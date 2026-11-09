@@ -68,6 +68,47 @@ async fn only_the_routed_opencode_server_gets_its_key() {
     }
 }
 
+/// YN-56 S3: an OpenCode executor's permission level reaches its own server
+/// as OpenCode's rules (OPENCODE_CONFIG_CONTENT), read again at each start;
+/// one without a level starts as before. A server whose agents don't keep the
+/// level (a configuration read after Yuzuno's adds a rule) is refused, and
+/// nothing of it is kept.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_opencode_executors_level_reaches_its_server_and_one_whose_agents_dont_keep_it_is_refused() {
+    opencode_program();
+    let before: Vec<_> = std::env::vars_os().collect();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let ws = Workspace::new(dir.path().join("data"), cwd.clone(), "unused".into()).unwrap();
+    for id in ["oc-none", "oc-auto", "oc-over"] {
+        ws.store.insert(&agent(id, "opencode", &cwd)).unwrap();
+    }
+    ws.store.set_permission_level("oc-auto", Some("auto")).unwrap();
+    ws.store.set_permission_level("oc-over", Some("auto")).unwrap();
+    assert!(ws.store.set_permission_level("oc-none", Some("readonly")).is_err(), "only a level is kept");
+    // A managed configuration OpenCode reads after Yuzuno's allows folders outside its own.
+    let over = ws.data_dir.join("opencode").join("oc-over");
+    fs::create_dir_all(&over).unwrap();
+    fs::write(over.join("permission-after"), r#"[{"action":"external_directory","resource":"*","effect":"allow"}]"#).unwrap();
+    let seen = |id: &str| -> Value {
+        serde_json::from_str(&fs::read_to_string(ws.data_dir.join("opencode").join(id).join("start.json")).unwrap()).unwrap()
+    };
+    ws.reconnect("oc-none").await.unwrap();
+    assert!(seen("oc-none")["configContent"].is_null(), "no level: Core's environment as it is");
+    ws.reconnect("oc-auto").await.unwrap();
+    assert_eq!(seen("oc-auto")["configContent"].as_str(), crate::permission_levels::opencode_config("auto").as_deref());
+    let refused = format!("{:#}", ws.reconnect("oc-over").await.unwrap_err());
+    assert!(refused.contains("doesn't keep the permission level auto: for external_directory on /elsewhere/* it decides allow, the level ask"),
+        "{refused}");
+    assert!(ws.opencodes.lock().unwrap().get("oc-over").is_none(), "the refused server is not kept");
+    assert_eq!(before, std::env::vars_os().collect::<Vec<_>>(), "Core's own environment is untouched");
+    for id in ["oc-none", "oc-auto", "oc-over"] {
+        ws.close_agent(id).await.unwrap();
+    }
+    assert_eq!(ws.store.permission_level("oc-auto").unwrap().as_deref(), Some("auto"), "a closed Agent keeps it until it is deleted");
+}
+
 /// A stub `node`: each bridge it is asked to run writes its environment to a
 /// file of its own and stays up until it is dropped.
 fn stub_bridge(dir: &Path) {

@@ -56,15 +56,53 @@ const ds = { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deep
   conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }, { kind: "laterKind", x: 1 }],
   unknown: "skip", note: "from a later Core" };
 const cl = { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" },
-  conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10, later: true }], unknown: "skip" };
+  conditions: [{ kind: "quota", weekLeftPct: 10, later: true }], unknown: "skip" };
 const savedView = (over = {}) => ({ version: 3, updatedAt: "2026-11-08T04:00:00Z", limits: { candidates: 8 },
   policy: { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, futureFlag: "kept", candidates: [clone(ds), clone(cl)] }, ...over });
 
-/** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. */
-function core({ view = savedView(), put } = {}) {
-  const state = { view };
+/** The Workspace's keys as Core lists them: never a value. */
+const KEYS = [
+  { id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: "2026-11-08T03:00:00Z" },
+  { id: "anthropic", provider: "anthropic", source: "1password", set: true, setAt: "2026-11-08T03:00:00Z", reference: "op://Vault/Anthropic/credential" },
+];
+/** Each tool's list as Core answers it (YN-57 S2b): Claude Code's CLI aliases and what each points to now, Codex's
+ * model/list, and OpenCode's as a new executor lists them (docs/executor-routing.md). */
+const CATALOGS = {
+  claude: { models: [
+    { id: "default", model: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" },
+    { id: "opus", model: "opus", displayName: "Opus", resolvedModel: "claude-opus-5-5" },
+    { id: "sonnet", model: "sonnet", displayName: "Sonnet", resolvedModel: "claude-sonnet-5-5" },
+    { id: "haiku", model: "haiku", displayName: "Haiku", resolvedModel: "claude-haiku-5-5" },
+  ] },
+  codex: { models: [
+    { id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+    { id: "gpt-6.1-sol-mini", model: "gpt-6.1-sol-mini", displayName: "GPT-6.1 Sol Mini" },
+    { id: "gpt-old", model: "gpt-old", displayName: "Old", hidden: true },
+  ] },
+  opencode: { opencode: { version: "2.2.5", verified: "2.2.5" }, models: [
+    { id: "anthropic/claude-x", model: "anthropic/claude-x", providerId: "anthropic", providerName: "Anthropic", name: "Claude X", displayName: "Anthropic · Claude X" },
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek Flash", displayName: "DeepSeek · DeepSeek Flash" },
+    { id: "deepseek/deepseek-v4-pro", model: "deepseek/deepseek-v4-pro", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek V4 Pro", displayName: "DeepSeek · DeepSeek V4 Pro" },
+    { id: "opencode/big-pickle", model: "opencode/big-pickle", providerId: "opencode", providerName: "OpenCode", name: "Big Pickle", displayName: "OpenCode · Big Pickle" },
+  ], providers: [
+    { id: "anthropic", name: "Anthropic", source: "routingKey", keyProvider: "anthropic" },
+    { id: "deepseek", name: "DeepSeek", source: "routingKey", keyProvider: "deepseek" },
+    { id: "opencode", name: "OpenCode", source: "ready" },
+  ] },
+};
+
+/** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
+ * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default. */
+function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
+  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: keys && clone(keys) };
   return { state, route(url, method, body) {
-    const p = new URL(url, "http://isolated.test").pathname;
+    const u = new URL(url, "http://isolated.test");
+    const p = u.pathname;
+    const harness = p === "/api/models" ? (u.searchParams.get("harness") ?? "codex") : p === "/api/routing/models" ? u.searchParams.get("harness") : null;
+    if (harness && method === "GET") {
+      const n = ++state.asked[harness];
+      return lists?.(harness, n) ?? [200, clone(CATALOGS[harness])];
+    }
     if (p === "/api/routing/policy" && method === "GET") return [200, state.view];
     if (p === "/api/routing/policy" && method === "PUT") {
       const answer = put?.(body, state);
@@ -73,13 +111,19 @@ function core({ view = savedView(), put } = {}) {
       state.view = { ...state.view, version: state.view.version + 1, policy: body.policy, updatedAt: "2026-11-08T05:00:00Z" };
       return [200, state.view];
     }
-    if (p === "/api/routing/keys") return [200, { keys: [
-      { id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: "2026-11-08T03:00:00Z" },
-      { id: "anthropic", provider: "anthropic", source: "1password", set: true, setAt: "2026-11-08T03:00:00Z", reference: "op://Vault/Anthropic/credential" },
-    ], onePasswordToken: { set: true } }];
+    // Keys that can't be read here (null): as Core refuses them off its own address.
+    if (p === "/api/routing/keys") return state.keys ? [200, { keys: state.keys, onePasswordToken: { set: true } }] : [403, { error: "Only from Core's own address" }];
+    // A key kept (S1's write, YN-57 S3): the answer says only that it is set.
+    const key = p.match(/^\/api\/routing\/keys\/([^/]+)$/);
+    if (key && method === "PUT") {
+      const kept = { id: decodeURIComponent(key[1]), provider: body.provider, source: body.source, set: true, setAt: "2026-11-09T01:00:00Z",
+        ...(body.reference ? { reference: body.reference } : {}) };
+      state.keys = [...state.keys.filter((k) => k.id !== kept.id), kept];
+      return [200, kept];
+    }
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
       { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAIL },
-      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "alias" },
+      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
       { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "other@example.test" },
     ] }, codexHomes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }] }];
     return [404, { error: `not answered: ${method} ${p}` }];
@@ -151,7 +195,7 @@ test("the saved order with its chips; a move by the arrows saved whole against t
   assert.deepEqual(titles(page), ["OpenCode · deepseek-flash", "Claude Code · opus"]);
   assert.deepEqual(cards(page).map((c) => c.querySelector(".routing-num").textContent), ["1", "2"]);
   assert.deepEqual(chips(card(page, "ds")), ["DeepSeek off-peak · at least 30 min before peak", "Today ≤ $5", "A condition this version can't show (laterKind)"]);
-  assert.deepEqual(chips(card(page, "cl")), ["5-hour left ≥ 15% · week left ≥ 10%", "The account with most left", "Skipped when a reading is unavailable"]);
+  assert.deepEqual(chips(card(page, "cl")), ["Week left ≥ 10%", "The account with most left", "Skipped when a reading is unavailable"]);
   assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key: DeepSeek · this host");
   assert.equal(page.document.querySelector(".settings-current").textContent, "version 3");
   assert.equal(bar(page).hidden, true, "nothing to save yet");
@@ -201,19 +245,46 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   assert.equal(editorField(page, id, "Model").value, "gpt-6.1-sol", "a tool's first model");
   await set(page, editorField(page, id, "Reasoning effort"), "high");
   const credentials = [...editorField(page, id, "Account or key").options].map((o) => o.textContent);
-  assert.deepEqual(credentials, ["This host's login (ChatGPT subscription)", "Codex account: Work"], "Codex takes its homes; no Anthropic or DeepSeek key");
+  assert.deepEqual(credentials, ["This host's login (ChatGPT subscription)", "Codex account: Work", "Add an API key for OpenAI…"],
+    "Codex takes its homes and an OpenAI key; no Anthropic or DeepSeek key");
   await set(page, editorField(page, id, "Account or key"), "home:work");
   button(page, "Subscription left", card(page, id)).click();
   await tick();
-  await set(page, editorField(page, id, "Model"), "gpt 6.1");
+  // A model the list lacks: Other, then typed (YN-57 S2b).
+  await set(page, editorField(page, id, "Model"), " other");
+  await set(page, byLabel(page, "Model, typed"), "gpt 6.1");
   assert.ok(card(page, id).textContent.includes("A model is one name, without spaces."), "as Core's check would refuse it");
   assert.match(bar(page).textContent, /Correct the marked block to save/);
   assert.equal(button(page, "Save", bar(page)).disabled, true);
-  await set(page, editorField(page, id, "Model"), "gpt-6.1-sol");
+  await set(page, byLabel(page, "Model, typed"), "gpt-6.1-sol");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.policy.candidates[2], { id, enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high",
-    credential: { kind: "codexHome", id: "work" }, conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }], unknown: "skip" });
+    credential: { kind: "codexHome", id: "work" }, conditions: [{ kind: "quota", weekLeftPct: 10 }], unknown: "skip" });
+});
+
+test("a quota condition that named only the 5-hour share, shown by Core with nothing left, is marked to fix and holds the save", async () => {
+  // Core drops a saved 5-hour share (YN-60): a condition that had only that comes back as { kind: "quota" }.
+  const view = savedView();
+  view.policy.candidates[1].conditions = [{ kind: "quota" }];
+  const page = mount(core({ view }));
+  await opened(page);
+  assert.deepEqual(chips(card(page, "cl")).slice(0, 1), ["Subscription left"]);
+  assert.equal(card(page, "cl").querySelector(".routing-fix")?.textContent, "Needs a fix", "not silently a condition that always holds");
+  button(page, "Move OpenCode · deepseek-flash · API down").click();
+  await until(() => button(page, "Save", bar(page)), "the bar");
+  assert.equal(button(page, "Save", bar(page)).disabled, true, "held until it is corrected");
+  card(page, "cl").querySelector(".routing-fix").click();
+  await until(() => card(page, "cl").querySelector(".routing-edit"), "its editor");
+  assert.equal(card(page, "cl").querySelector(".routing-cond-error")?.textContent,
+    "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.");
+  // Only the week's share is asked for: there is no 5-hour quota now (YN-60).
+  const quotaFields = [...card(page, "cl").querySelectorAll(".routing-cond .routing-inline-field")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
+  assert.deepEqual(quotaFields, ["This week left at least%"], "no 5-hour field to fill");
+  await set(page, card(page, "cl").querySelector(".routing-cond input"), "20");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.policy.candidates[0].conditions, [{ kind: "quota", weekLeftPct: 20 }]);
 });
 
 test("a newer version is shown and not overwritten; saving over it takes a choice and a Save", async () => {
@@ -296,7 +367,193 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
     { kind: "apiKey", keyId: "deepseek-main" }, { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, { kind: "login" },
     { kind: "apiKey", keyId: "anthropic" }]);
   assert.deepEqual(sent[0].conditions[0], { kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 });
+  assert.deepEqual([sent[1].conditions, sent[2].conditions], [[{ kind: "quota", weekLeftPct: 10 }], [{ kind: "quota", weekLeftPct: 10 }]],
+    "the subscriptions' quota is the week's only (YN-60)");
+  assert.deepEqual(chips(cards(page)[1]).slice(0, 1), ["本周剩 ≥ 10%"]);
   assert.equal(new Set(sent.map((c) => c.id)).size, 4, "each its own id");
+});
+
+/** An open editor's model select: its groups and options as shown, and the line under it. */
+function modelView(page, id) {
+  const select = card(page, id).querySelector(".routing-edit .routing-model select");
+  const field = select.closest(".routing-model");
+  return {
+    select,
+    value: select.value,
+    groups: [...select.querySelectorAll("optgroup")].map((g) => g.label),
+    options: [...select.options].map((o) => o.textContent),
+    grouped: Object.fromEntries([...select.querySelectorAll("optgroup")].map((g) => [g.label, [...g.querySelectorAll("option")].map((o) => o.value)])),
+    notes: [...field.querySelectorAll(".routing-model-note")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
+  };
+}
+const asks = (page) => page.calls.filter((c) => /\/api\/(routing\/)?models/.test(c.url)).map((c) => new URL(c.url, "http://isolated.test").pathname + new URL(c.url, "http://isolated.test").search);
+
+test("Claude Code's model is chosen from its CLI's aliases and the versions they point to, read when its editor opens (YN-57)", async () => {
+  const page = mount(core());
+  await opened(page);
+  assert.deepEqual(asks(page), [], "no list is read before an editor opens");
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => modelView(page, "cl").groups.length === 2, "Claude Code's list");
+  const view = modelView(page, "cl");
+  assert.equal(view.value, "opus", "the saved alias stays chosen");
+  assert.deepEqual(view.groups, ["Aliases · follow new releases", "Pinned versions"]);
+  assert.deepEqual(view.grouped["Aliases · follow new releases"], ["default", "opus", "sonnet", "haiku"]);
+  assert.deepEqual(view.grouped["Pinned versions"], ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"], "each once");
+  assert.equal(view.options[0], "The tool's default");
+  assert.equal(view.options.at(-1), "Other (type it)…");
+  assert.ok(view.options.includes("Opus · opus"));
+  assert.match(view.notes[0], /^From Claude Code on this Core host: its aliases, and the versions they point to now\. Read again$/);
+  assert.deepEqual(asks(page), ["/api/models?harness=claude"], "only the open candidate's tool, once");
+  await set(page, view.select, "claude-sonnet-5-5");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.policy.candidates.find((c) => c.id === "cl").model, "claude-sonnet-5-5");
+});
+
+test("OpenCode's list puts the candidate's key's provider first, and says when a model needs another key (YN-57)", async () => {
+  const page = mount(core(), "zh-Hans");
+  await opened(page);
+  button(page, "编辑 OpenCode · deepseek-flash · API").click();
+  await until(() => modelView(page, "ds").groups.length === 3, "OpenCode's list");
+  let view = modelView(page, "ds");
+  assert.equal(view.value, "deepseek/deepseek-flash");
+  assert.deepEqual(view.groups, ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"]);
+  assert.deepEqual(view.grouped["DeepSeek · 用这个候选的 API key"], ["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
+  assert.ok(view.options.includes("DeepSeek V4 Pro · deepseek/deepseek-v4-pro"));
+  assert.match(view.notes[0], /^来自这台 Core 主机上的 OpenCode 2\.2\.5：它这个版本自带的目录加上你的 OpenCode 配置，也就是新执行者看到的那份。 重新读取$/);
+  assert.deepEqual(asks(page), ["/api/routing/models?harness=opencode"]);
+  await set(page, view.select, "anthropic/claude-x");
+  view = modelView(page, "ds");
+  assert.equal(view.notes[1], "Anthropic 的模型需要 Anthropic 的 API key：在「账号或 key」里选一把。", "said, not refused");
+  await until(() => button(page, "保存", bar(page)), "the bar");
+  assert.equal(button(page, "保存", bar(page)).disabled, false, "the save is not held for it");
+});
+
+test("a tool whose list can't be read shows Yuzuno's short list and why, until Read again reads it (YN-57)", async () => {
+  const view0 = savedView();
+  view0.policy.candidates.push({ id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, conditions: [], unknown: "skip" });
+  const page = mount(core({ view: view0, lists: (harness, n) => (harness === "codex" && n === 1 ? [503, { code: "unavailable", error: "Codex did not start" }] : undefined) }));
+  await opened(page);
+  button(page, "Edit Codex · gpt-6.1-sol").click();
+  await until(() => modelView(page, "cx").groups.length === 1, "the short list");
+  let view = modelView(page, "cx");
+  assert.deepEqual(view.groups, ["Yuzuno's short list"]);
+  assert.deepEqual(view.grouped["Yuzuno's short list"], ["gpt-6.1-sol"]);
+  assert.equal(view.value, "gpt-6.1-sol");
+  assert.match(view.notes[0], /^Couldn't read Codex's models on this Core host \(Codex did not start\)\. Showing Yuzuno's short list; choose Other to type any model\. Read again$/);
+  button(page, "Read again", card(page, "cx")).click();
+  await until(() => modelView(page, "cx").groups[0] === "Codex's models", "Codex's own list");
+  view = modelView(page, "cx");
+  assert.deepEqual(view.grouped["Codex's models"], ["gpt-6.1-sol", "gpt-6.1-sol-mini"], "a hidden model stays out");
+  assert.match(view.notes[0], /^From Codex on this Core host: its own model list\./);
+  assert.deepEqual(asks(page), ["/api/models", "/api/models"], "asked again");
+});
+
+test("a saved model the list lacks stays chosen and says so; Other takes a typed one (YN-57)", async () => {
+  const view0 = savedView();
+  view0.policy.candidates.push({ id: "cy", enabled: true, harness: "codex", model: "gpt-legacy", credential: { kind: "login" }, conditions: [], unknown: "skip" });
+  const page = mount(core({ view: view0 }));
+  await opened(page);
+  button(page, "Edit Codex · gpt-legacy").click();
+  await until(() => modelView(page, "cy").groups.length === 1, "Codex's list");
+  let view = modelView(page, "cy");
+  assert.equal(view.value, "gpt-legacy", "not changed for the user");
+  assert.equal(view.select.selectedOptions[0].textContent, "gpt-legacy · not in the list now");
+  await set(page, view.select, " other");
+  const typed = byLabel(page, "Model, typed");
+  assert.equal(typed.value, "gpt-legacy", "the typed field starts from it");
+  await set(page, typed, "gpt-7-preview");
+  view = modelView(page, "cy");
+  assert.equal(view.value, " other", "Other stays chosen while typing");
+  assert.ok(view.notes.includes("Codex doesn't list this model now: it runs only if the executor's Codex has it."));
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.policy.candidates.find((c) => c.id === "cy").model, "gpt-7-preview");
+});
+
+test("a candidate added by hand offers an API key for its tool with no keys added yet (YN-57 S3)", async () => {
+  const page = mount(core({ keys: [] }));
+  await opened(page);
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const id = cards(page)[2].dataset.cand;
+  const offered = () => [...editorField(page, id, "Account or key").options].map((o) => [o.value, o.textContent]);
+  assert.ok(offered().some(([value, label]) => value === "new:anthropic" && label === "Add an API key for Anthropic…"),
+    `Claude Code takes an Anthropic key, and one can be added from here: ${JSON.stringify(offered())}`);
+  await set(page, editorField(page, id, "Tool"), "opencode");
+  for (const provider of ["DeepSeek", "Anthropic", "OpenAI"]) {
+    assert.ok(offered().some(([, label]) => label === `Add an API key for ${provider}…`), `OpenCode takes ${provider}'s: ${JSON.stringify(offered())}`);
+  }
+});
+
+// Synthetic, long and unusual, so a page or request holding it is found by a text search.
+const KEY_VALUE = "sk-fixture-yn57-IN-PLACE-WRITE-ONLY-7d2e";
+test("a key added from a candidate is written once, never shown or kept, and becomes the candidate's (YN-57 S3)", async () => {
+  // No Anthropic key yet; DeepSeek's stays, so the saved DeepSeek candidate doesn't hold the save.
+  const page = mount(core({ keys: [KEYS[0]] }));
+  await opened(page);
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const id = cards(page)[2].dataset.cand;
+  const keyReads = () => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/routing/keys")).length;
+  const readsBefore = keyReads();
+  await set(page, editorField(page, id, "Account or key"), "new:anthropic");
+  const form = card(page, id).querySelector('.routing-key-inline form[aria-label="New Anthropic API key"]');
+  assert.ok(form, "Accounts and keys' own form, in place");
+  assert.equal(form.querySelector("select"), null, "its provider is the one chosen, not asked again");
+  assert.equal(form.querySelector(".routing-new-key-grid input").value, "anthropic", "the first id free for it");
+  assert.match(form.textContent, /Saved under Accounts and keys as soon as you save it here, and never shown again\./);
+  const value = byLabel(page, "New Anthropic API key: value");
+  assert.equal(value.type, "password");
+  await set(page, value, KEY_VALUE);
+  assert.equal(value.getAttribute("value"), null, "typed, it is never written into the page");
+  button(page, "Save key", form).click();
+  await until(() => !card(page, id).querySelector(".routing-key-inline"), "the form closes once the key is kept");
+  const writes = page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/routing/keys/anthropic"));
+  assert.deepEqual(writes.map((c) => c.body), [{ source: "local", provider: "anthropic", value: KEY_VALUE }], "one write, with the value");
+  const select = editorField(page, id, "Account or key");
+  assert.equal(select.value, "key:anthropic", "the candidate's key now");
+  assert.equal(select.selectedOptions[0].textContent, "API key: Anthropic (anthropic)");
+  await until(() => keyReads() > readsBefore, "the page's keys read again");
+  await save(page);
+  await until(() => puts(page).some((c) => c.url.endsWith("/routing/policy")), "the page's save");
+  const policy = puts(page).find((c) => c.url.endsWith("/routing/policy")).body.policy;
+  assert.deepEqual(policy.candidates.find((c) => c.id === id).credential, { kind: "apiKey", keyId: "anthropic" });
+  assert.deepEqual(page.calls.filter((c) => JSON.stringify(c.body ?? "").includes(KEY_VALUE)).map((c) => `${c.method} ${new URL(c.url, "http://isolated.test").pathname}`),
+    ["PUT /api/routing/keys/anthropic"], "only its own write carries the value");
+  assert.ok(!page.document.documentElement.outerHTML.includes(KEY_VALUE), "never in the page");
+  const kept = JSON.stringify([Object.entries(page.window.localStorage), Object.entries(page.window.sessionStorage), page.window.location.href]);
+  assert.ok(!kept.includes(KEY_VALUE), "never kept in this browser");
+  assert.deepEqual(page.errors, []);
+});
+
+test("cancelling a key added in place leaves the candidate's account as it was and writes nothing (YN-57 S3)", async () => {
+  const page = mount(core());
+  await opened(page);
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => card(page, "cl").querySelector(".routing-edit"), "its editor");
+  await set(page, editorField(page, "cl", "Account or key"), "new:anthropic");
+  const form = card(page, "cl").querySelector(".routing-key-inline form");
+  assert.equal(form.querySelector(".routing-new-key-grid input").value, "anthropic-2", "another id than the key already there");
+  await set(page, byLabel(page, "New Anthropic API key: value"), KEY_VALUE);
+  button(page, "Cancel", form).click();
+  await tick();
+  assert.equal(card(page, "cl").querySelector(".routing-key-inline"), null);
+  assert.equal(editorField(page, "cl", "Account or key").value, "pool", "the pool, as before");
+  assert.deepEqual(puts(page).map((c) => c.url), [], "nothing written (evaluating the draft is a read)");
+});
+
+test("while the keys can't be read here, adding one from a candidate is offered but can't be chosen (YN-57 S3)", async () => {
+  const page = mount(core({ keys: null }));
+  await until(() => cards(page).length > 0, "the candidates");
+  await until(() => page.calls.some((c) => c.url.endsWith("/routing/keys")), "the keys asked for");
+  await tick();
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const option = [...editorField(page, cards(page)[2].dataset.cand, "Account or key").options].find((o) => o.value === "new:anthropic");
+  assert.ok(option, "still offered");
+  assert.equal(option.disabled, true);
+  assert.equal(option.textContent, "Add an API key for Anthropic (keys can't be read here)");
 });
 
 test("a candidate that can't be saved says so on its card, with a pill that opens its editor (YN-57)", async () => {
@@ -345,7 +602,7 @@ test("routing off, the Workspace cap, a weekly schedule of its own and a pool of
   await tick();
   [...card(page, "cl").querySelectorAll(".routing-pool-accounts label")].find((l) => l.textContent.includes("Account #2")).querySelector("input").click();
   await tick();
-  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("alias"), "accounts by number and fingerprint only");
+  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("fixture-alias-label"), "accounts by number and fingerprint only");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   const sent = puts(page)[0].body.policy;

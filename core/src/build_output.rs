@@ -454,6 +454,28 @@ pub(crate) fn foreign_entries(profile: &Path) -> Vec<String> {
     foreign
 }
 
+/// Every build lock Cargo keeps in profile, held exclusively until the files
+/// are dropped: a build that starts meanwhile waits for them, and one that
+/// holds any of them now refuses the removal. Cargo 1.97 may hold only a
+/// newer lock (YN-65 review 9b839d5f), so holding .cargo-lock alone would let
+/// it start between the last check and the rename.
+pub(crate) fn hold_build_locks(profile: &Path) -> std::result::Result<Vec<std::fs::File>, String> {
+    let lock = std::fs::File::open(profile.join(".cargo-lock")).map_err(|e| format!("Its build lock cannot be opened: {e}"))?;
+    lock.try_lock().map_err(|_| "Cargo started building here".to_owned())?;
+    let mut held = vec![lock];
+    for name in NEWER_LOCKS {
+        match std::fs::File::open(profile.join(name)) {
+            Ok(lock) => {
+                lock.try_lock().map_err(|_| "Cargo started building here".to_owned())?;
+                held.push(lock);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Its build lock {name} cannot be opened: {error}")),
+        }
+    }
+    Ok(held)
+}
+
 /// Why candidate must stay, from Core's own records: who works in the
 /// workspace now and which Job records name the candidate.
 pub(crate) async fn record_protections(ws: &Arc<Workspace>, root: &Path, candidate: &Path) -> Vec<String> {
@@ -519,8 +541,7 @@ pub(crate) async fn remove_one(ws: &Arc<Workspace>, git_root: &Path, users_root:
     }
     let (dev, ino) = (candidate["dev"].as_u64(), candidate["ino"].as_u64());
     let outcome = tokio::task::spawn_blocking(move || -> std::result::Result<String, (String, String)> {
-        let lock = std::fs::File::open(path.join(".cargo-lock")).map_err(|e| ("refused".to_owned(), format!("Its build lock cannot be opened: {e}")))?;
-        lock.try_lock().map_err(|_| ("refused".to_owned(), "Cargo started building here".to_owned()))?;
+        let locks = hold_build_locks(&path).map_err(|why| ("refused".to_owned(), why))?;
         let parent = path.parent().ok_or(("refused".to_owned(), "It has no parent folder".to_owned()))?;
         let aside = parent.join(format!("{REMOVING}{}", uuid::Uuid::new_v4()));
         std::fs::rename(&path, &aside).map_err(|e| ("refused".to_owned(), format!("It could not be moved aside: {e}")))?;
@@ -530,7 +551,7 @@ pub(crate) async fn remove_one(ws: &Arc<Workspace>, git_root: &Path, users_root:
             return Err(("refused".to_owned(), format!("It was replaced while being removed; {}",
                 if back.is_ok() { "it was put back".to_owned() } else { format!("it is left at {}", aside.display()) })));
         }
-        drop(lock);
+        drop(locks);
         std::fs::remove_dir_all(&aside)
             .map(|()| "removed".to_owned())
             .map_err(|e| ("partial".to_owned(), format!("Removing it stopped: {e}; what remains is at {}", aside.display())))

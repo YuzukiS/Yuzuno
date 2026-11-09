@@ -14,6 +14,7 @@ export const executorRowText = strings({
     stopped: "Stopped",
   } as Record<ExecutorShown, string>,
   position: (n: number) => `${n} in line`,
+  candidate: "waiting for a routing candidate",
   starting: "Starting",
   awaitingRelease: "Handed in, waiting for the lead",
   blocked: (text: string) => `Task blocked: ${text}`,
@@ -50,6 +51,7 @@ export const executorRowText = strings({
     stopped: "已停止",
   },
   position: (n) => `第 ${n} 位`,
+  candidate: "在等路由候选",
   starting: "启动中",
   awaitingRelease: "已交，等负责人",
   blocked: (text) => `任务受阻：${text}`,
@@ -93,6 +95,7 @@ export function detailText(detail: ExecutorDetail | null, t: Text, shown?: Execu
   if (!detail) return null;
   switch (detail.kind) {
     case "position": return t.position(detail.position);
+    case "candidate": return t.candidate;
     case "starting": return t.starting;
     case "awaitingRelease": return t.awaitingRelease;
     case "pr":

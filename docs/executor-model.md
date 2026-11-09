@@ -133,7 +133,7 @@ not a template's or a Project's.
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Routing** (`routing`) | Unset: the template follows routing. Its executors get their harness, model, effort and account from the Workspace's [routing](executor-routing.md#routing-at-dispatch-s3b2). While routing is off, or none of its candidates keeps the template's permission level, they get the default harness and model for new Agents: the task's Project's, then the Workspace's, then Codex. Such a template names no harness, model or effort. `"fixed"`: its executors start with this template's own harness, model and machine on the host's login, whatever the [routing policy](executor-routing.md#the-policy-get-and-put-apiroutingpolicy-s3a) says. In Settings it is the template's **Runs with**: **Follows routing**, or the tool it is fixed to. Executor routing's **Templates** section sets it too: one switch per template. On, the template is routed by the rules. Off, it is fixed to a tool you choose beside the switch, which starts as the Workspace's default tool for new Agents. A tool that doesn't keep the template's permission level isn't saved: choose another tool, or change the level. |
 | **Harness** | A fixed template's only: Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
-| **Permissions** (`permissionLevel`) | **Ask you first** (`ask`), **Auto-approve** (`auto`) or **Full access** (`full`): one permission for every harness, which Core maps to each harness's own. The page shows what the chosen level is on each tool, and which tools routing passes over for it. See [Permission levels](executor-routing.md#permission-levels-yn-56). Left unset, each harness's default for new Agents. A fixed template's level must be one its harness keeps; a fixed Codex template may instead follow its machine's own Codex configuration (`permissionPreset: "config"`). A dispatch whose harness doesn't keep the level is refused (`level_not_kept`). Its executor's materials name the level. |
+| **Permissions** (`permissionLevel`) | **Ask you first** (`ask`), **Auto-approve** (`auto`) or **Full access** (`full`): one permission for every harness, which Core maps to each harness's own. The page shows what the chosen level is on each tool, and which tools routing passes over for it. See [Permission levels](executor-routing.md#permission-levels-yn-56). Left unset, each harness's default for new Agents. A fixed template's level must be one its harness keeps: Claude Code doesn't keep Full access, and OpenCode keeps each, as rules of its own. A fixed Codex template may instead follow its machine's own Codex configuration (`permissionPreset: "config"`). A dispatch whose harness doesn't keep the level is refused (`level_not_kept`). Its executor's materials name the level. |
 | **Model**, **Reasoning effort** | A fixed template's only, shown once it runs with a tool, as for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. The template form's Model field takes it, as does `executor_templates_change`. |
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
@@ -141,6 +141,7 @@ not a template's or a Project's.
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
 | **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
 | **Steps** (`steps`) | 1 to 12 steps its executors follow, in order. Unset is its delivery's default steps. See [Delivery and steps](#delivery-and-steps). |
+| **Tier** (`tier`) | The kind of model its work wants (YN-70): `strong`, for designing, investigating, deciding and checking, or `fast`, for building what was decided. Unset is no preference. Its executors' materials say it under `template`, as `tier` with `tierSource: "template"`, and their mail says it, such as `Tier: fast · 快 (the template's default)`. `executor_templates_list` lists it. Routing doesn't choose by it. Settings shows no control for it: a save there keeps the tier a template was saved with, or its preset's. |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
@@ -171,34 +172,46 @@ not a template's or a Project's.
   a template that follows routing, since it names no harness: it counts it
   among templates a newer Core saved, doesn't offer it, and keeps it as it
   is when it saves.
-- **Presets.** Core ships ten presets, in English and Chinese:
+- **Presets.** Core ships eleven presets, in English and Chinese, each
+  with the tier its work wants:
 
-  | Id | Preset | Delivery | For |
-  | --- | --- | --- | --- |
-  | `design-first` | Design first · 设计先行 | `pr` | A design note approved before any code, then a PR per slice |
-  | `red-test-fix` | Red test first · 红测先行修复 | `pr` | A reproducible bug: a failing test first, then the fix |
-  | `batch-change` | Mechanical batch · 机械批量改动 | `pr` | One mechanical change in many places, no behaviour change |
-  | `investigation` | Read-only investigation · 只读调查 | `none` | A question answered in a memo, each claim with its source |
-  | `decision-memo` | Decision memo · 决策备忘 | `none` | Options with cost and risk, and a gate for your choice |
-  | `verification` | Independent check · 独立核查 | `none` | Named checks run in Jobs, a verdict each |
-  | `sliced-feature` | Sliced long task · 切片长任务 | `pr` | A large feature in slices, with a progress file across sessions |
-  | `runbook` | Gated runbook · 人工把关的运行手册 | `none` | Irreversible steps, each approved; asks before each action |
-  | `small-fix` | Small fix · 小修快路径 | `pr` | A small fix whose cause is clear |
-  | `test-hygiene` | Test hygiene · 测试卫生修复 | `pr` | A flaky or wrong test, fixed in the test alone |
+  | Id | Preset | Delivery | Tier | For |
+  | --- | --- | --- | --- | --- |
+  | `design` | Design · 设计 | `none` | strong | A design note, whole in the result, up to its approval; the build is a second dispatch |
+  | `build-from-design` | Build from an approved design · 按批准的设计实现 | `pr` | fast | The approved note of an earlier dispatch, read whole with `task_result_get`, built a PR per slice |
+  | `red-test-fix` | Red test first · 红测先行修复 | `pr` | fast | A reproducible bug: a failing test first, then the fix |
+  | `batch-change` | Mechanical batch · 机械批量改动 | `pr` | fast | One mechanical change in many places, no behaviour change |
+  | `investigation` | Read-only investigation · 只读调查 | `none` | strong | A question answered in a memo, each claim with its source |
+  | `decision-memo` | Decision memo · 决策备忘 | `none` | strong | Options with cost and risk, and a gate for your choice |
+  | `verification` | Independent check · 独立核查 | `none` | strong | Named checks run in Jobs, a verdict each |
+  | `sliced-feature` | Sliced long task · 切片长任务 | `pr` | strong | A large feature in slices, with a progress file across sessions |
+  | `runbook` | Gated runbook · 人工把关的运行手册 | `none` | strong | Irreversible steps, each approved; asks before each action |
+  | `small-fix` | Small fix · 小修快路径 | `pr` | fast | A small fix whose cause is clear |
+  | `test-hygiene` | Test hygiene · 测试卫生修复 | `pr` | fast | A flaky or wrong test, fixed in the test alone |
+
+  Design first (`design-first`) was one preset before core.30: the same
+  executor wrote the note and, once it was approved, built it. It is two
+  now, so that the design and the build can each have their own kind of
+  model: dispatch the task with **Design**, approve its note, then dispatch
+  the same task again with **Build from an approved design**, naming the
+  note's result in the materials. The design's executor puts the whole note
+  in its result, not a path: a builder on another machine can't read that
+  path, and a new executor's summary holds only a result's first 800 bytes.
+  A template saved from the earlier preset is kept as it was.
 
   In Settings, **Add presets** shows them in the page's language, each
   with when to choose it, its delivery and its steps. You pick which to
   add. Each becomes an unsaved template, under a free id if its id is
   taken, for the harness of the defaults for new Agents (Codex unless you
-  set another). Each has its instructions, delivery, steps and when to
-  choose it. The gated runbook also has its permission: Codex **ask**,
-  Claude Code **default**. A preset names no model, since Core has no model
-  tiers; the template shows the preset's suggestion beside **Model**, which
-  isn't saved. Saving (the page's save bar, or **Save templates** where the
+  set another). Each has its instructions, delivery, steps, tier and when
+  to choose it. The gated runbook also has its permission: Codex **ask**,
+  Claude Code **default**. A preset names no model, only its tier; the
+  template shows the preset's suggestion beside **Model**, which isn't
+  saved. Saving (the page's save bar, or **Save templates** where the
   editor stands alone) saves the new templates like any other edit. A
   preset is never stored as one. No Agent saves presets; a lead changes
   templates as below. "Read-only" in the investigation, decision memo and
-  design-note steps is an instruction only: no permission enforces it.
+  design is an instruction only: no permission enforces it.
 - **The editor.** Each template is a card: its label, harness and when to
   choose it; its delivery, chosen from three cards; its steps, shown as its
   delivery's default until you choose **Change the steps**, then one row
@@ -308,7 +321,8 @@ records (see [An executor's session](#an-executors-session)).
   - `none`: materials → work → result.
 - **What the executor gets.** A template dispatch's materials say, under
   `template`, its `deliveryMode` and its `steps` as resolved (its own, else
-  the default), and `whenToChoose` when it has one. Its mail says the
+  the default), `whenToChoose` when it has one, and its `tier` with
+  `tierSource` when it has one (YN-70). Its mail says the
   delivery and the steps on one line each, such as `Delivery: none: no
   repository change to deliver; your result is the deliverable` and `Steps
   (descriptive: Core does not track them): materials → work: Write the memo
@@ -692,7 +706,12 @@ A released executor takes no more mail or work:
   first line. An executor you dispatched has no Agent to pass it to: that
   mail is kept in the executor's mailbox, never dropped, where you can still
   read it. Either way the task's own records of the Job, the CI run or the
-  review are written as always.
+  review are written as always. While the task is open such mail wakes the
+  dispatcher, as it would have woken the executor. Once the task is done,
+  cancelled or archived, a passed-on success (a Job that succeeded, CI that
+  passed, a review that passed, a pull request made, a merge) is quiet: it
+  is kept and read as usual, and comes with the dispatcher's next wake-up
+  instead of starting a Turn (YN-68). A failure always wakes it.
 - **Other mail is refused.** Mail to it, and a dispatch naming it, is refused
   with `executor_archived`, naming its task and its dispatcher. Write to the
   dispatcher instead, or dispatch the task again for new work.
@@ -749,6 +768,26 @@ was made from (`template`: its `id`, and its `label` as its dispatch's
 materials give it), when it was dispatched (`dispatchedAt`), and since when
 it is in its state (`since`). An executor at work whose task is blocked also
 has the blocker (`blocked`); its state stays what it is.
+
+An executor with a dispatch record also says what executor routing gave it
+(`route`, YN-57). It is one of three kinds:
+- **`chosen`:** the candidate (`candidate`, with its `label` when it has one),
+  the harness, model and effort the executor runs with, and its account or key
+  (`credential`). The credential is one of:
+  - `login`;
+  - `apiKey` with `keyId`;
+  - `pool` with `account`: its `fingerprint` and, as the record gives it, `number`;
+  - `codexHome` with `id`.
+- **`waiting`:** it waits for a candidate, with `earliest`, the soonest time a
+  candidate's reason gives, when there is one.
+- **`unrouted`:** with `why`, one of:
+  - `none`: its dispatch recorded no route. Either routing was off then, or
+    it could not route this one (for example, no candidate could run there);
+  - `fixed`: its template is fixed;
+  - `routingOff` or `noCandidate`: released after waiting
+    ([executor routing](executor-routing.md)).
+
+It never holds a key's value or an account's email.
 
 - **A task's short name.** What the task is about in plain words, at most
   16 characters ("导出设备偏好", "Export settings"), not a key, a number or a

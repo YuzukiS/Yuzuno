@@ -21,8 +21,10 @@
 //   loaded; wider letters; a larger text size) and while its words change
 //   (排队 ↔ 等负责人) (YN-41, the user's report of 2026-11-08);
 // - every other state is a pill left of the ring that stays while it holds
-//   (等负责人, 审查中, 等合并, 排队 · 第 2 位, 离线), in its outline, line one's
-//   words clear of it; needs you and failed are row islands;
+//   (等负责人, 审查中, 等合并, 排队 · 第 2 位, 等候选 · 04:00 起, 离线), in its
+//   outline, line one's words clear of it; needs you and failed are row
+//   islands; an executor waiting for a routing candidate, not a slot, says
+//   等候选 and its card its template and route (YN-57);
 // - an executor's line one is its task's short name, else its title; line
 //   two what it is doing and its clock; no task key or PR number on a row;
 // - only a lead shows updates unread, as a dot; no count anywhere;
@@ -91,6 +93,8 @@ const fixture = () => [
   // Nothing for line two (no start time, nothing said): handed in, queued (YN-41).
   executor("yn44", { title: "Theme names", shortName: "主题名称" }, "delivering", {}, { since: null, dispatchedAt: null }),
   executor("yn45", { title: "Sort keys", shortName: "排序键" }, "queued", {}, { since: null, dispatchedAt: null, position: 3 }),
+  // Queued for a routing candidate, not a slot (YN-57): its own pill, the longest words a pill has here.
+  executor("yn57", { title: "Routing page fixes", shortName: "路由页改进" }, "queued", {}, { position: 1, route: { kind: "waiting", earliest: "2026-11-09T04:00:00Z" } }),
 ];
 // The live step's yn32: queued, then running again (YN-41).
 const queued32 = () => executor("yn32", { title: "Export the device preferences file", shortName: "导出设备偏好文件" }, "queued", {}, { position: 2 });
@@ -388,6 +392,29 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       await list.screenshot({ path: join(output, `${tag}-2-selected.png`) });
       report.screenshots.push(`${tag}-2-selected`);
       check(`${tag}: the selected row looks as hover does, with no "…"; Shift+F10 on its link opens its menu`);
+      // YN-57: the card of an executor waiting for a routing candidate says so, its template and its route.
+      // The time as the page writes it: its own locale and time zone (the context's), not this process's.
+      const at = await page.evaluate((iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso)), "2026-11-09T04:00:00Z");
+      // In the middle of the rail first: a row far down it has no size until it is near the view.
+      await rowOf("yn57").evaluate((row) => row.scrollIntoView({ block: "center" }));
+      // Its pill leaves line one room, as the slot queue's pills do: a long one took all of it
+      // (light-en, a 12-hour clock: "Waiting for a candidate · from 12:00 PM", then "Candidate from 12:00 PM").
+      const lineOne = async (id) => rowOf(id).locator(".agent-select").evaluate((b) => b.getBoundingClientRect().width);
+      const [waitingOne, queuedOne] = [await lineOne("yn57"), await lineOne("yn45")];
+      assert.ok(waitingOne >= 40 && waitingOne >= queuedOne - 24, `${tag}: yn57's line one keeps room beside its pill (${waitingOne} px; yn45's ${queuedOne} px)`);
+      await rowOf("yn57").locator(".agent-select").hover();
+      const tip = page.locator(".tip");
+      await tip.waitFor({ timeout: 10_000 });
+      const said = await tip.innerText();
+      const zh = tag.endsWith("-zh");
+      for (const line of zh ? [`等候选 · ${at} 起`, "在等路由候选；有候选满足条件就启动", "模板：Design first", `路由：在等一个候选 · 最早 ${at}`]
+        : [`From ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
+        assert.ok(said.includes(line), `${tag}: the card says "${line}": ${said}`);
+      await page.screenshot({ path: join(output, `${tag}-3-card-route.png`) });
+      report.screenshots.push(`${tag}-3-card-route`);
+      await page.mouse.move(0, 0);
+      await tip.waitFor({ state: "detached", timeout: 10_000 }).catch(() => {});
+      check(`${tag}: an executor waiting for a routing candidate says so on its pill and card, with its template and route; its line one ${Math.round(waitingOne)} px beside its pill (yn45's ${Math.round(queuedOne)} px)`);
     }
   } catch (error) {
     await page.screenshot({ path: join(output, `${tag}-failure.png`) }).catch(() => {});

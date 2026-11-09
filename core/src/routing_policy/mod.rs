@@ -10,6 +10,9 @@
 //!   reads such a kind as unknown.
 //! - A save is checked strictly. Each refusal names the field's path.
 //! - A save replaces the whole policy, against the version read.
+//! - A quota condition's `fiveHourLeftPct` is retired (YN-60): a page from
+//!   before may still send it, and a save takes it and drops it; a read shows
+//!   a saved policy without it (`without_five_hour`).
 //!
 //! Only the user's own browser writes it (routes.rs). Choosing an executor by
 //! it is S3b.
@@ -41,8 +44,30 @@ pub struct Stored {
 impl Stored {
     pub fn view(&self) -> Value {
         json!({"version": self.version, "updatedAt": self.updated_at, "limits": {"candidates": MAX_CANDIDATES},
-            "policy": self.policy})
+            "policy": without_five_hour(&self.policy, false)})
     }
+}
+
+/// A quota condition's 5-hour share, retired by the user on 2026-11-09 (YN-60):
+/// Claude and Codex have no 5-hour quota now, and Core reads none.
+pub const FIVE_HOUR: &str = "fiveHourLeftPct";
+
+/// `policy` without any quota condition's 5-hour share. A condition left with no
+/// share at all is dropped when `drop_emptied` (a save: it was no condition), and
+/// kept as `{kind: "quota"}` otherwise (a read: the page marks it to fix).
+pub fn without_five_hour(policy: &Value, drop_emptied: bool) -> Value {
+    let mut policy = policy.clone();
+    for candidate in policy["candidates"].as_array_mut().into_iter().flatten() {
+        let Some(conditions) = candidate.get_mut("conditions").and_then(Value::as_array_mut) else { continue };
+        conditions.retain_mut(|c| {
+            let Some(map) = c.as_object_mut().filter(|m| m.get("kind").is_some_and(|k| k == "quota")) else { return true };
+            if map.remove(FIVE_HOUR).is_none() {
+                return true;
+            }
+            !drop_emptied || map.get("weekLeftPct").is_some_and(|w| !w.is_null())
+        });
+    }
+    policy
 }
 
 /// The policy before any save: routing off.
@@ -253,16 +278,14 @@ fn check_condition(value: &Value, path: &str, credential: &str) -> Result<(), In
             if !matches!(credential, "login" | "pool" | "codexHome") {
                 return refuse(field("kind"), "A quota condition is for a login, a pool or a Codex home");
             }
-            let mut any = false;
-            for name in ["fiveHourLeftPct", "weekLeftPct"] {
-                match c.get(name) {
-                    None | Some(Value::Null) => {}
-                    Some(v) if v.as_f64().is_some_and(|n| (0.0..=100.0).contains(&n)) => any = true,
-                    Some(_) => return refuse(field(name), format!("{name} is 0 to 100")),
-                }
-            }
-            if !any {
-                return refuse(field("kind"), "A quota condition names fiveHourLeftPct, weekLeftPct or both");
+            let week = match c.get("weekLeftPct") {
+                None | Some(Value::Null) => false,
+                Some(v) if v.as_f64().is_some_and(|n| (0.0..=100.0).contains(&n)) => true,
+                Some(_) => return refuse(field("weekLeftPct"), "weekLeftPct is 0 to 100"),
+            };
+            // An older page's 5-hour share is taken here and dropped by the save (YN-60).
+            if !week && c.get(FIVE_HOUR).is_none_or(Value::is_null) {
+                return refuse(field("kind"), "A quota condition names weekLeftPct");
             }
         }
         "dailyApiCap" => {

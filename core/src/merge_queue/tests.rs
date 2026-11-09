@@ -426,6 +426,8 @@ async fn a_released_head_with_green_ci_on_the_current_main_merges_and_is_followe
     assert!(lab.comments().iter().any(|c| c.contains(&format!("merged #11 at {}", &head()[..12]))));
     assert_eq!(lab.mail("lead").len(), 1, "the releasing lead is told of the merge");
     assert_eq!(lab.mail("dev").len(), 1, "and so is the task's executor");
+    // Quietly, while the executor works (YN-68): it is woken when main CI ends.
+    assert_eq!((lab.mail("lead")[0]["wake"].clone(), lab.mail("dev")[0]["wake"].clone()), (json!("quiet"), json!("quiet")));
 
     let e = lab.step().await;
     assert_eq!(e["state"], "merged", "main CI has not run yet: {e}");
@@ -434,10 +436,50 @@ async fn a_released_head_with_green_ci_on_the_current_main_merges_and_is_followe
     assert_eq!(e["state"], "done", "main CI on the merge commit is green: {e}");
     assert_eq!(e["merge"]["mainCi"]["conclusion"], "success");
     assert_eq!(lab.mail("lead").len(), 2, "and the lead is told main CI passed");
+    assert_eq!(lab.mail("lead")[1]["wake"], "quiet", "quietly: the executor reports it");
+    assert_eq!(lab.mail("dev")[1]["wake"], "ring", "the executor is woken to report it");
     assert!(lab.paused()["paused"].is_null());
     lab.step().await;
     assert_eq!(writes(lab.dir.path()).len(), 1, "a done entry writes nothing more");
     assert_eq!(lab.mail("lead").len(), 2, "a done entry is not announced again");
+
+    // Its result rings for the lead and says, by Core's records, what main CI concluded.
+    let task = lab.ws.store.collaboration_call(None, "task_get", json!({"taskId":lab.task})).unwrap()["task"].clone();
+    lab.ws.store.collaboration_call(Some("dev"), "task_submit_result", json!({"requestId":"result","taskId":lab.task,
+        "expectedVersion":task["version"],"dispatchId":task["dispatch"]["id"],"summary":"Merged.","status":"review"})).unwrap();
+    let read = lab.ws.store.collaboration_call(None, "peer_read", json!({"agentId":"lead"})).unwrap();
+    let result = read["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["kind"] == "task_result").unwrap().clone();
+    assert_eq!(result["wake"], "ring");
+    let line = format!("Merge queue, by Core's records: #11 merged as {}, main CI success", &merge_commit()[..12]);
+    assert!(result["body"].as_str().unwrap().contains(&line), "{}", result["body"]);
+}
+
+/// YN-68 (Dev Lead 2, mail 10300): once the task's executor is released,
+/// its copy of the merge goes to the lead who dispatched it, who released
+/// the entry too: one mail each time, and it rings, since nobody else will
+/// report the merge.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_released_executors_merge_mail_rings_once_for_its_lead() {
+    let lab = lab(green());
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        let task = crate::collaboration_store::task_key(&db, &lab.task).unwrap().0;
+        db.execute("INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,archived_at,created_at,updated_at)
+            VALUES('dev','executor','reviewer',?1,'agent:lead','then','now','now')", [&task]).unwrap();
+    }
+    lab.ws.store.update("dev", "agent/closed", &json!({}), |d| d.agent.closed_at = Some("then".into())).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "merged");
+    let mail = lab.mail("lead");
+    assert_eq!(mail.len(), 1, "one mail, not the lead's and the executor's copy: {mail:#?}");
+    assert_eq!(mail[0]["wake"], "ring");
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    assert_eq!(lab.step().await["state"], "done");
+    let mail = lab.mail("lead");
+    assert_eq!(mail.len(), 2, "{mail:#?}");
+    assert_eq!(mail[1]["wake"], "ring", "main CI green rings: the lead closes the task");
 }
 
 #[cfg(unix)]
@@ -2319,7 +2361,9 @@ async fn red_main_ci_after_a_merge_pauses_and_only_a_lead_or_the_user_unpauses()
         serde_json::from_str(&db.query_row("SELECT data FROM merge_entries WHERE number=12", [], |r| r.get::<_, String>(0)).unwrap()).unwrap()
     };
     assert_eq!(w["mainAtRelease"], merge_commit(), "re-anchored at the main read at the unpause");
-    assert!(lab.mail("lead").iter().any(|m| m["priority"] == "urgent" && m["metadata"]["status"] == "unpaused"), "the leads are told");
+    // Told, quietly: the waiting entries go on by themselves (YN-68).
+    assert!(lab.mail("lead").iter().any(|m| m["priority"] == "normal" && m["wake"] == "quiet" && m["metadata"]["status"] == "unpaused"),
+        "the leads are told: {:#?}", lab.mail("lead"));
 }
 
 #[cfg(unix)]

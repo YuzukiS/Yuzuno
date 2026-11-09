@@ -481,6 +481,10 @@ pub(super) fn body(snapshot: &Value) -> String {
             200,
         );
         field("Its instructions", &template["instructions"], "template.instructions", 2_000);
+        // The kind of model its work wants and whose that is (YN-70).
+        if let Some(tier) = template["tier"].as_str() {
+            field("Tier", &json!(tier_text(tier, template["tierSource"].as_str())), "template.tier", 200);
+        }
         // How its work is delivered and its steps (YN-23); materials from
         // before carry neither.
         if let Some(mode) = template["deliveryMode"].as_str() {
@@ -563,6 +567,20 @@ fn delivery_text(mode: &str) -> String {
         "direct-commit" => "direct-commit: commit the work without a pull request".into(),
         "none" => "none: no repository change to deliver; your result is the deliverable".into(),
         other => other.into(),
+    }
+}
+
+/// A dispatch's tier and whose it is (YN-70): `fast · 快 (the template's default)`.
+fn tier_text(tier: &str, source: Option<&str>) -> String {
+    let name = match tier {
+        "strong" => "strong · 强",
+        "fast" => "fast · 快",
+        other => other,
+    };
+    match source {
+        Some("template") => format!("{name} (the template's default)"),
+        Some(source) => format!("{name} (from {source})"),
+        None => name.to_owned(),
     }
 }
 
