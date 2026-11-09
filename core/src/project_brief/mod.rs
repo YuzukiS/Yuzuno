@@ -155,7 +155,7 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
 Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
-(on version_conflict use the latest Brief attached) and call again with a new requestId. \
+(on version_conflict merge into the latest sections attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
 Kinds: ask (a question with options, freeText, form or choice; a reply marks it replied and it stays until you resolve it once handled), \
 report (leaves when the user marks it seen), status (current data with asOf and validFor). \
@@ -196,7 +196,7 @@ fn description(tool: &str) -> &'static str {
     let generated = brief_contract().and_then(|brief| contract_text(&brief["toolDescriptions"][tool]));
     generated.unwrap_or(match tool {
         "brief_get" => "Read your Project's Brief: its version and sections (with owners and ask state), what you own, your asks the user replied to, and the limits. Call it before brief_update; its version is your expectedVersion.",
-        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with the latest Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
+        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with those sections as they are now and an index of the Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
         _ => "The Project Brief guide: section kinds, keys and owners, asks, content blocks, charts, attachments, limits and rejection codes, with examples. Pass part to read one part.",
     })
 }
