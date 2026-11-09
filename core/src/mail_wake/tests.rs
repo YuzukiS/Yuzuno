@@ -152,6 +152,63 @@ fn each_kind_of_mail_wakes_as_the_table_says() {
     assert!(old["messages"].as_array().unwrap().iter().all(|m| m["wake"] == "ring"));
 }
 
+/// A quiet notice to `to` named `name`, of `metadata`, written at `at`.
+fn quiet_at(store: &Store, to: &str, task: Option<&str>, name: &str, at: &str, metadata: Value) -> Value {
+    let mut mail = core_mail(name, to, task, "normal", metadata);
+    mail["createdAt"] = json!(at);
+    let written = insert_message(&store.db.write().unwrap(), mail).unwrap();
+    assert_eq!(written["wake"], "quiet", "{written:#}");
+    written
+}
+
+fn merge(status: &str, entry: &str) -> Value {
+    let main = if status == "done" { json!("success") } else { Value::Null };
+    json!({"kind":"merge","entryId":entry,"status":status,"reason":null,"mainCi":main,"entryKind":null})
+}
+
+/// YN-68 S2: the digest a doorbell gives of its quiet notices: a line a task
+/// in the order they came, "Workspace" for those of none, each event once,
+/// with its time; at most four events a line and eight lines.
+#[test]
+fn the_digest_says_what_quiet_notices_bring_a_line_a_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    for id in ["lead", "exec"] {
+        agent(&store, id);
+    }
+    let (first, first_id) = task(&store, "First", Some("exec"));
+    let (second, second_id) = task(&store, "Second", Some("exec"));
+    quiet_at(&store, "lead", Some(&first_id), "PR #822", "2026-11-09T01:11:00Z", merge("merged", "e822"));
+    quiet_at(&store, "lead", Some(&second_id), "PR #830", "2026-11-09T01:20:00Z", merge("merged", "e830"));
+    // The same event again (a second copy) is told once.
+    quiet_at(&store, "lead", Some(&first_id), "PR #822", "2026-11-09T01:12:00Z", merge("merged", "e822"));
+    quiet_at(&store, "lead", Some(&first_id), "PR #822", "2026-11-09T01:26:00Z", merge("done", "e822"));
+    quiet_at(&store, "lead", None, "repository 7", "2026-11-09T01:45:00Z", json!({"kind":"merge","status":"unpaused"}));
+    quiet_at(&store, "lead", None, "templates", "2026-11-09T01:50:00Z", json!({"kind":"executorTemplates","status":"changed"}));
+    let db = store.db.read().unwrap();
+    assert_eq!(digest(&db, "lead", i64::MAX, "normal").unwrap(), [
+        format!("- {first}: PR #822 merged 01:11Z; PR #822 main CI success 01:26Z"),
+        format!("- {second}: PR #830 merged 01:20Z"),
+        "- Workspace: repository 7 merge queue unpaused 01:45Z; executor templates changed 01:50Z".to_owned(),
+    ]);
+    assert!(digest(&db, "exec", i64::MAX, "normal").unwrap().is_empty(), "only the recipient's own");
+    assert!(digest(&db, "lead", i64::MAX, "urgent").unwrap().is_empty(), "only the delivery's priority");
+    drop(db);
+
+    // Past four events a line and eight lines, it counts the rest.
+    for n in 0..5 {
+        quiet_at(&store, "exec", Some(&first_id), &format!("PR #{n}"), "2026-11-09T02:00:00Z", merge("merged", &format!("m{n}")));
+    }
+    for n in 0..9 {
+        let (_, id) = task(&store, &format!("Task {n}"), Some("lead"));
+        quiet_at(&store, "exec", Some(&id), "PR", "2026-11-09T02:00:00Z", merge("merged", &format!("t{n}")));
+    }
+    let lines = digest(&store.db.read().unwrap(), "exec", i64::MAX, "normal").unwrap();
+    assert_eq!(lines.len(), 9, "{lines:#?}");
+    assert!(lines[0].ends_with("PR #3 merged 02:00Z; 1 more"), "{}", lines[0]);
+    assert_eq!(lines[8], "- and 2 more tasks in the mailbox");
+}
+
 mod delivery {
     use super::*;
     use crate::collaboration_runtime::tests::{finish, fixture, steered_item, working};
@@ -199,6 +256,24 @@ mod delivery {
         let read = ws.collaboration_call(Some("a"), "peer_read", json!({})).await.unwrap();
         let wakes: Vec<_> = read["messages"].as_array().unwrap().iter().map(|m| (m["body"].clone(), m["wake"].clone())).collect();
         assert_eq!(wakes, [(json!("Merge queue: merged #822."), json!("quiet")), (json!("Please decide"), json!("ring"))]);
+        finish(&ws, "native-turn");
+        ws.close_agent("a").await.unwrap();
+    }
+
+    /// The doorbell gives the digest after its count (S2).
+    #[tokio::test]
+    async fn the_doorbell_gives_the_digest_of_its_quiet_notices() {
+        let (dir, ws) = fixture().await;
+        merged_pr(&ws);
+        quiet_at(&ws.store, "a", None, "repository 7", "2026-11-09T01:45:00Z", json!({"kind":"merge","status":"unpaused"}));
+        ws.collaboration_call(None, "peer_send", json!({"requestId":"ask","toAgentId":"a","body":"Please decide"})).await.unwrap();
+        deliver_pending(&ws).await;
+        let starts = std::fs::read_to_string(dir.path().join("starts.jsonl")).unwrap();
+        let call: Value = serde_json::from_str(starts.lines().next().unwrap()).unwrap();
+        let text = call.to_string();
+        assert!(text.contains("2 of them are quiet notices from Core"), "{text}");
+        assert!(text.contains("Quiet notices in this delivery:\\n- T-") && text.contains(": PR #822 merged"), "{text}");
+        assert!(text.contains("\\n- Workspace: repository 7 merge queue unpaused 01:45Z"), "{text}");
         finish(&ws, "native-turn");
         ws.close_agent("a").await.unwrap();
     }

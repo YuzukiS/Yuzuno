@@ -32,6 +32,11 @@
 //!
 //! A revert, a red, cancelled or unobserved main CI, a stop, a pause, a
 //! result, a refusal, a failure and an unknown outcome always ring.
+//!
+//! An Agent may ask for its quiet notices to ring after all, every one or
+//! those of a few open tasks (`mail_preferences`, S2); such a notice says
+//! why ([`WANTED`]). The doorbell that brings quiet notices counts them and
+//! gives a line a task of what they say ([`digest`]).
 use crate::collaboration_store::{load_task, SharedTask};
 use anyhow::Result;
 use rusqlite::Connection;
@@ -46,10 +51,102 @@ pub(crate) const JOIN: &str = "join";
 /// cannot read rings.
 pub(crate) fn classify(db: &Connection, message: &Value) -> (&'static str, Option<&'static str>) {
     match decide(db, message) {
+        // Its recipient asked to be woken by it (mail_preferences); a
+        // preference Core cannot read wakes it too.
+        Ok(Some(_)) if wanted(db, message).unwrap_or(true) => (RING, Some(WANTED)),
         Ok(Some(why)) => (QUIET, Some(why)),
         Ok(None) if message["metadata"]["kind"] == crate::session_baseline::KIND && from_core(message) => (JOIN, None),
         Ok(None) | Err(_) => (RING, None),
     }
+}
+
+/// Why a notice that would be quiet rings: its recipient's preferences.
+pub(crate) const WANTED: &str = "a quiet notice your mail_preferences ask to be woken by";
+
+/// Whether the recipient's preferences make this quiet notice ring.
+fn wanted(db: &Connection, message: &Value) -> Result<bool> {
+    let recipient = message["recipient"]["id"].as_str().unwrap_or("");
+    let task = match message["taskId"].as_str().filter(|id| !id.is_empty()) {
+        Some(id) => Some(load_task(db, id)?),
+        None => None,
+    };
+    crate::collaboration_store::mail_preferences::rings(db, recipient, task.as_ref())
+}
+
+/// At most this many lines in a doorbell's digest of its quiet notices,
+/// and this many events on one line.
+const DIGEST_LINES: usize = 8;
+const DIGEST_EVENTS: usize = 4;
+
+/// The digest a doorbell gives of the quiet notices it brings (`recipient`'s
+/// pending, unread mail of `priority` up to `through`): one line a task, in
+/// the order they came, "Workspace" for those of no task, each event once
+/// (by its notice key) with its time, at most [`DIGEST_LINES`] lines.
+pub(crate) fn digest(db: &Connection, recipient: &str, through: i64, priority: &str) -> Result<Vec<String>> {
+    let mut q = db.prepare(
+        "SELECT data FROM collaboration_messages m WHERE recipient_id=?1 AND seq<=?2 AND delivery_state='pending'
+           AND COALESCE(json_extract(data,'$.priority'),'normal')=?3 AND json_extract(data,'$.wake')='quiet'
+           AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)
+         ORDER BY seq",
+    )?;
+    let mut tasks: Vec<(Option<String>, Vec<String>, Vec<String>)> = Vec::new();
+    for raw in q.query_map(rusqlite::params![recipient, through, priority], |r| r.get::<_, String>(0))? {
+        let message: Value = serde_json::from_str(&raw?)?;
+        let task = message["taskId"].as_str().filter(|id| !id.is_empty()).map(str::to_owned);
+        let key = message["notice"]["key"].as_str().unwrap_or_default().to_owned();
+        let at = message["createdAt"]
+            .as_str()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.with_timezone(&chrono::Utc).format(" %H:%MZ").to_string())
+            .unwrap_or_default();
+        let event = format!("{}{at}", event(&message["metadata"]));
+        let entry = match tasks.iter_mut().position(|(t, ..)| *t == task) {
+            Some(i) => &mut tasks[i],
+            None => {
+                tasks.push((task, Vec::new(), Vec::new()));
+                tasks.last_mut().unwrap()
+            }
+        };
+        if !entry.1.contains(&key) {
+            entry.1.push(key);
+            entry.2.push(event);
+        }
+    }
+    let more = tasks.len().saturating_sub(DIGEST_LINES);
+    let mut lines: Vec<String> = tasks
+        .into_iter()
+        .take(DIGEST_LINES)
+        .map(|(task, _, events)| {
+            let shown = task.map(|id| crate::collaboration_store::task_shown(db, &id)).unwrap_or_else(|| "Workspace".into());
+            let rest = events.len().saturating_sub(DIGEST_EVENTS);
+            let mut text = events.into_iter().take(DIGEST_EVENTS).collect::<Vec<_>>().join("; ");
+            if rest > 0 {
+                text.push_str(&format!("; {rest} more"));
+            }
+            format!("- {shown}: {text}")
+        })
+        .collect();
+    if more > 0 {
+        lines.push(format!("- and {more} more task{} in the mailbox", if more == 1 { "" } else { "s" }));
+    }
+    Ok(lines)
+}
+
+/// One quiet notice in a few words: its name (cut to 60 characters) and what happened.
+fn event(metadata: &Value) -> String {
+    let name: String = metadata["name"].as_str().unwrap_or("").chars().take(60).collect();
+    let what = match (metadata["kind"].as_str().unwrap_or(""), metadata["status"].as_str().unwrap_or("")) {
+        ("merge", "merged") => "merged",
+        ("merge", "done") => "main CI success",
+        ("merge", "unpaused") => "merge queue unpaused",
+        ("executorTemplates", "changed") => return "executor templates changed".into(),
+        ("job", "succeeded") => "Job succeeded",
+        ("ci", "passed") => "CI passed",
+        ("review", "completed") => "review passed",
+        ("pr", "completed") => "PR done",
+        (_, status) => return format!("{name} {status}").trim().to_owned(),
+    };
+    format!("{name} {what}").trim().to_owned()
 }
 
 fn from_core(message: &Value) -> bool {
