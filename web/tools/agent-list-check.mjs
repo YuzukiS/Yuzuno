@@ -175,7 +175,8 @@ try {
           unread: island?.dataset.unread ?? null,
           unreadText: island?.querySelector(".island-notch")?.textContent ?? null,
           avatar: !!row.querySelector(".agent-rail-avatar, .avatar"),
-          title: row.querySelector(".agent-select").title,
+          // What the row's button says beside its name (YN-44: its title is now the row's card).
+          described: row.querySelector(".agent-select").getAttribute("aria-description"),
           overflows: row.scrollWidth > row.clientWidth + 1,
         };
       }),
@@ -238,8 +239,8 @@ try {
   // Unread updates: a notch beside the ring, a count past one (99+ past 99).
   assert.deepEqual(detailed.map((r) => [r.id, r.unread, r.unreadText]), [["a", null, null], ["b", "count", "2"], ["c", null, null], ["d", "count", "99+"]]);
   assert.ok(detailed.every((r) => !r.avatar), "no avatar on any row");
-  assert.match(at.b.title, / · 2 unread updates$/, "the count is in the row's tip");
-  assert.doesNotMatch(at.a.title, /unread/);
+  assert.match(at.b.described, /, 2 unread updates$/, "the count is in the row's description");
+  assert.doesNotMatch(at.a.described ?? "", /unread/);
   const marks = () =>
     page.evaluate(() => {
       const list = document.querySelector(".agent-list").getBoundingClientRect();

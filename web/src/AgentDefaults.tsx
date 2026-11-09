@@ -3,6 +3,7 @@ import { api, errorText } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Model } from "./types";
+import { Tip, TipText } from "./Tip";
 import {
   CLAUDE_MODES,
   CODEX_PRESETS,
@@ -299,12 +300,14 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
           <p>{projectId ? t.introProject : t.intro}</p>
         </div>
         {effective && (
-          <span className="settings-current" title={t.current}>
-            {harnessName(effective.harness.value)} ·{" "}
-            {effective.harness.value === "claude"
-              ? claudeModeText(effective.claudePermissionMode.value, language)
-              : codexPermissionText(effective.codexPermissionPreset.value, language)}
-          </span>
+          <Tip content={<TipText title={t.current} />}>
+            <span className="settings-current">
+              {harnessName(effective.harness.value)} ·{" "}
+              {effective.harness.value === "claude"
+                ? claudeModeText(effective.claudePermissionMode.value, language)
+                : codexPermissionText(effective.codexPermissionPreset.value, language)}
+            </span>
+          </Tip>
         )}
       </header>
       {/* Until Core answers, the section says it is reading (T-19 ST:AD1). */}

@@ -38,6 +38,7 @@ import { strings, useLanguage, type Language } from "./i18n";
 import { SaveStatus, saveRefusalReason } from "./SaveStatus";
 import { SettingsSlider } from "./SettingsSlider";
 import type { SaveOutcome } from "./device-storage";
+import { Tip, TipText } from "./Tip";
 
 // Appearance's words (T-189), in the interface language. Values and the file
 // keep their ids ("garden", "dark"); only how they are named changes.
@@ -173,10 +174,12 @@ export function AppearanceSection() {
           <h3 id="settings-appearance-title">{t.title}</h3>
           <p>{t.intro}</p>
         </div>
-        <span className="settings-current" title={t.current}>
-          {t.palettes[appearance.palette]} · {theme} · {appearance.fontSize} px
-          {appearance.agentList === "compact" && t.compactList}
-        </span>
+        <Tip content={<TipText title={t.current} />}>
+          <span className="settings-current">
+            {t.palettes[appearance.palette]} · {theme} · {appearance.fontSize} px
+            {appearance.agentList === "compact" && t.compactList}
+          </span>
+        </Tip>
       </header>
       <div className="settings-group appearance-group">
         <fieldset className="appearance-field">

@@ -5,6 +5,7 @@ import { useLanguage } from "./i18n";
 import { newAgentText } from "./new-agent-text";
 import type { Agent } from "./types";
 import "./session-import.css";
+import { Tip, TipText } from "./Tip";
 
 /** What Core read from an uploaded OpenCode 2.x export (T-61 slice 8). */
 export interface OpenCodeImportPreview {
@@ -350,9 +351,12 @@ export function ImportOpenCodeSession({
           {/* As in the other import tabs, the error's line is kept while empty
               so a failure doesn't push the buttons under the pointer. */}
           {error ? (
-            <p key="error" role="alert" className="remote-field-error kept-error" title={error}>
-              <span>{error}</span>
-            </p>
+            // The whole error, when its one line cuts it.
+            <Tip key="error" content={<TipText body={error} />} size="wide" cut>
+              <p role="alert" className="remote-field-error kept-error">
+                <span>{error}</span>
+              </p>
+            </Tip>
           ) : (
             <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
               <span>&nbsp;</span>

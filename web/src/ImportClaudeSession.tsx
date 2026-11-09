@@ -14,6 +14,7 @@ import { activeProjects } from "./projects";
 import type { Agent, AgentDetail, Project } from "./types";
 import "./session-import.css";
 import "./claude-sessions.css";
+import { Tip, TipText } from "./Tip";
 
 /** A Claude Code session saved on the Core host, as the list shows it. */
 export interface ClaudeSession {
@@ -478,9 +479,12 @@ export function ImportClaudeSession({
               pushing the buttons down under the pointer. Below them it could fall out of this
               dialog's scrolled view (T-19 SX-47). */}
           {errorShown ? (
-            <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
-              <span>{errorShown}</span>
-            </p>
+            // The whole error, when its one line cuts it.
+            <Tip key="error" content={<TipText body={errorShown} />} size="wide" cut>
+              <p role="alert" className="remote-field-error kept-error">
+                <span>{errorShown}</span>
+              </p>
+            </Tip>
           ) : (
             <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
               <span>&nbsp;</span>

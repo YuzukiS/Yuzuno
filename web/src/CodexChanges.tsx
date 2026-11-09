@@ -7,6 +7,7 @@ import { userText } from "./message-content";
 import { loadFullItem } from "./item-payload";
 import type { Agent, NativeItem, NativeTurn } from "./types";
 import "./codex-changes.css";
+import { Tip, TipText } from "./Tip";
 
 const statusLabels: Record<string, string> = { completed: "Applied", failed: "Failed", declined: "Declined", inProgress: "In progress" };
 const kindLabels: Record<FileEdit["kind"], string> = { add: "Added", delete: "Deleted", update: "Updated", unknown: "Changed" };
@@ -113,9 +114,12 @@ export function CodexChangesDialog({ agent, open, turnId, turns, turnNumber, old
                   <FileCode2 size={14} />
                   <span className="changes-path">{displayPath(file.path, agent.cwd)}</span>
                   <span className="changes-count">{plural(file.edits.length, "edit")}</span>
-                  <button type="button" className="inline-link" title="Opens the file as it is now" onClick={() => onFile(file.path)}>
-                    Open file <ArrowUpRight size={12} />
-                  </button>
+                  {/* What it shows; its words say what it does. */}
+                  <Tip content={<TipText body="The file as it is now, not as this turn left it" />}>
+                    <button type="button" className="inline-link" onClick={() => onFile(file.path)}>
+                      Open file <ArrowUpRight size={12} />
+                    </button>
+                  </Tip>
                 </div>
                 <ol>
                   {file.edits.map((edit) => (
