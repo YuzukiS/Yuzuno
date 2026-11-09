@@ -439,13 +439,6 @@ fn only_a_round_whose_merge_base_changed_is_offered_fixed_by_base_and_every_othe
     let findings = json!([{"index":0},{"index":1}]);
     let moved = json!({"from":C,"to":E,"paths":[{"path":"z.rs","status":"A"}],"listed":1,"total":1});
     let changed = json!({"coveragePolicyVersion":3,"incrementalOf":{"reviewId":"earlier","findings":findings},"mergeBaseChanged":moved}).to_string();
-    let schema = reviewer::schema(&changed);
-    let items = &schema["properties"]["previous_findings"]["items"];
-    assert_eq!(items["properties"]["disposition"]["enum"], json!(["fixed","still_valid","fixed_by_base"]));
-    assert!(items["required"].as_array().unwrap().contains(&json!("base_paths")));
-    let prompt = reviewer::prompt(&changed);
-    assert!(prompt.contains("mergeBaseChanged") && prompt.contains("fixed_by_base") && prompt.contains("base_paths"), "{prompt}");
-    assert!(prompt.contains("in the base now is not fixed by it"), "{prompt}");
     let variants = [
         ("full-v1", "fixed evidence".to_owned()),
         ("full-v2", json!({"coveragePolicyVersion":2}).to_string()),
@@ -457,5 +450,12 @@ fn only_a_round_whose_merge_base_changed_is_offered_fixed_by_base_and_every_othe
     ];
     let actual: Vec<String> = variants.iter().map(|(name, e)| format!("{name} {} {}", sha(&reviewer::prompt(e)), sha(&reviewer::schema(e).to_string()))).collect();
     println!("PINNED:\n{}", actual.join("\n"));
+    let schema = reviewer::schema(&changed);
+    let items = &schema["properties"]["previous_findings"]["items"];
+    assert_eq!(items["properties"]["disposition"]["enum"], json!(["fixed","still_valid","fixed_by_base"]));
+    assert!(items["required"].as_array().unwrap().contains(&json!("base_paths")));
+    let prompt = reviewer::prompt(&changed);
+    assert!(prompt.contains("mergeBaseChanged") && prompt.contains("fixed_by_base") && prompt.contains("base_paths"), "{prompt}");
+    assert!(prompt.contains("in the base now is not fixed by it"), "{prompt}");
     assert_eq!(actual, PINNED);
 }
