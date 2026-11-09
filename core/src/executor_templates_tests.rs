@@ -3,8 +3,14 @@ use axum::http::StatusCode;
 use std::collections::BTreeMap;
 use tower::ServiceExt;
 
+/// A template fixed to `harness` (YN-56: only a fixed one names its harness).
 fn template(id: &str, harness: &str) -> Value {
-    json!({"id": id, "label": format!("Label {id}"), "harness": harness})
+    json!({"id": id, "label": format!("Label {id}"), "harness": harness, "routing": "fixed"})
+}
+
+/// A template that follows routing.
+fn follows(id: &str) -> Value {
+    json!({"id": id, "label": format!("Label {id}")})
 }
 
 async fn call(ws: &Arc<Workspace>, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -39,7 +45,7 @@ async fn templates_are_the_workspaces_saved_against_the_version_read() {
         (StatusCode::OK, json!({"version":0,"templates":[]}), json!([])));
 
     let mut events = ws.changes.subscribe(None);
-    let writer = json!({"id":"writer","label":"Writer","harness":"claude","permissionMode":"auto",
+    let writer = json!({"id":"writer","label":"Writer","permissionLevel":"auto",
         "namePattern":"{label} for {task}","instructions":"Read the task's acceptance first.","maxConcurrent":2});
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
         Some(json!({"expectedVersion":0,"templates":[template("reviewer", "codex"), writer.clone()]}))).await;
@@ -90,7 +96,7 @@ async fn templates_are_the_workspaces_saved_against_the_version_read() {
 async fn a_save_keeps_what_a_later_core_stored() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-    let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
+    let later = json!({"id":"z","label":"A later shape","routing":"remote","laterHarness":{"kind":"remote"}});
     // A later Core's templates that read, but hold what this Core refuses (R2 70093e91).
     let refused = [json!({"id":"g","label":"Another harness","harness":"gemini"}),
         json!({"id":"m","label":"Yet another harness","harness":"kimi"})];
@@ -106,10 +112,10 @@ async fn a_save_keeps_what_a_later_core_stored() {
         "the view shows what it can use and says how many it can't");
 
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":1,"templates":[
-        {"id":"a","label":"A again","harness":"codex"}, template("b", "claude")]}))).await;
+        {"id":"a","label":"A again"}, template("b", "claude")]}))).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     let raw = stored();
-    assert_eq!(raw["templates"][0], json!({"id":"a","label":"A again","harness":"codex","laterField":"kept"}),
+    assert_eq!(raw["templates"][0], json!({"id":"a","label":"A again","laterField":"kept"}),
         "a later Core's field of a template is kept");
     assert_eq!(raw["templates"][1], template("b", "claude"));
     assert_eq!(raw["templates"][2], later, "a template a later Core stored is kept");
@@ -136,13 +142,29 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         t
     };
+    let follows_with = |extra: Value| {
+        let mut t = follows("t");
+        t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        t
+    };
     for (template, says) in [
         (with(json!({"extra":1})), "Unknown template field: extra"),
         (with(json!({"id":"Not ok"})), "A template's id is 1 to 48 lowercase letters"),
         (with(json!({"label":" "})), "A template's label is a line of at most 80 characters"),
         (with(json!({"harness":"gemini"})), "A template's harness is Codex, Claude Code or OpenCode, not gemini"),
-        (with(json!({"permissionMode":"auto"})), "A Claude Code permission mode does not apply to a Codex template"),
-        (with(json!({"permissionPreset":"root"})), "Unknown Codex permission mode: root"),
+        (with(json!({"permissionMode":"auto"})), "A template takes a permission level (permissionLevel), not a Claude Code permission mode"),
+        (with(json!({"permissionPreset":"root"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
+        (with(json!({"permissionPreset":"auto"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
+        (with(json!({"permissionPreset":"config","permissionLevel":"ask"})), "A fixed Codex template takes a permission level or its own configuration"),
+        (with(json!({"permissionLevel":"readonly"})), "A permission level is ask, auto or full, not readonly"),
+        (with(json!({"harness":"claude","permissionLevel":"full"})), "Claude Code doesn't keep the permission level full (Full access)"),
+        (with(json!({"harness":"opencode","permissionLevel":"ask"})), "OpenCode doesn't keep the permission level ask (Ask you first)"),
+        // YN-56: only a fixed template names its harness, model and effort; one that follows routing takes a level.
+        (follows_with(json!({"harness":"codex"})), "A template that follows routing names no harness"),
+        (follows_with(json!({"model":"m"})), "A template that follows routing names no model or reasoning effort"),
+        (follows_with(json!({"permissionMode":"auto"})), "A template that follows routing takes a permission level"),
+        (follows_with(json!({"permissionPreset":"config"})), "A template that follows routing takes a permission level"),
+        (follows_with(json!({"routing":"fixed"})), "A fixed template names its harness"),
         (with(json!({"reasoningEffort":"high"})), "Choose the Codex model the reasoning effort is for"),
         (with(json!({"harness":"claude","permissionPreset":"auto"})), "A Codex permission mode does not apply to a Claude Code template"),
         (with(json!({"harness":"claude","reasoningEffort":"high","model":"m"})), "A Claude Code template takes no reasoning effort"),
@@ -180,7 +202,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     // changed, so the rest of the list does too; a new one is refused
     // (R2 70093e91, R4 42f066e2: the editor rebuilds each template it sends).
     let kept: Template = serde_json::from_value(json!({"id":"o","label":"Label o","harness":"opencode","machineId":"local"})).unwrap();
-    let renamed = json!({"id":"o","label":"Renamed","harness":"opencode"});
+    let renamed = json!({"id":"o","label":"Renamed","harness":"opencode","routing":"fixed"});
     assert!(parse_save(&[renamed, template("c", "codex")], false, &[kept.clone()]).is_ok(),
         "an OpenCode template saved before stays editable while OpenCode is off");
     assert_eq!(parse_save(&[template("n", "opencode")], false, &[kept.clone()]).unwrap_err().to_string(), "OpenCode Agents aren't enabled on this Core");
@@ -201,15 +223,22 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         {"id":"g","label":"Reads, but another harness","harness":"gemini"},
     ]}).to_string())).unwrap();
     assert_eq!((read.version, read.later_templates), (3, 2));
-    assert_eq!(read.templates, vec![serde_json::from_value::<Template>(template("a", "codex").clone()).unwrap()]);
+    assert_eq!(read.templates, vec![serde_json::from_value::<Template>(follows("a")).unwrap()],
+        "a template a Core before YN-56 kept follows routing (an unknown harness is a later Core's)");
+    for level in ["ask", "auto", "full"] {
+        assert!(parse_save(&[follows_with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "{level}");
+        assert!(parse_save(&[with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "Codex keeps {level}");
+    }
+    assert!(parse_save(&[with(json!({"permissionPreset":"config"}))], true, &[]).is_ok(), "a fixed Codex template on its machine's configuration");
+    assert!(parse_save(&[with(json!({"harness":"claude","permissionLevel":"auto","model":"opus"}))], true, &[]).is_ok());
     assert_eq!(read_list(None).unwrap(), Templates::default());
 }
 
 /// YN-23: Core offers the ten presets of T-43's plan in English and Chinese,
-/// each a template once the page gives it a harness: every one passes a
-/// save's checks for Codex and for Claude Code, with its permission for that
-/// harness, and its instructions fit the 8 KiB a template has. The view
-/// serves them; nothing stores them.
+/// each a template that follows routing (YN-56), with its permission level:
+/// every one passes a save's checks as it is and fixed to Codex or Claude
+/// Code, and its instructions fit the 8 KiB a template has. The view serves
+/// them; nothing stores them.
 #[tokio::test]
 async fn the_ten_presets_are_templates_in_both_languages() {
     let presets = presets();
@@ -226,21 +255,28 @@ async fn the_ten_presets_are_templates_in_both_languages() {
         assert!(!preset["modelHint"].as_str().unwrap().trim().is_empty(), "{id} {language}: a model hint");
         let steps = preset["steps"].as_array().map(|steps| steps.iter().map(|s| s["label"].clone()).collect::<Vec<_>>()).unwrap_or_default();
         assert!(steps.iter().all(|label| label.is_null() || label.is_string()), "{id} {language}: step labels in its language: {steps:?}");
+        let mut template = json!({"id": id, "label": preset["label"], "instructions": instructions,
+            "whenToChoose": preset["whenToChoose"], "deliveryMode": preset["deliveryMode"]});
+        if let Some(steps) = preset.get("steps") {
+            template["steps"] = steps.clone();
+        }
+        if let Some(level) = preset.get("permissionLevel") {
+            template["permissionLevel"] = level.clone();
+        }
+        assert!(preset.get("permissions").is_none(), "{id}: no permission of one harness");
+        let saved = parse_save(&[template.clone()], false, &[]);
+        assert!(saved.is_ok(), "{id} {language}: {saved:?}");
         for harness in ["codex", "claude"] {
-            let mut template = json!({"id": id, "label": preset["label"], "harness": harness, "instructions": instructions,
-                "whenToChoose": preset["whenToChoose"], "deliveryMode": preset["deliveryMode"]});
-            if let Some(steps) = preset.get("steps") {
-                template["steps"] = steps.clone();
-            }
-            if let Some(permission) = preset["permissions"][harness].as_str() {
-                template[if harness == "codex" { "permissionPreset" } else { "permissionMode" }] = json!(permission);
-            }
-            let saved = parse_save(&[template.clone()], false, &[]);
-            assert!(saved.is_ok(), "{id} {language} {harness}: {saved:?}");
+            let mut fixed = template.clone();
+            fixed["harness"] = json!(harness);
+            fixed["routing"] = json!("fixed");
+            let saved = parse_save(&[fixed], false, &[]);
+            assert!(saved.is_ok(), "{id} {language} fixed to {harness}: {saved:?}");
         }
     }
     let runbook = presets.iter().find(|p| p["id"] == "runbook").unwrap();
-    assert_eq!(runbook["permissions"], json!({"codex":"ask","claude":"default"}), "the gated runbook asks before each action");
+    assert_eq!(runbook["permissionLevel"], "ask", "the gated runbook asks before each action");
+    assert_eq!(presets.iter().filter(|p| p.get("permissionLevel").is_some()).count(), 2, "only the runbook, in two languages, names a level");
     let zh = presets.iter().find(|p| p["id"] == "design-first" && p["language"] == "zh-Hans").unwrap();
     assert_eq!((zh["label"].clone(), zh["steps"][1]["label"].clone()), (json!("设计先行"), json!("设计说明")));
 
@@ -260,20 +296,20 @@ fn a_named_model_is_confirmed_by_the_core_hosts_catalog() {
     let claude = json!({"models":[{"id":"opus","model":"opus","displayName":"Opus","supportsAutoMode":false}]});
     let catalogs = Catalogs { codex: Some(Ok(codex)), claude: Some(Ok(claude)) };
     let parse = |values: Vec<Value>| parse_save(&values, true, &[]).unwrap();
-    let mut fine = parse(vec![json!({"id":"c","label":"C","harness":"codex","model":"m-small","reasoningEffort":"low"})]);
+    let mut fine = parse(vec![json!({"id":"c","label":"C","harness":"codex","routing":"fixed","model":"m-small","reasoningEffort":"low"})]);
     confirm_models(&mut fine, &[], &catalogs).unwrap();
     assert_eq!(fine[0].model.as_deref(), Some("m-small"));
-    let mut gone = parse(vec![json!({"id":"c","label":"C","harness":"codex","model":"gone"})]);
+    let mut gone = parse(vec![json!({"id":"c","label":"C","harness":"codex","routing":"fixed","model":"gone"})]);
     let says = confirm_models(&mut gone, &[], &catalogs).err().map(|e| e.to_string()).unwrap_or_default();
     assert!(says.starts_with("C: ") && says.contains("not among this Core host's Codex models") && says.ends_with("nothing was saved"),
         "a model not in the catalog is refused: {says:?}");
-    let mut auto = parse(vec![json!({"id":"o","label":"O","harness":"claude","model":"opus","permissionMode":"auto"})]);
+    let mut auto = parse(vec![json!({"id":"o","label":"O","harness":"claude","routing":"fixed","model":"opus","permissionLevel":"auto"})]);
     assert_eq!(confirm_models(&mut auto, &[], &catalogs).unwrap_err().to_string(), "O: opus can't run in Auto mode; nothing was saved");
     // Unchanged from what is saved: no catalog is needed.
     let unread = Catalogs { codex: None, claude: None };
     let saved = fine.clone();
     confirm_models(&mut fine, &saved, &unread).unwrap();
-    let mut changed = parse(vec![json!({"id":"c","label":"C","harness":"codex","model":"m-small"})]);
+    let mut changed = parse(vec![json!({"id":"c","label":"C","harness":"codex","routing":"fixed","model":"m-small"})]);
     assert_eq!(confirm_models(&mut changed, &saved, &unread).unwrap_err().to_string(),
         "Can't read this Core host's Codex models; nothing was saved", "its effort changed");
 }
@@ -406,13 +442,13 @@ async fn a_list_the_copy_took_past_the_limit_still_saves() {
 async fn a_templates_delivery_steps_and_when_to_choose_round_trip_through_a_save() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-    let design = json!({"id":"design-first","label":"Design first","harness":"codex","deliveryMode":"pr",
+    let design = json!({"id":"design-first","label":"Design first","permissionLevel":"auto","deliveryMode":"pr",
         "whenToChoose":"UI or cross-module work the user should see before code",
         "steps":[{"kind":"materials"},{"kind":"work","label":"设计说明"},{"kind":"result","label":"设计说明"},
             {"kind":"gate","label":"批准设计说明","approver":"either"},{"kind":"work","label":"切片实现"},{"kind":"job"},{"kind":"pr"},
             {"kind":"review","rounds":2},{"kind":"ci"},{"kind":"merge"}]});
     let memo = json!({"id":"memo","label":"Memo","harness":"claude","deliveryMode":"none","routing":"fixed"});
-    let commit = json!({"id":"results","label":"Results","harness":"codex","deliveryMode":"direct-commit"});
+    let commit = json!({"id":"results","label":"Results","harness":"codex","routing":"fixed","deliveryMode":"direct-commit"});
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
         Some(json!({"expectedVersion":0,"templates":[design.clone(), memo.clone(), commit.clone(), template("plain", "codex")]}))).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
@@ -426,7 +462,9 @@ async fn a_templates_delivery_steps_and_when_to_choose_round_trip_through_a_save
         ("pr".into(), "materials work job pr review ci merge".into()),
     ], "a template's own steps, else its mode's; unset is pr");
     assert_eq!(read[0].given("workspace")["steps"][3], json!({"kind":"gate","label":"批准设计说明","approver":"either"}));
-    assert!(Template::general("codex".into()).given("builtin").get("deliveryMode").is_none(), "the general executor has neither");
+    assert_eq!(read[0].given("workspace")["permissionLevel"], "auto", "its executors are told their permission level (YN-56)");
+    assert!(read[1].given("workspace").get("permissionLevel").is_none());
+    assert!(Template::general().given("builtin").get("deliveryMode").is_none(), "the general executor has neither");
 }
 
 /// YN-23: steps and the delivery mode are checked as the editor shows them,
@@ -492,24 +530,26 @@ async fn a_lead_lists_the_templates_to_choose_one() {
     ws.store.insert(&detail).unwrap();
     ws.store.set_agent_project("lead", Some(&p)).unwrap();
     ws.store.save_project_agent_defaults(&p, &crate::agent_defaults::AgentDefaults { harness: Some("claude".into()), ..Default::default() }).unwrap();
-    let memo = json!({"id":"memo","label":"决策备忘","harness":"codex","model":"m-large","reasoningEffort":"high","permissionPreset":"ask",
+    let memo = json!({"id":"memo","label":"决策备忘","harness":"codex","routing":"fixed","model":"m-large","reasoningEffort":"high","permissionPreset":"ask",
         "machineId":"auto","instructions":"列出选项。","whenToChoose":"A choice the user makes","deliveryMode":"none",
         "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"result","label":"选项表"},{"kind":"gate","approver":"user"}]});
     let later = json!({"id":"later","label":"Later","harness":"gemini"});
-    stored_at(&ws.store, KEY, json!({"version":4,"templates":[memo, template("plain", "claude"), later]}));
+    stored_at(&ws.store, KEY, json!({"version":4,"templates":[memo, template("plain", "claude"), later,
+        {"id":"follower","label":"Follower","harness":"claude","permissionMode":"default","model":"opus"}]}));
     let before = raw_at(&ws.store, KEY);
 
     let listed = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({})).await.unwrap();
+    let pr_steps = json!([{"kind":"materials"},{"kind":"work"},{"kind":"job"},{"kind":"pr"},{"kind":"review"},{"kind":"ci"},{"kind":"merge"}]);
     assert_eq!(listed, json!({"version":4,"laterTemplates":1,
         "general":{"label":"Executor","harness":"claude","harnessSource":"project"},
+        "levels":crate::permission_levels::table(),
         "templates":[
             {"id":"memo","label":"决策备忘","whenToChoose":"A choice the user makes","deliveryMode":"none",
                 "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"result","label":"选项表"},{"kind":"gate","approver":"user"}],
-                "harness":"codex","model":"m-large","reasoningEffort":"high","permissionPreset":"ask","machineId":"auto",
+                "routing":"fixed","permissionLevel":"ask","harness":"codex","model":"m-large","reasoningEffort":"high","machineId":"auto",
                 "instructionsBytes":"列出选项。".len()},
-            {"id":"plain","label":"Label plain","deliveryMode":"pr",
-                "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"job"},{"kind":"pr"},{"kind":"review"},{"kind":"ci"},{"kind":"merge"}],
-                "harness":"claude","instructionsBytes":0},
+            {"id":"plain","label":"Label plain","deliveryMode":"pr","steps":pr_steps,"routing":"fixed","harness":"claude","instructionsBytes":0},
+            {"id":"follower","label":"Follower","deliveryMode":"pr","steps":pr_steps,"routing":"follows","permissionLevel":"ask","instructionsBytes":0},
         ]}), "{listed}");
     assert!(!listed.to_string().contains("列出选项"), "its instructions' size, not their text");
     assert_eq!(raw_at(&ws.store, KEY), before, "reading changes nothing");
@@ -523,3 +563,101 @@ async fn a_lead_lists_the_templates_to_choose_one() {
     assert_eq!(tool["inputSchema"]["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), ["full"]);
 }
 
+
+/// YN-56: a template as a Core before YN-56 kept it reads in this Core's
+/// shape, without rewriting the list. Its harness's own permission is its
+/// level. One that followed routing names no harness, model or effort now:
+/// routing gives them, or the defaults for new Agents. A fixed one keeps its
+/// harness and model, and Codex's `config`, which no level is.
+#[test]
+fn a_template_before_yn56_reads_as_a_level_and_one_that_follows_routing_names_no_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let before = json!({"version":7,"templates":[
+        {"id":"c-auto","label":"A","harness":"claude","permissionMode":"auto","model":"opus"},
+        {"id":"c-default","label":"B","harness":"claude","permissionMode":"default"},
+        {"id":"x-ask","label":"C","harness":"codex","permissionPreset":"ask","model":"m","reasoningEffort":"high"},
+        {"id":"x-auto","label":"D","harness":"codex","permissionPreset":"auto"},
+        {"id":"x-full","label":"E","harness":"codex","permissionPreset":"full"},
+        {"id":"x-config","label":"F","harness":"codex","permissionPreset":"config"},
+        {"id":"x-none","label":"G","harness":"codex"},
+        {"id":"o","label":"H","harness":"opencode","model":"deepseek/deepseek-flash"},
+        {"id":"f-claude","label":"I","harness":"claude","permissionMode":"default","model":"opus","routing":"fixed"},
+        {"id":"f-config","label":"J","harness":"codex","permissionPreset":"config","routing":"fixed"},
+        {"id":"f-full","label":"K","harness":"codex","permissionPreset":"full","model":"m","routing":"fixed"},
+        {"id":"f-opencode","label":"L","harness":"opencode","routing":"fixed"},
+    ]});
+    stored_at(&store, KEY, before.clone());
+    let read = store.executor_templates().unwrap();
+    assert_eq!((read.version, read.later_templates), (7, 0));
+    let shape = |t: &Template| (t.id.as_str(), t.fixed(), t.harness.as_deref(), t.model.as_deref(), t.reasoning_effort.as_deref(),
+        t.permission_level.as_deref(), t.permission_preset.as_deref(), t.permission_mode.as_deref());
+    assert_eq!(read.templates.iter().map(shape).collect::<Vec<_>>(), [
+        ("c-auto", false, None, None, None, Some("auto"), None, None),
+        ("c-default", false, None, None, None, Some("ask"), None, None),
+        ("x-ask", false, None, None, None, Some("ask"), None, None),
+        ("x-auto", false, None, None, None, Some("auto"), None, None),
+        ("x-full", false, None, None, None, Some("full"), None, None),
+        ("x-config", false, None, None, None, None, None, None),
+        ("x-none", false, None, None, None, None, None, None),
+        ("o", false, None, None, None, None, None, None),
+        ("f-claude", true, Some("claude"), Some("opus"), None, Some("ask"), None, None),
+        ("f-config", true, Some("codex"), None, None, None, Some("config"), None),
+        ("f-full", true, Some("codex"), Some("m"), None, Some("full"), None, None),
+        ("f-opencode", true, Some("opencode"), None, None, None, None, None),
+    ]);
+    assert_eq!(raw_at(&store, KEY), before, "reading rewrites nothing: a Core before YN-56 still reads the list until a save");
+}
+
+/// YN-56: a fixed template is stored with its level as its harness's own
+/// permission too, which a Core before YN-56 reads; this Core reads the
+/// level. When such a Core changes that permission and keeps the level it
+/// doesn't know, its change wins. One that follows routing is stored with
+/// its level alone.
+#[test]
+fn a_fixed_templates_level_is_stored_as_its_harnesss_own_permission_for_an_older_core() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let sent = [json!({"id":"c","label":"C","harness":"claude","routing":"fixed","permissionLevel":"ask"}),
+        json!({"id":"x","label":"X","harness":"codex","routing":"fixed","permissionLevel":"full"}),
+        json!({"id":"f","label":"F","permissionLevel":"auto"})];
+    let templates = parse_save(&sent, true, &[]).unwrap();
+    let tx = store.db.write().unwrap();
+    write_list(&tx, &list_at(&tx, KEY).unwrap(), &templates).unwrap();
+    drop(tx);
+    let raw = raw_at(&store, KEY);
+    assert_eq!(raw["templates"], json!([
+        {"id":"c","label":"C","harness":"claude","routing":"fixed","permissionLevel":"ask","permissionMode":"default"},
+        {"id":"x","label":"X","harness":"codex","routing":"fixed","permissionLevel":"full","permissionPreset":"full"},
+        {"id":"f","label":"F","permissionLevel":"auto"}]));
+    let read = store.executor_templates().unwrap().templates;
+    assert_eq!(read, templates, "read back as saved: the level, not the harness's own permission");
+    // A Core before YN-56 changes C to Auto mode and keeps the level it doesn't know.
+    let mut older = raw.clone();
+    older["templates"][0]["permissionMode"] = json!("auto");
+    older["version"] = json!(2);
+    stored_at(&store, KEY, older);
+    assert_eq!(store.executor_template("c").unwrap().unwrap().permission_level.as_deref(), Some("auto"));
+}
+
+/// YN-56: a dispatch starts a template on a harness with its level as that
+/// harness's own permission; a level the harness doesn't keep refuses it.
+/// No level leaves the harness's defaults for new Agents, and a fixed Codex
+/// template on its machine's configuration keeps it.
+#[test]
+fn a_level_resolves_to_the_harnesss_own_permission_or_refuses_the_dispatch() {
+    let of = |value: Value| -> Template { parse_save(&[value], true, &[]).unwrap().remove(0) };
+    let auto = of(json!({"id":"a","label":"Auto","permissionLevel":"auto"}));
+    let on = |t: &Template, harness: &str| t.resolved(harness).map(|r| (r.harness, r.permission_preset, r.permission_mode));
+    assert_eq!(on(&auto, "claude").unwrap(), (Some("claude".into()), None, Some("auto".into())));
+    assert_eq!(on(&auto, "codex").unwrap(), (Some("codex".into()), Some("auto".into()), None));
+    let full = of(json!({"id":"f","label":"Full","permissionLevel":"full"}));
+    let refused = on(&full, "claude").unwrap_err().to_string();
+    assert!(refused.starts_with("level_not_kept: Full asks for the permission level full (Full access), which Claude Code, the harness for new Agents here"),
+        "{refused}");
+    assert_eq!(on(&full, "codex").unwrap().1.as_deref(), Some("full"));
+    let none = of(follows("n"));
+    assert_eq!(on(&none, "claude").unwrap(), (Some("claude".into()), None, None), "the harness's defaults for new Agents");
+    let config = of(json!({"id":"x","label":"X","harness":"codex","routing":"fixed","permissionPreset":"config"}));
+    assert_eq!(on(&config, "codex").unwrap().1.as_deref(), Some("config"));
+}

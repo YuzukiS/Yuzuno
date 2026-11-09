@@ -11,7 +11,7 @@ fn agent_detail(id: &str) -> AgentDetail {
 }
 
 fn template(id: &str, label: &str, harness: &str) -> Value {
-    json!({"id":id,"label":label,"harness":harness,"instructions":format!("Work as {label}.")})
+    json!({"id":id,"label":label,"harness":harness,"routing":"fixed","instructions":format!("Work as {label}.")})
 }
 
 /// Lab with two leads, a member and an executor of its own; Other with a
@@ -63,7 +63,7 @@ fn change(request: &str, expected: i64, changes: Value) -> Value {
 }
 
 fn dev_with(instructions: &str) -> Value {
-    json!({"id":"dev","label":"Dev","harness":"claude","instructions":instructions})
+    json!({"id":"dev","label":"Dev","harness":"claude","routing":"fixed","instructions":instructions})
 }
 
 fn error_of(result: Result<Value>) -> String {
@@ -169,11 +169,16 @@ async fn a_change_is_checked_as_a_save_is() {
     assert!(refused(change("j", 5, json!([put(dev_with("x"))]))).await.starts_with("version_conflict: the executor templates are at version 1, not 5"));
     assert_eq!(saved(&ws).version, 1);
 
-    let raised = json!({"id":"review","label":"Review","harness":"codex","permissionPreset":"full"});
+    // YN-56: a template that follows routing names no harness, and a level its harness doesn't keep is refused.
+    assert!(refused(change("l", 1, json!([put(json!({"id":"dev","label":"Dev","harness":"claude"}))]))).await
+        .contains("A template that follows routing names no harness"));
+    assert!(refused(change("m", 1, json!([put(json!({"id":"dev","label":"Dev","harness":"claude","routing":"fixed","permissionLevel":"full"}))]))).await
+        .contains("Claude Code doesn't keep the permission level full"));
+    let raised = json!({"id":"review","label":"Review","harness":"codex","routing":"fixed","permissionLevel":"full"});
     ws.collaboration_call(Some("lead"), TOOL, change("k", 1, json!([put(raised)]))).await.unwrap();
-    assert_eq!(saved(&ws).templates[1].permission_preset.as_deref(), Some("full"));
+    assert_eq!(saved(&ws).templates[1].permission_level.as_deref(), Some("full"));
     let rows = history(&ws);
-    assert_eq!((rows[1].3[0]["before"]["permissionPreset"].clone(), rows[1].3[0]["after"]["permissionPreset"].clone()), (Value::Null, json!("full")));
+    assert_eq!((rows[1].3[0]["before"]["permissionLevel"].clone(), rows[1].3[0]["after"]["permissionLevel"].clone()), (Value::Null, json!("full")));
 }
 
 /// A lead's change applies while each template it changes is as it was at
@@ -184,7 +189,7 @@ async fn a_change_is_checked_as_a_save_is() {
 async fn a_change_is_checked_against_each_template_it_changes() {
     let (_dir, ws, _) = fixture().await;
     // The user changes Review in Settings: version 2.
-    let (status, _) = user_save(&ws, 1, json!([template("dev", "Dev", "claude"), json!({"id":"review","label":"Review","harness":"codex","instructions":"Mine."})])).await;
+    let (status, _) = user_save(&ws, 1, json!([template("dev", "Dev", "claude"), json!({"id":"review","label":"Review","harness":"codex","routing":"fixed","instructions":"Mine."})])).await;
     assert_eq!(status, StatusCode::OK);
     // A lead that read version 1 changes Dev: it applies on version 2, Review kept as the user saved it.
     let applied = ws.collaboration_call(Some("lead"), TOOL, change("dev", 1, json!([put(dev_with("Dev, changed."))]))).await.unwrap();
@@ -193,7 +198,7 @@ async fn a_change_is_checked_against_each_template_it_changes() {
     assert_eq!((list.templates[0].instructions.as_deref(), list.templates[1].instructions.as_deref()), (Some("Dev, changed."), Some("Mine.")));
     // Another lead that read version 1 changes Review: the user changed it since.
     let refused = error_of(ws.collaboration_call(Some("otherlead"), TOOL, change("review", 1,
-        json!([put(json!({"id":"review","label":"Review","harness":"codex","instructions":"Theirs."}))]))).await);
+        json!([put(json!({"id":"review","label":"Review","harness":"codex","routing":"fixed","instructions":"Theirs."}))]))).await);
     assert_eq!(refused, "version_conflict: You changed “Review” at version 2 after version 1; read the templates again and change them on version 3");
     // An addition another save made since is a conflict too.
     ws.collaboration_call(Some("lead"), TOOL, change("add", 3, json!([put(template("docs", "Docs", "claude"))]))).await.unwrap();

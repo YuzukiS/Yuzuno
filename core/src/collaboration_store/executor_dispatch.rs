@@ -296,12 +296,7 @@ impl Store {
                 found.validate(crate::opencode_agent::enabled())?;
                 (found, "workspace")
             }
-            // Its harness is chosen now, in this transaction, so the machine
-            // checks below are for the harness it is made with.
-            None => {
-                let (harness, _) = crate::agent_defaults::new_agent_harness(&tx, project.as_deref())?;
-                (Template::general(harness), "builtin")
-            }
+            None => (Template::general(), "builtin"),
         };
         // YN-34 S3b2: the Workspace's routing gives it its harness, model and
         // account or key, unless its template is fixed; why is kept with it.
@@ -317,13 +312,22 @@ impl Store {
                 }
                 (routed.template, Some(routed.route.to_string()), routed.profile)
             }
-            None => (template, None, None),
+            // Not routed: a fixed template's own harness, else the default for new
+            // Agents of the task's Project, chosen now, in this transaction, so the
+            // machine checks below are for the harness it is made with (YN-56).
+            None => {
+                let harness = match template.harness.clone() {
+                    Some(harness) => harness,
+                    None => crate::agent_defaults::new_agent_harness(&tx, project.as_deref())?.0,
+                };
+                (template.resolved(&harness)?, None, None)
+            }
         };
         // Where it runs (T-35 S3a, Lead 2 Q1): the dispatch's machine, else
         // its template's, else this Core host; `auto`, the one Core chooses
         // now (S3b, executor_choice.rs), recorded with why.
         let requested = given_machine.or_else(|| template.machine_id.clone()).unwrap_or_else(|| "local".into());
-        crate::executor_templates::machine_named(Some(&requested), &template.harness)?;
+        crate::executor_templates::machine_named(Some(&requested), template.harness())?;
         let worktree = dispatch_materials::worktree(&tx, &task.id, &request)?;
         let (machine, choice) = if requested == super::executor_choice::AUTO {
             let default_local = match local {
@@ -336,7 +340,7 @@ impl Store {
         } else {
             (requested, None)
         };
-        let remote = remote_machine(&tx, &machine, &template.harness)?;
+        let remote = remote_machine(&tx, &machine, template.harness())?;
         let project_dir = match &project {
             Some(project) => crate::projects::default_dir(&tx, project, &machine)?,
             None => None,

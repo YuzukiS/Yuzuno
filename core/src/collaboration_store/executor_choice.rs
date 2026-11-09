@@ -113,10 +113,10 @@ fn left_out(db: &Connection, template: &Template, project: Option<&str>, worktre
         };
         return Ok((worktree.is_none() && !folder).then(|| "this dispatch has no worktree, and its Project no folder here".into()));
     };
-    if template.harness == "opencode" {
+    if template.harness() == "opencode" {
         return Ok(Some("OpenCode executors run on this Core host only".into()));
     }
-    if template.harness == "codex" && remote.contained {
+    if template.harness() == "codex" && remote.contained {
         return Ok(Some("it keeps its Agents contained, and runs no Codex Agent there".into()));
     }
     if let Some(path) = worktree {

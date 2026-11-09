@@ -21,7 +21,7 @@ fn templates(store: &Store, list: Value) {
 }
 
 fn reviewer() -> Value {
-    json!({"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."})
+    json!({"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","instructions":"Review the change."})
 }
 
 fn project(store: &Store) -> String {
@@ -335,7 +335,7 @@ fn auto_chooses_a_machine_at_dispatch_and_keeps_why() {
         [json!({"cpuMillis":2000,"memoryMiB":4096,"swapMiB":0}).to_string()]).unwrap();
     let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
         ("lab-box".into(), "/srv/lab/project".into())])).unwrap().id;
-    templates(&store, json!([reviewer(), {"id":"chooser","label":"Chooser","harness":"claude","machineId":"auto"}]));
+    templates(&store, json!([reviewer(), {"id":"chooser","label":"Chooser","harness":"claude","routing":"fixed","machineId":"auto"}]));
     let t = task(&store, "Review", Some(&p), None);
     let with = |request: &str, executor: Value| json!({"requestId":request,"taskId":t,"expectedVersion":1,"executor":executor});
     let choice_of = |request: &str| -> (String, Value, Value) {
@@ -387,8 +387,8 @@ fn a_dispatch_runs_on_its_machine_in_its_projects_folder_there() {
     machine(&store, "boxed", "Boxed", true);
     let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
         ("lab-box".into(), "/srv/lab/project".into()), ("boxed".into(), "/srv/boxed/project".into())])).unwrap().id;
-    templates(&store, json!([reviewer(), {"id":"remote","label":"Remote","harness":"claude","machineId":"lab-box"},
-        {"id":"coder","label":"Coder","harness":"codex"}]));
+    templates(&store, json!([reviewer(), {"id":"remote","label":"Remote","harness":"claude","routing":"fixed","machineId":"lab-box"},
+        {"id":"coder","label":"Coder","harness":"codex","routing":"fixed"}]));
     let t = task(&store, "Review", Some(&p), None);
     let with = |request: &str, executor: Value| json!({"requestId":request,"taskId":t,"expectedVersion":1,"executor":executor});
 
@@ -578,7 +578,7 @@ fn a_template_dispatch_carries_its_delivery_mode_and_steps() {
     let p = project(&store);
     let steps = json!([{"kind":"materials"},{"kind":"work","label":"Write the memo"},{"kind":"result","label":"Options"},
         {"kind":"gate","label":"Your choice"},{"kind":"gate","approver":"either","label":"Go ahead"}]);
-    let memo = json!({"id":"reviewer","label":"Decision memo","harness":"codex","deliveryMode":"none","steps":steps,
+    let memo = json!({"id":"reviewer","label":"Decision memo","harness":"codex","routing":"fixed","deliveryMode":"none","steps":steps,
         "whenToChoose":"A choice between options, with cost and risk"});
     templates(&store, json!([memo]));
     let t = task(&store, "Choose", Some(&p), None);
@@ -684,7 +684,7 @@ fn a_dispatch_without_a_template_makes_a_general_executor_from_the_defaults_for_
 
     let plan = begun(&store, None, general(&t, "general", json!({})))
         .unwrap_or_else(|e| panic!("a dispatch that names no template makes a general executor: {e}"));
-    assert_eq!((plan.template.harness.as_str(), plan.name.as_str(), plan.template.id.as_str()), ("claude", "LAB-1 · Executor", ""),
+    assert_eq!((plan.template.harness(), plan.name.as_str(), plan.template.id.as_str()), ("claude", "LAB-1 · Executor", ""),
         "the Project's new-Agent harness, named {{task}} · Executor, with no template id");
     assert!(plan.template.model.is_none() && plan.template.permission_mode.is_none() && plan.template.instructions.is_none(),
         "everything else is inherited as for a new Agent: {:?}", plan.template);
@@ -697,10 +697,10 @@ fn a_dispatch_without_a_template_makes_a_general_executor_from_the_defaults_for_
     // Elsewhere, the Workspace's default, else the built-in Codex.
     let elsewhere = task(&store, "Elsewhere", Some(&plain), None);
     let null = begun(&store, None, general(&elsewhere, "builtin", json!({"templateId":null}))).unwrap();
-    assert_eq!(null.template.harness, "codex", "a Project without a default, and no Workspace default: Codex");
+    assert_eq!(null.template.harness(), "codex", "a Project without a default, and no Workspace default: Codex");
     store.save_agent_defaults(&harness("claude")).unwrap();
     let workspace = begun(&store, None, general(&elsewhere, "workspace", json!({}))).unwrap();
-    assert_eq!(workspace.template.harness, "claude", "the Workspace's default");
+    assert_eq!(workspace.template.harness(), "claude", "the Workspace's default");
 
     create(&store, &plan);
     let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
@@ -735,7 +735,7 @@ fn a_missing_template_is_refused_naming_the_templates_and_the_general_executor()
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("workspace.db")).unwrap();
     let p = project(&store);
-    templates(&store, json!([reviewer(), {"id":"writer","label":"Writer","harness":"claude"}]));
+    templates(&store, json!([reviewer(), {"id":"writer","label":"Writer","harness":"claude","routing":"fixed"}]));
     let t = task(&store, "Review", Some(&p), None);
     let refused = begun(&store, None, json!({"requestId":"missing","taskId":t,"expectedVersion":1,"executor":{"templateId":"missing"}})).unwrap_err();
     assert!(refused.starts_with("template_not_found:") && refused.contains("can use are: reviewer, writer")
@@ -762,7 +762,7 @@ fn a_general_executors_machine_is_checked_for_the_harness_its_defaults_give() {
     assert_eq!(auto.machine, "local", "auto leaves the contained machine out for a Codex executor");
     store.save_project_agent_defaults(&p, &harness("claude")).unwrap();
     let claude = begun(&store, None, with("claude", "boxed")).unwrap();
-    assert_eq!((claude.machine.as_str(), claude.template.harness.as_str()), ("boxed", "claude"), "a Claude Code default runs there");
+    assert_eq!((claude.machine.as_str(), claude.template.harness()), ("boxed", "claude"), "a Claude Code default runs there");
 }
 
 /// YN-2 S2: templates are the Workspace's. A dispatch of a task in a Project
@@ -779,11 +779,45 @@ fn a_dispatch_in_a_project_gets_the_workspaces_template_of_that_id() {
             json!({"version":1,"templates":[{"id":"reviewer","label":"Project reviewer","harness":"codex"}]}).to_string()]).unwrap();
     let t = task(&store, "Review", Some(&p), None);
     let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
-    assert_eq!((plan.template.label.as_str(), plan.template.harness.as_str()), ("Reviewer", "claude"),
+    assert_eq!((plan.template.label.as_str(), plan.template.harness()), ("Reviewer", "claude"),
         "the Workspace's reviewer, not the Project's own list from before");
     let given: String = store.db.read().unwrap()
         .query_row("SELECT template_json FROM executor_dispatches WHERE request_id='first'", [], |r| r.get(0)).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&given).unwrap()["source"], "workspace");
+}
+
+/// YN-56: a template that follows routing, with routing off, starts on the
+/// default harness for new Agents of the task's Project, with its permission
+/// level as that harness's own permission; a level that harness doesn't keep
+/// refuses the dispatch before anything is written. A fixed template starts
+/// on its own harness, with Codex's own configuration if it says so.
+#[test]
+fn a_template_that_follows_routing_starts_on_the_default_for_new_agents_with_its_level() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([{"id":"reviewer","label":"Reviewer","permissionLevel":"auto"},
+        {"id":"full","label":"Full","permissionLevel":"full"},
+        {"id":"own","label":"Own","harness":"codex","routing":"fixed","permissionPreset":"config"}]));
+    store.save_project_agent_defaults(&p, &harness("claude")).unwrap();
+    let from = |template: &str, request: &str| {
+        let mut input = dispatch(&task(&store, request, Some(&p), None), request);
+        input["executor"]["templateId"] = json!(template);
+        begun(&store, None, input)
+    };
+    let claude = from("reviewer", "claude-auto").unwrap();
+    assert_eq!((claude.template.harness(), claude.template.permission_mode.as_deref(), claude.template.permission_preset.as_deref(),
+        claude.template.model.as_deref()), ("claude", Some("auto"), None, None), "the Project's Claude Code, in Auto mode");
+    let refused = from("full", "claude-full").unwrap_err();
+    assert!(refused.starts_with("level_not_kept: Full asks for the permission level full (Full access), which Claude Code"), "{refused}");
+    let rows: i64 = store.db.read().unwrap().query_row("SELECT COUNT(*) FROM executor_dispatches WHERE request_id='claude-full'", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 0, "nothing was written");
+    store.save_project_agent_defaults(&p, &harness("codex")).unwrap();
+    let codex = from("full", "codex-full").unwrap();
+    assert_eq!((codex.template.harness(), codex.template.permission_preset.as_deref(), codex.template.permission_mode.as_deref()),
+        ("codex", Some("full"), None));
+    let own = from("own", "own").unwrap();
+    assert_eq!((own.template.harness(), own.template.permission_preset.as_deref()), ("codex", Some("config")));
 }
 
 /// YN-34 S3b2: routing at dispatch, on synthetic readings.
@@ -807,7 +841,7 @@ mod routing {
     /// The executor its plan makes, with the plan's harness (the waiting list reads it from the agent).
     fn create_as_planned(store: &Store, plan: &Plan) {
         let mut detail = agent_detail(&plan.dispatch.agent_id, &plan.name);
-        detail.agent.harness = plan.template.harness.clone();
+        detail.agent.harness = plan.template.harness().to_owned();
         store.insert_created_then(&detail, Some(plan.then())).unwrap();
     }
 
@@ -821,7 +855,8 @@ mod routing {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("workspace.db")).unwrap();
         let p = project(&store);
-        templates(&store, json!([reviewer(), {"id":"fixed","label":"Fixed","harness":"claude","routing":"fixed"}]));
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer","instructions":"Review the change."},
+            {"id":"fixed","label":"Fixed","harness":"claude","routing":"fixed"}]));
         let policy = json!({"enabled": true, "whenNone": "wait", "candidates": [
             {"id": "c-deepseek", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash",
              "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": []},
@@ -832,7 +867,7 @@ mod routing {
         // The first candidate whose conditions hold: DeepSeek on its key, on this Core host.
         let one = task(&store, "One", Some(&p), None);
         let plan = routed(&store, dispatch(&one, "one"), true);
-        assert_eq!((plan.template.harness.as_str(), plan.template.model.as_deref(), plan.machine.as_str()),
+        assert_eq!((plan.template.harness(), plan.template.model.as_deref(), plan.machine.as_str()),
             ("opencode", Some("deepseek/deepseek-flash"), "local"));
         assert_eq!(plan.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
         assert!(plan.template.permission_mode.is_none(), "a Claude permission is not an OpenCode one");
@@ -847,13 +882,13 @@ mod routing {
         let mut input = dispatch(&task(&store, "Two", Some(&p), None), "two");
         input["executor"]["templateId"] = json!("fixed");
         let fixed = routed(&store, input, true);
-        assert_eq!((fixed.template.harness.as_str(), fixed.profile.clone(), route_of(&store, &fixed.dispatch.agent_id)), ("claude", None, None));
+        assert_eq!((fixed.template.harness(), fixed.profile.clone(), route_of(&store, &fixed.dispatch.agent_id)), ("claude", None, None));
 
         // A rebuild of the first leaves DeepSeek out: Codex, on the host's login, with its effort.
         let mut rebuild = dispatch(&task(&store, "Three", Some(&p), None), &format!("rebuild:{}", plan.dispatch.agent_id));
         rebuild["expectedVersion"] = json!(1);
         let again = routed(&store, rebuild, true);
-        assert_eq!((again.template.harness.as_str(), again.template.model.as_deref(), again.template.reasoning_effort.as_deref(), again.profile.clone()),
+        assert_eq!((again.template.harness(), again.template.model.as_deref(), again.template.reasoning_effort.as_deref(), again.profile.clone()),
             ("codex", Some("gpt-test"), Some("high"), None));
         let route = route_of(&store, &again.dispatch.agent_id).unwrap();
         assert_eq!((route["chosen"].clone(), route["excluded"].clone(), route["candidates"][0]["state"].clone()),
@@ -864,7 +899,7 @@ mod routing {
         off["candidates"][1]["enabled"] = json!(false);
         store.save_routing_policy(1, off).unwrap().unwrap();
         let waits = routed(&store, dispatch(&task(&store, "Four", Some(&p), None), "four"), false);
-        assert_eq!((waits.template.harness.as_str(), waits.template.model.clone(), waits.profile.clone()), ("opencode", None, None));
+        assert_eq!((waits.template.harness(), waits.template.model.clone(), waits.profile.clone()), ("opencode", None, None));
         let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
         assert_eq!((route["waiting"].clone(), route["chosen"].clone()), (json!(true), Value::Null));
         create_as_planned(&store, &waits);
@@ -915,5 +950,49 @@ mod routing {
             [waits.dispatch.agent_id.clone(), again.dispatch.agent_id.clone(), plan.dispatch.agent_id.clone()]);
         assert_eq!((choices[0]["executorName"].clone(), choices[1].get("executorName")), (json!(waits.name), None),
             "a made executor is named; the rebuild here was never made");
+    }
+
+    /// YN-56: routing gives the executor its harness, and the template's level
+    /// goes with it as that harness's own permission; a candidate whose harness
+    /// doesn't keep the level is passed over. When none keeps it, the dispatch
+    /// is not routed: the default for new Agents, with the level.
+    #[test]
+    fn a_level_goes_with_the_executor_to_the_harness_routing_chooses_and_one_that_cant_keep_it_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        let p = project(&store);
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer","permissionLevel":"auto"},
+            {"id":"full","label":"Full","permissionLevel":"full"}]));
+        let policy = json!({"enabled": true, "whenNone": "wait", "candidates": [
+            {"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"}, "conditions": []},
+            {"id": "c-deepseek", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash",
+             "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": []},
+            {"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "conditions": []}]});
+        store.save_routing_policy(0, policy).unwrap().unwrap();
+        let from = |template: &str, request: &str| {
+            let mut input = dispatch(&task(&store, request, Some(&p), None), request);
+            input["executor"]["templateId"] = json!(template);
+            routed(&store, input, true)
+        };
+        let auto = from("reviewer", "auto");
+        assert_eq!((auto.template.harness(), auto.template.model.as_deref(), auto.template.permission_mode.as_deref()),
+            ("claude", Some("opus"), Some("auto")), "Claude Code keeps Auto-approve as its Auto mode");
+        assert_eq!(route_of(&store, &auto.dispatch.agent_id).unwrap()["level"], "auto");
+        let full = from("full", "full");
+        assert_eq!((full.template.harness(), full.template.permission_preset.as_deref()), ("codex", Some("full")));
+        let route = route_of(&store, &full.dispatch.agent_id).unwrap();
+        let states: Vec<(Value, Value)> = route["candidates"].as_array().unwrap().iter()
+            .map(|c| (c["state"].clone(), c["reasons"][0]["code"].clone())).collect();
+        assert_eq!(states, [(json!("skipped"), json!("levelNotKept")), (json!("skipped"), json!("levelNotKept")), (json!("chosen"), Value::Null)]);
+
+        // Only OpenCode left: it keeps no level yet, so the dispatch is not routed, and doesn't wait.
+        let mut only = store.routing_policy().unwrap();
+        only.policy["candidates"][0]["enabled"] = json!(false);
+        only.policy["candidates"][2]["enabled"] = json!(false);
+        store.save_routing_policy(only.version, only.policy).unwrap().unwrap();
+        let unrouted = from("reviewer", "unrouted");
+        assert_eq!((unrouted.template.harness(), unrouted.template.permission_preset.as_deref(), unrouted.profile.clone()),
+            ("codex", Some("auto"), None), "the built-in default for new Agents, with the level");
+        assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
     }
 }

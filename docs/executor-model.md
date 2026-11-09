@@ -123,20 +123,20 @@ A template says what an executor is made of: a named kind of executor that
 a dispatch can ask for. Without one, a dispatch makes a
 [general executor](#the-general-executor). Templates are the Workspace's,
 for every Project: you keep them in Settings, under **Executor templates**.
-A new template needs only a **Label** and a **Harness**; the other fields
-are under **More settings**, and left unset each inherits as described
-below. A Project's page has no templates of its own. How many executors run
+A template needs only a **Label**; left unset, each other field inherits
+as described below. A Project's page has no templates of its own. How many executors run
 at once is each machine's number ([Executors at once](#executors-at-once)),
 not a template's or a Project's.
 
 | Field | What it is |
 | --- | --- |
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
-| **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
-| **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. Its permissions are always its own configuration's. The template form's Model field takes it, as does `executor_templates_change`. |
+| **Routing** (`routing`) | Unset: the template follows routing. Its executors get their harness, model, effort and account from the Workspace's [routing](executor-routing.md#routing-at-dispatch-s3b2). While routing is off, or none of its candidates keeps the template's permission level, they get the default harness and model for new Agents: the task's Project's, then the Workspace's, then Codex. Such a template names no harness, model or effort. `"fixed"`: its executors start with this template's own harness, model and machine on the host's login, whatever the [routing policy](executor-routing.md#the-policy-get-and-put-apiroutingpolicy-s3a) says. The Settings page's routing section sets it. |
+| **Harness** | A fixed template's only: Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
+| **Permission level** (`permissionLevel`) | `ask` (ask you first), `auto` (auto-approve) or `full` (full access): one permission for every harness, which Core maps to each harness's own. See [Permission levels](executor-routing.md#permission-levels-yn-56). Left unset, each harness's default for new Agents. A fixed template's level must be one its harness keeps; a fixed Codex template may instead follow its machine's own Codex configuration (`permissionPreset: "config"`). A dispatch whose harness doesn't keep the level is refused (`level_not_kept`). Its executor's materials name the level. |
+| **Model**, **Reasoning effort** | A fixed template's only, as for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. The template form's Model field takes it, as does `executor_templates_change`. |
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
-| **Routing** (`routing`) | `"fixed"`: its executors start with this template's own harness, model and machine on the host's login, whatever the [routing policy](executor-routing.md#the-policy-get-and-put-apiroutingpolicy-s3a) says. Unset follows the Workspace's routing (from S3b on). A save keeps it. The Settings page's routing section sets it. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
 | **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
@@ -145,6 +145,19 @@ not a template's or a Project's.
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
   doesn't have is refused with `template_not_found`, naming the ids it has.
+- **Templates saved before core.29 (YN-56).** They are read in this shape,
+  and the list is rewritten only by the next save:
+  - a Codex preset or Claude Code mode becomes its level: `ask` and
+    `default` are `ask`, `auto` is `auto`, `full` is `full`;
+  - one that followed routing loses its harness, model and effort, and a
+    Codex `config` on it becomes no level;
+  - a fixed one keeps its harness, model and `config`.
+
+  A fixed template is stored with its harness's own permission beside its
+  level, so a Core before core.29 starts it as before. That Core can't read
+  a template that follows routing, since it names no harness: it counts it
+  among templates a newer Core saved, doesn't offer it, and keeps it as it
+  is when it saves.
 - **Presets.** Core ships ten presets, in English and Chinese:
 
   | Id | Preset | Delivery | For |

@@ -707,7 +707,7 @@ pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::execu
     let p = Create {
         name,
         goal: String::new(),
-        harness: Some(template.harness.clone()),
+        harness: template.harness.clone(),
         cwd,
         model: template.model.clone().map_or(crate::agent_defaults::ModelAsk::Inherit, crate::agent_defaults::ModelAsk::Named),
         reasoning_effort: template.reasoning_effort.clone().map(Some),
