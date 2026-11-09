@@ -80,6 +80,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::routing_accounts::routes::router())
         .merge(crate::routing_readings::routes::router())
         .merge(crate::routing_policy::routes::router())
+        // The models routing's picker offers for OpenCode (YN-57 S2a).
+        .merge(crate::routing_models::routes::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);

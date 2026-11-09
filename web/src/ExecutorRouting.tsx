@@ -252,6 +252,15 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
   const list = useRef<HTMLOListElement>(null);
   const [drag, setDrag] = useState<{ from: number; to: number; dy: number; y0: number; line: number } | null>(null);
   const cards = () => [...(list.current?.querySelectorAll<HTMLLIElement>(":scope > .routing-cand") ?? [])];
+  // The pill opens its candidate and goes (YN-57 R1): the focus moves to that card's open/close toggle, as the pencil
+  // leaves it, so the editor is the next stop and a keyboard isn't sent back to the top of the page.
+  const focusToggle = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const id = focusToggle.current;
+    if (!id) return;
+    focusToggle.current = null;
+    cards().find((card) => card.dataset.cand === id)?.querySelector<HTMLButtonElement>(".routing-cand-end button[aria-expanded]")?.focus();
+  });
   const start = (event: ReactPointerEvent<HTMLButtonElement>, index: number) => {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -307,7 +316,12 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
                   <span>{title}</span>
                   {c.credential.kind === "apiKey" ? <span className="settings-tag">{t.tagApi}</span>
                     : c.harness !== "opencode" && <span className="settings-tag">{t.tagSub}</span>}
-                  {issues.length > 0 && !expanded && <span className="settings-tag is-error">{t.needsFix}</span>}
+                  {/* What keeps it from being saved: a pill that reads as a call to act, and opens its editor (YN-57). */}
+                  {issues.length > 0 && !expanded && (
+                    <button type="button" className="routing-fix" aria-label={t.fixIt(name)} aria-controls={`routing-edit-${c.id}`} onClick={() => { focusToggle.current = c.id; onOpen(c.id); }}>
+                      <CircleAlert size={12} aria-hidden="true" />{t.needsFix}
+                    </button>
+                  )}
                 </div>
                 <div className={`routing-cand-sub${cred.missing ? " is-missing" : ""}`}>{cred.missing && <CircleAlert size={12} className="routing-icon" aria-hidden="true" />} {cred.text}</div>
               </div>

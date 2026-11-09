@@ -281,7 +281,7 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
   assert.deepEqual(chips(cards(page)[0]), ["DeepSeek 闲时 · 离高峰至少 30 分钟", "今日本项 ≤ $5"]);
   // No OpenAI key in this Workspace: its candidate says so, and holds the save until it has one or goes (Core refuses a key not set).
   assert.match(cards(page)[4].querySelector(".routing-cand-sub").textContent, /API key openai · 还没添加/, "a provider without a key says so");
-  assert.ok(cards(page)[4].querySelector(".settings-tag.is-error"), "marked to fix");
+  assert.equal(cards(page)[4].querySelector(".routing-fix")?.textContent, "需要修改", "marked to fix");
   await until(() => button(page, "保存", bar(page)), "the bar");
   assert.equal(button(page, "保存", bar(page)).disabled, true, "held while a key is missing");
   button(page, `编辑 Codex · gpt-6.1-sol · API`).click();
@@ -297,6 +297,31 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
     { kind: "apiKey", keyId: "anthropic" }]);
   assert.deepEqual(sent[0].conditions[0], { kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 });
   assert.equal(new Set(sent.map((c) => c.id)).size, 4, "each its own id");
+});
+
+test("a candidate that can't be saved says so on its card, with a pill that opens its editor (YN-57)", async () => {
+  const view = savedView();
+  view.policy.candidates[0].credential = { kind: "apiKey", keyId: "deepseek-gone" };
+  const page = mount(core({ view }));
+  await opened(page);
+  const pill = card(page, "ds").querySelector(".routing-cand-title > .routing-fix");
+  assert.ok(pill, "the pill, beside its title");
+  assert.equal(pill.tagName, "BUTTON");
+  assert.equal(pill.type, "button", "never a form's submit");
+  assert.equal(pill.textContent, "Needs a fix");
+  assert.equal(pill.getAttribute("aria-label"), "Needs a fix: edit OpenCode · deepseek-flash · API");
+  assert.ok(pill.querySelector("svg[aria-hidden='true']"), "its icon, hidden from a screen reader");
+  assert.equal(card(page, "cl").querySelector(".routing-fix"), null, "only on a candidate with a problem");
+  pill.click();
+  await tick();
+  const editor = card(page, "ds").querySelector(".routing-edit");
+  assert.ok(editor, "its editor is open");
+  assert.match(editor.textContent, /The key deepseek-gone isn't added yet/, "which says what to fix");
+  assert.equal(card(page, "ds").querySelector(".routing-fix"), null, "the open editor says it instead of the pill");
+  // The pill went: the focus is on the card's open/close toggle, as after the pencil, not lost to the page (R1).
+  assert.equal(page.document.activeElement?.getAttribute("aria-label"), "Close OpenCode · deepseek-flash · API");
+  assert.equal(page.document.activeElement?.getAttribute("aria-expanded"), "true");
+  assert.deepEqual(page.errors, []);
 });
 
 test("routing off, the Workspace cap, a weekly schedule of its own and a pool of chosen accounts", async () => {

@@ -372,7 +372,7 @@ fn set_aside(folder: &std::path::Path) -> Result<(Option<PathBuf>, Vec<crate::op
 }
 
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
-fn program() -> PathBuf {
+pub(crate) fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
 }
 
@@ -560,6 +560,27 @@ pub(crate) fn compaction_blocks(d: &AgentDetail, what: &str) -> Option<String> {
     })
 }
 
+/// A catalog as the Agent settings and executor routing's model picker show
+/// it (YN-47, YN-57): `models` as OpenCode `server` lists them now, each
+/// provider with where it gets its access, the model OpenCode runs with none
+/// chosen, and which OpenCode it is.
+pub(crate) async fn catalog_of(server: &Server, models: &[ModelChoice]) -> Value {
+    // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+    let version = server.version();
+    let mut native = json!({"version":version,"verified":opencode::VERIFIED});
+    if opencode::newer_than_verified(version) {
+        native["note"] = json!(opencode::newer_note());
+    }
+    // Where each provider gets its access (YN-47), from 2.x's integrations, which a
+    // release older than logins lacks: unknown then, or when they could not be read.
+    let sources = if opencode::login_supported(version) { server.provider_sources().await.ok() } else { None };
+    // What "Harness default" is now (YN-48): the model OpenCode runs a session on with none chosen.
+    let default = server.default_model().await.ok().flatten()
+        .map(|(id, name)| models.iter().find(|m| m.id() == id).map(offered).unwrap_or_else(|| json!({"id":id,"model":id,"displayName":name})));
+    json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"providers":offered_providers(models, sources.as_ref()),
+        "opencode":native,"default":default})
+}
+
 fn takes_images(model: Option<&ModelChoice>) -> Result<()> {
     let model = model.context("发送图片需要先在设置里选定一个能读图片的模型：无法事先确认 OpenCode 自己的默认模型能否读图片；这条消息没有发送，草稿和图片保留")?;
     ensure!(model.image, "所选模型 {} 在 OpenCode 的配置中不能读图片；这条消息没有发送，草稿和图片保留。请在设置里另选能读图片的模型", model.id());
@@ -573,20 +594,7 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
         c.windows(&models);
-        // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
-        let version = c.server.version();
-        let mut native = json!({"version":version,"verified":opencode::VERIFIED});
-        if opencode::newer_than_verified(version) {
-            native["note"] = json!(opencode::newer_note());
-        }
-        // Where each provider gets its access (YN-47), from 2.x's integrations, which a
-        // release older than logins lacks: unknown then, or when they could not be read.
-        let sources = if opencode::login_supported(version) { c.server.provider_sources().await.ok() } else { None };
-        // What "Harness default" is now (YN-48): the model OpenCode runs a session on with none chosen.
-        let default = c.server.default_model().await.ok().flatten()
-            .map(|(id, name)| models.iter().find(|m| m.id() == id).map(offered).unwrap_or_else(|| json!({"id":id,"model":id,"displayName":name})));
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"providers":offered_providers(&models, sources.as_ref()),
-            "opencode":native,"default":default}))
+        Ok(catalog_of(&c.server, &models).await)
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.

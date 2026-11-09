@@ -6,6 +6,8 @@
 // The candidate order (S4a-2): reordered by dragging a handle (a mouse on the
 // desktop, the arrows on a phone), a candidate's editor, saved whole against
 // the version read; a newer version saved meanwhile is shown, not overwritten.
+// YN-57 S1: a candidate that can't be saved says so with a pill in the error
+// tones (4.5:1 at least), a 40 px target on a phone, that opens its editor.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -20,7 +22,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-49", checks: [], screenshots: [], writes: [], unexpected: [], errors: [] };
+const report = { task: "YN-49, YN-57", checks: [], screenshots: [], writes: [], unexpected: [], errors: [] };
 const check = (name, extra = {}) => { report.checks.push({ name, ...extra }); console.log(`PASS ${name}`); };
 const HOST = "yuzuno-executor-routing.test";
 // Synthetic only. Long and unusual, so a page holding one is found by a text search.
@@ -64,6 +66,18 @@ const fresh = () => ({
     // As Core serves them (YN-56): one following routing names no tool; a fixed one does.
     { id: "dev", label: "Development (PR)", permissionLevel: "auto" }, { id: "review", label: "Review", harness: "claude", routing: "fixed", permissionLevel: "ask" }] },
 });
+/** YN-57: a candidate naming a key the Workspace no longer has, as another save left it. */
+const FIX = { id: "fix", enabled: true, harness: "claude", model: "sonnet", credential: { kind: "apiKey", keyId: "anthropic-old" }, unknown: "skip", conditions: [] };
+/** WCAG's contrast of two computed colours: `rgb(…)`, or `color(srgb …)` (0–1), which a color-mix() wash computes to. */
+function contrast(a, b) {
+  const lum = (css) => {
+    const scale = css.startsWith("color(srgb") ? 1 : 255;
+    const [r, g, b] = css.match(/[\d.]+/g).slice(0, 3).map(Number).map((c) => { c /= scale; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m);
+  return (x + 0.05) / (y + 0.05);
+}
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
 /** As Core would judge a policy at an hour of the day (Asia/Shanghai, as the page's clock): one rule for
@@ -172,12 +186,14 @@ const words = {
     value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
     replaceToken: "Replace token", token: "Service account token",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
-    saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model" },
+    saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model",
+    needsFix: "Needs a fix", fixIt: "Needs a fix: edit Claude Code · sonnet · API", keyNeeded: "The key anthropic-old isn't added yet" },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
-    saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型" },
+    saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型",
+    needsFix: "需要修改", fixIt: "需要修改：编辑 Claude Code · sonnet · API", keyNeeded: "还没有 key anthropic-old" },
 };
 
 async function run({ width, height, theme, lang }) {
@@ -226,13 +242,17 @@ async function run({ width, height, theme, lang }) {
       assert.ok(!consoleLines.some((line) => line.includes(secret)), `${tag} ${when}: the console holds ${secret}`);
     }
   };
-  try {
-    await page.goto(`https://${HOST}/`);
+  /** Settings, opened at Executor routing, its accounts read. */
+  const openRouting = async () => {
     await page.locator(".workspace-settings").waitFor({ timeout: 15_000 });
     await press(page.locator(".workspace-settings"));
     await dialog.locator(".settings-center").waitFor({ timeout: 10_000 });
     await press(dialog.locator("#settings-tab-routing"));
     await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
+  };
+  try {
+    await page.goto(`https://${HOST}/`);
+    await openRouting();
     assert.equal((await dialog.locator("#settings-tab-routing .settings-nav-label").innerText()).trim(), w.tab);
     assert.equal((await section.locator("#routing-keys-title").innerText()).trim(), w.title);
     await page.mouse.move(0, 0);
@@ -368,6 +388,46 @@ async function run({ width, height, theme, lang }) {
     assert.deepEqual(puts.map((x) => `${x.method} ${x.path}`), ["POST /api/routing/keys/openai/check", "PUT /api/routing/keys/deepseek", "PUT /api/routing/1password/token"], `${tag}: these writes only`);
     assert.deepEqual(puts[1].body, { source: "local", provider: "deepseek", value: SECRET });
     assert.deepEqual(puts[2].body, { value: TOKEN });
+    // ---- YN-57 S1: another save left a candidate naming a key that is gone; the page, opened again, reads it.
+    state.policy = { ...state.policy, version: state.policy.version + 1, policy: { ...state.policy.policy, candidates: [...state.policy.policy.candidates, FIX] } };
+    await page.reload();
+    await openRouting();
+    const fixCard = page.locator('.executor-routing .routing-cand[data-cand="fix"]');
+    const pill = fixCard.locator(".routing-cand-title > button.routing-fix");
+    await pill.waitFor({ timeout: 10_000 });
+    assert.equal((await pill.innerText()).trim(), w.needsFix);
+    assert.equal(await pill.getAttribute("aria-label"), w.fixIt);
+    assert.equal(await page.locator(".executor-routing .routing-fix").count(), 1, `${tag}: only the card with a problem has the pill`);
+    // In the middle of the view first: a point outside it, or under the dialog's sticky foot, hits something else.
+    await pill.evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await page.mouse.move(0, 0);
+    const look = await pill.evaluate((el) => {
+      const css = getComputedStyle(el), box = el.getBoundingClientRect();
+      const x = box.left + box.width / 2, y = box.top + box.height / 2;
+      // A phone's target is 40 px tall: what a finger 19 px above or below the pill's middle lands on.
+      const landed = [y - 19, y + 19].map((at) => document.elementFromPoint(x, at));
+      return { color: css.color, background: css.backgroundColor, weight: Number(css.fontWeight), height: box.height,
+        hits: landed.map((hit) => el.contains(hit)), landed: landed.map((hit) => hit ? `${hit.tagName.toLowerCase()}.${hit.className}` : "nothing") };
+    });
+    const ratio = contrast(look.color, look.background);
+    assert.ok(ratio >= 4.5, `${tag}: the pill's text is ${ratio.toFixed(2)}:1 on its wash (${look.color} on ${look.background})`);
+    assert.ok(look.weight >= 600, `${tag}: the pill's words are bold`);
+    if (phone) {
+      assert.ok(look.height < 30, `${tag}: on a phone the pill stays a pill (${look.height} px), not a 40 px blob`);
+      assert.deepEqual(look.hits, [true, true], `${tag}: the pill's target is 40 px tall (landed on ${look.landed.join(", ")})`);
+    }
+    await shot("needs-fix");
+    await press(pill);
+    const fixEditor = fixCard.locator(".routing-edit");
+    await fixEditor.waitFor({ timeout: 10_000 });
+    assert.match(await fixEditor.innerText(), new RegExp(w.keyNeeded));
+    assert.equal(await fixCard.locator(".routing-fix").count(), 0, `${tag}: the open editor says what to fix instead`);
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".routing-cand-end") && document.activeElement.getAttribute("aria-expanded")), "true",
+      `${tag}: the focus moved to the card's open/close toggle, not lost to the page`);
+    await page.mouse.move(0, 0);
+    await shot("needs-fix-open");
+    report.pills = [...(report.pills ?? []), { tag, contrast: Number(ratio.toFixed(2)), color: look.color, background: look.background, height: look.height }];
+    check(`${tag}: a candidate that can't be saved has a ${ratio.toFixed(1)}:1 pill${phone ? " with a 40 px target" : ""}, which opens its editor`);
     check(`${tag}: page fits${phone ? ", 40 px targets" : ""}; the order ${phone ? "moved by its arrows" : "dragged"}, edited and saved; accounts by number and fingerprint; a key and the token typed and kept, never in the page`);
   } finally {
     await context.close();
