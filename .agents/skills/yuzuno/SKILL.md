@@ -44,7 +44,7 @@ For per-Agent Codex context windows, compaction thresholds and safe application 
 `job_submit`, `review_start`, `github_pr_submit`, `ci_subscribe`, `task_dispatch` and similar tools return an identifier at once and continue in Core.
 
 - Keep the identifier and finish your turn, or do independent work. The result arrives as a mailbox notification; read it with `peer_read` when notified. Do not poll, sleep or watch.
-- Some of Core's notices are quiet (`wake: "quiet"`): they ask nothing of you, such as a PR merged while its executor still works. Where the connected Core has them, they never wake you; they come with your next wake-up, whose text counts them, and `peer_read` with `wake: "quiet"` lists them. Failures, refusals, pauses, results and questions always wake you.
+- Some of Core's notices are quiet (`wake: "quiet"`): they ask nothing of you, such as a PR merged while its executor still works. Where the connected Core has them, they never wake you; they come with your next wake-up, whose text counts them and gives a line a task of what they say, and `peer_read` with `wake: "quiet"` lists them. Failures, refusals, pauses, results and questions always wake you. To be woken by them after all, set `mail_preferences`: `mode: "all"` for every one, or `wakeForTasks` for a few open tasks (for example a merge a release waits for).
 - After a lost reply, timeout or unknown result, repeat the identical call with the same `requestId`, or read the operation's state. A new `requestId` starts a new operation — for a review, a new paid round.
 - Do not send receipt-only acknowledgements. Write to others with a question, a decision or a useful result.
 
