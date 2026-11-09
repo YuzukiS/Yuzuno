@@ -102,9 +102,6 @@ const text = strings({
   qr: (url: string) => `QR code for ${url}`,
   latest: "Latest phone access change",
   notes: "Notes from Core",
-  disconnectWarning: "This change disconnects this phone: afterwards this page cannot open Core, and only the computer can change it back.",
-  disconnectAnyway: "Change anyway",
-  disconnectCancel: "Cancel",
   advanced: "Advanced",
   servePort: "Serve port",
   servePortHelp: (port: number) => `The HTTPS port your phone opens. Empty: ${port}.`,
@@ -191,9 +188,6 @@ const text = strings({
   qr: (url) => `${url} 的二维码`,
   latest: "最近一次手机访问更改",
   notes: "Core 的说明",
-  disconnectWarning: "这项更改会断开这台手机：之后这个页面将无法再打开 Core，只能在电脑上改回来。",
-  disconnectAnyway: "仍要更改",
-  disconnectCancel: "取消",
   advanced: "高级",
   servePort: "Serve 端口",
   servePortHelp: (port) => `你的手机打开的 HTTPS 端口。留空：${port}。`,
@@ -243,21 +237,6 @@ function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView):
     login: draft?.login ?? saved?.login ?? "",
     previews: draft?.previews ?? saved?.previews ?? view.previews?.included ?? false,
   };
-}
-
-/** Whether asking this change from the phone entry would cut off the phone
- * that asks (YN-79): turning access off, or moving its port, login or Serve
- * origin. Changed previews alone do not. */
-function disconnectsPhone(view: RemoteAccessView, enabled: boolean, fields: Fields): boolean {
-  const current = view.listening;
-  if (!current) return false;
-  if (!enabled) return true;
-  const draft = draftOf(fields, false);
-  if ("badPort" in draft) return false;
-  const port = draft.localPort ?? view.defaults.localPort;
-  const servePort = draft.servePort ?? view.defaults.servePort;
-  const login = draft.login ?? view.tailscale?.ownerLogin ?? current.login;
-  return port !== current.port || servePort !== view.saved?.servePort || login !== current.login;
 }
 
 /** What the page says of an older Core's own previews entry (T-5): one still
@@ -339,9 +318,6 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
   const [checked, setChecked] = useState(false);
   const [checking, setChecking] = useState(false);
   const [sending, setSending] = useState(false);
-  /** A change asked from the phone entry that would disconnect this phone:
-   * shown with its warning until the user asks again. */
-  const [confirm, setConfirm] = useState<{ enabled: boolean } | null>(null);
   const [error, setError] = useState<Said | null>(null);
   const [said, setSaid] = useState(0);
   const errorLine = useRef<HTMLParagraphElement>(null);
@@ -427,7 +403,6 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
 
   function edit(change: Partial<Fields>) {
     setFields((old) => (old ? { ...old, ...change } : old));
-    setConfirm(null);
     setError(null);
   }
 
@@ -445,16 +420,10 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
     }
   }
 
-  async function send(enabled: boolean, confirmed = false) {
+  async function send(enabled: boolean) {
     // Until this window knows its Workspace, no change is asked: its request
     // could not be kept for asking again after a lost answer.
     if (!fields || sending || busy || !workspaceId) return;
-    // On the phone entry, a change that cuts this phone off asks first (YN-79).
-    if (!confirmed && view?.phoneEntry && disconnectsPhone(view, enabled, fields)) {
-      setConfirm({ enabled });
-      return;
-    }
-    setConfirm(null);
     const kept = pending.current?.draft;
     const older = !!kept && kept.enabled && !("previews" in kept) && !previewsTouched.current;
     const draft = enabled ? draftOf(fields, !!view?.previews && !older) : { enabled: false };
@@ -794,19 +763,6 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   )}
                 </div>
               </div>
-              {confirm && (
-                <div className="remote-access-confirm" role="alertdialog" aria-label={t.disconnectWarning}>
-                  <p className="remote-access-note">{t.disconnectWarning}</p>
-                  <div className="settings-row-action">
-                    <button type="button" className="primary-button" disabled={sending || busy} onClick={() => void send(confirm.enabled, true)}>
-                      {t.disconnectAnyway}
-                    </button>
-                    <button type="button" className="secondary-button" disabled={sending} onClick={() => setConfirm(null)}>
-                      {t.disconnectCancel}
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           )}
           {error && (

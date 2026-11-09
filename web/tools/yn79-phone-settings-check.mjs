@@ -1,8 +1,8 @@
 // YN-79: the settings a phone may now change, at a phone's size in isolated
 // Chromium. Every request is answered by synthetic fixtures; no Core, no real
 // storage. What the jsdom tests cannot see: that Settings → Phone access is
-// editable there and its disconnect warning fits, and that Accounts and keys
-// lays out on a 390 px screen without sideways overflow. Screenshots go to
+// editable there with its actions on screen, and that Accounts and keys lays
+// out on a 390 px screen without sideways overflow. Screenshots go to
 // YUZUNO_BROWSER_OUTPUT.
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
@@ -40,7 +40,6 @@ const phoneView = {
   qr: null,
   startupError: null,
   defaults: { servePort: 8444, localPort: 4318 },
-  phoneEntry: true,
   previews: { included: false, available: false, legacy: null },
 };
 const routingKeys = {
@@ -123,8 +122,8 @@ async function noOverflow(page, label) {
   for (const part of parts) assert.ok(part.scroll <= part.client + 1, `${label}: ${part.name} overflows sideways (${part.scroll} > ${part.client})`);
 }
 const words = {
-  en: { phone: "Phone access", routing: "Executor routing", off: "Turn off", warning: /This change disconnects this phone/, anyway: "Change anyway", keys: "Accounts and keys" },
-  "zh-Hans": { phone: "手机访问", routing: "执行者路由", off: "关闭", warning: /这项更改会断开这台手机/, anyway: "仍要更改", keys: "账号和密钥" },
+  en: { phone: "Phone access", routing: "Executor routing", off: "Turn off", check: "Check", apply: "Save and apply", keys: "Accounts and keys" },
+  "zh-Hans": { phone: "手机访问", routing: "执行者路由", off: "关闭", check: "检查", apply: "保存并应用", keys: "账号和密钥" },
 };
 
 try {
@@ -134,22 +133,16 @@ try {
       const { page, context } = await open({ language, theme });
       const t = words[language];
       await openSettings(page);
-      // Phone access: editable on the phone entry, and the warning fits.
+      // Phone access: editable on the phone entry, with no read-only note.
       await dialog(page).locator("#settings-tab-phone").click();
       const remote = dialog(page).locator("#settings-editor-remote:not([hidden])");
       await remote.waitFor();
       await page.waitForTimeout(150);
-      assert.ok(await remote.getByRole("button", { name: t.off }).isVisible(), `${label}: Turn off is offered`);
+      for (const label of [t.check, t.apply, t.off]) assert.ok(await remote.getByRole("button", { name: label }).isVisible(), `${label}: ${label}`);
       assert.equal(await remote.getByText(/open through the phone entry, so it cannot change it/).count(), 0, `${label}: no read-only note`);
-      await remote.getByRole("button", { name: t.off }).click();
-      const warning = remote.locator(".remote-access-confirm");
-      await warning.waitFor();
-      assert.match(await warning.innerText(), t.warning, `${label}: the warning`);
-      const r = await warning.evaluate((el) => { const b = el.getBoundingClientRect(); return { x: b.x, w: b.width, scroll: el.scrollWidth, client: el.clientWidth }; });
-      assert.ok(r.x >= 0 && r.x + r.w <= 390, `${label}: the warning is on screen`);
-      assert.ok(r.scroll <= r.client + 1, `${label}: the warning does not overflow sideways`);
-      await remote.getByRole("button", { name: t.anyway }).waitFor();
-      await page.screenshot({ path: resolve(output, `phone-access-warning-${language}-${theme}.png`) });
+      assert.equal(await remote.locator(".remote-access-confirm").count(), 0, `${label}: no confirmation panel`);
+      await noOverflow(page, `${label} phone access`);
+      await page.screenshot({ path: resolve(output, `phone-access-${language}-${theme}.png`) });
       await dialog(page).locator(".settings-back").click();
       // Accounts and keys: the rows a phone now reads and changes.
       await dialog(page).locator("#settings-tab-routing").click();
@@ -162,7 +155,7 @@ try {
       await noOverflow(page, `${label} accounts and keys`);
       await page.screenshot({ path: resolve(output, `routing-keys-${language}-${theme}.png`) });
       await context.close();
-      check(`${label}: phone access warns, accounts and keys lays out`);
+      check(`${label}: phone access is editable, accounts and keys lays out`);
     }
   }
   assert.deepEqual(errors, [], "no page errors");

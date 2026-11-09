@@ -87,11 +87,11 @@ impl Lab {
         panic!("operation {id} did not finish");
     }
     async fn view(&self) -> Value {
-        view(&self.ws, false).await.unwrap()
+        view(&self.ws).await.unwrap()
     }
     /// POST /api/remote-access/check, as the page on Core's port makes it.
     async fn check(&self) -> Value {
-        match post_check(AppState(self.ws.clone()), Request::new(axum::body::Body::empty())).await {
+        match post_check(AppState(self.ws.clone())).await {
             Ok(Json(value)) => value,
             Err(_) => panic!("check failed"),
         }
@@ -142,7 +142,6 @@ async fn apply_serves_the_phone_entry_without_a_restart_and_a_new_core_serves_it
     let (code, body) = get(port, "/api/remote-access", Some(OWNER), &host).await;
     assert_eq!(code, 200, "{body}");
     let remote: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(remote["phoneEntry"], true, "{remote}");
     assert!(remote.get("canChange").is_none() && remote.get("readOnlyReason").is_none(), "{remote}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let refused = client.post(format!("http://127.0.0.1:{port}/api/remote-access/apply")).header("host", &host)
@@ -168,7 +167,6 @@ async fn a_phone_changes_its_own_access_and_the_entry_ends_with_it() {
     // The page through the phone entry reads it, then turns phone access off itself (YN-79).
     let (code, view) = get(phone, "/api/remote-access", Some(OWNER), &host).await;
     assert_eq!(code, 200, "{view}");
-    assert_eq!(serde_json::from_str::<Value>(&view).unwrap()["phoneEntry"], true, "{view}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let answer = client.post(format!("http://127.0.0.1:{phone}/api/remote-access/apply")).header("host", &host)
         .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
@@ -482,8 +480,7 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     let port = free_port();
     lab.apply(json!({"requestId": "on", "enabled": true, "localPort": port})).await.unwrap();
     let real = lab.view().await;
-    let mut known = keys(example);
-    known.extend(keys(&fixtures["throughPhone"]));
+    let known = keys(example);
     assert!(keys(&real).is_subset(&known), "fields the page does not know: {:?}", keys(&real).difference(&known).collect::<Vec<_>>());
     assert!(keys(example).is_subset(&keys(&real)), "fields the page reads but Core does not send: {:?}", keys(example).difference(&keys(&real)).collect::<Vec<_>>());
     for field in ["support", "saved", "listening", "serve", "tailscale", "verification", "qr", "defaults", "previews"] {
@@ -507,11 +504,8 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     assert_eq!(list("operationStates"), ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted", "partial"]);
     assert_eq!(list("operationSteps"), ["validate", "save", "listen", "serve", "verify", "cleanup", "done"]);
     assert_eq!(list("serveStates"), ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"]);
-    // Through the phone entry: the same shape, saying the page is there (YN-79).
-    let remote = view(&lab.ws, true).await.unwrap();
-    assert_eq!(remote["phoneEntry"], true);
-    assert!(remote.get("canChange").is_none() && remote.get("readOnlyReason").is_none());
-    assert!(keys(&remote).is_subset(&known), "fields the page does not know: {:?}", keys(&remote).difference(&known).collect::<Vec<_>>());
+    // The page has no read-only state: the phone changes it too (YN-79).
+    assert!(real.get("canChange").is_none() && real.get("readOnlyReason").is_none(), "{real}");
 }
 
 #[tokio::test]

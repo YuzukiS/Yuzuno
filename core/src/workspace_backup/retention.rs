@@ -43,7 +43,8 @@
 //! one kept backup back whole first, judges each one again right before it
 //! goes, and stops at the first removal that fails.
 //!
-//! Only on Core's own port: it lists folders on the computer that runs Core.
+//! On Core's own port and the phone entry (YN-79): it lists folders on the
+//! computer that runs Core.
 use super::online::{self, Operation};
 use super::{Control, Stopped};
 use crate::{server::ApiError, workspace::Workspace};
@@ -559,7 +560,7 @@ fn names(removed: &[Value]) -> String {
     format!("{what} removed ({})", all.join(", "))
 }
 
-/// The preview route: on Core's own port only.
+/// The preview route: on Core's own port and the phone entry.
 pub fn changes() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/workspace/backup/retention/preview", post(preview_route))

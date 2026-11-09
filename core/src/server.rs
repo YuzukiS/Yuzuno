@@ -69,12 +69,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     let router = browser_routes(assets, updates.clone())
         // Only on Core's own port: the desktop app on this computer asks.
         .route("/api/desktop/start-profile", get(start_profile))
-        // Backups and restores start only from Core's own port (T-192).
-        .merge(crate::workspace_backup::online::changes())
-        // A preview of keeping the latest backups lists host folders (T-196).
-        .merge(crate::workspace_backup::retention::changes())
-        // Routing, the OpenCode login and phone access itself: on this port and
-        // on the phone entry (YN-79).
+        // Routing, the OpenCode login, phone access and the backups: on this
+        // port and on the phone entry (YN-79).
         .merge(settings_routes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
@@ -103,11 +99,11 @@ pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<cr
 
 /// The settings a phone changes as the computer does (YN-79, the user's
 /// 2026-11-09 choice): routing keys, accounts, readings, policy and models,
-/// an OpenCode Agent's login, and phone access itself. Both entries serve
-/// them. The phone entry still admits only its configured Tailscale login
-/// (`RemoteEntry::admit`), with no second check, so any device signed in to
-/// that account may change them. An Agent's credential is not the user: any
-/// Authorization header is refused on both entries.
+/// an OpenCode Agent's login, phone access itself, and backups and restores.
+/// Both entries serve them. The phone entry still admits only its configured
+/// Tailscale login (`RemoteEntry::admit`), with no second check, so any
+/// device signed in to that account may change them. An Agent's credential
+/// is not the user: any Authorization header is refused on both entries.
 fn settings_routes() -> Router<Arc<Workspace>> {
     Router::new()
         .merge(crate::remote_access::changes())
@@ -117,6 +113,10 @@ fn settings_routes() -> Router<Arc<Workspace>> {
         .merge(crate::routing_readings::routes::router())
         .merge(crate::routing_policy::routes::router())
         .merge(crate::routing_models::routes::router())
+        // Backups and restores start here too (T-192, T-196; YN-79).
+        .merge(crate::workspace_backup::online::changes())
+        // A preview of keeping the latest backups lists host folders.
+        .merge(crate::workspace_backup::retention::changes())
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
 

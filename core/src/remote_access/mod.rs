@@ -627,10 +627,9 @@ fn observe(ws: &Workspace, result: &Value) {
 // ---- the view ----------------------------------------------------------
 
 /// The page's view, read only: nothing is probed and nothing is written.
-/// `through_phone` says it was opened through the phone entry, which changes
-/// phone access as the computer does (YN-79); the page warns before a change
-/// that would disconnect that phone.
-async fn view(ws: &Arc<Workspace>, through_phone: bool) -> Result<Value> {
+/// `through_phone` said it was opened through the phone entry, which changed
+/// phone access as the computer does (YN-79); the page is the same either way.
+async fn view(ws: &Arc<Workspace>) -> Result<Value> {
     let state = &ws.remote_access;
     // An unreadable record reads as none here; startup said why, and the next
     // apply keeps it aside and starts again.
@@ -682,9 +681,6 @@ async fn view(ws: &Arc<Workspace>, through_phone: bool) -> Result<Value> {
         "url": url,
         "startupError": state.startup_error.get(),
         "defaults": {"servePort": DEFAULT_SERVE_PORT, "localPort": DEFAULT_LOCAL_PORT},
-        // Opened through the phone entry: changes are allowed, and the page
-        // warns before one that would disconnect this phone (YN-79).
-        "phoneEntry": through_phone,
         // Phone access including previews (T-5): as it applies, whether a
         // phone can open them now, and what an older Core left of its own.
         "previews": {
@@ -1098,19 +1094,17 @@ async fn disable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result
 #[derive(Clone, Copy)]
 pub struct RemoteRequest;
 
-async fn get_view(AppState(ws): AppState<Arc<Workspace>>, request: Request) -> Result<Json<Value>, ApiError> {
-    let through_phone = request.extensions().get::<RemoteRequest>().is_some();
-    Ok(Json(view(&ws, through_phone).await?))
+async fn get_view(AppState(ws): AppState<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(view(&ws).await?))
 }
 
-async fn post_check(AppState(ws): AppState<Arc<Workspace>>, request: Request) -> Result<Json<Value>, ApiError> {
-    let through_phone = request.extensions().get::<RemoteRequest>().is_some();
+async fn post_check(AppState(ws): AppState<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
     let host = ws.remote_access.host(true);
     let saved = read(&path(&ws)).unwrap_or_default();
     let result = check(&ws, &host, current(&ws), planned(&saved)).await;
     observe(&ws, &result);
     changed(&ws);
-    Ok(Json(view(&ws, through_phone).await?))
+    Ok(Json(view(&ws).await?))
 }
 
 async fn post_apply(AppState(ws): AppState<Arc<Workspace>>, Json(request): Json<ApplyRequest>) -> Result<Json<Value>, ApiError> {

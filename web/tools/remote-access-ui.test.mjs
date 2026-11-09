@@ -50,7 +50,7 @@ const examples = JSON.parse(await readFile(new URL("./fixtures/remote-access-vie
  * appliedVerified with their own fields. */
 function example(name) {
   const { _note, ...own } = structuredClone(examples[name]);
-  return name === "appliedNotVerified" || name === "throughPhone" ? { ...structuredClone(examples.appliedVerified), ...own } : own;
+  return name === "appliedNotVerified" ? { ...structuredClone(examples.appliedVerified), ...own } : own;
 }
 /** An error from the examples, `"<status> <json>"`, as the stub answers it. */
 function exampleError(name) {
@@ -128,7 +128,6 @@ function view(over = {}) {
     operation: null,
     url: null,
     defaults: { servePort: 8444, localPort: 4318 },
-    phoneEntry: false,
     ...over,
   };
 }
@@ -432,52 +431,22 @@ test("another change already running is shown, not started twice", async () => {
   }
 });
 
-test("on the phone entry the page changes phone access too, and warns before it disconnects this phone (YN-79)", async () => {
-  let current = example("throughPhone");
+test("on the phone entry the page changes phone access as the computer does, with no extra prompt (YN-79)", async () => {
+  let current = example("appliedVerified");
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: current };
-    current = view({ phoneEntry: true, operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
+    current = view({ operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
     return { status: 202, body: { operation: current.operation } };
   }, { url: "https://pc.tail0.ts.net:8444/" });
   try {
     await waitFor(() => button(p, "Save and apply"), "the form");
     assert.doesNotMatch(p.text(), /open through the phone entry, so it cannot change it/, "no read-only note");
     for (const label of ["Check", "Save and apply", "Turn off"]) assert.ok(button(p, label), label);
-    // Turning it off here cuts this phone off: the warning comes before anything is sent.
+    // Turn off goes at once: no confirmation, no new prompt.
     button(p, "Turn off").click();
-    await waitFor(() => p.doc.querySelector(".remote-access-confirm"), "the warning");
-    assert.match(p.doc.querySelector(".remote-access-confirm").textContent,
-      /This change disconnects this phone: afterwards this page cannot open Core, and only the computer can change it back\./);
-    assert.deepEqual(p.writes(), [], "nothing sent before the warning is answered");
-    button(p, "Cancel").click();
-    await waitFor(() => !p.doc.querySelector(".remote-access-confirm"), "cancelled");
-    assert.deepEqual(p.writes(), []);
-    // Asked again, it goes as one change: off.
-    button(p, "Turn off").click();
-    await waitFor(() => p.doc.querySelector(".remote-access-confirm"), "the warning again");
-    button(p, "Change anyway").click();
     await waitFor(() => p.applies().length === 1, "the change");
     assert.equal(p.applies()[0].body.enabled, false);
-  } finally {
-    p.close();
-  }
-});
-
-test("a change that keeps this phone connected is sent without the warning (YN-79)", async () => {
-  const onlyPreviews = { ...example("throughPhone"), previews: { included: true, available: true, legacy: null } };
-  const p = mount((url, method, body) => {
-    if (url.endsWith("/check") || method === "GET") return { body: onlyPreviews };
-    return { status: 202, body: { operation: op("succeeded", "done", { requestId: body.requestId }) } };
-  }, { url: "https://pc.tail0.ts.net:8444/" });
-  try {
-    await waitFor(() => p.doc.querySelector('input[type="checkbox"]'), "the previews box");
-    p.doc.querySelector('input[type="checkbox"]').click();
-    button(p, "Check").click();
-    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
-    button(p, "Save and apply").click();
-    await waitFor(() => p.applies().length === 1, "the change");
-    assert.equal(!!p.doc.querySelector(".remote-access-confirm"), false, "no warning");
-    assert.equal(p.applies()[0].body.previews, false);
+    assert.equal(!!p.doc.querySelector(".remote-access-confirm"), false, "no confirmation panel");
   } finally {
     p.close();
   }
@@ -680,7 +649,7 @@ test("phone access includes previews (T-5): an older Core shows and sends no cho
     off.close();
   }
   // Through the phone entry: the line and the box, since a phone changes it too (YN-79).
-  const phone = mount(() => ({ body: on({ phoneEntry: true, previews: included() }) }), { url: `${ENTRY}/` });
+  const phone = mount(() => ({ body: on({ previews: included() }) }), { url: `${ENTRY}/` });
   try {
     await waitFor(() => previewsLine(phone), "the line");
     assert.deepEqual(previewsLine(phone), ["on", "Previews on the phone Included"]);

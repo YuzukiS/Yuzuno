@@ -1,9 +1,9 @@
 //! What the phone entry may change (YN-79, the user's choice of 2026-11-09):
 //! the routing keys, accounts, readings, policy and models, an OpenCode
-//! Agent's login, and phone access itself. Both entries serve them; the phone
-//! entry still admits only its configured Tailscale login, and any
-//! Authorization header is refused on either. What stays on Core's own port
-//! (the desktop profile, backups and restores) is not there.
+//! Agent's login, phone access itself, and backups and restores. Both entries
+//! serve them; the phone entry still admits only its configured Tailscale
+//! login, and any Authorization header is refused on either. The desktop
+//! profile stays on Core's own port.
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
@@ -70,6 +70,16 @@ fn moved() -> Vec<(&'static str, &'static str, Option<Value>)> {
         ("GET", "/api/remote-access", None),
         ("POST", "/api/remote-access/apply", Some(json!({"requestId": "", "enabled": false}))),
         ("POST", "/api/remote-access/preview", Some(json!({}))),
+        // The backup and restore changes (T-192, T-196): an empty body is
+        // refused by the route itself, so nothing starts or is saved.
+        ("POST", "/api/workspace/backups", Some(json!({}))),
+        ("POST", "/api/workspace/backups/check", Some(json!({}))),
+        ("POST", "/api/workspace/restores", Some(json!({}))),
+        ("POST", "/api/workspace/backup/operations/none/stop", Some(json!({}))),
+        ("POST", "/api/workspace/backup/schedule", Some(json!({}))),
+        ("POST", "/api/workspace/backup/schedule/retention", Some(json!({}))),
+        ("POST", "/api/workspace/backup/retention/preview", Some(json!({}))),
+        ("POST", "/api/workspace/backup/retention/remove", Some(json!({}))),
     ]
 }
 
@@ -111,19 +121,12 @@ async fn an_agents_credential_changes_none_of_them_on_either_entry() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn what_stays_on_cores_own_port_is_not_on_the_phone_entry() {
+async fn the_desktop_profile_stays_on_cores_own_port() {
     let (_tmp, ws) = lab();
     let remote = server::remote_router(ws.clone(), ws.data_dir.join("assets"), None, server::RemoteEntry::new(ORIGIN, LOGIN).unwrap());
-    for (method, uri, body) in [
-        ("GET", "/api/desktop/start-profile", None),
-        ("POST", "/api/workspace/backups", Some(json!({}))),
-        ("POST", "/api/workspace/backups/check", Some(json!({}))),
-        ("POST", "/api/workspace/restores", Some(json!({}))),
-        ("POST", "/api/workspace/backup/schedule", Some(json!({}))),
-        ("POST", "/api/workspace/backup/retention/preview", Some(json!({}))),
-        ("POST", "/api/workspace/backup/retention/remove", Some(json!({}))),
-    ] {
-        let (status, answer) = phone(&remote, method, uri, body, Some(LOGIN), &[]).await;
-        assert!(unrouted(status), "the phone entry must not serve {method} {uri}: {status} {answer}");
-    }
+    let (status, answer) = phone(&remote, "GET", "/api/desktop/start-profile", None, Some(LOGIN), &[]).await;
+    assert!(unrouted(status), "the phone entry must not serve the desktop profile: {status} {answer}");
+    let local_app = server::router(ws.clone(), ws.data_dir.join("assets"));
+    let (status, _) = local(&local_app, "GET", "/api/desktop/start-profile", None, &[]).await;
+    assert!(!unrouted(status), "Core's own port still serves it");
 }

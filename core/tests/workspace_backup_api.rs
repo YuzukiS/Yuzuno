@@ -32,12 +32,6 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>, remote
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-/// No route takes the request: 404, or 405 where the page's own GET
-/// fallback answers the path.
-fn unrouted(status: StatusCode) -> bool {
-    matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED)
-}
-
 async fn finished(app: &Router, id: &str) -> Value {
     for _ in 0..600 {
         let (status, op) = call(app, "GET", &format!("/api/workspace/backup/operations/{id}"), None, false).await;
@@ -51,7 +45,7 @@ async fn finished(app: &Router, id: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
+async fn settings_back_up_check_and_restore_on_either_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
@@ -61,15 +55,13 @@ async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
     let (status, view) = call(&local, "GET", "/api/workspace/backup", None, false).await;
     assert_eq!(status, StatusCode::OK, "{view}");
     assert_eq!((view["canChange"].clone(), view["canBackUp"].clone()), (json!(true), json!(true)), "{view}");
+    // Through the phone entry it reads and changes too (YN-79).
     let (status, phone) = call(&remote, "GET", "/api/workspace/backup", None, true).await;
-    assert_eq!((status, phone["canChange"].clone()), (StatusCode::OK, json!(false)), "the phone entry may read");
+    assert_eq!((status, phone["canChange"].clone()), (StatusCode::OK, json!(true)), "the phone changes it too");
 
     let backup = tmp.path().join("backup");
     let request = json!({"requestId":"b1","to":backup});
-    let (status, _) = call(&remote, "POST", "/api/workspace/backups", Some(request.clone()), true).await;
-    assert!(unrouted(status), "a phone cannot start a backup: {status}");
-    assert!(!backup.exists());
-    let (status, started) = call(&local, "POST", "/api/workspace/backups", Some(request.clone()), false).await;
+    let (status, started) = call(&remote, "POST", "/api/workspace/backups", Some(request.clone()), true).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{started}");
     let id = started["operation"]["id"].as_str().unwrap().to_owned();
     let (_, again) = call(&local, "POST", "/api/workspace/backups", Some(request), false).await;
@@ -96,9 +88,8 @@ async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(refused["error"].as_str().unwrap().contains("holds a Workspace"), "the reason is given: {refused}");
     assert!(!restored.exists(), "a precheck writes nothing");
-    let (status, _) = call(&remote, "POST", "/api/workspace/restores", Some(json!({"requestId":"r1","from":backup,"to":restored})), true).await;
-    assert!(unrouted(status), "a phone cannot restore: {status}");
-    let (status, started) = call(&local, "POST", "/api/workspace/restores", Some(json!({"requestId":"r1","from":backup,"to":restored})), false).await;
+    // A restore from the phone entry, as the computer starts it.
+    let (status, started) = call(&remote, "POST", "/api/workspace/restores", Some(json!({"requestId":"r1","from":backup,"to":restored})), true).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{started}");
     let done = finished(&local, started["operation"]["id"].as_str().unwrap()).await;
     assert_eq!(done["state"], "succeeded", "{done}");
@@ -112,7 +103,7 @@ async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
 /// at a time of day in UTC into a folder that exists. Turning it on backs up
 /// nothing now, and its schedule file is never in a backup.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_time_is_utc() {
+async fn the_daily_backup_is_off_until_turned_on_from_either_entry_and_its_time_is_utc() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
@@ -131,8 +122,6 @@ async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_tim
     let daily = tmp.path().join("daily");
     std::fs::create_dir(&daily).unwrap();
     let on = json!({"enabled":true,"timeUtc":"03:00","folder":daily});
-    let (status, _) = call(&remote, "POST", "/api/workspace/backup/schedule", Some(on.clone()), true).await;
-    assert!(unrouted(status), "a phone cannot turn it on: {status}");
     let (status, bad) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"25:00","folder":daily})), false).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(bad["error"].as_str().unwrap().contains("HH:MM, in UTC"), "{bad}");
@@ -143,7 +132,8 @@ async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_tim
     let (status, view) = call(&local, "GET", "/api/workspace/backup", None, false).await;
     assert_eq!((status, view["schedule"]["enabled"].clone()), (StatusCode::OK, json!(false)), "refusals change nothing");
 
-    let (status, set) = call(&local, "POST", "/api/workspace/backup/schedule", Some(on), false).await;
+    // The phone turns it on as the computer does (YN-79).
+    let (status, set) = call(&remote, "POST", "/api/workspace/backup/schedule", Some(on), true).await;
     assert_eq!(status, StatusCode::OK, "{set}");
     let schedule = &set["schedule"];
     assert_eq!((schedule["enabled"].clone(), schedule["timeUtc"].clone()), (json!(true), json!("03:00")));
@@ -166,10 +156,10 @@ async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_tim
     assert_eq!((off["schedule"]["enabled"].clone(), off["schedule"]["nextRunAt"].clone()), (json!(false), Value::Null));
 }
 
-/// The retention preview (T-196, slice 2): only from Core's own port, read
+/// The retention preview (T-196, slice 2): on either entry (YN-79), read
 /// only, and refusing a relative folder or a count out of range.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes_nothing() {
+async fn a_retention_preview_lists_a_folder_on_either_entry_and_changes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
@@ -183,10 +173,8 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     std::fs::create_dir(folder.join("photos")).unwrap();
 
     let request = json!({"folder": folder, "keep": 1});
-    let (status, _) = call(&remote, "POST", "/api/workspace/backup/retention/preview", Some(request.clone()), true).await;
-    assert!(unrouted(status), "a phone cannot list host folders: {status}");
-    let (status, preview) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(request), false).await;
-    assert_eq!(status, StatusCode::OK, "{preview}");
+    let (status, preview) = call(&remote, "POST", "/api/workspace/backup/retention/preview", Some(request), true).await;
+    assert_eq!(status, StatusCode::OK, "the phone lists host folders too: {preview}");
     let verdicts: Vec<(String, String)> = preview["entries"].as_array().unwrap().iter()
         .map(|e| (e["name"].as_str().unwrap().to_owned(), e["verdict"].as_str().unwrap().to_owned())).collect();
     assert!(verdicts.contains(&("first".into(), "keep".into())) && verdicts.contains(&("photos".into(), "ignored".into())), "{preview}");
@@ -197,11 +185,9 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     let (status, zero) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder":folder,"keep":0})), false).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(zero["error"].as_str().unwrap().contains("Keep at least 1"), "{zero}");
-    // Removing one (T-196, slice 3): not from a phone, and refused at once when the folder no longer allows it.
+    // Removing one (T-196, slice 3): on either entry (YN-79), refused at once when the folder no longer allows it.
     let remove = json!({"requestId":"rm1","folder":folder,"keep":1,"name":"first","manifestSha256":"stale"});
-    let (status, _) = call(&remote, "POST", "/api/workspace/backup/retention/remove", Some(remove.clone()), true).await;
-    assert!(unrouted(status), "a phone cannot remove a backup: {status}");
-    let (status, refused) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(remove), false).await;
+    let (status, refused) = call(&remote, "POST", "/api/workspace/backup/retention/remove", Some(remove), true).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
     let reason = refused["error"].as_str().unwrap();
     assert!(reason.contains("not one that could be removed now: One of the latest 1") && reason.ends_with("nothing was removed"), "{refused}");
@@ -214,7 +200,7 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     let first = preview["entries"].as_array().unwrap().iter().find(|e| e["name"] == "first").unwrap().clone();
     assert_eq!(first["verdict"], "remove", "{preview}");
     let remove = json!({"requestId":"rm2","folder":folder,"keep":1,"name":"first","manifestSha256":first["manifestSha256"]});
-    let (status, started) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(remove.clone()), false).await;
+    let (status, started) = call(&remote, "POST", "/api/workspace/backup/retention/remove", Some(remove.clone()), true).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{started}");
     let id = started["operation"]["id"].as_str().unwrap().to_owned();
     let done = finished(&local, &id).await;
@@ -242,10 +228,10 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
 }
 
 /// Automatic removal of old daily backups (T-196, slice 6): off by default,
-/// turned on only from Core's own port for the folder the page previewed,
+/// turned on on either entry (YN-79) for the folder the page previewed,
 /// removing nothing when turned on; a folder change turns it off.
 #[tokio::test(flavor = "multi_thread")]
-async fn automatic_removal_is_off_until_turned_on_for_the_previewed_folder_from_cores_own_port() {
+async fn automatic_removal_is_off_until_turned_on_for_the_previewed_folder_on_either_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
@@ -263,14 +249,12 @@ async fn automatic_removal_is_off_until_turned_on_for_the_previewed_folder_from_
     assert!(refused["error"].as_str().unwrap().contains("save the daily backup's folder first"), "{refused}");
     let (status, _) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"03:00","folder":daily})), false).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = call(&remote, "POST", "/api/workspace/backup/schedule/retention", Some(on.clone()), true).await;
-    assert!(unrouted(status), "a phone cannot turn it on: {status}");
     for wrong in [json!({"enabled":true,"keep":2,"folder":other}), json!({"enabled":true,"folder":daily}), json!({"enabled":true,"keep":0,"folder":daily})] {
         let (status, refused) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(wrong.clone()), false).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{wrong}: {refused}");
     }
-    let (status, set) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(on), false).await;
-    assert_eq!(status, StatusCode::OK, "{set}");
+    let (status, set) = call(&remote, "POST", "/api/workspace/backup/schedule/retention", Some(on), true).await;
+    assert_eq!(status, StatusCode::OK, "the phone turns it on too: {set}");
     assert_eq!((set["schedule"]["retention"]["keep"].clone(), set["schedule"]["retention"]["budgetBytes"].clone()), (json!(2), json!(1073741824u64)));
     assert!(daily.join("an-old-folder").is_dir(), "turning it on removes nothing");
     let (status, moved) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"03:00","folder":other})), false).await;
