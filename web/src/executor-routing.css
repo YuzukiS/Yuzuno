@@ -267,7 +267,8 @@
 .settings-center.is-phone .executor-routing :is(button, select, .settings-input):not(.routing-chip) { min-height: 40px; }
 /* The pill stays a pill on a phone; its target is 40 px tall all the same. */
 .settings-center.is-phone .executor-routing .routing-cand-title > .routing-fix { min-height: 0; }
-.settings-center.is-phone .routing-fix::after { content: ""; position: absolute; inset: -9px -4px; }
+/* 40 px around its middle, whatever its own height: an inset counts from inside its border. */
+.settings-center.is-phone .routing-fix::after { content: ""; position: absolute; top: calc(50% - 20px); left: -4px; right: -4px; height: 40px; }
 .settings-center.is-phone .routing-days button { min-width: 40px; }
 .settings-center.is-phone .routing-cand-head { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px 6px 4px; }
 .settings-center.is-phone .routing-cand-main { flex-basis: calc(100% - 80px); }
