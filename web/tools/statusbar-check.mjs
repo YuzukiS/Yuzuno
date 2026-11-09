@@ -10,6 +10,12 @@
 // - Remote machines, with those unreachable at their last check apart from
 //   a reachable one's disconnected Agents, which are named (YN-61); opens
 //   Machines.
+// - Without room, nothing is cut in its words (YN-75): in English and
+//   Chinese at 1440, 940, 820 and 390 px no painted frame spills, the notice
+//   is whole at 940, and what gives way follows priority, by this check's
+//   own order; at 320 px with 20 px text the least important are behind
+//   "⋯", whose list says them in full and opens them.
+// - Core's backlog details open whole and in the window above the bar.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or writes, other than the reading handoff (T-170),
 // answered and counted apart.
@@ -99,6 +105,8 @@ const codexUsage = (revision, primary, secondary) => {
 const codexReads = [];
 // What Core reports, changed step by step below.
 const f = {
+  // Core's backlog per Agent: none until the backlog step.
+  backlog: {},
   codex: codexUsage(5, { usedPercent: 23 }, { usedPercent: 41 }),
   budget: {
     machine: { name: "Core host", memoryAvailableMiB: 26000, scope: "fixture" },
@@ -203,7 +211,7 @@ try {
           "/api/reviews": { reviews: scoped ? [] : f.reviews, hasMore: false, nextBefore: null },
           "/api/ci": { runs: scoped ? [] : f.runs, subscriptions: [], hasMore: false, nextBefore: null },
           "/api/machines": { machines: f.machines },
-          "/api/backlog": { observedAt: iso(Date.now()), agents: {} },
+          "/api/backlog": { observedAt: iso(Date.now()), agents: f.backlog },
           "/api/catchup": { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } },
         }[url.pathname];
     if (json) return route.fulfill({ json });
@@ -379,8 +387,12 @@ try {
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ ...saved, theme: "dark" }));
     window.dispatchEvent(new StorageEvent("storage", { key: "yuzuno.appearance" }));
   });
+  // A fresh end as well, so the notice is showing through the widths below
+  // (it shows 10 s) whatever the steps above took (YN-75).
+  f.runs = [...f.runs, { ...f.runs[0], id: "github:1:901:1", runId: "901", status: "failed", conclusion: "failure", updatedAt: iso(Date.now()), cursor: 2 }];
   await refresh();
   await bar.getByRole("button", { name: "1 review running" }).waitFor();
+  await notice.filter({ hasText: "CI run failed" }).first().waitFor();
   const sizes = {};
   for (const width of [1440, 940, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -391,13 +403,223 @@ try {
     assert.ok(fit.items.every((i) => !i.visible || i.inside), `${width}: ${JSON.stringify(fit)}`);
     await shot(`statusbar-dark-${width}.png`);
   }
-  // The narrowest keeps the background work and the RAM meter only.
+  // At the narrowest every item is still there, shorter (YN-75): the bar
+  // no longer drops plan usage and machines because the window is narrow.
   const narrow = sizes[390].items.filter((i) => i.visible).map((i) => i.text);
   assert.ok(narrow.some((t) => t.includes("review running")) && narrow.some((t) => t.startsWith("RAM")), JSON.stringify(narrow));
-  assert.ok(!narrow.some((t) => t.startsWith("Claude") || t.startsWith("Codex") || t.includes("machine")), JSON.stringify(narrow));
   assert.ok(sizes[940].items.some((i) => i.visible && i.text.startsWith("Codex")), JSON.stringify(sizes[940]));
   report.sizes = sizes;
-  check("dark at 1440, 940 and 390 px: one line, nothing outside; the narrowest keeps background work and RAM");
+  check("dark at 1440, 940 and 390 px: one line, nothing outside");
+
+  // What gives way, in which form, in both languages and at 820 px too; no
+  // painted frame on the way spills or cuts a word (YN-75). The order is
+  // this check's own, from the design, not read from the page: within a
+  // tier a lower number gives way first; news > work > metrics; a metric at
+  // its limit or not reached is news. Every item in this fixture has a
+  // shorter form, so an item that gave way means every less important one
+  // did too, and one behind "⋯" means every less important one is.
+  const ORDER = { machines: 101, codex: 102, claude: 103, ram: 104, ci: 201, reviews: 202, backlog: 304, stream: 305, notice: 307 };
+  const RAISED = { machines: 301, codex: 302, claude: 303 };
+  const read = () =>
+    bar.evaluate((el) => {
+      const start = el.querySelector(".statusbar-start").getBoundingClientRect();
+      const style = getComputedStyle(el);
+      const box = el.getBoundingClientRect();
+      const left = box.left + parseFloat(style.paddingLeft) - 0.5;
+      const right = box.right - parseFloat(style.paddingRight) + 0.5;
+      const items = [...el.querySelectorAll(":scope > .statusbar-start [data-item], :scope > .statusbar-end > [data-item], :scope > .statusbar-end > * > [data-item]")]
+        .filter((item) => !item.closest(".statusbar-overflow-list"))
+        .map((item) => {
+          const r = item.getBoundingClientRect();
+          return {
+            id: item.dataset.item,
+            form: item.dataset.form,
+            text: item.textContent.trim(),
+            failed: item.classList.contains("is-failed"),
+            cut: r.left < left || r.right > right || (!!item.closest(".statusbar-start") && r.right > start.right + 0.5) || item.scrollWidth > item.clientWidth + 1,
+          };
+        });
+      const more = el.querySelector(".statusbar-overflow");
+      return { items, more: more ? Number(more.textContent.trim()) : 0, overflow: el.scrollWidth > el.clientWidth + 1, height: Math.round(box.height) };
+    });
+  const rank = (item) => (item.failed && RAISED[item.id]) || ORDER[item.id];
+  // `present`: the items that stay for the whole step. A notice comes and
+  // goes on its own clock, so it counts only while it shows; it is never
+  // behind "⋯", so a missing one has ended.
+  const priority = (state, present, where) => {
+    const shown = new Map(state.items.map((i) => [i.id, i]));
+    const items = shown.has("notice") ? [...present, shown.get("notice")] : present;
+    const forms = Object.fromEntries(items.map((p) => [p.id, shown.get(p.id)?.form ?? "hidden"]));
+    const behind = Object.values(forms).filter((form) => form === "hidden").length;
+    assert.equal(state.more, behind, `${where}: "⋯" counts what is behind it: ${JSON.stringify(forms)}`);
+    for (const a of items)
+      for (const b of items) {
+        if (!(rank(a) > rank(b))) continue;
+        if (forms[a.id] === "hidden") assert.equal(forms[b.id], "hidden", `${where}: ${a.id} behind "⋯" but ${b.id} not: ${JSON.stringify(forms)}`);
+        if (forms[a.id] !== "full") assert.notEqual(forms[b.id], "full", `${where}: ${a.id} ${forms[a.id]} but ${b.id} full: ${JSON.stringify(forms)}`);
+      }
+    return forms;
+  };
+  let ended = 902;
+  const freshEnd = async () => {
+    ended++;
+    f.runs = [...f.runs, { ...f.runs[0], id: `github:1:${ended}:1`, runId: String(ended), status: "failed", conclusion: "failure", updatedAt: iso(Date.now()), cursor: ended }];
+    await refresh();
+    await notice.first().waitFor();
+  };
+  // Painted frames: a rAF, then a message, then a look (a resize observer
+  // may change the bar after layout; what counts is what is drawn).
+  const watchFrames = () =>
+    page.evaluate(() => {
+      window.__barFrames = [];
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        const el = document.querySelector(".statusbar");
+        const start = el.querySelector(".statusbar-start").getBoundingClientRect();
+        const bad = [...el.querySelectorAll(":scope > .statusbar-start [data-item], :scope > .statusbar-end [data-item]")].filter((item) => {
+          if (item.closest(".statusbar-overflow-list")) return false;
+          const r = item.getBoundingClientRect();
+          return r.right > innerWidth || (!!item.closest(".statusbar-start") && r.right > start.right + 0.5) || item.scrollWidth > item.clientWidth + 1;
+        });
+        window.__barFrames.push({ overflow: el.scrollWidth > el.clientWidth + 1, bad: bad.map((b) => `${b.dataset.item}:${b.dataset.form}`) });
+      };
+      let n = 0;
+      const tick = () => {
+        channel.port2.postMessage(0);
+        if (++n < 40) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  const language = (choice) =>
+    page.evaluate((language) => {
+      localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+      window.dispatchEvent(new StorageEvent("storage", { key: "yuzuno.language" }));
+    }, choice);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await freshEnd();
+  await page.waitForTimeout(300);
+  const all = (await read()).items;
+  assert.ok(all.every((i) => i.form === "full"), `1440: everything in full: ${JSON.stringify(all)}`);
+  const present = all.filter((i) => i.id !== "notice");
+  assert.deepEqual(present.map((i) => i.id).sort(), ["claude", "codex", "machines", "ram", "reviews"], JSON.stringify(all));
+  report.fit = {};
+  for (const lang of ["en", "zh-Hans"]) {
+    await language(lang);
+    await bar.locator('[data-item="reviews"]', { hasText: lang === "en" ? "review running" : "审查进行中" }).waitFor();
+    for (const width of [1440, 940, 820, 390]) {
+      // At 940 a notice must be showing: that is where it was cut.
+      if (width === 940) await freshEnd();
+      await watchFrames();
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForFunction(() => window.__barFrames.length >= 40, null, { timeout: 5000 });
+      const frames = await page.evaluate(() => window.__barFrames);
+      const where = `${lang} ${width}`;
+      assert.ok(frames.every((fr) => !fr.overflow && !fr.bad.length), `${where}: a painted frame spilled or cut: ${JSON.stringify(frames.filter((fr) => fr.overflow || fr.bad.length))}`);
+      const state = await read();
+      assert.ok(!state.overflow && state.height <= 28, `${where}: ${JSON.stringify(state)}`);
+      assert.ok(state.items.every((i) => !i.cut), `${where}: ${JSON.stringify(state.items)}`);
+      const forms = priority(state, present, where);
+      if (width === 940) assert.equal(forms.notice, "full", `${where}: the notice is whole: ${JSON.stringify(forms)}`);
+      report.fit[where] = forms;
+      await shot(`statusbar-fit-${lang}-${width}.png`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+  await language("en");
+  await bar.getByRole("button", { name: "1 review running" }).waitFor();
+  check("en and zh at 1440, 940, 820 and 390 px: one line, no word cut in any painted frame, the notice whole at 940, and what gives way follows priority");
+
+  // Behind "⋯": at 320 px with 20 px text not even every item's shortest
+  // fits. The least important go behind "⋯"; its list says them in full,
+  // in the window, and each opens what it opens in the bar (YN-75).
+  const appearance = (change) =>
+    page.evaluate((change) => {
+      const saved = JSON.parse(localStorage.getItem("yuzuno.appearance"));
+      localStorage.setItem("yuzuno.appearance", JSON.stringify({ ...saved, ...change }));
+      window.dispatchEvent(new StorageEvent("storage", { key: "yuzuno.appearance" }));
+    }, change);
+  await appearance({ fontSize: 20 });
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.waitForTimeout(400);
+  const tight = await read();
+  assert.ok(!tight.overflow && tight.items.every((i) => !i.cut), `320: ${JSON.stringify(tight)}`);
+  const tightForms = priority(tight, present, "en 320 at 20 px");
+  const behind = present.filter((p) => tightForms[p.id] === "hidden").map((p) => p.id);
+  assert.ok(behind.includes("machines"), `the least important goes first: ${JSON.stringify(tightForms)}`);
+  const moreButton = bar.getByRole("button", { name: `${behind.length} more in the status bar` });
+  await moreButton.click();
+  const list = page.getByRole("region", { name: "Not shown in the status bar for lack of room" });
+  await list.waitFor();
+  const listed = await list.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      inside: r.left >= 0 && r.right <= innerWidth && r.top >= 0,
+      items: [...el.querySelectorAll("[data-item]")].map((i) => ({ id: i.dataset.item, form: i.dataset.form, text: i.textContent.trim() })),
+    };
+  });
+  assert.ok(listed.inside, JSON.stringify(listed));
+  assert.deepEqual(listed.items.map((i) => i.id).sort(), [...behind].sort(), JSON.stringify(listed));
+  for (const item of listed.items) {
+    assert.equal(item.form, "full", JSON.stringify(item));
+    assert.equal(item.text, all.find((a) => a.id === item.id).text, `said in full as at 1440: ${JSON.stringify(item)}`);
+  }
+  await shot("statusbar-overflow-320.png");
+  await page.screenshot({ path: resolve(output, "statusbar-overflow-open-320.png") });
+  report.screenshots.push("statusbar-overflow-open-320.png");
+  await list.getByRole("button", { name: /machine/ }).click();
+  await machinesPage.locator("#settings-editor-machines:not([hidden]) .settings-machines").waitFor();
+  await page.keyboard.press("Escape");
+  await machinesPage.waitFor({ state: "detached" });
+  // Escape closes the list and hands focus back to "⋯".
+  if (!(await list.count())) await moreButton.click();
+  await list.waitFor();
+  await page.keyboard.press("Escape");
+  await list.waitFor({ state: "detached" });
+  assert.equal(await moreButton.getAttribute("aria-expanded"), "false");
+  assert.ok(await moreButton.evaluate((b) => b === document.activeElement), "focus back on ⋯");
+  report.behind = { forms: tightForms, listed: listed.items };
+  await appearance({ fontSize: 16 });
+  check('320 px at 20 px text: the least important behind "⋯", listed in full in the window, opening Settings › Machines; Escape gives focus back');
+
+  // Core's backlog: its details open above the bar, whole and in the window
+  // at 1440, 940 and 390 px. The bar's clip used to hide all of them
+  // (YN-75; the panel's placement is not this bar's and is not checked).
+  f.backlog = { a: { generation: 1, pending: 12, oldestMs: 9000 } };
+  const hint = bar.locator(".statusbar-start .core-backlog-hint");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // Behind in two reads in a row, five seconds apart.
+  await hint.waitFor({ timeout: 20_000 });
+  const details = bar.locator(".statusbar-start .core-backlog-details");
+  report.backlog = {};
+  for (const width of [1440, 940, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(250);
+    if ((await hint.getAttribute("aria-expanded")) !== "true") await hint.click();
+    await details.waitFor();
+    const seen = await details.evaluate((d) => {
+      const r = d.getBoundingClientRect();
+      const points = [
+        [r.left + r.width / 2, r.top + r.height / 2],
+        [r.left + 4, r.top + 4],
+        [r.right - 4, r.top + 4],
+        [r.left + 4, r.bottom - 4],
+        [r.right - 4, r.bottom - 4],
+      ];
+      return {
+        box: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
+        inside: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight,
+        hits: points.map(([x, y]) => {
+          const at = document.elementFromPoint(x, y);
+          return !!at && d.contains(at);
+        }),
+      };
+    });
+    report.backlog[width] = seen;
+    assert.ok(seen.inside && seen.hits.every(Boolean), `backlog details at ${width}: ${JSON.stringify(seen)}`);
+    await page.screenshot({ path: resolve(output, `statusbar-backlog-${width}.png`), clip: { x: 0, y: 900 - 220, width, height: 220 } });
+    report.screenshots.push(`statusbar-backlog-${width}.png`);
+  }
+  check("Core backlog details: whole and in the window at 1440, 940 and 390 px");
 
   assert.deepEqual(report.errors, []);
   report.status = "passed";

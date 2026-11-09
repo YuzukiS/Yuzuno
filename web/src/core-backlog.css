@@ -4,7 +4,9 @@
   display: inline-flex;
   align-items: center;
 }
-.core-backlog-hint {
+/* The status bar measures the hint with a stand-in of the same box (YN-75). */
+.core-backlog-hint,
+.statusbar-measure-backlog {
   font: inherit;
   color: var(--coral);
   background: none;

@@ -10,7 +10,8 @@ import {
 } from "./core-backlog";
 import "./core-backlog.css";
 
-// What the hint says (T-189); Agent names as they came.
+// What the hint says (T-189); Agent names as they came. The status bar
+// measures the hint in both its forms (YN-75).
 const text = strings({
   someAgent: "An Agent",
   hint: "Core is catching up on output; status may lag",
@@ -26,6 +27,7 @@ const text = strings({
   waiting: (count, seconds) => ` · ${count} 个事件等待中 · 最早的已等 ${seconds} 秒`,
   observed: "观察于 ",
 });
+export const backlogWords = text;
 
 /**
  * A short note next to the Core status when Core itself has stayed behind in
@@ -35,10 +37,17 @@ const text = strings({
 export function CoreBacklog({
   agents,
   live,
+  compact = false,
+  onShown,
 }: {
   agents: { id: string; name: string }[];
   /** Core reachable and live updates open; otherwise the backlog is unknown. */
   live: boolean;
+  /** Where the status bar has no room for the whole hint (YN-75): "Core
+   * backlog" shows, and the whole hint stays its name. */
+  compact?: boolean;
+  /** Told whether the note is showing, so the status bar can make room. */
+  onShown?: (shown: boolean) => void;
 }) {
   const [read, setRead] = useState<BacklogRead | null>(null);
   const [streaks, setStreaks] = useState<Streaks>({});
@@ -121,20 +130,31 @@ export function CoreBacklog({
   useEffect(() => {
     if (!behind.length) setOpen(false);
   }, [behind.length]);
-  if (!behind.length || !read) return null;
+  const shown = behind.length > 0 && !!read;
+  useEffect(() => {
+    onShown?.(shown);
+  }, [shown, onShown]);
+  if (!shown || !read) return null;
 
   const name = (id: string) =>
     agents.find((agent) => agent.id === id)?.name || t.someAgent;
   const observed = new Date(read.observedAt);
   return (
-    <span className="core-backlog">
+    <span className="core-backlog" data-item="backlog" data-form={compact ? "compact" : "full"}>
       <button
         type="button"
         className="core-backlog-hint"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {t.hint}
+        {compact ? (
+          <>
+            <span className="sr-only">{t.hint}</span>
+            <span aria-hidden="true">{t.region}</span>
+          </>
+        ) : (
+          t.hint
+        )}
       </button>
       {open && (
         <div
