@@ -86,6 +86,9 @@ pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 /// protocol/src/groups/message.ts).
 const PAGE: usize = 200;
 const BODY_LIMIT: usize = 2048;
+/// The most of a permission answer Core reads (YN-78 S1): one request or a
+/// session's pending list, each small, read whole or refused, never a dump.
+const PERMISSION_BODY_LIMIT: usize = 256 << 10;
 const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
 /// What a start that failed tells of why (T-32): the first STDERR_KEPT bytes
@@ -289,6 +292,26 @@ pub enum RevertAnswer {
 pub enum Reply {
     Once,
     Reject,
+}
+
+/// What became of an answer to a permission request (YN-78 S1, design 2.4 of
+/// the OpenCode auto-approval design). OpenCode's 204 says it took the
+/// answer, 404 that it no longer holds the request pending, and 400 that it
+/// refused the payload with the request still pending. Anything else, no
+/// answer or a lost connection included, leaves whether it was taken unknown:
+/// never read as delivered, and never as a refusal.
+#[derive(Debug, PartialEq)]
+pub enum PermissionDelivery {
+    /// 204: OpenCode took the answer.
+    Delivered,
+    /// 404: the request is no longer pending (answered, ended, or another
+    /// session's); nothing was answered.
+    Gone { code: u16, kind: Option<String> },
+    /// 400: OpenCode refused the payload; the request is still pending.
+    Invalid { message: String },
+    /// It may or may not have been taken: no answer, a timeout, a lost
+    /// connection, or a status other than 204, 404 or 400.
+    Unknown(String),
 }
 
 /// Whether OpenCode reached an MCP server, as it lists it for the Agent's
@@ -1151,6 +1174,39 @@ impl Server {
         self.request_call(Method::POST, &path, Some(&json!({"decision": decision}))).await
     }
 
+    /// The permission request `request` if it still waits in `session`
+    /// (`GET /api/session/:sessionID/permission/:requestID`, YN-78 S1):
+    /// `None` when OpenCode answers 404, which says it no longer holds it
+    /// pending. This is the read design 2.4 uses to check an answer whose
+    /// delivery is unknown.
+    pub async fn pending_permission(&self, session: &str, request: &str) -> Result<Option<Value>> {
+        self.wire().pending_permission(session, request, REQUEST_LIMIT).await
+    }
+
+    /// Every permission request waiting in `session` (`GET
+    /// /api/session/:sessionID/permission`, YN-78 S1), in OpenCode's order.
+    /// The read design 2.4 uses to answer some before a reject.
+    pub async fn pending_permissions(&self, session: &str) -> Result<Vec<Value>> {
+        self.wire().pending_permissions(session, REQUEST_LIMIT).await
+    }
+
+    /// Answers a permission request and reports what became of it (YN-78
+    /// S1, design 2.4): 204 delivered, 404 gone, 400 refused, and unknown
+    /// for no answer, a timeout, a lost connection or another status.
+    /// `message`, when given, is OpenCode's feedback to the model: with a
+    /// reject the tool fails as corrected and the turn continues (2.2.5
+    /// core/src/permission.ts). None sends the same payload as
+    /// `reply_permission`, which stays the manual path, unchanged: its
+    /// reject carries no reason and ends the step.
+    pub async fn answer_permission(&self, session: &str, request: &str, reply: Reply, message: Option<&str>) -> Result<PermissionDelivery> {
+        self.wire().answer_permission(session, request, reply, message, REQUEST_LIMIT).await
+    }
+
+    /// This server's HTTP side, for the calls of YN-78 S1.
+    fn wire(&self) -> Wire<'_> {
+        Wire { base: &self.base, password: &self.password, http: &self.http }
+    }
+
     /// Answers a form pending in `session` (T-61 slice 2: `POST
     /// /api/session/:id/form/:form/reply`, 204): each field's value by its
     /// key. 2.x checks the answer first and refuses one it can't take with
@@ -1427,6 +1483,134 @@ impl Server {
             query = vec![("cursor", next.to_owned())];
         }
     }
+}
+
+/// One `Server`'s HTTP side apart from a running OpenCode (YN-78 S1): its
+/// base address, password and client, so a test can put a protocol stand-in
+/// where OpenCode would be. These paths are OpenCode's own and name no
+/// folder query.
+struct Wire<'a> {
+    base: &'a str,
+    password: &'a str,
+    http: &'a reqwest::Client,
+}
+
+impl Wire<'_> {
+    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        let url = Url::parse(&format!("{}{path}", self.base)).expect("an OpenCode path");
+        self.http.request(method, url).basic_auth(USERNAME, Some(self.password))
+    }
+
+    /// `GET /api/session/:sessionID/permission/:requestID`: the request while
+    /// it waits, `None` for 404. A 200 is read as `{data: request}` within
+    /// PERMISSION_BODY_LIMIT; any other status is an error.
+    async fn pending_permission(&self, session: &str, request: &str, limit: Duration) -> Result<Option<Value>> {
+        let path = format!("/api/session/{}/permission/{}", segment(session)?, segment(request)?);
+        let response = self.request(Method::GET, &path).timeout(limit).send().await
+            .with_context(|| format!("OpenCode did not answer {path}"))?;
+        match response.status().as_u16() {
+            200 => Ok(Some(data_of(response, &path).await?)),
+            404 => Ok(None),
+            code => Err(refusal(&path, code, response).await),
+        }
+    }
+
+    /// `GET /api/session/:sessionID/permission`: every pending request, read
+    /// as `{data: [request, …]}` within PERMISSION_BODY_LIMIT.
+    async fn pending_permissions(&self, session: &str, limit: Duration) -> Result<Vec<Value>> {
+        let path = format!("/api/session/{}/permission", segment(session)?);
+        let response = self.request(Method::GET, &path).timeout(limit).send().await
+            .with_context(|| format!("OpenCode did not answer {path}"))?;
+        let code = response.status().as_u16();
+        if code != 200 {
+            return Err(refusal(&path, code, response).await);
+        }
+        let data = data_of(response, &path).await?;
+        Ok(data.as_array().with_context(|| format!("OpenCode's answer to {path} is not a list"))?.clone())
+    }
+
+    /// `POST …/permission/:requestID/reply`: the answer, classified as
+    /// `PermissionDelivery` says. Only 204 is delivered: any other success,
+    /// an unexpected status, a timeout or a lost connection is unknown.
+    async fn answer_permission(&self, session: &str, request: &str, reply: Reply, message: Option<&str>, limit: Duration) -> Result<PermissionDelivery> {
+        let mut body = json!({"decision": match reply { Reply::Once => "once", Reply::Reject => "reject" }});
+        if let Some(message) = message {
+            body["message"] = message.into();
+        }
+        let path = format!("/api/session/{}/permission/{}/reply", segment(session)?, segment(request)?);
+        let response = match self.request(Method::POST, &path).timeout(limit).json(&body).send().await {
+            Ok(response) => response,
+            Err(error) => return Ok(PermissionDelivery::Unknown(format!("OpenCode did not answer {path} ({})", error.without_url()))),
+        };
+        let code = response.status().as_u16();
+        Ok(match code {
+            204 => PermissionDelivery::Delivered,
+            404 => PermissionDelivery::Gone { code, kind: bounded_kind(response).await },
+            400 => PermissionDelivery::Invalid { message: bounded_message(response).await },
+            _ => PermissionDelivery::Unknown(format!("OpenCode answered {path} with HTTP {code}")),
+        })
+    }
+}
+
+/// A 200 answer's `data` (`{data, …}`), read as JSON within
+/// PERMISSION_BODY_LIMIT.
+async fn data_of(response: Response, path: &str) -> Result<Value> {
+    let kind = content_type(&response);
+    ensure!(kind.eq_ignore_ascii_case("application/json"),
+        "OpenCode answered {path} with {}, not JSON: not an answer of the OpenCode {MAJOR}.x API", shown(kind));
+    let (body, cut) = bounded_body(response, PERMISSION_BODY_LIMIT).await;
+    ensure!(!cut, "OpenCode's answer to {path} is longer than {PERMISSION_BODY_LIMIT} bytes");
+    let mut answered: Value = serde_json::from_slice(&body).with_context(|| format!("OpenCode's answer to {path} is not JSON"))?;
+    let data = answered.get_mut("data").with_context(|| format!("OpenCode's answer to {path} has no data"))?;
+    Ok(data.take())
+}
+
+/// At most `limit` bytes of a body, and whether it was read up to that limit
+/// (YN-78 S1: what Core reads to check its own answer, never a whole dump).
+async fn bounded_body(mut response: Response, limit: usize) -> (Vec<u8>, bool) {
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = limit.saturating_sub(body.len());
+                body.extend_from_slice(&chunk[..room.min(chunk.len())]);
+                if body.len() >= limit {
+                    return (body, true);
+                }
+            }
+            Ok(None) => return (body, false),
+            Err(_) => return (body, true),
+        }
+    }
+}
+
+/// A refusal of a permission read: its status and name only, the body read
+/// within BODY_LIMIT.
+async fn refusal(path: &str, code: u16, response: Response) -> anyhow::Error {
+    let (body, _) = bounded_body(response, BODY_LIMIT).await;
+    let answered: Value = serde_json::from_slice(&body).unwrap_or_default();
+    let kind = answered_kind(&answered).map(|kind| format!(", {kind}")).unwrap_or_default();
+    anyhow!("OpenCode refused {path} (HTTP {code}{kind})")
+}
+
+/// The name of a 404's or 400's answer, within BODY_LIMIT.
+async fn answered(response: Response) -> Value {
+    let (body, _) = bounded_body(response, BODY_LIMIT).await;
+    serde_json::from_slice(&body).unwrap_or_default()
+}
+
+async fn bounded_kind(response: Response) -> Option<String> {
+    answered_kind(&answered(response).await)
+}
+
+async fn bounded_message(response: Response) -> String {
+    answered(response).await["message"].as_str().unwrap_or_default().chars().take(300).collect()
+}
+
+/// 2.x's name of a refusal (`_tag`, else `name`), when it is a plain name.
+fn answered_kind(answered: &Value) -> Option<String> {
+    answered["_tag"].as_str().or(answered["name"].as_str()).filter(|kind| kind.len() <= 64
+        && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')).map(str::to_owned)
 }
 
 /// OpenCode's event stream.
@@ -2077,5 +2261,240 @@ mod tests {
         for bad in ["", "../config", "a/b", "per_1?x=1", "ses 1"] {
             assert!(segment(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// One request as a protocol stand-in saw it (YN-78 S1).
+    #[derive(Clone, Debug)]
+    struct Asked {
+        method: String,
+        path: String,
+        authorization: Option<String>,
+        body: Value,
+    }
+
+    /// What the stand-in answers one request with.
+    struct Answered {
+        status: u16,
+        content_type: &'static str,
+        body: String,
+        delay: Duration,
+    }
+
+    /// A protocol stand-in at a loopback address: one HTTP/1.1 request per
+    /// connection, recorded, answered by `answer`. It is not OpenCode; it is
+    /// the wire S1's calls are checked against.
+    struct Protocol {
+        base: String,
+        seen: Arc<Mutex<Vec<Asked>>>,
+    }
+
+    impl Protocol {
+        async fn start(answer: impl Fn(&Asked) -> Answered + Send + Sync + 'static) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let answer: Arc<dyn Fn(&Asked) -> Answered + Send + Sync> = Arc::new(answer);
+            let recorded = seen.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((socket, _)) = listener.accept().await else { return };
+                    let (recorded, answer) = (recorded.clone(), answer.clone());
+                    tokio::spawn(async move { serve(socket, recorded, answer).await });
+                }
+            });
+            Self { base, seen }
+        }
+
+        fn asked(&self) -> Vec<Asked> {
+            self.seen.lock().unwrap().clone()
+        }
+
+        fn wire<'a>(&'a self, http: &'a reqwest::Client) -> Wire<'a> {
+            Wire { base: &self.base, password: "fixture-password", http }
+        }
+    }
+
+    async fn serve(mut socket: tokio::net::TcpStream, seen: Arc<Mutex<Vec<Asked>>>, answer: Arc<dyn Fn(&Asked) -> Answered + Send + Sync>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end + 4;
+            }
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let mut request = lines.next().unwrap_or_default().split(' ');
+        let method = request.next().unwrap_or_default().to_owned();
+        let path = request.next().unwrap_or_default().split('?').next().unwrap_or_default().to_owned();
+        let (mut authorization, mut length) = (None, 0usize);
+        for line in lines {
+            let Some((name, value)) = line.split_once(':') else { continue };
+            if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_owned());
+            }
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = buffer[head_end..].to_vec();
+        while body.len() < length {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => body.extend_from_slice(&chunk[..read]),
+            }
+        }
+        let asked = Asked { method, path, authorization, body: serde_json::from_slice(&body).unwrap_or(Value::Null) };
+        let answered = answer(&asked);
+        seen.lock().unwrap().push(asked);
+        if !answered.delay.is_zero() {
+            tokio::time::sleep(answered.delay).await;
+        }
+        let mut response = format!("HTTP/1.1 {} Status\r\ncontent-type: {}\r\nconnection: close\r\n",
+            answered.status, answered.content_type);
+        if answered.status != 204 {
+            response.push_str(&format!("content-length: {}\r\n", answered.body.len()));
+        }
+        response.push_str("\r\n");
+        response.push_str(&answered.body);
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.shutdown().await;
+    }
+
+    fn json_answer(status: u16, body: Value) -> Answered {
+        Answered { status, content_type: "application/json", body: body.to_string(), delay: Duration::ZERO }
+    }
+
+    fn empty_answer(status: u16) -> Answered {
+        Answered { status, content_type: "text/plain", body: String::new(), delay: Duration::ZERO }
+    }
+
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    /// The answer keeps 2.x's payload: `{decision}` alone for the manual
+    /// answers, with `message` only when one is given (YN-78 S1). The path,
+    /// method and Basic authentication are as 2.x's permission route takes
+    /// them, and an ID that is not a path segment is refused before any
+    /// request.
+    #[tokio::test]
+    async fn permission_answers_carry_a_message_only_when_given() {
+        use base64::Engine as _;
+        let protocol = Protocol::start(|_| empty_answer(204)).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+
+        assert_eq!(wire.answer_permission("ses_a", "per_1", Reply::Once, None, REQUEST_LIMIT).await.unwrap(),
+            PermissionDelivery::Delivered);
+        assert_eq!(wire.answer_permission("ses_a", "per_1", Reply::Reject, None, REQUEST_LIMIT).await.unwrap(),
+            PermissionDelivery::Delivered);
+        assert_eq!(wire.answer_permission("ses_a", "per_1", Reply::Reject, Some("use $TMPDIR"), REQUEST_LIMIT).await.unwrap(),
+            PermissionDelivery::Delivered);
+
+        let asked = protocol.asked();
+        assert_eq!(asked.len(), 3);
+        assert!(asked.iter().all(|asked| asked.method == "POST" && asked.path == "/api/session/ses_a/permission/per_1/reply"));
+        assert_eq!(asked[0].body, json!({"decision": "once"}), "no message key when none is given");
+        assert_eq!(asked[1].body, json!({"decision": "reject"}), "the manual reject is unchanged: no reason");
+        assert_eq!(asked[2].body, json!({"decision": "reject", "message": "use $TMPDIR"}));
+        let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("opencode:fixture-password"));
+        assert!(asked.iter().all(|asked| asked.authorization.as_deref() == Some(basic.as_str())), "Basic authentication");
+
+        assert!(wire.answer_permission("ses_a", "../config", Reply::Once, None, REQUEST_LIMIT).await.is_err());
+        assert!(wire.answer_permission("ses/a", "per_1", Reply::Once, None, REQUEST_LIMIT).await.is_err());
+        assert!(wire.pending_permission("ses_a", "per_1?x=1", REQUEST_LIMIT).await.is_err());
+        assert_eq!(protocol.asked().len(), 3, "nothing is sent for an ID that is not a path segment");
+    }
+
+    /// The reads name the session and return 2.x's `data`, the single one
+    /// `None` for 404; a 200 is read only as bounded JSON of its own shape
+    /// (YN-78 S1).
+    #[tokio::test]
+    async fn permission_reads_return_their_data_within_their_shape() {
+        let protocol = Protocol::start(|asked: &Asked| {
+            let path = asked.path.as_str();
+            if path.ends_with("/permission/per_1") {
+                json_answer(200, json!({"data": {"id": "per_1", "sessionID": "ses_a", "action": "read"}}))
+            } else if path.ends_with("/permission/per_2") {
+                empty_answer(404)
+            } else if path.ends_with("/permission/html") {
+                Answered { status: 200, content_type: "text/html", body: "not json".into(), delay: Duration::ZERO }
+            } else if path.ends_with("/permission/shape") {
+                json_answer(200, json!({"rows": []}))
+            } else if path.ends_with("/permission/huge") {
+                json_answer(200, json!({"data": {"id": "x".repeat(PERMISSION_BODY_LIMIT)}}))
+            } else if path == "/api/session/ses_a/permission" {
+                json_answer(200, json!({"data": [{"id": "per_1"}, {"id": "per_2"}]}))
+            } else if path == "/api/session/ses_b/permission" {
+                json_answer(200, json!({"data": {"id": "per_1"}}))
+            } else if path == "/api/session/ses_c/permission" {
+                json_answer(500, json!({"message": "no"}))
+            } else {
+                empty_answer(404)
+            }
+        }).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+
+        assert_eq!(wire.pending_permission("ses_a", "per_1", REQUEST_LIMIT).await.unwrap(),
+            Some(json!({"id": "per_1", "sessionID": "ses_a", "action": "read"})));
+        assert_eq!(wire.pending_permission("ses_a", "per_2", REQUEST_LIMIT).await.unwrap(), None, "404 is gone");
+        assert_eq!(wire.pending_permissions("ses_a", REQUEST_LIMIT).await.unwrap(),
+            vec![json!({"id": "per_1"}), json!({"id": "per_2"})]);
+        assert!(wire.pending_permission("ses_a", "html", REQUEST_LIMIT).await.unwrap_err().to_string().contains("not JSON"));
+        assert!(wire.pending_permission("ses_a", "shape", REQUEST_LIMIT).await.unwrap_err().to_string().contains("has no data"));
+        assert!(wire.pending_permissions("ses_b", REQUEST_LIMIT).await.unwrap_err().to_string().contains("not a list"));
+        assert!(wire.pending_permissions("ses_c", REQUEST_LIMIT).await.unwrap_err().to_string().contains("HTTP 500"));
+        assert!(wire.pending_permission("ses_a", "huge", REQUEST_LIMIT).await.unwrap_err().to_string().contains("longer than"));
+
+        let asked = protocol.asked();
+        assert!(asked.iter().all(|asked| asked.method == "GET"));
+        assert_eq!(asked[0].path, "/api/session/ses_a/permission/per_1");
+        assert_eq!(asked[1].path, "/api/session/ses_a/permission/per_2");
+        assert_eq!(asked[2].path, "/api/session/ses_a/permission");
+        assert_eq!(asked[5].path, "/api/session/ses_b/permission");
+        assert_eq!(asked[6].path, "/api/session/ses_c/permission");
+    }
+
+    /// Only 204 is delivered: 404 is gone, 400 is refused, and every other
+    /// status, a timeout and a lost connection are unknown, never success
+    /// (YN-78 S1).
+    #[tokio::test]
+    async fn permission_delivery_separates_gone_refused_and_unknown() {
+        let answers: Arc<Mutex<Vec<Answered>>> = Arc::new(Mutex::new(vec![
+            json_answer(404, json!({"_tag": "PermissionNotFoundError", "requestID": "per_1"})),
+            json_answer(400, json!({"_tag": "InvalidRequestError", "message": "Invalid decision: always"})),
+            json_answer(200, json!({"ok": true})),
+            json_answer(201, json!({"ok": true})),
+            json_answer(401, json!({"_tag": "UnauthorizedError"})),
+            json_answer(500, json!({"_tag": "UnknownError"})),
+        ]));
+        let protocol = Protocol::start(move |_| answers.lock().unwrap().remove(0)).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+
+        assert_eq!(wire.answer_permission("ses_a", "per_1", Reply::Once, None, REQUEST_LIMIT).await.unwrap(),
+            PermissionDelivery::Gone { code: 404, kind: Some("PermissionNotFoundError".into()) });
+        assert_eq!(wire.answer_permission("ses_a", "per_1", Reply::Once, None, REQUEST_LIMIT).await.unwrap(),
+            PermissionDelivery::Invalid { message: "Invalid decision: always".into() });
+        for _ in 0..4 {
+            let delivery = wire.answer_permission("ses_a", "per_1", Reply::Once, None, REQUEST_LIMIT).await.unwrap();
+            assert!(matches!(delivery, PermissionDelivery::Unknown(_)), "another status is never success: {delivery:?}");
+        }
+
+        // A timeout at the answer, and a connection that is not there.
+        let slow = Protocol::start(|_| Answered { status: 204, content_type: "text/plain", body: String::new(), delay: Duration::from_secs(5) }).await;
+        let unknown = slow.wire(&client).answer_permission("ses_a", "per_1", Reply::Once, None, Duration::from_millis(100)).await.unwrap();
+        assert!(matches!(unknown, PermissionDelivery::Unknown(ref why) if why.contains("did not answer")), "{unknown:?}");
+        let port = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let lost = Wire { base: &format!("http://127.0.0.1:{port}"), password: "fixture-password", http: &client };
+        let unknown = lost.answer_permission("ses_a", "per_1", Reply::Once, None, Duration::from_millis(500)).await.unwrap();
+        assert!(matches!(unknown, PermissionDelivery::Unknown(_)), "a lost connection is unknown: {unknown:?}");
     }
 }
