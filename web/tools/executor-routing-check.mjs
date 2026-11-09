@@ -393,22 +393,23 @@ async function run({ width, height, theme, lang }) {
     assert.equal((await pill.innerText()).trim(), w.needsFix);
     assert.equal(await pill.getAttribute("aria-label"), w.fixIt);
     assert.equal(await page.locator(".executor-routing .routing-fix").count(), 1, `${tag}: only the card with a problem has the pill`);
-    // In view first: a point outside the viewport hits nothing.
-    await fixCard.scrollIntoViewIfNeeded();
+    // In the middle of the view first: a point outside it, or under the dialog's sticky foot, hits something else.
+    await pill.evaluate((el) => el.scrollIntoView({ block: "center" }));
     await page.mouse.move(0, 0);
     const look = await pill.evaluate((el) => {
       const css = getComputedStyle(el), box = el.getBoundingClientRect();
       const x = box.left + box.width / 2, y = box.top + box.height / 2;
       // A phone's target is 40 px tall: what a finger 19 px above or below the pill's middle lands on.
-      const hits = [y - 19, y + 19].map((at) => el.contains(document.elementFromPoint(x, at)));
-      return { color: css.color, background: css.backgroundColor, weight: Number(css.fontWeight), height: box.height, hits };
+      const landed = [y - 19, y + 19].map((at) => document.elementFromPoint(x, at));
+      return { color: css.color, background: css.backgroundColor, weight: Number(css.fontWeight), height: box.height,
+        hits: landed.map((hit) => el.contains(hit)), landed: landed.map((hit) => hit ? `${hit.tagName.toLowerCase()}.${hit.className}` : "nothing") };
     });
     const ratio = contrast(look.color, look.background);
     assert.ok(ratio >= 4.5, `${tag}: the pill's text is ${ratio.toFixed(2)}:1 on its wash (${look.color} on ${look.background})`);
     assert.ok(look.weight >= 600, `${tag}: the pill's words are bold`);
     if (phone) {
       assert.ok(look.height < 30, `${tag}: on a phone the pill stays a pill (${look.height} px), not a 40 px blob`);
-      assert.deepEqual(look.hits, [true, true], `${tag}: the pill's target is 40 px tall`);
+      assert.deepEqual(look.hits, [true, true], `${tag}: the pill's target is 40 px tall (landed on ${look.landed.join(", ")})`);
     }
     await shot("needs-fix");
     await press(pill);
