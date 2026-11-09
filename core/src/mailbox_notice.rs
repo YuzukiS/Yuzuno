@@ -134,14 +134,17 @@ pub(crate) fn snapshot(
         SELECT seq,COALESCE(json_extract(data,'$.notice.kind'),'workspace') kind,
           COALESCE(json_extract(data,'$.notice.status'),'') status,
           json_extract(data,'$.notice.name') name,
-          COALESCE(json_extract(data,'$.notice.key'),id) event_key
+          COALESCE(json_extract(data,'$.notice.key'),id) event_key,
+          COALESCE(json_extract(data,'$.wake'),'ring')='quiet' quiet
         {ELIGIBLE}
         ), groups AS (
           SELECT kind,status,COUNT(DISTINCT event_key) count,COUNT(*) messages,MIN(seq) first_seq,
-            CASE WHEN COUNT(name)=COUNT(*) AND COUNT(DISTINCT name)=1 THEN MIN(name) END name
+            CASE WHEN COUNT(name)=COUNT(*) AND COUNT(DISTINCT name)=1 THEN MIN(name) END name,
+            MIN(quiet) all_quiet
           FROM eligible GROUP BY kind,status
         ) SELECT kind,status,count,messages,name,SUM(count) OVER(),SUM(messages) OVER(),MIN(first_seq) OVER()
-          FROM groups ORDER BY first_seq LIMIT 2"))?;
+          -- What rang first: quiet notices that came with it are not why (YN-68).
+          FROM groups ORDER BY all_quiet,first_seq LIMIT 2"))?;
     let rows = query.query_map(params![recipient, through, priority], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -172,12 +175,20 @@ pub(crate) fn snapshot(
             row.get::<_, i64>(0)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(
-        json!({"version":1,"recipientId":recipient,"priority":priority,
+    let quiet: i64 = db.query_row(
+        &format!("SELECT COUNT(*) {ELIGIBLE} AND COALESCE(json_extract(data,'$.wake'),'ring')='quiet'"),
+        params![recipient, through, priority],
+        |row| row.get(0),
+    )?;
+    let mut snapshot = json!({"version":1,"recipientId":recipient,"priority":priority,
         "afterSeq":detail["afterSeq"].as_i64().unwrap_or(first-1),"throughSeq":through,
         "messageCount":messages,"count":total,"groups":groups,"remainingCount":total-shown,
-        "memberSeqs":members}),
-    )
+        "memberSeqs":members});
+    // Only when there are any, so a snapshot without stays as it was.
+    if quiet > 0 {
+        snapshot["quietCount"] = json!(quiet);
+    }
+    Ok(snapshot)
 }
 
 /// Query only native bindings present in the loaded conversation. Expression

@@ -251,8 +251,12 @@ impl Store {
                AND NOT EXISTS(
                SELECT 1 FROM collaboration_message_reads seen WHERE seen.message_seq=older.seq AND seen.reader_id=older.recipient_id))
             ,COALESCE(json_extract(m.data,'$.priority'),'normal') AS priority
-            -- Mail that rings: all but Core's session notices, which join (YN-5).
-            ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')!=?1) AS ringing
+            -- Mail that rings: all but Core's session notices, which join
+            -- (YN-5), and its quiet notices, which wait for either (YN-68).
+            ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')!=?1
+              AND COALESCE(json_extract(m.data,'$.wake'),'ring')!='quiet') AS ringing
+            ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')=?1) AS joining
+            ,SUM(COALESCE(json_extract(m.data,'$.wake'),'ring')='quiet') AS quiet
             FROM collaboration_messages m
             WHERE delivery_state='pending' AND COALESCE(json_extract(m.data,'$.metadata.kind'),'')!='update_wait'
               AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r
@@ -266,18 +270,25 @@ impl Store {
                 r.get::<_, i64>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })?;
         let mut batches = Vec::new();
         for row in rows {
-            let (id, through, count, after, priority, ringing) = row?;
+            let (id, through, count, after, priority, ringing, joining, quiet) = row?;
+            // Quiet notices alone are no delivery: they wait in the mailbox
+            // for the next one, whatever brings it (YN-68).
+            if ringing == 0 && joining == 0 {
+                continue;
+            }
             // The listed view: parsing whole records here, on every wake-up
             // while mail waits, held back every other Agent's events.
             if let Some(brief) = self.brief_in(&db, &id)? {
                 if brief.agent.closed_at.is_none() {
                     // joinOnly: nothing in it may start a Turn (YN-5).
                     batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,
-                        "messageCount":count,"joinOnly":ringing == 0}));
+                        "messageCount":count,"joinOnly":ringing == 0,"quietCount":quiet}));
                 }
             }
         }
@@ -1630,6 +1641,12 @@ fn create_message(
 pub(crate) fn insert_message(db: &Connection, mut message: Value) -> Result<Value> {
     // Core's mail to an archived executor goes to its dispatcher (T-36).
     crate::executor_archive::redirect(db, &mut message)?;
+    // Whether it wakes its recipient, decided once, as written (YN-68).
+    let (wake, why) = crate::mail_wake::classify(db, &message);
+    message["wake"] = json!(wake);
+    if let Some(why) = why {
+        message["wakeReason"] = json!(why);
+    }
     message["notice"] = crate::mailbox_notice::message_notice(&message);
     let id = message["id"].as_str().context("Missing message identity")?.to_owned();
     let sender_id = message["sender"]["id"].as_str().context("Missing message sender")?;
@@ -1649,7 +1666,7 @@ pub(crate) fn insert_message(db: &Connection, mut message: Value) -> Result<Valu
 }
 
 fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Value> {
-    allowed(input, &["agentId", "afterSeq", "limit", "priority"])?;
+    allowed(input, &["agentId", "afterSeq", "limit", "priority", "wake"])?;
     let requested = optional_text(input, "agentId", 128)?;
     if let (Some(actor), Some(requested)) = (actor, requested.as_deref()) {
         ensure!(
@@ -1663,10 +1680,17 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
         .get("priority")
         .map(|_| message_priority(input))
         .transpose()?;
+    // Mail of one wake-up only (YN-68); mail from before it rings.
+    let wake = match input.get("wake") {
+        None => None,
+        Some(Value::String(wake)) if matches!(wake.as_str(), "ring" | "quiet" | "join") => Some(wake.as_str()),
+        _ => bail!("invalid_input: wake must be ring, quiet or join"),
+    };
     let mut q = db.prepare("SELECT id,seq FROM collaboration_messages WHERE seq>?1 AND (?2 IS NULL OR recipient_id=?2)
-        AND (?4 IS NULL OR COALESCE(json_extract(data,'$.priority'),'normal')=?4) ORDER BY seq LIMIT ?3")?;
+        AND (?4 IS NULL OR COALESCE(json_extract(data,'$.priority'),'normal')=?4)
+        AND (?5 IS NULL OR COALESCE(json_extract(data,'$.wake'),'ring')=?5) ORDER BY seq LIMIT ?3")?;
     let rows: Vec<(String, i64)> = q
-        .query_map(params![after, recipient, limit + 1, priority], |r| {
+        .query_map(params![after, recipient, limit + 1, priority, wake], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1677,7 +1701,11 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
         if let Some(actor) = actor {
             db.execute("INSERT OR IGNORE INTO collaboration_message_reads(message_seq,reader_id,read_at) VALUES(?1,?2,?3)", params![seq,actor,now()])?;
         }
-        messages.push(load_message(db, &id)?);
+        let mut message = load_message(db, &id)?;
+        if message.get("wake").is_none_or(Value::is_null) {
+            message["wake"] = json!(crate::mail_wake::RING);
+        }
+        messages.push(message);
         next = seq;
     }
     // Core's session notice first: it says what the rest is read with (YN-5).
@@ -1705,6 +1733,7 @@ pub fn tool_definitions() -> Vec<Value> {
     let list_project = json!({"type":["string","null"],"description":"Project ID from projects_list. Omit to list every project; null lists only tasks without a project. An unknown ID is an error."});
     let short_name = json!({"type":["string","null"],"maxLength":SHORT_NAME_CHARS,"description":"What the task is about in plain words, at most 16 characters, such as \"Export settings\": the sidebar names its executor by it. Not a key, a number or a PR. Unset, the title stands in; null or empty clears it."});
     let read_priority = json!({"type":"string","enum":["normal","urgent"],"description":"Read only this priority. Use the priority and afterSeq from a mailbox notification, and keep that priority while paging. Omit only to intentionally read all mail."});
+    let read_wake = json!({"type":"string","enum":["ring","quiet","join"],"description":"Read only mail of this wake, e.g. quiet for the notices your wake-up counted. Mail from before wakes existed reads ring."});
     let definition = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
         "name":name,"description":description,
@@ -1714,7 +1743,7 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (the user's Agent that leads its Project and edits its Home), executor (made by Core for one task) or standing (the user's, leading no Project); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Each has a key, the prefix of its tasks' keys: a task created in or moved into a project is <KEY>-<n> there, and a task in no project, or numbered before keys came, is T-<n>. T-<n> names every task forever, as does every key a task or project had. The user changes a project's key in the Projects window (Manage projects…), as its task key prefix.", json!({}), &[]),
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
-        definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
+        definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed. Each message has its wake: ring (it wakes you), quiet (Core's notice that asks nothing of you, e.g. a PR merged while its executor still works; it comes with your next wake-up, which counts it) or join (Core's session notice).", json!({"afterSeq":after,"limit":limit,"priority":read_priority,"wake":read_wake}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. compact:true gives short rows; task_get reads one task whole.", json!({"compact":{"type":"boolean","default":false,"description":"Short rows: id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
         definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), executorSlot (when its executor waits for a slot, with its place in the queue, or is starting or running) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Every view has keys: the task's global T-<n> and the project keys it had before (history), which all still name it. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"shortName":short_name.clone(),"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
