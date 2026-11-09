@@ -51,6 +51,7 @@ use std::{
 
 mod apply;
 mod check;
+mod inventory;
 mod settings;
 mod summary;
 mod worktrees;
@@ -83,6 +84,12 @@ pub(crate) struct State {
     /// The processes using a folder cannot be read (as without /proc).
     #[cfg(test)]
     pub processes_unavailable: std::sync::atomic::AtomicBool,
+    /// The python3 this host's inventory probe runs (a stand-in).
+    #[cfg(test)]
+    pub python: std::sync::Mutex<Option<String>>,
+    /// The OpenSSH program a remote inventory's probe calls (a stand-in).
+    #[cfg(test)]
+    pub ssh: std::sync::Mutex<Option<String>>,
 }
 
 impl State {
@@ -108,6 +115,22 @@ impl State {
             return true;
         }
         false
+    }
+
+    fn python_program(&self) -> String {
+        #[cfg(test)]
+        if let Some(program) = self.python.lock().unwrap().clone() {
+            return program;
+        }
+        "python3".to_owned()
+    }
+
+    fn ssh_program(&self) -> String {
+        #[cfg(test)]
+        if let Some(program) = self.ssh.lock().unwrap().clone() {
+            return program;
+        }
+        crate::jobs::SSH_PROGRAM.to_owned()
     }
 
     fn kind_check(&self) -> bool {
@@ -145,13 +168,14 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/cleanup/plans/{plan}/items/{item}/restore", axum::routing::post(http_restore))
 }
 
-pub(crate) const TOOLS: [&str; 4] = ["cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_restore"];
+pub(crate) const TOOLS: [&str; 5] = ["cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_restore"];
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let request = json!({"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."});
     let text = |max: u32| json!({"type":"string","maxLength":max});
     let id = json!({"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"});
     vec![
+        inventory::tool_definition(),
         json!({"name":"cleanup_plan_submit",
             "description":"Register a workspace cleanup plan for your own task, as its executor; nothing is removed. groups (1-12) each have a decision: delete (entry and worktree items), rebuildable (only cache-dir items a rule recognizes), keep or ask (any kind; never executed). A decision that does not fit its items' kinds refuses the whole plan. items: entry, a first-level entry of a scratch root in Settings; cache-dir, a folder recognized by a rule (Cargo's target folder, whose Cargo-only profiles go; a CACHEDIR.TAG), Git-ignored inside this Project's folder or a worktree of it, or inside a scratch root; worktree, one this Project's repository lists (git worktree list), not the main one, not locked. Core checks each item now: never Core's data, $HOME or its first level, $XDG_CACHE_HOME, ~/Library on macOS, another Project, this Project's folder or main worktree, links, mounts, other users' files, or a protected path; nothing written within freshDays (an entry: evidenceDays). An item failing a check is refused with why. Core then summarizes each group from its checks alone, not from your labels: the user approves groups by that summary. inventory names this task's Job artifact the plan comes from; a plan from another machine's inventory is registered with every item refused. The answer has planId, sha256 (over the items, their checks and the summary), each group's summary and up to 20 refused items. Valid for planHours (Settings); a newer plan of the task cancels it. At most maxItems items (Settings) and 128 KiB.",
             "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","taskId","title","inventory","groups","items"],"properties":{
@@ -178,6 +202,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
 
 pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, input: Value) -> Result<Value> {
     match operation.as_str() {
+        "cleanup_inventory" => inventory::inventory(&ws, actor, input).await,
         "cleanup_plan_submit" => submit(&ws, actor, input).await,
         "cleanup_apply" => apply::apply(&ws, actor, input).await,
         "cleanup_restore" => worktrees::restore(&ws, actor, input).await,

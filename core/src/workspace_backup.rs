@@ -78,6 +78,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (crate::web_push::FILE, "This Core's push key and the devices it notifies; each device turns push on again"),
     (crate::routing_keys::DIR, "Routing keys and the 1Password token: secrets never copied; each is entered again"),
     ("cleanup-snapshots", "Snapshots of what a workspace cleanup removed, kept on this host for the days Settings say"),
+    ("cleanup-inventories", "Read-only inventories a workspace cleanup took of this host; a new one is taken any time"),
 ];
 const OTHER: &str = "Not made by this Core version; not copied";
 const SPECIAL: &str = "A link or special file; a backup holds regular files only";

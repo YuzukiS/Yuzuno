@@ -38,7 +38,7 @@ const FIRST_WAIT: i64 = 30;
 const MAX_WAIT: i64 = 300;
 
 /// The operations that start new work, refused to an executor being released.
-const STARTS_WORK: [&str; 7] = ["job_submit", "job_run_submit", "ci_subscribe", "github_pr_submit", "review_start", "delivery_enable", "cleanup_apply"];
+const STARTS_WORK: [&str; 8] = ["job_submit", "job_run_submit", "ci_subscribe", "github_pr_submit", "review_start", "delivery_enable", "cleanup_apply", "cleanup_inventory"];
 
 #[derive(Default)]
 pub(crate) struct State {
