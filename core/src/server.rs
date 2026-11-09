@@ -627,8 +627,9 @@ struct Create {
     /// own default; a name is that model (T-190).
     #[serde(default, deserialize_with = "crate::agent_defaults::model_ask")]
     model: crate::agent_defaults::ModelAsk,
-    /// This Agent's own reasoning effort, for Codex on the Core host with a
-    /// model named in the request; `null` is the model's own (T-190).
+    /// This Agent's own reasoning effort, for Codex with a model named in the
+    /// request, on this Core host or another machine; `null` is the model's
+    /// own (T-190, YN-81).
     #[serde(default, deserialize_with = "crate::agent_defaults::present")]
     reasoning_effort: Option<Option<String>>,
     #[serde(default)]
@@ -804,11 +805,22 @@ async fn settle(ws: &Arc<Workspace>, p: &Create) -> anyhow::Result<Settled> {
     // host only. A default is checked against that host's catalog before
     // anything exists; elsewhere the model is as before.
     let local = p.machine_id.as_deref().is_none_or(|machine| machine == "local");
+    // A Codex Agent on another machine takes the request's own effort, as one
+    // on this host does (YN-81): that machine's app-server receives it in the
+    // same place, and this host's catalog says nothing of that machine's Codex.
+    let remote_codex = new.harness == "codex" && !local;
     let plan = crate::agent_defaults::resolve_model(&defaults, project_defaults.as_ref(), new.harness == "codex" && local,
-        &p.model, p.reasoning_effort.as_ref().map(|effort| effort.as_deref()))?
+        &p.model, if remote_codex { None } else { p.reasoning_effort.as_ref().map(|effort| effort.as_deref()) })?
         .or_else(|| (new.harness == "claude" && local).then(|| crate::agent_defaults::resolve_claude_model(&defaults, project_defaults.as_ref(), &p.model)));
     let mut settings = new.settings;
     let mut sources = new.sources;
+    if remote_codex {
+        if let Some(effort) = p.reasoning_effort.as_ref().and_then(Option::as_deref) {
+            anyhow::ensure!(matches!(&p.model, crate::agent_defaults::ModelAsk::Named(_)), "Choose the Codex model the reasoning effort is for");
+            settings.reasoning_effort = Some(effort.to_owned());
+            sources["effort"] = "request".into();
+        }
+    }
     let model = match plan {
         Some(plan) if new.harness == "claude" => {
             let mut model = plan.model.clone();
