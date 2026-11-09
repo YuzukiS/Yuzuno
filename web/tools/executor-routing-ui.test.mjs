@@ -462,7 +462,8 @@ test("a candidate added by hand offers an API key for its tool with no keys adde
 // Synthetic, long and unusual, so a page or request holding it is found by a text search.
 const KEY_VALUE = "sk-fixture-yn57-IN-PLACE-WRITE-ONLY-7d2e";
 test("a key added from a candidate is written once, never shown or kept, and becomes the candidate's (YN-57 S3)", async () => {
-  const page = mount(core({ keys: [] }));
+  // No Anthropic key yet; DeepSeek's stays, so the saved DeepSeek candidate doesn't hold the save.
+  const page = mount(core({ keys: [KEYS[0]] }));
   await opened(page);
   button(page, "Add a candidate").click();
   await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
