@@ -185,9 +185,12 @@ fn package_has_script(package: &Path, script: &str) -> bool {
         .is_some_and(|p| p["scripts"][script].is_string())
 }
 
-fn only_files_ending(dir: &Path, suffix: &str) -> bool {
+/// How many entries `only_files_ending` reads of a folder.
+pub(crate) const ONLY_FILES_CAP: usize = 100_000;
+
+pub(crate) fn only_files_ending(dir: &Path, suffix: &str, cap: usize) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    entries.flatten().take(100_000).all(|e| e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_string_lossy().ends_with(suffix))
+    entries.flatten().take(cap).all(|e| e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_string_lossy().ends_with(suffix))
 }
 
 /// The first ecosystem rule in `on` that recognizes dir, and what it went
@@ -207,7 +210,7 @@ pub(crate) fn ecosystem(dir: &Path, on: &BTreeSet<&'static str>, in_git: bool, i
         let beside = rule.siblings.iter().all(|group| group.iter().any(|p| present(parent, p)));
         let within = rule.inside.iter().all(|f| present(dir, f)) && !rule.absent.iter().any(|f| std::fs::symlink_metadata(dir.join(f)).is_ok());
         let script = rule.package_script.is_none_or(|s| package_has_script(&parent.join("package.json"), s));
-        let only = rule.only_suffix.is_none_or(|s| only_files_ending(dir, s));
+        let only = rule.only_suffix.is_none_or(|s| only_files_ending(dir, s, ONLY_FILES_CAP));
         if !(beside && within && script && only) {
             continue;
         }

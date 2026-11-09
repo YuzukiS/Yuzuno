@@ -162,7 +162,10 @@ def package_has_script(package, script):
     return isinstance(data, dict) and isinstance(data.get("scripts"), dict) and isinstance(data["scripts"].get(script), str)
 
 
-def only_files_ending(folder, suffix):
+ONLY_FILES_CAP = 100000
+
+
+def only_files_ending(folder, suffix, cap=ONLY_FILES_CAP):
     try:
         names = os.listdir(folder)
     except OSError:
