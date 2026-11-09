@@ -229,7 +229,9 @@ async fn a_routed_deepseek_executors_level_holds_a_write_that_asks_under_ask_and
         let ended = loop {
             assert!(std::time::Instant::now() < deadline, "the {level} turn did not end within 240 s");
             let d = ws.store.detail(&agent).unwrap();
-            for p in d.pending.iter().filter(|p| p.method == "opencode/permission" && !p.stale && !answered.contains(&p.id)) {
+            let new: Vec<crate::model::PendingRequest> = d.pending.iter()
+                .filter(|p| p.method == "opencode/permission" && !p.stale && !answered.contains(&p.id)).cloned().collect();
+            for p in new {
                 let action = p.params["action"].as_str().unwrap_or("?").to_owned();
                 let decision = if matches!(action.as_str(), "edit" | "shell") { "reject" } else { "once" };
                 events.push(format!("{level}: permission.asked {action} {} -> {decision} (Core's reply path)", p.params["resources"]));
