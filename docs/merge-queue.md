@@ -135,7 +135,11 @@ conditions is merged by a person, or reviewed again first.
 
 A review round reads text only. An image, icon or font the PR adds or changes
 is recorded as `unsupported` with reason `binary`; the round stays incomplete,
-its conclusion is `unknown`, and `unknown` never passes. The releaser (the
+its conclusion is `unknown`, and `unknown` never passes. The reviewer is told
+that such a file, once a source tool refuses it as binary, is outside its
+verdict: it judges the patch on everything else and names those files, so it
+can still say the patch is correct. Any other path it could not read keeps
+its verdict `unknown`. The releaser (the
 task's dispatching lead, or the user) may acknowledge such files in the
 release, `acknowledgeBinaries`: each file's path, the SHA-256 of its content at
 the released head, and an optional note, after checking the files. Only a

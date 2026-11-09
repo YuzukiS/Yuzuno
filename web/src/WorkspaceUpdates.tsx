@@ -69,6 +69,7 @@ import {
 import { updatesText } from "./updates-text";
 import "./updates.css";
 import { randomId } from "./random-id";
+import { Tip, TipText } from "./Tip";
 
 export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
   // Each status keeps when its request began, so a step Core accepted is
@@ -843,9 +844,11 @@ export function WorkspaceUpdates({
                   <p>{t.intro}</p>
                 </div>
                 {status && (
-                  <span className="settings-current" title={t.installedNow}>
-                    {status.current.version}
-                  </span>
+                  <Tip content={<TipText title={t.installedNow} />}>
+                    <span className="settings-current">
+                      {status.current.version}
+                    </span>
+                  </Tip>
                 )}
               </header>
               <div
@@ -971,7 +974,7 @@ export function WorkspaceUpdates({
                       <dt>{t.installedLabel}</dt>
                       <dd>
                         <span className="updates-version-number">{status.current.version}</span>
-                        <code title={status.current.releaseId}>{status.current.releaseId}</code>
+                        <Tip content={<TipText value={status.current.releaseId} />} size="wide" cut><code>{status.current.releaseId}</code></Tip>
                         <code>{status.current.gitSha.slice(0, 8)}</code>
                       </dd>
                     </div>
@@ -1098,25 +1101,25 @@ function UpdateSteps({ current, from }: { current: UpdateStep; from: UpdateStep 
         const state =
           i < at ? (i < reused ? "reused" : "done") : i === at ? "current" : "next";
         return (
-          <li
-            key={step}
-            className={`is-${state}`}
-            aria-current={state === "current" ? "step" : undefined}
-            title={state === "reused" ? t.reusedTitle : undefined}
-          >
-            <span className="update-step-label">
-              <span className="update-step-mark" aria-hidden="true">
-                {state === "current" ? (
-                  <LoaderCircle size={11} className="updates-spin" />
-                ) : i < at ? (
-                  <Check size={10} strokeWidth={3} />
-                ) : null}
+          <Tip key={step} content={state === "reused" ? <TipText body={t.reusedTitle} /> : null}>
+            <li
+              className={`is-${state}`}
+              aria-current={state === "current" ? "step" : undefined}
+            >
+              <span className="update-step-label">
+                <span className="update-step-mark" aria-hidden="true">
+                  {state === "current" ? (
+                    <LoaderCircle size={11} className="updates-spin" />
+                  ) : i < at ? (
+                    <Check size={10} strokeWidth={3} />
+                  ) : null}
+                </span>
+                {updateStepLabel(step, language)}
               </span>
-              {updateStepLabel(step, language)}
-            </span>
-            {state === "reused" && <span className="sr-only">{t.reusedNote}</span>}
-            {state === "done" && <span className="sr-only">{t.doneNote}</span>}
-          </li>
+              {state === "reused" && <span className="sr-only">{t.reusedNote}</span>}
+              {state === "done" && <span className="sr-only">{t.doneNote}</span>}
+            </li>
+          </Tip>
         );
       })}
     </ol>

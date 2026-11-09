@@ -4,6 +4,7 @@ import { strings, useLanguage, type Language } from "./i18n";
 import type { SettingsEditor } from "./settings-catalog";
 import type { ReleaseSummary } from "./updates";
 import "./about-section.css";
+import { Tip, TipText } from "./Tip";
 
 /** The project's public pages, as the README and Contributing guide link them. */
 export const PROJECT = "https://github.com/YuzukiS/Yuzuno";
@@ -192,9 +193,11 @@ export function AboutSection({
           <p>{t.intro}</p>
         </div>
         {current && (
-          <span className="settings-current" title={t.runs}>
-            {current.version}
-          </span>
+          <Tip content={<TipText title={t.runs} />}>
+            <span className="settings-current">
+              {current.version}
+            </span>
+          </Tip>
         )}
       </header>
       <div className="settings-group appearance-group">
@@ -206,7 +209,7 @@ export function AboutSection({
                 <span className="settings-row-meta about-version">
                   <span>{t.service(current.version)}</span>
                   <code>{current.releaseId}</code>
-                  {commit && <code title={commit}>{commit.slice(0, 8)}</code>}
+                  {commit && <Tip content={<TipText value={commit} />} size="wide"><code>{commit.slice(0, 8)}</code></Tip>}
                 </span>
                 <span className="settings-row-help">{t.versionHelp(development)}</span>
               </>

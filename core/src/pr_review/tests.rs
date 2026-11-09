@@ -465,6 +465,40 @@ fn report_schema_and_shared_prompt_constrain_priority_and_source_lines() {
     }
 }
 
+/// YN-55: a binary image, icon or font asset the source tools refuse is
+/// checked at release by its content hash (merge_queue/binaries.rs), so the
+/// reviewer judges everything else instead of answering unknown for it alone.
+/// Every other unreadable path still makes the verdict unknown, and rounds
+/// before coverage policy 3 keep their instructions.
+#[test]
+fn binary_assets_alone_leave_the_verdict_to_what_the_reviewer_read() {
+    // The refusal the source tools return for such a file (source.rs text_of).
+    let refusal = "\"Binary source cannot be inspected as text\"";
+    for (round, evidence) in [
+        ("full", r#"{"coveragePolicyVersion":3}"#),
+        ("incremental", r#"{"coveragePolicyVersion":3,"incrementalOf":{"reviewId":"r1"}}"#),
+        ("continuation", r#"{"coveragePolicyVersion":3,"continuationOf":{"reviewId":"r1"}}"#),
+    ] {
+        let prompt = reviewer::prompt(evidence);
+        assert!(
+            prompt.contains("Binary image, icon and font files are the one exception to every rule here that makes an unreadable path unknown"),
+            "{round}: the exception is missing"
+        );
+        assert!(prompt.contains(refusal), "{round}: the exception names the source tools' refusal");
+        assert!(prompt.contains("outside your verdict") && prompt.contains("by content hash and format when the PR is released"), "{round}");
+        assert!(prompt.contains("name them in overall_explanation"), "{round}: the binaries are still listed");
+        // Not read, not UTF-8, a failed read or a budget: still unknown.
+        assert!(
+            prompt.contains("Any other path you could not read keeps overall_correctness unknown: one you did not read, one refused as not UTF-8 text, a failed read or an exhausted budget."),
+            "{round}: the other gaps stay unknown"
+        );
+        assert!(prompt.contains("If necessary source or budget is unavailable, return overall_correctness unknown"), "{round}");
+    }
+    for evidence in ["fixed evidence", r#"{"coveragePolicyVersion":2}"#] {
+        assert!(!reviewer::prompt(evidence).contains("Binary image, icon and font files"), "{evidence}");
+    }
+}
+
 #[test]
 fn terminal_and_restart_notifications_are_atomic_deduplicated_and_system_authored() {
     let (dir, s, task) = setup();

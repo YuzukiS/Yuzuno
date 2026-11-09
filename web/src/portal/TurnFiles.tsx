@@ -3,6 +3,7 @@ import { strings, useStrings } from "../i18n";
 import type { Agent, NativeTurn } from "../types";
 import { OpenChoice } from "./OpenChoice";
 import { htmlFile } from "./html-file";
+import { Tip, TipText } from "../Tip";
 
 const text = strings({
   prototype: "Interactive prototype · one file",
@@ -40,7 +41,7 @@ export function TurnFiles({ agent, turn, onSource }: { agent: Agent; turn: Nativ
           <li key={path} className="turn-file">
             <span className="turn-file-icon" aria-hidden="true"><FileCode2 size={17} /></span>
             <span className="turn-file-meta">
-              <strong title={path}>{name}</strong>
+              <Tip content={<TipText value={path} />} size="wide"><strong>{name}</strong></Tip>
               <small>{t.prototype}</small>
             </span>
             <OpenChoice

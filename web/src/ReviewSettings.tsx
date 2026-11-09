@@ -4,6 +4,7 @@ import { strings, useStrings } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Model } from "./types";
 import "./pr-reviews.css";
+import { Tip, TipText } from "./Tip";
 
 type Reviewer = { harness: "codex" | "claude"; model: string };
 type Source = "project" | "workspace" | "builtin";
@@ -199,12 +200,14 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
           )}
         </div>
         {saved && (
-          <span className="settings-current" title={t.inUse}>
-            {saved.harness === "claude" ? "Claude Code" : "Codex"} ·{" "}
-            {saved.harness === "codex" && saved.model === "gpt-6.1-sol"
-              ? "GPT-6.1 Sol"
-              : models.find((m) => m.model === saved.model)?.displayName || saved.model}
-          </span>
+          <Tip content={<TipText title={t.inUse} />}>
+            <span className="settings-current">
+              {saved.harness === "claude" ? "Claude Code" : "Codex"} ·{" "}
+              {saved.harness === "codex" && saved.model === "gpt-6.1-sol"
+                ? "GPT-6.1 Sol"
+                : models.find((m) => m.model === saved.model)?.displayName || saved.model}
+            </span>
+          </Tip>
         )}
       </header>
       {draft && (

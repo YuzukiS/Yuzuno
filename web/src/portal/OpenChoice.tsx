@@ -5,6 +5,7 @@ import { strings, useStrings } from "../i18n";
 import { useOpenWith, type OpenWith } from "./portal-preference";
 import { mintPreview, openInPortal, openOutside, phonePreviewsOff, provesPreview, type PortalTarget } from "./index";
 import "./portal.css";
+import { Tip, TipText } from "../Tip";
 
 // The entry's own words (T-189).
 const text = strings({
@@ -143,19 +144,20 @@ export function OpenChoice({
           {busy ? <LoaderCircle size={14} className="spin" /> : preferred === "browser" ? <ArrowUpRight size={14} /> : <PanelRight size={14} />}
           {busy ? t.opening : label(preferred)}
         </button>
-        <button
-          ref={more}
-          type="button"
-          className="primary-button open-choice-more"
-          aria-label={t.more}
-          title={t.more}
-          aria-haspopup="menu"
-          aria-expanded={menu}
-          disabled={busy}
-          onClick={() => setMenu(!menu)}
-        >
-          <ChevronDown size={14} />
-        </button>
+        <Tip content={menu ? null : <TipText title={t.more} />} describe={false}>
+          <button
+            ref={more}
+            type="button"
+            className="primary-button open-choice-more"
+            aria-label={t.more}
+            aria-haspopup="menu"
+            aria-expanded={menu}
+            disabled={busy}
+            onClick={() => setMenu(!menu)}
+          >
+            <ChevronDown size={14} />
+          </button>
+        </Tip>
       </span>
       {(menu || leaving) && (
         <div

@@ -18,6 +18,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -138,7 +139,7 @@ const about = (box) => box.evaluate((el) => ({
   heading: el.querySelector("h3").textContent,
   current: el.querySelector(".settings-current").textContent,
   version: el.querySelector(".about-version").textContent,
-  codes: [...el.querySelectorAll(".about-version code")].map((code) => [code.textContent, code.getAttribute("title")]),
+  codes: [...el.querySelectorAll(".about-version code")].map((code) => code.textContent),
   notesSummary: el.querySelector(".updates-notes:not(.about-license) summary").textContent,
   notes: el.querySelector(".updates-release-notes:not(.about-license-text)").textContent,
   links: [...el.querySelectorAll("a.about-link")].map((a) => [a.textContent, a.href]),
@@ -207,7 +208,9 @@ try {
   const aboutZh = await about(box);
   assert.deepEqual([aboutZh.lang, aboutZh.heading, aboutZh.current], ["zh-Hans", "关于与帮助", "2026.10.24-core.17"]);
   assert.equal(aboutZh.version, `Workspace 服务 2026.10.24-core.17core-20261024-c215011${COMMIT.slice(0, 8)}`);
-  assert.deepEqual(aboutZh.codes, [["core-20261024-c215011", null], [COMMIT.slice(0, 8), COMMIT]]);
+  assert.deepEqual(aboutZh.codes, ["core-20261024-c215011", COMMIT.slice(0, 8)]);
+  // The whole commit is in its tip (YN-44).
+  assert.equal(await tipText(page, box.locator(".about-version code").nth(1)), COMMIT);
   assert.equal(aboutZh.notesSummary, "2026.10.24-core.17 的更新内容");
   assert.equal(aboutZh.notes, NOTES, "the release notes as they are");
   assert.deepEqual(aboutZh.links.map(([, href]) => href), LINKS);
