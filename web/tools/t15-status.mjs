@@ -6,7 +6,8 @@
 // panel under the toolbar instead, opened from the Core status entry. Folding
 // it away must not fold away what it was saying: the entry carries the count
 // of what needs a look while it is closed, and the panel has to open whole,
-// inside the window, with rows a finger can hit. A screen with the room
+// inside the window, with rows a finger can hit. Core's backlog details open
+// in place in it, whole and inside the window (YN-76). A screen with the room
 // keeps the bar it had and shows no entry at all.
 //
 // The fixture is built to the user's screenshot (951x669 with an 84px system
@@ -60,7 +61,7 @@ const errors = [];
 // `healthy: hasSnapshot && !error`).
 let failWorkspace = false;
 
-async function open({ width, height, coarse, inset, quiet }) {
+async function open({ width, height, coarse, inset, quiet, backlog }) {
   const context = await browser.newContext({
     viewport: { width, height }, hasTouch: coarse, isMobile: coarse, reducedMotion: "reduce" });
   const page = await context.newPage();
@@ -112,6 +113,10 @@ async function open({ width, height, coarse, inset, quiet }) {
     if (path === "/api/ci") return route.fulfill({ json: { runs: [], subscriptions: [], hasMore: false, nextBefore: null } });
     if (path === "/api/reviews") return route.fulfill({ json: noReviews });
     if (path === "/api/catchup") return route.fulfill({ json: { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } } });
+    // Core behind on both Agents' output, when asked for (YN-76).
+    if (path === "/api/backlog" && backlog)
+      return route.fulfill({ json: { observedAt: new Date().toISOString(), agents: {
+        a: { generation: 1, pending: 12, oldestMs: 9000 }, b: { generation: 1, pending: 4, oldestMs: 6000 } } } });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     try { return route.fulfill({ body: await readFile(file), contentType: types[extname(file)] }); }
@@ -341,6 +346,64 @@ for (const width of [951, 820, 669]) {
   await page.waitForTimeout(250);
   const up = await page.evaluate(look);
   check(up.bar.open && up.bar.h > 0, `and it still opens what the bar held (${up.bar.h}px)`);
+  await context.close();
+}
+
+// --- Core behind on the Agents' output, in the panel (YN-76) ---
+// The backlog's details open in place under its hint, as part of the panel.
+// Hung from the hint as they are in the bar, they went up past the window's
+// top (-24px at 951x669) and, 360px wide in a 320px panel against the right
+// edge, past that edge too. 951x360 with a mouse is still the panel, not a
+// phone, and too short for it with the details open: the panel scrolls and
+// stays in the window, and the details can be scrolled to.
+for (const [width, height, coarse] of [[951, 669, true], [820, 669, true], [669, 669, true], [951, 360, false]]) {
+  const { context, page } = await open({ width, height, coarse, inset: coarse ? 84 : 0, backlog: true });
+  await page.click(".core-status-entry");
+  const hint = page.locator(".statusbar .core-backlog-hint");
+  // Behind in two reads in a row, five seconds apart (core-backlog.ts).
+  await hint.waitFor({ timeout: 20_000 });
+  await hint.click();
+  const details = page.locator(".statusbar .core-backlog-details");
+  await details.waitFor();
+  await details.evaluate((d) => d.scrollIntoView({ block: "nearest" }));
+  await page.waitForTimeout(250);
+  const seen = await page.evaluate(() => {
+    const panel = document.querySelector(".statusbar");
+    const button = panel.querySelector(".core-backlog-hint");
+    const d = panel.querySelector(".core-backlog-details");
+    const r = d.getBoundingClientRect();
+    const p = panel.getBoundingClientRect();
+    const h = button.getBoundingClientRect();
+    const box = (b) => `${Math.round(b.left)},${Math.round(b.top)}-${Math.round(b.right)},${Math.round(b.bottom)}`;
+    const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const points = [[r.left + r.width / 2, r.top + r.height / 2], [r.left + 4, r.top + 4], [r.right - 4, r.top + 4],
+      [r.left + 4, r.bottom - 4], [r.right - 4, r.bottom - 4]];
+    return {
+      view: `${innerWidth}x${innerHeight}`, details: box(r), panel: box(p), hintH: Math.round(h.height),
+      inWindow: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+      hits: points.map(([x, y]) => { const at = document.elementFromPoint(x, y); return !!at && d.contains(at); }),
+      inPanel: r.left >= p.left && r.right <= p.right && r.top >= p.top && r.bottom <= p.bottom,
+      under: r.top >= h.bottom - 1,
+      covered: [...panel.querySelectorAll(".statusbar-item")].filter((el) => {
+        const b = el.getBoundingClientRect();
+        return b.width > 0 && b.height > 0 && meets(b, r);
+      }).map((el) => (el.textContent || "").trim().slice(0, 24)),
+      panelInWindow: p.left >= 0 && p.top >= 0 && p.right <= innerWidth && p.bottom <= innerHeight,
+      scrolls: panel.scrollHeight > panel.clientHeight + 1,
+      expanded: button.getAttribute("aria-expanded"),
+      controls: !!d.id && button.getAttribute("aria-controls") === d.id,
+    };
+  });
+  console.log(`\n--- ${width}x${height} ${coarse ? "touch" : "mouse"}, Core behind, details open ---`);
+  console.log(`  details ${seen.details}  panel ${seen.panel}  window ${seen.view}  scrolls ${seen.scrolls}`);
+  check(seen.hintH >= 40, `${width}x${height}: the backlog hint is a 40px row like the panel's others (${seen.hintH}px)`);
+  check(seen.expanded === "true" && seen.controls, `${width}x${height}: and it says it is open, and which details it opened`);
+  check(seen.inWindow && seen.hits.every(Boolean),
+    `${width}x${height}: its details open whole, inside the window, and are what a press there lands on (${seen.details}, hits ${seen.hits.map(Number).join("")})`);
+  check(seen.inPanel && seen.under, `${width}x${height}: they open in place under the hint, inside the panel (panel ${seen.panel})`);
+  check(seen.covered.length === 0, `${width}x${height}: and lie over none of the panel's rows${seen.covered.length ? ` (${seen.covered.join(", ")})` : ""}`);
+  check(seen.panelInWindow, `${width}x${height}: the panel with them open stays inside the window (${seen.panel})`);
+  if (height < 400) check(seen.scrolls, `${width}x${height}: too short for all of it, the panel scrolls`);
   await context.close();
 }
 
