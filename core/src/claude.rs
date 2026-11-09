@@ -5843,6 +5843,29 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1, "sent once, never again");
     }
 
+    /// YN-82 (Lead, P2): the bridge can report a follow-up unconfirmed before
+    /// Core shows it (`show_follow_up` runs after the bridge's reply to the
+    /// append). The item that delivery makes is marked unknown, not read, and
+    /// the late show adds no second copy.
+    #[tokio::test]
+    async fn an_unconfirmed_delivery_before_its_follow_up_is_shown_marks_it_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        ws.store.insert(&detail()).unwrap();
+        let _seen = queuing_bridge(&ws);
+        let sending: crate::model::MessageReceipt = serde_json::from_value(json!({"status":"sending",
+            "input":{"clientMessageId":"f1","text":"also this","expectedTurnId":"t"}})).unwrap();
+        ws.store.update("a", "test/sending", &json!({}), move |d| d.message_receipts.push(sending)).unwrap();
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"unconfirmed","turnId":"t"})).await;
+        ws.show_follow_up("a", "t", "f1", user_content("also this", vec![])).await.unwrap();
+        let d = ws.store.detail("a").unwrap();
+        let items: Vec<&Value> = d.turns.iter().flat_map(|t| t["items"].as_array().unwrap().iter()).filter(|i| i["clientId"] == "f1").collect();
+        assert_eq!(items.len(), 1, "shown once");
+        assert_eq!(items[0]["_yuzunoDelivery"], "unknown", "not shown as read: {}", items[0]);
+        let receipt = d.message_receipts.iter().find(|r| r.input.client_message_id == "f1").unwrap();
+        assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("unknown", Some("t")));
+    }
+
     /// A Claude connection whose bridge queues every follow-up sent to it,
     /// with each command it was sent.
     fn queuing_bridge(ws: &Arc<Workspace>) -> Arc<std::sync::Mutex<Vec<Value>>> {
