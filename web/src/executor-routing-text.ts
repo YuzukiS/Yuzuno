@@ -131,6 +131,8 @@ export const text = strings({
   done: "Done",
   // Problems.
   needsFix: "Needs a fix",
+  /** The pill is a button that opens the candidate's editor (YN-57). */
+  fixIt: (title: string) => `Needs a fix: edit ${title}`,
   modelSpaces: "A model is one name, without spaces.",
   modelOpencode: "An OpenCode model is <provider>/<model>, such as deepseek/deepseek-flash.",
   keyNeeded: (id: string) => `The key ${id} isn't added yet: add it under Accounts and keys below, or choose another.`,
@@ -285,6 +287,7 @@ export const text = strings({
   remove: "删除这一项",
   done: "完成",
   needsFix: "需要修改",
+  fixIt: (title) => `需要修改：编辑 ${title}`,
   modelSpaces: "模型是一个名字，不带空格。",
   modelOpencode: "OpenCode 的模型写成 <提供方>/<模型>，例如 deepseek/deepseek-flash。",
   keyNeeded: (id) => `还没有 key ${id}：在下面的「账号和密钥」里添加，或换一个。`,
