@@ -434,6 +434,9 @@ test("tiers (YN-70): a template's Kind of work is chosen under How it runs, said
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.templates[0], { id: "plain", label: "Plain", tier: "fast" });
   assert.deepEqual(puts(page)[0].body.templates[1], { id: "fixed", label: "Fixed", harness: "claude", routing: "fixed", tier: "strong" }, "another template kept as saved");
+  // The answer resets the drafts from what was saved: edit again only once it is in.
+  await until(() => /Saved\./.test(page.document.querySelector("#settings-executor-templates")?.textContent ?? ""), "saved");
+  await until(() => field(page, "Kind of work")?.value === "fast", "the saved tier shown");
   await type(page, "Kind of work", "");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 2, "the second save");
