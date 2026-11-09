@@ -329,6 +329,88 @@ fn a_pr_gets_at_most_two_started_rounds_whichever_task_they_belong_to() {
     assert!(store.create_pr_review_continuation(None, &on(&task, "p2", "c1"), "child").unwrap().2);
 }
 
+/// Stores a created round as one whose native harness reported a failure
+/// before any report (as #820 R1, "Credit balance is too low"), after the
+/// given reads; `status` is failed (Claude) or unknown (Codex).
+fn failed_without_report(store: &Store, mut run: Value, status: &str, tools: &[&str]) -> Value {
+    run["status"] = json!(status);
+    run["actualHarness"] = json!("claude");
+    run["nativeStartedAt"] = json!("2026-11-09T00:25:15Z");
+    run["reasonCodes"] = json!(["execution_failed"]);
+    run["error"] = json!("Claude review failed (success): \"Credit balance is too low\"");
+    let mut reads = vec![json!({"number":1,"tool":"review_changes","responseSha256":"1".repeat(64)})];
+    for (n, tool) in tools.iter().enumerate() {
+        reads.push(json!({"number":n + 2,"tool":tool,"responseSha256":"2".repeat(64)}));
+    }
+    run["contextReads"] = json!(reads);
+    store.save_pr_review(&run, Some("{\"is_error\":true}")).unwrap();
+    run
+}
+
+#[test]
+fn a_round_that_failed_without_a_report_does_not_count_and_after_reads_only_once_per_pr() {
+    // It read nothing but the change manifest: it never counts.
+    let (_dir, store, task) = setup();
+    for key in ["none1", "none2"] {
+        let (run, _) = store.create_pr_review(None, &start(&task, key), key).unwrap();
+        failed_without_report(&store, run, "failed", &[]);
+    }
+    let (run, _) = store.create_pr_review(None, &start(&task, "r3"), "p3").unwrap();
+    complete(&store, run);
+    assert!(store.create_pr_review_continuation(None, &on(&task, "p3", "c1"), "child").unwrap().2);
+    let stamp = &store.pr_review_report(&task, "none2").unwrap()["roundLimit"];
+    assert_eq!((stamp["counts"].as_bool(), stamp["read"].as_str()), (Some(false), Some("nothing")), "{stamp}");
+    // After reading source (as #820 R1 did, all 15 paths): the PR's first
+    // such round doesn't count, and its record says so.
+    let (_dir, store, task) = setup();
+    let (run, _) = store.create_pr_review(None, &start(&task, "read1"), "read1").unwrap();
+    failed_without_report(&store, run, "failed", &["source_diff", "source_read"]);
+    let (run, _) = store.create_pr_review(None, &start(&task, "r2"), "p2").unwrap();
+    complete(&store, run);
+    assert!(store.create_pr_review_continuation(None, &on(&task, "p2", "c1"), "child").unwrap().2);
+    let stamp = &store.pr_review_report(&task, "read1").unwrap()["roundLimit"];
+    assert_eq!((stamp["counts"].as_bool(), stamp["read"].as_str()), (Some(false), Some("some")), "{stamp}");
+    // A second one after reads counts, naming the one that didn't. Codex
+    // ends such a round unknown, with the same single reason.
+    let (_dir, store, task) = setup();
+    for key in ["read1", "read2"] {
+        let (run, _) = store.create_pr_review(None, &start(&task, key), key).unwrap();
+        failed_without_report(&store, run, "unknown", &["source_search"]);
+    }
+    let (run, _) = store.create_pr_review(None, &start(&task, "r3"), "p3").unwrap();
+    complete(&store, run);
+    let refused = store.create_pr_review_continuation(None, &on(&task, "p3", "c1"), "child").unwrap_err().to_string();
+    assert!(refused.contains("already has 2 review rounds that started or may have started"), "{refused}");
+    assert!(refused.contains("1 more ended without a report and doesn't count"), "{refused}");
+    let stamp = &store.pr_review_report(&task, "read2").unwrap()["roundLimit"];
+    assert_eq!(stamp["counts"], true, "{stamp}");
+    assert!(stamp["why"].as_str().unwrap().contains("read1"), "{stamp}");
+    // A round with any other ending still counts: a deadline or a lost
+    // shutdown (execution_unconfirmed), or a report, invalid or with a verdict.
+    for (status, reasons, correctness, findings) in [
+        ("unknown", json!(["execution_unconfirmed"]), Value::Null, json!([])),
+        ("unknown", json!(["execution_failed", "execution_unconfirmed"]), Value::Null, json!([])),
+        ("unknown", json!(["invalid_report"]), Value::Null, json!([])),
+        ("failed", json!(["execution_failed"]), json!("unknown"), json!([])),
+        ("failed", json!(["execution_failed"]), Value::Null, json!([{"title":"t","body":"b","priority":2}])),
+    ] {
+        let (_dir, store, task) = setup();
+        let (mut run, _) = store.create_pr_review(None, &start(&task, "other"), "other").unwrap();
+        run["status"] = json!(status);
+        run["actualHarness"] = json!("claude");
+        run["nativeStartedAt"] = json!("2026-11-09T00:25:15Z");
+        run["reasonCodes"] = reasons;
+        run["nativeCorrectness"] = correctness;
+        run["findings"] = findings;
+        store.save_pr_review(&run, None).unwrap();
+        assert!(store.pr_review_report(&task, "other").unwrap()["roundLimit"].is_null());
+        let (run, _) = store.create_pr_review(None, &start(&task, "r2"), "p2").unwrap();
+        complete(&store, run);
+        let refused = store.create_pr_review_continuation(None, &on(&task, "p2", "c1"), "child").unwrap_err().to_string();
+        assert!(refused.contains("already has 2"), "{status} {refused}");
+    }
+}
+
 #[test]
 fn a_confirmed_native_report_survives_a_restart_during_the_check_after_the_review() {
     let (dir, store, task) = setup();
