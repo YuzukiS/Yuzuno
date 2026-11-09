@@ -4088,7 +4088,7 @@ async fn an_acknowledgement_that_isnt_the_users_acceptance_of_exactly_these_p2_f
     assert!(executor.contains("merge_release_not_allowed"), "{executor}");
     // The round's review id alone names every finding of the round (R1 P3):
     // a finding is named by its title or its own id, review id and index.
-    let lab = lab(green());
+    let lab = self::lab(green());
     let round = finding_round(&lab.ws.store, &lab.task, &[(ACCEPTED, 2)], |_| {});
     let short = &round[..8];
     let cite = |key: &str| json!([{"reviewId":round,"index":0,"title":ACCEPTED,"userReply":{"key":key}}]);
