@@ -94,7 +94,7 @@ const CATALOGS = {
 /** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
  * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default. */
 function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
-  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: clone(keys) };
+  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: keys && clone(keys) };
   return { state, route(url, method, body) {
     const u = new URL(url, "http://isolated.test");
     const p = u.pathname;
@@ -111,7 +111,8 @@ function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
       state.view = { ...state.view, version: state.view.version + 1, policy: body.policy, updatedAt: "2026-11-08T05:00:00Z" };
       return [200, state.view];
     }
-    if (p === "/api/routing/keys") return [200, { keys: state.keys, onePasswordToken: { set: true } }];
+    // Keys that can't be read here (null): as Core refuses them off its own address.
+    if (p === "/api/routing/keys") return state.keys ? [200, { keys: state.keys, onePasswordToken: { set: true } }] : [403, { error: "Only from Core's own address" }];
     // A key kept (S1's write, YN-57 S3): the answer says only that it is set.
     const key = p.match(/^\/api\/routing\/keys\/([^/]+)$/);
     if (key && method === "PUT") {
@@ -244,7 +245,8 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   assert.equal(editorField(page, id, "Model").value, "gpt-6.1-sol", "a tool's first model");
   await set(page, editorField(page, id, "Reasoning effort"), "high");
   const credentials = [...editorField(page, id, "Account or key").options].map((o) => o.textContent);
-  assert.deepEqual(credentials, ["This host's login (ChatGPT subscription)", "Codex account: Work"], "Codex takes its homes; no Anthropic or DeepSeek key");
+  assert.deepEqual(credentials, ["This host's login (ChatGPT subscription)", "Codex account: Work", "Add an API key for OpenAI…"],
+    "Codex takes its homes and an OpenAI key; no Anthropic or DeepSeek key");
   await set(page, editorField(page, id, "Account or key"), "home:work");
   button(page, "Subscription left", card(page, id)).click();
   await tick();
@@ -455,6 +457,75 @@ test("a candidate added by hand offers an API key for its tool with no keys adde
   for (const provider of ["DeepSeek", "Anthropic", "OpenAI"]) {
     assert.ok(offered().some(([, label]) => label === `Add an API key for ${provider}…`), `OpenCode takes ${provider}'s: ${JSON.stringify(offered())}`);
   }
+});
+
+// Synthetic, long and unusual, so a page or request holding it is found by a text search.
+const KEY_VALUE = "sk-fixture-yn57-IN-PLACE-WRITE-ONLY-7d2e";
+test("a key added from a candidate is written once, never shown or kept, and becomes the candidate's (YN-57 S3)", async () => {
+  const page = mount(core({ keys: [] }));
+  await opened(page);
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const id = cards(page)[2].dataset.cand;
+  const keyReads = () => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/routing/keys")).length;
+  const readsBefore = keyReads();
+  await set(page, editorField(page, id, "Account or key"), "new:anthropic");
+  const form = card(page, id).querySelector('.routing-key-inline form[aria-label="New Anthropic API key"]');
+  assert.ok(form, "Accounts and keys' own form, in place");
+  assert.equal(form.querySelector("select"), null, "its provider is the one chosen, not asked again");
+  assert.equal(form.querySelector(".routing-new-key-grid input").value, "anthropic", "the first id free for it");
+  assert.match(form.textContent, /Saved under Accounts and keys as soon as you save it here, and never shown again\./);
+  const value = byLabel(page, "New Anthropic API key: value");
+  assert.equal(value.type, "password");
+  await set(page, value, KEY_VALUE);
+  assert.equal(value.getAttribute("value"), null, "typed, it is never written into the page");
+  button(page, "Save key", form).click();
+  await until(() => !card(page, id).querySelector(".routing-key-inline"), "the form closes once the key is kept");
+  const writes = page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/routing/keys/anthropic"));
+  assert.deepEqual(writes.map((c) => c.body), [{ source: "local", provider: "anthropic", value: KEY_VALUE }], "one write, with the value");
+  const select = editorField(page, id, "Account or key");
+  assert.equal(select.value, "key:anthropic", "the candidate's key now");
+  assert.equal(select.selectedOptions[0].textContent, "API key: Anthropic (anthropic)");
+  await until(() => keyReads() > readsBefore, "the page's keys read again");
+  await save(page);
+  await until(() => puts(page).some((c) => c.url.endsWith("/routing/policy")), "the page's save");
+  const policy = puts(page).find((c) => c.url.endsWith("/routing/policy")).body.policy;
+  assert.deepEqual(policy.candidates.find((c) => c.id === id).credential, { kind: "apiKey", keyId: "anthropic" });
+  assert.deepEqual(page.calls.filter((c) => JSON.stringify(c.body ?? "").includes(KEY_VALUE)).map((c) => `${c.method} ${new URL(c.url, "http://isolated.test").pathname}`),
+    ["PUT /api/routing/keys/anthropic"], "only its own write carries the value");
+  assert.ok(!page.document.documentElement.outerHTML.includes(KEY_VALUE), "never in the page");
+  const kept = JSON.stringify([Object.entries(page.window.localStorage), Object.entries(page.window.sessionStorage), page.window.location.href]);
+  assert.ok(!kept.includes(KEY_VALUE), "never kept in this browser");
+  assert.deepEqual(page.errors, []);
+});
+
+test("cancelling a key added in place leaves the candidate's account as it was and writes nothing (YN-57 S3)", async () => {
+  const page = mount(core());
+  await opened(page);
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => card(page, "cl").querySelector(".routing-edit"), "its editor");
+  await set(page, editorField(page, "cl", "Account or key"), "new:anthropic");
+  const form = card(page, "cl").querySelector(".routing-key-inline form");
+  assert.equal(form.querySelector(".routing-new-key-grid input").value, "anthropic-2", "another id than the key already there");
+  await set(page, byLabel(page, "New Anthropic API key: value"), KEY_VALUE);
+  button(page, "Cancel", form).click();
+  await tick();
+  assert.equal(card(page, "cl").querySelector(".routing-key-inline"), null);
+  assert.equal(editorField(page, "cl", "Account or key").value, "pool", "the pool, as before");
+  assert.deepEqual(puts(page).map((c) => c.url), [], "nothing written (evaluating the draft is a read)");
+});
+
+test("while the keys can't be read here, adding one from a candidate is offered but can't be chosen (YN-57 S3)", async () => {
+  const page = mount(core({ keys: null }));
+  await until(() => cards(page).length > 0, "the candidates");
+  await until(() => page.calls.some((c) => c.url.endsWith("/routing/keys")), "the keys asked for");
+  await tick();
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const option = [...editorField(page, cards(page)[2].dataset.cand, "Account or key").options].find((o) => o.value === "new:anthropic");
+  assert.ok(option, "still offered");
+  assert.equal(option.disabled, true);
+  assert.equal(option.textContent, "Add an API key for Anthropic (keys can't be read here)");
 });
 
 test("a candidate that can't be saved says so on its card, with a pill that opens its editor (YN-57)", async () => {

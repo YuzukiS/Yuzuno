@@ -355,7 +355,7 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
               </div>
               <CandidateLive live={now} />
               {expanded && (
-                <CandidateEditor c={c} t={t} keys={keys ?? []} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
+                <CandidateEditor c={c} t={t} keys={keys ?? []} keysRead={keys !== null} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
                   onEdit={(change) => onEdit(c.id, change)} onRemove={() => onRemove(c.id)} onClose={() => onOpen(null)} />
               )}
             </div>

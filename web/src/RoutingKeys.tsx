@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Bot, CircleAlert, HardDrive, KeyRound, LoaderCircle, Lock, Plus, RefreshCw, ShieldCheck, Trash2, Users, X } from "lucide-react";
 import { errorText } from "./api";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import {
   KEY_ID, KEY_PROVIDERS, checkKey, freeKeyId, putCodexHomes, putCswapCommand, putLocalKey, putReferenceKey, putToken,
-  announceCredentialsChanged, readAccountsShared, readKeys, readOnePassword, removeKey, removeToken, shortFingerprint,
+  ROUTING_CREDENTIALS_CHANGED, announceCredentialsChanged, readAccountsShared, readKeys, readOnePassword, removeKey, removeToken, shortFingerprint,
   type AccountsView, type CodexHome, type KeyProvider, type KeySource, type KeysView, type OnePasswordView, type RoutingKey, type Unavailable,
 } from "./routing-keys";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
@@ -58,6 +58,8 @@ const text = strings({
   keyPlaceholder: "Paste the key: it is not shown again",
   addKey: "Add a key",
   newKey: "New key",
+  newKeyFor: (provider: string) => `New ${provider} API key`,
+  saveKey: "Save key",
   provider: "Provider",
   keyId: "Id",
   keyIdHelp: "Lowercase letters, digits and hyphens; a routing candidate names the key by it.",
@@ -123,6 +125,8 @@ const text = strings({
   keyPlaceholder: "粘贴 key（填完不再显示）",
   addKey: "添加 key",
   newKey: "新的 key",
+  newKeyFor: (provider) => `新的 ${provider} API key`,
+  saveKey: "保存 key",
   provider: "提供方",
   keyId: "Id",
   keyIdHelp: "小写字母、数字和连字符；路由里的候选用它指名这把 key。",
@@ -145,6 +149,9 @@ const text = strings({
   storeHelp: "存在 Workspace 文件夹里的 secrets/routing-keys.json，只有你能读（0600）。备份、恢复和迁移都不带它，之后要重新填。它挡得住这台电脑的其他用户，挡不住以你的身份运行的程序，包括 Agent 自己的工具。",
 });
 type Text = ReturnType<typeof text>;
+/** This section's words, for its new-key form where a routing candidate opens it (YN-57 S3). */
+export const keysText = text;
+export type KeysText = Text;
 
 const setAtFormat = timeFormatter({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const reasonText = (reason: Unavailable, language: Language) => (language === "zh-Hans" ? reason.messageZh : reason.message);
@@ -229,7 +236,10 @@ export function RoutingKeys({ active }: { active: boolean }) {
     readKeys(signal).then((next) => { if (!signal.aborted) setKeys(next); }).catch((e) => { if (!signal.aborted) setReadError(errorText(e)); });
     readOnePassword(signal).then((next) => { if (!signal.aborted) setOp(next); }).catch(() => { /* the keys' read says why */ });
     loadAccounts(signal, false);
-    return () => controller.abort();
+    // A key added elsewhere on the page (a routing candidate's own form, YN-57 S3) is listed here too.
+    const changed = () => { readKeys(signal).then((next) => { if (!signal.aborted) setKeys(next); }).catch(() => { /* the next read says why */ }); };
+    window.addEventListener(ROUTING_CREDENTIALS_CHANGED, changed);
+    return () => { controller.abort(); window.removeEventListener(ROUTING_CREDENTIALS_CHANGED, changed); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
@@ -522,11 +532,13 @@ function HomesForm({ t, busy, initial, onSave, onCancel }: {
   );
 }
 
-function NewKeyForm({ t, busy, taken, onSave, onCancel }: {
-  t: Text; busy: boolean; taken: string[];
+/** A new key: its provider, id and source, then its write-only value or its reference. Also where a routing candidate
+ * adds one (YN-57 S3): `fixed` is the provider it needs, `saveLabel` its Save's words and `note` a line above them. */
+export function NewKeyForm({ t, busy, taken, fixed, saveLabel, note, onSave, onCancel }: {
+  t: Text; busy: boolean; taken: string[]; fixed?: KeyProvider; saveLabel?: string; note?: ReactNode;
   onSave: (id: string, provider: KeyProvider, source: KeySource, value: string) => Promise<boolean>; onCancel: () => void;
 }) {
-  const [provider, setProvider] = useState<KeyProvider>(() => KEY_PROVIDERS.find((p) => !taken.includes(p)) ?? "deepseek");
+  const [provider, setProvider] = useState<KeyProvider>(() => fixed ?? KEY_PROVIDERS.find((p) => !taken.includes(p)) ?? "deepseek");
   const [id, setId] = useState(() => freeKeyId(provider, taken));
   const [idTouched, setIdTouched] = useState(false);
   const [source, setSource] = useState<KeySource>("local");
@@ -536,7 +548,7 @@ function NewKeyForm({ t, busy, taken, onSave, onCancel }: {
   const idProblem = !KEY_ID.test(id) ? t.keyIdBad : taken.includes(id) ? t.keyIdTaken : "";
   const refBad = source === "1password" && !!reference.trim() && !reference.trim().startsWith("op://");
   const ready = !idProblem && (source === "local" ? secret.filled : !!reference.trim() && !refBad);
-  const title = t.keyTitle(providerName[provider], harnessOf[provider]);
+  const title = fixed ? t.newKeyFor(providerName[provider]) : t.keyTitle(providerName[provider], harnessOf[provider]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = source === "local" ? secret.value() : reference.trim();
@@ -544,15 +556,15 @@ function NewKeyForm({ t, busy, taken, onSave, onCancel }: {
     if (await onSave(id, provider, source, value)) secret.clear();
   };
   return (
-    <form className="routing-new-key" onSubmit={(e) => void submit(e)} aria-label={t.newKey}>
-      <span className="settings-row-title">{t.newKey}</span>
+    <form className="routing-new-key" onSubmit={(e) => void submit(e)} aria-label={fixed ? title : t.newKey}>
+      <span className="settings-row-title">{fixed ? title : t.newKey}</span>
       <div className="routing-new-key-grid">
-        <label className="routing-field"><span>{t.provider}</span>
+        {!fixed && <label className="routing-field"><span>{t.provider}</span>
           <select className="settings-select" value={provider} disabled={busy}
             onChange={(e) => { const p = e.target.value as KeyProvider; setProvider(p); if (!idTouched) setId(freeKeyId(p, taken)); }}>
             {KEY_PROVIDERS.map((p) => <option key={p} value={p}>{t.keyTitle(providerName[p], harnessOf[p])}</option>)}
           </select>
-        </label>
+        </label>}
         <label className="routing-field"><span>{t.keyId}</span>
           <input className="settings-input" value={id} spellCheck={false} disabled={busy} aria-invalid={!!idProblem || undefined}
             onChange={(e) => { setId(e.target.value); setIdTouched(true); }} />
@@ -567,12 +579,13 @@ function NewKeyForm({ t, busy, taken, onSave, onCancel }: {
         ))}
       </span>
       {source === "local"
-        ? <input {...secret.props} className="settings-input" aria-label={t.keyValue(title)} placeholder={t.keyPlaceholder} disabled={busy} />
+        ? <input {...secret.props} className="settings-input" aria-label={t.keyValue(title)} placeholder={t.keyPlaceholder} disabled={busy} autoFocus={!!fixed} />
         : <input className="settings-input routing-reference-input" aria-label={`${title}: ${t.reference}`} placeholder="op://vault/item/field" value={reference}
             autoComplete="off" spellCheck={false} disabled={busy} aria-invalid={refBad || undefined} onChange={(e) => setReference(e.target.value)} />}
       {refBad && <span className="inline-error">{t.referenceBad}</span>}
+      {note && <p className="settings-row-meta routing-new-key-note">{note}</p>}
       <div className="routing-form-actions">
-        <button type="submit" className="primary-button" disabled={busy || !ready}>{busy && <LoaderCircle size={13} className="spin" />}{t.save}</button>
+        <button type="submit" className="primary-button" disabled={busy || !ready}>{busy && <LoaderCircle size={13} className="spin" />}{saveLabel ?? t.save}</button>
         <button type="button" className="quiet-button" disabled={busy} onClick={() => { secret.clear(); onCancel(); }}>{t.cancel}</button>
       </div>
     </form>
