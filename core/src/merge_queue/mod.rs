@@ -7,6 +7,7 @@
 //! for the repository is on; `writes` holds every write it can make.
 mod binaries;
 mod checks;
+mod findings;
 mod landing;
 mod merges;
 mod remote;
@@ -52,6 +53,9 @@ pub(super) struct Enqueue {
     /// Binary files the releaser checked, by their content (YN-52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledge_binaries: Option<Vec<binaries::Acknowledged>>,
+    /// P2 findings the user accepted as intended (YN-67).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledge_findings: Option<Vec<findings::Acknowledged>>,
 }
 impl Enqueue {
     fn validate(&self) -> Result<()> {
@@ -72,6 +76,13 @@ impl Enqueue {
         );
         if let Some(files) = &self.acknowledge_binaries {
             binaries::validate(files)?;
+        }
+        if let Some(listed) = &self.acknowledge_findings {
+            findings::validate(listed)?;
+            ensure!(
+                self.acknowledge_binaries.is_none(),
+                "findings_refused: a release acknowledges binary files or findings, not both"
+            );
         }
         Ok(())
     }
@@ -433,11 +444,14 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         def(
             "merge_enqueue",
-            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Settings → Projects → its Project → Repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise; a round whose only gap is unreadable image or font files passes once acknowledgeBinaries lists them. A head that adds only merges after that round (of commits on main or of other reviewed heads) passes too, once Core has redone each merge to exactly its tree; see docs/merge-queue.md. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main, or stacked on the batch ahead of it (a chain of batches, merged in order), and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
+            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Settings → Projects → its Project → Repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise; acknowledgeBinaries (unreadable images, fonts) and acknowledgeFindings (P2s the user accepted) admit two exceptions. A head that adds only merges after that round (of commits on main or of other reviewed heads) passes too, once Core has redone each merge to exactly its tree; see docs/merge-queue.md. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main, or stacked on the batch ahead of it (a chain of batches, merged in order), and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
             json!({"requestId":text,"taskId":task,"pullUrl":{"type":"string","description":"https://github.com/<owner>/<repo>/pull/<number>, linked to the task"},"headSha":head,
                 "note":{"type":"string","maxLength":2000},"requireWorkflows":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":100},"description":"Workflows that must also have run green on the head besides CI, for example Desktop macOS."},
                 "acknowledgeBinaries":{"type":"array","minItems":1,"maxItems":binaries::FILES,"description":"Optional. When the last round's only gap is binary files it could not read (unsupported: binary) and the reviewer said the patch is correct with no P0–P2 finding, list each such file once, with the SHA-256 of its content at headSha, after checking it yourself. Core reads each at headSha and refuses (binaries_refused, naming the file) unless the list is exactly those files and each is a regular, non-executable file of at most 2 MiB whose SHA-256 matches and whose leading bytes are PNG, JPEG, GIF, WebP, ICO, ICNS, WOFF, WOFF2, TTF or OTF. Any other gap, or a removed binary, still refuses. The acknowledgement is recorded on the entry and the task; the round's own conclusion stays unknown, and a new head needs a new release.",
-                    "items":{"type":"object","additionalProperties":false,"required":["path","sha256"],"properties":{"path":{"type":"string","maxLength":4096},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"note":{"type":"string","maxLength":500}}}}}),
+                    "items":{"type":"object","additionalProperties":false,"required":["path","sha256"],"properties":{"path":{"type":"string","maxLength":4096},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"note":{"type":"string","maxLength":500}}}},
+                "acknowledgeFindings":{"type":"array","minItems":1,"maxItems":findings::FINDINGS,"description":"Optional. When the last completed round passes but for P2 findings the user accepted as intended, list every P0–P2 finding of it, each by reviewId, index and title as review_get shows them. A P0 or P1 is never accepted. A lead cites in userReply.key a Home ask of the task's Project that names the PR (#number) and the finding (its title, or its id: the review id's first 8 characters, a slash and its index), that the user replied to and that hasn't changed since; Core reads it and records its question and reply. The user releasing needs none. Refused (findings_refused) naming what didn't match. Recorded on the entry and the task; the round's conclusion stays, and a new round or head needs a new release.",
+                    "items":{"type":"object","additionalProperties":false,"required":["reviewId","index","title"],"properties":{"reviewId":{"type":"string","maxLength":64},"index":{"type":"integer","minimum":0},
+                        "title":{"type":"string","maxLength":1000},"userReply":{"type":"object","additionalProperties":false,"required":["key"],"properties":{"key":{"type":"string","maxLength":97}}},"note":{"type":"string","maxLength":500}}}}}),
             &["requestId", "taskId", "pullUrl", "headSha"],
         ),
         def(

@@ -627,6 +627,44 @@ fn replied_ask(row: &sections::Row) -> Value {
     json!({"key":row.key,"title":row.data["title"],"repliedAt":row.replied_at,"reply":reply,"updatedSinceReply":updated})
 }
 
+/// The live ask under `key` in `project` that the user replied to, as a
+/// release that cites the reply reads it (merge_queue/findings.rs, YN-67):
+/// its question and the words around it (`text`: title, question and every
+/// text of its body), the reply, and whether the ask changed after the
+/// reply. Only Home's reply route records a reply (`mark_replied`); an
+/// owner's edit after it keeps the reply but changes `updated_at`, so an
+/// ask whose times can't be compared reads as changed.
+pub(crate) fn cited_reply(db: &Connection, project: &str, key: &str) -> Result<Option<Value>> {
+    let Some(row) = sections::live_key(db, project, key)? else {
+        return Ok(None);
+    };
+    let (Some(replied), Some(reply)) = (row.replied_at.as_deref(), row.reply_text.as_deref()) else {
+        return Ok(None);
+    };
+    if row.kind != "ask" || row.ask_state.as_deref() != Some("replied") || reply.trim().is_empty() {
+        return Ok(None);
+    }
+    let time = |at: &str| chrono::DateTime::parse_from_rfc3339(at).ok();
+    let changed = match (time(replied), time(&row.updated_at)) {
+        (Some(replied), Some(updated)) => updated > replied,
+        _ => true,
+    };
+    let mut words = Vec::new();
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    for part in [&row.data["title"], &row.data["ask"]["question"], &row.data["body"]] {
+        strings(part, &mut words);
+    }
+    Ok(Some(json!({"key":row.key,"version":row.version,"owner":{"id":row.owner_id,"name":row.owner_name},"title":row.data["title"],
+        "question":row.data["ask"]["question"],"text":words.join("\n"),"reply":reply,"repliedAt":replied,"changedSinceReply":changed})))
+}
+
 /// At most this many keys in one brief_get: the topics and their subs.
 const MAX_KEYS: usize = 60;
 

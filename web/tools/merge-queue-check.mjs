@@ -7,6 +7,9 @@
 //    refusal shown as it came;
 //  - the language changed in another window: the panel is Chinese, with
 //    names, SHAs and Core's text as they came;
+//  - YN-67: an entry whose release acknowledged a P2 the user accepted
+//    shows the finding, its round and the user's reply, in Chinese and in
+//    English;
 //  - at 420 px nothing in the panel is wider than the panel.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/merge-queue-check.mjs
 import assert from "node:assert/strict";
@@ -46,7 +49,11 @@ const entry = (id, number, state, extra = {}) => ({
 });
 const entries = [
   entry("e-queued", 13, "queued", { detail: "Released; Core checks it before anything else happens." }),
-  entry("e-waiting", 14, "waiting", { detail: "Synthetic CI run 610 is still in progress" }),
+  entry("e-waiting", 14, "waiting", { detail: "Synthetic CI run 610 is still in progress", acknowledgedFindings: { by: { kind: "agent", id: "lead-1", name: "Lead Sora" }, at: now, items: [
+    { reviewId: "e38ff3c7-0000-4000-8000-000000000001", round: 2, index: 0, priority: 2, path: "core/src/example.rs", startLine: 430, endLine: 454,
+      title: "Synthetic finding: old templates follow routing after upgrade", note: "Synthetic note: chosen in Q1",
+      userReply: { key: "design/yn-example-q1", version: 3, question: "Synthetic question naming PR #14 and the finding", reply: "Synthetic reply: intended, release it", repliedAt: now } },
+  ] } }),
   entry("e-stopped", 12, "stopped", { reason: "ci_red", detail: "Synthetic CI run 501 ended failure on the head" }),
   entry("e-done", 16, "done", {
     taskReference: "T-43",
@@ -193,9 +200,30 @@ try {
   await shot("merge-queue-zh-1280.png");
   check("changed to Chinese in another window: the panel is Chinese; names, SHAs and Core's text as they came; the refusal said in Chinese beside Core's text");
 
+  // ---- YN-67: a P2 the user accepted, on the entry that acknowledged it.
+  const accepted = (label) => queue().locator(".job-detail dt", { hasText: label }).locator("xpath=following-sibling::dd[1]");
+  await queue().locator(".job-row", { has: page.locator("strong", { hasText: "owner/repo #14" }) }).click();
+  await queue().locator(".job-detail h3", { hasText: "owner/repo #14" }).waitFor({ timeout: 10_000 });
+  await accepted("确认的发现").waitFor({ timeout: 10_000 });
+  const zhAccepted = await accepted("确认的发现").textContent();
+  assert.match(zhAccepted, /^Lead Sora 引用你的回复，确认 1 个 P2 是有意为之；审查轮的结论不变/);
+  assert.match(zhAccepted, /P2 · core\/src\/example\.rs:430 · Synthetic finding: old templates follow routing after upgrade/);
+  assert.match(zhAccepted, /第 2 轮 e38ff3c7 · 你在 design\/yn-example-q1 的回复.*：\s?“Synthetic reply: intended, release it”/);
+  await accepted("确认的发现").screenshot({ path: join(output, "merge-queue-findings-zh-row.png") });
+  await shot("merge-queue-findings-zh-1280.png");
+  check("in Chinese: the entry's accepted P2 with its finding, round and the user's reply", { text: zhAccepted });
+
   // ---- Narrow: nothing wider than the panel.
   await setLanguage("en");
   await page.locator("#jobs-tab-merge_queue", { hasText: "Merge queue" }).waitFor({ timeout: 10_000 });
+  await accepted("Findings accepted").waitFor({ timeout: 10_000 });
+  const enAccepted = await accepted("Findings accepted").textContent();
+  assert.match(enAccepted, /^1 P2 accepted as intended by Lead Sora, citing your reply; the review round's conclusion stays/);
+  assert.match(enAccepted, /Round 2 e38ff3c7 · your reply to design\/yn-example-q1.*: “Synthetic reply: intended, release it”/);
+  assert.match(enAccepted, /Synthetic note: chosen in Q1$/);
+  await accepted("Findings accepted").screenshot({ path: join(output, "merge-queue-findings-en-row.png") });
+  await shot("merge-queue-findings-en-1280.png");
+  check("in English: the same row, and the panel with it open", { text: enAccepted });
   await page.setViewportSize({ width: 420, height: 900 });
   await page.waitForTimeout(300);
   const wide = await overflow();
