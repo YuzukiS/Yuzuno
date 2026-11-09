@@ -236,29 +236,46 @@ async function run({ width, height, theme, lang, motion = false }) {
     // The arc turns under motion; nothing turns under reduced motion.
     const spin = await page.evaluate(() => getComputedStyle(document.querySelector('.agent-list article[data-agent-id="yn12"] .r-spin')).animationName);
     assert.equal(spin, motion ? "island-turn" : "none", `${tag}: the arc ${motion ? "turns" : "rests"}`);
-    // Each card says which one, and the rest.
-    for (const [id, [wait, line, also]] of Object.entries(EXPECTED)) {
-      // In view first: a scroll of what holds a tip closes it (Tip.tsx).
+    // Each card says which one, and the rest. A tip closes on a scroll of
+    // what holds it (Tip.tsx), and a scroll event comes a frame after the
+    // scroll: the row is brought into view and settles before its focus, and
+    // the card is read in one step while it shows.
+    const CARD = '.tip.agent-card[role="tooltip"]:not([data-state="closed"])';
+    const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50)))));
+    const openCard = async (id) => {
       await rowOf(id).scrollIntoViewIfNeeded();
+      await frames();
       await page.keyboard.press("Tab");
       await rowOf(id).locator(".agent-select").focus();
-      const tip = page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])');
-      await tip.waitFor({ timeout: 5_000 }).catch(async (error) => {
+      try {
+        const read = await page.waitForFunction((sel) => {
+          const t = document.querySelector(sel);
+          if (!t) return null;
+          const b = t.getBoundingClientRect();
+          return { text: t.innerText.replace(/\s+/g, " "), waits: [...t.querySelectorAll(".agent-card-wait")].map((w) => [w.dataset.wait, w.querySelectorAll("svg").length]),
+            box: { x: b.x, y: b.y, width: b.width, height: b.height } };
+        }, CARD, { timeout: 5_000 });
+        return await read.jsonValue();
+      } catch (error) {
         const tips = await page.locator(".tip").evaluateAll((all) => all.map((t) => `${t.className} [${t.dataset.state}] ${t.textContent.slice(0, 40)}`));
         throw new Error(`${tag}: ${id}'s card did not open (tips: ${JSON.stringify(tips)}): ${error.message}`);
-      });
-      const text = (await tip.innerText()).replace(/\s+/g, " ");
+      }
+    };
+    const closeCard = async (id) => {
+      await rowOf(id).locator(".agent-select").evaluate((el) => el.blur());
+      await page.waitForFunction((sel) => !document.querySelector(sel), CARD, { timeout: 5_000 }).catch(() => {});
+    };
+    for (const [id, [wait, line, also]] of Object.entries(EXPECTED)) {
+      const { text, waits } = await openCard(id);
       if (wait) {
         assert.ok(text.includes(line[i]), `${tag}: ${id}'s card says "${line[i]}": ${text}`);
         if (also) assert.ok(text.includes(also[i]), `${tag}: ${id}'s card says "${also[i]}": ${text}`);
         else assert.ok(!/另有|Also:/.test(text), `${tag}: ${id}'s card names no other wait`);
-        assert.equal(await tip.locator(`.agent-card-wait[data-wait="${wait}"] svg`).count(), 1, `${tag}: ${id}'s card line has its icon`);
+        assert.deepEqual(waits, [[wait, 1]], `${tag}: ${id}'s card has one wait line, with its icon`);
       } else {
-        assert.equal(await tip.locator(".agent-card-wait").count(), 0, `${tag}: ${id}'s card has no wait line`);
+        assert.deepEqual(waits, [], `${tag}: ${id}'s card has no wait line`);
       }
-      await page.locator("body").focus();
-      await rowOf(id).locator(".agent-select").evaluate((el) => el.blur());
-      await tip.waitFor({ state: "detached", timeout: 5_000 }).catch(() => {});
+      await closeCard(id);
     }
     check(`${tag}: each row waits on what it should, one icon in a working ring, 11 px, centred, inside its arc, its colour, no height; its card and its words say it`);
     // Screenshots: the list, and the list with the busiest row's card open.
@@ -268,11 +285,7 @@ async function run({ width, height, theme, lang, motion = false }) {
     };
     await page.mouse.move(0, 0);
     await shot(`${tag}-list.png`, list);
-    await rowOf("yn12").scrollIntoViewIfNeeded();
-    await page.keyboard.press("Tab");
-    await rowOf("yn12").locator(".agent-select").focus();
-    await page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])').waitFor({ timeout: 5_000 });
-    const card = await page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])').boundingBox();
+    const card = (await openCard("yn12")).box;
     const listBox = await list.boundingBox();
     const x = Math.max(0, Math.min(card.x, listBox.x) - 8), y = Math.max(0, Math.min(card.y, listBox.y) - 8);
     await page.screenshot({ path: join(output, `${tag}-card.png`), animations: "disabled",
