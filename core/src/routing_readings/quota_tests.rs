@@ -35,15 +35,33 @@ fn only_an_enabled_policy_that_reads_quotas_needs_them() {
 
 #[test]
 fn codex_windows_are_taken_by_their_length_and_say_what_is_left() {
+    // Only the week is read (YN-60): a 5-hour window, should Codex still give one, is not.
     let limits = json!({"rateLimits": {"limitId": "codex",
         "primary": {"usedPercent": 30, "windowDurationMins": 300, "resetsAt": 1794120000},
         "secondary": {"usedPercent": 85.5, "windowDurationMins": 10080, "resetsAt": 1794500000}}});
     assert_eq!(codex_windows(&limits), json!({
-        "fiveHour": {"leftPct": 70.0, "resetsAt": "2026-11-08T06:40:00+00:00"},
         "week": {"leftPct": 14.5, "resetsAt": "2026-11-12T16:13:20+00:00"}}));
+    let week_only = json!({"rateLimits": {"limitId": "codex",
+        "primary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": 1794500000}}});
+    assert_eq!(codex_windows(&week_only), json!({"week": {"leftPct": 0.0, "resetsAt": "2026-11-12T16:13:20+00:00"}}),
+        "a week as Codex's only window, as the user's login gave it on 2026-11-09");
     let by_id = json!({"rateLimitsByLimitId": {"other": {"primary": {"usedPercent": 1}},
         "codex": {"secondary": {"usedPercent": 120, "windowDurationMins": 10080}}}});
     assert_eq!(codex_windows(&by_id), json!({"week": {"leftPct": 0.0, "resetsAt": null}}), "the codex limit, and never below 0");
+}
+
+#[test]
+fn readings_kept_before_yn60_are_shown_without_their_5_hour_window() {
+    let window = json!({"leftPct": 70.0, "resetsAt": "2026-11-08T06:40:00+00:00"});
+    let at = "2026-11-09T01:00:00+00:00".to_owned();
+    let kept = vec![
+        ("codex:login".to_owned(), json!({"fiveHour": window, "week": window}), at.clone()),
+        ("cswap".to_owned(), json!({"accounts": [{"number": 1, "fingerprint": "aaaaaaaaaaaaaaaa", "active": true, "source": "cswap",
+            "fiveHour": window, "week": window}]}), at.clone()),
+    ];
+    let (cswap, codex) = view(&kept, DateTime::parse_from_rfc3339(&at).unwrap().with_timezone(&Utc));
+    assert_eq!((cswap["accounts"][0].get("fiveHour"), codex[0].get("fiveHour")), (None, None), "{cswap} {codex}");
+    assert_eq!((cswap["accounts"][0]["week"].clone(), codex[0]["week"].clone()), (window.clone(), window));
 }
 
 #[tokio::test]
@@ -96,15 +114,15 @@ for line in sys.stdin:
     assert!(!body.contains('@'), "no email anywhere: {body}");
     let read: Value = serde_json::from_str(&body).unwrap();
     let accounts = read["cswap"]["accounts"].as_array().unwrap();
-    assert_eq!((accounts[0]["number"].clone(), accounts[0]["fiveHour"]["leftPct"].clone(), accounts[0]["week"]["leftPct"].clone()),
-        (json!(1), json!(75.0), json!(84.0)), "what is left, not what is used: {read}");
-    assert_eq!(accounts[0]["fiveHour"]["resetsAt"], "2026-11-08T10:00:00Z");
+    assert_eq!((accounts[0]["number"].clone(), accounts[0]["week"]["leftPct"].clone(), accounts[0]["week"]["resetsAt"].clone()),
+        (json!(1), json!(84.0), json!("2026-11-12T18:00:00Z")), "what is left, not what is used: {read}");
+    assert!(!body.contains("fiveHour"), "no 5-hour window is read (YN-60): {body}");
     assert!(accounts[0].get("unknown").is_none() && accounts[1]["unknown"]["code"] == "usage:token_expired", "{read}");
     assert_eq!((read["cswap"]["stale"].clone(), read["cswap"]["observedAt"].is_string()), (json!(false), true));
     let codex = read["codex"].as_array().unwrap();
-    let left = |home: &str| codex.iter().find(|c| c["home"] == home).map(|c| (c["fiveHour"]["leftPct"].clone(), c["week"]["leftPct"].clone()));
-    assert_eq!(left("login"), Some((json!(70.0), json!(15.0))), "the host's own login: {read}");
-    assert_eq!(left("work"), Some((json!(50.0), json!(90.0))), "the listed home, read in that home: {read}");
+    let left = |home: &str| codex.iter().find(|c| c["home"] == home).map(|c| c["week"]["leftPct"].clone());
+    assert_eq!(left("login"), Some(json!(15.0)), "the host's own login: {read}");
+    assert_eq!(left("work"), Some(json!(90.0)), "the listed home, read in that home: {read}");
     assert!(codex.iter().all(|c| c["source"] == "codex" && c["stale"] == false));
 
     // A home taken off the list leaves the readings at the next refresh; the host's login stays (#800 R1 P3).

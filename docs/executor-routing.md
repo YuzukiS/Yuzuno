@@ -277,7 +277,9 @@ It answers from what Core last observed and starts no read itself.
 
 ### Subscription quotas
 
-These are what is left of each account's 5-hour and weekly windows.
+These are what is left of each account's weekly window. Claude and Codex
+have no 5-hour quota now (YN-60), so no 5-hour window is read, and one an
+older Core kept is not shown.
 
 - **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
   - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
@@ -292,10 +294,10 @@ These are what is left of each account's 5-hour and weekly windows.
 ```jsonc
   "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read
     "accounts": [ { "number": 2, "fingerprint": "3f2a…", "active": false,
-      "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
+      "week": { "leftPct": 40, "resetsAt": "…" },
       "observedAt": "…", "source": "cswap",           // "cswap" | "agent" (reported by a running Agent)
       "unknown": { "code": "…", "message": "…", "messageZh": "…" } } ] },
-  "codex": [ { "home": "login", "fiveHour": { … }, "week": { … }, "observedAt": "…", "source": "codex" },
+  "codex": [ { "home": "login", "week": { … }, "observedAt": "…", "source": "codex" },
              { "home": "work", "unknown": { … } } ]
 ```
 
@@ -367,7 +369,9 @@ executors as it says, whatever the policy is.
 
 `conditions[]` entries take one of these forms:
 - `{ "kind": "timeWindow", "inside": bool, "schedule": { "timeZone": "UTC" | "local", "slots": […] }, "minMinutesLeft"?: n }`. With `minMinutesLeft`, the condition must still hold for that many more minutes.
-- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials. It is the share left.
+- `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
+  - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
+  - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
 
 ### `route_json`: why a candidate was chosen (S3b)
@@ -384,7 +388,7 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
-      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
+      "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
   "changedAtStart": { "from": "c-claude", "reason": "…" },        // only when the start-time check chose another
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
@@ -402,10 +406,10 @@ is chosen. The other candidates are marked `notTried`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
-- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of min(5-hour, week) left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of its week left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
 - **Its conditions hold:**
-  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left;
-  - `quota`: `quotaLow`;
+  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
+  - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);
   - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
@@ -415,7 +419,7 @@ know, is unknown. Codex API-key spend is unknown too. The candidate's
 `pass` lets it be chosen, with the unknowns kept as its reasons.
 
 When none is chosen, `earliest` names the soonest time a reason gives
-(`params.until`), such as the end of a time window or a quota's reset.
+(`params.until`), such as when a time window next holds or a quota's reset.
 
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
