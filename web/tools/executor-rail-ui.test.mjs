@@ -40,6 +40,10 @@ const agent = (id, extra = {}) => ({
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", ...extra,
 });
 const design = { id: "design-first", label: "Design first" };
+// YN-57 S4b: what routing gave an executor, as its lifecycle says it; and a time, as the app writes it (the user's
+// clock and zone; here the defaults).
+const CANDIDATE_AT = "2026-11-09T04:00:00Z";
+const hhmm = (iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso));
 const executor = (id, name, state, extra = {}, lifecycle = {}) => agent(id, {
   name,
   kind: "executor",
@@ -55,17 +59,22 @@ const agents = () => [
     workSummary: { kind: "pending", source: "runtime", text: "Approve the design note", requestId: "q1" },
   }, { task: { id: "YN-w", title: "Export and import device preferences", shortName: "Export settings" } }),
   // Its result in, its PR waiting for its review rounds: the lead's turn.
-  executor("v", "Agent v", "delivering"),
+  executor("v", "Agent v", "delivering", {}, { route: { kind: "chosen", candidate: "c-cl", harness: "claude", model: "opus",
+    credential: { kind: "pool", account: { fingerprint: "0f1e2d3c4b5a6978", number: 2 } } } }),
   // At work, with a short name; done long ago; another Agent waiting for you; one with updates unread.
   executor("k", "YN-k · Design first", "running", { status: "working", workSummary: { kind: "progress", source: "agent", text: "Slice 2: evidence Job" } },
-    { task: { id: "YN-k", title: "Keep the selection after a refresh", shortName: "Keep selection" } }),
+    { task: { id: "YN-k", title: "Keep the selection after a refresh", shortName: "Keep selection" },
+      route: { kind: "chosen", candidate: "c-ds", label: "DeepSeek off-peak", harness: "opencode", model: "deepseek/deepseek-flash",
+        credential: { kind: "apiKey", keyId: "deepseek-main" } } }),
   executor("a", "YN-a · Design first", "archived", { closedAt: at(30), releasedAt: at(30), releasedBy: "user" },
     { dispatchedAt: at(120), since: at(30) }),
   agent("s", { status: "waiting", pendingCount: 1, workSummary: { kind: "pending", source: "runtime", text: "Allow npm test", requestId: "q2" } }),
   agent("u", { unreadCount: 4 }),
   executor("q", "YN-q · Design first", "queued", {}, { position: 2 }),
+  // Queued too, but for a routing candidate, not a slot (YN-57): its place in the slot queue doesn't apply.
+  executor("c", "YN-c · Design first", "queued", {}, { position: 1, route: { kind: "waiting", earliest: CANDIDATE_AT } }),
   // Made from no template (an empty id).
-  executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null } }),
+  executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null }, route: { kind: "unrouted", why: "off" } }),
 ];
 const live = {
   executors: {
@@ -166,6 +175,7 @@ test("needs you is a row island by itself, with how long; line one is still its 
       "Waits for your answer in Home's Needs you",
       "YN-w · Export and import device preferences",
       "YN-w · Design first · Core host",
+      "Template: Design first",
       "Dispatched by you",
     ]);
     // A standing Agent that needs you: its name, then the word and what it asks.
@@ -199,6 +209,49 @@ test("line one is the task's short name, else its title; the ring is one of five
     assert.equal(p.island("k").querySelectorAll("svg .r-spin .r-arc").length, 1, "working: its turning arc");
     // No numbers on the row: no task key, no PR.
     for (const id of ["v", "k", "q", "a", "g"]) assert.doesNotMatch(p.row(id).textContent, /#\d|YN-/, `${id}: no key or PR on the row`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an executor waiting for a routing candidate says so, from when; one waiting for a slot says its place (YN-57)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.pill("c") !== null, "c's pill");
+    assert.equal(p.pill("c"), `Waiting for a candidate · from ${hhmm(CANDIDATE_AT)}`, "not its place in the slot queue");
+    assert.deepEqual(p.state("c"), ["idle", "Work c"]);
+    const c = await readTip(p.w, p.row("c").querySelector(".agent-select"));
+    assert.match(c[1], new RegExp(`^Waiting for a candidate · from ${hhmm(CANDIDATE_AT)} for \\S+$`), "the pill and since when");
+    assert.equal(c[2], "Waits for a routing candidate; starts once one's conditions hold");
+    assert.ok(c.includes(`Route: waiting for a candidate · from ${hhmm(CANDIDATE_AT)}`), c.join(" | "));
+    // Waiting for a slot: its place, as before.
+    assert.equal(p.pill("q"), "Queued · 2 in line");
+    const q = await readTip(p.w, p.row("q").querySelector(".agent-select"));
+    assert.equal(q[2], "Waits for an executor slot; starts in turn");
+    assert.ok(!q.some((line) => line.startsWith("Route:")), "no route said where Core gave none");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the row's card says the template and what routing gave it, a key by its id and an account by number and fingerprint (YN-57)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.pill("v") === "Lead's turn", "the rows");
+    const card = (id) => readTip(p.w, p.row(id).querySelector(".agent-select"));
+    const k = await card("k");
+    assert.ok(k.includes("Template: Design first"), k.join(" | "));
+    assert.ok(k.includes("Route: OpenCode · deepseek-flash · API key deepseek-main"), k.join(" | "));
+    assert.ok(k.indexOf("YN-k · Design first · Core host") < k.indexOf("Template: Design first")
+      && k.indexOf("Template: Design first") < k.indexOf("Route: OpenCode · deepseek-flash · API key deepseek-main"), "under its name and machine");
+    const v = await card("v");
+    assert.ok(v.includes("Route: Claude Code · opus · claude-swap #2 · 0f1e2d3c"), v.join(" | "));
+    const g = await card("g");
+    assert.ok(g.includes("Template: none") && g.includes("Not routed: routing was off at dispatch"), g.join(" | "));
+    assert.ok(g.includes("Agent g · Core host"), g.join(" | "));
+    for (const lines of [k, v, g]) assert.doesNotMatch(lines.join("\n"), /@|sk-/, "never an email or a key");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -274,6 +327,12 @@ test("in Chinese the row reads in Chinese", async () => {
     const q = await readTip(p.w, p.row("q").querySelector(".agent-select"));
     assert.match(q[1], /^排队 · 第 2 位 已用 \S+$/, "the pill and since when");
     assert.equal(q[2], "在等执行者槽位，按顺序启动");
+    // Waiting for a routing candidate (YN-57), and what routing gave one.
+    assert.equal(p.pill("c"), `等候选 · ${hhmm(CANDIDATE_AT)} 起`);
+    const k = await readTip(p.w, p.row("k").querySelector(".agent-select"));
+    assert.ok(k.includes("模板：Design first") && k.includes("路由：OpenCode · deepseek-flash · API key deepseek-main"), k.join(" | "));
+    const g = await readTip(p.w, p.row("g").querySelector(".agent-select"));
+    assert.ok(g.includes("模板：无") && g.includes("未经路由：派发时路由没开"), g.join(" | "));
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

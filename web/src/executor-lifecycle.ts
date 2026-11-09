@@ -29,7 +29,18 @@ export type ExecutorLifecycle = {
   position?: number | null;
   /** Its task's blocker, while it runs on a blocked task. */
   blocked?: string | null;
+  /** What executor routing gave it (YN-57 S4a), when its dispatch has a record; absent from an older Core's answer. */
+  route?: ExecutorRoute | null;
 };
+
+/** What routing gave an executor, as Core says it (docs/executor-model.md): chosen, with what it runs and its account
+ * or key; waiting for a candidate, from when one's reason ends; or not routed and why. Never a key's value or an email. */
+export type ExecutorRoute =
+  | { kind: "chosen"; candidate: string; label?: string; harness: string; model: string; effort?: string;
+      credential: { kind: "login" } | { kind: "apiKey"; keyId: string } | { kind: "codexHome"; id: string }
+        | { kind: "pool"; account: { fingerprint: string; number: number | null } } }
+  | { kind: "waiting"; earliest?: string }
+  | { kind: "unrouted"; why: string };
 
 export const lifecycleText = strings(
   {
