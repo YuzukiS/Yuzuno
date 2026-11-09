@@ -205,9 +205,6 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   await set(page, editorField(page, id, "Account or key"), "home:work");
   button(page, "Subscription left", card(page, id)).click();
   await tick();
-  // Only the week's share is asked for: there is no 5-hour quota now (YN-60).
-  const quotaFields = [...card(page, id).querySelectorAll(".routing-cond .routing-inline-field")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
-  assert.deepEqual(quotaFields, ["This week left at least%"], "no 5-hour field");
   await set(page, editorField(page, id, "Model"), "gpt 6.1");
   assert.ok(card(page, id).textContent.includes("A model is one name, without spaces."), "as Core's check would refuse it");
   assert.match(bar(page).textContent, /Correct the marked block to save/);
@@ -234,7 +231,9 @@ test("a quota condition that named only the 5-hour share, shown by Core with not
   await until(() => card(page, "cl").querySelector(".routing-edit"), "its editor");
   assert.equal(card(page, "cl").querySelector(".routing-cond-error")?.textContent,
     "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.");
-  assert.ok(!card(page, "cl").textContent.includes("5-hour window"), "no 5-hour field to fill");
+  // Only the week's share is asked for: there is no 5-hour quota now (YN-60).
+  const quotaFields = [...card(page, "cl").querySelectorAll(".routing-cond .routing-inline-field")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
+  assert.deepEqual(quotaFields, ["This week left at least%"], "no 5-hour field to fill");
   await set(page, card(page, "cl").querySelector(".routing-cond input"), "20");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
