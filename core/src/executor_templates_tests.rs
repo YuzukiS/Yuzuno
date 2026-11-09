@@ -74,7 +74,7 @@ async fn templates_are_the_workspaces_saved_against_the_version_read() {
     assert_eq!(ids(&seen), [("reviewer".into(), "workspace".into()), ("writer".into(), "workspace".into())],
         "a Project's view offers the Workspace's templates");
     assert!(seen.get("project").is_none(), "and no list of its own: {seen}");
-    assert_eq!(seen["presets"].as_array().map(Vec::len), Some(20), "ten presets in two languages (YN-23)");
+    assert_eq!(seen["presets"].as_array().map(Vec::len), Some(22), "eleven presets in two languages (YN-23, YN-70)");
     assert_eq!(ws.store.executor_template("reviewer").unwrap().map(|t| t.label), Some("Label reviewer".into()));
     assert_eq!(ws.store.executor_template("absent").unwrap(), None);
     let (status, missing) = call(&ws, "GET", "/api/executor-templates?projectId=nope", None).await;
@@ -237,19 +237,24 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     assert_eq!(read_list(None).unwrap(), Templates::default());
 }
 
-/// YN-23: Core offers the ten presets of T-43's plan in English and Chinese,
+/// YN-23: Core offers the presets of T-43's plan in English and Chinese,
 /// each a template that follows routing (YN-56), with its permission level:
 /// every one passes a save's checks as it is and fixed to Codex or Claude
 /// Code, and its instructions fit the 8 KiB a template has. The view serves
-/// them; nothing stores them.
+/// them; nothing stores them. YN-70: design first is two presets, the
+/// design (strong) and its build (fast), and each preset names its tier.
 #[tokio::test]
-async fn the_ten_presets_are_templates_in_both_languages() {
+async fn the_presets_are_templates_in_both_languages() {
     let presets = presets();
-    let ids = ["design-first", "red-test-fix", "batch-change", "investigation", "decision-memo", "verification",
+    let ids = ["design", "build-from-design", "red-test-fix", "batch-change", "investigation", "decision-memo", "verification",
         "sliced-feature", "runbook", "small-fix", "test-hygiene"];
     for language in PRESET_LANGUAGES {
         let these: Vec<&Value> = presets.iter().filter(|p| p["language"] == language).collect();
-        assert_eq!(these.iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(), ids, "{language}: the ten, in order");
+        assert_eq!(these.iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(), ids, "{language}: the eleven, in order");
+        let tiers: Vec<(&str, &str)> = these.iter().map(|p| (p["id"].as_str().unwrap(), p["tier"].as_str().unwrap_or("none"))).collect();
+        assert_eq!(tiers, [("design", "strong"), ("build-from-design", "fast"), ("red-test-fix", "fast"), ("batch-change", "fast"),
+            ("investigation", "strong"), ("decision-memo", "strong"), ("verification", "strong"), ("sliced-feature", "strong"),
+            ("runbook", "strong"), ("small-fix", "fast"), ("test-hygiene", "fast")], "{language}: each preset's tier");
     }
     for preset in &presets {
         let (id, language) = (preset["id"].as_str().unwrap(), preset["language"].as_str().unwrap());
@@ -266,6 +271,7 @@ async fn the_ten_presets_are_templates_in_both_languages() {
         if let Some(level) = preset.get("permissionLevel") {
             template["permissionLevel"] = level.clone();
         }
+        template["tier"] = preset["tier"].clone();
         assert!(preset.get("permissions").is_none(), "{id}: no permission of one harness");
         let saved = parse_save(&[template.clone()], false, &[]);
         assert!(saved.is_ok(), "{id} {language}: {saved:?}");
@@ -280,8 +286,21 @@ async fn the_ten_presets_are_templates_in_both_languages() {
     let runbook = presets.iter().find(|p| p["id"] == "runbook").unwrap();
     assert_eq!(runbook["permissionLevel"], "ask", "the gated runbook asks before each action");
     assert_eq!(presets.iter().filter(|p| p.get("permissionLevel").is_some()).count(), 2, "only the runbook, in two languages, names a level");
-    let zh = presets.iter().find(|p| p["id"] == "design-first" && p["language"] == "zh-Hans").unwrap();
-    assert_eq!((zh["label"].clone(), zh["steps"][1]["label"].clone()), (json!("设计先行"), json!("设计说明")));
+    let zh = presets.iter().find(|p| p["id"] == "design" && p["language"] == "zh-Hans").unwrap();
+    assert_eq!((zh["label"].clone(), zh["steps"][1]["label"].clone()), (json!("设计"), json!("设计说明")));
+    // The design stops at its approval, and both halves say how the note is handed over: whole, in the result.
+    for language in PRESET_LANGUAGES {
+        let of = |id: &str| presets.iter().find(|p| p["id"] == id && p["language"] == language).unwrap();
+        let (design, build) = (of("design"), of("build-from-design"));
+        assert_eq!(design["deliveryMode"], "none", "{language}: the design changes no repository");
+        assert_eq!(design["steps"].as_array().unwrap().last().unwrap()["kind"], "gate", "{language}: it ends at its approval");
+        assert_eq!(build["deliveryMode"], "pr", "{language}: the build is delivered by pull request");
+        for preset in [design, build] {
+            let instructions = preset["instructions"].as_str().unwrap();
+            assert!(instructions.contains("task_result_get") && instructions.contains("800"),
+                "{language} {}: the note whole in the result, read with task_result_get", preset["id"]);
+        }
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
@@ -468,6 +487,42 @@ async fn a_templates_delivery_steps_and_when_to_choose_round_trip_through_a_save
     assert_eq!(read[0].given("workspace")["permissionLevel"], "auto", "its executors are told their permission level (YN-56)");
     assert!(read[1].given("workspace").get("permissionLevel").is_none());
     assert!(Template::general().given("builtin").get("deliveryMode").is_none(), "the general executor has neither");
+}
+
+/// YN-70: a template may name the tier its work wants, strong or fast. A
+/// save checks it and keeps it; its executors' materials say it and that it
+/// is the template's; the list a lead reads says it. Unset is no preference,
+/// and says nothing.
+#[tokio::test]
+async fn a_templates_tier_is_checked_kept_and_told_to_its_executors() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let with_tier = |id: &str, tier: &str| { let mut t = follows(id); t["tier"] = json!(tier); t };
+    for tier in ["strong", "fast"] {
+        assert!(parse_save(&[with_tier("t", tier)], true, &[]).is_ok(), "{tier}");
+        let mut fixed = template("t", "codex");
+        fixed["tier"] = json!(tier);
+        assert!(parse_save(&[fixed], true, &[]).is_ok(), "a fixed template names a tier too: {tier}");
+    }
+    for wrong in ["heavy", "Strong", ""] {
+        let says = parse_save(&[with_tier("t", wrong)], true, &[]).err().map(|e| e.to_string()).unwrap_or_default();
+        assert_eq!(says, format!("A template's tier is strong or fast, not {wrong}"));
+    }
+    let mut number = follows("t");
+    number["tier"] = json!(2);
+    assert!(parse_save(&[number], true, &[]).is_err(), "a tier is a word");
+    let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
+        Some(json!({"expectedVersion":0,"templates":[with_tier("build", "fast"), with_tier("design", "strong"), follows("plain")]}))).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["workspace"]["templates"][0], with_tier("build", "fast"), "kept as sent");
+    let read = ws.store.executor_templates().unwrap().templates;
+    assert_eq!(read.iter().map(|t| t.tier.clone()).collect::<Vec<_>>(), [Some("fast".into()), Some("strong".into()), None]);
+    let given = read[0].given("workspace");
+    assert_eq!((given["tier"].clone(), given["tierSource"].clone()), (json!("fast"), json!("template")), "{given}");
+    assert!(read[2].given("workspace").get("tier").is_none() && read[2].given("workspace").get("tierSource").is_none(),
+        "no tier, nothing said");
+    let listed: Vec<Value> = read.iter().map(listed).collect();
+    assert_eq!((listed[1]["tier"].clone(), listed[2].get("tier")), (json!("strong"), None), "the list says it");
 }
 
 /// YN-23: steps and the delivery mode are checked as the editor shows them,
