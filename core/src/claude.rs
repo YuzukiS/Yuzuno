@@ -3367,12 +3367,16 @@ pub(crate) fn deliver_message(d: &mut AgentDetail, root: &std::path::Path, clien
         open_native_turn(d, turn_id, at, true);
     }
     let here = d.turn_at(turn_id, at)["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client_id));
+    // An item made here, before `show_follow_up` showed the follow-up, has no
+    // mark yet: missing, it says nothing about Claude having read it.
+    let mut made = false;
     if !here {
         let moved = d.turns.iter_mut().find_map(|t| {
             let items = t["items"].as_array_mut()?;
             let index = items.iter().position(|i| i["clientId"] == client_id)?;
             Some(items.remove(index))
         });
+        made = moved.is_none();
         let item = moved.unwrap_or_else(|| {
             follow_up_item(turn_id, client_id, user_content(&text, crate::input_images::history_images(root, &agent, &images)), at)
         });
@@ -3384,7 +3388,7 @@ pub(crate) fn deliver_message(d: &mut AgentDetail, root: &std::path::Path, clien
                 item.as_object_mut().map(|item| item.remove("_yuzunoDelivery"));
             }
             // Never over a confirmation: read stays read.
-            "unconfirmed" if item.get("_yuzunoDelivery").is_none() => {}
+            "unconfirmed" if !made && item.get("_yuzunoDelivery").is_none() => {}
             "unconfirmed" => item["_yuzunoDelivery"] = "unknown".into(),
             _ => item["_yuzunoDelivery"] = "queued".into(),
         }
