@@ -502,6 +502,8 @@ async function run({ width, height, theme, lang }) {
     assert.equal(await account.inputValue(), "key:anthropic-2", `${tag}: the candidate's key now`);
     const inPlace = report.writes.filter((x) => x.path === "/api/routing/keys/anthropic-2");
     assert.deepEqual(inPlace.map((x) => [x.method, x.body]), [["PUT", { source: "local", provider: "anthropic", value: IN_PLACE }]], `${tag}: one write, with the value`);
+    // This run's own writes: the next run's list of writes leaves them out.
+    for (const x of report.writes) if (x.tag === undefined) x.tag = tag;
     await clean("once the key added in place is kept");
     assert.equal(await page.evaluate((secret) => [...document.querySelectorAll("input")].some((i) => i.value === secret), IN_PLACE), false, `${tag}: no field holds it`);
     await page.mouse.move(0, 0);
