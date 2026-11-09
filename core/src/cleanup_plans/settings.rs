@@ -45,6 +45,9 @@ pub(crate) struct Settings {
     pub evidence_file_mib: u32,
     /// File suffixes an entry's snapshot keeps (design 2.6).
     pub evidence_suffixes: Vec<String>,
+    /// Days a snapshot is kept, then deleted; a worktree's ref stays
+    /// (default 30, design's own choice; GitHub keeps Actions artifacts 90).
+    pub snapshot_days: u32,
     pub version: i64,
     pub changed_at: Option<String>,
 }
@@ -62,6 +65,7 @@ impl Default for Settings {
             snapshot_max_mib: 256,
             evidence_file_mib: 4,
             evidence_suffixes: EVIDENCE_SUFFIXES.iter().map(|s| (*s).to_owned()).collect(),
+            snapshot_days: 30,
             version: 0,
             changed_at: None,
         }
@@ -91,6 +95,7 @@ pub(crate) struct Change {
     pub snapshot_max_mib: u32,
     pub evidence_file_mib: u32,
     pub evidence_suffixes: Vec<String>,
+    pub snapshot_days: u32,
     pub expected_version: i64,
 }
 
@@ -126,6 +131,7 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
         ("evidenceDays", change.evidence_days, 0, 365),
         ("snapshotMaxMib", change.snapshot_max_mib, 0, 4096),
         ("evidenceFileMib", change.evidence_file_mib, 0, 256),
+        ("snapshotDays", change.snapshot_days, 1, 365),
     ];
     for (name, value, low, high) in ranges {
         ensure!((low..=high).contains(&value), "invalid_input: {name} is {low} to {high}");
@@ -153,6 +159,7 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
         snapshot_max_mib: change.snapshot_max_mib,
         evidence_file_mib: change.evidence_file_mib,
         evidence_suffixes: suffixes,
+        snapshot_days: change.snapshot_days,
         version: current.version + 1,
         changed_at: Some(now()),
     };

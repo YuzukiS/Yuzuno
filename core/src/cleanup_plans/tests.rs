@@ -108,7 +108,7 @@ fn settings_change(lab: &Lab, edit: impl FnOnce(&mut Settings)) {
     settings::change(&db, settings::Change {
         protected_paths: s.protected_paths, scratch_roots: s.scratch_roots, max_items: s.max_items, plan_hours: s.plan_hours,
         summary_paths: s.summary_paths, fresh_days: s.fresh_days, evidence_days: s.evidence_days, snapshot_max_mib: s.snapshot_max_mib,
-        evidence_file_mib: s.evidence_file_mib, evidence_suffixes: s.evidence_suffixes, expected_version: s.version,
+        evidence_file_mib: s.evidence_file_mib, evidence_suffixes: s.evidence_suffixes, snapshot_days: s.snapshot_days, expected_version: s.version,
     })
     .unwrap();
 }
@@ -589,7 +589,7 @@ fn settings_are_checked_and_saved_against_the_version_read() {
     let change = |protected: Vec<&str>, version: i64, max_items: u32| settings::Change {
         protected_paths: protected.into_iter().map(str::to_owned).collect(), scratch_roots: vec![], max_items, plan_hours: 24,
         summary_paths: 10, fresh_days: 1, evidence_days: 7, snapshot_max_mib: 256, evidence_file_mib: 4,
-        evidence_suffixes: vec![".PNG".into(), "png".into()], expected_version: version,
+        evidence_suffixes: vec![".PNG".into(), "png".into()], snapshot_days: 30, expected_version: version,
     };
     assert!(settings::change(&db, change(vec!["relative/path"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));
     assert!(settings::change(&db, change(vec!["/"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));

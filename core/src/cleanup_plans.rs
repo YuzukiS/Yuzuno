@@ -53,6 +53,7 @@ mod apply;
 mod check;
 mod settings;
 mod summary;
+mod worktrees;
 
 pub(crate) use check::HostEnv;
 pub(crate) use settings::Settings;
@@ -141,9 +142,10 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/cleanup/settings", get(settings::http_read).put(settings::http_change))
         .route("/api/tasks/{task}/cleanup-plan", get(http_plan))
+        .route("/api/cleanup/plans/{plan}/items/{item}/restore", axum::routing::post(http_restore))
 }
 
-pub(crate) const TOOLS: [&str; 3] = ["cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply"];
+pub(crate) const TOOLS: [&str; 4] = ["cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_restore"];
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let request = json!({"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."});
@@ -170,6 +172,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "afterItem":{"type":"string","description":"items: the item after which the page starts (nextAfterItem)."},
                 "limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE,"default":PAGE}}}}),
         apply::tool_definition(),
+        worktrees::restore_definition(),
     ]
 }
 
@@ -177,6 +180,7 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: S
     match operation.as_str() {
         "cleanup_plan_submit" => submit(&ws, actor, input).await,
         "cleanup_apply" => apply::apply(&ws, actor, input).await,
+        "cleanup_restore" => worktrees::restore(&ws, actor, input).await,
         "cleanup_plan_get" => {
             let get: GetInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
             ws.stored(move |s| plan_get(s, actor.as_deref(), &get)).await
@@ -433,11 +437,12 @@ fn register(store: &Store, actor: &str, input: &SubmitInput, digest: &str, prepa
         })
         .collect();
     // What the sha256 fixes: the plan as registered, its checks and Core's summary.
-    let fixed = json!({"planId": id, "taskId": collaboration::task_number(&tx, &prepared.task)?, "title": input.title,
+    let task_key = collaboration::task_number(&tx, &prepared.task)?;
+    let fixed = json!({"planId": id, "taskId": task_key, "title": input.title,
         "inventory": prepared.inventory, "machine": prepared.remote, "groups": input.groups, "items": rows,
         "summary": summaries, "createdAt": created, "expiresAt": expires});
     let sha = sha256(&fixed.to_string());
-    let data = json!({"title": input.title, "inventory": prepared.inventory, "machine": prepared.remote, "groups": input.groups,
+    let data = json!({"title": input.title, "taskKey": task_key, "inventory": prepared.inventory, "machine": prepared.remote, "groups": input.groups,
         "summary": summaries, "requestDigest": digest, "settingsVersion": prepared.settings.version,
         "sha256Of": "planId, taskId, title, inventory, machine, groups, items, summary, createdAt, expiresAt"});
     // A newer plan of the task cancels the plans waiting for approval.
@@ -639,17 +644,29 @@ fn approval(db: &Connection, id: &str) -> Result<Value> {
 
 impl Workspace {
     /// Once at start: plans a stopped Core left applying are finished, what
-    /// was not reached kept, and their executors told.
-    pub(crate) fn start_cleanup_recovery(self: &Arc<Self>) {
-        let ws = self.clone();
+    /// was not reached kept, and their executors told. Then every hour,
+    /// snapshots past `snapshotDays` are deleted (refs stay).
+    pub(crate) fn start_cleanup(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            match ws.stored(apply::recover).await {
-                Ok(0) => {}
-                Ok(n) => {
-                    eprintln!("[cleanup] {n} plan(s) left applying by a stopped Core were finished; nothing was retried");
-                    ws.collaboration_wakeup.notify_one();
+            if let Some(ws) = weak.upgrade() {
+                match ws.stored(apply::recover).await {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        eprintln!("[cleanup] {n} plan(s) left applying by a stopped Core were finished; nothing was retried");
+                        ws.collaboration_wakeup.notify_one();
+                    }
+                    Err(error) => eprintln!("[cleanup] recovery failed: {error:#}"),
                 }
-                Err(error) => eprintln!("[cleanup] recovery failed: {error:#}"),
+            }
+            loop {
+                let Some(ws) = weak.upgrade() else { break };
+                let data = ws.data_dir.clone();
+                if let Err(error) = ws.stored(move |s| worktrees::expire_snapshots(s, &data)).await {
+                    eprintln!("[cleanup] snapshot expiry failed: {error:#}");
+                }
+                drop(ws);
+                tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         });
     }
@@ -676,6 +693,18 @@ fn current_plan(store: &Store, task: &str) -> Result<Value> {
 
 async fn http_plan(AppState(ws): AppState<Arc<Workspace>>, UrlPath(task): UrlPath<String>) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.stored(move |s| current_plan(s, &task)).await?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestoreBody {
+    request_id: String,
+}
+
+/// The user's restore from Settings.
+async fn http_restore(AppState(ws): AppState<Arc<Workspace>>, UrlPath((plan, item)): UrlPath<(String, String)>, Json(body): Json<RestoreBody>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(worktrees::restore(&ws, None, json!({"requestId": body.request_id, "planId": plan, "itemId": item})).await?))
 }
 
 #[cfg(test)]

@@ -402,15 +402,12 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
     if !plan.data["machine"].is_null() {
         return outcome("refused", "remote", "On another machine: Core removes only on its own host for now");
     }
-    if item.kind == "worktree" {
-        return outcome("refused", "unsupported", "This Core does not remove worktrees");
-    }
     let path = PathBuf::from(&item.path);
     if !same(&path, &item.pre) {
         return outcome("refused", "changed", "It changed since the plan was registered");
     }
     let given = check::Item { id: item.id.clone(), group: item.group.clone(), kind: item.kind.clone(), rule: item.pre["rule"].as_str().map(str::to_owned),
-        path: item.path.clone(), save_diff: false };
+        path: item.path.clone(), save_diff: item.pre["saveDiff"] == true };
     let now = check::preflight(ctx, &given).await;
     if let Some((code, why)) = now.refusal {
         return outcome("refused", code, why);
@@ -429,6 +426,22 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
         return outcome("refused", code, why);
     }
     let bytes = now.pre["bytes"].clone();
+    if item.kind == "worktree" {
+        let task = plan.data["taskKey"].as_str().unwrap_or(&plan.task).to_owned();
+        return match worktrees::reclaim(ctx, &ws.data_dir, &plan.id, &task, &item.id, &path, &item.pre, &now.pre).await {
+            Ok((record, snapshot)) => {
+                let mut result = json!({"code": "removed", "bytes": bytes});
+                for (key, value) in record.as_object().into_iter().flatten() {
+                    result[key] = value.clone();
+                }
+                Outcome { state: "removed", result, snapshot: Some(snapshot) }
+            }
+            Err((state, why)) if state == "partial" || state == "failed" => {
+                Outcome { state: if state == "partial" { "partial" } else { "failed" }, result: json!({"code": state, "why": why}), snapshot: None }
+            }
+            Err((code, why)) => outcome("refused", code, why),
+        };
+    }
     let mut snapshot = None;
     if item.kind == "entry" {
         let out = ws.data_dir.join("cleanup-snapshots").join(&plan.id).join(format!("{}.tar.gz", item.id));
@@ -474,7 +487,7 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
 
 /// Moves path aside in its folder, checks it is the object planned, and
 /// removes it without following links.
-fn remove_aside(path: &Path, dev: Option<u64>, ino: Option<u64>) -> std::result::Result<Option<String>, (&'static str, String)> {
+pub(super) fn remove_aside(path: &Path, dev: Option<u64>, ino: Option<u64>) -> std::result::Result<Option<String>, (&'static str, String)> {
     let parent = path.parent().ok_or(("refused", "It has no parent folder".to_owned()))?;
     let aside = parent.join(format!("{REMOVING}{}", uuid::Uuid::new_v4()));
     std::fs::rename(path, &aside).map_err(|e| ("refused", format!("It could not be moved aside: {e}")))?;
@@ -587,7 +600,7 @@ fn keep_evidence(entry: &Path, out: &Path, suffixes: &[String], limit: u64) -> R
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(std::fs::read(out)?))
     };
-    Ok(Some(json!({"path": out, "sha256": sha, "files": files.len(), "bytes": bytes})))
+    Ok(Some(json!({"at": now(), "path": out, "sha256": sha, "files": files.len(), "bytes": bytes})))
 }
 
 /// The plan is applied: the rest of its pending items are kept, the task
