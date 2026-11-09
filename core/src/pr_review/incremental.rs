@@ -257,7 +257,9 @@ pub(super) fn schema(findings: usize, base: bool) -> Value {
 struct Base<'a> {
     /// The merge base differs from the earlier round's.
     changed: bool,
-    /// The round is one `fixed_by_base` was offered to (base_offered).
+    /// The round is of the coverage policy `fixed_by_base` is offered in;
+    /// with `changed` and `paths`, what base_offered checks, each with its
+    /// own reason.
     offered: bool,
     /// What Core read of the change, when it could.
     paths: Option<&'a [Value]>,
@@ -387,7 +389,7 @@ pub(super) fn conclude(run: &mut Value, answers: &Value) {
     let listed = (i["baseChanges"]["state"] == "read").then(|| i["baseChanges"]["paths"].as_array().map(Vec::as_slice)).flatten();
     let base = Base {
         changed: i["sameMergeBase"] == false,
-        offered: base_offered(run),
+        offered: run["coveragePolicyVersion"].as_u64().is_some_and(|v| v >= 3),
         paths: listed,
         whole: listed.is_some_and(|paths| i["baseChanges"]["truncated"] == false && i["baseChanges"]["total"].as_u64() == Some(paths.len() as u64)),
         targets: i["targets"].as_array().into_iter().flatten().filter_map(|t| t["path"].as_str()).collect(),
