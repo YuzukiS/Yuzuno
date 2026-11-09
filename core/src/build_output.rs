@@ -40,6 +40,8 @@ pub(crate) const REMOVING: &str = ".yuzuno-removing-";
 const BUILDING: &str = "Cargo is building here now";
 /// Build locks a newer Cargo keeps beside .cargo-lock in a profile directory.
 const NEWER_LOCKS: [&str; 2] = [".cargo-build-lock", ".cargo-artifact-lock"];
+/// The folders Cargo makes directly in a profile directory.
+const CARGO_DIRS: [&str; 5] = ["build", "deps", "examples", "incremental", ".fingerprint"];
 /// The processes named in one reason list; the rest are counted.
 const MAX_PROCESSES: usize = 3;
 
@@ -423,6 +425,35 @@ pub(crate) fn process_users(dir: &Path) -> std::result::Result<Vec<String>, Stri
     Ok(users)
 }
 
+/// Top-level names in a profile directory that Cargo does not make: its
+/// build, deps, examples, incremental and .fingerprint folders, its lock
+/// files, and its final artifacts (each with its .d file beside it, or a hard
+/// link of the build in deps/). Anything else (a screenshot, a report, a link)
+/// was put there by someone, so YN-65's cleanup keeps the whole profile.
+pub(crate) fn foreign_entries(profile: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(profile) else { return vec!["(it cannot be read)".to_owned()] };
+    let names: HashSet<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let mut foreign: Vec<String> = names
+        .iter()
+        .filter(|name| {
+            let path = profile.join(name);
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { return true };
+            if meta.is_dir() {
+                return !CARGO_DIRS.contains(&name.as_str());
+            }
+            if !meta.is_file() {
+                return true;
+            }
+            let cargo_file = name.as_str() == ".cargo-lock" || NEWER_LOCKS.contains(&name.as_str());
+            let artifact = name.ends_with(".d") || names.contains(&format!("{name}.d")) || meta.nlink() > 1;
+            !(cargo_file || artifact)
+        })
+        .cloned()
+        .collect();
+    foreign.sort();
+    foreign
+}
+
 /// Why candidate must stay, from Core's own records: who works in the
 /// workspace now and which Job records name the candidate.
 pub(crate) async fn record_protections(ws: &Arc<Workspace>, root: &Path, candidate: &Path) -> Vec<String> {
@@ -459,7 +490,11 @@ pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
 /// Removes one selected candidate after every check passes again: the
 /// folder is renamed aside while its build lock is held, checked to be the
 /// one previewed, then removed without following links.
-pub(crate) async fn remove_one(ws: &Arc<Workspace>, root: &Path, candidate: &Value) -> Value {
+///
+/// Git's checks run in git_root, the Git working tree it is in; Jobs and
+/// Agents are looked for in users_root: the workspace, or a target directory
+/// of its own (YN-65).
+pub(crate) async fn remove_one(ws: &Arc<Workspace>, git_root: &Path, users_root: &Path, candidate: &Value) -> Value {
     let path = PathBuf::from(candidate["path"].as_str().unwrap_or(""));
     let mut result = json!({"id": candidate["id"], "relative": candidate["relative"]});
     let refuse = |mut result: Value, why: String| {
@@ -477,8 +512,8 @@ pub(crate) async fn remove_one(ws: &Arc<Workspace>, root: &Path, candidate: &Val
     if !same {
         return refuse(result, "It changed since the preview; preview again".to_owned());
     }
-    let mut protected = local_protections(root, &path).await;
-    protected.extend(record_protections(ws, root, &path).await);
+    let mut protected = local_protections(git_root, &path).await;
+    protected.extend(record_protections(ws, users_root, &path).await);
     if !protected.is_empty() {
         return refuse(result, protected.join("; "));
     }

@@ -1231,6 +1231,7 @@ impl Store {
         crate::project_brief::migrate(&db)?;
         crate::brief_turns::migrate(&db)?;
         crate::task_workspaces::migrate(&db)?;
+        crate::build_cleanup::migrate(&db)?;
         record_rows::migrate(&db)?;
         db.execute_batch(COMPLETION_INDEX)?;
         db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES('workspaceId',?1)",

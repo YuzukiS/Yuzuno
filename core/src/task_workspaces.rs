@@ -574,7 +574,7 @@ async fn remove_selected(ws: Arc<Workspace>, task: String, id: String, input: Ex
             results.push(json!({"id": wanted, "state": "refused", "reason": "Not in this preview"}));
             continue;
         };
-        results.push(remove_one(&ws, &root.path, candidate).await);
+        results.push(remove_one(&ws, &root.path, &root.path, candidate).await);
     }
     let after = free_bytes(&root.path);
     Ok(json!({"results": results, "freeBytesBefore": before, "freeBytesAfter": after,

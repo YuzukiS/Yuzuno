@@ -200,6 +200,7 @@ async fn the_users_release_route_releases_and_the_agent_lists_when() {
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
     let listed = ws.store.agents().unwrap().into_iter().find(|a| a.id == "e6").unwrap();
     assert_eq!(json!(listed.released_at), body["releasedAt"], "the Agent list names the release");
+    assert_eq!(body["buildCleanup"], json!({"enabled": false}), "the build output cleanup is off unless the user turns it on (YN-65)");
     assert_eq!(listed.released_by.as_deref(), Some("user"), "and who made it");
     let listed = serde_json::to_value(&listed).unwrap();
     assert_eq!((listed["releasedAt"].clone(), listed["releasedBy"].clone()), (body["releasedAt"].clone(), json!("user")));

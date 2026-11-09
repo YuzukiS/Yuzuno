@@ -42,7 +42,7 @@ pub(crate) const REOPEN_REFUSED: &str =
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name":"executor_release",
-        "description":"Release an executor once its work is accepted: Core closes it for good. The Agent that dispatched it from an executor template, a lead of its task's Project, or the user may release it; setting its task done releases it too. While a Job of its runs, its delivery flow is under way or a pull request operation of its is in flight, it is archiving: its CI watches stop, its queued Jobs are held (refused at its close), it starts nothing new, and the answer's archiving.reason says what it waits for; Core closes it once that ends. Its runtime then stops as on Close, its executor slot is freed, its Brief sections go to its dispatcher if that Agent is open, and it is never reopened. Its task, dispatch and result stay as they are: releasing does not accept the work, so record that on the task. Refused while Core prepares an update, as Close is. The answer names releasedAt and releasedBy; releasing a released executor answers with the same.",
+        "description":"Release an executor once its work is accepted: Core closes it for good. The Agent that dispatched it from an executor template, a lead of its task's Project, or the user may release it; setting its task done releases it too. While a Job of its runs, its delivery flow is under way or a pull request operation of its is in flight, it is archiving: its CI watches stop, its queued Jobs are held (refused at its close), it starts nothing new, and the answer's archiving.reason says what it waits for; Core closes it once that ends. Its runtime then stops as on Close, its executor slot is freed, its Brief sections go to its dispatcher if that Agent is open, and it is never reopened. Its task, dispatch and result stay as they are: releasing does not accept the work, so record that on the task. Refused while Core prepares an update, as Close is. The answer names releasedAt and releasedBy; releasing a released executor answers with the same. buildCleanup says whether the user's build output cleanup is on and, if so, from when (dueAt, counted from its close) Core removes the Cargo debug output of the worktrees its records show were its own.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","agentId"],"properties":{
             "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."},
             "agentId":{"type":"string","minLength":1,"description":"The executor, as peers_list or the task's dispatch names it."}}}
@@ -218,6 +218,8 @@ impl Workspace {
         if let Some(release) = archiving {
             answer["archiving"] = json!({"since":release.since,"releasedBy":release.by,"reason":release.reason});
         }
+        let policy = self.stored(|store| crate::build_cleanup::policy(&*store.db.read()?)).await?;
+        answer["buildCleanup"] = crate::build_cleanup::release_note(&policy, agent.closed_at.as_deref(), agent.remote.is_some());
         Ok(answer)
     }
 
@@ -237,6 +239,8 @@ impl Workspace {
         self.stored(move |store| archive_closed(store, &agent, &by)).await?;
         // Archived now, by its close or here: what shows it reads it again.
         self.executor_changed(id);
+        // Its build output may be due now (YN-65), when the user keeps none.
+        self.wake_build_cleanup();
         Ok(())
     }
 
