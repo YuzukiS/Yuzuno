@@ -7,8 +7,10 @@
 //!   user's reply to a Home ask of the task's Project. Only Home's reply
 //!   route records a reply, so it is the user's; the ask must be unchanged
 //!   since that reply, so its question is the one they answered; and that
-//!   question must name the PR (`#n`) and the finding (its title, or its
-//!   round's review id), so a reply accepts only what it was asked about;
+//!   question must name the PR (`#n`) and the finding, by its title or its
+//!   own id (the first 8 characters of its round's review id, a slash and
+//!   its index, `b3e3a2a5/0`; the review id alone names every finding of the
+//!   round), so a reply accepts only what it was asked about;
 //! - bound to that finding (its round, index and title), and so to the head
 //!   the round reviewed: a new round or a new head needs a new release.
 //!
@@ -76,11 +78,10 @@ fn clip(text: &str) -> String {
     out
 }
 
-/// Whether `text` names PR `number` as `#number`, not as the start of a
-/// longer number.
-fn names_pr(text: &str, number: u64) -> bool {
-    let tag = format!("#{number}");
-    text.match_indices(&tag).any(|(at, _)| !text[at + tag.len()..].starts_with(|c: char| c.is_ascii_digit()))
+/// Whether `text` holds `tag` not followed by another digit: `#11` is not
+/// `#110`, and `b3e3a2a5/1` is not `b3e3a2a5/10`.
+fn names(text: &str, tag: &str) -> bool {
+    text.match_indices(tag).any(|(at, _)| !text[at + tag.len()..].starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// The acknowledged findings as the release records them, or why not. Each
@@ -123,10 +124,10 @@ pub(super) fn resolve(listed: &[Acknowledged], round: &Value, number: u64, by_us
                     return Ok(Err(format!("{which} cites `{key}`, which changed after the user replied, so its question isn't the one they answered; ask again")));
                 }
                 let text = ask["text"].as_str().unwrap_or_default();
-                let short: String = id.chars().take(8).collect();
-                if !names_pr(text, number) || !(text.contains(title) || text.contains(&short)) {
+                let own = format!("{}/{}", id.chars().take(8).collect::<String>(), a.index);
+                if !names(text, &format!("#{number}")) || !(text.contains(title) || names(text, &own)) {
                     return Ok(Err(format!(
-                        "{which} cites `{key}`, whose ask doesn't name PR #{number} and this finding (its title “{title}”, or review {short}): a reply accepts only what its question names"
+                        "{which} cites `{key}`, whose ask doesn't name PR #{number} and this finding (its title “{title}”, or its id {own}): a reply accepts only what its question names"
                     )));
                 }
                 json!({"key":key,"version":ask["version"],"title":ask["title"],"question":clip(ask["question"].as_str().unwrap_or_default()),

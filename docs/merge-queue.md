@@ -206,9 +206,10 @@ and `title` as `review_get` shows them, with an optional note (YN-67).
   The ask must be live and unchanged since the reply, so its question is the
   one they answered: an owner's edit after a reply keeps the reply but not the
   question, so cite an ask before resolving it. Its title, question or body
-  must name the PR as `#number` and the finding by its title or its round's
-  review id (the first 8 characters will do). The task's executor never
-  releases, with or without one.
+  must name the PR as `#number` and the finding by its title or its own id:
+  the first 8 characters of its round's review id, a slash and its index
+  (`b3e3a2a5/0`). The review id alone names every finding of the round, so it
+  doesn't count. The task's executor never releases, with or without one.
 - **What.** The findings are those of the PR's last completed round, every
   P0–P2 finding of it listed, and nothing else keeps it from passing: it is
   complete, has no reason code, stopped at no limit and the reviewer reached a

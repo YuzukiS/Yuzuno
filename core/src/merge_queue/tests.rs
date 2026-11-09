@@ -4086,6 +4086,21 @@ async fn an_acknowledgement_that_isnt_the_users_acceptance_of_exactly_these_p2_f
     replied_ask(&lab.ws.store, &project_of(&lab), "design/q", &named(ACCEPTED), Some("Intended"), ASKED);
     let executor = lab.release_accepting(Some("dev"), "x3", cited).await.unwrap_err().to_string();
     assert!(executor.contains("merge_release_not_allowed"), "{executor}");
+    // The round's review id alone names every finding of the round (R1 P3):
+    // a finding is named by its title or its own id, review id and index.
+    let lab = lab(green());
+    let round = finding_round(&lab.ws.store, &lab.task, &[(ACCEPTED, 2)], |_| {});
+    let short = &round[..8];
+    let cite = |key: &str| json!([{"reviewId":round,"index":0,"title":ACCEPTED,"userReply":{"key":key}}]);
+    replied_ask(&lab.ws.store, &project_of(&lab), "design/round", &format!("PR #11: review {short} found a P2. Intended?"), Some("Intended"), ASKED);
+    let refused = lab.release_accepting(Some("lead"), "y1", cite("design/round")).await.unwrap_err().to_string();
+    assert!(refused.contains(&format!("whose ask doesn't name PR #11 and this finding (its title “{ACCEPTED}”, or its id {short}/0)")), "{refused}");
+    replied_ask(&lab.ws.store, &project_of(&lab), "design/other", &format!("PR #11: is finding {short}/01 intended?"), Some("Intended"), ASKED);
+    let refused = lab.release_accepting(Some("lead"), "y2", cite("design/other")).await.unwrap_err().to_string();
+    assert!(refused.contains("whose ask doesn't name PR #11 and this finding"), "{short}/01 is not {short}/0: {refused}");
+    replied_ask(&lab.ws.store, &project_of(&lab), "design/own", &format!("PR #11: is finding {short}/0 intended?"), Some("Intended"), ASKED);
+    let e = lab.release_accepting(Some("lead"), "y3", cite("design/own")).await.unwrap();
+    assert_eq!(e["acknowledgedFindings"]["items"][0]["userReply"]["key"], "design/own", "{e}");
 }
 
 /// The user releasing needs no reply; the acceptance is theirs, and the
