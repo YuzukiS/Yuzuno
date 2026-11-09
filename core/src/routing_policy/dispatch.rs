@@ -278,3 +278,7 @@ impl crate::workspace::Workspace {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "start_tests.rs"]
+mod start_tests;
