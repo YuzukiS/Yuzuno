@@ -630,6 +630,25 @@ async fn merge_list_pages_by_limit_and_before_and_the_record_stays_whole() {
         (json!("merged"), json!(merge_commit()), whole["evidence"]["gate"].clone()));
 }
 
+/// YN-69 S5: the release stays pinned to the exact head. One that is not
+/// the PR's head (a typo, or a push since) is refused before any proof or
+/// write, naming the PR's head and the head the last round reviewed in full,
+/// to copy.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_head_that_is_not_the_prs_is_refused_naming_both_heads_in_full() {
+    let lab = lab(green());
+    let mut typo = head();
+    typo.replace_range(39..40, "2");
+    let refused = lab.ws.collaboration_call(Some("lead"), "merge_enqueue", json!({"requestId":"t","taskId":lab.task,
+        "pullUrl":"https://github.com/owner/repo/pull/11","headSha":typo})).await.unwrap_err().to_string();
+    assert!(refused.starts_with("head_moved"), "{refused}");
+    assert!(refused.contains(&format!("the PR head is {}", head())) && refused.contains(&format!("reviewed {}", head())), "{refused}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing is written");
+    // The PR's own head, copied, is released as before.
+    assert_eq!(lab.release(Some("lead"), "r1").await.unwrap()["state"], "queued");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_dispatcher_that_is_not_a_lead_may_not_release() {

@@ -469,3 +469,14 @@ fn two_concurrent_requests_reserve_the_parent_once() {
     let (again, _, created) = store.create_pr_review_continuation(None, &on(&task, "p1", winner.0), "other").unwrap();
     assert!(!created && again["id"] == winner.1);
 }
+
+/// YN-69 S5: a continuation's base and head are its parent's: given, they
+/// are checked against it as before; left out, they are the parent's.
+#[test]
+fn a_continuations_base_and_head_may_be_left_out() {
+    let bare: Continue = serde_json::from_value(json!({"requestId":"c","taskId":"T-1","reviewId":"parent"})).unwrap();
+    assert_eq!((bare.base_sha.as_str(), bare.head_sha.as_str()), ("", ""), "left out until the parent fills them");
+    let tool = crate::pr_review::tool_definitions().into_iter().find(|tool| tool["name"] == "review_continue").unwrap();
+    let required: Vec<&str> = tool["inputSchema"]["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(required, ["requestId", "taskId", "reviewId"]);
+}
