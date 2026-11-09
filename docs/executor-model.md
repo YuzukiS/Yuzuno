@@ -704,6 +704,25 @@ materials give it), when it was dispatched (`dispatchedAt`), and since when
 it is in its state (`since`). An executor at work whose task is blocked also
 has the blocker (`blocked`); its state stays what it is.
 
+An executor with a dispatch record also says what executor routing gave it
+(`route`, YN-57). It is one of three kinds:
+- **`chosen`:** the candidate (`candidate`, with its `label` when it has one),
+  the harness, model and effort the executor runs with, and its account or key
+  (`credential`). The credential is one of:
+  - `login`;
+  - `apiKey` with `keyId`;
+  - `pool` with `account`: its `fingerprint` and, as the record gives it, `number`;
+  - `codexHome` with `id`.
+- **`waiting`:** it waits for a candidate, with `earliest`, the soonest time a
+  candidate's reason gives, when there is one.
+- **`unrouted`:** with `why`, one of:
+  - `off`: routing was off at its dispatch;
+  - `fixed`: its template is fixed;
+  - `routingOff` or `noCandidate`: released after waiting
+    ([executor routing](executor-routing.md)).
+
+It never holds a key's value or an account's email.
+
 - **A task's short name.** What the task is about in plain words, at most
   16 characters ("导出设备偏好", "Export settings"), not a key, a number or a
   PR: the sidebar names an executor by it. A lead or the user gives it with
