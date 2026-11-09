@@ -83,6 +83,8 @@ await context.route("**/*", async (route) => {
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
     "/api/storage": overview,
+    // YN-65: the build output cleanup, off, nothing done yet.
+    "/api/build-cleanup": { policy: { enabled: false, keepDays: 1, since: null, version: 0, changedAt: null }, maxKeepDays: 30, recent: [], waiting: 0 },
   }[path];
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -152,7 +154,7 @@ try {
   assert.match(zh.text, /12 条 Job 记录，1 条未完成。/);
   assert.match(zh.text, /Codex · Core 主机大小未知3 个 Agent（1 个已关闭） · 由 Codex 保存在那台电脑上它自己的文件夹中。/);
   assert.doesNotMatch(zh.text, /size unknown|Not in a backup|entries ·/);
-  assert.match(zh.tasks, /^任务工作目录中的构建输出任务已登记工作目录中由 Cargo 生成的构建输出.+不会预览或移除任何内容。已归档的任务不在此列出。任务选择任务…T-7 · Build cache · done打开它的 Workspace 部分$/, "a task by its ID, its title as it comes");
+  assert.match(zh.tasks, /^任务工作目录中的构建输出执行者释放后自动清理只删除 Core 的记录能确认.+关：不会自动删除任何东西。只有你能在这里打开；Agent 没有改它的工具。手动清理一个任务的目录任务已登记工作目录中由 Cargo 生成的构建输出.+不会预览或移除任何内容。已归档的任务不在此列出。任务选择任务…T-7 · Build cache · done打开它的 Workspace 部分$/, "the cleanup off (YN-65), then a task by its ID, its title as it comes");
   await page.screenshot({ path: join(output, "storage-zh.png") });
   check("Data & storage in Chinese; Core's reason, path and listed item, and a name this version doesn't know, as they come", { heading: zh.heading });
 
