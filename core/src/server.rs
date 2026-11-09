@@ -59,6 +59,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_routing_quotas();
     ws.start_archive_passes();
     ws.start_build_cleanup();
+    ws.start_cleanup_recovery();
     ws.start_ci_monitor();
     ws.start_delivery();
     ws.start_merge_queue();

@@ -340,6 +340,14 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     )?;
     // lineage: the seq of the section a row continues on Home (see update.rs,
     // put after a Seen); NULL when it is its own. Older Cores ignore it.
+    // reply_form: the form answers Home checked for the replied version of
+    // an ask (YN-74), {version, formId, answers by option id}; what Core
+    // itself reads of an approval (cleanup_apply), never the reply's text.
+    let has_reply_form: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_form')", [], |r| r.get(0))?;
+    if !has_reply_form {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_form TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

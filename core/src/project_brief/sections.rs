@@ -465,10 +465,17 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
 /// no longer the live unresolved ask: a reply to it never marks a newer ask
 /// under the same key (T-9), as when its owner asked again meanwhile.
 pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
+    mark_replied_form(store, project, key, version, text, None)
+}
+
+/// `mark_replied` with the form answers Home checked (form_answers), kept
+/// with the version they answer (YN-74); a reply without them clears any.
+pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>) -> Result<bool> {
+    let form = form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
     let changed = store.db.write()?.execute(
-        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4
+        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6
          WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text, version],
+        params![project, key, now(), text, version, form],
     )?;
     Ok(changed == 1)
 }

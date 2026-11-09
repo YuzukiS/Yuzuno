@@ -1432,6 +1432,42 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     assert!(["m5", "m6", "m7"].iter().all(|id| receipt(id).is_none()), "nothing was recorded for them");
 }
 
+/// YN-74: a form reply that reached the ask's owner keeps the answers Home
+/// checked on the ask, by option id, with the version they answer; what
+/// Core itself reads of an approval (cleanup_apply). Asked again, none.
+#[tokio::test]
+async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answered() {
+    let (_dir, ws, project) = lab();
+    let mut setup = put("setup", "ask");
+    setup["ask"]["reply"] = json!({"form":{"id":"prefs","title":"Preview setup","fields":[
+        {"id":"checks","type":"multi","label":"Checks","required":true,"options":[{"id":"keys","label":"Keyboard"},{"id":"wide","label":"Wide text"}]}]}});
+    accept(&ws, "a", input("s1", 0, vec![setup])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let form: home::FormReply = serde_json::from_value(json!({"formId":"prefs","answers":{"checks":["wide","keys"]}})).unwrap();
+    let text = "Answers to \u{201c}Preview setup\u{201d}:\n- Checks: Wide text, Keyboard\n\n{\"formId\":\"prefs\",\"answers\":{\"checks\":[\"wide\",\"keys\"]}}".to_owned();
+    let kept = |ws: &Arc<Workspace>| -> Option<Value> {
+        let raw: Option<String> = ws.store.db.read().unwrap().query_row(
+            "SELECT reply_form FROM project_brief_sections WHERE project_id=?1 AND key='setup' AND live=1", [&project], |r| r.get(0)).unwrap();
+        raw.map(|raw| serde_json::from_str(&raw).unwrap())
+    };
+    // Home's first send was accepted (as in the test above): its retry marks the ask.
+    let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "setup").unwrap().unwrap();
+    let message = home::compose_ask(&workspace, "Code", &project, &row, None, &text);
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        origin: Some(json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,
+            "reply":home::reply_digest(None, &text, Some(&form))})),
+        input: crate::model::MessageInput { client_message_id: "f1".into(), text: message, text_blocks: None, images: vec![],
+            expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
+    let reply = home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.clone(), client_message_id: "f1".into(),
+        choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()) };
+    home::reply(&ws, project.clone(), reply).await.unwrap();
+    assert_eq!(kept(&ws), Some(json!({"version":1,"formId":"prefs","answers":{"checks":["wide","keys"]}})));
+    // Asked again: the earlier reply's answers never count for the new question.
+    accept(&ws, "a", input("s2", 1, vec![put("setup", "ask")])).await;
+    assert_eq!(kept(&ws), None);
+}
+
 // T-9: a Home reply's receipt keeps the reply as the user saw it, beside
 // where it came from: the Project, the section's kind, title and question,
 // the options it offered, the choice, the user's whole words, and a form's
