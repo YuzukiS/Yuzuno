@@ -60,7 +60,7 @@ const text = strings({
   cancel: "Cancel",
   recent: "Latest cleanups",
   waiting: (count: number) => `${count} ${count === 1 ? "executor waits" : "executors wait"} for the next try.`,
-  state: (state: ResultState, gaveUp: boolean) =>
+  state: (state: ResultState, gaveUp: boolean): string =>
     state === "removed" ? "Removed" : state === "kept" ? "Kept" : state === "failed" ? "Not fully removed" : gaveUp ? "Given up" : "Will retry",
   how: (how: string) => how,
   removedAt: (date: string) => `${date}`,

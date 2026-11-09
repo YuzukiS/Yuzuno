@@ -206,7 +206,9 @@ test("a task is chosen by its ID and only opened: nothing is previewed, removed,
   // Only reads: the overview and the task list's pages, the board's own read.
   assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
     ["/api/collaboration/task_list", { limit: 200 }], ["/api/collaboration/task_list", { limit: 200, afterSeq: 7 }]]);
-  assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url)), "no task folder is read, previewed or removed here");
+  // The build output cleanup's own policy is read (YN-65); nothing of a task's folders.
+  assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url) && !(c.url.endsWith("/api/build-cleanup") && c.method === "GET")),
+    "no task folder is read, previewed or removed here");
   assert.deepEqual(p.errors, []);
 });
 
@@ -343,7 +345,7 @@ test("prepared runtimes: a refusal is said and offers nothing; a removal Core re
 
 // YN-65: the build output cleanup after an executor's release, in its section.
 const section = (p) => p.doc.querySelector('[aria-labelledby="storage-task-folders"]');
-const toggle = (p) => section(p).querySelector("[role=switch]");
+const toggle = (p) => section(p)?.querySelector("[role=switch]") ?? null;
 const puts = (p) => p.calls.filter((c) => c.url.endsWith("/api/build-cleanup") && c.method === "PUT").map((c) => c.body);
 function cleanupCore(start) {
   let policy = { enabled: false, keepDays: 1, since: null, version: 0, changedAt: null, ...start };
