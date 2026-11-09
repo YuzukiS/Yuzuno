@@ -61,9 +61,13 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 18] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+const FIELDS: [&str; 19] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
     "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose", "routing",
-    "permissionLevel", "formerHarness"];
+    "permissionLevel", "formerHarness", "tier"];
+/// The kinds of model a template's executors want (YN-70): a strong one,
+/// as for a design, an investigation or a decision, or a fast one, as for
+/// building what was decided. Unset wants neither more than the other.
+pub const TIERS: [&str; 2] = ["strong", "fast"];
 /// How a template's work is delivered (YN-23, T-43 S1a): a pull request
 /// (unset, as every template saved before), a commit without one, or no
 /// repository change at all. Said in its executors' materials; Core holds
@@ -148,6 +152,11 @@ pub struct Template {
     /// by a lead choosing a template (`executor_templates_list`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when_to_choose: Option<String>,
+    /// One of `TIERS`, the kind of model its executors want (YN-70); unset
+    /// is no preference. Said in its executors' materials (`given`); the
+    /// routing policy doesn't choose by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 /// A step of a template (YN-23). A step with a field this Core doesn't know
@@ -371,6 +380,9 @@ impl Template {
         if let Some(line) = &self.when_to_choose {
             single_line(line, "When to choose it", 200)?;
         }
+        if let Some(tier) = self.tier.as_deref() {
+            ensure!(TIERS.contains(&tier), "A template's tier is strong or fast, not {tier}");
+        }
         Ok(())
     }
 
@@ -394,7 +406,7 @@ impl Template {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness: None, model: None, reasoning_effort: None,
             permission_level: None, permission_preset: None, permission_mode: None, former_harness: None, machine_id: None,
-            instructions: None, origin: None, delivery_mode: None, routing: None, steps: None, when_to_choose: None,
+            instructions: None, origin: None, delivery_mode: None, routing: None, steps: None, when_to_choose: None, tier: None,
         }
     }
 
@@ -480,7 +492,8 @@ impl Template {
     /// whose id is none; `project` in materials from before YN-2 S2). A
     /// template's also say how its work is delivered and its steps, resolved
     /// (YN-23), and when to choose it if it says; the general executor's say
-    /// neither, as before.
+    /// neither, as before. A template with a tier says it, and that it is
+    /// the template's (`tierSource`, YN-70).
     pub(crate) fn given(&self, source: &str) -> Value {
         let id = (!self.id.is_empty()).then_some(self.id.as_str());
         let mut given = json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions});
@@ -492,6 +505,10 @@ impl Template {
             }
             if let Some(line) = &self.when_to_choose {
                 given["whenToChoose"] = json!(line);
+            }
+            if let Some(tier) = &self.tier {
+                given["tier"] = json!(tier);
+                given["tierSource"] = json!("template");
             }
         }
         given
@@ -593,15 +610,17 @@ pub(crate) fn ids(db: &Connection) -> Result<Vec<String>> {
     Ok(list_at(db, KEY)?.templates.into_iter().map(|t| t.id).collect())
 }
 
-/// The ten presets (YN-23, T-43 S1a), in each language the page has. A
-/// preset names no harness: its templates follow routing (YN-56).
+/// The presets (YN-23, T-43 S1a), in each language the page has. A preset
+/// names no harness: its templates follow routing (YN-56). Each names the
+/// tier its work wants (YN-70): design, investigation, decisions, checks and
+/// runbooks a strong model, building what was decided a fast one.
 const PRESETS: &str = include_str!("executor_templates/presets.json");
 /// The languages presets are written in, as the page names them.
 pub(crate) const PRESET_LANGUAGES: [&str; 2] = ["en", "zh-Hans"];
 
 /// The template presets the user can adopt in Settings, one entry per preset
 /// and language: `{id, language, label, whenToChoose, modelHint,
-/// instructions, deliveryMode, steps?, permissionLevel?}`. Never stored by
+/// instructions, deliveryMode, steps?, permissionLevel?, tier?}`. Never stored by
 /// Core and never saved by an Agent: adopting one fills an unsaved template
 /// on the page, and the user's ordinary save writes it.
 pub(crate) fn presets() -> Vec<Value> {
@@ -632,6 +651,9 @@ pub(crate) fn presets() -> Vec<Value> {
                 }
                 if let Some(level) = preset["permissionLevel"].as_str() {
                     item["permissionLevel"] = json!(level);
+                }
+                if let Some(tier) = preset["tier"].as_str() {
+                    item["tier"] = json!(tier);
                 }
                 out.push(item);
             }
@@ -962,7 +984,7 @@ pub(crate) const LIST_TOOL: &str = "executor_templates_list";
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": LIST_TOOL,
-        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each has id, label; whenToChoose, a line saying what work it is for (if set); deliveryMode: pr, direct-commit or none (no repository change: the result is the deliverable); steps its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, descriptive only: Core doesn't track them. routing: follows (routing chooses its harness, model and account; while routing is off, the defaults for new Agents of the task's Project) or fixed (its own harness, model and reasoningEffort, given then, on the host's login). permissionLevel: ask, auto or full, which Core maps to each harness's own permission; absent is each harness's default for new Agents. formerHarness: the harness it named before core.29, when it follows routing now. levels says what each level is on each harness: routing skips a candidate whose harness doesn't keep the level. A fixed Codex template may instead have permissionPreset config (the machine's Codex configuration). machineId: local, a machine's id or auto. instructionsBytes: the size of its instructions (0 for none). general: what executor {} makes for your Project. laterTemplates: templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: as saved, to change and send back whole with executor_templates_change. The user saves templates in Settings, a lead with executor_templates_change; version is the expectedVersion.",
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each has id, label; whenToChoose, a line saying what work it is for (if set); deliveryMode: pr, direct-commit or none (no repository change: the result is the deliverable); steps its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, descriptive only: Core doesn't track them. routing: follows (routing chooses its harness, model and account; while routing is off, the defaults for new Agents of the task's Project) or fixed (its own harness, model and reasoningEffort, given then, on the host's login). permissionLevel: ask, auto or full, which Core maps to each harness's own permission; absent is each harness's default for new Agents. formerHarness: the harness it named before core.29, when it follows routing now. levels says what each level is on each harness: routing skips a candidate whose harness doesn't keep the level. tier: strong or fast, the kind of model its work wants (absent: no preference), told to its executors in their materials; routing doesn't choose by it. A fixed Codex template may instead have permissionPreset config (the machine's Codex configuration). machineId: local, a machine's id or auto. instructionsBytes: the size of its instructions (0 for none). general: what executor {} makes for your Project. laterTemplates: templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: as saved, to change and send back whole with executor_templates_change. The user saves templates in Settings, a lead with executor_templates_change; version is the expectedVersion.",
         "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved, instructions included: for leads of a Project only (YN-24)."}},"required":[],"additionalProperties":false},
     })
 }
@@ -976,7 +998,7 @@ fn listed(template: &Template) -> Value {
         "instructionsBytes": template.instructions.as_deref().map_or(0, str::len),
     });
     for (field, value) in [("whenToChoose", &template.when_to_choose), ("permissionLevel", &template.permission_level),
-        ("formerHarness", &template.former_harness),
+        ("formerHarness", &template.former_harness), ("tier", &template.tier),
         ("harness", &template.harness), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
         ("permissionPreset", &template.permission_preset), ("machineId", &template.machine_id)] {
         if let Some(value) = value {

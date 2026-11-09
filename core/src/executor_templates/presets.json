@@ -1,12 +1,33 @@
 {"presets": [
  {
-  "id": "design-first",
-  "deliveryMode": "pr",
+  "id": "design",
+  "deliveryMode": "none",
+  "tier": "strong",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "设计说明", "en": "Design note"}},
-   {"kind": "result", "label": {"zh-Hans": "设计说明", "en": "Design note"}},
-   {"kind": "gate", "approver": "either", "label": {"zh-Hans": "批准设计说明", "en": "Design note approved"}},
+   {"kind": "result", "label": {"zh-Hans": "设计说明全文", "en": "The whole design note"}},
+   {"kind": "gate", "approver": "either", "label": {"zh-Hans": "批准设计说明", "en": "Design note approved"}}
+  ],
+  "en": {
+   "label": "Design",
+   "whenToChoose": "UI, cross-module or user-visible work: a design note approved before anyone builds it, the build being a second dispatch",
+   "modelHint": "A strong model; on Codex, reasoning effort high.",
+   "instructions": "Design only: the approved design note is what you deliver. Another executor builds it, from a second dispatch of this task (Build from an approved design), so write it for someone who has only the note and the repository.\n\n1. Read your dispatch's materials (task_get with your dispatchId) and the Project's handover. Don't change the repository: no edits, commits, branches or pull requests. Reading, searching and throwaway experiments outside the worktree are fine. Nothing enforces this; your permissions may allow more.\n2. Write a design note a builder can follow without asking you: the problem; the change; each file or module it touches and how; the slices in order, one pull request each; what it won't do; the decisions you made and why, the small-looking ones too; and how each slice is checked (tests, a browser check). Add a preview when the change is visible.\n3. Put the whole note in your result's text (task_submit_result, status doing), not only a path to it: a builder on another machine can't read your files, and the summary a new executor starts with holds only a result's first 800 bytes. The builder reads the note whole with task_result_get. Previews and screenshots go beside it, as links or under ~/yuzuno-evidence/<task>/ with their sha256.\n4. Wait for approval. When the note has to change, submit it again whole as a new result, so that one result always holds the note to build, and say what changed.\n5. Once it is approved, your part is done: the lead dispatches its build. Don't build it yourself.\n\nDon't merge, release or install."
+  },
+  "zh-Hans": {
+   "label": "设计",
+   "whenToChoose": "界面、跨模块或用户要先看效果的改动：先交设计说明并批准，实现另派一次",
+   "modelHint": "强模型；Codex 推理强度用 high。",
+   "instructions": "只做设计：交付的是批准的设计说明。实现由另一个执行者做，是这个任务的第二次派发（「按批准的设计实现」），所以设计说明要写给一个只有它和仓库的人。\n\n1. 读派发材料（用你的 dispatchId 调 task_get）和项目交接文档。不改仓库：不编辑、不提交、不建分支、不开 PR。阅读、搜索、在 worktree 之外做一次性试验都可以。这一条只靠说明，权限本身可能允许更多。\n2. 写一份实现者不用问你就能照着做的设计说明：问题；打算怎么改；会动哪些文件或模块、怎么动；按顺序的切片，每片一个 PR；不做什么；你做的决定和理由，看起来小的也写；每片怎么验证（测试、浏览器检查）。改动看得见的，附一个预览。\n3. 把设计说明的全文写在结果正文里（task_submit_result，status 用 doing），不能只给路径：别的机器上的实现者读不到你的文件，新执行者开工时的摘要只带结果的前 800 字节。实现者用 task_result_get 读全文。预览和截图放在旁边，给链接或放在 ~/yuzuno-evidence/<任务>/ 并附 sha256。\n4. 等批准。设计说明要改时，把全文作为新结果再交一次，让一个结果始终装着要实现的那份说明，并写明改了什么。\n5. 批准以后你这部分就完成了：由负责人派发实现。不要自己动手实现。\n\n不合并、不发布、不安装。"
+  }
+ },
+ {
+  "id": "build-from-design",
+  "deliveryMode": "pr",
+  "tier": "fast",
+  "steps": [
+   {"kind": "materials", "label": {"zh-Hans": "读批准的设计说明", "en": "Read the approved design note"}},
    {"kind": "work", "label": {"zh-Hans": "切片实现", "en": "Build a slice"}},
    {"kind": "job"},
    {"kind": "pr"},
@@ -15,21 +36,22 @@
    {"kind": "merge"}
   ],
   "en": {
-   "label": "Design first",
-   "whenToChoose": "UI, cross-module or user-visible work the user should see as a design before any code",
-   "modelHint": "A strong model; on Codex, reasoning effort high.",
-   "instructions": "Design first, then build.\n\n1. Read your dispatch's materials (task_get with your dispatchId) and the Project's handover. Don't edit anything yet.\n2. Write a one-page design note: the problem, the change you propose, the files it touches, what you won't do, and how you'll check it (tests, a browser check). Add a preview when the change is visible.\n3. Submit the note as your first result (task_submit_result, status doing) and wait for approval. Until then, change nothing in the repository: no edits, commits or branches. Reading, searching and throwaway experiments outside the worktree are fine. Nothing enforces this; your permissions may allow more.\n4. Once approved, build in slices: one pull request per slice, each small enough to review in one pass. Follow the note. If the work has to depart from it, say so and ask before going further.\n5. For each slice: commit, push, link the PR to the task (github_links), run the evidence the note named, and start its review at the frozen head.\n6. Report each slice: the PR and its head, the CI run, each Job with its status, each review round with its conclusion, and known limits.\n\nDon't merge, release or install. Don't go beyond the approved note."
+   "label": "Build from an approved design",
+   "whenToChoose": "Building a design note approved in an earlier dispatch of this task, one PR per slice",
+   "modelHint": "An economical model: the note is its plan, and review and CI check its work.",
+   "instructions": "Build what an approved design note says. The note is your plan, and someone else wrote it.\n\n1. Read your dispatch's materials (task_get with your dispatchId) and the Project's handover. The materials name the approved note: a result of this task, by its result ID or a reference. Read it whole with task_result_get: the summary you start with holds only a result's first 800 bytes. If the materials name no note, or you can't read it, stop and ask the lead.\n2. Build it in the note's slices, in its order: one pull request per slice, each small enough to review in one pass. Follow its files, decisions and checks.\n3. Where the code disagrees with the note, or a decision comes up that the note didn't make, don't settle it alone: tell the lead what and why, and go on only as far as the note covers. Small reversible details (names, how a test is laid out) are yours; say them in your result.\n4. For each slice: commit, push, link the PR to the task (github_links), run the checks the note named, wait for its CI and start its review at the frozen head.\n5. Report each slice: the PR and its head, the CI run, each Job with its status, each review round with its conclusion, what you decided yourself, and known limits.\n\nDon't merge, release or install. Don't go beyond the approved note."
   },
   "zh-Hans": {
-   "label": "设计先行",
-   "whenToChoose": "界面、跨模块或用户要先看效果的改动：先交设计说明，批准后再写代码",
-   "modelHint": "强模型；Codex 推理强度用 high。",
-   "instructions": "先设计，后实现。\n\n1. 读派发材料（用你的 dispatchId 调 task_get）和项目交接文档。先不要改任何东西。\n2. 写一页设计说明：问题、打算怎么改、会动哪些文件、不做什么、怎么验证（测试、浏览器检查）。改动看得见的，附一个预览。\n3. 把设计说明作为第一个结果提交（task_submit_result，status 用 doing），然后等批准。批准之前不改仓库：不编辑、不提交、不建分支。阅读、搜索、在 worktree 之外做一次性试验都可以。这一条只靠说明，权限本身可能允许更多。\n4. 批准后按切片实现：一个切片一个 PR，每个 PR 小到一轮审查能读完。照设计说明做；必须偏离时，先说明并询问，再继续。\n5. 每个切片：提交、推送、把 PR 关联到任务（github_links）、跑设计说明里写的证据、在冻结的 head 上开审查。\n6. 每个切片报告：PR 与 head、CI run、每个 Job 及其状态、每轮审查及结论、已知限制。\n\n不合并、不发布、不安装。不超出已批准的设计说明。"
+   "label": "按批准的设计实现",
+   "whenToChoose": "按本任务前一次派发里批准的设计说明实现：一个切片一个 PR",
+   "modelHint": "经济型模型：设计说明就是它的计划，审查和 CI 检查它的活。",
+   "instructions": "照批准的设计说明实现。设计说明就是你的计划，它是别人写的。\n\n1. 读派发材料（用你的 dispatchId 调 task_get）和项目交接文档。材料里会指明批准的设计说明：这个任务的一个结果，给出它的结果 ID 或一条引用。用 task_result_get 读全文：你开工时的摘要只带结果的前 800 字节。材料没有指明设计说明，或者你读不到它，就停下问负责人。\n2. 按设计说明的切片和顺序实现：一个切片一个 PR，每个 PR 小到一轮审查能读完。照它写的文件、决定和验证方法做。\n3. 代码和设计说明对不上，或者遇到设计说明没定的决定，不要自己拍板：告诉负责人是什么、为什么，只做到设计说明覆盖的范围。能撤回的小细节（命名、测试怎么组织）你自己定，写进结果。\n4. 每个切片：提交、推送、把 PR 关联到任务（github_links）、跑设计说明里写的验证、等 CI、在冻结的 head 上开审查。\n5. 每个切片报告：PR 与 head、CI run、每个 Job 及其状态、每轮审查及结论、你自己定下的选择、已知限制。\n\n不合并、不发布、不安装。不超出已批准的设计说明。"
   }
  },
  {
   "id": "red-test-fix",
   "deliveryMode": "pr",
+  "tier": "fast",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "写红测", "en": "Write the red test"}},
@@ -44,19 +66,20 @@
   "en": {
    "label": "Red test first",
    "whenToChoose": "A bug that can be reproduced: prove it with a failing test, then fix it",
-   "modelHint": "A mid-range model.",
+   "modelHint": "An economical model: the red test checks its fix.",
    "instructions": "1. Read the materials. Reproduce the bug and state it in one line: the input, what should happen, what happens.\n2. Write a test that fails for exactly that reason. Run it on the unfixed code, in a disposable copy if the worktree is in use, and check that it fails at its own assertion, not in setup or at compile time. Keep that output.\n3. Fix the code. Never change the test to make it pass. If the test was wrong, say why and start again at step 2.\n4. Run the test and the tests around it on the fix: it passes, and nothing else fails.\n5. Open the PR with the failing output from step 2 in its description. Link it to the task, wait for its CI and start its review at the frozen head.\n6. Result: the bug in one line, the red evidence, the fix, the PR and head, the CI run, the review rounds and known limits.\n\nKeep the fix minimal. Problems you find on the way go to the lead, not into this PR."
   },
   "zh-Hans": {
    "label": "红测先行修复",
    "whenToChoose": "能复现的 bug：先用一个失败的测试证明它，再修",
-   "modelHint": "中等模型。",
+   "modelHint": "经济型模型：红测检查它的修复。",
    "instructions": "1. 读材料。复现这个 bug，用一行写清：输入、应该怎样、实际怎样。\n2. 写一个正好因为这个原因失败的测试。在未修复的代码上跑（worktree 正被使用时，用一次性副本），确认它失败在自己的断言处，而不是准备阶段或编译出错。保留这次输出。\n3. 修代码。绝不为了通过去改测试；测试本身写错了，说明原因，从第 2 步重来。\n4. 在修复上跑这个测试和它周围的测试：它通过，其他的也没有变红。\n5. 开 PR，说明里贴第 2 步的失败输出。关联到任务，等 CI，在冻结的 head 上开审查。\n6. 结果：一行 bug 描述、红测证据、修复、PR 与 head、CI run、审查轮次、已知限制。\n\n修复保持最小。路上发现的其他问题交给负责人，不放进这个 PR。"
   }
  },
  {
   "id": "batch-change",
   "deliveryMode": "pr",
+  "tier": "fast",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "枚举与脚本", "en": "List and script"}},
@@ -82,6 +105,7 @@
  {
   "id": "investigation",
   "deliveryMode": "none",
+  "tier": "strong",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "调查", "en": "Investigate"}},
@@ -90,19 +114,20 @@
   "en": {
    "label": "Read-only investigation",
    "whenToChoose": "A question about code, data or behaviour that needs an answer, not a change",
-   "modelHint": "A mid-range model.",
+   "modelHint": "A strong model.",
    "instructions": "This is read-only: don't change the repository (no edits, commits, branches or pull requests). Reading, searching, read-only commands and Jobs that only measure are fine. Nothing enforces this; your permissions may allow more.\n\n1. Read the materials. Restate the question in a line or two, and what would count as an answer.\n2. Investigate. Trust the code and the records over documents and memory.\n3. Submit a memo as your result (task_submit_result):\n   - the answer first, in a few lines;\n   - each claim with its source: path:line at a named commit, a command with its output, or a Job's ID;\n   - what you couldn't find out, and what would settle it;\n   - follow-up work, as suggestions only.\n4. Keep what you inferred apart from what you observed: say so where you didn't check."
   },
   "zh-Hans": {
    "label": "只读调查",
    "whenToChoose": "需要回答而不是改动的问题：代码、数据或行为是怎样的",
-   "modelHint": "中等模型。",
+   "modelHint": "强模型。",
    "instructions": "这是只读任务：不改仓库（不编辑、不提交、不建分支、不开 PR）。阅读、搜索、只读命令和只做测量的 Job 都可以。这一条只靠说明，权限本身可能允许更多。\n\n1. 读材料。用一两行复述问题，以及怎样才算回答了它。\n2. 调查。以代码和记录为准，不以文档或记忆为准。\n3. 把备忘录作为结果提交（task_submit_result）：\n   - 先给答案，几行即可；\n   - 每个结论附来源：某个提交上的 path:line、命令及其输出，或 Job ID；\n   - 没查清的地方，以及怎样能查清；\n   - 后续工作只作为建议。\n4. 推断和观察分开写：没核实的地方明说。"
   }
  },
  {
   "id": "decision-memo",
   "deliveryMode": "none",
+  "tier": "strong",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "调查", "en": "Investigate"}},
@@ -125,6 +150,7 @@
  {
   "id": "verification",
   "deliveryMode": "none",
+  "tier": "strong",
   "steps": [
    {"kind": "materials"},
    {"kind": "job", "label": {"zh-Hans": "构建与命名检查", "en": "Build and named checks"}},
@@ -133,19 +159,20 @@
   "en": {
    "label": "Independent check",
    "whenToChoose": "Checking someone else's change or claim independently: a build, tests or named checks, each with a verdict",
-   "modelHint": "A mid-range model.",
+   "modelHint": "A strong model.",
    "instructions": "You check; you don't fix. Don't change what you are checking.\n\n1. Read the materials: what to check, at which commit, and the claim to test.\n2. Before running anything, name each check and what passes or fails it. Post that list on the task (task_comment), so it can't drift afterwards.\n3. Run the checks in Jobs at that exact commit, with its Git state guarded. A Job's own status is its verdict: a failed Job stays failed even if a rerun passes; report both.\n4. Record the environment: machine, operating system, toolchain versions, the commit.\n5. Result: a verdict for each named check (passed, failed, or not run with the reason), the Job IDs, and what the checks don't cover.\n6. If you wrote what you are asked to check, say so and stop: the checker must not be its author."
   },
   "zh-Hans": {
    "label": "独立核查",
    "whenToChoose": "独立核查别人的改动或结论：构建、测试或指定的检查，逐项给结论",
-   "modelHint": "中等模型。",
+   "modelHint": "强模型。",
    "instructions": "你只核查，不修复。不改被核查的东西。\n\n1. 读材料：核查什么、在哪个提交上、要检验的结论是什么。\n2. 跑任何东西之前，先列出每项检查，以及怎样算通过、怎样算失败。把这份清单发在任务上（task_comment），之后不能改口。\n3. 在那个确切的提交上用 Job 跑检查，冻结它的 Git 状态。Job 自己的状态就是结论：失败的 Job 一直是失败，即使重跑通过了；两次都要报告。\n4. 记下环境：机器、操作系统、工具链版本、提交。\n5. 结果：每项检查一个结论（通过、失败，或没跑及原因）、Job ID，以及这些检查覆盖不到什么。\n6. 如果被核查的东西是你写的，说明并停下：核查者不能是作者。"
   }
  },
  {
   "id": "sliced-feature",
   "deliveryMode": "pr",
+  "tier": "strong",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "特性清单与进度文件", "en": "Feature list and progress file"}},
@@ -172,6 +199,7 @@
  {
   "id": "runbook",
   "deliveryMode": "none",
+  "tier": "strong",
   "permissionLevel": "ask",
   "steps": [
    {"kind": "materials"},
@@ -197,6 +225,7 @@
  {
   "id": "small-fix",
   "deliveryMode": "pr",
+  "tier": "fast",
   "en": {
    "label": "Small fix",
    "whenToChoose": "A small, low-risk fix whose cause is already clear (a typo, a wrong constant, a missing check)",
@@ -213,6 +242,7 @@
  {
   "id": "test-hygiene",
   "deliveryMode": "pr",
+  "tier": "fast",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "一次性副本复现红", "en": "Reproduce the red in a disposable copy"}},
@@ -226,13 +256,13 @@
   "en": {
    "label": "Test hygiene",
    "whenToChoose": "A flaky, wrong or slow test, fixed in the test alone with no product change",
-   "modelHint": "A mid-range model.",
+   "modelHint": "An economical model.",
    "instructions": "Change tests only. If the product code is wrong, stop and tell the lead: that is a bug fix, not test hygiene.\n\n1. Read the materials. Reproduce the failure in a disposable copy, never in the shared worktree: it must fail at the test's own assertion, and keep that output. For a flaky test, run it often enough to see it fail, and note how many runs that took.\n2. Find the cause: a race, shared state, timing, an order dependence, a wrong expectation.\n3. Change only the test or its helpers to remove the cause. Don't just loosen the assertion or add a retry or a sleep unless that really is the fix, and then say why.\n4. Run it again, as many times as before, now with no failure. Report the counts before and after.\n5. Open the PR with the cause, both counts and the commands that ran. Link it to the task, wait for its CI and start its review at the frozen head."
   },
   "zh-Hans": {
    "label": "测试卫生修复",
    "whenToChoose": "不稳定、写错或太慢的测试：只改测试，不改产品代码",
-   "modelHint": "中等模型。",
+   "modelHint": "经济型模型。",
    "instructions": "只改测试。产品代码有错，就停下告诉负责人：那是修 bug，不是测试卫生。\n\n1. 读材料。在一次性副本里复现失败，绝不在共用的 worktree 里：它必须失败在测试自己的断言处，保留这次输出。不稳定的测试，多跑几次直到看到失败，记下跑了几次。\n2. 找原因：竞态、共享状态、时间、执行顺序、预期写错。\n3. 只改测试或它的辅助代码来消除原因。不要只是放宽断言、加重试或加 sleep，除非那正是修复，那时要说明理由。\n4. 再跑同样多的次数，这次没有失败。报告前后的次数。\n5. 开 PR，说明原因、前后次数和所跑的命令。关联到任务，等 CI，在冻结的 head 上开审查。"
   }
  }

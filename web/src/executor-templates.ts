@@ -5,6 +5,8 @@ export type ExecutorHarness = "codex" | "claude" | "opencode";
 /** A permission said once for every harness, which Core maps to each one's own (YN-56). */
 export type PermissionLevel = "ask" | "auto" | "full";
 export const PERMISSION_LEVELS: PermissionLevel[] = ["ask", "auto", "full"];
+/** The kind of model a template's work wants (YN-70): strong for designing and deciding, fast for building what was decided. */
+export type ModelTier = "strong" | "fast";
 export type ExecutorTemplate = {
   id: string;
   label: string;
@@ -37,6 +39,8 @@ export type ExecutorTemplate = {
   /** "fixed": its executors start with its own harness, whatever the routing policy (YN-34 S3); unset follows routing,
    * or while routing is off the defaults for new Agents (YN-56). */
   routing?: "fixed";
+  /** The kind of model its work wants (YN-70); unset is no preference. Told to its executors in their materials. */
+  tier?: ModelTier;
 };
 /** What a level is on each harness, as Core serves it (`levels`): null where that harness doesn't keep it. */
 export type LevelInfo = {
@@ -74,6 +78,8 @@ export type ExecutorPreset = {
   deliveryMode?: DeliveryMode;
   steps?: TemplateStep[];
   permissionLevel?: PermissionLevel;
+  /** The tier its work wants (YN-70), which a template made from it keeps. */
+  tier?: ModelTier;
 };
 /** The presets in the page's language; one without a language is in every one. */
 export const presetsIn = (presets: ExecutorPreset[], language: string) => {
