@@ -84,7 +84,10 @@ A template step of `kind: gate` is a point where the executor waits for an appro
   - The permanent gaps are paths no further round of the same head can cover. That says nothing about whether any other gap may be retried or continued.
 - **Continuing a round** (Cores newer than 2026.10.19-core.12). `review_continue` asks for a bounded continuation of one completed round of the same frozen snapshot, for the changed paths it left `not_read` or `read_failed`.
   - It is a new isolated reviewer run with its own record, round number and cost, not a resumed session. It gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms, to the exact millisecond; nothing is refilled.
-  - A PR gets at most two started review rounds when one of them is a continuation, counted across every task linked to that PR. Only a round recorded with a ledger that failed before its native start was recorded provably started nothing; older rounds and unknown ones count.
+  - A PR gets at most two started review rounds when one of them is a continuation, counted across every task linked to that PR. A round counts unless its record, made with a ledger, shows it reached no verdict:
+    - it failed before its native start was recorded, so it started nothing;
+    - or its harness itself reported a failure before any report: its only reason is `execution_failed`, with no conclusion, findings or correctness verdict (Claude ends it `failed`, Codex `unknown`). One that read nothing but the change manifest never counts. Of those that read source first, only the PR's first doesn't count; every later one does.
+  - Such a round records the decision as `roundLimit` (`counts`, `read`, `why`), shown in `review_list` and `review_get` and in its end-of-review line on the task. Every other round counts: a report of any kind, a cancellation, a deadline, a restart, an unconfirmed shutdown, and older rounds without a ledger.
   - Core refuses it before it exists, starting no model, when the parent:
     - isn't `completed` with `ledger.nativeCompletion: "confirmed"` (its native run completed and shut down, and its report was stored before the check after the review);
     - predates usage ledgers (every round recorded before such a Core);

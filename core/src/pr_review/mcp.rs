@@ -112,6 +112,13 @@ pub(super) fn list_row(data: &Value) -> Value {
         Value::Null
     };
     row["scopeCheckAfterReview"] = scope["checkAfterReview"].clone();
+    // Set only on a round that ended without a report (round_limit.rs).
+    let limit = &data["roundLimit"];
+    row["roundLimit"] = if limit.is_object() {
+        json!({"counts":limit["counts"],"read":limit["read"],"why":limit["why"]})
+    } else {
+        Value::Null
+    };
     row
 }
 
@@ -169,6 +176,19 @@ pub(super) fn list_schema() -> Value {
     row.insert(
         "scopeCounts".into(),
         json!({"anyOf":[closed(scope),{"type":"null"}]}),
+    );
+    let round_limit = closed(
+        [
+            ("counts".into(), json!({"type":"boolean"})),
+            ("read".into(), json!({"type":"string","enum":["nothing","some"]})),
+            ("why".into(), json!({"type":"string"})),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    row.insert(
+        "roundLimit".into(),
+        json!({"anyOf":[round_limit,{"type":"null"}]}),
     );
     let settings = closed(
         [

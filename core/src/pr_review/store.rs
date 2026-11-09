@@ -57,16 +57,48 @@ fn known_unreviewable(tx: &Connection, task: &str, link: &str, base: &str, head:
     Ok(None)
 }
 
-/// Started review rounds of one PR across tasks. Only a round recorded with
-/// a ledger that failed before its native start was recorded provably started
-/// nothing; every other one, older history and unknown ones included, counts.
-fn started_rounds(tx: &Connection, linked: &Value) -> Result<i64> {
-    Ok(tx.query_row(
-        "SELECT COUNT(*) FROM pr_reviews WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2
-           AND NOT (status='failed' AND json_extract(data,'$.ledger.version') IS ?3 AND json_extract(data,'$.nativeStartedAt') IS NULL)",
-        params![linked["repositoryId"].as_i64(), linked["number"].as_i64(), super::continuation::LEDGER_VERSION as i64],
-        |r| r.get(0),
-    )?)
+/// One PR's rounds across tasks, in the order they were created, except
+/// `except`. Only a failed or unknown round's record can show that it
+/// reached no verdict (round_limit.rs); any other is read as its status.
+fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<Value>> {
+    let mut q = tx.prepare(
+        "SELECT id,status,CASE WHEN status IN ('failed','unknown') THEN data END FROM pr_reviews
+           WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2 AND id IS NOT ?3 ORDER BY rowid",
+    )?;
+    let rows = q.query_map(params![repository, number, except], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+    })?;
+    rows.map(|row| {
+        let (id, status, data) = row?;
+        Ok(match data {
+            Some(data) => serde_json::from_str(&data)?,
+            None => json!({"id":id,"status":status}),
+        })
+    })
+    .collect()
+}
+
+/// Started review rounds of one PR across tasks (round_limit.rs), and how
+/// many more ended without a report and don't count.
+fn started_rounds(tx: &Connection, linked: &Value) -> Result<(i64, usize)> {
+    let rounds = pr_rounds(tx, linked["repositoryId"].as_i64(), linked["number"].as_i64(), None)?;
+    let counts = super::round_limit::counts(&rounds);
+    let started = counts.iter().filter(|c| **c).count() as i64;
+    let uncounted = rounds
+        .iter()
+        .zip(&counts)
+        .filter(|(r, c)| !**c && matches!(super::round_limit::ending(r), super::round_limit::Ending::NoReport { .. }))
+        .count();
+    Ok((started, uncounted))
+}
+
+/// The refusal's note on rounds that ended without a report.
+fn uncounted_note(uncounted: usize) -> String {
+    match uncounted {
+        0 => String::new(),
+        1 => " 1 more ended without a report and doesn't count.".into(),
+        n => format!(" {n} more ended without a report and don't count."),
+    }
 }
 
 impl Store {
@@ -171,11 +203,12 @@ impl Store {
                 let head = input.head_sha.as_deref().or(linked["snapshot"]["headSha"].as_str());
                 let config = serde_json::to_value(super::settings::for_task(&tx, &task)?)?;
                 super::incremental::admit(&previous, head, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No review was started."))?;
-                let started = started_rounds(&tx, &linked)?;
+                let (started, uncounted) = started_rounds(&tx, &linked)?;
                 ensure!(
                     started < super::continuation::MAX_STARTED_ROUNDS,
-                    "This PR already has {started} review rounds that started or may have started, across tasks; an incremental round would be one more than the {} it may use. Report the result to whoever decides. No review was started.",
-                    super::continuation::MAX_STARTED_ROUNDS
+                    "This PR already has {started} review rounds that started or may have started, across tasks; an incremental round would be one more than the {} it may use.{} Report the result to whoever decides. No review was started.",
+                    super::continuation::MAX_STARTED_ROUNDS,
+                    uncounted_note(uncounted)
                 );
                 Some(previous)
             }
@@ -282,11 +315,12 @@ impl Store {
         // that failed before its native start was recorded provably started
         // nothing; every other one, older history and unknown ones included,
         // counts.
-        let started = started_rounds(&tx, &linked)?;
+        let (started, uncounted) = started_rounds(&tx, &linked)?;
         ensure!(
             started < super::continuation::MAX_STARTED_ROUNDS,
-            "This PR already has {started} review rounds that started or may have started, across tasks; a continuation would be one more than the {} it may use. Report the result to whoever decides. No continuation was started.",
-            super::continuation::MAX_STARTED_ROUNDS
+            "This PR already has {started} review rounds that started or may have started, across tasks; a continuation would be one more than the {} it may use.{} Report the result to whoever decides. No continuation was started.",
+            super::continuation::MAX_STARTED_ROUNDS,
+            uncounted_note(uncounted)
         );
         let count: i64 = tx.query_row("SELECT COUNT(*) FROM pr_reviews WHERE task_id=?1", [&task], |r| r.get(0))?;
         ensure!(count < 1000, "This task has reached its review history limit");
@@ -337,6 +371,15 @@ impl Store {
         // A terminal run is immutable. A retry always gets a new record.
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
+        // A round that ended without a report records, as it ends, whether it
+        // counts toward its PR's started rounds and why (round_limit.rs).
+        if !matches!(status, "preparing" | "running") {
+            let others = pr_rounds(&tx, data["repositoryId"].as_i64(), data["number"].as_i64(), Some(id))?;
+            if let Some(stamp) = super::round_limit::stamp(data, &others) {
+                stored_data["roundLimit"] = stamp;
+            }
+        }
+        let round_limit = stored_data["roundLimit"]["why"].as_str().map(|why| format!(" {why}")).unwrap_or_default();
         let n = tx.execute("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN ('preparing','running')",params![id,status,stored_data.to_string(),report])?;
         ensure!(n == 1, "Review has already ended");
         if !matches!(status, "preparing" | "running") {
@@ -359,6 +402,7 @@ impl Store {
                 if let Some(codes) = data["reasonCodes"].as_array().filter(|codes| !codes.is_empty()) {
                     body.push_str(&format!(" Review reasons: {}.", codes.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
                 }
+                body.push_str(&round_limit);
                 // Typed so the mailbox notice reads "PR #n · Code review: …"
                 // rather than a bare System notice (mailbox_notice.rs).
                 let pr = data["url"]
@@ -379,7 +423,7 @@ impl Store {
                 "comment",
                 &actor,
                 &Value::Null,
-                json!({"body":format!("Code review round {} · {}: {}. Model conclusion: {}. Open PR reviews for the fixed revision, findings and original report.{}",data["round"],id,status,data["conclusion"].as_str().unwrap_or("unknown"),data["error"].as_str().map(|s|format!(" {s}")).unwrap_or_default()),"reviewId":id}),
+                json!({"body":format!("Code review round {} · {}: {}. Model conclusion: {}. Open PR reviews for the fixed revision, findings and original report.{}{round_limit}",data["round"],id,status,data["conclusion"].as_str().unwrap_or("unknown"),data["error"].as_str().map(|s|format!(" {s}")).unwrap_or_default()),"reviewId":id}),
             )?;
         }
         tx.commit()?;

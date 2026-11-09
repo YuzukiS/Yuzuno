@@ -370,6 +370,10 @@ fn a_round_that_failed_without_a_report_does_not_count_and_after_reads_only_once
     assert!(store.create_pr_review_continuation(None, &on(&task, "p2", "c1"), "child").unwrap().2);
     let stamp = &store.pr_review_report(&task, "read1").unwrap()["roundLimit"];
     assert_eq!((stamp["counts"].as_bool(), stamp["read"].as_str()), (Some(false), Some("some")), "{stamp}");
+    // Task details say so, beside the round's end.
+    let page = store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"activity","limit":200})).unwrap();
+    let ended = page["activities"].as_array().unwrap().iter().filter_map(|a| a["body"].as_str()).find(|b| b.contains("read1: failed")).unwrap_or_default().to_owned();
+    assert!(ended.contains("doesn't count toward this PR's two started rounds"), "{page}");
     // A second one after reads counts, naming the one that didn't. Codex
     // ends such a round unknown, with the same single reason.
     let (_dir, store, task) = setup();
