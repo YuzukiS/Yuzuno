@@ -634,6 +634,16 @@ async fn merge_list_pages_by_limit_and_before_and_the_record_stays_whole() {
 /// the PR's head (a typo, or a push since) is refused before any proof or
 /// write, naming the PR's head and the head the last round reviewed in full,
 /// to copy.
+#[test]
+fn a_released_head_in_either_case_is_the_same_head() {
+    let mut release: Enqueue = serde_json::from_value(json!({"requestId":"r","taskId":"T-1",
+        "pullUrl":"https://github.com/owner/repo/pull/11","headSha":"ABCDEF".repeat(6) + "ABCD"})).unwrap();
+    release.check().unwrap();
+    assert_eq!(release.head_sha, "abcdef".repeat(6) + "abcd");
+    release.head_sha = "abc".into();
+    assert!(release.check().unwrap_err().to_string().contains("full 40-character commit SHA"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_head_that_is_not_the_prs_is_refused_naming_both_heads_in_full() {

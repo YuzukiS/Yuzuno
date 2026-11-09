@@ -480,3 +480,15 @@ fn a_continuations_base_and_head_may_be_left_out() {
     let required: Vec<&str> = tool["inputSchema"]["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert_eq!(required, ["requestId", "taskId", "reviewId"]);
 }
+
+#[test]
+fn a_continuations_base_and_head_left_out_are_its_parents() {
+    let mut bare: Continue = serde_json::from_value(json!({"requestId":"c","taskId":"T-1","reviewId":"parent"})).unwrap();
+    super::fill_from_parent(&mut bare, &parent());
+    assert_eq!((bare.base_sha.as_str(), bare.head_sha.as_str()), (A, B));
+    let mut given = ask("parent", "c2");
+    given.head_sha = "c".repeat(40);
+    super::fill_from_parent(&mut given, &parent());
+    assert_eq!(given.head_sha, "c".repeat(40), "a given head is kept, and admission checks it");
+    assert!(admit(&parent(), &given, &settings()).unwrap_err().contains("another base or head"));
+}

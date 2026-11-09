@@ -58,11 +58,14 @@ pub(super) struct Enqueue {
     pub acknowledge_findings: Option<Vec<findings::Acknowledged>>,
 }
 impl Enqueue {
-    fn validate(&self) -> Result<()> {
+    /// The release as Core keeps it: headSha in lowercase (YN-69 S5: either
+    /// case is the same head), then checked. The pin stays the full SHA.
+    fn check(&mut self) -> Result<()> {
+        self.head_sha.make_ascii_lowercase();
         request_key(&self.request_id)?;
         ensure!(
             self.head_sha.len() == 40 && self.head_sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
-            "invalid_input: headSha must be the full 40-character lowercase commit SHA"
+            "invalid_input: headSha must be the full 40-character commit SHA of the PR head you checked"
         );
         ensure!(
             self.note.as_ref().is_none_or(|n| n.len() <= 2000 && !n.contains('\0')),
@@ -218,14 +221,22 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
 }
 
 async fn enqueue(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
-    let i: Enqueue = serde_json::from_value(input)?;
-    i.validate()?;
+    let mut i: Enqueue = serde_json::from_value(input)?;
+    i.check()?;
     let (who, request) = (actor.clone(), i.clone());
     let plan = match ws.stored(move |s| s.merge_release_plan(who.as_deref(), &request)).await? {
         Ok(plan) => plan,
         Err(existing) => return Ok(existing),
     };
     let (pr, main) = remote::release_reads(ws, &plan.repository, plan.number).await?;
+    // A head that is not the PR's (a typo, or a push since) is refused before
+    // any proof or write (YN-69 S5), naming the PR's head and the head the
+    // last round reviewed in full, so the release is copied, never retyped.
+    if pr["head"]["sha"].as_str() != Some(i.head_sha.as_str()) {
+        bail!("head_moved: the PR head is {}, not {}; the last completed review round reviewed {}. Release the head you checked, \
+            copied from github_links or from here", pr["head"]["sha"].as_str().unwrap_or("unknown"), i.head_sha,
+            plan.reviewed.as_deref().unwrap_or(&i.head_sha));
+    }
     // The last round reviewed an earlier head (YN-33): the release needs the
     // proof that this head adds only merges that need no review of their own.
     let proof = match &plan.reviewed {
