@@ -79,6 +79,8 @@ const text = strings({
   levelSkips: (names: string) => `Routing passes over ${names} for this template.`,
   levelNotKept: (name: string) => `${name} doesn't keep this level: choose another.`,
   levelNotKeptOption: "not kept",
+  opencodeRules: "its own rules",
+  opencodeNote: "On OpenCode nothing reviews an action: everything inside the project is allowed, and only a folder outside it or a call that keeps failing asks you. Its commands aren't sandboxed.",
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
   opencodeOwnModel: "Its own configuration’s model",
   opencodeOption: "OpenCode (Experimental)",
@@ -184,6 +186,8 @@ const text = strings({
   levelSkips: (names) => `路由不会把这个模板派给 ${names}。`,
   levelNotKept: (name) => `${name} 不支持这个等级：请换一个。`,
   levelNotKeptOption: "不支持",
+  opencodeRules: "它自己的规则",
+  opencodeNote: "OpenCode 没有自动审查：项目内全部放行，只有项目外的文件夹或反复失败的调用才问你。它的命令也不在沙箱里。",
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
   opencodeOwnModel: "其自身配置中的模型",
   opencodeOption: "OpenCode（实验性）",
@@ -795,7 +799,7 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
     if (!info) return null;
     if (h === "codex") return info.codex ? codexPermissionText(info.codex.permissionPreset, language) : null;
     if (h === "claude") return info.claude ? claudeModeText(info.claude.permissionMode, language) : null;
-    return info.opencode ? levelName(levels, info.level, language) : null;
+    return info.opencode ? t.opencodeRules : null;
   };
   const skipped = info && !d.harness ? shownHarnesses.filter((h) => !keepsLevel(levels, info.level, h)) : [];
   const refused = levelRefused(d, levels);
@@ -812,6 +816,9 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
             </span>
           )}
         {skipped.length > 0 && <span className="settings-row-help">{t.levelSkips(skipped.map(harnessName).join(", "))}</span>}
+        {d.level === "auto" && info?.opencode && (d.harness === "opencode" || (!d.harness && shownHarnesses.includes("opencode"))) && (
+          <span className="settings-row-help executor-level-opencode">{t.opencodeNote}</span>
+        )}
       </span>
       <select className="settings-select" aria-label={t.permission} value={d.level} aria-invalid={refused || undefined}
         onChange={(e) => edit({ level: e.target.value as Draft["level"] })}>

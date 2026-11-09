@@ -269,6 +269,28 @@ test("YN-56: a template that follows routing has a level on every tool; a fixed 
   assert.deepEqual(page.errors, []);
 });
 
+test("YN-56 S3: where Core says OpenCode keeps a level, its line says its own rules, and Auto-approve says what OpenCode lacks", async () => {
+  const levels = [
+    { level: "ask", label: "Ask you first", labelZh: "先问你", codex: { permissionPreset: "ask" }, claude: { permissionMode: "default" }, opencode: { permission: { "*": "ask" } } },
+    { level: "auto", label: "Auto-approve", labelZh: "自动审批", codex: { permissionPreset: "auto" }, claude: { permissionMode: "auto" }, opencode: { permission: { "*": "allow" } } },
+    { level: "full", label: "Full access", labelZh: "完全放开", codex: { permissionPreset: "full" }, claude: null, opencode: { permission: { "*": "allow" } } },
+  ];
+  const page = mount(() => [200, { ...view({ version: 1, templates: [{ id: "r", label: "Router", permissionLevel: "auto" }] }, true), levels }]);
+  page.window.renderTemplates();
+  await openTemplate(page, "Router");
+  assert.equal(page.document.querySelector(".executor-level-on").textContent,
+    "On each tool: Codex: Approve for me · Claude Code: Auto mode · OpenCode: its own rules");
+  assert.match(page.document.querySelector(".executor-level-opencode").textContent, /^On OpenCode nothing reviews an action/);
+  await type(page, "Permissions", "ask");
+  assert.equal(page.document.querySelector(".executor-level-opencode"), null, "only for Auto-approve");
+  assert.match(page.document.querySelector(".executor-level-on").textContent, /OpenCode: its own rules$/);
+  await type(page, "Runs with", "opencode");
+  assert.deepEqual([...field(page, "Permissions").options].map((o) => o.disabled), [false, false, false, false], "OpenCode keeps each level");
+  await type(page, "Permissions", "auto");
+  assert.ok(page.document.querySelector(".executor-level-opencode"), "a template fixed to OpenCode says it too");
+  assert.deepEqual(page.errors, []);
+});
+
 // As Core serves presets (executor_templates.rs `presets`, YN-23): each in each language, with no harness.
 const presetPair = (id, en, zh, extra = {}) => [
   { id, language: "en", label: en, whenToChoose: `When ${en}`, modelHint: "A strong model.", instructions: `Do ${en}.`, deliveryMode: "pr", ...extra },
