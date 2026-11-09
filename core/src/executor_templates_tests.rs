@@ -158,7 +158,6 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"permissionPreset":"config","permissionLevel":"ask"})), "A fixed Codex template takes a permission level or its own configuration"),
         (with(json!({"permissionLevel":"readonly"})), "A permission level is ask, auto or full, not readonly"),
         (with(json!({"harness":"claude","permissionLevel":"full"})), "Claude Code doesn't keep the permission level full (Full access)"),
-        (with(json!({"harness":"opencode","permissionLevel":"ask"})), "OpenCode doesn't keep the permission level ask (Ask you first)"),
         // YN-56: only a fixed template names its harness, model and effort; one that follows routing takes a level.
         (follows_with(json!({"harness":"codex"})), "A template that follows routing names no harness"),
         (follows_with(json!({"model":"m"})), "A template that follows routing names no model or reasoning effort"),
@@ -231,6 +230,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     for level in ["ask", "auto", "full"] {
         assert!(parse_save(&[follows_with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "{level}");
         assert!(parse_save(&[with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "Codex keeps {level}");
+        assert!(parse_save(&[with(json!({"harness":"opencode","permissionLevel":level}))], true, &[]).is_ok(), "OpenCode keeps {level} (S3)");
     }
     assert!(parse_save(&[with(json!({"permissionPreset":"config"}))], true, &[]).is_ok(), "a fixed Codex template on its machine's configuration");
     assert!(parse_save(&[with(json!({"harness":"claude","permissionLevel":"auto","model":"opus"}))], true, &[]).is_ok());

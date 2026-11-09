@@ -211,15 +211,19 @@ async fn evaluate_and_simulate_answer_from_cores_own_evaluator_for_a_draft_or_th
         ("10:00".into(), "12:00".into(), json!("c-deepseek"))], "off-peak around the peaks: {sim}");
     let (status, _) = post(&lab.local, "/api/routing/simulate", json!({"from": "2026-11-09T00:00:00Z", "to": "2026-11-20T00:00:00Z", "stepMinutes": 5}), vec![]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "at most 2016 steps");
-    // YN-56: with a permission level, only candidates whose harness keeps it; OpenCode keeps none yet.
+    // YN-56: with a permission level, only candidates whose harness keeps it: Claude Code doesn't keep Full access.
+    let mut with_claude = draft.clone();
+    with_claude["candidates"].as_array_mut().unwrap().insert(0, json!({"id": "c-claude", "enabled": true, "harness": "claude",
+        "model": "opus", "credential": {"kind": "login"}, "conditions": []}));
     let (status, route) = post(&lab.local, "/api/routing/evaluate",
-        json!({"policy": draft, "at": "2026-11-09T12:00:00Z", "permissionLevel": "ask"}), vec![]).await;
+        json!({"policy": with_claude, "at": "2026-11-09T12:00:00Z", "permissionLevel": "full"}), vec![]).await;
     assert_eq!(status, StatusCode::OK, "{route}");
     assert_eq!((route["level"].clone(), route["chosen"].clone(), route["candidates"][0]["state"].clone(), route["candidates"][0]["reasons"][0]["code"].clone()),
-        (json!("ask"), json!("c-codex"), json!("skipped"), json!("levelNotKept")), "{route}");
+        (json!("full"), json!("c-deepseek"), json!("skipped"), json!("levelNotKept")), "{route}");
     let (_, sim) = post(&lab.local, "/api/routing/simulate",
-        json!({"policy": draft, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z", "stepMinutes": 30, "permissionLevel": "full"}), vec![]).await;
-    assert_eq!(sim["segments"].as_array().map(|s| s.iter().map(|s| s["chosen"].clone()).collect::<Vec<_>>()), Some(vec![json!("c-codex")]), "{sim}");
+        json!({"policy": with_claude, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z", "stepMinutes": 30, "permissionLevel": "full"}), vec![]).await;
+    assert_eq!(sim["segments"].as_array().map(|s| s.iter().map(|s| s["chosen"].clone()).collect::<Vec<_>>()),
+        Some(vec![json!("c-deepseek"), json!("c-codex"), json!("c-deepseek"), json!("c-codex"), json!("c-deepseek")]), "Claude Code is passed over: {sim}");
     for uri in ["/api/routing/evaluate", "/api/routing/simulate"] {
         let (status, refused) = post(&lab.local, uri, json!({"policy": draft, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z",
             "stepMinutes": 30, "permissionLevel": "readonly"}), vec![]).await;

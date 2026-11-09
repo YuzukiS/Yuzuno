@@ -127,6 +127,10 @@ pub struct Launch {
     /// set on its process only, never in `environment`, which other processes
     /// started for the Agent read.
     pub extra: Vec<(String, crate::routing_keys::Secret)>,
+    /// OPENCODE_CONFIG_CONTENT for this server alone: an executor's permission
+    /// level as OpenCode's rules (permission_levels.rs, YN-56 S3). None leaves
+    /// Core's own environment as it is.
+    pub config: Option<String>,
 }
 
 impl Launch {
@@ -134,7 +138,8 @@ impl Launch {
     /// `cache`, the cache Core's Agents share.
     pub fn new(program: PathBuf, directory: PathBuf, folder: &Path, cache: PathBuf) -> Self {
         let own = folder.join("xdg");
-        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new() }
+        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new(),
+            config: None }
     }
 
     /// What OpenCode gets besides Core's own environment: the database and
@@ -559,6 +564,7 @@ impl Server {
             .env("OPENCODE_PASSWORD", &password)
             .envs(launch.environment())
             .envs(launch.extra.iter().map(|(name, value)| (name.as_str(), value.expose())))
+            .envs(launch.config.iter().map(|config| ("OPENCODE_CONFIG_CONTENT", config.as_str())))
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -995,6 +1001,15 @@ impl Server {
         let listed = listed.as_array().context("OpenCode's /api/agent is not a list")?;
         Ok(listed.iter().filter_map(|agent| Some((agent["id"].as_str()?.to_owned(), agent["mode"].as_str()?.to_owned(),
             agent["hidden"].as_bool().unwrap_or(false)))).collect())
+    }
+
+    /// The agents 2.x has for `directory`, each as `{id, permissions}`: the
+    /// permission rules it decides by (YN-56 S3). Only those fields are kept,
+    /// since an agent's `request` may hold its provider's headers.
+    pub async fn agent_rules(&self, directory: &str) -> Result<Value> {
+        let listed = self.data(Method::GET, "/api/agent", &[(LOCATION, directory)], None).await?;
+        let listed = listed.as_array().context("OpenCode's /api/agent is not a list")?;
+        Ok(listed.iter().map(|agent| serde_json::json!({"id": agent["id"], "permissions": agent["permissions"]})).collect())
     }
 
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
