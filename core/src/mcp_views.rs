@@ -49,6 +49,9 @@ pub(crate) fn prepare(tool: &str, arguments: &mut Map<String, Value>) -> Result<
             arguments.insert("byteBudget".into(), json!(BUDGET));
             Ok(None)
         }
+        // Without keys or part: whole, within the budget (answer).
+        "brief_get" => Ok(arguments.get("keys").is_none_or(Value::is_null).then(|| "whole".into())),
+        "brief_guide" => Ok(arguments.get("part").is_none_or(Value::is_null).then(|| "whole".into())),
         // Short rows unless the Agent asks for whole ones with compact:false (YN-69).
         "task_list" if !arguments.contains_key("compact") => {
             arguments.insert("compact".into(), json!(true));
@@ -95,6 +98,10 @@ pub(crate) fn answer(tool: &str, value: Value, view: Option<&str>) -> Value {
         mail_within_budget(mailbox(value))
     } else if tool == "task_get" {
         history_within_budget(materials_once(value))
+    } else if view == Some("whole") && size(&value) > BUDGET && tool == "brief_get" {
+        brief_within_budget(value)
+    } else if view == Some("whole") && size(&value) > BUDGET && tool == "brief_guide" {
+        guide_within_budget(value)
     } else {
         value
     }
@@ -267,6 +274,77 @@ fn materials_once(mut answer: Value) -> Value {
         }
     }
     answer
+}
+
+/// A Brief larger than an answer holds (YN-69 S8): every section's index
+/// entry, as brief_get with keys [] lists them, and the caller's own sections
+/// whole, newest first, while the answer fits; more names the ones left out.
+/// brief_get keys reads any section whole.
+fn brief_within_budget(mut brief: Value) -> Value {
+    let whole = size(&brief);
+    let sections = brief["sections"].as_array().cloned().unwrap_or_default();
+    let own: Vec<&str> = brief["you"]["ownsKeys"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let mut mine: Vec<&Value> = sections.iter().filter(|s| s["key"].as_str().is_some_and(|key| own.contains(&key))).collect();
+    mine.sort_by(|a, b| b["updatedAt"].as_str().cmp(&a["updatedAt"].as_str()));
+    brief["index"] = sections.iter().map(index_entry).collect();
+    let mut shown: Vec<Value> = Vec::new();
+    let mut left: Vec<&str> = Vec::new();
+    for section in mine {
+        shown.push(section.clone());
+        brief["sections"] = json!(shown);
+        brief["more"] = brief_more(whole, sections.len(), &left);
+        if size(&brief) > BUDGET {
+            shown.pop();
+            left.push(section["key"].as_str().unwrap_or_default());
+        }
+    }
+    brief["sections"] = json!(shown);
+    brief["more"] = brief_more(whole, sections.len(), &left);
+    brief
+}
+
+fn brief_more(whole: usize, all: usize, left: &[&str]) -> Value {
+    let left = if left.is_empty() { String::new() } else { format!("; of your own, these are left out: {}", left.join(", ")) };
+    json!(format!("This Brief is {whole} bytes, more than one answer holds ({BUDGET}): index lists all {all} sections, \
+        sections holds your own newest that fit{left}. brief_get with keys [...] reads any section whole"))
+}
+
+/// A section's index entry, as sections::index_json lists it for keys [].
+fn index_entry(section: &Value) -> Value {
+    let mut entry = json!({"key": section["key"], "kind": section["kind"], "title": section["title"], "version": section["version"],
+        "owner": section["owner"], "updatedAt": section["updatedAt"], "seen": section["seen"]});
+    if section["kind"] == "ask" {
+        entry["ask"] = json!({"state": section["ask"]["state"], "repliedAt": section["ask"]["repliedAt"]});
+    }
+    if section["kind"] == "status" {
+        entry["status"] = section["status"].clone();
+    }
+    if section["time"].is_object() {
+        entry["time"] = section["time"].clone();
+    }
+    entry
+}
+
+/// The whole brief_guide when it is more than an answer holds (YN-69 S8): its
+/// header and its parts in order while they fit; moreParts names the rest,
+/// each of which brief_guide with part reads whole.
+fn guide_within_budget(mut answer: Value) -> Value {
+    let Some(text) = answer["guide"].as_str().map(str::to_owned) else { return answer };
+    let starts: Vec<usize> = text.match_indices("\n## ").map(|(at, _)| at).collect();
+    let names: Vec<String> = starts.iter().map(|&at| text[at + 4..].lines().next().unwrap_or_default().trim().to_owned()).collect();
+    let mut kept = starts.len();
+    loop {
+        let end = starts.get(kept).copied().unwrap_or(text.len());
+        let rest = &names[kept..];
+        answer["guide"] = json!(text[..end]);
+        answer["moreParts"] = json!(rest);
+        answer["more"] = json!(format!("The whole guide is {} bytes, more than one answer holds ({BUDGET}); \
+            brief_guide with part reads each of moreParts whole", text.len()));
+        if size(&answer) <= BUDGET || kept == 0 {
+            return answer;
+        }
+        kept -= 1;
+    }
 }
 
 fn pick(from: &Value, keys: &[&str]) -> Value {

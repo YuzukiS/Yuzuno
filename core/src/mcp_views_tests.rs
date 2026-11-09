@@ -420,6 +420,7 @@ fn an_agents_brief_get_without_keys_and_brief_guide_without_part_are_answered_wi
     assert_eq!(prepare("brief_get", &mut keyed), Ok(None));
     assert_eq!(prepare("brief_guide", &mut arguments(json!({}))), Ok(Some("whole".into())));
     assert_eq!(prepare("brief_guide", &mut arguments(json!({"part":"limits"}))), Ok(None));
+    assert_eq!(BUDGET, ANSWER_BUDGET);
 }
 
 /// YN-69 S8: the whole brief_guide (68 KB) is more than an answer holds: an
