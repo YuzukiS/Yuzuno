@@ -131,16 +131,10 @@
     min-height: 44px;
     padding: 0 14px;
   }
-  .executor-overview-card .more {
-    min-height: 44px;
-  }
 }
 .app.phone .executor-overview-chips .chip.link {
   min-height: 44px;
   padding: 0 14px;
-}
-.app.phone .executor-overview-card .more {
-  min-height: 44px;
 }
 .app.phone .executor-tabs,
 .app.phone .executor-overview {
@@ -265,15 +259,21 @@
   flex-direction: column;
   gap: 5px;
 }
+/* Its mark and place on its name's first line; the name and the record
+   share the rest of the row (YN-58). */
 .executor-overview-steps .step {
   display: grid;
-  grid-template-columns: 16px 1.5em minmax(0, 1fr) auto;
-  grid-template-areas: "mark no label ref";
+  grid-template-columns: 16px 1.5em minmax(0, 1fr);
+  grid-template-areas: "mark no text";
   column-gap: 8px;
-  align-items: center;
+  align-items: baseline;
 }
 .executor-overview-steps .mark {
   grid-area: mark;
+  align-self: start;
+  /* Centred on the first line: em first for a browser without lh. */
+  margin-top: calc((1.2em - 14px) / 2);
+  margin-top: calc((1lh - 14px) / 2);
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -288,10 +288,22 @@
   font-variant-numeric: tabular-nums;
   text-align: end;
 }
-.executor-overview-steps .label {
-  grid-area: label;
+/* The record beside the name where both fit on one line, else on a line of
+   its own under the name, wrapping there (YN-58): a long record never
+   squeezes the name. The name keeps at least its longest word (it breaks
+   inside a word only where that word alone is wider than the row). */
+.executor-overview-steps .text {
+  grid-area: text;
   min-width: 0;
-  overflow-wrap: anywhere;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  column-gap: 8px;
+}
+.executor-overview-steps .label {
+  max-width: 100%;
+  overflow-wrap: break-word;
 }
 /* The state's word, for a reader that has no colour or mark. */
 .executor-overview-steps .state {
@@ -303,10 +315,9 @@
   white-space: nowrap;
 }
 .executor-overview-steps .ref {
-  grid-area: ref;
+  min-width: 0;
   color: var(--muted);
   font-size: 0.76rem;
-  text-align: end;
   overflow-wrap: anywhere;
 }
 .executor-overview-steps .step[data-state="done"] .mark {
@@ -334,23 +345,8 @@
 .executor-overview-steps .step[data-state="todo"] .label {
   color: var(--muted);
 }
-.executor-overview-card .more {
-  margin-top: 6px;
-  border: 0;
-  background: none;
-  padding: 2px 0;
-  font: inherit;
-  font-size: 0.76rem;
-  color: var(--green);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.executor-overview-card .more:hover {
-  text-decoration: underline;
-}
 /* Its own controls only: a request's card keeps its own focus. */
 .executor-overview-chips .chip.link:focus-visible,
-.executor-overview-card .more:focus-visible,
 .executor-overview-card > summary:focus-visible,
 .executor-overview-card a:focus-visible,
 .executor-overview-error button:focus-visible {

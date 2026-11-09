@@ -7,9 +7,13 @@
 //   Conversation and the composer are hidden, not gone;
 // - nothing in the Overview is wider than it, no step's label runs into
 //   its record, and every card is inside the pane;
-// - the steps show five, then all on request;
+// - YN-58: every step shows at once, no "more"/"fewer" and no button in
+//   the steps card; a step's name is never narrower than its longest word
+//   (nor than all of it, where the row fits it), and its record neither:
+//   a long record (yn22's step 6, a Job named with a sentence, as in the
+//   user's screenshot) goes under the name and wraps there;
 // - the waiting executor's request card is in its Overview only;
-// - on a phone each tab, the task link and the steps toggle are 44 px tall;
+// - on a phone each tab and the task link are 44 px tall;
 // - its Conversation shows the composer again; back to the Overview.
 // - T-43 S4: two executors at a gate asked on Home with their own Asks (a
 //   design note, an irreversible runbook step): each Overview has the Ask's
@@ -39,7 +43,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 S3/S4, YN-46", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
+const report = { task: "T-43 S3/S4, YN-46, YN-58", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -97,6 +101,8 @@ const longAcceptance = [
   "",
   "Lab Cores and isolated browsers only.",
 ].join("\n");
+// The user's screenshot (YN-58), synthetic: a Job's name as long as a sentence.
+const LONG_JOB = "YN-56 S4 b1: isolated UI build, templates and routing browser checks";
 const overview = {
   yn22: {
     agentId: "yn22", lifecycle: agents[1].executor, task: { id: "YN-22", title: agents[1].executor.task.title, status: "doing" },
@@ -107,11 +113,14 @@ const overview = {
       { kind: "work", label: "Fix (the test unchanged)", state: "done" },
       { kind: "job", label: "Green", state: "done", ref: { kind: "job", id: "j2", name: "green 24/24", status: "succeeded" } },
       { kind: "pr", label: "PR at a frozen head", state: "done", ref: { kind: "pr", number: 688, url: "https://github.com/owner/repo/pull/688", state: "open" } },
+      // YN-58: a Job named with a sentence, its kind's word for its name.
+      { kind: "job", state: "failed", ref: { kind: "job", id: "j4", name: LONG_JOB, status: "failed" } },
       { kind: "review", rounds: 2, state: "doing", ref: { kind: "review", id: "r1", round: 1, conclusion: null, forCurrentHead: true } },
       { kind: "ci", state: "done", ref: { kind: "ci", state: "success", headSha: head } },
       { kind: "merge", label: "Merge (Dev 9 / the merge queue)", state: "todo" },
     ],
-    jobs: [{ id: "j2", name: "green 24/24", status: "succeeded", finishedAt: ago(20) }, { id: "j1", name: "red 1/1 (the assertion \"selected stays\")", status: "failed", reason: "exit-code", finishedAt: ago(40) }],
+    jobs: [{ id: "j4", name: LONG_JOB, status: "failed", reason: "exit-code", finishedAt: ago(8) },
+      { id: "j2", name: "green 24/24", status: "succeeded", finishedAt: ago(20) }, { id: "j1", name: "red 1/1 (the assertion \"selected stays\")", status: "failed", reason: "exit-code", finishedAt: ago(40) }],
     pullRequest: { number: 688, url: "https://github.com/owner/repo/pull/688", title: "Keep the selection after a refresh", state: "open", headSha: head,
       ci: { state: "success", headSha: head }, latestReview: { reviewId: "r1", round: 1, status: "running", conclusion: null, forCurrentHead: true },
       changes: { additions: 46, deletions: 9, files: 3 } },
@@ -242,9 +251,29 @@ async function route(route) {
 const measure = (page) => page.evaluate(() => {
   const panel = document.querySelector("#executor-overview");
   const box = panel.getBoundingClientRect();
+  // YN-58: a copy of a step's name or record on one line, out of the flow and unseen, in the same rules: its full width, and its longest word's.
+  const oneLine = (el, text) => {
+    const copy = el.cloneNode(false);
+    copy.textContent = text;
+    Object.assign(copy.style, { position: "absolute", visibility: "hidden", whiteSpace: "nowrap", width: "auto", maxWidth: "none", left: "0", top: "0" });
+    el.parentElement.append(copy);
+    const width = copy.getBoundingClientRect().width;
+    copy.remove();
+    return width;
+  };
+  const widths = (el) => ({ width: el.getBoundingClientRect().width, full: oneLine(el, el.textContent),
+    word: Math.max(0, ...el.textContent.split(/\s+/).filter(Boolean).map((word) => oneLine(el, word))) });
+  // The lines its text is drawn on: one box per line.
+  const lines = (el) => { const range = document.createRange(); range.selectNodeContents(el); return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size; };
   const steps = [...panel.querySelectorAll(".executor-overview-steps .step")].map((s) => {
     const label = s.querySelector(".label").getBoundingClientRect(), ref = s.querySelector(".ref").getBoundingClientRect();
-    return { text: s.querySelector(".label").textContent, overlap: ref.width > 0 && label.right > ref.left + 1 && label.bottom > ref.top + 1 && label.top < ref.bottom - 1 };
+    const row = s.querySelector(".text").getBoundingClientRect().width;
+    const name = widths(s.querySelector(".label")), record = widths(s.querySelector(".ref"));
+    const round = (n) => Math.round(n * 10) / 10;
+    return { text: s.querySelector(".label").textContent, ref: s.querySelector(".ref").textContent,
+      overlap: ref.width > 0 && label.right > ref.left + 1 && label.bottom > ref.top + 1 && label.top < ref.bottom - 1,
+      row: round(row), label: { width: round(name.width), full: round(name.full), word: round(name.word), lines: lines(s.querySelector(".label")) },
+      record: { width: round(record.width), full: round(record.full), word: round(record.word), lines: lines(s.querySelector(".ref")) }, under: ref.width > 0 && ref.top >= label.bottom - 1 };
   });
   const wide = [...panel.querySelectorAll("*")].filter((el) => {
     const r = el.getBoundingClientRect();
@@ -253,8 +282,10 @@ const measure = (page) => page.evaluate(() => {
   const height = (selector) => [...document.querySelectorAll(selector)].map((el) => Math.round(el.getBoundingClientRect().height));
   const shown = (selector) => { const el = document.querySelector(selector); return !!el && el.getClientRects().length > 0; };
   return {
-    overflowX: panel.scrollWidth > panel.clientWidth + 1, wide, overlaps: steps.filter((s) => s.overlap).map((s) => s.text), steps: steps.length,
-    tabs: height(".executor-tabs [role=tab]"), link: height(".executor-overview-chips .chip.link"), more: height(".executor-overview-card .more"),
+    overflowX: panel.scrollWidth > panel.clientWidth + 1, wide, overlaps: steps.filter((s) => s.overlap).map((s) => s.text), steps: steps.length, rows: steps,
+    // YN-58: nothing to unfold: no button in the steps card, no .more anywhere.
+    stepButtons: panel.querySelector(".executor-overview-steps").closest(".executor-overview-card").querySelectorAll("button").length + panel.querySelectorAll(".more").length,
+    tabs: height(".executor-tabs [role=tab]"), link: height(".executor-overview-chips .chip.link"),
     conversation: shown(".conversation-body"), composer: shown(".composer-area"), cards: panel.querySelectorAll(".pending-card").length,
     gates: panel.querySelectorAll(".gate-ask .home-ask-options").length, bodyGates: document.querySelectorAll(".conversation-body .gate-ask").length,
     bodyCards: document.querySelectorAll(".conversation-body .pending-card").length,
@@ -287,6 +318,16 @@ const layout = (page) => page.evaluate(() => {
       tones: [...pair.querySelectorAll(".v [data-tone]")].map((v) => v.dataset.tone) } : null,
   };
 });
+// YN-58: each step's name and record at least their longest word wide, and
+// all of it where their row fits it: a record never squeezes its name.
+function assertNames(tag, id, rows) {
+  for (const [i, r] of rows.entries()) for (const [what, w] of [["name", r.label], ["record", r.record]]) {
+    if (!w.full) continue;
+    assert.ok(w.width + 0.5 >= Math.min(w.word, r.row), `${tag} ${id} step ${i + 1}: its ${what} ${w.width} px, under its longest word's ${w.word} px`);
+    assert.ok(w.width + 0.5 >= Math.min(w.full, r.row), `${tag} ${id} step ${i + 1}: its ${what} ${w.width} px, narrower than it (${w.full} px) or its row (${r.row} px)`);
+  }
+}
+
 // Two columns where the pane is 1000 px or wider, one below: checked against what is drawn.
 function assertColumns(tag, id, l) {
   const two = l.pane >= 1000;
@@ -410,8 +451,10 @@ async function run({ width, height, theme, lang = "en", glance = true }) {
       assert.deepEqual(m.overlaps, [], `${tag} ${id}: no step's label runs into its record`);
       assert.equal(m.conversation, false, `${tag} ${id}: its Conversation hidden`);
       assert.equal(m.composer, false, `${tag} ${id}: the composer is the Conversation's`);
-      assert.equal(m.steps, Math.min(5, overview[id].steps.length), `${tag} ${id}: five steps, then the rest on request`);
-      if (phone) for (const [name, heights] of [["tabs", m.tabs], ["task link", m.link], ["steps toggle", m.more]])
+      assert.equal(m.steps, overview[id].steps.length, `${tag} ${id}: every step at once`);
+      assert.equal(m.stepButtons, 0, `${tag} ${id}: no more or fewer`);
+      assertNames(tag, id, m.rows);
+      if (phone) for (const [name, heights] of [["tabs", m.tabs], ["task link", m.link]])
         assert.ok(heights.every((h) => h >= 44), `${tag} ${id}: each ${name} 44 px tall on a phone (${heights})`);
       if (id === "yn21") {
         assert.equal(m.cards, 1, `${tag}: its request's card in its Overview`);
@@ -466,15 +509,22 @@ async function run({ width, height, theme, lang = "en", glance = true }) {
     await press(page.getByRole("tab", { name: lang === "zh" ? "概览" : "Overview" }));
     await page.locator("#executor-overview .executor-overview-head").waitFor({ timeout: 5_000 });
     check(`${tag}: a gate's Ask in its Conversation too, when that tab shows`);
-    // yn22: all its steps, then its Conversation and back.
+    // yn22: all its steps, its long Job's record under the name (YN-58); then its Conversation and back.
     await open("yn22");
-    await press(page.locator("#executor-overview .executor-overview-card .more"));
-    await page.waitForFunction(() => document.querySelectorAll("#executor-overview .executor-overview-steps .step").length === 8);
+    await page.locator("#executor-overview .executor-overview-steps .step:nth-child(6)").scrollIntoViewIfNeeded();
     const all = await measure(page);
+    assert.equal(all.steps, 9, `${tag}: all nine steps`);
     assert.deepEqual(all.overlaps, [], `${tag}: all steps, none overlapping`);
-    await page.locator("#executor-overview .executor-overview-steps").scrollIntoViewIfNeeded();
+    assertNames(tag, "yn22", all.rows);
+    const job = all.rows[5];
+    assert.deepEqual([job.text, job.ref], [lang === "zh" ? "跑 Job" : "Run a Job", `${LONG_JOB} · failed`], `${tag}: step 6 is the long Job`);
+    // Beside its name on one line where the row fits both (a wide single column), else under it: in the steps column and on a phone.
+    if (phone || twoColumns) assert.ok(job.under, `${tag}: the long record under its name (row ${job.row} px)`);
+    else assert.ok(job.under || job.record.lines === 1, `${tag}: the long record beside its name on one line, or under it`);
+    assert.equal(job.label.lines, 1, `${tag}: its name on one line (${job.label.width} px)`);
+    report.measures[`${tag}-yn22-long-job`] = job;
     await shot("yn22-all-steps");
-    check(`${tag}: all eight steps on request`);
+    check(`${tag}: all nine steps at once; the long Job's name on one line, its record under it`);
     await press(page.getByRole("tab", { name: lang === "zh" ? "会话" : "Conversation" }));
     await page.locator(".composer-area").waitFor({ state: "visible", timeout: 5_000 });
     assert.equal(await page.locator("#executor-overview").count(), 0);
