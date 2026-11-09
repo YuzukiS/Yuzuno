@@ -105,6 +105,8 @@ async fn an_approved_plan_removes_only_its_chosen_groups_after_checking_each_aga
     assert!(excluded.exists() && kept.exists(), "excluded and keep-group items stay");
     assert!(!target.join("debug").exists(), "the Cargo-only profile went");
     assert!(target.join("release/report.html").exists() && target.join("CACHEDIR.TAG").exists(), "what Cargo did not make stays");
+    let freed = items_of(&lab, &plan).await;
+    assert!(freed.iter().find(|i| i["item"] == "target").unwrap()["result"]["bytes"].as_u64().is_some_and(|b| b > 0), "every planned profile went: its size counts");
     let states = item_states(&lab, &plan).await;
     assert_eq!(states["excluded"], ("kept".to_owned(), Some("excluded".to_owned())));
     assert_eq!(states["kept"], ("kept".to_owned(), Some("notApproved".to_owned())));
@@ -264,7 +266,12 @@ async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
     let lab = lab();
     let entry = old_entry(&lab, "job-s");
     let plan = submit(&lab, "stopped", vec![group("d", "delete")], vec![item("e", "d", "entry", &entry)]).await;
-    lab.ws.store.db.write().unwrap().execute("UPDATE cleanup_plans SET state='applying', approval='{\"groups\":[\"d\"]}' WHERE id=?1",
+    // One this process is applying is its own: recovery leaves it.
+    lab.ws.store.db.write().unwrap().execute("UPDATE cleanup_plans SET state='applying', approval=json_object('groups',json_array('d'),'boot',?2) WHERE id=?1",
+        params![plan["planId"].as_str(), apply::BOOT.as_str()]).unwrap();
+    assert_eq!(lab.ws.stored(apply::recover).await.unwrap(), 0);
+    // One an earlier process left applying is finished.
+    lab.ws.store.db.write().unwrap().execute("UPDATE cleanup_plans SET approval='{\"groups\":[\"d\"],\"boot\":\"earlier\"}' WHERE id=?1",
         [plan["planId"].as_str()]).unwrap();
     assert_eq!(lab.ws.stored(apply::recover).await.unwrap(), 1);
     let read = lab.ws.collaboration_call(None, "cleanup_plan_get", json!({"planId": plan["planId"]})).await.unwrap();

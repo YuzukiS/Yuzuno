@@ -36,6 +36,9 @@ use std::io::Write as _;
 const APPLY_TIME: Duration = Duration::from_secs(6 * 3600);
 /// Names of excluded items one call takes.
 const MAX_EXCLUDED: usize = 2000;
+/// This Core process: an approval records it, so recovery at start takes
+/// only plans an earlier process left applying (review ae977525).
+pub(super) static BOOT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -232,7 +235,7 @@ fn approve(store: &Store, actor: &str, input: &ApplyInput, digest: &str) -> Resu
     let at = now();
     let record = json!({"requestId": input.request_id, "requestDigest": digest, "askKey": input.ask_key, "askVersion": ask.version,
         "repliedAt": ask.replied_at, "groups": chosen, "excluded": excluded, "by": {"kind": "user", "through": "Home"},
-        "appliedBy": actor, "at": at, "summary": summary});
+        "appliedBy": actor, "at": at, "summary": summary, "boot": BOOT.as_str()});
     tx.execute("UPDATE cleanup_plans SET state='applying',approved_at=?2,approval=?3 WHERE id=?1", params![plan.id, at, record.to_string()])?;
     let (author, source) = collaboration::actor_context(store, &tx, Some(actor))?;
     collaboration::activity(&tx, &task, "comment", &author, &json!({"cleanupPlan": {"planId": plan.id}, "agent": source}),
@@ -449,11 +452,18 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
         _ => {
             let (dev, ino) = (item.pre["dev"].as_u64(), item.pre["ino"].as_u64());
             let target = path.clone();
-            tokio::task::spawn_blocking(move || remove_aside(&target, dev, ino)).await.unwrap_or_else(|e| Err(("failed", e.to_string())))
+            tokio::task::spawn_blocking(move || remove_aside(&target, dev, ino).map(|note| (note, true)))
+                .await
+                .unwrap_or_else(|e| Err(("failed", e.to_string())))
         }
     };
     match removal {
-        Ok(note) => Outcome { state: "removed", result: json!({"code": "removed", "bytes": bytes, "note": note}), snapshot },
+        Ok((note, whole)) => {
+            // Its size was measured over everything planned: when part of it
+            // stayed, how much went is not known (review ae977525).
+            let bytes = if whole { bytes } else { Value::Null };
+            Outcome { state: "removed", result: json!({"code": "removed", "bytes": bytes, "note": note}), snapshot }
+        }
         Err((state, why)) => Outcome {
             state: if state == "partial" { "partial" } else if state == "failed" { "failed" } else { "refused" },
             result: json!({"code": state, "why": why}),
@@ -481,7 +491,8 @@ fn remove_aside(path: &Path, dev: Option<u64>, ino: Option<u64>) -> std::result:
 
 /// The planned Cargo profiles of a target folder that are still the ones
 /// planned, each removed under its build locks; everything else stays.
-fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::result::Result<Option<String>, (&'static str, String)> {
+/// With what was done, and whether every planned profile went.
+fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::result::Result<(Option<String>, bool), (&'static str, String)> {
     let (mut removed, mut kept) = (Vec::new(), Vec::new());
     for profile in planned {
         let name = profile["name"].as_str().unwrap_or_default();
@@ -512,14 +523,19 @@ fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::
             continue;
         }
         drop(locks);
-        std::fs::remove_dir_all(&aside)
-            .map_err(|e| ("partial", format!("Removing {name} stopped: {e}; what remains is at {}", aside.display())))?;
+        if let Err(e) = std::fs::remove_dir_all(&aside) {
+            // What went before it and what stayed are said too.
+            let before = if removed.is_empty() { String::new() } else { format!("; removed before it: {}", removed.join(", ")) };
+            let stayed = if kept.is_empty() { String::new() } else { format!("; kept: {}", kept.join("; ")) };
+            return Err(("partial", format!("Removing {name} stopped: {e}; what remains is at {}{before}{stayed}", aside.display())));
+        }
         removed.push(name.to_owned());
     }
     if removed.is_empty() {
         return Err(("refused", format!("No planned profile could be removed: {}", kept.join("; "))));
     }
-    Ok(Some(if kept.is_empty() { format!("Removed {}", removed.join(", ")) } else { format!("Removed {}; kept {}", removed.join(", "), kept.join("; ")) }))
+    let whole = kept.is_empty();
+    Ok((Some(if whole { format!("Removed {}", removed.join(", ")) } else { format!("Removed {}; kept {}", removed.join(", "), kept.join("; ")) }), whole))
 }
 
 /// A scratch entry's evidence files (the settings' suffixes, each at most
@@ -628,12 +644,13 @@ fn finish(store: &Store, id: &str, error: Option<String>) -> Result<()> {
 }
 
 /// Plans a stopped Core left applying: what was not reached is kept, and
-/// their executors are told. Nothing is retried.
+/// their executors are told. Nothing is retried. A plan this process
+/// started applying is its own and is left to it.
 pub(super) fn recover(store: &Store) -> Result<usize> {
     let ids: Vec<String> = {
         let db = store.db.read()?;
-        let mut q = db.prepare("SELECT id FROM cleanup_plans WHERE state='applying'")?;
-        let rows = q.query_map([], |r| r.get(0))?;
+        let mut q = db.prepare("SELECT id FROM cleanup_plans WHERE state='applying' AND COALESCE(json_extract(approval,'$.boot'),'')<>?1")?;
+        let rows = q.query_map([BOOT.as_str()], |r| r.get(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     for id in &ids {
