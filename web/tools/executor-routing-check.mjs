@@ -500,7 +500,8 @@ async function run({ width, height, theme, lang }) {
     await press(keyForm.getByRole("button", { name: w.saveKey, exact: true }));
     await keyForm.waitFor({ state: "detached", timeout: 10_000 });
     assert.equal(await account.inputValue(), "key:anthropic-2", `${tag}: the candidate's key now`);
-    const inPlace = report.writes.filter((x) => x.path === "/api/routing/keys/anthropic-2");
+    // This run's (not yet tagged): each run gives the key the same id.
+    const inPlace = report.writes.filter((x) => x.tag === undefined && x.path === "/api/routing/keys/anthropic-2");
     assert.deepEqual(inPlace.map((x) => [x.method, x.body]), [["PUT", { source: "local", provider: "anthropic", value: IN_PLACE }]], `${tag}: one write, with the value`);
     // This run's own writes: the next run's list of writes leaves them out.
     for (const x of report.writes) if (x.tag === undefined) x.tag = tag;
