@@ -112,7 +112,7 @@ function core({ view = savedView(), put, lists } = {}) {
     ], onePasswordToken: { set: true } }];
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
       { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAIL },
-      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "alias" },
+      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
       { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "other@example.test" },
     ] }, codexHomes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }] }];
     return [404, { error: `not answered: ${method} ${p}` }];
@@ -336,7 +336,7 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
 
 /** An open editor's model select: its groups and options as shown, and the line under it. */
 function modelView(page, id) {
-  const select = editorField(page, id, "Model");
+  const select = card(page, id).querySelector(".routing-edit .routing-model select");
   const field = select.closest(".routing-model");
   return {
     select,
@@ -386,11 +386,14 @@ test("OpenCode's list puts the candidate's key's provider first, and says when a
   await set(page, view.select, "anthropic/claude-x");
   view = modelView(page, "ds");
   assert.equal(view.notes[1], "Anthropic 的模型需要 Anthropic 的 API key：在「账号或 key」里选一把。", "said, not refused");
-  assert.equal(button(page, "保存", bar(page))?.disabled, false, "the save is not held for it");
+  await until(() => button(page, "保存", bar(page)), "the bar");
+  assert.equal(button(page, "保存", bar(page)).disabled, false, "the save is not held for it");
 });
 
 test("a tool whose list can't be read shows Yuzuno's short list and why, until Read again reads it (YN-57)", async () => {
-  const page = mount(core({ lists: (harness, n) => (harness === "codex" && n === 1 ? [503, { code: "unavailable", error: "Codex did not start" }] : undefined) }));
+  const view0 = savedView();
+  view0.policy.candidates.push({ id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, conditions: [], unknown: "skip" });
+  const page = mount(core({ view: view0, lists: (harness, n) => (harness === "codex" && n === 1 ? [503, { code: "unavailable", error: "Codex did not start" }] : undefined) }));
   await opened(page);
   button(page, "Edit Codex · gpt-6.1-sol").click();
   await until(() => modelView(page, "cx").groups.length === 1, "the short list");
@@ -450,7 +453,7 @@ test("routing off, the Workspace cap, a weekly schedule of its own and a pool of
   await tick();
   [...card(page, "cl").querySelectorAll(".routing-pool-accounts label")].find((l) => l.textContent.includes("Account #2")).querySelector("input").click();
   await tick();
-  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("alias"), "accounts by number and fingerprint only");
+  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("fixture-alias-label"), "accounts by number and fingerprint only");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   const sent = puts(page)[0].body.policy;
