@@ -723,6 +723,24 @@ A released executor takes no more mail or work:
   proposal shows who, and can't be decided there. You decide it if you
   dispatched the executor, or if its dispatcher is closed or no longer
   exists.
+- **Its build output can go, by the user's policy.** The build output cleanup
+  (`/api/build-cleanup`) is off unless the user turns it on, and only the user
+  changes it. Once on, the chosen number of days (0–30, 1 unless changed)
+  after the executor's close, Core removes the Cargo `debug` build output of
+  the folders its records show were the executor's: the folder it worked in,
+  the folders its Jobs ran in and the target directories they named in
+  `CARGO_TARGET_DIR`, worktrees registered on its task, and worktrees on the
+  head branch of its task's pull requests. Each must be a worktree of the
+  Project's repository inside the Project's folder on the Core host, and not
+  that folder itself or its own `target/`. A profile is removed only if
+  nothing keeps it at that moment: Git tracking or seeing files there, files
+  Cargo does not make, a Job record naming it, a build or a process using it,
+  a Job or an Agent in that folder, or another open executor of the task.
+  What is in use is tried again every hour for a week. Worktrees, branches,
+  sources, other profiles and everything beside a profile stay. The task's
+  activity says once what was removed and kept, and `executor_release`'s
+  answer gives the policy and `dueAt` in `buildCleanup`. Executors on other
+  machines are not handled.
 
 ## An executor's lifecycle
 

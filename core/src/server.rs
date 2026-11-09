@@ -58,6 +58,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_executor_slots();
     ws.start_routing_quotas();
     ws.start_archive_passes();
+    ws.start_build_cleanup();
     ws.start_ci_monitor();
     ws.start_delivery();
     ws.start_merge_queue();
@@ -153,6 +154,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::appearance_preset::router())
         .merge(crate::task_proposals::router())
         .merge(crate::task_workspaces::router())
+        .merge(crate::build_cleanup::router())
         .merge(crate::codex_usage::router())
         .merge(crate::project_brief::router())
         .merge(crate::machine_load::router())

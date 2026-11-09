@@ -88,6 +88,8 @@ pub struct Workspace {
     pub(crate) routing_quotas: crate::routing_readings::quota::State,
     /// Releases that wait for an executor's work to end (T-36); see `executor_archiving`.
     pub(crate) executor_archiving: crate::executor_archiving::State,
+    /// Cleaning released executors' build output by the user's policy (YN-65).
+    pub(crate) build_cleanup: crate::build_cleanup::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
     pub(crate) delivery: crate::delivery::State,
@@ -172,6 +174,7 @@ impl Workspace {
             executor_slots: Default::default(),
             routing_quotas: Default::default(),
             executor_archiving: Default::default(),
+            build_cleanup: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
