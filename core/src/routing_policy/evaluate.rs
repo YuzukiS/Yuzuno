@@ -3,8 +3,9 @@
 //! agreed with YN-49 in docs/executor-routing.md) and the profile the chosen
 //! candidate starts with.
 //!
-//! The first enabled candidate whose harness can run on the machine, whose
-//! credential is available and whose conditions all hold is chosen. A reading
+//! The first enabled candidate whose harness can run on the machine and keeps
+//! the executor's permission level (YN-56), whose credential is available and
+//! whose conditions all hold is chosen. A reading
 //! that is missing, stale or unknown makes its condition unknown, and the
 //! candidate's `unknown` rule decides: `skip` (the default) or `pass`.
 use crate::{routing_keys::Provider, routing_launch::RuntimeProfile, routing_readings::{DaySpend, Schedule}};
@@ -28,6 +29,8 @@ pub struct Inputs<'a> {
     pub exclude: &'a [String],
     /// Only candidates of this harness (the check at an executor's first start).
     pub harness: Option<&'a str>,
+    /// The executor's permission level (permission_levels): only candidates whose harness keeps it.
+    pub level: Option<&'a str>,
     pub assume: &'a Assume,
 }
 
@@ -219,6 +222,9 @@ pub fn evaluate(version: i64, policy: &Value, at: &str, inputs: &Inputs) -> Rout
     }
     let mut record = json!({"policyVersion": version, "evaluatedAt": inputs.now.to_rfc3339(), "at": at,
         "chosen": chosen.as_ref().map(|(c, _, _)| c["id"].clone()), "candidates": rows});
+    if let Some(level) = inputs.level {
+        record["level"] = level.into();
+    }
     if let Some((_, _, Some(account))) = &chosen {
         record["account"] = account.clone();
     }
@@ -250,6 +256,9 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
     }
     if inputs.harness.is_some_and(|h| h != harness) {
         return ("skipped", vec![reason("otherHarness", "The executor was made for another harness", "这个执行者是为另一个工具建的")], None, None, None);
+    }
+    if let Some(level) = inputs.level.filter(|level| !crate::permission_levels::keeps(Some(*level), harness)) {
+        return ("skipped", vec![crate::permission_levels::not_kept(level, harness)], None, None, None);
     }
     let host_only = kind != "login" || harness == "opencode";
     if host_only && inputs.machine.is_some_and(|m| m != "local") {
@@ -393,9 +402,9 @@ pub(crate) struct Gathered {
 
 impl Gathered {
     pub fn inputs<'a>(&'a self, now: DateTime<Utc>, machine: Option<&'a str>, exclude: &'a [String], harness: Option<&'a str>,
-        assume: &'a Assume) -> Inputs<'a> {
+        level: Option<&'a str>, assume: &'a Assume) -> Inputs<'a> {
         Inputs { now, keys: &self.keys, codex_homes: &self.codex_homes, spend: &self.spend, cswap: &self.cswap, codex: &self.codex,
-            machine, exclude, harness, assume }
+            machine, exclude, harness, level, assume }
     }
 }
 

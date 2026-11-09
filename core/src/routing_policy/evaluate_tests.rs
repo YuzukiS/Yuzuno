@@ -47,7 +47,13 @@ impl Fixture {
 
     fn run(&self, policy: &Value, now: DateTime<Utc>, machine: Option<&str>, exclude: &[String], assume: &Assume) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, assume })
+            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, level: None, assume })
+    }
+
+    /// At the executor's first start (`harness`) or dispatch, for a permission level (YN-56).
+    fn run_level(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, level: Option<&str>) -> Route {
+        evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, level, assume: &Assume::default() })
     }
 }
 
@@ -168,4 +174,30 @@ fn a_preview_can_assume_accounts_used_up_and_the_spend_cap_reached() {
         "unknown, and it says pass");
     let route = f.run(&codex, utc(9, 12, 0), None, &[], &Assume::from_json(&json!({"codexUsedUp": ["login"]})));
     assert_eq!((states(&route), codes(&route, "c-codex")), (vec![("c-codex".to_owned(), "skipped".to_owned())], vec!["quotaLow".to_owned()]));
+}
+
+#[test]
+fn a_candidate_whose_harness_does_not_keep_the_permission_level_is_skipped_with_level_not_kept() {
+    let f = Fixture::new();
+    // 12:00 UTC on a Monday: off-peak, so DeepSeek would hold; account 2 holds the pool's quota.
+    let at = utc(9, 12, 0);
+    let full = f.run_level(&policy(), at, None, Some("full"));
+    assert_eq!(states(&full), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "skipped".into()), ("c-codex".into(), "chosen".into())]);
+    assert_eq!((codes(&full, "c-pool"), codes(&full, "c-deepseek")), (vec!["levelNotKept".to_owned()], vec!["levelNotKept".to_owned()]));
+    let why = &full.record["candidates"][0]["reasons"][0];
+    assert_eq!((why["params"].clone(), why["messageZh"].clone()),
+        (json!({"level": "full", "harness": "claude"}), json!("它的权限等级是「完全放开」，Claude Code 不支持这个等级")));
+    assert_eq!(full.record["level"], "full");
+    assert!(full.profile.is_none() && full.record.get("account").is_none(), "Codex on the host's login");
+    // Claude Code keeps auto: the pool is chosen as it is with no level.
+    let auto = f.run_level(&policy(), at, None, Some("auto"));
+    assert_eq!((auto.record["chosen"].clone(), auto.record["level"].clone()), (json!("c-pool"), json!("auto")));
+    // No level: as before, and no level in the record.
+    let none = f.run_level(&policy(), at, None, None);
+    assert_eq!(none.record["chosen"], "c-pool");
+    assert!(none.record.get("level").is_none());
+    // At a first start, among one harness: OpenCode keeps no level yet, so none can be chosen.
+    let start = f.run_level(&policy(), at, Some("opencode"), Some("ask"));
+    assert_eq!(start.record["chosen"], Value::Null);
+    assert_eq!((codes(&start, "c-pool"), codes(&start, "c-deepseek")), (vec!["otherHarness".to_owned()], vec!["levelNotKept".to_owned()]));
 }
