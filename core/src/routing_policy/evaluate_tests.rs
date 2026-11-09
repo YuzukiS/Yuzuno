@@ -50,19 +50,28 @@ impl Fixture {
 
     fn run(&self, policy: &Value, now: DateTime<Utc>, machine: Option<&str>, exclude: &[String], assume: &Assume) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, unavailable: &[], level: None, assume })
+            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, unavailable: &[], level: None, tier: None, tier_source: None, assume })
     }
 
     /// At a waiting executor's start (YN-66): among one harness, or any but those its machine can't run.
     fn run_start(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, unavailable: &[&str]) -> Route {
         evaluate(3, policy, "start", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable, level: None, assume: &Assume::default() })
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable, level: None, tier: None, tier_source: None, assume: &Assume::default() })
     }
 
     /// At the executor's first start (`harness`) or dispatch, for a permission level (YN-56).
     fn run_level(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, level: Option<&str>) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable: &[], level, assume: &Assume::default() })
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable: &[], level, tier: None, tier_source: None, assume: &Assume::default() })
+    }
+}
+
+impl Fixture {
+    /// At a dispatch for a tier (YN-70), whose it is beside it.
+    fn run_tier(&self, policy: &Value, now: DateTime<Utc>, tier: Option<&str>, source: Option<&str>) -> Route {
+        evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None,
+            tier, tier_source: source, assume: &Assume::default() })
     }
 }
 
@@ -319,4 +328,42 @@ fn at_a_start_every_harness_its_machine_runs_counts_and_one_it_cant_is_passed_ov
     assert_eq!((why["params"].clone(), why["messageZh"].clone()),
         (json!({"harness": "opencode", "machine": "local"}), json!("它所在的机器现在跑不了 OpenCode")));
     assert_eq!(off.record["earliest"], json!({"at": "2026-11-09T03:00:00+00:00", "candidate": "c-pool"}));
+}
+
+/// YN-70: a candidate serves the tiers it names, and one that names none serves
+/// both, as every candidate saved before did. A tier passes over a candidate that
+/// doesn't serve it, saying why in both languages, and the record keeps the tier
+/// and whose it is; no tier passes over none and records none.
+#[test]
+fn a_tier_passes_over_a_candidate_that_does_not_serve_it() {
+    let f = Fixture::new();
+    let mut p = policy();
+    // Outside DeepSeek's peak, so each of the three would hold on its own.
+    let now = utc(9, 20, 0);
+    p["candidates"][0]["tiers"] = json!(["strong"]);
+    p["candidates"][1]["tiers"] = json!(["fast"]);
+    let fast = f.run_tier(&p, now, Some("fast"), Some("template"));
+    assert_eq!(states(&fast), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "chosen".into()), ("c-codex".into(), "notTried".into())]);
+    let why = &fast.record["candidates"][0]["reasons"][0];
+    assert_eq!((why["code"].clone(), why["params"]["tier"].clone()), (json!("tierNotServed"), json!("fast")), "{why}");
+    assert_eq!(why["message"], "It doesn't serve the fast tier this executor wants");
+    assert_eq!(why["messageZh"], "它不接这个执行者要的「快」档");
+    assert_eq!((fast.record["tier"].clone(), fast.record["tierSource"].clone()), (json!("fast"), json!("template")));
+
+    let strong = f.run_tier(&p, now, Some("strong"), Some("lead"));
+    assert_eq!(strong.record["chosen"], "c-pool", "the pool serves strong: {}", strong.record);
+    assert_eq!(strong.record["tierSource"], "lead");
+    // The pool used up: DeepSeek serves only fast, so Codex, which names no tiers, serves strong.
+    let assume = Assume { accounts_used_up: vec!["aaaaaaaaaaaaaaaa".into(), "bbbbbbbbbbbbbbbb".into()], ..Assume::default() };
+    let used = evaluate(3, &p, "dispatch", &Inputs { now, keys: &f.keys, codex_homes: &f.homes, spend: &f.spend, cswap: &f.cswap,
+        codex: &f.codex, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None, tier: Some("strong"),
+        tier_source: Some("template"), assume: &assume });
+    assert_eq!(states(&used), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "skipped".into()), ("c-codex".into(), "chosen".into())]);
+    assert_eq!(codes(&used, "c-deepseek"), ["tierNotServed"]);
+
+    let any = f.run_tier(&p, now, None, None);
+    assert_eq!(any.record["chosen"], "c-pool", "no tier: the first that holds");
+    assert!(any.record.get("tier").is_none() && any.record.get("tierSource").is_none(), "{}", any.record);
+    assert!(serves(&json!({}), Some("fast")) && serves(&json!({"tiers": ["strong", "fast"]}), Some("fast")));
+    assert!(!serves(&json!({"tiers": ["strong"]}), Some("fast")) && serves(&json!({"tiers": ["strong"]}), None));
 }

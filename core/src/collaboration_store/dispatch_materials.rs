@@ -481,10 +481,6 @@ pub(super) fn body(snapshot: &Value) -> String {
             200,
         );
         field("Its instructions", &template["instructions"], "template.instructions", 2_000);
-        // The kind of model its work wants and whose that is (YN-70).
-        if let Some(tier) = template["tier"].as_str() {
-            field("Tier", &json!(tier_text(tier, template["tierSource"].as_str())), "template.tier", 200);
-        }
         // How its work is delivered and its steps (YN-23); materials from
         // before carry neither.
         if let Some(mode) = template["deliveryMode"].as_str() {
@@ -493,6 +489,11 @@ pub(super) fn body(snapshot: &Value) -> String {
         if let Some(steps) = template["steps"].as_array().filter(|steps| !steps.is_empty()) {
             field("Steps (descriptive: Core does not track them)", &json!(steps_text(steps)), "template.steps", 3_000);
         }
+    }
+    // The kind of model its work wants and whose that is (YN-70): its
+    // template's, or this dispatch's own, a general executor's too.
+    if let Some(tier) = snapshot["template"]["tier"].as_str() {
+        field("Tier", &json!(tier_text(tier, snapshot["template"]["tierSource"].as_str())), "template.tier", 200);
     }
     // Read whole from the materials, never in the mail (T-34).
     if snapshot["handover"].is_object() {
@@ -579,6 +580,8 @@ fn tier_text(tier: &str, source: Option<&str>) -> String {
     };
     match source {
         Some("template") => format!("{name} (the template's default)"),
+        Some("lead") => format!("{name} (the lead chose it for this dispatch)"),
+        Some("user") => format!("{name} (the user chose it for this dispatch)"),
         Some(source) => format!("{name} (from {source})"),
         None => name.to_owned(),
     }

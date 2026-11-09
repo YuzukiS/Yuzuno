@@ -352,6 +352,7 @@ executors as it says, whatever the policy is.
         "harness": "opencode",                        // "claude" | "codex" | "opencode"
         "model": "deepseek/deepseek-flash",           // as that harness names it; empty is its default
         "reasoningEffort": "high",                    // Codex only, optional
+        "tiers": ["fast"],                            // optional (YN-70): "strong", "fast" or both; left out serves both
         "credential": { "kind": "apiKey", "keyId": "deepseek" },
         "conditions": [                               // all must hold
           { "kind": "timeWindow", "inside": false, "minMinutesLeft": 30,
@@ -364,6 +365,10 @@ executors as it says, whatever the policy is.
 // A stale version → 409 { "code": "version_conflict", "error": "…", "current": { "version", "policy", "updatedAt" } }
 // A refused field → 400 { "code": "invalid", "error": "…", "path": "candidates[2].conditions[0].usd" }
 ```
+
+`tiers` lists the [tiers](#tiers-yn-70) a candidate serves, each once. A
+candidate without it serves both, so a policy saved before routes as it did;
+an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 
 `credential` takes one of these forms:
 - `{ "kind": "login" }`: the host's own login for that harness.
@@ -388,6 +393,7 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
 ```jsonc
 { "policyVersion": 4, "evaluatedAt": "…", "at": "dispatch",      // "dispatch" | "start" | "preview"
   "level": "auto",                                                // only with a permission level (YN-56)
+  "tier": "fast", "tierSource": "template",                       // only with a tier (YN-70): "template" | "lead" | "user"
   "chosen": "c-deepseek",                                         // null when none could be chosen
   "account": { "number": 2, "fingerprint": "3f2a…" },             // or { "home": "work" }, when the credential has one
   "candidates": [
@@ -413,6 +419,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Of a harness it can be given:** at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. An executor something of which already ran is given its own harness only (`otherHarness`).
 - **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
+- **Serves the tier:** with a [tier](#tiers-yn-70), a candidate whose `tiers` don't include it is `skipped`, with `tierNotServed` and `params: { tier }`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
@@ -487,6 +494,34 @@ the dispatch is not routed and starts on the default harness for new Agents,
 with the level; one that harness doesn't keep is refused (`level_not_kept`).
 The previews take one too (`permissionLevel`, below).
 
+### Tiers (YN-70)
+
+A tier is the kind of model an executor's work wants: `strong`, for
+designing, investigating, deciding and checking, or `fast`, for building
+what was decided. It is the user's choice of 2026-11-09: design with a
+strong model, build with a fast one, and review, as now, with the
+Workspace's reviewer.
+
+- **Where an executor's tier comes from.** Its dispatch's own
+  (`task_dispatch` with `executor.tier`), else its template's
+  ([`tier`](executor-model.md#executor-templates)), else none. Its route and
+  its materials say it with `tierSource`: `lead` or `user` for a dispatch's
+  own, by who dispatched, `template` for its template's. A rebuild after a
+  failed start dispatches as the first did, with the same tier.
+- **Which candidates serve it.** Those whose `tiers` include it, and every
+  candidate without `tiers`. Routing passes over the others
+  (`tierNotServed`), at dispatch, as the stand-in of an executor that waits,
+  and at a waiting executor's start. An executor without a tier may be given
+  any candidate, as before.
+- **When none that serves it holds now,** the executor waits, as for any
+  other reason none can be chosen. When no enabled candidate serves its tier
+  at all, it is not routed: at dispatch it starts on the defaults for new
+  Agents, as for a level no candidate keeps, and one already waiting is
+  released (`noCandidate`). To let a strong candidate take fast work while
+  the fast one is out of its window, give it both tiers.
+- **A template fixed to its harness** (`routing: "fixed"`), or routing off,
+  starts as it would without routing; its materials still say its tier.
+
 ### Routing at dispatch (S3b2)
 
 When the policy is on and the template is not `routing: "fixed"`, a
@@ -500,8 +535,8 @@ dispatch is routed:
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
-  harness of the first candidate that could run there and keeps its level,
-  a stand-in, and stays in the queue while executors after it start. At each
+  harness of the first candidate that could run there, keeps its level and
+  serves its tier, a stand-in, and stays in the queue while executors after it start. At each
   slot pass routing is read again, among every candidate it could be given,
   whatever its harness (YN-66). The first that holds gives it its harness,
   model, effort, permission and account or key, and it starts in turn:
@@ -523,8 +558,9 @@ dispatch is routed:
   routing, on the host's own login: its route says `released`, with
   `routingOff` when routing was turned off, or `noCandidate` when no candidate
   it could be given is left: none enabled that is not excluded for it after a
-  failed start, of a harness its machine runs and that keeps its level, and,
-  while it waits on another machine, not this Core host's only.
+  failed start, of a harness its machine runs, that keeps its level and
+  serves its tier, and, while it waits on another machine, not this Core
+  host's only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.
@@ -557,12 +593,13 @@ cargo test --locked --lib -- --ignored --exact --nocapture \
 
 ### More routes in S3b
 
-- `POST /api/routing/evaluate { policy?, at?, assume?, permissionLevel? }` answers one `route_json` with `at: "preview"`.
+- `POST /api/routing/evaluate { policy?, at?, assume?, permissionLevel?, tier? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
     A Codex home assumed used up fails its quota condition even before Core has a reading of it; a claude-swap account is known only from a reading.
-- `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume?, permissionLevel? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
+- `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume?, permissionLevel?, tier? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
 - `permissionLevel` is `ask`, `auto` or `full`, for an executor of that [level](#permission-levels-yn-56); another value is refused (`path: "permissionLevel"`). Left out, no level.
+- `tier` is `strong` or `fast`, for an executor of that [tier](#tiers-yn-70); another value is refused (`path: "tier"`). Left out, no tier. A preview's record has the tier without `tierSource`.
 - `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, agentId, executorName?, route } ] }`, newest first. `executorName` is there while the executor's record is kept.
 
 ### The models routing's picker offers for OpenCode: `GET /api/routing/models?harness=opencode` (YN-57)

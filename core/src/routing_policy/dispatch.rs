@@ -14,7 +14,7 @@
 //!   its gate, and its route, written last, lets it start.
 //! - **A rebuild** (a definite start failure) leaves out the candidates the
 //!   executor it replaces was started with, so each is tried once.
-use super::evaluate::{evaluate, Assume, Gathered};
+use super::evaluate::{evaluate, serves, Assume, Gathered};
 use crate::{executor_templates::Template, routing_launch::RuntimeProfile};
 use anyhow::Result;
 use chrono::Utc;
@@ -65,9 +65,14 @@ fn host_only(candidate: &Value) -> bool {
     candidate["credential"]["kind"] != "login" || candidate["harness"] == "opencode"
 }
 
+/// The tier a dispatch wants and whose it is (YN-70): `template`, `lead` or `user`.
+pub(crate) type Tier<'a> = Option<(&'a str, &'a str)>;
+
 /// Routing for a dispatch, in its transaction: None while routing is off, for
-/// a `fixed` template, or with no candidate at all.
-pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, request_id: &str, machine: Option<&str>) -> Result<Option<Routed>> {
+/// a `fixed` template, or with no candidate at all. Only candidates that serve
+/// `tier` are chosen, or stand in while it waits.
+pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, request_id: &str, machine: Option<&str>, tier: Tier)
+    -> Result<Option<Routed>> {
     if template.fixed() {
         return Ok(None);
     }
@@ -80,20 +85,24 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     // `auto` or unset chooses its machine after routing: any candidate may run.
     let machine = machine.filter(|m| *m != super::super::collaboration_store::executor_choice::AUTO);
     let assume = Assume::default();
-    let route = evaluate(stored.version, &stored.policy, "dispatch", &gathered.inputs(Utc::now(), machine, &exclude, None, level, &assume));
+    let mut inputs = gathered.inputs(Utc::now(), machine, &exclude, None, level, &assume);
+    (inputs.tier, inputs.tier_source) = (tier.map(|(tier, _)| tier), tier.map(|(_, source)| source));
+    let route = evaluate(stored.version, &stored.policy, "dispatch", &inputs);
     let mut record = route.record;
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
         let machine = host_only(&candidate).then(|| "local".to_owned());
         return Ok(Some(Routed { template: apply(template, &candidate), route: record, profile: route.profile, machine }));
     }
-    // None now: the first enabled candidate that could run there, and keeps
-    // the template's permission level, gives the executor its harness, and it
-    // waits for one of that harness.
+    // None now: the first enabled candidate that could run there, keeps the
+    // template's permission level and serves its tier, stands in for its
+    // harness while it waits. One that doesn't serve the tier would pin it to
+    // this Core host for nothing (a host-only one's machine is fixed here).
     let first = stored.policy["candidates"].as_array().into_iter().flatten()
         .find(|c| c["enabled"] == true && !exclude.iter().any(|e| c["id"] == e.as_str())
             && (!host_only(c) || machine.is_none_or(|m| m == "local"))
-            && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default()));
+            && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default())
+            && serves(c, tier.map(|(tier, _)| tier)));
     let Some(first) = first else {
         return Ok(None);
     };
@@ -137,6 +146,15 @@ impl WaitingExecutor {
     /// filter of its dispatch's evaluation is read again here, but its harness.
     pub(crate) fn level(&self) -> Option<&str> {
         self.route["level"].as_str()
+    }
+
+    /// Its tier and whose it is (YN-70), as its dispatch's route keeps them.
+    pub(crate) fn tier(&self) -> Option<&str> {
+        self.route["tier"].as_str()
+    }
+
+    pub(crate) fn tier_source(&self) -> Option<&str> {
+        self.route["tierSource"].as_str()
     }
 
     /// Only candidates of this harness: its own, once something of it ran.
@@ -205,7 +223,8 @@ pub(crate) fn waiting_list(db: &Connection) -> Result<Vec<WaitingExecutor>> {
 /// candidate it can be given is what `evaluate` would not pass over for it whatever the
 /// readings: enabled; not `excluded` for it (a rebuild's); of a harness its machine runs
 /// (YN-66), and its own once something of it ran; not this Core host's only while it
-/// waits on another machine (#805 R2 P3); and of a harness that keeps its permission level.
+/// waits on another machine (#805 R2 P3); of a harness that keeps its permission level;
+/// and serving its tier (YN-70).
 pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Option<Value> {
     let excluded = waiting.excluded();
     let possible = |c: &Value| {
@@ -215,6 +234,7 @@ pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Optio
             && !(waiting.machine != "local" && host_only(c))
             && !waiting.unavailable.contains(&harness)
             && crate::permission_levels::keeps(waiting.level(), harness)
+            && serves(c, waiting.tier())
     };
     let (code, message, zh) = if policy["enabled"] != true {
         ("routingOff", "Routing was turned off while it waited, so it starts as it would without routing",
@@ -375,6 +395,7 @@ impl crate::workspace::Workspace {
         let assume = Assume::default();
         let mut inputs = gathered.inputs(Utc::now(), Some(&waiting.machine), &excluded, waiting.harness_only(), waiting.level(), &assume);
         inputs.unavailable = &waiting.unavailable;
+        (inputs.tier, inputs.tier_source) = (waiting.tier(), waiting.tier_source());
         let route = evaluate(stored.version, &stored.policy, "start", &inputs);
         let mut record = route.record;
         record["excluded"] = json!(excluded);

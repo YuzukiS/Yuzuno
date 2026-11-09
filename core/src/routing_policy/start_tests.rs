@@ -48,7 +48,8 @@ fn off(mut candidate: Value) -> Value {
 
 impl Lab {
     /// A Project ("Lab", its folder on this host) with a lead ("lead", never started),
-    /// the templates "writer" (follows routing) and "auto" (follows it, at the level auto).
+    /// the templates "writer" (follows routing), "auto" (follows it, at the level auto)
+    /// and "build" (follows it, for the fast tier, YN-70).
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("project");
@@ -63,7 +64,7 @@ impl Lab {
         crate::agent_roles::save(&ws.store, &project, 0, vec!["lead".into()]).unwrap();
         ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES('executors.templates',?1)",
             [json!({"version": 1, "templates": [{"id": "writer", "label": "Writer"},
-                {"id": "auto", "label": "Auto", "permissionLevel": "auto"}]}).to_string()]).unwrap();
+                {"id": "auto", "label": "Auto", "permissionLevel": "auto"}, {"id": "build", "label": "Build", "tier": "fast"}]}).to_string()]).unwrap();
         Lab { _dir: dir, ws }
     }
 
@@ -80,10 +81,15 @@ impl Lab {
 
     /// A new task of the Project, dispatched by the lead from `template`: its executor's id.
     async fn dispatch(&self, title: &str, template: &str) -> String {
+        self.dispatch_as(title, json!({"templateId": template})).await
+    }
+
+    /// The same, with the dispatch's own `executor`.
+    async fn dispatch_as(&self, title: &str, executor: Value) -> String {
         let project = self.ws.store.projects().unwrap()[0].id.clone();
         let task = self.ws.collaboration_call(None, "task_create", json!({"requestId": format!("create {title}"), "title": title, "projectId": project}))
             .await.unwrap()["task"]["id"].as_str().unwrap().to_owned();
-        let input = json!({"requestId": format!("dispatch {title}"), "taskId": task, "expectedVersion": 1, "executor": {"templateId": template}});
+        let input = json!({"requestId": format!("dispatch {title}"), "taskId": task, "expectedVersion": 1, "executor": executor});
         self.ws.collaboration_call(Some("lead"), "task_dispatch", input).await.unwrap()["agentId"].as_str().unwrap().to_owned()
     }
 
@@ -264,4 +270,63 @@ async fn a_start_waits_for_the_pass_changing_its_harness_and_a_second_pass_leave
     second.await.unwrap();
     assert_eq!((lab.harness(&agent), lab.route(&agent)["chosen"].clone()), (json!("codex"), json!("c-codex")), "the first pass's");
     assert_eq!(lab.next(), Some(agent), "and it starts in turn");
+}
+
+fn serving(mut candidate: Value, tiers: &[&str]) -> Value {
+    candidate["tiers"] = json!(tiers);
+    candidate
+}
+
+/// YN-70: a dispatch's tier, its template's or the lead's own, chooses only a
+/// candidate that serves it, and its route says the tier and whose it is; one
+/// without a tier takes the first that holds, as before.
+#[tokio::test]
+async fn a_dispatch_chooses_a_candidate_that_serves_its_tier_and_says_whose_tier_it_is() {
+    let lab = Lab::new();
+    lab.policy(vec![serving(claude(), &["strong"]), serving(codex(), &["fast"])]);
+    let build = lab.dispatch("Build the parser", "build").await;
+    let route = lab.route(&build);
+    assert_eq!((route["chosen"].clone(), route["tier"].clone(), route["tierSource"].clone()), (json!("c-codex"), json!("fast"), json!("template")), "{route}");
+    assert_eq!(route["candidates"][0]["reasons"][0]["code"], "tierNotServed");
+    assert_eq!(lab.harness(&build), json!("codex"));
+
+    let strong = lab.dispatch_as("Design the parser", json!({"templateId": "build", "tier": "strong"})).await;
+    let route = lab.route(&strong);
+    assert_eq!((route["chosen"].clone(), route["tier"].clone(), route["tierSource"].clone()), (json!("c-claude"), json!("strong"), json!("lead")),
+        "the lead's tier over the template's: {route}");
+
+    let any = lab.dispatch("Write the parser", "writer").await;
+    let route = lab.route(&any);
+    assert_eq!((route["chosen"].clone(), route.get("tier"), route.get("tierSource")), (json!("c-claude"), None, None), "no tier: {route}");
+}
+
+/// YN-70, with YN-66's waiting: none that serves the tier holds, so the executor
+/// waits on a stand-in that serves it (not the first candidate, which doesn't), and
+/// its start reads the tier again from its route; when no candidate serves it at
+/// all, it is released rather than left waiting.
+#[tokio::test]
+async fn a_waiting_executor_keeps_its_tier_and_is_released_when_no_candidate_serves_it() {
+    let lab = Lab::new();
+    lab.policy(vec![serving(claude(), &["strong"]), serving(stand_in("opencode"), &["fast"]), off(serving(codex(), &["fast"]))]);
+    let agent = lab.dispatch("Build the parser", "build").await;
+    let route = lab.route(&agent);
+    assert_eq!((lab.harness(&agent), route["waiting"].clone(), route["tier"].clone()), (json!("opencode"), json!(true), json!("fast")),
+        "the stand-in serves its tier: {route}");
+    lab.policy(vec![serving(claude(), &["strong"]), serving(stand_in("opencode"), &["fast"]), serving(codex(), &["fast"])]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&agent);
+    assert_eq!((route["chosen"].clone(), route["at"].clone(), route["tier"].clone(), route["tierSource"].clone()),
+        (json!("c-codex"), json!("start"), json!("fast"), json!("template")), "Claude Code is passed over at its start too: {route}");
+    assert_eq!(route["candidates"][0]["reasons"][0]["code"], "tierNotServed");
+    assert_eq!(lab.harness(&agent), json!("codex"));
+
+    lab.policy(vec![serving(stand_in("opencode"), &["fast"]), off(codex())]);
+    let waiting = lab.dispatch("Build the lexer", "build").await;
+    assert_eq!(lab.route(&waiting)["waiting"], true);
+    // Only Claude Code is left, and it serves strong work only: nothing could ever take this executor.
+    lab.policy(vec![serving(claude(), &["strong"])]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&waiting);
+    assert_eq!((route["released"]["code"].clone(), route["waiting"].clone(), route["tier"].clone()), (json!("noCandidate"), json!(false), json!("fast")),
+        "it starts in turn as without routing, its route keeping its tier: {route}");
 }
