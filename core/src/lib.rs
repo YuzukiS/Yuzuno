@@ -112,6 +112,7 @@ pub mod task_proposals;
 pub mod task_workspaces;
 mod build_output;
 mod build_cleanup;
+mod cleanup_plans;
 pub mod updates;
 pub mod workspace;
 pub mod workspace_backup;

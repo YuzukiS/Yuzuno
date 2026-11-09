@@ -76,6 +76,10 @@ impl Workspace {
             return tokio::spawn(crate::services::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Service operation ended unexpectedly")?;
         }
+        if crate::cleanup_plans::TOOLS.contains(&operation) {
+            return tokio::spawn(crate::cleanup_plans::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+                .await.context("Cleanup plan operation ended unexpectedly")?;
+        }
         if operation.starts_with("handover_") {
             return tokio::spawn(crate::handover_tools::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Handover operation ended unexpectedly")?;

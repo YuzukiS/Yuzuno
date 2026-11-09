@@ -155,6 +155,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::task_proposals::router())
         .merge(crate::task_workspaces::router())
         .merge(crate::build_cleanup::router())
+        .merge(crate::cleanup_plans::router())
         .merge(crate::codex_usage::router())
         .merge(crate::project_brief::router())
         .merge(crate::machine_load::router())
