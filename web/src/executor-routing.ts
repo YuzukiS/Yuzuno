@@ -17,7 +17,8 @@ export interface Slot { days: number[]; from: string; to: string }
 export interface Schedule { timeZone: "UTC" | "local"; slots: Slot[] }
 export type Condition =
   | { kind: "timeWindow"; inside: boolean; schedule: Schedule; minMinutesLeft?: number }
-  | { kind: "quota"; fiveHourLeftPct?: number; weekLeftPct?: number }
+  /** The share of the week left: Claude and Codex have no 5-hour quota now (YN-60). */
+  | { kind: "quota"; weekLeftPct?: number }
   | { kind: "dailyApiCap"; usd: number };
 /** A condition of a kind this version doesn't know: shown, kept, never edited. */
 export type AnyCondition = Condition | ({ kind: string } & Record<string, unknown>);
@@ -117,8 +118,9 @@ export const credentialFits = (harness: Harness, credential: Credential) =>
   || (credential.kind === "pool" && harness === "claude") || (credential.kind === "codexHome" && harness === "codex");
 export const usesApi = (c: Candidate) => c.credential.kind === "apiKey";
 
+/** A tool's first model for a new or changed candidate, and Yuzuno's short list when the tool's own can't be read (YN-57 S2b). */
 export const MODEL_HINTS: Record<Harness, string[]> = {
-  claude: ["opus", "sonnet"],
+  claude: ["opus", "sonnet", "haiku"],
   codex: ["gpt-6.1-sol"],
   opencode: ["deepseek/deepseek-flash"],
 };
@@ -150,9 +152,9 @@ export function presetCandidates(preset: PresetId, keys: readonly { id: string; 
   const deepseek = () => make({ harness: "opencode", model: "deepseek/deepseek-flash", credential: { kind: "apiKey", keyId: keyFor("deepseek") },
     conditions: [{ kind: "timeWindow", inside: false, schedule: DEEPSEEK_PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }] });
   const claudePool = () => make({ harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" },
-    conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] });
+    conditions: [{ kind: "quota", weekLeftPct: 10 }] });
   const codex = () => make({ harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high", credential: { kind: "login" },
-    conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] });
+    conditions: [{ kind: "quota", weekLeftPct: 10 }] });
   const claudeApi = () => make({ harness: "claude", model: "opus", credential: { kind: "apiKey", keyId: keyFor("anthropic") }, conditions: [] });
   const codexApi = () => make({ harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high", credential: { kind: "apiKey", keyId: keyFor("openai") }, conditions: [] });
   if (preset === "subscriptions") return [claudePool(), codex()];

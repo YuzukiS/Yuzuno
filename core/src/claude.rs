@@ -35,6 +35,17 @@ type Reply = oneshot::Sender<Result<Value>>;
 /// within a session (plan, or accept edits granted for the session) is shown
 /// but ends with that session.
 const SELECTABLE_PERMISSION_MODES: [&str; 2] = ["default", "auto"];
+
+/// Refuses settings a Claude Agent can't be made with: a Codex preset, or a mode
+/// it can't be started in.
+pub(crate) fn check_settings(settings: &crate::model::AgentSettings) -> Result<()> {
+    anyhow::ensure!(
+        settings.permission_preset.is_none()
+            && settings.permission_mode.as_deref().is_none_or(|mode| SELECTABLE_PERMISSION_MODES.contains(&mode)),
+        "Claude 权限模式无效"
+    );
+    Ok(())
+}
 /// Reasoning effort levels the Agent SDK accepts; each model lists its own.
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const NATIVE_PERMISSION_MODES: [&str; 6] = [
@@ -666,11 +677,7 @@ impl Workspace {
         settings: crate::model::AgentSettings,
         birth: Option<crate::workspace::Birth>,
     ) -> Result<Agent> {
-        anyhow::ensure!(
-            settings.permission_preset.is_none()
-                && settings.permission_mode.as_deref().is_none_or(|mode| SELECTABLE_PERMISSION_MODES.contains(&mode)),
-            "Claude 权限模式无效"
-        );
+        check_settings(&settings)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.

@@ -2,6 +2,7 @@ import { forwardRef, useLayoutEffect, useRef, type RefObject } from "react";
 import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandStay, type IslandView } from "./agent-island";
 import { detailText, executorRowText } from "./ExecutorRowState";
 import { strings, useLanguage, type Language } from "./i18n";
+import { timeFormatter, type TimeDisplay } from "./time-preferences";
 import "./agent-island.css";
 
 // The island's words (T-43, rail v11). What Agents and Core wrote is shown as it came.
@@ -9,6 +10,10 @@ export const islandText = strings({
   word: { idle: "Idle", working: "Working", waiting: "Needs you", done: "Done", failed: "Failed" } as Record<IslandState, string>,
   stay: {
     queued: (position: number | null) => (position ? `Queued · ${position} in line` : "Queued"),
+    /** Waiting for a routing candidate (YN-57), from when one's reason ends. No wider than
+     *  "Queued · 3 in line", with a 12-hour clock too: a longer pill leaves line one no width in a
+     *  240 px rail. The card's meaning and route lines say it in full. */
+    candidate: (from: string | null) => (from ? `From ${from}` : "No candidate yet"),
     starting: "Starting", lead: "Lead's turn", review: "In review", changes: "Changes asked", ciFailed: "CI failed",
     ready: "Ready to merge", merged: "Merged", offline: "Offline",
   },
@@ -27,6 +32,7 @@ export const islandText = strings({
   word: { idle: "空闲", working: "在做", waiting: "等你", done: "完成", failed: "出错" },
   stay: {
     queued: (position) => (position ? `排队 · 第 ${position} 位` : "排队"),
+    candidate: (from) => (from ? `等候选 · ${from} 起` : "等候选"),
     starting: "启动中", lead: "等负责人", review: "审查中", changes: "要改", ciFailed: "CI 红了",
     ready: "等合并", merged: "已合入", offline: "离线",
   },
@@ -54,10 +60,15 @@ export function lineText(line: IslandLine, language: Language): string {
   }
 }
 
-/** A state that stays, in words: "等负责人", "排队 · 第 2 位". */
-export function stayText(stay: IslandStay, language: Language): string {
+/** A candidate's time as a pill says it: "04:00", in the user's clock format and time zone. */
+const candidateAt = timeFormatter({ hour: "2-digit", minute: "2-digit" });
+
+/** A state that stays, in words: "等负责人", "排队 · 第 2 位", "等候选 · 04:00 起" (`time`: the user's clock and zone). */
+export function stayText(stay: IslandStay, language: Language, time?: TimeDisplay): string {
   const t = islandText(language).stay;
-  return stay.kind === "queued" ? t.queued(stay.position) : t[stay.kind];
+  if (stay.kind === "queued") return t.queued(stay.position);
+  if (stay.kind === "candidate") return t.candidate(stay.earliest != null ? candidateAt(time).format(stay.earliest) : null);
+  return t[stay.kind];
 }
 
 /** How a staying state's pill is coloured: good news, bad news, work going

@@ -1205,6 +1205,7 @@ impl Store {
         crate::projects::migrate(&db)?;
         crate::agent_roles::migrate(&db)?;
         crate::routing_launch::migrate(&db)?;
+        crate::permission_levels::migrate(&db)?;
         crate::routing_readings::migrate(&db)?;
         crate::session_baseline::migrate(&db)?;
         crate::executor_archiving::migrate(&db)?;

@@ -471,10 +471,46 @@ fn record(e: &Value) -> Value {
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
 
-/// System mail to each of `recipients`.
+/// What the merge queue did with a task's PRs, by its own records, for the
+/// task's result mail, so its reader need not rely on what the result's
+/// author wrote (YN-68, Dev Lead 2 mail 10300): each PR's newest entry,
+/// newest first, at most five. None when the queue has none.
+pub(crate) fn task_summary(db: &Connection, task: &str) -> Result<Option<String>> {
+    let mut q = db.prepare(
+        "SELECT data FROM merge_entries WHERE rowid IN
+           (SELECT MAX(rowid) FROM merge_entries WHERE task_id=?1 GROUP BY repository_id,number)
+         ORDER BY rowid DESC LIMIT 5",
+    )?;
+    let mut lines = Vec::new();
+    for raw in q.query_map([task], |r| r.get::<_, String>(0))? {
+        let e: Value = serde_json::from_str(&raw?)?;
+        let (n, m) = (&e["number"], &e["merge"]);
+        lines.push(match e["state"].as_str().unwrap_or("") {
+            "done" => {
+                let run = m["mainCi"]["run"].as_i64().map(|run| format!(" (run {run})")).unwrap_or_default();
+                format!("#{n} merged as {}, main CI {}{run}", short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("unknown"))
+            }
+            "merged" => format!("#{n} merged as {}, main CI not finished", short(&m["sha"])),
+            "stopped" => format!("#{n} stopped ({})", e["reason"].as_str().unwrap_or("?")),
+            "cancelled" => format!("#{n} cancelled"),
+            state => format!("#{n} in the queue ({state})"),
+        });
+    }
+    Ok((!lines.is_empty()).then(|| format!("Merge queue, by Core's records: {}.", lines.join("; "))))
+}
+
+/// System mail to each of `recipients`, once to each Agent it reaches: a
+/// released executor's copy goes to its dispatcher (`executor_archive`),
+/// who may be a recipient already (YN-68).
 fn mail(db: &Connection, recipients: &[Value], body: &str, task: &Value, priority: &str, metadata: Value) -> Result<()> {
     let actor = system();
+    let mut reached = Vec::new();
     for recipient in recipients {
+        let to = crate::executor_archive::delivered_to(db, recipient["id"].as_str().unwrap_or(""))?;
+        if reached.contains(&to) {
+            continue;
+        }
+        reached.push(to);
         let message = uuid::Uuid::new_v4().to_string();
         collab::insert_message(db, json!({"id":message,"seq":0,"sender":actor,"recipient":recipient,"body":body,"taskId":task,
             "replyTo":null,"threadId":message,"createdAt":now(),"source":{"mergeQueue":true},"priority":priority,"metadata":metadata}))?;
@@ -538,8 +574,10 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             recipients.push(assignee);
         }
     }
+    // What its wake-up is decided by (mail_wake.rs): a revert, and main CI's conclusion.
     mail(db, &recipients, &body, &e["taskId"], priority,
-        json!({"kind":"merge","entryId":id,"status":e["state"],"reason":e["reason"],"name":format!("PR #{n}")}))
+        json!({"kind":"merge","entryId":id,"status":e["state"],"reason":e["reason"],"name":format!("PR #{n}"),
+            "entryKind":e["kind"],"mainCi":m["mainCi"]["conclusion"]}))
 }
 
 /// Who is told of a pause or its end: the releasers of `entries` and the
@@ -649,7 +687,8 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     }
     let recipients = pause_recipients(store, db, repository_id, &waiting)?;
     let task = waiting.first().map(|e| e["taskId"].clone()).unwrap_or(Value::Null);
-    mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
+    // Normal and quiet: the waiting entries go on by themselves (YN-68).
+    mail(db, &recipients, &text, &task, "normal", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
     Ok((waiting, accepted))
 }
 /// A place in the repository's chain of batches (YN-18 S2e).

@@ -29,7 +29,18 @@ export type ExecutorLifecycle = {
   position?: number | null;
   /** Its task's blocker, while it runs on a blocked task. */
   blocked?: string | null;
+  /** What executor routing gave it (YN-57 S4a), when its dispatch has a record; absent from an older Core's answer. */
+  route?: ExecutorRoute | null;
 };
+
+/** What routing gave an executor, as Core says it (docs/executor-model.md): chosen, with what it runs and its account
+ * or key; waiting for a candidate, from when one's reason ends; or not routed and why. Never a key's value or an email. */
+export type ExecutorRoute =
+  | { kind: "chosen"; candidate: string; label?: string; harness: string; model: string; effort?: string;
+      credential: { kind: "login" } | { kind: "apiKey"; keyId: string } | { kind: "codexHome"; id: string }
+        | { kind: "pool"; account: { fingerprint: string; number: number | null } } }
+  | { kind: "waiting"; earliest?: string }
+  | { kind: "unrouted"; why: string };
 
 export const lifecycleText = strings(
   {
@@ -44,6 +55,7 @@ export const lifecycleText = strings(
       closed: "Closed",
     } as Record<ExecutorState, string>,
     queuedAt: (position: number) => `Queued · ${position} in line`,
+    queuedCandidate: "Queued · waiting for a routing candidate",
     executor: "Executor",
     executors: "Task executors",
     // How many wait for a slot and how many run (T-43 S2, g7): the queue
@@ -68,6 +80,7 @@ export const lifecycleText = strings(
       closed: "已关闭",
     },
     queuedAt: (position) => `排队中 · 第 ${position} 位`,
+    queuedCandidate: "排队中 · 在等路由候选",
     executor: "执行者",
     executors: "任务执行者",
     slotUse: (running, queued) => `${queued} 排队 · ${running} 运行`,
@@ -84,6 +97,8 @@ type Text = ReturnType<typeof lifecycleText>;
 
 /** The state as the sidebar and the task card say it, with its place in the queue. */
 export function stateLabel(lifecycle: ExecutorLifecycle, t: Text): string {
+  // Waiting for a routing candidate is not a place in the slot queue (YN-57).
+  if (lifecycle.state === "queued" && lifecycle.route?.kind === "waiting") return t.queuedCandidate;
   return lifecycle.state === "queued" && lifecycle.position ? t.queuedAt(lifecycle.position) : t.states[lifecycle.state];
 }
 

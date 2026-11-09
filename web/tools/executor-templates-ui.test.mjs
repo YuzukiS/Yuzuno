@@ -381,6 +381,35 @@ test("presets (YN-23): the user picks which to add, each an unsaved template in 
   assert.deepEqual(page.errors, []);
 });
 
+test("tiers (YN-70): a saved template's tier and an added preset's are kept by a save, with no control for them on this page", async () => {
+  let workspace = { version: 1, templates: [{ id: "build", label: "Build", tier: "fast" }, { id: "plain", label: "Plain" }] };
+  const presets = presetPair("design", "Design", "设计", { deliveryMode: "none", tier: "strong" });
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace, false, presets)];
+  });
+  page.window.renderTemplates();
+  await until(() => button(page, "Add presets"), "the presets button");
+  await openTemplate(page, "Build");
+  await type(page, "Label", "Build it");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the first save");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "build", label: "Build it", tier: "fast" }, { id: "plain", label: "Plain" }],
+    "an edit keeps the tier it was saved with, and no tier is added where none was");
+  await back(page);
+  await until(() => button(page, "Add presets"), "the presets button again");
+  button(page, "Add presets").click();
+  await tick();
+  await choose(page, "Design");
+  button(page, "Add 1 preset").click();
+  await tick();
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 2, "the second save");
+  assert.deepEqual(puts(page)[1].body.templates[2], { id: "design", label: "Design", instructions: "Do Design.", deliveryMode: "none",
+    whenToChoose: "When Design", tier: "strong" }, "a preset's tier goes with its template");
+  assert.deepEqual(page.errors, []);
+});
+
 test("presets (YN-23) are offered in Chinese on a Chinese page, follow routing, and keep their level on a fixed tool (YN-56)", async () => {
   const page = mount(() => [200, view({ version: 0, templates: [] }, false, presetList)]);
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));

@@ -44,10 +44,8 @@ pub struct Account {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_status: Option<String>,
-    /// What is left of its 5-hour and weekly windows, as claude-swap read it
-    /// (YN-34 S2b): `pct` there is the share used.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub five_hour: Option<Window>,
+    /// What is left of its weekly window, as claude-swap read it (YN-34 S2b):
+    /// `pct` there is the share used. Its 5-hour window is not read (YN-60).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub week: Option<Window>,
 }
@@ -164,7 +162,6 @@ fn account(row: &Value) -> Option<Account> {
         active: row["active"].as_bool() == Some(true),
         label: label.chars().take(120).collect(),
         usage_status: row["usageStatus"].as_str().map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(32).collect()),
-        five_hour: window(&row["usage"]["fiveHour"]),
         week: window(&row["usage"]["sevenDay"]),
     })
 }

@@ -593,6 +593,26 @@ fn a_template_dispatch_carries_its_delivery_mode_and_steps() {
     assert!(body.contains("\nSteps (descriptive: Core does not track them): materials → work: Write the memo → result: Options → gate (user): Your choice → gate (either): Go ahead\n"),
         "an approver left unset is the user: {body}");
     assert!(!body.contains("A choice between options"), "when to choose it is for whoever dispatches, not in the executor's mail: {body}");
+    assert!(!body.contains("\nTier: "), "a template without a tier says none: {body}");
+}
+
+/// YN-70: a template's tier reaches its executor's materials with whose it
+/// is, the template's, and its mail says both.
+#[test]
+fn a_template_dispatch_says_its_tier_and_whose_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([{"id":"reviewer","label":"Build from an approved design","harness":"codex","routing":"fixed","tier":"fast"}]));
+    let t = task(&store, "Build", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "build")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let template = &given["dispatchMaterials"]["template"];
+    assert_eq!((template["tier"].clone(), template["tierSource"].clone()), (json!("fast"), json!("template")), "{template}");
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("\nTier: fast · 快 (the template's default)\n"), "{body}");
 }
 
 /// T-34 S3a: what a template dispatch adds is held to its own limits, not to
@@ -913,8 +933,8 @@ mod routing {
         store.collaboration_call(None, "task_dispatch", waits.dispatch.input.clone()).unwrap();
         assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
         let listed = store.routing_waiting().unwrap();
-        assert_eq!(listed.iter().map(|(a, h, m, _)| (a.clone(), h.clone(), m.clone())).collect::<Vec<_>>(),
-            [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned())]);
+        assert_eq!(listed.iter().map(|w| (w.agent.clone(), w.harness.clone(), w.machine.clone(), w.unstarted)).collect::<Vec<_>>(),
+            [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned(), true)], "nothing of it ran yet (YN-66)");
         // The slot pass leaves it queued and takes the routed one ahead of it.
         let in_flight = std::sync::Mutex::new(std::collections::HashSet::new());
         assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(plan.dispatch.agent_id.clone()));
@@ -933,9 +953,11 @@ mod routing {
         let mut on = store.routing_policy().unwrap();
         on.policy["enabled"] = json!(true);
         on.policy["candidates"][0]["enabled"] = json!(false);
+        // One something of which ran: its own harness only, as before YN-66.
         let release = |policy: &Value, harness: &str, excluded: &[&str], machine: &str| {
-            let excluded: Vec<String> = excluded.iter().map(|e| (*e).to_owned()).collect();
-            crate::routing_policy::dispatch::release_reason(policy, harness, &excluded, machine).map(|r| r["code"].clone())
+            let waiting = crate::routing_policy::dispatch::WaitingExecutor { agent: "a-waiting".into(), harness: harness.into(),
+                machine: machine.into(), project: None, route: json!({"waiting": true, "excluded": excluded}), unstarted: false, unavailable: vec![] };
+            crate::routing_policy::dispatch::release_reason(policy, &waiting).map(|r| r["code"].clone())
         };
         let reason = |policy: &Value, harness: &str| release(policy, harness, &[], "local");
         assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), Some(json!("noCandidate"))),
@@ -950,6 +972,25 @@ mod routing {
         assert_eq!((release(&on.policy, "opencode", &[], "local"), release(&on.policy, "opencode", &[], "lab-mac")),
             (None, Some(json!("noCandidate"))), "OpenCode on a key runs here only");
         assert_eq!(release(&on.policy, "codex", &[], "lab-mac"), None, "Codex on the login runs anywhere");
+        // YN-66: one nothing of which ran may be given any candidate its machine runs and that keeps its level.
+        let unstarted = |policy: &Value, route: Value, machine: &str, unavailable: Vec<&'static str>| {
+            let waiting = crate::routing_policy::dispatch::WaitingExecutor { agent: "a-waiting".into(), harness: "opencode".into(),
+                machine: machine.into(), project: None, route, unstarted: true, unavailable };
+            crate::routing_policy::dispatch::release_reason(policy, &waiting).map(|r| r["code"].clone())
+        };
+        on.policy["candidates"][0]["enabled"] = json!(false);
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true}), "local", vec![]), None, "an OpenCode stand-in waits for Codex too");
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true, "excluded": ["c-codex"]}), "local", vec![]), Some(json!("noCandidate")));
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true}), "lab-mac", vec!["codex"]), Some(json!("noCandidate")),
+            "a contained machine runs no Codex");
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true, "level": "auto"}), "local", vec![]), None, "Codex keeps auto");
+        let mut claude_only = on.policy.clone();
+        claude_only["candidates"] = json!([{"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus",
+            "credential": {"kind": "login"}, "conditions": []}]);
+        assert_eq!((unstarted(&claude_only, json!({"waiting": true, "level": "auto"}), "local", vec![]),
+            unstarted(&claude_only, json!({"waiting": true, "level": "full"}), "local", vec![])), (None, Some(json!("noCandidate"))),
+            "Claude Code doesn't keep full access: an executor of that level is never given it");
+        on.policy["candidates"][0]["enabled"] = json!(true);
 
         // The newest choices first.
         let choices = store.routing_choices(10).unwrap();
@@ -985,21 +1026,29 @@ mod routing {
         assert_eq!((auto.template.harness(), auto.template.model.as_deref(), auto.template.permission_mode.as_deref()),
             ("claude", Some("opus"), Some("auto")), "Claude Code keeps Auto-approve as its Auto mode");
         assert_eq!(route_of(&store, &auto.dispatch.agent_id).unwrap()["level"], "auto");
+        create_as_planned(&store, &auto);
+        assert_eq!(store.permission_level(&auto.dispatch.agent_id).unwrap(), None, "Claude Code takes the level as its own mode");
+        // Full access: Claude Code doesn't keep it; OpenCode does, as its own rules (S3).
         let full = from("full", "full");
-        assert_eq!((full.template.harness(), full.template.permission_preset.as_deref()), ("codex", Some("full")));
+        assert_eq!((full.template.harness(), full.template.permission_preset.as_deref(), full.template.permission_mode.as_deref()),
+            ("opencode", None, None));
+        assert_eq!(full.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
         let route = route_of(&store, &full.dispatch.agent_id).unwrap();
         let states: Vec<(Value, Value)> = route["candidates"].as_array().unwrap().iter()
             .map(|c| (c["state"].clone(), c["reasons"][0]["code"].clone())).collect();
-        assert_eq!(states, [(json!("skipped"), json!("levelNotKept")), (json!("skipped"), json!("levelNotKept")), (json!("chosen"), Value::Null)]);
+        assert_eq!(states, [(json!("skipped"), json!("levelNotKept")), (json!("chosen"), Value::Null), (json!("notTried"), Value::Null)]);
+        create_as_planned(&store, &full);
+        assert_eq!(store.permission_level(&full.dispatch.agent_id).unwrap().as_deref(), Some("full"),
+            "an OpenCode executor's level is kept with it, in the dispatch's transaction");
 
-        // Only OpenCode left: it keeps no level yet, so the dispatch is not routed, and doesn't wait.
+        // No candidate keeps the level (Claude Code alone, for Full access): the dispatch is not routed.
         let mut only = store.routing_policy().unwrap();
-        only.policy["candidates"][0]["enabled"] = json!(false);
+        only.policy["candidates"][1]["enabled"] = json!(false);
         only.policy["candidates"][2]["enabled"] = json!(false);
         store.save_routing_policy(only.version, only.policy).unwrap().unwrap();
-        let unrouted = from("reviewer", "unrouted");
+        let unrouted = from("full", "unrouted");
         assert_eq!((unrouted.template.harness(), unrouted.template.permission_preset.as_deref(), unrouted.profile.clone()),
-            ("codex", Some("auto"), None), "the built-in default for new Agents, with the level");
+            ("codex", Some("full"), None), "the built-in default for new Agents, with the level");
         assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
     }
 }

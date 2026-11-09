@@ -15,6 +15,7 @@ import { islandView, type IslandAction, type IslandForm } from "./agent-island";
 import { AgentRowCard } from "./AgentRowCard";
 import { Tip, type TipSide } from "./Tip";
 import { useExecutorPR, useMinute } from "./live-executors";
+import { useTimeDisplay } from "./time-preferences";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -205,10 +206,6 @@ export function AgentRailRow({
   const pr = useExecutorPR(agent.id);
   const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince, asking }) : null;
   const shown = executor ? stateText(executor, language) : label;
-  // Its template beside its state when its name doesn't already say it; one
-  // made from no template (an empty id) says Executor there.
-  const made = lifecycle?.template ? (lifecycle.template.id === "" ? t.executor : lifecycle.template.label || null) : null;
-  const template = made && !agent.name.includes(made) ? made : null;
   const kind = agent.kind === "lead" ? t.lead : agent.kind === "executor" ? t.executor : null;
   // Updates unread are a lead's only (the user, rail v11).
   const unread = agent.kind === "lead" ? agent.unreadCount : 0;
@@ -222,11 +219,12 @@ export function AgentRailRow({
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
   const words = islandText(language);
   const now = useMinute();
+  const timeDisplay = useTimeDisplay();
   const stay: IslandPill | null = island.stay && !island.auto
-    ? { text: stayText(island.stay, language), ring: null, tone: stayTone(island.stay), event: false } : null;
+    ? { text: stayText(island.stay, language, timeDisplay), ring: null, tone: stayTone(island.stay), event: false } : null;
   const rest: IslandForm = island.auto ? "row" : stay ? "pill" : "ring";
   // A passing event takes the pill's place for a few seconds; then what stays comes back.
-  const queued = island.stay?.kind === "queued" || island.stay?.kind === "starting";
+  const queued = island.stay?.kind === "queued" || island.stay?.kind === "candidate" || island.stay?.kind === "starting";
   const event = usePassingEvent({ state: queued ? "queued" : island.state, pr: pr ?? null, language, quiet: island.auto });
   const pill = event ?? stay;
   const form: IslandForm = island.auto ? "row" : pill ? "pill" : rest;
@@ -359,7 +357,7 @@ export function AgentRailRow({
       open={card.open}
       onOpenChange={card.onOpenChange}
       className="agent-card"
-      content={<AgentRowCard agent={agent} island={island} executor={executor} lifecycle={lifecycle} template={template}
+      content={<AgentRowCard agent={agent} island={island} executor={executor} lifecycle={lifecycle}
         machine={machine} badge={agent.kind === "lead" ? t.lead : null} activity={activity} waits={executor ? null : waiting?.detail ?? null} />}
     >
       {body}

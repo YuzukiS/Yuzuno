@@ -21,6 +21,8 @@ export type IslandState = "idle" | "working" | "waiting" | "done" | "failed";
  * while it holds. */
 export type IslandStay =
   | { kind: "queued"; position: number | null }
+  /** Waiting for a routing candidate (YN-57), not for a slot: from when one's reason ends, when Core says. */
+  | { kind: "candidate"; earliest: number | null }
   | { kind: "starting" }
   /** Handed in, its review not under way: the lead's turn. */
   | { kind: "lead" }
@@ -141,8 +143,11 @@ function executor(facts: IslandFacts, view: ExecutorView): Read {
   const out = (state: IslandState, clock: IslandClock | null, line: IslandLine, stay: IslandStay | null = null): Read => ({ state, stay, clock, line });
   switch (view.shown) {
     case "queued":
+      // Waiting for a routing candidate is not waiting for a slot (YN-57): its place in the slot queue doesn't apply.
       return out("idle", live(view.started), NONE,
-        view.detail?.kind === "starting" ? { kind: "starting" } : { kind: "queued", position: view.detail?.kind === "position" ? view.detail.position : null });
+        view.detail?.kind === "starting" ? { kind: "starting" }
+          : lifecycle?.route?.kind === "waiting" ? { kind: "candidate", earliest: time(lifecycle.route.earliest) }
+            : { kind: "queued", position: view.detail?.kind === "position" ? view.detail.position : null });
     case "needsYou":
       // What it asks is its work summary. Its wait is Home's Needs you's;
       // until Home lists it, no clock rather than its time since dispatch.
