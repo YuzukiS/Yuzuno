@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { errorText } from "./api";
-import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, TIERS, credentialFits, isKnown, keyFits, sameSchedule, tiersOf, usesApi, withTiers, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
 import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
 import { useLanguage } from "./i18n";
 import { KEY_PROVIDERS, announceCredentialsChanged, putLocalKey, putReferenceKey, shortFingerprint, type AccountsView, type KeyProvider, type RoutingKey } from "./routing-keys";
@@ -189,6 +189,23 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           {!has("dailyApiCap") && api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "dailyApiCap", usd: 5 }])}><Plus size={13} /> {t.addCap}</button>}
         </div>
       </div>
+      {/* YN-70: the kinds of work it takes; both is no list, as before. The last one ticked stays. */}
+      <fieldset className="routing-field routing-tiers">
+        <legend>{t.serves}</legend>
+        {TIERS.map((tier) => {
+          const served = tiersOf(c);
+          const on = served.includes(tier);
+          const last = on && served.length === 1;
+          return (
+            <label key={tier} title={last ? t.servesLast : undefined}>
+              <input type="checkbox" checked={on} disabled={last}
+                onChange={() => onEdit((x) => withTiers(x, on ? tiersOf(x).filter((s) => s !== tier) : [...tiersOf(x), tier]))} />
+              {tier === "strong" ? t.servesStrong : t.servesFast}
+            </label>
+          );
+        })}
+        <p className="settings-row-meta">{t.servesHelp}</p>
+      </fieldset>
       <fieldset className="routing-field routing-unknown">
         <legend>{t.unknown}</legend>
         {(["skip", "pass"] as const).map((v) => (

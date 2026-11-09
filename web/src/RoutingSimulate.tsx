@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { errorText, HttpError } from "./api";
-import type { Candidate, Policy } from "./executor-routing";
+import { TIERS, tiersOf, type Candidate, type Policy, type Tier } from "./executor-routing";
 import { strings, useLanguage, type Language } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
 import { evaluate, simulate, type Assume, type RouteRecord, type Segment } from "./routing-live";
@@ -25,6 +25,11 @@ const text = strings({
   codexHome: (label: string) => `Codex ${label}`,
   capReached: "Today's API cap reached",
   onePasswordDown: "1Password unreachable",
+  forWork: "For work:",
+  workAny: "Any",
+  workStrong: "Strong",
+  workFast: "Fast",
+  forWorkHelp: "An executor whose template or lead names a kind of work is given only a candidate that takes it.",
   textVersion: "Text version",
   noneShort: "none: wait",
   stretch: (from: string, to: string) => `${from}–${to}`,
@@ -46,6 +51,11 @@ const text = strings({
   codexHome: (label) => `Codex ${label}`,
   capReached: "今日 API 到上限",
   onePasswordDown: "1Password 连不上",
+  forWork: "按哪种活：",
+  workAny: "不限",
+  workStrong: "强",
+  workFast: "快",
+  forWorkHelp: "模板或负责人定了是哪种活的执行者，只会给接这种活的候选。",
   textVersion: "文字版",
   noneShort: "都不可用：排队",
   stretch: (from, to) => `${from}–${to}`,
@@ -128,6 +138,10 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
   const pickedAt = pickedOwn ?? toStep(now);
   const picked = (pickedAt - start) / 60_000;
   const [assume, setAssume] = useState<Required<Assume>>({ accountsUsedUp: [], codexUsedUp: [], spendCapReached: false, onePasswordDown: false });
+  // YN-70: the kind of work to simulate for; offered only while a candidate takes one kind alone, as only then it changes the answer.
+  const tiered = policy.candidates.some((c) => tiersOf(c).length < TIERS.length);
+  const [chosenTier, setTier] = useState<Tier | null>(null);
+  const tier = tiered ? chosenTier ?? undefined : undefined;
   const [segments, setSegments] = useState<Segment[] | null | undefined>(undefined);
   const [record, setRecord] = useState<RouteRecord | null>(null);
   const [error, setError] = useState("");
@@ -139,7 +153,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     ...(assume.spendCapReached ? { spendCapReached: true } : {}),
     ...(assume.onePasswordDown ? { onePasswordDown: true } : {}),
   }), [assume]);
-  const key = JSON.stringify([policy, sent]);
+  const key = JSON.stringify([policy, sent, tier ?? null]);
   // Nothing assumed is no assumption: not sent at all.
   const assumed = Object.keys(sent).length ? sent : undefined;
   // The week, asked again a moment after the order or an assumption changes;
@@ -148,7 +162,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     if (!active || held) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
-      simulate(policy, new Date(start).toISOString(), new Date(end).toISOString(), STEP, assumed, controller.signal)
+      simulate(policy, new Date(start).toISOString(), new Date(end).toISOString(), STEP, assumed, controller.signal, tier)
         .then((next) => { if (!controller.signal.aborted) { setSegments(next); setError(""); setRefused(""); } })
         .catch((e) => {
           if (controller.signal.aborted) return;
@@ -166,7 +180,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     if (!active || held || segments === null) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
-      evaluate(policy, new Date(pickedAt).toISOString(), assumed, controller.signal)
+      evaluate(policy, new Date(pickedAt).toISOString(), assumed, controller.signal, tier)
         .then((next) => { if (!controller.signal.aborted) setRecord(next); })
         .catch(() => { /* the week says what it can */ });
     }, 250);
@@ -214,6 +228,17 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
           </label>
           <button type="button" className="quiet-button" disabled={pickedOwn === null} onClick={() => setChosenAt(null)}><RotateCcw size={14} /> {t.now}</button>
         </div>
+        {tiered && (
+          <div className="routing-sim-assume routing-sim-tier" role="group" aria-label={t.forWork}>
+            <span className="settings-row-meta">{t.forWork}</span>
+            {([null, ...TIERS] as (Tier | null)[]).map((v) => (
+              <button type="button" key={v ?? "any"} className="routing-pill" aria-pressed={(tier ?? null) === v} onClick={() => setTier(v)}>
+                {v === "strong" ? t.workStrong : v === "fast" ? t.workFast : t.workAny}
+              </button>
+            ))}
+            <span className="settings-row-meta routing-sim-tier-help">{t.forWorkHelp}</span>
+          </div>
+        )}
         {(cswapAccounts.length > 0 || codexLogin || homes.length > 0 || apiKeys || onePassword) && (
           <div className="routing-sim-assume" role="group" aria-label={t.assume}>
             <span className="settings-row-meta">{t.assume}</span>

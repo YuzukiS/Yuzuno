@@ -13,6 +13,9 @@
 // YN-57 S2b: a candidate's model is chosen from what its tool lists: Claude
 // Code's aliases and pinned versions; OpenCode's providers, the candidate's
 // key's first; and the line under it says where the list comes from.
+// YN-70: a candidate that takes one kind of work says so on its card, its
+// editor ticks the kinds it takes (the last one held), and the week is asked
+// for a kind of work, a candidate that doesn't take it passed over with why.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -27,7 +30,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-49, YN-57", checks: [], screenshots: [], writes: [], unexpected: [], errors: [] };
+const report = { task: "YN-49, YN-57, YN-70", checks: [], screenshots: [], writes: [], unexpected: [], errors: [], asked: [] };
 const check = (name, extra = {}) => { report.checks.push({ name, ...extra }); console.log(`PASS ${name}`); };
 const HOST = "yuzuno-executor-routing.test";
 // Synthetic only. Long and unusual, so a page holding one is found by a text search.
@@ -58,10 +61,11 @@ const fresh = () => ({
   ] },
   homes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }],
   policy: { version: 3, updatedAt: "2026-11-08T04:00:00Z", limits: { candidates: 8 }, policy: { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, candidates: [
+    // YN-70: DeepSeek takes fast work only, the pool strong work only; Codex both.
     { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deepseek-flash", credential: { kind: "apiKey", keyId: "deepseek-main" }, unknown: "skip",
-      conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }] },
+      conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }], tiers: ["fast"] },
     { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, unknown: "skip",
-      conditions: [{ kind: "quota", weekLeftPct: 10 }] },
+      conditions: [{ kind: "quota", weekLeftPct: 10 }], tiers: ["strong"] },
     { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high", credential: { kind: "codexHome", id: "work" }, unknown: "skip",
       conditions: [{ kind: "quota", weekLeftPct: 10 }] },
     { id: "cla", enabled: false, harness: "claude", model: "opus", credential: { kind: "apiKey", keyId: "anthropic" }, unknown: "skip", conditions: [{ kind: "dailyApiCap", usd: 8 }] },
@@ -106,11 +110,15 @@ const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak
  * 10:00; the claude-swap pool is out when an account is assumed used up; the Codex home runs low at 22:00. */
 const usedUp = { code: "poolNone", message: "No account has enough left (account #2 assumed used up)", messageZh: "没有够用的账号（假设账号 #2 用完）" };
 const codexLow = { code: "quotaLow", message: "4% of the weekly quota is left, below 10%", messageZh: "本周额度只剩 4%，低于 10%" };
-function judged(policy, hour, assume) {
+/** YN-70: as Core says it of a candidate that doesn't take the kind of work asked for. */
+const tierReason = (tier) => ({ code: "tierNotServed", message: `It doesn't serve the ${tier} tier this executor wants`,
+  messageZh: `它不接这个执行者要的「${tier === "strong" ? "强" : "快"}」档`, params: { tier } });
+function judged(policy, hour, assume, tier) {
   let chosen = null;
   const candidates = policy.candidates.map((c) => {
     if (!c.enabled) return { id: c.id, state: "off", reasons: [], readings: [] };
-    const why = c.harness === "opencode" && hour >= 10 ? peakReason
+    const why = tier && Array.isArray(c.tiers) && !c.tiers.includes(tier) ? tierReason(tier)
+      : c.harness === "opencode" && hour >= 10 ? peakReason
       : c.credential.kind === "pool" && assume?.accountsUsedUp?.length ? usedUp
       : c.credential.kind === "codexHome" && hour >= 22 ? codexLow : null;
     if (why) return { id: c.id, state: "skipped", reasons: [why], readings: [] };
@@ -123,11 +131,11 @@ function judged(policy, hour, assume) {
       : { id: c.id, state: "chosen", reasons: [], readings: [] };
   });
   const pick = candidates.find((c) => c.id === chosen);
-  return { policyVersion: 3, evaluatedAt: ago(0), at: "preview", chosen, ...(pick?.accounts ? { account: { number: 2, fingerprint: "0f1e2d3c4b5a6978" } } : {}), candidates };
+  return { policyVersion: 3, evaluatedAt: ago(0), at: "preview", chosen, ...(tier ? { tier } : {}), ...(pick?.accounts ? { account: { number: 2, fingerprint: "0f1e2d3c4b5a6978" } } : {}), candidates };
 }
 const shanghaiHour = (iso) => (new Date(iso).getUTCHours() + 8) % 24;
 /** "Now" is 14:00 in this fixture, whatever the clock says: the check's assertions don't move with it. */
-const evaluation = (policy, at, assume) => judged(policy, at ? shanghaiHour(at) : 14, assume);
+const evaluation = (policy, at, assume, tier) => judged(policy, at ? shanghaiHour(at) : 14, assume, tier);
 const PEAK = { timeZone: "UTC", slots: [{ days: [1, 2, 3, 4, 5], from: "01:00", to: "04:00" }, { days: [1, 2, 3, 4, 5], from: "06:00", to: "10:00" }] };
 let state = fresh();
 const notFound = { ok: false, reason: { code: "referenceNotFound", message: "1Password has no op://Yuzuno/OpenAI/api key", messageZh: "1Password 里找不到 op://Yuzuno/OpenAI/api key" } };
@@ -148,12 +156,16 @@ async function route(r) {
   if (path === "/api/models" && method === "GET") return json(CATALOGS[url.searchParams.get("harness") ?? "codex"]);
   if (path === "/api/routing/models" && method === "GET") return json(CATALOGS[url.searchParams.get("harness")]);
   // S4b: Core's evaluation of the draft it is sent, the recent choices and today's spend.
-  if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy, body.at, body.assume));
+  if (path === "/api/routing/evaluate" && method === "POST") {
+    report.asked.push({ path, tier: body.tier ?? null });
+    return json(evaluation(body.policy ?? state.policy.policy, body.at, body.assume, body.tier));
+  }
   // The week, by the same rule: each day's stretches before 10:00, to 22:00 and to midnight.
   if (path === "/api/routing/simulate" && method === "POST") {
     const from = Date.parse(body.from), H = 3_600_000, segments = [], policy = body.policy ?? state.policy.policy;
     for (let d = 0; d < 7; d++) for (const [a, b] of [[0, 10], [10, 22], [22, 24]])
-      segments.push({ from: new Date(from + (24 * d + a) * H).toISOString(), to: new Date(from + (24 * d + b) * H).toISOString(), chosen: judged(policy, a, body.assume).chosen });
+      segments.push({ from: new Date(from + (24 * d + a) * H).toISOString(), to: new Date(from + (24 * d + b) * H).toISOString(), chosen: judged(policy, a, body.assume, body.tier).chosen });
+    report.asked.push({ path, tier: body.tier ?? null });
     return json({ segments });
   }
   if (path === "/api/executor-templates") {
@@ -213,7 +225,8 @@ const words = {
     claudeGroups: ["Aliases · follow new releases", "Pinned versions"], fromClaude: /^From Claude Code on this Core host/,
     opencodeGroups: ["DeepSeek · with this candidate's API key", "OpenCode · no login needed", "Anthropic · only with its own API key"], fromOpencode: /^From OpenCode 2\.2\.5 on this Core host/,
     needsFix: "Needs a fix", fixIt: "Needs a fix: edit Claude Code · sonnet · API", keyNeeded: "The key anthropic-old isn't added yet",
-    addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key" },
+    addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key",
+    fastOnly: "Fast work only", strongOnly: "Strong work only", workAny: "Any", workFast: "Fast", notServed: "It doesn't serve the fast tier this executor wants" },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
@@ -222,7 +235,8 @@ const words = {
     claudeGroups: ["别名 · 跟着新版本走", "固定版本"], fromClaude: /^来自这台 Core 主机上的 Claude Code/,
     opencodeGroups: ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"], fromOpencode: /^来自这台 Core 主机上的 OpenCode 2\.2\.5/,
     needsFix: "需要修改", fixIt: "需要修改：编辑 Claude Code · sonnet · API", keyNeeded: "还没有 key anthropic-old",
-    addCandidate: "添加候选", account: "账号或 key", newAnthropic: "新的 Anthropic API key", saveKey: "保存 key" },
+    addCandidate: "添加候选", account: "账号或 key", newAnthropic: "新的 Anthropic API key", saveKey: "保存 key",
+    fastOnly: "只接快活", strongOnly: "只接强活", workAny: "不限", workFast: "快", notServed: "它不接这个执行者要的「快」档" },
 };
 
 async function run({ width, height, theme, lang }) {
@@ -354,6 +368,33 @@ async function run({ width, height, theme, lang }) {
     assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the model picker open`);
     await shot("model-opencode");
     check(`${tag}: the model is chosen from Claude Code's and OpenCode's own lists, each saying where it comes from`);
+    // ---- YN-70: the kinds of work. DeepSeek's card and editor (open now) say fast work only, the fast box held.
+    assert.equal((await order.locator('.routing-cand[data-cand="ds"] .routing-chip-tier').innerText()).trim(), w.fastOnly);
+    assert.equal((await order.locator('.routing-cand[data-cand="cl"] .routing-chip-tier').innerText()).trim(), w.strongOnly);
+    assert.equal(await order.locator('.routing-cand[data-cand="cx"] .routing-chip-tier').count(), 0, `${tag}: one taking both says nothing`);
+    const tiers = opencodeEditor.locator(".routing-tiers");
+    await tiers.scrollIntoViewIfNeeded();
+    assert.deepEqual(await tiers.locator("input").evaluateAll((inputs) => inputs.map((i) => [i.checked, i.disabled])), [[false, false], [true, true]],
+      `${tag}: fast ticked, and held as the last one`);
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the kinds of work`);
+    await shot("tiers-editor");
+    // The week for fast work: the pool, first, takes strong work only, and is passed over with why (whoever the
+    // picked time then gives it to). Then back to any work, as the later checks take it.
+    const tierGroup = order.locator(".routing-sim-tier");
+    await tierGroup.scrollIntoViewIfNeeded();
+    await press(tierGroup.getByRole("button", { name: w.workFast, exact: true }));
+    const simResult = order.locator(".routing-simulate .routing-sim-result");
+    await simResult.getByText(w.notServed).waitFor({ timeout: 10_000 });
+    assert.ok(report.asked.some((a) => a.path === "/api/routing/simulate" && a.tier === "fast"), `${tag}: the week asked for fast work`);
+    assert.equal(await tierGroup.getByRole("button", { name: w.workFast, exact: true }).getAttribute("aria-pressed"), "true");
+    await order.locator(".routing-simulate").scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the week for fast work`);
+    await shot("simulate-fast");
+    await press(tierGroup.getByRole("button", { name: w.workAny, exact: true }));
+    await simResult.getByText(w.notServed).waitFor({ state: "detached", timeout: 10_000 });
+    check(`${tag}: a candidate taking one kind of work says so on its card and in its editor; the week is asked for fast work, the pool passed over with why`);
     if (phone) {
       const short = await order.evaluate((el) => [...el.querySelectorAll("button, select, input:not([type=checkbox]):not([type=radio])")].filter((c) => c.offsetParent)
         .map((c) => ({ name: c.getAttribute("aria-label") || c.textContent.trim(), h: Math.round(c.getBoundingClientRect().height) })).filter((c) => c.h < 40));
@@ -389,7 +430,7 @@ async function run({ width, height, theme, lang }) {
       // The week, assuming account #2 used up; the templates, one fixed.
       const sim = order.locator(".routing-simulate");
       await sim.locator(".routing-strip-row").nth(6).waitFor({ timeout: 10_000 });
-      await press(sim.locator(".routing-pill").nth(1));
+      await press(sim.locator(".routing-sim-assume:not(.routing-sim-tier) .routing-pill").nth(1));
       // Assuming it, the pool is out: Codex until 22:00, then none (striped) each day.
       await sim.locator(".routing-strip-run.is-wait").nth(6).waitFor({ timeout: 10_000 });
       await sim.scrollIntoViewIfNeeded();

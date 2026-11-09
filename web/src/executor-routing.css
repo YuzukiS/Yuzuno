@@ -231,9 +231,12 @@
 .routing-model-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin: 0; color: var(--text-quiet); font-size: calc(9px + var(--font-adjust, 3px)); line-height: 1.45; }
 .routing-model-note.is-warn { color: var(--warning-ink, var(--text-secondary)); }
 .routing-model-note .routing-model-reread { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px; min-height: 0; font-size: inherit; }
-.routing-pool, .routing-unknown { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
-.routing-pool legend, .routing-unknown legend { float: left; width: 100%; padding: 0; margin-bottom: 2px; }
-.routing-pool label, .routing-unknown label, .routing-pool-accounts label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+.routing-pool, .routing-unknown, .routing-tiers { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.routing-pool legend, .routing-unknown legend, .routing-tiers legend { float: left; width: 100%; padding: 0; margin-bottom: 2px; }
+.routing-pool label, .routing-unknown label, .routing-tiers label, .routing-pool-accounts label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+/* YN-70: the last kind of work it takes stays ticked. */
+.routing-tiers label:has(input:disabled) { cursor: not-allowed; }
+.routing-tiers .settings-row-meta { flex-basis: 100%; margin: 0; }
 .routing-pool-accounts { display: flex; flex-wrap: wrap; gap: 6px 16px; width: 100%; }
 .routing-conditions { display: grid; gap: 6px; }
 .routing-conds { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
@@ -360,6 +363,7 @@
 .routing-sim-slider b { color: var(--ink); }
 .routing-sim-slider input { width: 100%; accent-color: var(--accent-ink); }
 .routing-sim-assume { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.routing-sim-tier-help { flex-basis: 100%; }
 .routing-pill {
   min-height: 28px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
   background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(9.5px + var(--font-adjust, 3px)); cursor: pointer;
