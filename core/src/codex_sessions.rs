@@ -482,7 +482,7 @@ impl Workspace {
         let mut detail = AgentDetail {
             agent: Agent {
                 id: uuid::Uuid::new_v4().to_string(), name: input.name.trim().into(), goal: String::new(),
-                work_summary: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
+                work_summary: None, turn_wait: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
                 claude_session_id: None, thread_id: Some(input.thread_id), status: "offline".into(),
                 opencode_session_id: None,
                 opencode_version: None, opencode_major: None,
@@ -858,7 +858,7 @@ impl Workspace {
         let agent_id = uuid::Uuid::new_v4().to_string();
         let mut detail = AgentDetail {
             agent: Agent {
-                id: agent_id.clone(), name: name.into(), goal: String::new(), work_summary: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None,
+                id: agent_id.clone(), name: name.into(), goal: String::new(), work_summary: None, turn_wait: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None,
                 cwd: source.agent.cwd.clone(), model: model?, settings: source.agent.settings.clone(),
                 color: source.agent.color.clone(), harness: "codex".into(), claude_session_id: None, opencode_session_id: None, opencode_version: None, opencode_major: None,
                 thread_id: Some(fork_thread.clone()), status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,

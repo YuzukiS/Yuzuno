@@ -531,7 +531,7 @@ impl Workspace {
         let at = now();
         let detail = AgentDetail {
             agent: crate::model::Agent {
-                id: row.target_agent_id.clone(), name: row.name.clone().unwrap_or_default(), goal: String::new(), work_summary: None, project_id: None,
+                id: row.target_agent_id.clone(), name: row.name.clone().unwrap_or_default(), goal: String::new(), work_summary: None, turn_wait: None, project_id: None,
                 kind: None, released_at: None, released_by: None, executor: None,
                 cwd: row.cwd.clone().unwrap_or_default(), model: fixed.model.clone(),
                 settings: crate::model::AgentSettings { reasoning_effort: fixed.variant.clone(), ..Default::default() }, color: "sage".into(),

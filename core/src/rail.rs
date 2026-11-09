@@ -1,6 +1,6 @@
 //! A small, evidence-based projection for the Agent rail. No observer, model
 //! call, cached summary, or persisted second source of truth is involved.
-use crate::model::{AgentDetail, PendingRequest, WorkSummary};
+use crate::model::{AgentDetail, PendingRequest, TurnWait, WorkSummary};
 use serde_json::Value;
 
 pub fn compact(text: &str) -> String {
@@ -107,6 +107,22 @@ pub fn project(d: &AgentDetail) -> Option<WorkSummary> {
     }
     task(turn)
 }
+
+/// What the Agent's running Turn is stopped on (YN-51): the foreground call
+/// it waits for, a sub-agent or a shell command, as its harness recorded it;
+/// None while it thinks, writes or calls anything else, and while no Turn
+/// runs. What it started and left running (Jobs, CI, reviews, background
+/// work) is not the Turn's: the rail reads those from Core's own records.
+pub fn turn_wait(_d: &AgentDetail) -> Option<TurnWait> {
+    None
+}
+
+/// A wait's label at most: a command's start says what it is.
+pub(crate) const LABEL_CHARS: usize = 80;
+
+#[cfg(test)]
+#[path = "rail_wait_tests.rs"]
+mod wait_tests;
 
 #[cfg(test)]
 mod tests {
