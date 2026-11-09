@@ -195,6 +195,29 @@ struct CollaborationHandler {
     tools: Arc<Vec<Tool>>,
 }
 
+impl CollaborationHandler {
+    /// The answer as the caller can read it (YN-69 S8): OpenCode shows nothing
+    /// of a tool output line over 51,200 bytes, and compact JSON is one line,
+    /// so an OpenCode Agent gets a short refusal saying how to read it in
+    /// parts instead of what it would see as an empty result. Every other
+    /// Agent gets it whole; the caller's harness is read only for an answer
+    /// that long.
+    async fn deliver(&self, tool: &str, value: Value, error: bool) -> CallToolResult {
+        let bytes = value.to_string().len();
+        if bytes > crate::mcp_views::OPENCODE_LINE {
+            let actor = self.actor.clone();
+            let harness = self.ws.stored(move |store| {
+                let db = store.db.read()?;
+                Ok(store.brief_in(&db, &actor)?.map(|brief| brief.agent.harness))
+            }).await.ok().flatten();
+            if harness.as_deref() == Some("opencode") {
+                return CallToolResult::structured_error(json!({"error": crate::mcp_views::too_large_for_opencode(tool, bytes)}));
+            }
+        }
+        if error { CallToolResult::structured_error(value) } else { CallToolResult::structured(value) }
+    }
+}
+
 impl ServerHandler for CollaborationHandler {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -243,7 +266,7 @@ impl ServerHandler for CollaborationHandler {
         // Read-only and the same for every Agent: the guide needs no Turn.
         if request.name == crate::guide::TOOL {
             return Ok(match crate::guide::answer(&Value::Object(arguments)) {
-                Ok(guide) => CallToolResult::structured(guide),
+                Ok(guide) => self.deliver(&request.name, guide, false).await,
                 Err(problem) => CallToolResult::structured_error(problem),
             }
             .into());
@@ -252,8 +275,8 @@ impl ServerHandler for CollaborationHandler {
         // a version conflict the latest Brief.
         if request.name == crate::project_brief::UPDATE_TOOL {
             return Ok(match crate::project_brief::update_tool(&self.ws, &self.actor, Value::Object(arguments)).await {
-                Ok(Ok(accepted)) => CallToolResult::structured(accepted),
-                Ok(Err(rejected)) => CallToolResult::structured_error(rejected),
+                Ok(Ok(accepted)) => self.deliver(&request.name, accepted, false).await,
+                Ok(Err(rejected)) => self.deliver(&request.name, rejected, true).await,
                 Err(error) => CallToolResult::structured_error(json!({"error": error.to_string()})),
             }
             .into());
@@ -286,7 +309,7 @@ impl ServerHandler for CollaborationHandler {
                         "agentId":self.actor,"credentialEpoch":self.ws.collaboration_epoch,
                         "activeTurnId":turn});
                 }
-                Ok(CallToolResult::structured(result).into())
+                Ok(self.deliver(&request.name, result, false).await.into())
             }
             Err(error) => {
                 Ok(CallToolResult::structured_error(json!({"error": error.to_string()})).into())
@@ -400,6 +423,9 @@ impl Store {
 
 #[cfg(test)]
 mod dispatch_tests;
+
+#[cfg(test)]
+mod answer_budget_tests;
 
 #[cfg(test)]
 mod tests {

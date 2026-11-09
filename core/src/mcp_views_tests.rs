@@ -333,3 +333,78 @@ fn a_full_task_says_its_registered_materials_once() {
     let current = json!({"current":{"taskId":"T-1","materialsRegistered":true},"keys":{"global":"T-1"}});
     assert_eq!(answer("task_get", current.clone(), None), current);
 }
+
+/// What one MCP answer holds (YN-69 S8: mcp_views::BUDGET), in bytes of compact JSON.
+const PAGE_BUDGET: usize = 49_152;
+
+fn message(seq: i64, body: &str) -> Value {
+    json!({"id":format!("m{seq}"),"seq":seq,"threadId":format!("m{seq}"),"sender":{"kind":"agent","id":"lead","name":"Lead"},
+        "body":body,"taskId":"T-1","createdAt":"t","priority":"normal","delivery":{"state":"delivered","detail":{}},"firstReadAt":null})
+}
+
+/// YN-69 S8: the store ends an Agent's mailbox page within the budget and
+/// marks as read only what it returns (collaboration_mcp answer_budget_tests),
+/// so a page is never cut short here: no message the store marked read is
+/// dropped. An Agent's peer_read asks the store for that budget.
+#[test]
+fn a_mailbox_page_is_never_cut_short_after_the_store_read_it() {
+    assert_eq!((BUDGET, OPENCODE_LINE), (PAGE_BUDGET, 51_200));
+    let mut read = arguments(json!({"afterSeq":4,"limit":50}));
+    assert_eq!(prepare("peer_read", &mut read), Ok(None));
+    assert_eq!(read["byteBudget"], json!(PAGE_BUDGET));
+    let body = "b".repeat(3000);
+    let page = json!({"messages":(1..=40).map(|seq| message(seq, &body)).collect::<Vec<_>>(),"nextAfterSeq":40,"hasMore":false});
+    let short = answer("peer_read", page, None);
+    assert_eq!(short["messages"].as_array().unwrap().len(), 40);
+    assert_eq!((short["nextAfterSeq"].clone(), short["hasMore"].clone()), (json!(40), json!(false)));
+}
+
+#[test]
+fn one_message_larger_than_an_answer_is_cut_and_says_so() {
+    let page = json!({"messages":[message(7, &"x".repeat(70_000))],"nextAfterSeq":7,"hasMore":false});
+    let short = answer("peer_read", page, None);
+    assert!(short.to_string().len() <= PAGE_BUDGET, "{}", short.to_string().len());
+    assert_eq!((short["nextAfterSeq"].clone(), short["messages"][0]["seq"].clone()), (json!(7), json!(7)));
+    let body = short["messages"][0]["body"].as_str().unwrap();
+    assert!(body.starts_with("xxx") && body.contains("more characters"), "{}", &body[body.len() - 80..]);
+    let more = short["more"].as_str().unwrap();
+    assert!(more.contains("m7") && more.contains("not readable through MCP"), "{more}");
+}
+
+fn activity(seq: i64, body: &str) -> Value {
+    json!({"seq":seq,"kind":"comment","at":"t","taskId":"T-1","actor":{"kind":"agent","id":"dev","name":"Dev"},"body":body})
+}
+
+/// YN-69 S8: a history page, or a full task, larger than an answer holds ends
+/// at an activity; nextAfterSeq pages on from there.
+#[test]
+fn a_task_history_larger_than_an_answer_pages_by_bytes() {
+    let body = "n".repeat(2000);
+    let page = json!({"taskId":"T-1","version":9,"activities":(1..=50).map(|seq| activity(seq, &body)).collect::<Vec<_>>(),
+        "nextAfterSeq":50,"hasMore":true,"keys":{"global":"T-1"}});
+    let short = answer("task_get", page.clone(), None);
+    assert!(short.to_string().len() <= PAGE_BUDGET, "{}", short.to_string().len());
+    let kept = short["activities"].as_array().unwrap();
+    let next = short["nextAfterSeq"].as_i64().unwrap();
+    assert!(!kept.is_empty() && kept.len() < 50 && short["hasMore"] == true);
+    assert_eq!(kept.last().unwrap()["seq"].as_i64(), Some(next), "the page ends at nextAfterSeq");
+    assert_eq!(kept[..], page["activities"].as_array().unwrap()[..kept.len()], "whole activities, in order");
+    // A full task keeps its record whole and fills the rest with history.
+    let full = json!({"task":{"id":"T-1","description":"d".repeat(20_000)},"activities":page["activities"],"executions":[],
+        "nextAfterSeq":50,"hasMore":false,"mailProblems":[],"keys":{"global":"T-1"}});
+    let short = answer("task_get", full.clone(), None);
+    assert!(short.to_string().len() <= PAGE_BUDGET, "{}", short.to_string().len());
+    assert_eq!((short["task"].clone(), short["hasMore"].clone()), (full["task"].clone(), json!(true)));
+    let kept = short["activities"].as_array().unwrap().len();
+    assert!(kept > 0 && kept < 50 && short["nextAfterSeq"] == json!(kept as i64), "{kept}");
+    // A task whose own record is more than an answer: the record whole, its
+    // history from the first activity on with view "activity", and it says so.
+    let huge = json!({"task":{"id":"T-1","description":"d".repeat(60_000)},"activities":page["activities"],"executions":[],
+        "nextAfterSeq":50,"hasMore":false,"mailProblems":[],"keys":{"global":"T-1"}});
+    let short = answer("task_get", huge, None);
+    assert_eq!((short["activities"].clone(), short["nextAfterSeq"].clone(), short["hasMore"].clone()), (json!([]), json!(0), json!(true)));
+    assert!(short["more"].as_str().unwrap().contains("view \"activity\""));
+    // A page that fits is as it was.
+    let small = json!({"taskId":"T-1","version":1,"activities":[activity(1, "hi")],"nextAfterSeq":1,"hasMore":false,"keys":{}});
+    assert_eq!(answer("task_get", small.clone(), None), small);
+}
