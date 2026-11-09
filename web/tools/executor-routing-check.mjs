@@ -417,6 +417,8 @@ async function run({ width, height, theme, lang }) {
     await fixEditor.waitFor({ timeout: 10_000 });
     assert.match(await fixEditor.innerText(), new RegExp(w.keyNeeded));
     assert.equal(await fixCard.locator(".routing-fix").count(), 0, `${tag}: the open editor says what to fix instead`);
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".routing-cand-end") && document.activeElement.getAttribute("aria-expanded")), "true",
+      `${tag}: the focus moved to the card's open/close toggle, not lost to the page`);
     await page.mouse.move(0, 0);
     await shot("needs-fix-open");
     report.pills = [...(report.pills ?? []), { tag, contrast: Number(ratio.toFixed(2)), color: look.color, background: look.background, height: look.height }];

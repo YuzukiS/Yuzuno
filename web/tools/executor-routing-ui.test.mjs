@@ -318,6 +318,9 @@ test("a candidate that can't be saved says so on its card, with a pill that open
   assert.ok(editor, "its editor is open");
   assert.match(editor.textContent, /The key deepseek-gone isn't added yet/, "which says what to fix");
   assert.equal(card(page, "ds").querySelector(".routing-fix"), null, "the open editor says it instead of the pill");
+  // The pill went: the focus is on the card's open/close toggle, as after the pencil, not lost to the page (R1).
+  assert.equal(page.document.activeElement?.getAttribute("aria-label"), "Close OpenCode · deepseek-flash · API");
+  assert.equal(page.document.activeElement?.getAttribute("aria-expanded"), "true");
   assert.deepEqual(page.errors, []);
 });
 
