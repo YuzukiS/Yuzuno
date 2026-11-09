@@ -155,7 +155,7 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
 Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
-(on version_conflict use the latest Brief attached) and call again with a new requestId. \
+(on version_conflict merge into the latest sections attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
 Kinds: ask (a question with options, freeText, form or choice; a reply marks it replied and it stays until you resolve it once handled), \
 report (leaves when the user marks it seen), status (current data with asOf and validFor). \
@@ -196,7 +196,7 @@ fn description(tool: &str) -> &'static str {
     let generated = brief_contract().and_then(|brief| contract_text(&brief["toolDescriptions"][tool]));
     generated.unwrap_or(match tool {
         "brief_get" => "Read your Project's Brief: its version and sections (with owners and ask state), what you own, your asks the user replied to, and the limits. Call it before brief_update; its version is your expectedVersion.",
-        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with the latest Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
+        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with those sections as they are now and an index of the Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
         _ => "The Project Brief guide: section kinds, keys and owners, asks, content blocks, charts, attachments, limits and rejection codes, with examples. Pass part to read one part.",
     })
 }
@@ -625,6 +625,44 @@ fn replied_ask(row: &sections::Row) -> Value {
         _ => false,
     };
     json!({"key":row.key,"title":row.data["title"],"repliedAt":row.replied_at,"reply":reply,"updatedSinceReply":updated})
+}
+
+/// The live ask under `key` in `project` that the user replied to, as a
+/// release that cites the reply reads it (merge_queue/findings.rs, YN-67):
+/// its question and the words around it (`text`: title, question and every
+/// text of its body), the reply, and whether the ask changed after the
+/// reply. Only Home's reply route records a reply (`mark_replied`); an
+/// owner's edit after it keeps the reply but changes `updated_at`, so an
+/// ask whose times can't be compared reads as changed.
+pub(crate) fn cited_reply(db: &Connection, project: &str, key: &str) -> Result<Option<Value>> {
+    let Some(row) = sections::live_key(db, project, key)? else {
+        return Ok(None);
+    };
+    let (Some(replied), Some(reply)) = (row.replied_at.as_deref(), row.reply_text.as_deref()) else {
+        return Ok(None);
+    };
+    if row.kind != "ask" || row.ask_state.as_deref() != Some("replied") || reply.trim().is_empty() {
+        return Ok(None);
+    }
+    let time = |at: &str| chrono::DateTime::parse_from_rfc3339(at).ok();
+    let changed = match (time(replied), time(&row.updated_at)) {
+        (Some(replied), Some(updated)) => updated > replied,
+        _ => true,
+    };
+    let mut words = Vec::new();
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    for part in [&row.data["title"], &row.data["ask"]["question"], &row.data["body"]] {
+        strings(part, &mut words);
+    }
+    Ok(Some(json!({"key":row.key,"version":row.version,"owner":{"id":row.owner_id,"name":row.owner_name},"title":row.data["title"],
+        "question":row.data["ask"]["question"],"text":words.join("\n"),"reply":reply,"repliedAt":replied,"changedSinceReply":changed})))
 }
 
 /// At most this many keys in one brief_get: the topics and their subs.

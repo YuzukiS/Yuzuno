@@ -174,7 +174,9 @@ fn observations_carry_their_source_and_time_and_a_result_stays_as_reported() {
     let current = |s: &Store| get(s, json!({"taskId":"T-1","view":"current"})).unwrap()["current"].clone();
     let pr = current(&s)["delivery"]["pullRequests"][0].clone();
     assert_eq!((pr["state"].clone(), pr["observedAt"].clone(), pr["error"].clone()), (json!("open"), json!("t0"), Value::Null));
-    assert!(pr["ci"]["source"].as_str().unwrap().contains("all of this head's checks"), "{pr}");
+    // Where a PR's CI comes from is said once, beside every PR (YN-69).
+    assert!(pr["ci"].get("source").is_none(), "{pr}");
+    assert!(current(&s)["delivery"]["note"].as_str().unwrap().contains("all of this head's checks"));
     assert_eq!(pr["watchedRuns"], json!([]));
 
     // A failed refresh is kept as it happened: the last good read stays, with
@@ -183,7 +185,9 @@ fn observations_carry_their_source_and_time_and_a_result_stays_as_reported() {
     let failed = current(&s)["delivery"]["pullRequests"][0].clone();
     assert_eq!((failed["state"].clone(), failed["observedAt"].clone(), failed["ci"]["state"].clone()), (json!("open"), json!("t0"), json!("pending")));
     assert_eq!((failed["error"].clone(), failed["stale"].clone()), (json!("rate_limited: try later"), json!(true)));
-    assert!(failed["lastAttemptAt"].as_str().unwrap() >= failed["syncedAt"].as_str().unwrap(), "{failed}");
+    assert!(failed["lastAttemptAt"].is_string(), "the failed attempt's time: {failed}");
+    // Without a failure the attempt is the read itself: only observedAt is shown (YN-69).
+    assert!(pr.get("lastAttemptAt").is_none() && pr.get("syncedAt").is_none() && failed.get("syncedAt").is_none(), "{pr}");
 
     // One workflow passing on the head is shown as that run, and the head's
     // checks stay as GitHub last reported them.
@@ -250,6 +254,121 @@ fn observations_carry_their_source_and_time_and_a_result_stays_as_reported() {
     let result = current(&s)["result"].clone();
     assert_eq!((result["taskVersionAtReport"].clone(), result["statusAtReport"].clone(), result["editsSinceReport"].clone()),
         (Value::Null, Value::Null, Value::Null));
+}
+
+/// YN-69: what an Agent reads by default is what it decides with now. A merged
+/// or closed PR is a short row (github_links has it whole); an open one keeps
+/// its head, CI, newest review and watched runs, without fields that are
+/// empty or say the same as another; a CI watch keeps its run without
+/// repeating the watch; the routing record keeps its decision and reasons
+/// without the Chinese texts, readings and account lists only the UI shows.
+#[test]
+fn finished_prs_are_short_rows_and_each_row_keeps_what_decides() {
+    let (_dir, s) = store();
+    let repo = Repository { id: 7, full_name: "owner/repo".into() };
+    let base = "a".repeat(40);
+    for (n, state) in [(1u64, "merged"), (2, "closed"), (3, "open")] {
+        let head = n.to_string().repeat(40);
+        s.github_link_object("T-1", &repo, "pull", n, json!({"title":format!("Slice {n}"),"state":state,"baseSha":base,
+            "headSha":head,"baseBranch":"main","observedAt":"t0","ci":{"state":"success","headSha":head,"complete":true,
+            "observedAt":"t0","checks":[{"name":"Core","state":"success"}]}})).unwrap();
+    }
+    let current = |s: &Store| get(s, json!({"taskId":"T-1","view":"current"})).unwrap()["current"].clone();
+    let link = |n: u64| current(&s)["delivery"]["pullRequests"].as_array().unwrap().iter()
+        .find(|pr| pr["number"] == n).unwrap()["linkId"].clone();
+    for (n, conclusion) in [(1u64, "approved_with_notes"), (3, "changes_requested")] {
+        let start = serde_json::from_value(json!({"requestId":format!("r{n}"),"notifyAgentId":null,"taskId":"T-1",
+            "linkId":link(n),"baseSha":null,"headSha":null})).unwrap();
+        let (mut run, _) = s.create_pr_review(None, &start, &format!("r{n}")).unwrap();
+        run["status"] = json!("completed");
+        run["conclusion"] = json!(conclusion);
+        run["headSha"] = json!(n.to_string().repeat(40));
+        run["baseSha"] = json!(base);
+        run["actualHarness"] = json!("codex");
+        run["actualModel"] = json!("model");
+        run["findings"] = json!([{"priority":2},{"priority":3}]);
+        run["scope"] = json!({"counts":{"covered":4}});
+        s.save_pr_review(&run, Some("report")).unwrap();
+    }
+    let c = current(&s);
+    let pulls = c["delivery"]["pullRequests"].as_array().unwrap().clone();
+    let pr = |n: u64| pulls.iter().find(|pr| pr["number"] == n).unwrap().clone();
+    let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    assert_eq!(keys(&pr(1)), ["headSha", "latestReview", "linkId", "number", "state", "title", "url"], "{}", pr(1));
+    assert_eq!(pr(1)["latestReview"], json!({"reviewId":"r1","conclusion":"approved_with_notes","forCurrentHead":true}));
+    assert_eq!((pr(1)["state"].clone(), pr(1)["headSha"].clone()), (json!("merged"), json!("1".repeat(40))));
+    assert_eq!(keys(&pr(2)), ["headSha", "linkId", "number", "state", "title", "url"], "a closed PR without a review: {}", pr(2));
+    // A finished PR whose refresh failed says so: it may have been reopened since.
+    s.github_refresh_object(pr(2)["linkId"].as_str().unwrap(), Err("rate_limited: try later".into())).unwrap();
+    let failed = current(&s)["delivery"]["pullRequests"].as_array().unwrap().iter().find(|pr| pr["number"] == 2).unwrap().clone();
+    assert_eq!((failed["state"].clone(), failed["stale"].clone(), failed["error"].clone()),
+        (json!("closed"), json!(true), json!("rate_limited: try later")), "{failed}");
+    assert!(failed["lastAttemptAt"].is_string(), "{failed}");
+
+    let open = pr(3);
+    assert_eq!((open["state"].clone(), open["headSha"].clone(), open["baseSha"].clone()), (json!("open"), json!("3".repeat(40)), json!(base)));
+    assert_eq!(open["ci"], json!({"state":"success","complete":true,"headSha":"3".repeat(40),"observedAt":"t0"}));
+    let review = &open["latestReview"];
+    assert_eq!((review["conclusion"].clone(), review["forCurrentHead"].clone(), review["findings"].clone()),
+        (json!("changes_requested"), json!(true), json!({"P2":1,"P3":1})));
+    assert_eq!((review["headSha"].clone(), review["reviewerStarted"].clone()), (json!("3".repeat(40)), json!(true)));
+    for gone in ["harness", "model", "error", "contextIncomplete", "acknowledgedUnreviewable"] {
+        assert!(review.get(gone).is_none(), "{gone}: {review}");
+    }
+    for gone in ["syncedAt", "lastAttemptAt", "error", "changes"] {
+        assert!(open.get(gone).is_none(), "{gone}: {open}");
+    }
+    let nulls = |v: &Value| v.as_object().unwrap().iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect::<Vec<_>>();
+    assert!(nulls(&open).is_empty() && nulls(review).is_empty(), "{open}");
+    assert_eq!((open["reviews"].clone(), open["watchedRuns"].clone()), (json!({"attempts":1,"reviewerRuns":1}), json!([])));
+    let note = c["delivery"]["note"].as_str().unwrap();
+    assert!(note.contains("all of this head's checks") && note.contains("github_links"), "{note}");
+
+    // A watch's run keeps its key, state, head, link and time; the watch says
+    // the rest once.
+    let subscribe = serde_json::from_value(json!({"requestId":"ci","taskId":"T-1","agentId":null,
+        "url":"https://github.com/owner/repo/pull/3","expectedSha":"3".repeat(40)})).unwrap();
+    let sub = s.ci_subscribe(Some("a"), subscribe, repo, "pull", 3).unwrap();
+    let observed = json!({"id":"github:7:42:1","source":"github_actions","repositoryId":7,"repository":"owner/repo","runId":"42",
+        "attempt":"1","headSha":"3".repeat(40),"name":"CI","status":"passed","rawStatus":"completed","conclusion":"success",
+        "event":"pull_request","branch":"feature","observedAt":"t1","url":"https://github.com/owner/repo/actions/runs/42/attempts/1"});
+    s.ci_observe(sub["watchId"].as_str().unwrap(), Ok(crate::ci_monitor::Observed { runs: vec![observed], head: Some("3".repeat(40)),
+        pr: None, truncated: false, checked: chrono::Utc::now().timestamp(), wait: 0, excluded: 0 })).unwrap();
+    let ci = current(&s)["delivery"]["ciSubscriptions"][0].clone();
+    assert_eq!(ci["latestRun"], json!({"runKey":"github:7:42:1","name":"CI","status":"passed","conclusion":"success",
+        "headSha":"3".repeat(40),"observedAt":"t1","url":"https://github.com/owner/repo/actions/runs/42/attempts/1"}), "{ci}");
+    assert_eq!((ci["watch"]["kind"].clone(), ci["watch"]["expectedSha"].clone(), ci["agent"].clone()), (json!("pull"), json!("3".repeat(40)), json!("Dev")));
+    assert!(nulls(&ci).is_empty() && nulls(&ci["watch"]).is_empty(), "{ci}");
+
+    // The routing record of the task's executor.
+    let task = crate::collaboration_store::task_key(&s.db.read().unwrap(), "T-1").unwrap().0;
+    let route = json!({"policyVersion":4,"evaluatedAt":"t2","at":"dispatch","chosen":"c-2","account":{"fingerprint":"f3","number":3},
+        "candidates":[
+            {"id":"c-1","label":null,"harness":"opencode","model":"flash","readings":[{"kind":"usage","value":3}],"state":"skipped",
+             "reasons":[{"code":"outsideWindow","condition":0,"message":"Not in its time window now","messageZh":"此刻不在它的时间窗口内",
+                 "params":{"until":"t9"}}]},
+            {"id":"c-2","label":"main","harness":"claude","model":"opus","readings":[],"reasons":[],"state":"chosen",
+             "accounts":[{"fingerprint":"f1","number":1,"state":"low"},{"fingerprint":"f3","number":3,"state":"pick"}]},
+            {"id":"c-3","label":null,"harness":"codex","model":"m","readings":[],"reasons":[],"state":"notTried"}]});
+    {
+        let db = s.db.write().unwrap();
+        db.execute("INSERT INTO executor_slots(agent_id,seq,task_id,machine_id,template_id,state,since,queued_at)
+            VALUES('a',1,?1,'local','design-first','running','t2','t2')", [&task]).unwrap();
+        db.execute("INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,machine_id,template_json,
+            agent_id,state,created_at,updated_at,route_json) VALUES('lead','x','{}',?1,'design-first','local','{}','a','dispatched','t2','t2',?2)",
+            rusqlite::params![task, route.to_string()]).unwrap();
+    }
+    let slot = current(&s)["executorSlot"].clone();
+    assert_eq!((slot["agentId"].clone(), slot["state"].clone()), (json!("a"), json!("running")), "{slot}");
+    assert_eq!(slot["route"], json!({"policyVersion":4,"evaluatedAt":"t2","at":"dispatch","chosen":"c-2",
+        "account":{"fingerprint":"f3","number":3},"candidates":[
+            {"id":"c-1","harness":"opencode","model":"flash","state":"skipped",
+             "reasons":[{"code":"outsideWindow","message":"Not in its time window now","params":{"until":"t9"}}]},
+            {"id":"c-2","label":"main","harness":"claude","model":"opus","state":"chosen"},
+            {"id":"c-3","harness":"codex","model":"m","state":"notTried"}]}));
+    // The store's own record, which the GUI reads, is whole.
+    let full = get(&s, json!({"taskId":"T-1","view":"full"})).unwrap();
+    assert_eq!(full["task"]["executorSlot"]["route"], route);
 }
 
 /// Each query of the current view, and of loading a dispatched task (every

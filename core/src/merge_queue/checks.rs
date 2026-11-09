@@ -70,7 +70,12 @@ pub(super) fn pull(entry: &Value, pr: &Value) -> Check<()> {
 ///
 /// A last round that does not pass is admitted when the entry acknowledges
 /// binary files (`binaries.files`, YN-52) that are exactly its one gap; see
-/// `binaries`. Its conclusion is reported as it is, with `passes` false.
+/// `binaries`. Or when it acknowledges P2 findings the user accepted
+/// (`acknowledgedFindings.items`, YN-67) that are every P0–P2 finding of a
+/// round complete but for them; see `findings`. A completed round at the
+/// reviewed head then blocks only by a P0–P2 finding that isn't one of them;
+/// at the released head or a merge commit on the way, any still blocks. Its
+/// conclusion is reported as it is, with `passes` false.
 pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_heads: &[Value], merged: &[(String, Vec<Value>)]) -> Check<Value> {
     if running {
         return wait("A review round of this PR is still running; the last completed round decides");
@@ -91,7 +96,17 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_he
     // A round whose only gap is binary files the release acknowledged by
     // their content (YN-52) is admitted; the round's own conclusion stays.
     let mut acknowledged = None;
-    if !crate::pr_review::policy::passes(r) {
+    // So is one whose only blockers are P2 findings the user accepted (YN-67).
+    let accepted = entry["acknowledgedFindings"]["items"].as_array().filter(|_| !crate::pr_review::policy::passes(r));
+    if let Some(items) = accepted {
+        if let Err(why) = super::findings::admits(r, items) {
+            return stop(
+                "review_not_passing",
+                format!("The last completed review round ({}) at {which} concluded {}, which does not pass under the review policy; the acknowledged findings don't admit it: {why}",
+                    r["id"].as_str().unwrap_or("?"), r["conclusion"].as_str().unwrap_or("unknown")),
+            );
+        }
+    } else if !crate::pr_review::policy::passes(r) {
         let listed = &entry["binaries"]["files"];
         let why = match super::binaries::gap(r) {
             Ok(gap) if listed.is_array() => match super::binaries::matches(&gap, listed) {
@@ -121,11 +136,17 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_he
     let blocking = |round: &Value| {
         round["findings"].as_array().into_iter().flatten().filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)).count()
     };
-    if let Some(earlier) = at_heads.iter().filter(|o| o["headSha"] == r["headSha"]).find(|o| blocking(o) > 0) {
+    // At the reviewed head, an acknowledged finding no longer blocks.
+    let unaccepted = |round: &Value| {
+        round["findings"].as_array().into_iter().flatten()
+            .filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2) && !accepted.is_some_and(|items| super::findings::covers(f, items)))
+            .count()
+    };
+    if let Some(earlier) = at_heads.iter().filter(|o| o["headSha"] == r["headSha"]).find(|o| unaccepted(o) > 0) {
         return stop(
             "review_not_passing",
             format!("Review round {} ({}) at {which} found {} P0–P2 issue(s); a later round of the same head does not clear them, so a new head needs a passing round of its own",
-                earlier["round"], earlier["id"].as_str().unwrap_or("?"), blocking(earlier)),
+                earlier["round"], earlier["id"].as_str().unwrap_or("?"), unaccepted(earlier)),
         );
     }
     if via_merges {
@@ -143,7 +164,13 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_he
         }
     }
     let mut passed = json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
-        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":acknowledged.is_none()});
+        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":acknowledged.is_none() && accepted.is_none()});
+    if let Some(items) = accepted {
+        // The round does not pass by itself: what admits it is the user's
+        // acceptance of these findings, recorded on the entry.
+        passed["admittedBy"] = json!("acknowledgedFindings");
+        passed["findings"] = json!(items.iter().map(|i| json!({"reviewId":i["reviewId"],"index":i["index"],"title":i["title"]})).collect::<Vec<_>>());
+    }
     if let Some(gap) = &acknowledged {
         // The round does not pass by itself: what admits it is the release's
         // acknowledgement of these files, whose content Core read at release.

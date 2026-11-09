@@ -76,7 +76,8 @@ entry is created:
   passed: only a new head, with a passing round of its own, clears it. So does
   one at the released head, or at a merge commit between the two: a round of
   the earlier head does not clear it. A round whose only gap is binary files
-  passes when the release acknowledges them (below).
+  passes when the release acknowledges them (below), and so does one whose
+  only blockers are P2 findings the user accepted (below).
 - **No other entry holds the PR.**
 
 ### A head that adds only merges
@@ -189,6 +190,48 @@ Known limit: a merged-in head (above) counts as reviewed only by a passing
 round of its own; one whose round passed only through an acknowledgement does
 not.
 
+### P2 findings the user accepted
+
+A reviewer can rate as a P2 a behaviour the user chose on purpose, as #824's
+first round did with the upgrade the user had picked in a Home ask. Such a
+round concludes `changes_requested`, which never passes. The release may
+acknowledge those findings, `acknowledgeFindings`: each by `reviewId`, `index`
+and `title` as `review_get` shows them, with an optional note (YN-67).
+
+- **Only a P2.** A P0 or P1 is never acknowledged, by anyone; a P3 doesn't
+  block and is refused as listed for nothing.
+- **Who.** The user releasing needs nothing more. The task's dispatching lead
+  must cite, in `userReply.key`, a Home ask of the task's Project that the user
+  replied to. Only Home's reply route records a reply, so it is the user's.
+  The ask must be live and unchanged since the reply, so its question is the
+  one they answered: an owner's edit after a reply keeps the reply but not the
+  question, so cite an ask before resolving it. Its title, question or body
+  must name the PR as `#number` and the finding by its title or its own id:
+  the first 8 characters of its round's review id, a slash and its index
+  (`b3e3a2a5/0`). The review id alone names every finding of the round, so it
+  doesn't count. The task's executor never releases, with or without one.
+- **What.** The findings are those of the PR's last completed round, every
+  P0–P2 finding of it listed, and nothing else keeps it from passing: it is
+  complete, has no reason code, stopped at no limit and the reviewer reached a
+  verdict. Binary files and findings are not acknowledged in the same release.
+
+Anything else is refused at release with `findings_refused`, naming the
+acknowledgement and what didn't match; a round that doesn't admit them is
+refused with `review_not_passing`, saying why. The entry keeps them as
+`acknowledgedFindings`: who gave them and when, and each finding (round,
+index, priority, path, lines, title, note) with the cited ask's key, version,
+title, question and the user's reply, as Core read them at release. The
+release comment on the task names each finding and quotes the reply.
+
+Each check after that asks again that the last round is complete and that
+every P0–P2 finding of it is an acknowledged P2 of that same round. A later
+round, at the same head or another, names other findings, so it stops the
+entry with `review_not_passing`. At the reviewed head, an earlier round's P2
+at the same path with the same title is accepted too; at the released head
+or a merge commit on the way, any P0–P2 finding still blocks. The review
+record is unchanged: the evidence names its conclusion with `passes` false and
+`admittedBy: acknowledgedFindings`.
+
 ## What Core checks
 
 Every check reads GitHub afresh, in this order. The first condition that fails
@@ -205,7 +248,8 @@ entry is checked again from the new anchor.
    computing whether the PR can merge, nothing is decided here.
 2. The last completed review round still passes at that head, or at the
    reviewed head the entry's proof names (see A head that adds only merges),
-   or its only gap is still exactly the binary files the release acknowledged.
+   or its only gap is still exactly the binary files the release acknowledged,
+   or its only blockers are still the P2 findings the release acknowledged.
    If a round is running, Core waits for it.
 3. Two reads of the base branch name the same commit.
 4. The repository's queue is not paused (see below).
@@ -575,6 +619,8 @@ The record holds:
 - the release (who, when, which request);
 - the binary files the release acknowledged, if any: who, when, and each file
   with its SHA-256, note, blob, size and format;
+- the P2 findings the release acknowledged, if any: who, when, and each
+  finding with the user's reply that accepts it, as read at release;
 - the review round, and for a head that adds only merges, the proof: each
   merge, what it brought in and why that needs no review, its merge base, and
   the tree Core redid it to;
@@ -592,7 +638,22 @@ The record holds:
 - the stop reason and detail, if any.
 
 `merge_get` returns an entry with its history and evidence. `merge_list` lists
-entries.
+entries, newest first, without their history and last check, at most 50 a
+page (`limit`, then `before` with the page's `nextBefore` while `hasMore`).
+
+Through MCP an Agent reads less by default, and loses nothing (YN-69):
+
+- **`merge_get` and the merge writes:** they answer with the entry's summary.
+  It leaves out `lastEvidence` (the last check as Core read it) and the
+  evidence fields that repeat the entry, whose own fields are current. Its
+  history keeps the newest 10 steps, with `historyCount` saying how many there
+  are. `view: "full"` returns the whole record.
+- **`merge_list`:** it lists 20 a page unless the Agent gives `limit`. Each row
+  is the entry, its PR, head, state, reason and detail, its times and its
+  merge: `sha`, `mergedAt` and `mainCi`. `view: "full"` returns the rows as
+  stored.
+
+The web app reads the whole records over HTTP, as before.
 
 ## Going back to an older Core
 
@@ -603,4 +664,6 @@ a head that adds only merges, still waiting, stops at its next check with
 `review_not_passing` (core.26 sees a last round that is not at the head), so
 nothing merges; a person merges it, or reviews it again. An entry released
 with acknowledged binary files (YN-52), still waiting, stops the same way with
-a Core from before that change, which does not read the acknowledgement.
+a Core from before that change, which does not read the acknowledgement. So
+does one released with acknowledged findings (YN-67), with a Core from before
+that change.
