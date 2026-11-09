@@ -9,8 +9,8 @@
 //! writes no tag), by the rustc information Cargo keeps there
 //! (`.rustc_info.json`). A name, being ignored by Git or being old never makes
 //! anything removable. The walk never follows links and stops at other Git
-//! working trees; Git, a running build, a mount, a link, a Job, an Agent at
-//! work or a Job record naming it keeps a folder; removal renames it aside
+//! working trees; Git, a running build, a process using it, a mount, a link,
+//! a Job, an Agent at work or a Job record naming it keeps a folder; removal renames it aside
 //! under its build lock and removes it without following links. Remote
 //! machines and Windows are not handled.
 use crate::{store::Store, workspace::Workspace};
@@ -37,6 +37,11 @@ const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 /// A real .rustc_info.json is a few KiB; a larger file is not Cargo's.
 const RUSTC_INFO_BYTES: u64 = 1 << 20;
 pub(crate) const REMOVING: &str = ".yuzuno-removing-";
+const BUILDING: &str = "Cargo is building here now";
+/// Build locks a newer Cargo keeps beside .cargo-lock in a profile directory.
+const NEWER_LOCKS: [&str; 2] = [".cargo-build-lock", ".cargo-artifact-lock"];
+/// The processes named in one reason list; the rest are counted.
+const MAX_PROCESSES: usize = 3;
 
 /// path as this host resolves it now, or as given where it does not resolve
 /// (a folder that was removed): roots are compared resolved.
@@ -332,10 +337,38 @@ pub(crate) async fn local_protections(root: &Path, candidate: &Path) -> Vec<Stri
                 Ok(()) => {
                     let _ = lock.unlock();
                 }
-                Err(std::fs::TryLockError::WouldBlock) => reasons.push("Cargo is building here now".to_owned()),
+                Err(std::fs::TryLockError::WouldBlock) => reasons.push(BUILDING.to_owned()),
                 Err(std::fs::TryLockError::Error(error)) => reasons.push(format!("Its build lock cannot be checked: {error}")),
             },
             Err(error) => reasons.push(format!("Its build lock cannot be opened: {error}")),
+        }
+        // Cargo 1.97 also holds these while it compiles; an older Cargo has none.
+        for name in NEWER_LOCKS {
+            match std::fs::File::open(candidate.join(name)) {
+                Ok(lock) => match lock.try_lock() {
+                    Ok(()) => {
+                        let _ = lock.unlock();
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        if !reasons.iter().any(|r| r == BUILDING) {
+                            reasons.push(BUILDING.to_owned());
+                        }
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => reasons.push(format!("Its build lock {name} cannot be checked: {error}")),
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => reasons.push(format!("Its build lock {name} cannot be opened: {error}")),
+            }
+        }
+        match process_users(&candidate) {
+            Ok(users) => {
+                let more = users.len().saturating_sub(MAX_PROCESSES);
+                reasons.extend(users.into_iter().take(MAX_PROCESSES));
+                if more > 0 {
+                    reasons.push(format!("{more} more processes use it"));
+                }
+            }
+            Err(why) => reasons.push(format!("The processes using it cannot be checked: {why}")),
         }
         reasons
     })
@@ -343,6 +376,51 @@ pub(crate) async fn local_protections(root: &Path, candidate: &Path) -> Vec<Stri
     .unwrap_or_else(|error| vec![format!("It could not be checked: {error}")]);
     reasons.extend(fs_reasons);
     reasons
+}
+
+/// What this host's processes have in dir, one line each: their working
+/// folder or root, the program they run, a file they have open or mapped
+/// (/proc). `cargo test` and `cargo run` hold no Cargo lock while the program
+/// runs, so this is what sees it. Core's own process is left out; a process
+/// of another user that this one may not read is not seen. An error where
+/// /proc cannot be read at all, so nothing is removed unchecked.
+pub(crate) fn process_users(dir: &Path) -> std::result::Result<Vec<String>, String> {
+    let entries = std::fs::read_dir("/proc").map_err(|error| format!("/proc cannot be read: {error}"))?;
+    let within = |path: &Path| path.starts_with(dir);
+    let me = std::process::id();
+    let mut users = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+        if pid == me {
+            continue;
+        }
+        let proc = entry.path();
+        let linked = |name: &str| std::fs::read_link(proc.join(name)).is_ok_and(|path| within(&path));
+        let how = if linked("cwd") {
+            Some("its working folder is there")
+        } else if linked("root") {
+            Some("its root folder is there")
+        } else if linked("exe") {
+            Some("it runs a program from there")
+        } else if std::fs::read_dir(proc.join("fd"))
+            .is_ok_and(|fds| fds.flatten().any(|fd| std::fs::read_link(fd.path()).is_ok_and(|path| within(&path))))
+        {
+            Some("it has a file open there")
+        } else if std::fs::read_to_string(proc.join("maps")).is_ok_and(|maps| {
+            // A mapped file's path is the rest of its line, from its first '/'.
+            maps.lines().filter_map(|line| line.find('/').map(|at| &line[at..])).any(|path| within(Path::new(path)))
+        }) {
+            Some("it has a file mapped from there")
+        } else {
+            None
+        };
+        if let Some(how) = how {
+            let name = std::fs::read_to_string(proc.join("comm")).map(|c| c.trim().to_owned()).unwrap_or_default();
+            users.push(format!("Process {pid} ({name}) uses it: {how}"));
+        }
+    }
+    users.sort();
+    Ok(users)
 }
 
 /// Why candidate must stay, from Core's own records: who works in the
