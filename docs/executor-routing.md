@@ -18,7 +18,8 @@ version; a later slice adds to it.
 | S3b3 | A real DeepSeek executor through routing: a lab check | Done |
 | S4 | The Settings page (YN-49) | Done |
 | YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
-| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | This version |
+| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
+| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the

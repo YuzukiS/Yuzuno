@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 import { api, errorText } from "./api";
-import { CLAUDE_MODES, CODEX_PRESETS, claudeModeText, codexPermissionText } from "./agent-defaults";
+import { claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
-  MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, presetsIn, readExecutorTemplates, saveExecutorTemplates,
+  MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, keepsLevel, presetsIn, readExecutorTemplates, saveExecutorTemplates,
   type DeliveryMode, type ExecutorHarness, type ExecutorPreset, type ExecutorTemplate, type ExecutorTemplatesView,
-  type StepKind, type TemplateChange, type TemplateStep,
+  type LevelInfo, type PermissionLevel, type StepKind, type TemplateChange, type TemplateStep,
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
 import { moment } from "./conversation-time";
@@ -25,7 +25,7 @@ const text = strings({
   none: "No template yet: a dispatch makes a general executor.",
   addPresets: "Add presets",
   presetsTitle: "Add presets",
-  presetsHelp: (harness: string) => `Choose the presets to add. Each becomes an unsaved template for ${harness}, the default for new Agents, that you can change; nothing is saved until you save.`,
+  presetsHelp: "Choose the presets to add. Each becomes an unsaved template that follows routing, which you can change; nothing is saved until you save.",
   presetTaken: "One with this id is in the list: it is added under another id.",
   addChosen: (n: number) => (n === 1 ? "Add 1 preset" : `Add ${n} presets`),
   room: (n: number, limit: number) => `Room for ${n} more ${n === 1 ? "template" : "templates"}: the list holds at most ${limit}.`,
@@ -59,7 +59,10 @@ const text = strings({
   label: "Label",
   id: "Id",
   idHelp: "Lowercase letters, digits and hyphens. A dispatch names the template by it.",
-  harness: "Harness",
+  harness: "Runs with",
+  followsRouting: "Follows routing",
+  followsHelp: (name: string) => `Routing on: routing's order chooses the tool, model and account. Routing off: the default for new Agents (here: ${name}; a project can have its own).`,
+  fixedHelp: (name: string) => `Fixed: always ${name} on this host's login, whatever routing says.`,
   whenToChoose: "When to choose it",
   whenToChooseHelp: "One line a lead reads to choose this template. Not sent to the executor.",
   model: "Model",
@@ -68,8 +71,14 @@ const text = strings({
   effort: "Reasoning effort",
   inheritEffort: "The model’s own",
   permission: "Permissions",
-  inheritPermission: "Inherit the default for new Agents",
-  opencodeNative: "OpenCode uses its own configuration’s permissions.",
+  levelDefault: "Defaults for new Agents",
+  levelDefaultHelp: "Each tool starts with its own default for new Agents; OpenCode with its own configuration.",
+  levelOn: "On each tool:",
+  toolLevel: (name: string, what: string) => `${name}: ${what}`,
+  notKept: "doesn't keep it",
+  levelSkips: (names: string) => `Routing passes over ${names} for this template.`,
+  levelNotKept: (name: string) => `${name} doesn't keep this level: choose another.`,
+  levelNotKeptOption: (name: string) => `${name} doesn't keep it`,
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
   opencodeOwnModel: "Its own configuration’s model",
   opencodeOption: "OpenCode (Experimental)",
@@ -121,7 +130,7 @@ const text = strings({
   none: "还没有模板：派发时会创建通用执行者。",
   addPresets: "添加预设",
   presetsTitle: "添加预设",
-  presetsHelp: (harness) => `选择要添加的预设。每个都会成为一个未保存的 ${harness} 模板（新 Agent 的默认 Harness），可以再改；保存之前什么都不会写入。`,
+  presetsHelp: "选择要添加的预设。每个都会成为一个跟随路由的未保存模板，可以再改；保存之前什么都不会写入。",
   presetTaken: "列表里已有这个 id：添加时会换一个 id。",
   addChosen: (n) => `添加 ${n} 个预设`,
   room: (n, limit) => `还能添加 ${n} 个模板：列表最多 ${limit} 个。`,
@@ -155,7 +164,10 @@ const text = strings({
   label: "标签",
   id: "Id",
   idHelp: "小写字母、数字和连字符。派发时用它指名模板。",
-  harness: "Harness",
+  harness: "运行环境",
+  followsRouting: "跟随路由",
+  followsHelp: (name) => `路由开着：按路由的顺序选运行环境、模型和账号。路由关着：用新 Agent 的默认（这里是 ${name}；项目可以有自己的）。`,
+  fixedHelp: (name) => `固定：总用 ${name} 和这台主机的登录，不看路由。`,
   whenToChoose: "何时选它",
   whenToChooseHelp: "一行字，负责人据此选模板。不会发给执行者。",
   model: "模型",
@@ -164,8 +176,14 @@ const text = strings({
   effort: "推理强度",
   inheritEffort: "模型自己的",
   permission: "权限",
-  inheritPermission: "沿用新 Agent 默认值",
-  opencodeNative: "OpenCode 使用其自身配置中的权限。",
+  levelDefault: "新 Agent 的默认",
+  levelDefaultHelp: "每个运行环境用它自己的新 Agent 默认权限；OpenCode 用它自己的配置。",
+  levelOn: "在各运行环境上：",
+  toolLevel: (name, what) => `${name}：${what}`,
+  notKept: "不支持",
+  levelSkips: (names) => `路由不会把这个模板派给 ${names}。`,
+  levelNotKept: (name) => `${name} 不支持这个等级：请换一个。`,
+  levelNotKeptOption: (name) => `${name} 不支持`,
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
   opencodeOwnModel: "其自身配置中的模型",
   opencodeOption: "OpenCode（实验性）",
@@ -221,18 +239,18 @@ type Draft = {
   /** A new template's id follows its label until it is edited. */
   idTouched: boolean;
   label: string;
-  harness: ExecutorHarness;
+  /** "" follows routing; a harness fixes it to that harness (YN-56). */
+  harness: "" | ExecutorHarness;
   model: string;
   reasoningEffort: string;
-  permission: string;
+  /** "" is the defaults for new Agents; "config" is a fixed Codex template's own configuration. */
+  level: "" | PermissionLevel | "config";
   namePattern: string;
   instructions: string;
   /** Where its executors run (T-35 S3): "" for this Core host, "auto", or a machine's id. */
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
-  /** Kept as saved (YN-34 S3): the Settings page's routing section sets it. */
-  routing?: ExecutorTemplate["routing"];
   /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
   savedId?: string;
   /** YN-23: "" is unset, which is "pr". */
@@ -240,8 +258,8 @@ type Draft = {
   /** null: its delivery's default steps. */
   steps: DraftStep[] | null;
   whenToChoose: string;
-  /** From the preset it was made from, never saved: its model hint, and its permission per harness. */
-  preset?: { modelHint?: string; permissions?: ExecutorPreset["permissions"] };
+  /** From the preset it was made from, never saved: its model hint. */
+  preset?: { modelHint?: string };
 };
 
 let keys = 0;
@@ -251,12 +269,12 @@ const stepOf = (s: TemplateStep): DraftStep => ({
   approver: s.approver ?? "",
 });
 const draftOf = (t: ExecutorTemplate): Draft => ({
-  key: `t${++keys}`, id: t.id, idTouched: true, label: t.label, harness: t.harness, model: t.model ?? "",
-  reasoningEffort: t.reasoningEffort ?? "", permission: t.permissionPreset ?? t.permissionMode ?? "",
+  key: `t${++keys}`, id: t.id, idTouched: true, label: t.label, harness: t.harness ?? "", model: t.model ?? "",
+  reasoningEffort: t.reasoningEffort ?? "",
+  level: t.harness === "codex" && t.permissionPreset === "config" ? "config" : t.permissionLevel ?? "",
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
-  ...(t.routing ? { routing: t.routing } : {}),
   deliveryMode: t.deliveryMode ?? "",
   steps: t.steps ? t.steps.map(stepOf) : null,
   whenToChoose: t.whenToChoose ?? "",
@@ -286,23 +304,29 @@ const stepTemplate = (s: DraftStep): TemplateStep => ({
   ...(s.kind === "gate" && s.approver ? { approver: s.approver } : {}),
 });
 /** As Core takes it: only what this harness uses, unset left out. A
- * template has no limit of its own (T-43, the user's 2026-11-07 decision:
- * one limit per machine), so one saved before is dropped at the next save. */
+ * template that follows routing names no harness, model or effort; one that
+ * names a harness is fixed to it (YN-56). A template has no limit of its own
+ * (T-43, the user's 2026-11-07 decision: one limit per machine), so one saved
+ * before is dropped at the next save. */
 const templateOf = (d: Draft): ExecutorTemplate => {
-  const template: ExecutorTemplate = { id: d.id.trim(), label: d.label.trim(), harness: d.harness };
+  const template: ExecutorTemplate = { id: d.id.trim(), label: d.label.trim() };
   const pattern = set(d.namePattern);
   if (pattern) template.namePattern = pattern;
-  // OpenCode's as it names it, provider/model (YN-34 S1c).
-  if (set(d.model)) template.model = set(d.model);
-  // An effort goes with the model it is for.
-  if (d.harness === "codex" && set(d.model) && set(d.reasoningEffort)) template.reasoningEffort = set(d.reasoningEffort);
-  if (d.harness === "codex" && d.permission) template.permissionPreset = d.permission;
-  if (d.harness === "claude" && d.permission) template.permissionMode = d.permission;
+  if (d.harness) {
+    template.harness = d.harness;
+    // OpenCode's as it names it, provider/model (YN-34 S1c).
+    if (set(d.model)) template.model = set(d.model);
+    // An effort goes with the model it is for.
+    if (d.harness === "codex" && set(d.model) && set(d.reasoningEffort)) template.reasoningEffort = set(d.reasoningEffort);
+  }
+  if (d.level === "config") {
+    if (d.harness === "codex") template.permissionPreset = "config";
+  } else if (d.level) template.permissionLevel = d.level;
   if (d.instructions.trim()) template.instructions = d.instructions;
   // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
-  if (d.routing) template.routing = d.routing;
+  if (d.harness) template.routing = "fixed";
   if (d.deliveryMode) template.deliveryMode = d.deliveryMode;
   if (d.steps) template.steps = d.steps.map(stepTemplate);
   if (set(d.whenToChoose)) template.whenToChoose = set(d.whenToChoose);
@@ -315,24 +339,31 @@ const stepsInvalid = (d: Draft) => !!d.steps && (d.steps.length === 0 || d.steps
  * host always; an SSH machine for Codex unless it keeps its Agents contained,
  * and for Claude Code; `auto` for both. OpenCode runs on this Core host only,
  * where `auto` would always choose (T-35 S3). */
-const machineOptions = (harness: ExecutorHarness, machines: WorkspaceMachine[]) =>
+const machineOptions = (harness: "" | ExecutorHarness, machines: WorkspaceMachine[]) =>
   harness === "opencode" ? [] : machines.filter((m) => m.kind === "ssh" && !(harness === "codex" && m.contained));
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 const harnessName = (h: ExecutorHarness) => (h === "codex" ? "Codex" : h === "claude" ? "Claude Code" : "OpenCode");
-/** A preset's permission for `harness`, if it has one. */
-const presetPermission = (preset: Draft["preset"], harness: ExecutorHarness) =>
-  harness === "opencode" ? "" : (preset?.permissions?.[harness] ?? "");
-/** A template made from a preset, for `harness`, under a free id. */
-const draftFromPreset = (p: ExecutorPreset, harness: ExecutorHarness, id: string): Draft => ({
+const HARNESSES: ExecutorHarness[] = ["codex", "claude", "opencode"];
+/** A level's name in the page's language. */
+const levelName = (levels: LevelInfo[], level: string, language: Language) => {
+  if (level === "config") return codexPermissionText("config", language);
+  const info = levels.find((l) => l.level === level);
+  return info ? (language === "zh-Hans" ? info.labelZh : info.label) : level;
+};
+/** A fixed template's level its harness doesn't keep, or `config` on a harness other than Codex. */
+const levelRefused = (d: Draft, levels: LevelInfo[]) =>
+  !!d.harness && !!d.level && (d.level === "config" ? d.harness !== "codex" : !keepsLevel(levels, d.level, d.harness));
+/** A template made from a preset, following routing, under a free id. */
+const draftFromPreset = (p: ExecutorPreset, id: string): Draft => ({
   ...draftOf({
-    id, label: p.label, harness,
+    id, label: p.label,
     ...(p.instructions ? { instructions: p.instructions } : {}),
     ...(p.deliveryMode ? { deliveryMode: p.deliveryMode } : {}),
     ...(p.steps ? { steps: p.steps } : {}),
     ...(p.whenToChoose ? { whenToChoose: p.whenToChoose } : {}),
+    ...(p.permissionLevel ? { permissionLevel: p.permissionLevel } : {}),
   }),
-  permission: presetPermission({ permissions: p.permissions }, harness),
-  preset: { modelHint: p.modelHint, permissions: p.permissions },
+  preset: { modelHint: p.modelHint },
 });
 /** A step line as the default steps show it. */
 const stepsLine = (steps: TemplateStep[], t: Text) => steps.map((s) => t.kinds[s.kind]).join(" → ");
@@ -358,8 +389,8 @@ export function ProjectExecutors({ projectId, disabled = false }: { projectId: s
 /** Choose presets to add (YN-23): each chosen one becomes an unsaved draft.
  * `room` is how many more templates the list takes; no more can be chosen
  * (#742 R1 3ec18555: past it, chosen presets were left out unsaid). */
-function PresetPicker({ presets, taken, room, limit, harness, t, onAdd, onCancel }: {
-  presets: ExecutorPreset[]; taken: string[]; room: number; limit: number; harness: ExecutorHarness; t: Text;
+function PresetPicker({ presets, taken, room, limit, t, onAdd, onCancel }: {
+  presets: ExecutorPreset[]; taken: string[]; room: number; limit: number; t: Text;
   onAdd: (chosen: ExecutorPreset[]) => void; onCancel: () => void;
 }) {
   const [chosen, setChosen] = useState<string[]>([]);
@@ -369,7 +400,7 @@ function PresetPicker({ presets, taken, room, limit, harness, t, onAdd, onCancel
     <div className="settings-group appearance-group executor-presets" role="group" aria-label={t.presetsTitle}>
       <fieldset className="appearance-field">
         <legend>{t.presetsTitle}</legend>
-        <p className="appearance-help">{t.presetsHelp(harnessName(harness))}</p>
+        <p className="appearance-help">{t.presetsHelp}</p>
         {room < presets.length && <p className="appearance-help executor-presets-room" role="status">{t.room(Math.max(room, 0), limit)}</p>}
         <div className="theme-options settings-choice-cards executor-preset-options">
           {presets.map((p) => (
@@ -555,7 +586,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   const changed = !!view && JSON.stringify(drafts.map(templateOf)) !== JSON.stringify(own(view).templates.map(saved => templateOf(draftOf(saved))));
   const locked = disabled || busy;
   const noLabel = (d: Draft) => !d.label.trim();
-  const needsFix = (d: Draft) => noLabel(d) || stepsInvalid(d);
+  const needsFix = (d: Draft) => noLabel(d) || stepsInvalid(d) || (!!view && levelRefused(d, view.levels));
   const invalid = drafts.some(needsFix);
   const open = openKey ? drafts.find(d => d.key === openKey) : undefined;
   // Another view starts at its top, its title focused; the first keeps the focus Settings gave the page.
@@ -574,11 +605,12 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       if (d.key !== key) return d;
       const next = { ...d, ...change };
       if (change.label !== undefined && !d.idTouched) next.id = idFor(change.label, list.filter(o => o.key !== key).map(o => o.id));
-      // Permissions differ per harness: a change of harness starts them over,
-      // with a preset's own for the new harness if it has one.
-      if (change.harness && change.harness !== d.harness) next.permission = presetPermission(d.preset, change.harness);
-      // OpenCode names its models otherwise: a model is not carried to or from it.
-      if (change.harness && change.harness !== d.harness && (change.harness === "opencode" || d.harness === "opencode")) {
+      // Codex's own configuration is Codex's only; a level stays, and is shown as refused where the harness doesn't keep it.
+      if (change.harness !== undefined && change.harness !== "codex" && d.level === "config") next.level = "";
+      // Only a fixed template names a model, and OpenCode names its models otherwise: a model is not
+      // carried into following routing, nor to or from OpenCode.
+      if (change.harness !== undefined && change.harness !== d.harness
+        && (!change.harness || change.harness === "opencode" || d.harness === "opencode")) {
         next.model = "";
         next.reasoningEffort = "";
       }
@@ -609,19 +641,13 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
     save,
     discard: () => { setError(""); setDone(false); setPicking(false); adopt(view); },
   } : null);
-  // The harness a preset's template gets: the default for new Agents, as a general executor's.
-  const presetHarness = (): ExecutorHarness => {
-    const harness = view?.general?.harness;
-    return harness === "codex" || harness === "claude" || (harness === "opencode" && view?.opencodeEnabled) ? harness : "codex";
-  };
-  // Each chosen preset becomes an unsaved draft, under a free id; Save writes them, as any edit.
+  // Each chosen preset becomes an unsaved draft that follows routing, under a free id; Save writes them, as any edit.
   const addPresets = (chosen: ExecutorPreset[]) => {
     const taken = drafts.map(d => d.id.trim());
-    const harness = presetHarness();
     const made = chosen.map(p => {
       const id = freeId(p.id, taken);
       taken.push(id);
-      return draftFromPreset(p, harness, id);
+      return draftFromPreset(p, id);
     });
     setDone(false);
     setPicking(false);
@@ -629,7 +655,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   };
   // A new template opens on its own page.
   const addNew = () => {
-    const made = { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false };
+    const made = { ...draftOf({ id: "", label: "" }), idTouched: false };
     setDone(false);
     setPicking(false);
     setDrafts(list => [...list, made]);
@@ -697,7 +723,8 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
                         <span className="settings-list-main">
                           <span className="settings-list-title">{d.label.trim() || t.newTemplate}</span>
                           <span className="settings-list-sub">
-                            {harnessName(d.harness)} · {t.deliveries[d.deliveryMode || "pr"][0]} · {runsOnText(d)}
+                            {[d.harness ? harnessName(d.harness) : t.followsRouting, d.level && levelName(view.levels, d.level, language),
+                              t.deliveries[d.deliveryMode || "pr"][0], runsOnText(d)].filter(Boolean).join(" · ")}
                           </span>
                         </span>
                         {needsFix(d) && <span className="settings-tag is-error">{t.needsFix}</span>}
@@ -726,7 +753,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
             </div>
             {picking && (
               <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} room={view.limits.templates - drafts.length}
-                limit={view.limits.templates} harness={presetHarness()} t={t}
+                limit={view.limits.templates} t={t}
                 onAdd={addPresets} onCancel={() => setPicking(false)} />
             )}
             {saveLine}
@@ -756,6 +783,53 @@ function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
   );
 }
 
+/** A template's permission level (YN-56): one for every tool, and what it is
+ * on each. A fixed template's harness keeps only some; a fixed Codex template
+ * may follow its machine's own Codex configuration instead. */
+function LevelField({ d, t, language, levels, opencode, edit }: {
+  d: Draft; t: Text; language: Language; levels: LevelInfo[]; opencode: boolean; edit: (change: Partial<Draft>) => void;
+}) {
+  const shownHarnesses = HARNESSES.filter((h) => h !== "opencode" || opencode || d.harness === "opencode");
+  const info = levels.find((l) => l.level === d.level);
+  const nativeText = (h: ExecutorHarness) => {
+    if (!info) return null;
+    if (h === "codex") return info.codex ? codexPermissionText(info.codex.permissionPreset, language) : null;
+    if (h === "claude") return info.claude ? claudeModeText(info.claude.permissionMode, language) : null;
+    return info.opencode ? levelName(levels, info.level, language) : null;
+  };
+  const skipped = info && !d.harness ? shownHarnesses.filter((h) => !keepsLevel(levels, info.level, h)) : [];
+  const refused = levelRefused(d, levels);
+  return (
+    <div className="settings-row executor-template-level">
+      <span className="settings-row-main">
+        <span className="settings-row-title">{t.permission}</span>
+        {refused && d.harness && <span className="inline-error">{t.levelNotKept(harnessName(d.harness))}</span>}
+        {!d.level ? <span className="settings-row-help">{t.levelDefaultHelp}</span>
+          : info && (
+            <span className="settings-row-help executor-level-on">
+              {[t.levelOn, (d.harness ? [d.harness] : shownHarnesses).map((h) => t.toolLevel(harnessName(h), nativeText(h) ?? t.notKept)).join(" · ")]
+                .join(language === "zh-Hans" ? "" : " ")}
+            </span>
+          )}
+        {skipped.length > 0 && <span className="settings-row-help">{t.levelSkips(skipped.map(harnessName).join(", "))}</span>}
+      </span>
+      <select className="settings-select" aria-label={t.permission} value={d.level} aria-invalid={refused || undefined}
+        onChange={(e) => edit({ level: e.target.value as Draft["level"] })}>
+        <option value="">{t.levelDefault}</option>
+        {levels.map((l) => {
+          const kept = !d.harness || keepsLevel(levels, l.level, d.harness);
+          return (
+            <option key={l.level} value={l.level} disabled={!kept && d.level !== l.level}>
+              {levelName(levels, l.level, language)}{kept || !d.harness ? "" : ` (${t.levelNotKeptOption(harnessName(d.harness))})`}
+            </option>
+          );
+        })}
+        {(d.harness === "codex" || d.level === "config") && <option value="config">{codexPermissionText("config", language)}</option>}
+      </select>
+    </div>
+  );
+}
+
 /** One template's page (YN-8 S5b), in the design's order: its name and
  * purpose and how it runs, its delivery and steps, where it runs and its
  * instructions, then removing it on a card of its own. */
@@ -765,6 +839,9 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
 }) {
   const name = d.label.trim() || t.newTemplate;
   const noLabel = !d.label.trim();
+  // The harness for new Agents while routing is off, as a general executor's: the Workspace's here.
+  const general = view.general?.harness;
+  const defaultHarness = general === "codex" || general === "claude" || general === "opencode" ? harnessName(general) : "Codex";
   const deliveries = (["pr", "direct-commit", "none"] as const).map((value) => ({
     value, label: t.deliveries[value][0], note: t.deliveries[value][1],
   }));
@@ -804,45 +881,39 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
           <label className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.harness}</span>
+              <span className="settings-row-help">
+                {d.harness ? t.fixedHelp(harnessName(d.harness)) : t.followsHelp(defaultHarness)}
+              </span>
             </span>
             <select className="settings-select" aria-label={t.harness} value={d.harness}
-              onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
-              <option value="codex">Codex</option>
+              onChange={e => edit({ harness: e.target.value as Draft["harness"] })}>
+              <option value="">{t.followsRouting}</option>
               <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
               {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">{t.opencodeOption}</option>}
             </select>
           </label>
-          <label className="settings-row">
-            <span className="settings-row-main">
-              <span className="settings-row-title">{t.model}</span>
-              {d.harness === "opencode" ? <span className="settings-row-help">{t.opencodeModelHelp}</span>
-                : d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
-            </span>
-            <input className="settings-input" aria-label={t.model} value={d.model}
-              placeholder={d.harness === "opencode" ? t.opencodeOwnModel : t.inheritModel}
-              onChange={e => edit({ model: e.target.value })} />
-          </label>
-          {d.harness === "opencode" ? <p className="settings-row-help executor-template-note">{t.opencodeNative}</p> : <>
-            {d.harness === "codex" && (
-              <label className="settings-row">
-                <span className="settings-row-main"><span className="settings-row-title">{t.effort}</span></span>
-                <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
-                  disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
-              </label>
-            )}
+          {d.harness && (
             <label className="settings-row">
-              <span className="settings-row-main"><span className="settings-row-title">{t.permission}</span></span>
-              <select className="settings-select" aria-label={t.permission} value={d.permission}
-                onChange={e => edit({ permission: e.target.value })}>
-                <option value="">{t.inheritPermission}</option>
-                {(d.harness === "codex" ? CODEX_PRESETS : CLAUDE_MODES).map(value => (
-                  <option key={value} value={value}>
-                    {d.harness === "codex" ? codexPermissionText(value, language) : claudeModeText(value, language)}
-                  </option>
-                ))}
-              </select>
+              <span className="settings-row-main">
+                <span className="settings-row-title">{t.model}</span>
+                {d.harness === "opencode" ? <span className="settings-row-help">{t.opencodeModelHelp}</span>
+                  : d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+              </span>
+              <input className="settings-input" aria-label={t.model} value={d.model}
+                placeholder={d.harness === "opencode" ? t.opencodeOwnModel : t.inheritModel}
+                onChange={e => edit({ model: e.target.value })} />
             </label>
-          </>}
+          )}
+          {d.harness === "codex" && (
+            <label className="settings-row">
+              <span className="settings-row-main"><span className="settings-row-title">{t.effort}</span></span>
+              <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
+                disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
+            </label>
+          )}
+          {!d.harness && d.preset?.modelHint && <p className="settings-row-help executor-template-note">{t.modelHint(d.preset.modelHint)}</p>}
+          <LevelField d={d} t={t} language={language} levels={view.levels} opencode={view.opencodeEnabled} edit={edit} />
         </fieldset>
       </fieldset>
       <fieldset className="settings-group appearance-group" disabled={locked}>

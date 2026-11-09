@@ -324,6 +324,7 @@
 .routing-simulate, .routing-templates { display: grid; gap: 6px; }
 .routing-simulate .settings-group-title, .routing-simulate .settings-block-help,
 .routing-templates .settings-group-title, .routing-templates .settings-block-help { margin: 0; }
+.routing-template-action { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .routing-sim-box { display: grid; gap: 10px; padding: 12px 14px; }
 .routing-sim-at { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
 .routing-sim-slider { display: grid; flex: 1 1 18rem; gap: 6px; min-width: 0; color: var(--text-secondary); font-size: calc(10px + var(--font-adjust, 3px)); }
@@ -357,4 +358,5 @@
 .settings-center.is-phone .routing-strip-row { grid-template-columns: 2.6em minmax(0, 1fr); gap: 6px; }
 .settings-center.is-phone .routing-strip-axis { margin-left: calc(2.6em + 6px); }
 .settings-center.is-phone .routing-templates .routing-seg button { min-height: 40px; }
+.settings-center.is-phone .routing-template-action .settings-select { min-height: 40px; }
 .settings-center.is-phone .routing-sim-slider input { min-height: 40px; }
