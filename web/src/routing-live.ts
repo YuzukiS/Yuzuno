@@ -3,7 +3,7 @@
  * wouldn't be chosen now, the recent choices, and today's spend. Nothing here
  * changes anything: every route only reads or evaluates. */
 import { api, HttpError } from "./api";
-import type { Policy } from "./executor-routing";
+import type { Policy, Tier } from "./executor-routing";
 
 export type CandidateState = "chosen" | "skipped" | "unknown" | "failed" | "notTried" | "off";
 /** Why, in both languages as Core words it; `params` carry ISO times. */
@@ -89,10 +89,11 @@ export function routeRecord(v: unknown): RouteRecord {
 /** Evaluates a policy (a draft, or the saved one when none is given) at a time
  * (now when none), as Core would choose. Null when this Core can't evaluate
  * routing yet (no such route: older than YN-34 S3b). */
-export async function evaluate(policy: Policy | undefined, at?: string, assume?: Assume, signal?: AbortSignal): Promise<RouteRecord | null> {
+/** `tier`: for an executor of that kind of work (YN-70), only the candidates that take it. */
+export async function evaluate(policy: Policy | undefined, at?: string, assume?: Assume, signal?: AbortSignal, tier?: Tier): Promise<RouteRecord | null> {
   try {
     const answer = await api<unknown>("/routing/evaluate", { method: "POST", signal,
-      body: JSON.stringify({ ...(policy ? { policy } : {}), ...(at ? { at } : {}), ...(assume ? { assume } : {}) }) });
+      body: JSON.stringify({ ...(policy ? { policy } : {}), ...(at ? { at } : {}), ...(assume ? { assume } : {}), ...(tier ? { tier } : {}) }) });
     return routeRecord(answer);
   } catch (e) {
     if (e instanceof HttpError && (e.status === 404 || e.status === 405)) return null;
@@ -144,10 +145,11 @@ export interface Segment { from: string; to: string; chosen: string | null }
 /** Whom Core would choose across a stretch of time, by a policy (a draft, or
  * the saved one), keeping the readings it has now and varying only the time
  * (YN-34 S3b). Null when this Core can't simulate routing yet. */
-export async function simulate(policy: Policy | undefined, from: string, to: string, stepMinutes: number, assume?: Assume, signal?: AbortSignal): Promise<Segment[] | null> {
+export async function simulate(policy: Policy | undefined, from: string, to: string, stepMinutes: number, assume?: Assume, signal?: AbortSignal,
+  tier?: Tier): Promise<Segment[] | null> {
   try {
     const answer = await api<{ segments?: unknown }>("/routing/simulate", { method: "POST", signal,
-      body: JSON.stringify({ ...(policy ? { policy } : {}), from, to, stepMinutes, ...(assume ? { assume } : {}) }) });
+      body: JSON.stringify({ ...(policy ? { policy } : {}), from, to, stepMinutes, ...(assume ? { assume } : {}), ...(tier ? { tier } : {}) }) });
     return list(answer.segments, (v) => {
       const s = v as Partial<Segment> | null;
       return s && text(s.from) && text(s.to) && Number.isFinite(Date.parse(s.from)) && Number.isFinite(Date.parse(s.to))

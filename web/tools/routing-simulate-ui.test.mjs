@@ -181,6 +181,52 @@ test("a picked time and an assumption are asked as Core takes them; Back to now"
   assert.equal(button(page, "Back to now").disabled, true);
 });
 
+test("tiers (YN-70): a candidate that takes one kind of work says so on its card and in its editor, and the simulation asks for a kind of work", async () => {
+  const plain = mount(core());
+  await until(() => plain.document.querySelectorAll(".routing-strip-row").length === 7, "the week, no tiers");
+  assert.equal(q(plain, ".routing-sim-tier"), null, "with no candidate taking one kind alone, no kind of work to choose");
+  assert.equal(q(plain, ".routing-chip-tier"), null);
+
+  const tiered = { ...policy, candidates: [{ ...policy.candidates[0], tiers: ["fast"] }, policy.candidates[1]] };
+  const server = core({ policy: tiered });
+  const page = mount(server);
+  await until(() => page.document.querySelectorAll(".routing-strip-row").length === 7, "the week");
+  const chip = () => q(page, '.routing-cand[data-cand="ds"] .routing-chip-tier')?.textContent.trim() ?? null;
+  assert.equal(chip(), "Fast work only");
+  assert.equal(q(page, '.routing-cand[data-cand="cl"] .routing-chip-tier'), null, "one with no tiers takes both, and says nothing");
+  assert.equal(server.asked.simulate[0].tier, undefined, "Any: no tier sent");
+  const group = q(page, ".routing-sim-tier");
+  assert.deepEqual([...group.querySelectorAll("button")].map((b) => [b.textContent.trim(), b.getAttribute("aria-pressed")]),
+    [["Any", "true"], ["Strong", "false"], ["Fast", "false"]]);
+  button(page, "Strong", group).click();
+  await until(() => server.asked.simulate.some((b) => b.tier === "strong"), "the week for strong work");
+  await until(() => server.asked.evaluate.some((b) => b.tier === "strong" && b.at), "the picked time for strong work");
+
+  q(page, '.routing-cand[data-cand="ds"] button[aria-label^="Edit"]').click();
+  await until(() => q(page, "#routing-edit-ds .routing-tiers"), "its editor");
+  const box = (words) => [...q(page, "#routing-edit-ds .routing-tiers").querySelectorAll("label")].find((l) => l.textContent.startsWith(words)).querySelector("input");
+  assert.deepEqual([box("Strong work").checked, box("Fast work").checked, box("Fast work").disabled], [false, true, true], "the last one stays");
+  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last").textContent, "It takes at least one kind of work, so the last one ticked stays.", "and says why");
+  box("Strong work").click();
+  await tick();
+  assert.equal(chip(), null, "both: as a candidate saved before");
+  assert.equal(box("Fast work").disabled, false);
+  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last"), null, "nothing held, nothing to say");
+  box("Fast work").click();
+  await tick();
+  assert.equal(chip(), "Strong work only");
+  assert.deepEqual(page.errors, []);
+});
+
+test("tiers (YN-70) in Chinese", async () => {
+  const tiered = { ...policy, candidates: [{ ...policy.candidates[0], tiers: ["strong"] }, policy.candidates[1]] };
+  const page = mount(core({ policy: tiered }), "zh-Hans");
+  await until(() => q(page, ".routing-sim-tier"), "the kind of work");
+  assert.equal(q(page, '.routing-cand[data-cand="ds"] .routing-chip-tier').textContent.trim(), "只接强活");
+  assert.match(q(page, ".routing-sim-tier").textContent, /^按哪种活：不限强快/);
+  assert.deepEqual(page.errors, []);
+});
+
 test("a Core without the simulation says it comes with routing itself", async () => {
   const page = mount(core({ simulate: () => [404, { error: "not found" }] }), "zh-Hans");
   await until(() => /按时间模拟要等路由本身/.test(q(page, ".routing-simulate")?.textContent ?? ""), "the note");

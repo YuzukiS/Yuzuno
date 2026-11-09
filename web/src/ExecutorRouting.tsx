@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronUp, CircleAlert, CircleHelp, Clock, Gauge, GripVertical, Layers, Pencil, Plus, Wallet } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleAlert, CircleHelp, Clock, Gauge, GripVertical, Layers, Pencil, Plus, Tag, Wallet } from "lucide-react";
 import { errorText } from "./api";
-import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, type AnyCondition, type Candidate, type Harness, type Policy, type PolicyView, type PresetId } from "./executor-routing";
+import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, tiersOf, type AnyCondition, type Candidate, type Harness, type Policy, type PolicyView, type PresetId } from "./executor-routing";
 import { langTag, useLanguage } from "./i18n";
 import { ROUTING_CREDENTIALS_CHANGED, readAccountsShared, readKeys, type AccountsView, type RoutingKey } from "./routing-keys";
 import { CandidateLive, NowCard, RecentChoices, SpendLine, StatePill, useLiveRouting } from "./RoutingLive";
@@ -352,6 +352,9 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
                 })}
                 {c.credential.kind === "pool" && <span className="routing-chip"><Layers size={13} aria-hidden="true" /><span>{t.chipPick}</span></span>}
                 {readingBound && <span className="routing-chip"><CircleHelp size={13} aria-hidden="true" /><span>{c.unknown === "pass" ? t.chipPass : t.chipSkip}</span></span>}
+                {/* YN-70: only when it takes one kind of work; both is as before, and says nothing. */}
+                {tiersOf(c).length === 1 && <span className="routing-chip routing-chip-tier"><Tag size={13} aria-hidden="true" />
+                  <span>{tiersOf(c)[0] === "strong" ? t.chipStrongOnly : t.chipFastOnly}</span></span>}
               </div>
               <CandidateLive live={now} />
               {expanded && (
