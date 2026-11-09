@@ -605,8 +605,8 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
     if let Err(reason) = entry.admit(req.method(), req.headers()) {
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
-    // Pages that change phone access read this to stay read-only here, and
-    // a preview asked for here is taken for this entry.
+    // A preview asked for here is taken for this entry; appearance settings
+    // stay read-only here (RemoteRequest).
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
     req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)

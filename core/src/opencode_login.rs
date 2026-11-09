@@ -557,7 +557,8 @@ async fn logout(ApiState(ws): ApiState<Arc<Workspace>>, Path((id, credential)): 
     Ok(Json(ws.opencode_logout(&id, &credential).await?))
 }
 
-/// The login routes: on Core's own port only (`server::router_with_updates`).
+/// The login routes: on Core's own port and on the phone entry
+/// (`server::settings_routes`, YN-79).
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/agents/{id}/opencode/login", get(read))
