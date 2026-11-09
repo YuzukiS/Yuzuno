@@ -520,6 +520,8 @@ Core lists no other tool to that Agent and refuses any other call before anythin
   - The executor's Codex permission can't be changed.
 - **OpenCode** gets rules that deny everything (`"*": "deny"`), then allow `read` (but not a `.env` file), `grep`, `glob`, `list` and the listed tools as `yuzuno_<tool>`. The start reads every agent's rules back, as at every level, now also for `bash` and for a Yuzuno tool kept and one not kept.
 
+**Read-only means it changes nothing, not that it reads only its Project.** Claude Code's `Read`, `Glob` and `Grep`, and Codex's read-only sandbox, can still read files outside the Project's folder. OpenCode's rules deny a folder outside its own (`external_directory`), as at every other level. Nothing at this level can write a file, wherever it is.
+
 The level is kept with the executor on every harness, not only OpenCode, because each start applies more than a mode.
 
 A Core before core.31 doesn't know `read-only`, so it can't use a template with it.

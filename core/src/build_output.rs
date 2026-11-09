@@ -111,6 +111,28 @@ pub(crate) async fn git_limited(dir: &Path, args: &[&str], limit: usize) -> Resu
     })
 }
 
+/// A Git command's exit status alone (None: ended by a signal), for one
+/// whose answer is its status, such as `merge-base --is-ancestor`: 0 yes, 1
+/// no, and anything else Git could not say (YN-74, Lead mail 10772).
+pub(crate) async fn git_status(dir: &Path, args: &[&str]) -> Result<Option<i32>> {
+    let status = Command::new("git")
+        .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C"])
+        .arg(dir)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    let status = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), status)
+        .await
+        .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))?
+        .context("Git could not be started on this Core's host")?;
+    Ok(status.code())
+}
+
 pub(crate) async fn git_ok(dir: &Path, args: &[&str]) -> Result<String> {
     git(dir, args).await?.map_err(|why| anyhow::anyhow!("git {} failed: {why}", args.join(" ")))
 }

@@ -285,3 +285,6 @@ async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
 
 #[path = "worktree_tests.rs"]
 mod worktree_tests;
+
+#[path = "rules_tests.rs"]
+mod rules_tests;

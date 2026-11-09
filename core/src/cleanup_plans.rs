@@ -42,7 +42,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -52,6 +52,7 @@ use std::{
 mod apply;
 mod check;
 mod inventory;
+mod rules;
 mod settings;
 mod summary;
 mod worktrees;
@@ -156,7 +157,10 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             group_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL,
             pre TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('pending','removed','kept','refused','partial','failed','restored')),
-            result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(plan_id, item_id));",
+            result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(plan_id, item_id));
+         CREATE TABLE IF NOT EXISTS cleanup_inventories(
+            actor TEXT NOT NULL, request_id TEXT NOT NULL, task_id TEXT NOT NULL, machine TEXT NOT NULL, folder TEXT NOT NULL,
+            identity TEXT NOT NULL, job_id TEXT UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(actor, request_id));",
     )?;
     Ok(())
 }
@@ -177,7 +181,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         inventory::tool_definition(),
         json!({"name":"cleanup_plan_submit",
-            "description":"Register a workspace cleanup plan for your own task, as its executor; nothing is removed. groups (1-12) each have a decision: delete (entry and worktree items), rebuildable (only cache-dir items a rule recognizes), keep or ask (any kind; never executed). A decision that does not fit its items' kinds refuses the whole plan. items: entry, a first-level entry of a scratch root in Settings; cache-dir, a folder recognized by a rule (Cargo's target folder, whose Cargo-only profiles go; a CACHEDIR.TAG), Git-ignored inside this Project's folder or a worktree of it, or inside a scratch root; worktree, one this Project's repository lists (git worktree list), not the main one, not locked. Core checks each item now: never Core's data, $HOME or its first level, $XDG_CACHE_HOME, ~/Library on macOS, another Project, this Project's folder or main worktree, links, mounts, other users' files, or a protected path; nothing written within freshDays (an entry: evidenceDays). An item failing a check is refused with why. Core then summarizes each group from its checks alone, not from your labels: the user approves groups by that summary. inventory names this task's Job artifact the plan comes from; a plan from another machine's inventory is registered with every item refused. The answer has planId, sha256 (over the items, their checks and the summary), each group's summary and up to 20 refused items. Valid for planHours (Settings); a newer plan of the task cancels it. At most maxItems items (Settings) and 128 KiB.",
+            "description":"Register a workspace cleanup plan for your own task, as its executor; nothing is removed. groups (1-12) each have a decision: delete (entry and worktree items), rebuildable (only cache-dir items a rule recognizes), keep or ask (any kind; never executed). A decision that does not fit its items' kinds refuses the whole plan. items: entry, a first-level entry of a scratch root in Settings; cache-dir, a folder a rule on for this Project recognizes (a CACHEDIR.TAG; Cargo's target folder, of which only what Cargo makes goes; an ecosystem's folder beside its manifest, such as node_modules with a lockfile: Settings lists them), Git-ignored with nothing tracked inside this Project's folder or a worktree of it, or inside a scratch root; worktree, one this Project's repository lists (git worktree list), not the main one, not locked. Core checks each item now: never Core's data, $HOME or its first level, $XDG_CACHE_HOME, ~/Library on macOS, another Project, this Project's folder or main worktree, links, mounts, other users' files, or a protected path; nothing written within freshDays (an entry: evidenceDays). An item failing a check is refused with why. Core then summarizes each group from its checks alone, not from your labels: the user approves groups by that summary. inventory names the artifact of this task's cleanup_inventory Job the plan comes from (no other Job is one); a plan from another machine's inventory is registered with every item refused. The answer has planId, sha256 (over the items, their checks and the summary), each group's summary and up to 20 refused items. Valid for planHours (Settings); a newer plan of the task cancels it. At most maxItems items (Settings) and 128 KiB.",
             "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","taskId","title","inventory","groups","items"],"properties":{
                 "requestId":request,
                 "taskId":{"type":"string","description":collaboration::TASK_ID},
@@ -371,11 +375,20 @@ fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str) -> Res
     let reference = json!({"jobId": input.inventory.job_id, "attempt": input.inventory.attempt, "path": input.inventory.path,
         "sha256": input.inventory.sha256});
     let inventory = collaboration::result_outcome::matched(&db, &task, "inventory", &reference)?;
-    let target: Option<String> = db
-        .query_row("SELECT COALESCE(json_extract(data,'$.target.kind'),'local') FROM local_jobs WHERE id=?1", [&input.inventory.job_id], |r| r.get(0))
-        .optional()?;
-    let remote = (target.as_deref() != Some("local"))
-        .then(|| inventory["machineName"].as_str().unwrap_or("another machine").to_owned());
+    let job: Value = db
+        .query_row("SELECT data FROM local_jobs WHERE id=?1", [&input.inventory.job_id], |r| r.get::<_, String>(0))
+        .optional()?
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or(Value::Null);
+    let target = job["target"]["kind"].as_str().unwrap_or("local");
+    // Only an inventory Core took of this Project's folder on that machine
+    // (inventory.rs `ours`, the same check as a retry's: Core's own record of it).
+    let machine = if target == "local" { "local" } else { job["target"]["machineId"].as_str().unwrap_or_default() };
+    let folder = projects.iter().find(|p| p.id == project).and_then(|p| p.default_dirs.get(machine).cloned());
+    let folder = folder.with_context(|| format!("invalid_input: inventory: the task's Project has no folder on the inventory's machine {machine}"))?;
+    let recorded = inventory::recorded_job(&db, &input.inventory.job_id)?;
+    inventory::ours(recorded.as_ref(), &job, &folder).map_err(|why| anyhow::anyhow!("invalid_input: inventory: {why}"))?;
+    let remote = (target != "local").then(|| inventory["machineName"].as_str().unwrap_or("another machine").to_owned());
     let (author, source) = collaboration::actor_context(store, &db, Some(actor))?;
     Ok(Earlier::New(Box::new(Prepared { task, project, project_dir, others, settings, author, source, inventory: reference, remote })))
 }
@@ -411,7 +424,8 @@ async fn submit(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Res
             .collect(),
         None => {
             let dir = prepared.project_dir.clone().context("project_folder_missing: its task's Project has no folder on this host")?;
-            let ctx = Arc::new(check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, &dir, &prepared.others, prepared.settings.clone()).await?);
+            let ctx = Arc::new(check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, &dir, Some(&prepared.project), &prepared.others,
+                prepared.settings.clone()).await?);
             let checks = items.iter().cloned().map(|item| {
                 let ctx = ctx.clone();
                 async move { check::preflight(&ctx, &item).await }

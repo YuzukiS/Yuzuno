@@ -93,6 +93,12 @@ pub(crate) fn group(id: &str, decision: &str, items: &[&Stored], top: usize) -> 
             warnings.push(json!({"code": "uncommitted", "text": format!(
                 "{changed} worktree(s) have changes Git tracks or untracked files")}));
         }
+        // Not known is never taken as merged (Lead mail 10772).
+        let unknown = worktrees.iter().filter(|i| i.pre["worktree"]["merged"].is_null()).count();
+        if unknown > 0 {
+            warnings.push(json!({"code": "mergeUnknown", "text": format!(
+                "For {unknown} worktree(s) Git could not tell whether the remote's default branch holds its HEAD")}));
+        }
     }
     let mut largest: Vec<&&Stored> = items.iter().collect();
     largest.sort_by(|a, b| b.pre["bytes"].as_u64().cmp(&a.pre["bytes"].as_u64()).then(a.path.cmp(&b.path)));

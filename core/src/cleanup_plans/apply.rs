@@ -349,7 +349,7 @@ async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
     .await?;
     let ctx = match &run.project_dir {
         Some(dir) if run.plan.data["machine"].is_null() => {
-            check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, dir, &run.others, run.settings.clone()).await.map(|mut ctx| {
+            check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, dir, run.plan.project.as_deref(), &run.others, run.settings.clone()).await.map(|mut ctx| {
                 ctx.deadline = Instant::now() + APPLY_TIME;
                 ctx
             })
@@ -511,6 +511,24 @@ pub(super) fn remove_aside(path: &Path, dev: Option<u64>, ino: Option<u64>) -> s
     removed.map(|()| None).map_err(|e| ("partial", format!("Removing it stopped: {e}; what remains is at {}", aside.display())))
 }
 
+/// Every build lock Cargo keeps in one of its subtrees (check.rs
+/// `cargo_profiles`): a profile's own, and each profile's in a target
+/// triple's or the build-dir folder; none in doc, package or tmp, or in a
+/// profile left without its lock. Each is held until the subtree is moved.
+fn hold_locks_within(path: &Path) -> std::result::Result<Vec<std::fs::File>, String> {
+    let mut dirs = vec![path.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(path) {
+        dirs.extend(entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()));
+    }
+    let mut held = Vec::new();
+    for dir in dirs {
+        if std::fs::symlink_metadata(dir.join(".cargo-lock")).is_ok_and(|m| m.is_file()) {
+            held.extend(hold_build_locks(&dir)?);
+        }
+    }
+    Ok(held)
+}
+
 /// The planned Cargo profiles of a target folder that are still the ones
 /// planned, each removed under its build locks; everything else stays.
 /// With what was done, and whether every planned profile went.
@@ -524,7 +542,7 @@ fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::
             kept.push(format!("{name}: it changed since the plan"));
             continue;
         }
-        let locks = match hold_build_locks(&path) {
+        let locks = match hold_locks_within(&path) {
             Ok(locks) => locks,
             Err(why) => {
                 kept.push(format!("{name}: {why}"));

@@ -24,7 +24,8 @@ async fn take(lab: &Lab, actor: Option<&str>, input: Value) -> Result<Value> {
 
 fn inventory_jobs(lab: &Lab) -> i64 {
     lab.ws.store.db.read().unwrap()
-        .query_row("SELECT COUNT(*) FROM local_jobs WHERE json_extract(data,'$.name')=?1", [JOB_NAME], |r| r.get(0)).unwrap()
+        // The lab's own seeded inventory `inv` aside.
+        .query_row("SELECT COUNT(*) FROM local_jobs WHERE json_extract(data,'$.name')=?1 AND id<>'inv'", [JOB_NAME], |r| r.get(0)).unwrap()
 }
 
 fn job(lab: &Lab, id: &str) -> Value {
@@ -82,16 +83,17 @@ async fn the_command_is_core_s_and_runs_here_to_an_inventory_of_its_schema() {
     assert_eq!(inventory_jobs(&lab), 0);
 
     // The job_submit Core makes, short of the systemd user manager a local Job needs.
-    let Prepared::New { actor, submit } = inventory::prepare(&lab.ws, Some("ex".into()), json!({"requestId": "inv-1", "taskId": "T-1"}))
+    let Prepared::New { actor, submit, .. } = inventory::prepare(&lab.ws, Some("ex".into()), json!({"requestId": "inv-1", "taskId": "T-1"}))
         .await.unwrap() else { panic!("a first call is new") };
     assert_eq!(actor, "ex");
     let python = inventory::local_python("python3").await.unwrap();
     assert!(python.executable.starts_with('/'), "{python:?}");
     let out = submit["artifacts"][0]["path"].as_str().unwrap().to_owned();
     assert!(out.ends_with(".json") && !out.contains('/'), "{out}");
-    let expected = inventory::command(&python.executable, &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[], &out);
+    let rules = super::rules::table(&super::rules::enabled(&Settings::default(), None));
+    let expected = inventory::command(&python.executable, &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[], &rules, &out);
     assert_eq!(strings(&submit["argv"]), expected);
-    assert_eq!(strings(&submit["argv"])[1..4], ["-I".to_owned(), "-c".to_owned(), inventory::SOURCE.to_owned()]);
+    assert_eq!(strings(&submit["argv"])[1..4], ["-I".to_owned(), "-c".to_owned(), inventory::loader().to_owned()]);
     assert_eq!(submit["cwd"], json!(lab.ws.data_dir.join(FOLDER)));
     assert_eq!((&submit["name"], &submit["guardGit"], submit.get("machineId")), (&json!(JOB_NAME), &json!(false), None));
     assert_eq!(submit["artifacts"], json!([{"path": out, "format": "json"}]));
@@ -189,7 +191,8 @@ async fn on_an_ssh_machine_it_runs_there_with_the_python3_that_answered() {
     let out = format!("{FOLDER}/{}", answer["artifact"].as_str().unwrap().rsplit('/').next().unwrap());
     assert!(argv[0].starts_with('/'), "the python3 that answered, by its path: {argv:?}");
     // Settings' scratch roots and protected paths are this host's: none are sent.
-    assert_eq!(argv, inventory::command(&argv[0], &lab.project.display().to_string(), &[], &[], &out));
+    let rules = super::rules::table(&super::rules::enabled(&Settings::default(), None));
+    assert_eq!(argv, inventory::command(&argv[0], &lab.project.display().to_string(), &[], &[], &rules, &out));
     assert_eq!(queued["cwd"], json!(there.join(".yuzuno")), "the data root its hello named");
     let dir = Path::new(&argv[0]).parent().unwrap().display().to_string();
     assert_eq!(queued["env"]["PATH"], json!(format!("{dir}:/usr/local/bin:/usr/bin:/bin")));
@@ -242,13 +245,6 @@ fn the_probe_is_read_by_its_exit_status_and_its_one_line() {
     }
 }
 
-#[test]
-fn its_rules_are_the_scripts() {
-    // The script names the rules Core's recognize() has; ③ adds to both.
-    assert!(inventory::SOURCE.contains("RULE_IDS = (\"cargo\", \"cachedir-tag\")"));
-    let description = inventory::tool_definition()["description"].as_str().unwrap().encode_utf16().count();
-    assert!(description <= 2048, "{description}");
-}
 
 /// YN-74 ④b (Lead mail 10783): a read-only executor reads its own task's Jobs
 /// and no other; job_get and job_logs refuse another task's with not_own_job.
@@ -286,4 +282,24 @@ async fn a_read_only_executor_reads_only_its_own_task_s_jobs() {
     assert_eq!(read("job_get", own).await.unwrap()["id"], own);
     // Another Agent, not read-only, still reads it.
     assert!(lab.ws.collaboration_call(Some("lead"), "job_get", json!({"jobId": other})).await.is_ok());
+}
+
+/// ③a: the script travels packed (a Job's argv holds 16 KiB); the loader
+/// unpacks exactly the repository's file, and a long command still fits.
+#[test]
+fn the_loader_unpacks_exactly_the_script_and_the_command_fits_a_job() {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    let loader = inventory::loader();
+    let packed = loader.split('\'').nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(packed).unwrap();
+    let mut unpacked = String::new();
+    flate2::read::ZlibDecoder::new(&bytes[..]).read_to_string(&mut unpacked).unwrap();
+    assert_eq!(unpacked, inventory::SOURCE);
+    let all: BTreeSet<&'static str> = super::rules::ids().into_iter().map(|(id, _)| id).collect();
+    let roots: Vec<String> = (0..5).map(|i| format!("/synthetic/scratch/root-number-{i}/with/a/longer/path")).collect();
+    let argv = inventory::command("/opt/homebrew/opt/python@3.12/bin/python3.12", "/synthetic/home/someone/work/a-project-folder", &roots, &roots,
+        &super::rules::table(&all), "cleanup-inventories/0123456789abcdef0123456789abcdef.json");
+    let bytes: usize = argv.iter().map(String::len).sum();
+    assert!(bytes + 2048 <= 16384, "every rule on, five scratch roots and protected paths: {bytes} bytes, with 2 KiB to spare");
 }

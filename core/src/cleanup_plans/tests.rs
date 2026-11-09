@@ -82,7 +82,7 @@ fn lab() -> Lab {
             VALUES('ex','executor','workspace-cleanup',?1,'agent:lead','running','now','now')", [&task]).unwrap();
         db.execute("INSERT INTO agent_roles(agent_id,kind,project_id,created_by,created_at,updated_at) VALUES('lead','lead',?1,'user','now','now')",
             [&demo.id]).unwrap();
-        inventory_job(&db, &task, "inv", json!({"kind": "local"}));
+        inventory_job(&db, &task, "inv", json!({"kind": "local"}), &project);
     }
     let lab = Lab { dir, ws, home, project, scratch };
     settings_change(&lab, |c| {
@@ -93,12 +93,19 @@ fn lab() -> Lab {
     lab
 }
 
-fn inventory_job(db: &Connection, task: &str, id: &str, target: Value) {
+/// A finished inventory Job of the task, its command Core's own on `folder` (inventory.rs `core_inventory`).
+fn inventory_job(db: &Connection, task: &str, id: &str, target: Value, folder: &Path) {
+    let argv = inventory::command("/usr/bin/python3", &folder.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
     let data = json!({"id":id,"taskId":task,"agentId":"ex","attempt":ATTEMPT,"status":"succeeded","target":target,
+        "name": inventory::JOB_NAME, "argv": argv,
         "machine":{"name":"Synthetic host"},
         "result":{"attempt":ATTEMPT,"artifacts":[{"path":"out/inventory.json","sha256":"b".repeat(64),"ok":true,"bytes":12}]}});
     db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'ex','succeeded',?3)", params![id, task, data.to_string()])
         .unwrap();
+    // As cleanup_inventory records the inventory it starts (inventory.rs `ours`).
+    let machine = data["target"]["machineId"].as_str().unwrap_or("local").to_owned();
+    db.execute("INSERT OR REPLACE INTO cleanup_inventories(actor,request_id,task_id,machine,folder,identity,job_id,created_at) VALUES('ex',?1,?2,?3,?4,?5,?6,'now')",
+        params![format!("cleanup-inventory/{id}"), task, machine, folder.display().to_string(), inventory::identity(&data), id]).unwrap();
 }
 
 fn settings_change(lab: &Lab, edit: impl FnOnce(&mut Settings)) {
@@ -108,7 +115,8 @@ fn settings_change(lab: &Lab, edit: impl FnOnce(&mut Settings)) {
     settings::change(&db, settings::Change {
         protected_paths: s.protected_paths, scratch_roots: s.scratch_roots, max_items: s.max_items, plan_hours: s.plan_hours,
         summary_paths: s.summary_paths, fresh_days: s.fresh_days, evidence_days: s.evidence_days, snapshot_max_mib: s.snapshot_max_mib,
-        evidence_file_mib: s.evidence_file_mib, evidence_suffixes: s.evidence_suffixes, snapshot_days: s.snapshot_days, expected_version: s.version,
+        evidence_file_mib: s.evidence_file_mib, evidence_suffixes: s.evidence_suffixes, snapshot_days: s.snapshot_days,
+        rules: Some(s.rules), project_rules: Some(s.project_rules), expected_version: s.version,
     })
     .unwrap();
 }
@@ -388,8 +396,15 @@ async fn a_project_that_is_a_folder_of_a_larger_repository_has_its_cache_folders
     let loose = app.join("cachey");
     std::fs::create_dir_all(&loose).unwrap();
     std::fs::write(loose.join("CACHEDIR.TAG"), TAG_PYTEST).unwrap();
-    lab.ws.store.db.write().unwrap().execute("UPDATE projects SET data=json_set(data,'$.defaultDirs.local',?1) WHERE json_extract(data,'$.name')='Demo'",
-        [app.display().to_string()]).unwrap();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        db.execute("UPDATE projects SET data=json_set(data,'$.defaultDirs.local',?1) WHERE json_extract(data,'$.name')='Demo'",
+            [app.display().to_string()]).unwrap();
+        // Its inventory is of the Project's folder as it is now.
+        let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+        db.execute("DELETE FROM local_jobs WHERE id='inv'", []).unwrap();
+        inventory_job(&db, &task, "inv", json!({"kind": "local"}), &app);
+    }
     let plan = submit(&lab, "mono", vec![group("r", "rebuildable")],
         vec![item("target", "r", "cache-dir", &app.join("target")), item("loose", "r", "cache-dir", &loose)]).await;
     let states = item_states(&lab, &plan).await;
@@ -570,8 +585,12 @@ async fn a_plan_from_another_machine_s_inventory_is_registered_with_every_item_r
         let db = lab.ws.store.db.write().unwrap();
         let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
         db.execute("DELETE FROM local_jobs WHERE id='inv'", []).unwrap();
-        inventory_job(&db, &task, "inv", json!({"kind": "ssh", "machineId": "m1"}));
+        inventory_job(&db, &task, "inv", json!({"kind": "ssh", "machineId": "m1"}), Path::new("/synthetic/m1/demo"));
     }
+    // The inventory is of the Project's folder on that machine.
+    let demo = lab.ws.store.projects().unwrap().into_iter().find(|p| p.name == "Demo").unwrap();
+    lab.ws.store.update_project(&demo.id, crate::projects::ProjectChange { name: None, key: None, archived: None,
+        default_dirs: BTreeMap::from([("m1".to_owned(), Some("/synthetic/m1/demo".to_owned()))]) }).unwrap();
     let plan = submit(&lab, "remote", vec![group("g", "delete")], vec![item("x", "g", "entry", Path::new("/synthetic/remote/x"))]).await;
     let states = item_states(&lab, &plan).await;
     assert_eq!(refused(&states, "x"), "remote");
@@ -589,7 +608,7 @@ fn settings_are_checked_and_saved_against_the_version_read() {
     let change = |protected: Vec<&str>, version: i64, max_items: u32| settings::Change {
         protected_paths: protected.into_iter().map(str::to_owned).collect(), scratch_roots: vec![], max_items, plan_hours: 24,
         summary_paths: 10, fresh_days: 1, evidence_days: 7, snapshot_max_mib: 256, evidence_file_mib: 4,
-        evidence_suffixes: vec![".PNG".into(), "png".into()], snapshot_days: 30, expected_version: version,
+        evidence_suffixes: vec![".PNG".into(), "png".into()], snapshot_days: 30, rules: None, project_rules: None, expected_version: version,
     };
     assert!(settings::change(&db, change(vec!["relative/path"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));
     assert!(settings::change(&db, change(vec!["/"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));

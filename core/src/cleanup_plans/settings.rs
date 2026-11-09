@@ -48,6 +48,11 @@ pub(crate) struct Settings {
     /// Days a snapshot is kept, then deleted; a worktree's ref stays
     /// (default 30, design's own choice; GitHub keeps Actions artifacts 90).
     pub snapshot_days: u32,
+    /// This host's switch for a rule (rules.rs), where it differs from the
+    /// rule's default; absent, the default.
+    pub rules: BTreeMap<String, bool>,
+    /// Each Project's own switches, by its id, over this host's.
+    pub project_rules: BTreeMap<String, BTreeMap<String, bool>>,
     pub version: i64,
     pub changed_at: Option<String>,
 }
@@ -66,6 +71,8 @@ impl Default for Settings {
             evidence_file_mib: 4,
             evidence_suffixes: EVIDENCE_SUFFIXES.iter().map(|s| (*s).to_owned()).collect(),
             snapshot_days: 30,
+            rules: BTreeMap::new(),
+            project_rules: BTreeMap::new(),
             version: 0,
             changed_at: None,
         }
@@ -96,7 +103,21 @@ pub(crate) struct Change {
     pub evidence_file_mib: u32,
     pub evidence_suffixes: Vec<String>,
     pub snapshot_days: u32,
+    /// Absent: as they are.
+    #[serde(default)]
+    pub rules: Option<BTreeMap<String, bool>>,
+    #[serde(default)]
+    pub project_rules: Option<BTreeMap<String, BTreeMap<String, bool>>>,
     pub expected_version: i64,
+}
+
+/// Switches name known rules only, and a Project by an id of at most 64 bytes.
+fn switches(name: &str, rules: &BTreeMap<String, bool>) -> Result<()> {
+    if let Some(unknown) = rules.keys().find(|id| !super::rules::known(id)) {
+        bail!("invalid_input: {name} names no rule {unknown:?}; the rules are {}",
+            super::rules::ids().iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", "));
+    }
+    Ok(())
 }
 
 fn paths(name: &str, list: &[String]) -> Result<Vec<String>> {
@@ -148,6 +169,14 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
             suffixes.push(suffix);
         }
     }
+    let rules = change.rules.unwrap_or_else(|| current.rules.clone());
+    switches("rules", &rules)?;
+    let project_rules = change.project_rules.unwrap_or_else(|| current.project_rules.clone());
+    ensure!(project_rules.len() <= 500, "invalid_input: projectRules holds at most 500 Projects");
+    for (project, own) in &project_rules {
+        ensure!((1..=64).contains(&project.len()), "invalid_input: each Project in projectRules is named by its id");
+        switches(&format!("projectRules.{project}"), own)?;
+    }
     let next = Settings {
         protected_paths: paths("protectedPaths", &change.protected_paths)?,
         scratch_roots: paths("scratchRoots", &change.scratch_roots)?,
@@ -160,6 +189,8 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
         evidence_file_mib: change.evidence_file_mib,
         evidence_suffixes: suffixes,
         snapshot_days: change.snapshot_days,
+        rules,
+        project_rules,
         version: current.version + 1,
         changed_at: Some(now()),
     };
@@ -173,7 +204,7 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
 /// What Settings shows: the settings, the defaults and what is fixed in Core.
 pub(crate) fn overview(db: &Connection) -> Result<Value> {
     Ok(json!({"settings": read(db)?, "defaults": Settings::default(), "maxItems": MAX_ITEMS,
-        "fixed": super::check::forbidden(), "note": SETTINGS_NOTE}))
+        "fixed": super::check::forbidden(), "rules": super::rules::overview(), "note": SETTINGS_NOTE}))
 }
 
 const SETTINGS_NOTE: &str = "Protected paths and scratch roots are empty until you add them: Core assumes no folder of one machine on another. What is fixed in Core is never removed whatever these say.";

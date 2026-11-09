@@ -16,9 +16,10 @@ What it reports, language-agnostic:
   no remote branch, commits `git cherry` finds missing from the remote's
   default branch, whether that branch has its HEAD, its size and newest write
   (its own: without the worktrees inside it and its rules' folders);
-- folders a cleanup rule recognizes as rebuildable (RULES below, the same as
-  Core's cleanup_plans/check.rs `recognize`), inside the main checkout, each
-  worktree and each scratch root, and whether Git ignores them;
+- folders a cleanup rule recognizes as rebuildable (Core's rule table,
+  cleanup_plans/rules.rs, which comes with --rules: the rules on for this
+  Project), inside the main checkout, each worktree and each scratch root,
+  and whether Git ignores them;
 - the first-level entries of each scratch root, with size (whole) and newest
   write.
 
@@ -39,8 +40,10 @@ import time
 SCHEMA = "yuzuno.cleanup-inventory"
 VERSION = 1
 CACHEDIR_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55"
-# The rules Core recognizes (check.rs `recognize`); tests keep them equal.
-RULE_IDS = ("cargo", "cachedir-tag")
+# Core's rule table (cleanup_plans/rules.rs) comes with --rules, the rules on
+# for this Project, and is read with the same meaning (`rule_matches`); a
+# Core test runs both on one tree. Without it, only the two CACHEDIR.TAG rules.
+DEFAULT_RULES = {"cachedirTag": True, "cargo": True, "rules": []}
 GIT_SECONDS = 30
 WALK_DEPTH = 6
 
@@ -75,6 +78,18 @@ def git(cwd, *args):
     return done.stdout.decode("utf-8", "surrogateescape"), None
 
 
+def git_status(cwd, *args):
+    """A Git command's exit status alone, or None when it could not run."""
+    try:
+        done = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", cwd] + list(args),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0"), timeout=GIT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.returncode
+
+
 def mtime_iso(seconds):
     return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
 
@@ -107,15 +122,105 @@ def rustc_info(path):
     return isinstance(data, dict) and isinstance(data.get("rustc_fingerprint"), int) and isinstance(data.get("outputs"), dict)
 
 
-def recognize(path):
-    """(rule, basis) when a cleanup rule recognizes path, else None. Cargo's
-    own tag goes by the cargo rule (only what Cargo makes goes), any other
-    valid CACHEDIR.TAG by cachedir-tag."""
+def matches(pattern, text):
+    """Whether text matches pattern, where * is any run of characters (rules.rs `matches`)."""
+    if "*" not in pattern:
+        return pattern == text
+    head, rest = pattern.split("*", 1)
+    if not text.startswith(head):
+        return False
+    tail = text[len(head):]
+    parts = rest.split("*")
+    for index, part in enumerate(parts):
+        if index == len(parts) - 1:
+            return len(tail) >= len(part) and tail.endswith(part)
+        at = tail.find(part)
+        if at < 0:
+            return False
+        tail = tail[at + len(part):]
+    return True
+
+
+def present(folder, pattern):
+    if "*" not in pattern:
+        target = os.path.join(folder, pattern)
+        return os.path.lexists(target) and not os.path.islink(target)
+    try:
+        return any(matches(pattern, name) and not os.path.islink(os.path.join(folder, name)) for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def package_has_script(package, script):
+    try:
+        if not os.path.isfile(package) or os.path.islink(package) or os.path.getsize(package) > (1 << 20):
+            return False
+        with open(package, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("scripts"), dict) and isinstance(data["scripts"].get(script), str)
+
+
+ONLY_FILES_CAP = 100000
+
+
+def only_files_ending(folder, suffix, cap=ONLY_FILES_CAP):
+    """Whether folder holds nothing but regular files ending so, every entry
+    read. More than cap entries, or one it can't read, proves nothing: no
+    (rules.rs `only_files_ending`)."""
+    try:
+        with os.scandir(folder) as entries:
+            for seen, entry in enumerate(entries):
+                if seen >= cap or not entry.is_file(follow_symlinks=False) or not entry.name.endswith(suffix):
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def rule_matches(rule, path, in_git, in_scratch):
+    """Whether an ecosystem rule of Core's table recognizes path (rules.rs `ecosystem`)."""
+    name, parent = os.path.basename(path), os.path.dirname(path)
+    if not any(matches(n, name) for n in rule.get("names", [])):
+        return False
+    if (rule.get("needsGit") and not in_git) or (rule.get("scratchOnly") and not in_scratch):
+        return False
+    # Only the outermost node_modules: one inside another is a package's.
+    if rule.get("id") == "node-modules" and "node_modules" in parent.split(os.sep):
+        return False
+    if not all(any(present(parent, p) for p in group) for group in rule.get("siblings", [])):
+        return False
+    if not all(present(path, f) for f in rule.get("inside", [])):
+        return False
+    if any(os.path.lexists(os.path.join(path, f)) for f in rule.get("absent", [])):
+        return False
+    if rule.get("packageScript") and not package_has_script(os.path.join(parent, "package.json"), rule["packageScript"]):
+        return False
+    if rule.get("onlySuffix") and not only_files_ending(path, rule["onlySuffix"]):
+        return False
+    return True
+
+
+def recognize(path, table, in_git, in_scratch):
+    """(rule, basis) when a rule on recognizes path, else None. A CACHEDIR.TAG
+    first: Cargo's goes by the cargo rule (only what Cargo makes goes), any
+    other valid one by cachedir-tag. Then each ecosystem's rule, in order.
+    A folder holding .git (a working tree or repository) is no rule's."""
+    if os.path.lexists(os.path.join(path, ".git")):
+        return None
     who = cachedir_tag(path)
     if (who is not None and "cargo" in who.lower()) or rustc_info(path):
+        if not table.get("cargo"):
+            return None
         return ("cargo", "CACHEDIR.TAG written by Cargo ({})".format(who) if who is not None else "Cargo's .rustc_info.json")
     if who is not None:
+        if not table.get("cachedirTag"):
+            return None
         return ("cachedir-tag", "CACHEDIR.TAG ({})".format(who) if who else "CACHEDIR.TAG")
+    for rule in table.get("rules", []):
+        if rule_matches(rule, path, in_git, in_scratch):
+            return (rule["id"], rule["id"])
     return None
 
 
@@ -151,7 +256,7 @@ def inside(path, root):
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def find_caches(root, tree, budget, protected, skipped, depth=WALK_DEPTH):
+def find_caches(root, tree, budget, protected, skipped, table, depth=WALK_DEPTH):
     """Folders a rule recognizes below root, not entering them, other Git
     working trees, links or .git."""
     found = []
@@ -166,7 +271,7 @@ def find_caches(root, tree, budget, protected, skipped, depth=WALK_DEPTH):
         if current != root and os.path.lexists(os.path.join(current, ".git")):
             continue
         # A scratch entry (tree None) may itself be a cache folder.
-        rule = recognize(current) if (current != root or tree is None) else None
+        rule = recognize(current, table, tree is not None, tree is None) if (current != root or tree is None) else None
         if rule:
             found.append({"path": current, "rule": rule[0], "basis": rule[1], "tree": tree})
             continue
@@ -231,8 +336,9 @@ def git_facts(path, upstream):
     if upstream:
         cherry, why = git(path, "cherry", upstream, "HEAD")
         facts["cherryUnmerged"] = None if cherry is None else sum(1 for line in cherry.splitlines() if line.startswith("+"))
-        merged, _ = git(path, "merge-base", "--is-ancestor", "HEAD", upstream)
-        facts["merged"] = merged is not None
+        # Three states (Lead mail 10772): exit 0 yes, 1 no, anything else not known.
+        code = git_status(path, "merge-base", "--is-ancestor", "HEAD", upstream)
+        facts["merged"] = True if code == 0 else False if code == 1 else None
     else:
         facts["cherryUnmerged"], facts["merged"] = None, None
     return facts
@@ -246,6 +352,14 @@ def ignored(tree, path):
 
 def inventory(args):
     budget = Budget(args.max_entries, args.seconds)
+    table = DEFAULT_RULES
+    if args.rules:
+        try:
+            table = json.loads(args.rules)
+        except ValueError as error:
+            raise SystemExit("inventory: --rules is not Core's rule table: {}".format(error))
+        if not (isinstance(table, dict) and isinstance(table.get("rules"), list)):
+            raise SystemExit("inventory: --rules is not Core's rule table")
     project = os.path.realpath(args.project)
     if not os.path.isdir(project):
         raise SystemExit("inventory: the Project's folder {} does not exist on this machine".format(project))
@@ -276,7 +390,7 @@ def inventory(args):
                 skipped.append({"path": path, "why": "a protected path, or one holding it"})
                 continue
             record["git"] = git_facts(path, upstream)
-            found = find_caches(path, path, budget, protected, skipped)
+            found = find_caches(path, path, budget, protected, skipped, table)
             for cache in found:
                 cache["ignored"] = ignored(path, cache["path"])
             caches.extend(found)
@@ -305,7 +419,7 @@ def inventory(args):
                 skipped.append({"path": path, "why": "a link"})
                 continue
             entry = {"path": path, "kind": "dir" if os.path.isdir(path) else "file"}
-            found = find_caches(path, None, budget, protected, skipped, depth=4) if entry["kind"] == "dir" else []
+            found = find_caches(path, None, budget, protected, skipped, table, depth=4) if entry["kind"] == "dir" else []
             caches.extend(found)
             # A scratch entry goes whole: its size adds its rules' folders back.
             sizing.append((entry, path, {c["path"] for c in found} - {path}, [c for c in found if c["path"] != path]))
@@ -327,7 +441,8 @@ def inventory(args):
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "host": {"python": "{}.{}.{}".format(*sys.version_info[:3]), "platform": sys.platform},
         "project": {"path": project, "gitCommonDir": common.strip(), "upstream": upstream},
-        "rules": list(RULE_IDS),
+        "rules": ["cachedir-tag"] * bool(table.get("cachedirTag")) + ["cargo"] * bool(table.get("cargo"))
+        + [r["id"] for r in table.get("rules", [])],
         "worktrees": worktrees, "cacheDirs": caches, "scratch": scratch, "skipped": skipped,
         "complete": not budget.exhausted,
         "bounds": {"maxEntries": args.max_entries, "seconds": args.seconds, "walkDepth": WALK_DEPTH},
@@ -339,6 +454,7 @@ def main(argv=None):
     parser.add_argument("--project", required=True)
     parser.add_argument("--scratch", action="append", default=[])
     parser.add_argument("--protected", action="append", default=[])
+    parser.add_argument("--rules", default=None, help="Core's rule table (cleanup_plans/rules.rs), the rules on, as JSON")
     parser.add_argument("--out", required=True)
     parser.add_argument("--max-entries", type=int, default=2000000)
     parser.add_argument("--seconds", type=int, default=600)
