@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Bot, Check, ChevronDown, GitPullRequest, Server, Sparkles, Workflow, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Ellipsis, GitPullRequest, Server, ServerOff, Sparkles, Unplug, Workflow, X } from "lucide-react";
 import { api } from "./api";
-import { CoreBacklog } from "./CoreBacklog";
+import { CoreBacklog, backlogWords } from "./CoreBacklog";
 import { limitWindows } from "./ClaudeControls";
 import { duration, usageWindows, useCodexUsage } from "./CodexPlanUsage";
 import { openJobs } from "./Jobs";
@@ -13,6 +13,7 @@ import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, ClaudeRuntime } from "./types";
 import { strings, useLanguage, type Language } from "./i18n";
 import { Tip, TipLines, TipText } from "./Tip";
+import { useStatusbarFit, type FitItem, type Form } from "./statusbar-fit";
 import "./statusbar.css";
 
 // The bottom bar's own words (T-189). Names of jobs, runs and machines, Core's
@@ -22,6 +23,10 @@ const words = strings({
   specimen: "Visual specimen",
   reconnecting: "Live updates reconnecting",
   connecting: "Live updates connecting",
+  // Shorter forms for a bar without room (YN-75); the full words stay in
+  // the item's name and tip.
+  reconnectingShort: "Reconnecting",
+  connectingShort: "Connecting",
   reviewsTip: "PR reviews in progress",
   reviews: (count: number) => `${count} ${count === 1 ? "review" : "reviews"} running`,
   ciTip: "GitHub Actions runs in progress",
@@ -34,6 +39,10 @@ const words = strings({
   suggestions: "passed with suggestions",
   run: (name: string, status: string) => `${name} run ${status}`,
   job: (name: string, outcome: string) => `Job ${name} ${outcome}`,
+  // An end said without the name, which is what can be long.
+  reviewShort: (outcome: string) => `Review: ${outcome}`,
+  runShort: (status: string) => `Run ${status}`,
+  jobShort: (outcome: string) => `Job ${outcome}`,
   finished: "finished",
   failed: "failed",
   memoryTip: (value: string, used: number, cpu: number) => `Jobs reserve ${value} of RAM and ${used} / ${cpu} CPU`,
@@ -68,6 +77,9 @@ const words = strings({
   machine: (name: string, check: string, off: string[]) =>
     `${name}: ${check}${off.length ? `; ${off.length === 1 ? "Agent" : "Agents"} disconnected: ${off.join(", ")}` : ""}`,
   openMachines: "Open Machines",
+  // What did not fit in the bar, behind "⋯" (YN-75).
+  more: (count: number) => `${count} more in the status bar`,
+  moreList: "Not shown in the status bar for lack of room",
   // The way into all of this from the toolbar, where the bar itself has no
   // room to stand (T-15 V5).
   details: "Core and background work",
@@ -80,6 +92,8 @@ const words = strings({
   specimen: "视觉样本",
   reconnecting: "实时更新正在重新连接",
   connecting: "实时更新正在连接",
+  reconnectingShort: "正在重新连接",
+  connectingShort: "正在连接",
   reviewsTip: "正在进行的 PR 审查",
   reviews: (count) => `${count} 个审查进行中`,
   ciTip: "正在进行的 GitHub Actions 运行",
@@ -92,6 +106,9 @@ const words = strings({
   suggestions: "通过，附建议",
   run: (name, status) => `${name} 运行 ${status}`,
   job: (name, outcome) => `Job ${name} ${outcome}`,
+  reviewShort: (outcome) => `审查：${outcome}`,
+  runShort: (status) => `运行 ${status}`,
+  jobShort: (outcome) => `Job ${outcome}`,
   finished: "已完成",
   failed: "已失败",
   memoryTip: (value, used, cpu) => `Job 预留 ${value} 内存和 ${used} / ${cpu} CPU`,
@@ -119,12 +136,36 @@ const words = strings({
   unchecked: "尚未检查",
   machine: (name, check, off) => `${name}：${check}${off.length ? `；未连接的 Agent：${off.join("、")}` : ""}`,
   openMachines: "打开“机器”",
+  more: (count) => `状态栏里还有 ${count} 项`,
+  moreList: "状态栏放不下的项",
   details: "Core 与后台工作",
   detailsNeed: (count) => `${count} 个待查看`,
   detailsQuiet: "没有待查看的",
   detailsCore: (core, work) => `${core} · ${work}`,
 });
 type Words = ReturnType<typeof words>;
+
+/** An item of the bar: how it gives way, and what it says in each form. */
+type Entry = FitItem & {
+  say: (form: Form) => ReactNode;
+  /** The item as the bar draws it, around its words. Items without one
+   * (news) are drawn in their place by the bar and never go behind "⋯". */
+  wrap?: (words: ReactNode, form: Form) => ReactNode;
+  /** Its own measuring element, when the item is not a plain one. */
+  measure?: (form: Form) => ReactNode;
+};
+/** A shorter form: the full words are its name; what shows is the rest. */
+const short = (full: string, ...shows: ReactNode[]) => (
+  <>
+    <span className="sr-only">{full}</span>
+    <span className="statusbar-short" aria-hidden="true">
+      {shows.map((part, i) => (
+        <Fragment key={i}>{part}</Fragment>
+      ))}
+    </span>
+  </>
+);
+const count = (value: number | string) => <span className="statusbar-count">{value}</span>;
 
 /**
  * The bottom bar: what runs in the background, and what the machine, the
@@ -226,6 +267,300 @@ export function StatusBar({
   const settled = coreHealthy && !stream;
   // Both states in the words it is read by, each said once.
   const said = [coreLabel, stream].filter(Boolean).join(" · ");
+
+  // Every item the bar holds now, with what it says in each of its forms
+  // (YN-75). When there is no room for all of them in full, the least
+  // important gives way first, to a shorter form and then behind "⋯"
+  // (statusbar-fit.ts); a shorter form keeps the full words as its name, and
+  // its tip says everything. Ranks: within a tier, a lower rank gives way
+  // first. A plan at its limit or a machine not reached is news.
+  const [backlogShown, setBacklogShown] = useState(false);
+  const backlogSays = backlogWords(language);
+  const entries: Entry[] = [];
+  if (previewMode) entries.push({ id: "specimen", side: "start", tier: "news", rank: 6, forms: [], say: () => t.specimen });
+  if (stream)
+    entries.push({
+      id: "stream",
+      side: "start",
+      tier: "news",
+      rank: 5,
+      forms: ["compact"],
+      say: (form) => (form === "full" ? stream : short(stream, eventConnection === "reconnecting" ? t.reconnectingShort : t.connectingShort)),
+    });
+  if (!previewMode && backlogShown)
+    entries.push({
+      id: "backlog",
+      side: "start",
+      tier: "news",
+      rank: 4,
+      forms: ["compact"],
+      say: (form) => (form === "full" ? backlogSays.hint : backlogSays.region),
+      // Measured as CoreBacklog draws it: the hint's own padding and rule,
+      // from a class of its own so nothing looking for the hint finds this.
+      measure: (form) => (
+        <span className="statusbar-measure-item" data-fit="backlog" data-form={form}>
+          <span className="statusbar-measure-backlog">{form === "full" ? backlogSays.hint : backlogSays.region}</span>
+        </span>
+      ),
+    });
+  if (background.reviews > 0) {
+    const text = t.reviews(background.reviews);
+    entries.push({
+      id: "reviews",
+      side: "start",
+      tier: "work",
+      rank: 2,
+      forms: ["icon"],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            <GitPullRequest size={12} aria-hidden="true" />
+            {text}
+          </>
+        ) : (
+          short(text, <GitPullRequest size={12} />, count(background.reviews))
+        ),
+      wrap: (words, form) => (
+        <Tip content={<TipText title={t.reviewsTip} />}>
+          <button type="button" className="statusbar-item" data-item="reviews" data-form={form} onClick={() => openJobs({ source: "reviews" })}>
+            {words}
+          </button>
+        </Tip>
+      ),
+    });
+  }
+  if (background.ci > 0 || background.ciPartial) {
+    const text = background.ci === 0 ? t.ciUnread : t.ci(background.ci, background.ciPartial);
+    entries.push({
+      id: "ci",
+      side: "start",
+      tier: "work",
+      rank: 1,
+      forms: ["icon"],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            <Workflow size={12} aria-hidden="true" />
+            {text}
+          </>
+        ) : (
+          short(text, <Workflow size={12} />, count(`${background.ci}${background.ciPartial ? "+" : ""}`))
+        ),
+      wrap: (words, form) => (
+        <Tip content={<TipText title={t.ciTip} body={background.ciPartial ? t.ciPartial : null} />}>
+          <button type="button" className="statusbar-item" data-item="ci" data-form={form} onClick={() => openJobs({ source: "github_actions" })}>
+            {words}
+          </button>
+        </Tip>
+      ),
+    });
+  }
+  const notice = background.notice;
+  if (notice) {
+    const icon = notice.ok ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />;
+    const more = background.more > 0 ? <span className="statusbar-more"> +{background.more}</span> : null;
+    entries.push({
+      id: "notice",
+      side: "start",
+      tier: "news",
+      rank: 7,
+      forms: ["compact", "icon"],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            {icon}
+            {notice.text}
+            {more}
+          </>
+        ) : (
+          short(`${notice.text}${background.more > 0 ? ` +${background.more}` : ""}`, icon, form === "compact" ? notice.short : null, more)
+        ),
+      wrap: (words, form) => (
+        <Tip content={<TipText title={notice.text} meta={background.more ? t.noticeMore(background.more) : null} />}>
+          <button
+            type="button"
+            className={`statusbar-item ${notice.ok ? "is-ok" : "is-failed"}`}
+            data-item="notice"
+            data-form={form}
+            onClick={notice.open}
+          >
+            {words}
+          </button>
+        </Tip>
+      ),
+    });
+  }
+  if (codex) {
+    const text = `Codex ${codex.text}`;
+    entries.push({
+      id: "codex",
+      side: "end",
+      tier: codex.limited ? "news" : "metric",
+      rank: 2,
+      forms: ["compact", "icon"],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            <Sparkles size={12} aria-hidden="true" />
+            {text}
+          </>
+        ) : (
+          short(text, <Sparkles size={12} />, form === "compact" ? `Codex ${codex.top}` : codex.topValue)
+        ),
+      wrap: (words, form) => (
+        <Tip size="wide" content={<TipLines text={codex.title} />}>
+          <span
+            className={`statusbar-item statusbar-codex${codex.limited ? " is-failed" : ""}${codex.stale ? " is-stale" : ""}`}
+            data-item="codex"
+            data-form={form}
+          >
+            {words}
+          </span>
+        </Tip>
+      ),
+    });
+  }
+  if (plan) {
+    const text = `Claude ${plan.text}`;
+    entries.push({
+      id: "claude",
+      side: "end",
+      tier: plan.limited ? "news" : "metric",
+      rank: 3,
+      // Only a window still going has a share to show alone.
+      forms: plan.top ? ["compact", "icon"] : [],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            <Bot size={12} aria-hidden="true" />
+            {text}
+          </>
+        ) : (
+          short(text, <Bot size={12} />, form === "compact" ? `Claude ${plan.top}` : plan.topValue)
+        ),
+      wrap: (words, form) => (
+        <Tip size="wide" content={<TipLines text={plan.title} />}>
+          <span className={`statusbar-item${plan.limited ? " is-failed" : ""}`} data-item="claude" data-form={form}>
+            {words}
+          </span>
+        </Tip>
+      ),
+    });
+  }
+  if (machines) {
+    const pairs = [
+      <Fragment key="all">
+        <Server size={12} />
+        {count(machines.count)}
+      </Fragment>,
+      machines.unreachable > 0 && (
+        <Fragment key="down">
+          <ServerOff size={12} />
+          {count(machines.unreachable)}
+        </Fragment>
+      ),
+      machines.disconnected > 0 && (
+        <Fragment key="off">
+          <Unplug size={12} />
+          {count(machines.disconnected)}
+        </Fragment>
+      ),
+    ].filter(Boolean);
+    entries.push({
+      id: "machines",
+      side: "end",
+      tier: machines.unreachable ? "news" : "metric",
+      rank: 1,
+      forms: ["compact"],
+      say: (form) =>
+        form === "full" ? (
+          <>
+            <Server size={12} aria-hidden="true" />
+            {machines.text}
+          </>
+        ) : (
+          short(
+            machines.text,
+            ...pairs.flatMap((pair, i) => (i ? [<span key={`dot${i}`}>·</span>, pair] : [pair])),
+          )
+        ),
+      wrap: (words, form) => (
+        <Tip size="wide" content={<TipLines text={machines.title} />}>
+          <button
+            type="button"
+            className={`statusbar-item${machines.unreachable ? " is-failed" : ""}`}
+            data-item="machines"
+            data-form={form}
+            onClick={onMachines}
+          >
+            {words}
+          </button>
+        </Tip>
+      ),
+    });
+  }
+  if (background.budget) {
+    const memory = memoryForms(background.budget, t);
+    entries.push({
+      id: "ram",
+      side: "end",
+      tier: "metric",
+      rank: 4,
+      forms: ["compact", "icon"],
+      say: memory.say,
+      wrap: (words, form) => (
+        <Tip content={memory.tip}>
+          <button
+            type="button"
+            className="statusbar-item statusbar-memory"
+            data-item="ram"
+            data-form={form}
+            onClick={() => openJobs({ source: "local" })}
+          >
+            {words}
+          </button>
+        </Tip>
+      ),
+    });
+  }
+  const measure = useRef<HTMLDivElement | null>(null);
+  const fit = useStatusbarFit(panel, measure, entries);
+  const formOf = (id: string): Form => fit.forms[id] ?? "full";
+  const shown = (id: string) => {
+    const item = entries.find((e) => e.id === id);
+    const form = formOf(id);
+    return item?.wrap && form !== "hidden" ? <Fragment key={id}>{item.wrap(item.say(form), form)}</Fragment> : null;
+  };
+  // Behind "⋯": what gave way all the way, said in full and opening what it
+  // opens in the bar. Escape gives focus back; a press elsewhere closes it.
+  const hidden = entries.filter((e) => e.wrap && formOf(e.id) === "hidden");
+  const [more, setMore] = useState(false);
+  const moreAnchor = useRef<HTMLSpanElement | null>(null);
+  const moreButton = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!hidden.length) setMore(false);
+  }, [hidden.length]);
+  useEffect(() => {
+    if (!more) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMore(false);
+      moreButton.current?.focus();
+    };
+    const onDown = (event: PointerEvent) => {
+      const at = event.target as Node | null;
+      if (!at || moreAnchor.current?.contains(at)) return;
+      setMore(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [more]);
+  const specimen = entries.find((e) => e.id === "specimen");
+  const streamItem = entries.find((e) => e.id === "stream");
   return (
     <footer className="statusbar" id="core-status-details" ref={panel} data-open={open ? "" : undefined}>
       {slot &&
@@ -266,76 +601,81 @@ export function StatusBar({
         )}
       <div className="statusbar-start">
         <span className="statusbar-item statusbar-core">{coreLabel}</span>
-        {previewMode && <span className="statusbar-item">{t.specimen}</span>}
-        {!previewMode && eventConnection !== "open" && (
-          <span className="statusbar-item event-connection-status" role="status">
-            {eventConnection === "reconnecting" ? t.reconnecting : t.connecting}
+        {specimen && (
+          <span className="statusbar-item" data-item="specimen" data-form={formOf("specimen")}>
+            {specimen.say(formOf("specimen"))}
           </span>
         )}
-        {!previewMode && <CoreBacklog agents={agents} live={live} />}
-        {background.reviews > 0 && (
-          <Tip content={<TipText title={t.reviewsTip} />}>
-            <button type="button" className="statusbar-item" onClick={() => openJobs({ source: "reviews" })}>
-              <GitPullRequest size={12} aria-hidden="true" />
-              {t.reviews(background.reviews)}
-            </button>
-          </Tip>
+        {streamItem && (
+          <span className="statusbar-item event-connection-status" role="status" data-item="stream" data-form={formOf("stream")}>
+            {streamItem.say(formOf("stream"))}
+          </span>
         )}
-        {(background.ci > 0 || background.ciPartial) && (
-          <Tip content={<TipText title={t.ciTip} body={background.ciPartial ? t.ciPartial : null} />}>
-            <button type="button" className="statusbar-item" onClick={() => openJobs({ source: "github_actions" })}>
-              <Workflow size={12} aria-hidden="true" />
-              {background.ci === 0 ? t.ciUnread : t.ci(background.ci, background.ciPartial)}
-            </button>
-          </Tip>
-        )}
+        {!previewMode && <CoreBacklog agents={agents} live={live} compact={formOf("backlog") === "compact"} onShown={setBacklogShown} />}
+        {shown("reviews")}
+        {shown("ci")}
         <span className="statusbar-notice" role="status" aria-live="polite">
-          {background.notice && (
-            <Tip content={<TipText title={background.notice.text} meta={background.more ? t.noticeMore(background.more) : null} />}>
-              <button
-                type="button"
-                className={`statusbar-item ${background.notice.ok ? "is-ok" : "is-failed"}`}
-                onClick={background.notice.open}
-              >
-                {background.notice.ok ? (
-                  <Check size={12} aria-hidden="true" />
-                ) : (
-                  <X size={12} aria-hidden="true" />
-                )}
-                {background.notice.text}
-                {background.more > 0 && <span className="statusbar-more"> +{background.more}</span>}
-              </button>
-            </Tip>
-          )}
+          {shown("notice")}
         </span>
       </div>
       <div className="statusbar-end">
-        {codex && (
-          <Tip size="wide" content={<TipLines text={codex.title} />}>
-            <span className={`statusbar-item statusbar-codex${codex.limited ? " is-failed" : ""}${codex.stale ? " is-stale" : ""}`}>
-              <Sparkles size={12} aria-hidden="true" />
-              Codex {codex.text}
-            </span>
-          </Tip>
+        {shown("codex")}
+        {shown("claude")}
+        {shown("machines")}
+        {shown("ram")}
+        {hidden.length > 0 && (
+          <span className="statusbar-overflow-anchor" ref={moreAnchor}>
+            <Tip content={<TipText title={t.more(hidden.length)} />}>
+              <button
+                type="button"
+                ref={moreButton}
+                className="statusbar-item statusbar-overflow"
+                aria-label={t.more(hidden.length)}
+                aria-expanded={more}
+                aria-controls="statusbar-overflow-list"
+                onClick={() => setMore((was) => !was)}
+              >
+                <Ellipsis size={12} aria-hidden="true" />
+                <span className="statusbar-count" aria-hidden="true">
+                  {hidden.length}
+                </span>
+              </button>
+            </Tip>
+            {more && (
+              <div id="statusbar-overflow-list" className="statusbar-overflow-list" role="region" aria-label={t.moreList}>
+                {hidden.map((e) => (
+                  <Fragment key={e.id}>{e.wrap!(e.say("full"), "full")}</Fragment>
+                ))}
+              </div>
+            )}
+          </span>
         )}
-        {plan && (
-          <Tip size="wide" content={<TipLines text={plan.title} />}>
-            <span className={`statusbar-item${plan.limited ? " is-failed" : ""}`}>
-              <Bot size={12} aria-hidden="true" />
-              Claude {plan.text}
-            </span>
-          </Tip>
-        )}
-        {machines && (
-          <Tip size="wide" content={<TipLines text={machines.title} />}>
-            <button type="button" className={`statusbar-item${machines.unreachable ? " is-failed" : ""}`} onClick={onMachines}>
-              <Server size={12} aria-hidden="true" />
-              {machines.text}
-            </button>
-          </Tip>
-        )}
-        {background.budget && <Memory budget={background.budget} t={t} />}
       </div>
+      {/* Every form of every item, where nobody sees or reaches it, to be
+          measured (statusbar-fit.ts). Drawn only while the bar is laid out
+          as a bar. Its own class, so nothing looking for the bar's items
+          finds these. */}
+      {fit.measuring && (
+        <div className="statusbar-measure" aria-hidden="true" inert ref={measure}>
+          <div>
+            {entries.flatMap((e) =>
+              (["full", ...e.forms] as Form[]).map((form) =>
+                e.measure ? (
+                  <Fragment key={`${e.id}:${form}`}>{e.measure(form)}</Fragment>
+                ) : (
+                  <span key={`${e.id}:${form}`} className="statusbar-measure-item" data-fit={e.id} data-form={form}>
+                    {e.say(form)}
+                  </span>
+                ),
+              ),
+            )}
+            <span className="statusbar-measure-item" data-fit="overflow" data-form="full">
+              <Ellipsis size={12} />
+              <span className="statusbar-count">{Math.max(entries.length, 1)}</span>
+            </span>
+          </div>
+        </div>
+      )}
     </footer>
   );
 }
@@ -364,50 +704,72 @@ const gib = (miB: number) =>
 const share = (used: number, total: number) =>
   total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
 
-/** Job memory reserved against its budget, and what the host has free. */
-function Memory({ budget, t }: { budget: Budget; t: Words }) {
+/**
+ * Job memory reserved against its budget, and what the host has free, in
+ * the bar's three forms (YN-75): everything; the reservation alone, with
+ * one unit when both sides have it; the meter alone. The meter and the full
+ * numbers are read in every form.
+ */
+function memoryForms(budget: Budget, t: Words) {
   const used = share(budget.reserved.memoryMiB, budget.budget.memoryMiB);
   const free = budget.machine.memoryAvailableMiB == null ? null : gib(budget.machine.memoryAvailableMiB);
   const host = free === null ? "" : t.free(free);
   const cpu = (millis: number) => Number((millis / 1000).toFixed(1));
-  const value = `${gib(budget.reserved.memoryMiB)} / ${gib(budget.budget.memoryMiB)}`;
-  return (
-    <Tip content={<TipText title={budget.machine.name} status={t.memoryTip(value, cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis))} meta={free ? t.hostFree(free) : null} />}>
-      <button
-        type="button"
-        className="statusbar-item statusbar-memory"
-        onClick={() => openJobs({ source: "local" })}
-      >
-        <span>{t.ram}</span>
-        <span
-          className="statusbar-meter"
-          role="meter"
-          aria-label={t.ramLabel}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(used)}
-          aria-valuetext={t.reserved(value)}
-        >
-          <span style={{ width: `${used}%` }} />
-        </span>
-        <span>
-          {value}
-          {host}
-        </span>
-      </button>
-    </Tip>
+  const reserved = gib(budget.reserved.memoryMiB);
+  const total = gib(budget.budget.memoryMiB);
+  const value = `${reserved} / ${total}`;
+  const unit = (text: string) => text.slice(text.lastIndexOf(" "));
+  const brief = unit(reserved) === unit(total) ? `${reserved.slice(0, reserved.lastIndexOf(" "))} / ${total}` : value;
+  const meter = (
+    <span
+      className="statusbar-meter"
+      role="meter"
+      aria-label={t.ramLabel}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(used)}
+      aria-valuetext={t.reserved(value)}
+    >
+      <span style={{ width: `${used}%` }} />
+    </span>
   );
+  return {
+    tip: <TipText title={budget.machine.name} status={t.memoryTip(value, cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis))} meta={free ? t.hostFree(free) : null} />,
+    say: (form: Form): ReactNode => (
+      <>
+        <span>{t.ram}</span>
+        {meter}
+        {form === "full" ? (
+          <span>
+            {value}
+            {host}
+          </span>
+        ) : (
+          <>
+            <span className="sr-only">
+              {value}
+              {host}
+            </span>
+            {form === "compact" && <span aria-hidden="true">{brief}</span>}
+          </>
+        )}
+      </>
+    ),
+  };
 }
 
 const stopped = new Set(["failed", "rejected", "interrupted", "unknown"]);
 const reviewActive = (r: ReviewRow) =>
   r.status === "preparing" || r.status === "running";
 const reviewOk = (r: ReviewRow) => r.status === "completed" && reviewPassed(r);
-/** What an end says, in the bar's words; Core's status values as they came. */
-function endedText(what: Ended, t: Words): string {
-  if (what.kind === "run") return t.run(what.name, what.status);
-  if (what.kind === "job")
-    return t.job(what.name, what.status === "succeeded" ? t.finished : stopped.has(what.status) ? t.failed : what.status);
+/** What an end says, in the bar's words; Core's status values as they came.
+ * Short, it leaves out the name, which is the part that can be long (YN-75). */
+function endedText(what: Ended, t: Words, brief = false): string {
+  if (what.kind === "run") return brief ? t.runShort(what.status) : t.run(what.name, what.status);
+  if (what.kind === "job") {
+    const outcome = what.status === "succeeded" ? t.finished : stopped.has(what.status) ? t.failed : what.status;
+    return brief ? t.jobShort(outcome) : t.job(what.name, outcome);
+  }
   const outcome =
     what.status !== "completed"
       ? what.status
@@ -416,7 +778,7 @@ function endedText(what: Ended, t: Words): string {
         : what.conclusion === "approved_with_notes"
           ? t.suggestions
           : (what.conclusion || "unknown").replace(/_/g, " ");
-  return t.review(what.number, outcome);
+  return brief ? t.reviewShort(outcome) : t.review(what.number, outcome);
 }
 
 const HOUR = 3_600_000;
@@ -688,7 +1050,7 @@ export function useBackground(revision: string, enabled: boolean, language: Lang
   }, [revision, enabled]);
   // Worded now, so a language change rewords the end on show.
   const first = notices[0];
-  const notice = first ? { ...first, text: endedText(first.what, words(language)) } : null;
+  const notice = first ? { ...first, text: endedText(first.what, words(language)), short: endedText(first.what, words(language), true) } : null;
   return { reviews, ci, ciPartial, budget, notice, more: Math.max(0, notices.length - 1) };
 }
 
@@ -739,8 +1101,13 @@ function usePlan(runtime?: ClaudeRuntime | null, language: Language = "en") {
   const live = typeof info.resetsAt !== "number" || info.resetsAt * 1000 > now;
   const limited = live && info.status === "rejected";
   const t = words(language);
+  // The window nearest its limit, for a bar without room for all (YN-75).
+  const going = windows.filter((w) => !w.expired);
+  const top = going.length ? going.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
   return {
     limited,
+    top: top ? `${top.name} ${top.percent}%` : null,
+    topValue: top ? `${top.percent}%` : null,
     text: windows.map((w) => (w.expired ? t.windowReset(w.name) : `${w.name} ${w.percent}%`)).join(" · "),
     title: [
       plan.account ? t.planFor(plan.account) : t.plan,
@@ -778,9 +1145,16 @@ export function useCodex(agent: Agent | null, streamConnected: boolean, language
     (usage.ordinaryUsageAllowed === false || windows.some((w) => !w.expired && w.percent !== null && w.percent >= 100));
   const who = [usage.account?.label || usage.account?.type, usage.account?.planType].filter(Boolean).join(" · ");
   const t = words(language);
+  const value = (w: (typeof windows)[number]) => (w.expired ? t.codexWaiting : w.percent === null ? t.codexUnknown : `${w.percent}%`);
+  // The window nearest its limit, for a bar without room for all (YN-75):
+  // one with a known share, else the first.
+  const known = windows.map((w, i) => ({ w, i })).filter(({ w }) => !w.expired && w.percent !== null);
+  const top = known.length ? known.reduce((a, b) => ((b.w.percent ?? 0) > (a.w.percent ?? 0) ? b : a)) : { w: windows[0], i: 0 };
   return {
     stale,
     limited,
+    top: `${labels[top.i]} ${value(top.w)}`,
+    topValue: value(top.w),
     text:
       windows
         .map((w, i) => `${labels[i]} ${w.expired ? t.codexWaiting : w.percent === null ? t.codexUnknown : `${w.percent}%`}`)
@@ -828,7 +1202,9 @@ export function useMachines(revision: string, enabled: boolean, agents: Agent[],
   const disconnected = remote.reduce((sum, m) => sum + off(m).length, 0);
   const t = words(language);
   return {
+    count: remote.length,
     unreachable,
+    disconnected,
     text: t.machines(remote.length, unreachable, disconnected),
     title: [
       ...remote.map((m) => {

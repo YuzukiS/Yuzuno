@@ -11,15 +11,22 @@
   gap: 14px;
   min-width: 0;
 }
+/* No clip: what does not fit gives way first (YN-75, statusbar-fit.ts), so
+   nothing is ever cut in the middle of its words. Positioned, so the Core
+   backlog's details hang from the bar's left edge and stay in the window. */
 .statusbar-start {
+  position: relative;
   flex: 1 1 auto;
-  overflow: hidden;
+}
+.statusbar-start .core-backlog {
+  position: static;
 }
 .statusbar-end {
   flex: none;
   margin-left: auto;
 }
-.statusbar-item {
+.statusbar-item,
+.statusbar-measure-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -78,15 +85,69 @@ button.statusbar-item:focus-visible {
   .statusbar-end {
     gap: 10px;
   }
-  .statusbar-memory > span:last-child {
-    display: none;
-  }
 }
-/* The narrowest windows keep the background work and the RAM meter. */
-@media (max-width: 520px) {
-  .statusbar-end > :not(.statusbar-memory) {
-    display: none;
-  }
+
+/* A bar without room for everything (YN-75): shorter forms, then "⋯".
+   Which form an item shows is measured, not set by the window's width. */
+.statusbar-short {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.statusbar-count {
+  font-variant-numeric: tabular-nums;
+}
+/* Every form of every item, where nobody sees it, to be measured; the 0×0
+   clip keeps it from widening the bar. */
+.statusbar-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+.statusbar-measure > div {
+  display: flex;
+  align-items: center;
+  width: max-content;
+}
+.statusbar-end {
+  position: relative;
+}
+.statusbar-overflow-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.statusbar-overflow {
+  gap: 3px;
+}
+.statusbar-overflow[aria-expanded="true"] {
+  color: var(--ink);
+}
+/* What did not fit, in full, above the "⋯" it is behind. */
+.statusbar-overflow-list {
+  position: absolute;
+  right: -4px;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 180px;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper, #fff);
+  box-shadow: 0 8px 24px rgb(50 54 44 / 16%);
+  color: var(--text-secondary, #646f59);
+}
+.statusbar-overflow-list .statusbar-item {
+  min-height: 26px;
 }
 
 /* A middle-sized workbench (T-15 V5). This bar costs 27px of a 669px-tall
@@ -202,6 +263,11 @@ button.statusbar-item:focus-visible {
     gap: 2px;
     margin-left: 0;
     overflow: visible;
+  }
+  /* In the panel the backlog's details hang from the hint, as before
+     YN-75; where they land there is not this bar's rule. */
+  .app:not(.phone) > .statusbar .core-backlog {
+    position: relative;
   }
   /* Each line in the panel is a row a finger can hit, which the 13px it had
      as a bar was not. */
