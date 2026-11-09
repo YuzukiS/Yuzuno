@@ -86,6 +86,7 @@ const entryLabelsZh: Record<string, string> = {
   backupSchedule: "每日备份计划",
   routingKeys: "执行者路由的 key 和 1Password 令牌（不进备份）",
   cleanupSnapshots: "工作区清理删除前存的快照（按设置保留若干天；不进备份）",
+  cleanupInventories: "工作区清理对本机做的只读盘点（不进备份）",
   earlierDatabaseCopy: "早期数据库副本，保留自一次性转换",
   unknown: "不是此 Core 生成的",
 };

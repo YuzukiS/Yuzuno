@@ -1537,3 +1537,40 @@ pub(super) fn registered_machine(tx: &rusqlite::Connection, id: &str) -> Result<
         serde_json::from_str(&raw.context("machineId is not a registered SSH machine of this Workspace")?)?;
     Ok(machine_snapshot(&machine))
 }
+
+/// The python3 a registered machine runs its helper with, from one hello:
+/// for a command Core builds itself to run there (the cleanup inventory,
+/// YN-74 ④a). Err says why none can run, in the machine's own words.
+pub(crate) struct PythonThere {
+    pub name: String,
+    pub platform: String,
+    pub version: String,
+    /// Absolute, or empty when that python3 could not name itself.
+    pub executable: String,
+    /// The absolute data root a start there goes to (created at the start).
+    pub root: String,
+}
+
+pub(crate) async fn python_there(ws: &Workspace, ssh: &str, machine_id: &str) -> std::result::Result<PythonThere, String> {
+    let id = machine_id.to_owned();
+    let machine = ws.stored(move |s| s.machine(&id)).await.map_err(|e| format!("{e:#}"))?;
+    let machine = Machine::Ssh(machine);
+    let name = machine.name().to_owned();
+    // A stand-in program (tests) shares no connection, as tick's does not.
+    let programs = Programs { ssh, windows: None, mux: (ssh == SSH).then_some(&ws.jobs.ssh_mux) };
+    let reply = match call(&programs, &machine, json!({"action": "hello", "root": new_root(&machine)})).await {
+        Reply::Answer(reply) if reply["status"] == "hello" => reply,
+        Reply::Answer(_) => return Err(format!("{name} did not answer as the Jobs helper does")),
+        Reply::Unusable(why) => return Err(format!("python3 cannot run on {name}: {why}")),
+        Reply::Refused(why) | Reply::NoAnswer(why) | Reply::Broken(why) => return Err(format!("{name} did not answer: {why}")),
+    };
+    let root = pinned_root(&machine, &reply).ok_or_else(|| format!("{name} named no data root Core can use"))?;
+    let executable = reply["executable"].as_str().filter(|path| path.starts_with('/') && !path.chars().any(char::is_control));
+    Ok(PythonThere {
+        name,
+        platform: reply["platform"].as_str().unwrap_or_default().to_owned(),
+        version: reply["python"].as_str().unwrap_or_default().to_owned(),
+        executable: executable.unwrap_or_default().to_owned(),
+        root,
+    })
+}

@@ -48,6 +48,7 @@ export const entryLabels: Record<string, string> = {
   backupSchedule: "Daily backup schedule",
   routingKeys: "Routing keys and the 1Password token (never backed up)",
   cleanupSnapshots: "Snapshots of what a workspace cleanup removed (kept for the days Settings say; never backed up)",
+  cleanupInventories: "Read-only inventories a workspace cleanup took of this host (never backed up)",
   earlierDatabaseCopy: "Earlier database copy, kept from a one-time conversion",
   unknown: "Not made by this Core",
 };

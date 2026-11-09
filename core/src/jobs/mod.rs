@@ -32,6 +32,36 @@ mod ssh_mux;
 #[path = "ssh_mux_tests.rs"]
 mod ssh_mux_tests;
 pub(crate) use remote::WINDOWS_LEGACY_ROOT;
+pub(crate) use remote::{python_there, PythonThere};
+/// Tests outside jobs drive remote Jobs themselves: no loop of Core's own
+/// runs them, and each tick checks every Job now with a stand-in OpenSSH.
+#[cfg(test)]
+pub(crate) fn hold_loops_for_tests(ws: &Workspace) {
+    let _ = ws.jobs.started.set(());
+}
+#[cfg(test)]
+pub(crate) async fn remote_tick_for_tests(ws: &Arc<Workspace>, ssh: &str) -> anyhow::Result<bool> {
+    ws.jobs.remote_seen.lock().unwrap().clear();
+    remote::tick(ws, ssh).await
+}
+/// The OpenSSH program remote Jobs' helper calls use.
+pub(crate) const SSH_PROGRAM: &str = remote::SSH;
+
+/// The Job an Agent submitted with this requestId, and that submission as
+/// recorded (taskId resolved): for the retry of a submission Core builds
+/// itself (cleanup_inventory), before anything is asked of a machine again.
+pub(crate) fn submitted(db: &rusqlite::Connection, actor: &str, request_id: &str)
+    -> anyhow::Result<Option<(serde_json::Value, serde_json::Value)>> {
+    use rusqlite::OptionalExtension as _;
+    let row: Option<(String, String)> = db
+        .query_row("SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='job_submit' AND request_id=?2",
+            rusqlite::params![store::actor_key(Some(actor)), request_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?;
+    let Some((input, response)) = row else { return Ok(None) };
+    let response: serde_json::Value = serde_json::from_str(&response)?;
+    let id = response["jobId"].as_str().ok_or_else(|| anyhow::anyhow!("Invalid job receipt"))?;
+    Ok(Some((serde_json::from_str(&input)?, store::get(db, id)?)))
+}
 mod resource_summary;
 #[cfg(test)]
 mod resource_tests;

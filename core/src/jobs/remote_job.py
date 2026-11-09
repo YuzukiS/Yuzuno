@@ -1356,8 +1356,10 @@ def state(root, intent):
 
 
 def hello(request, host):
+    # executable: the python3 answering, which a Core-built command such as
+    # the cleanup inventory (YN-74) runs, so it is the same interpreter.
     reply = {"status": "hello", "platform": platform.system(), "python": platform.python_version(), "pidfd": PIDFD,
-             "resources": capabilities()}
+             "executable": sys.executable or "", "resources": capabilities()}
     # The absolute root a start would go to, which Core pins with the
     # machine. Nothing is created.
     if "root" in request:

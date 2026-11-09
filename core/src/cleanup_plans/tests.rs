@@ -616,3 +616,6 @@ fn git_worktree_list_is_read_with_its_main_worktree_first() {
 
 #[path = "apply_tests.rs"]
 mod apply_tests;
+
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
