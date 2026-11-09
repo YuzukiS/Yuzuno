@@ -402,6 +402,9 @@ impl Store {
 mod dispatch_tests;
 
 #[cfg(test)]
+mod answer_budget_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::AgentDetail;
