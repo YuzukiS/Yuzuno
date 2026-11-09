@@ -253,10 +253,15 @@ fn cachedir_tag(dir: &Path) -> Option<String> {
 /// target/ and only what Cargo makes there goes; any other valid tag by
 /// cachedir-tag. Then each ecosystem's rule (rules.rs). `in_git`: inside a
 /// Git working tree; `in_scratch`: inside a scratch root. No file in a
-/// repository adds a rule.
+/// repository adds a rule, and a folder holding `.git` is no rule's.
 pub(crate) fn recognize(dir: &Path, on: &BTreeSet<&'static str>, in_git: bool, in_scratch: bool)
     -> std::result::Result<Option<(&'static str, String)>, &'static str> {
     use super::rules::{CACHEDIR_TAG, CARGO};
+    // A Git working tree or repository is never a cache, wherever it is: a
+    // scratch root's clone included, where no Git check applies (review 939ed865).
+    if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+        return Ok(None);
+    }
     if cargo_target(dir) {
         let basis = match cachedir_tag(dir) {
             Some(who) => format!("CACHEDIR.TAG written by Cargo ({who})"),

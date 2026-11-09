@@ -37,7 +37,7 @@ fn fixtures() -> Vec<(&'static str, &'static str, Vec<(&'static str, &'static st
         ("elixir", "_build", vec![("mix.exs", "")], vec![], vec![]),
         ("haskell", "dist-newstyle", vec![("app.cabal", "")], vec![], vec![]),
         ("zig", "zig-out", vec![("build.zig", "")], vec![], vec![]),
-        ("cmake", "out", vec![], vec![("CMakeCache.txt", "")], vec![]),
+        ("cmake", "out", vec![], vec![("CMakeCache.txt", ""), ("CMakeFiles/cmake.check_cache", "")], vec![]),
         ("unity", "Library", vec![("ProjectSettings/ProjectVersion.txt", "m_EditorVersion: 6000.0")], vec![], vec![]),
         ("unreal", "Intermediate", vec![("Game.uproject", "{}")], vec![], vec![]),
         ("godot", ".godot", vec![("project.godot", "")], vec![], vec![]),
@@ -101,6 +101,61 @@ fn every_rule_recognizes_its_fixture_and_not_one_without_what_makes_it_the_rules
     assert_eq!(check::recognize(&inner, &on, true, false).unwrap(), None);
     assert!(rules::matches("*.egg-info", "demo.egg-info") && rules::matches("requirements*.txt", "requirements-dev.txt")
         && !rules::matches("*.csproj", "App.csproj.bak") && rules::matches("*", ""));
+}
+
+/// Review 939ed865 (P2): a scratch root's clone built in source holds
+/// CMakeCache.txt beside its sources; there no Git check applies. A folder
+/// holding .git is no rule's, and CMake's rule takes a build folder only.
+#[test]
+fn a_checkout_is_never_a_cache_and_an_in_source_cmake_build_is_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let on = all();
+    let clone = root.join("scratch/clone");
+    for file in ["CMakeLists.txt", "CMakeCache.txt", "CMakeFiles/cmake.check_cache", "src/main.c"] {
+        touch(&clone.join(file), "");
+    }
+    assert_eq!(check::recognize(&clone, &on, false, true).unwrap(), None, "an in-source build is the sources");
+    let build = clone.join("build");
+    touch(&build.join("CMakeCache.txt"), "");
+    touch(&build.join("CMakeFiles/cmake.check_cache"), "");
+    assert_eq!(check::recognize(&build, &on, false, true).unwrap().map(|f| f.0), Some("cmake"), "its own build folder is one");
+    // Whatever else is in it, a folder holding .git is no rule's.
+    let tagged = root.join("t/cache");
+    touch(&tagged.join("CACHEDIR.TAG"), TAG_PYTEST);
+    let target = root.join("c/target");
+    touch(&target.join("CACHEDIR.TAG"), TAG_CARGO);
+    let next = root.join("n/.next");
+    touch(&root.join("n/package.json"), "{}");
+    let cmake = root.join("m/out");
+    touch(&cmake.join("CMakeCache.txt"), "");
+    touch(&cmake.join("CMakeFiles/x"), "");
+    for folder in [&tagged, &target, &next, &cmake] {
+        std::fs::create_dir_all(folder).unwrap();
+        assert!(check::recognize(folder, &on, true, true).unwrap().is_some(), "{folder:?} is one before");
+        std::fs::create_dir_all(folder.join(".git")).unwrap();
+        assert_eq!(check::recognize(folder, &on, true, true).unwrap(), None, "{folder:?} holding .git");
+    }
+    touch(&build.join(".git"), "gitdir: /synthetic/elsewhere");
+    assert_eq!(check::recognize(&build, &on, false, true).unwrap(), None, "a .git file, as a worktree has, too");
+}
+
+#[tokio::test]
+async fn a_scratch_root_s_clone_is_never_rebuildable_in_a_plan() {
+    let lab = lab();
+    let built = lab.scratch.join("job-7/clone");
+    for file in ["CMakeLists.txt", "CMakeCache.txt", "CMakeFiles/cmake.check_cache", "src/main.c"] {
+        touch(&built.join(file), "");
+    }
+    let repo = lab.scratch.join("job-8/web");
+    touch(&repo.join("CACHEDIR.TAG"), TAG_PYTEST);
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let plan = submit(&lab, "clones", vec![group("r", "rebuildable")], vec![
+        item("built", "r", "cache-dir", &built), item("repo", "r", "cache-dir", &repo)]).await;
+    let states = item_states(&lab, &plan).await;
+    assert_eq!(refused(&states, "built"), "noRule");
+    assert_eq!(refused(&states, "repo"), "noRule");
+    assert!(built.join("src/main.c").exists() && repo.join(".git").exists());
 }
 
 #[test]
@@ -314,6 +369,12 @@ fn core_and_the_script_recognize_the_same_folders() {
     let built = build(&tree);
     let compile = lab.scratch.join("job-9/node-compile-cache");
     std::fs::create_dir_all(&compile).unwrap();
+    // Near misses in a scratch root, where no Git check applies: an in-source CMake build and a clone.
+    for file in ["CMakeLists.txt", "CMakeCache.txt", "CMakeFiles/x", "src/main.c"] {
+        touch(&lab.scratch.join("job-9/clone").join(file), "");
+    }
+    touch(&lab.scratch.join("job-9/repo/CACHEDIR.TAG"), TAG_PYTEST);
+    std::fs::create_dir_all(lab.scratch.join("job-9/repo/.git")).unwrap();
     let on: BTreeSet<&'static str> = rules::ids().into_iter().map(|(id, _)| id).collect();
     let argv = inventory::command("python3", &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[],
         &rules::table(&on), "out.json");

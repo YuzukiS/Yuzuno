@@ -20,14 +20,17 @@ use super::*;
 
 /// One ecosystem's rule: a folder named as `names` says (`*` is any run of
 /// characters), with every group of `siblings` matched by a file or folder
-/// beside it (one name of each group; `a/b` is a path from beside it), and
-/// with `inside` matched by a file in it, when given.
+/// beside it (one name of each group; `a/b` is a path from beside it), every
+/// name of `inside` in it (a file or a folder), and none of `absent` in it.
 pub(crate) struct Rule {
     pub id: &'static str,
     pub label: &'static str,
     pub names: &'static [&'static str],
     pub siblings: &'static [&'static [&'static str]],
     pub inside: &'static [&'static str],
+    /// What a source folder holds and a build folder doesn't: CMake's own
+    /// listfile, for an in-source build (review 939ed865).
+    pub absent: &'static [&'static str],
     /// A `package.json` beside it whose `scripts` has this one.
     pub package_script: Option<&'static str>,
     /// Holds nothing but regular files ending so (`__pycache__`: `.pyc`).
@@ -51,57 +54,58 @@ pub(crate) const CARGO: &str = "cargo";
 /// Every rule, in the order they are tried after a CACHEDIR.TAG.
 pub(crate) static RULES: [Rule; 21] = [
     Rule { id: "node-modules", label: "Node.js node_modules (with a lockfile)", names: &["node_modules"], siblings: &[&["package.json"], NODE_LOCKS],
-        inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "npm ci rebuilds it from the lockfile only (docs.npmjs.com npm-ci); the outermost one" },
     Rule { id: "node-framework", label: "Node.js framework caches", names: &[".next", ".nuxt", ".svelte-kit", ".angular", ".turbo", ".parcel-cache"],
-        siblings: &[&["package.json"]], inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        siblings: &[&["package.json"]], inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "framework build caches beside package.json (kondo, projclean)" },
-    Rule { id: "frontend-build", label: "Front-end build output", names: &["dist", "build"], siblings: &[&["package.json"]], inside: &[],
+    Rule { id: "frontend-build", label: "Front-end build output", names: &["dist", "build"], siblings: &[&["package.json"]], inside: &[], absent: &[],
         package_script: Some("build"), only_suffix: None, needs_git: true, scratch_only: false, default_on: true,
         basis: "package.json has a build script; only where Git ignores it, since it may be a release" },
     Rule { id: "python-cache", label: "Python caches", names: &[".pytest_cache", ".ruff_cache", ".mypy_cache", "*.egg-info"], siblings: NONE,
-        inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "pytest, ruff and mypy caches and setuptools metadata (kondo, projclean)" },
-    Rule { id: "python-pycache", label: "Python __pycache__", names: &["__pycache__"], siblings: NONE, inside: &[], package_script: None,
+    Rule { id: "python-pycache", label: "Python __pycache__", names: &["__pycache__"], siblings: NONE, inside: &[], absent: &[], package_script: None,
         only_suffix: Some(".pyc"), needs_git: false, scratch_only: false, default_on: true, basis: "PEP 3147: compiled files only" },
-    Rule { id: "python-tox", label: "tox and nox environments", names: &[".tox", ".nox"], siblings: &[&["tox.ini", "noxfile.py"]], inside: &[],
+    Rule { id: "python-tox", label: "tox and nox environments", names: &[".tox", ".nox"], siblings: &[&["tox.ini", "noxfile.py"]], inside: &[], absent: &[],
         package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside tox.ini or noxfile.py" },
     Rule { id: "python-venv", label: "Python virtual environments", names: &[".venv", "venv"],
-        siblings: &[&["uv.lock", "poetry.lock", "requirements*.txt", "pdm.lock"]], inside: &["pyvenv.cfg"], package_script: None,
+        siblings: &[&["uv.lock", "poetry.lock", "requirements*.txt", "pdm.lock"]], inside: &["pyvenv.cfg"], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: false,
         basis: "pyvenv.cfg in it and a lock beside it; off by default: packages may have been installed by hand" },
-    Rule { id: "maven", label: "Maven target", names: &["target"], siblings: &[&["pom.xml"]], inside: &[], package_script: None, only_suffix: None,
+    Rule { id: "maven", label: "Maven target", names: &["target"], siblings: &[&["pom.xml"]], inside: &[], absent: &[], package_script: None, only_suffix: None,
         needs_git: false, scratch_only: false, default_on: true, basis: "beside pom.xml" },
     Rule { id: "gradle", label: "Gradle build", names: &["build", ".gradle"],
-        siblings: &[&["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]], inside: &[], package_script: None,
+        siblings: &[&["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside a Gradle build or settings file" },
-    Rule { id: "dotnet", label: ".NET bin and obj", names: &["bin", "obj"], siblings: &[&["*.csproj", "*.fsproj", "*.vbproj"]], inside: &[],
+    Rule { id: "dotnet", label: ".NET bin and obj", names: &["bin", "obj"], siblings: &[&["*.csproj", "*.fsproj", "*.vbproj"]], inside: &[], absent: &[],
         package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside a project file" },
-    Rule { id: "swiftpm", label: "SwiftPM .build", names: &[".build"], siblings: &[&["Package.swift"]], inside: &[], package_script: None,
+    Rule { id: "swiftpm", label: "SwiftPM .build", names: &[".build"], siblings: &[&["Package.swift"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside Package.swift" },
-    Rule { id: "dart", label: "Dart and Flutter", names: &[".dart_tool", "build"], siblings: &[&["pubspec.yaml"]], inside: &[], package_script: None,
+    Rule { id: "dart", label: "Dart and Flutter", names: &[".dart_tool", "build"], siblings: &[&["pubspec.yaml"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside pubspec.yaml" },
-    Rule { id: "elixir", label: "Elixir _build and deps", names: &["_build", "deps"], siblings: &[&["mix.exs"]], inside: &[], package_script: None,
+    Rule { id: "elixir", label: "Elixir _build and deps", names: &["_build", "deps"], siblings: &[&["mix.exs"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside mix.exs" },
     Rule { id: "haskell", label: "Haskell Stack and Cabal", names: &[".stack-work", "dist-newstyle"], siblings: &[&["stack.yaml", "cabal.project", "*.cabal"]],
-        inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "beside stack.yaml, cabal.project or a .cabal file" },
-    Rule { id: "zig", label: "Zig caches and output", names: &[".zig-cache", "zig-cache", "zig-out"], siblings: &[&["build.zig"]], inside: &[],
+    Rule { id: "zig", label: "Zig caches and output", names: &[".zig-cache", "zig-cache", "zig-out"], siblings: &[&["build.zig"]], inside: &[], absent: &[],
         package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside build.zig" },
-    Rule { id: "cmake", label: "CMake build folders", names: &["*"], siblings: NONE, inside: &["CMakeCache.txt"], package_script: None,
-        only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "CMakeCache.txt in it, by no name: build is too common" },
+    Rule { id: "cmake", label: "CMake build folders", names: &["*"], siblings: NONE, inside: &["CMakeCache.txt", "CMakeFiles"],
+        absent: &["CMakeLists.txt"], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        basis: "CMakeCache.txt and CMakeFiles in it and no CMakeLists.txt, by no name: build is too common, and an in-source build is the sources" },
     Rule { id: "unity", label: "Unity Library, Temp and Obj", names: &["Library", "Temp", "Obj"], siblings: &[&["ProjectSettings/ProjectVersion.txt"]],
-        inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "beside ProjectSettings/ProjectVersion.txt" },
     Rule { id: "unreal", label: "Unreal Intermediate, Binaries and DerivedDataCache", names: &["Intermediate", "Binaries", "DerivedDataCache"],
-        siblings: &[&["*.uproject"]], inside: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
+        siblings: &[&["*.uproject"]], inside: &[], absent: &[], package_script: None, only_suffix: None, needs_git: false, scratch_only: false, default_on: true,
         basis: "beside a .uproject file; Saved holds the user's own and is never one" },
-    Rule { id: "godot", label: "Godot .godot", names: &[".godot"], siblings: &[&["project.godot"]], inside: &[], package_script: None,
+    Rule { id: "godot", label: "Godot .godot", names: &[".godot"], siblings: &[&["project.godot"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: true, basis: "beside project.godot" },
-    Rule { id: "terraform", label: "Terraform .terraform", names: &[".terraform"], siblings: &[&["*.tf"]], inside: &[], package_script: None,
+    Rule { id: "terraform", label: "Terraform .terraform", names: &[".terraform"], siblings: &[&["*.tf"]], inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: false, default_on: false,
         basis: "beside a .tf file; off by default: rebuilding needs the network and sometimes credentials" },
-    Rule { id: "node-compile-cache", label: "Node.js compile cache", names: &["node-compile-cache"], siblings: NONE, inside: &[], package_script: None,
+    Rule { id: "node-compile-cache", label: "Node.js compile cache", names: &["node-compile-cache"], siblings: NONE, inside: &[], absent: &[], package_script: None,
         only_suffix: None, needs_git: false, scratch_only: true, default_on: true, basis: "Node's own module compile cache, in a scratch root only" },
 ];
 
@@ -127,7 +131,7 @@ pub(crate) fn enabled(settings: &Settings, project: Option<&str>) -> BTreeSet<&'
 /// The table as the inventory script takes it (`--rules`): the rules on, each as data.
 pub(crate) fn table(on: &BTreeSet<&'static str>) -> Value {
     let rules: Vec<Value> = RULES.iter().filter(|r| on.contains(r.id)).map(|r| json!({
-        "id": r.id, "names": r.names, "siblings": r.siblings, "inside": r.inside, "packageScript": r.package_script,
+        "id": r.id, "names": r.names, "siblings": r.siblings, "inside": r.inside, "absent": r.absent, "packageScript": r.package_script,
         "onlySuffix": r.only_suffix, "needsGit": r.needs_git, "scratchOnly": r.scratch_only})).collect();
     json!({"cachedirTag": on.contains(CACHEDIR_TAG), "cargo": on.contains(CARGO), "rules": rules})
 }
@@ -201,7 +205,7 @@ pub(crate) fn ecosystem(dir: &Path, on: &BTreeSet<&'static str>, in_git: bool, i
             continue;
         }
         let beside = rule.siblings.iter().all(|group| group.iter().any(|p| present(parent, p)));
-        let within = rule.inside.iter().all(|f| std::fs::symlink_metadata(dir.join(f)).is_ok_and(|m| m.is_file()));
+        let within = rule.inside.iter().all(|f| present(dir, f)) && !rule.absent.iter().any(|f| std::fs::symlink_metadata(dir.join(f)).is_ok());
         let script = rule.package_script.is_none_or(|s| package_has_script(&parent.join("package.json"), s));
         let only = rule.only_suffix.is_none_or(|s| only_files_ending(dir, s));
         if !(beside && within && script && only) {

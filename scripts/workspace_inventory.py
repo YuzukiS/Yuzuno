@@ -182,7 +182,9 @@ def rule_matches(rule, path, in_git, in_scratch):
         return False
     if not all(any(present(parent, p) for p in group) for group in rule.get("siblings", [])):
         return False
-    if not all(os.path.isfile(os.path.join(path, f)) and not os.path.islink(os.path.join(path, f)) for f in rule.get("inside", [])):
+    if not all(present(path, f) for f in rule.get("inside", [])):
+        return False
+    if any(os.path.lexists(os.path.join(path, f)) for f in rule.get("absent", [])):
         return False
     if rule.get("packageScript") and not package_has_script(os.path.join(parent, "package.json"), rule["packageScript"]):
         return False
@@ -194,7 +196,10 @@ def rule_matches(rule, path, in_git, in_scratch):
 def recognize(path, table, in_git, in_scratch):
     """(rule, basis) when a rule on recognizes path, else None. A CACHEDIR.TAG
     first: Cargo's goes by the cargo rule (only what Cargo makes goes), any
-    other valid one by cachedir-tag. Then each ecosystem's rule, in order."""
+    other valid one by cachedir-tag. Then each ecosystem's rule, in order.
+    A folder holding .git (a working tree or repository) is no rule's."""
+    if os.path.lexists(os.path.join(path, ".git")):
+        return None
     who = cachedir_tag(path)
     if (who is not None and "cargo" in who.lower()) or rustc_info(path):
         if not table.get("cargo"):

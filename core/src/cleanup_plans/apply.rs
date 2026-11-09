@@ -511,9 +511,6 @@ pub(super) fn remove_aside(path: &Path, dev: Option<u64>, ino: Option<u64>) -> s
     removed.map(|()| None).map_err(|e| ("partial", format!("Removing it stopped: {e}; what remains is at {}", aside.display())))
 }
 
-/// The planned Cargo profiles of a target folder that are still the ones
-/// planned, each removed under its build locks; everything else stays.
-/// With what was done, and whether every planned profile went.
 /// Every build lock Cargo keeps in one of its subtrees (check.rs
 /// `cargo_profiles`): a profile's own, and each profile's in a target
 /// triple's or the build-dir folder; none in doc, package or tmp, or in a
@@ -532,6 +529,9 @@ fn hold_locks_within(path: &Path) -> std::result::Result<Vec<std::fs::File>, Str
     Ok(held)
 }
 
+/// The planned Cargo profiles of a target folder that are still the ones
+/// planned, each removed under its build locks; everything else stays.
+/// With what was done, and whether every planned profile went.
 fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::result::Result<(Option<String>, bool), (&'static str, String)> {
     let (mut removed, mut kept) = (Vec::new(), Vec::new());
     for profile in planned {
