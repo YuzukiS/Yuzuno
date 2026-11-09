@@ -1114,3 +1114,104 @@ fn a_delivery_candidate_is_submitted_only_with_status_review() {
     let v = result(&s, &t, Some(f["candidate"].clone()), "review");
     assert_eq!(s.collaboration_call(None, "task_submit_result", v).unwrap()["task"]["status"], "review", "review takes it");
 }
+
+/// A completed review the user started, so it counts toward the PR's started
+/// rounds. `base`/`head` are fixed when given, which also makes it a
+/// candidate a delivery can adopt.
+fn completed_review(s: &Store, task: &str, key: &str, base: Option<&str>, head: Option<&str>) -> Value {
+    let mut body = json!({"requestId":key,"taskId":task,"linkId":"7:pull:1"});
+    if let Some(base) = base {
+        body["baseSha"] = json!(base);
+    }
+    if let Some(head) = head {
+        body["headSha"] = json!(head);
+    }
+    let input: crate::pr_review::Start = serde_json::from_value(body).unwrap();
+    let (mut run, _) = s.create_pr_review(None, &input, key).unwrap();
+    run["status"] = json!("completed");
+    run["conclusion"] = json!("no_findings");
+    if let Some(base) = base {
+        run["baseSha"] = json!(base);
+    }
+    if let Some(head) = head {
+        run["headSha"] = json!(head);
+    }
+    s.save_pr_review(&run, None).unwrap();
+    run
+}
+
+#[test]
+fn a_delivery_round_prechecks_the_prs_two_started_rounds_without_reserving() {
+    let (_d, s, t) = setup();
+    completed_review(&s, &t, "old1", None, None);
+    completed_review(&s, &t, "old2", None, None);
+    let error = s.collaboration_call(None, "delivery_enable", input(&t)).unwrap_err().to_string();
+    assert!(error.starts_with("round_limit:"), "{error}");
+    assert!(error.contains("a delivery round would be one more than the 2 it may use"), "{error}");
+    assert!(error.ends_with("No delivery round was authorized."), "{error}");
+    assert!(get(&s, &t).is_null(), "a refused precheck writes no flow");
+    // Adopting an existing matching review starts nothing new, so the
+    // precheck does not refuse it.
+    let (_d, s, t) = setup();
+    let base = "a".repeat(40);
+    let head = "b".repeat(40);
+    completed_review(&s, &t, "matching", Some(&base), Some(&head));
+    completed_review(&s, &t, "unrelated", None, None);
+    let f = enable(&s, &t);
+    assert_eq!(f["rounds"][0]["review"]["id"], "matching");
+    assert!(f["rounds"][0]["review"].get("limitRefused").is_none(), "an unset field is left out");
+}
+
+#[test]
+fn a_delivery_start_refused_by_the_limit_records_it_and_is_never_retried() {
+    let (_d, s, t) = setup();
+    // One counted round leaves room for the delivery's precheck, and another
+    // round takes the last slot before the delivery starts.
+    completed_review(&s, &t, "before", None, None);
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result"))
+        .unwrap();
+    completed_review(&s, &t, "late", Some(&"c".repeat(40)), Some(&"d".repeat(40)));
+    let key = internal(&s, &t);
+    let plan = s.delivery_claim(&key, "review").unwrap().unwrap();
+    let input: crate::pr_review::Start = serde_json::from_value(plan.input.clone()).unwrap();
+    let error = s.create_pr_review(Some("owner"), &input, "refused").unwrap_err().to_string();
+    assert!(error.starts_with("round_limit:"), "{error}");
+    s.delivery_finish(&key, &plan, Err(error)).unwrap();
+    let flow = get(&s, &t);
+    assert_eq!(flow["state"], "needs_judgment", "{flow}");
+    assert!(flow["reason"].as_str().unwrap().contains("No reviewer ran and it isn't retried"), "{flow}");
+    assert!(s.delivery_claim(&key, "review").unwrap().is_none(), "it is never retried");
+    assert!(s.delivery_reconcile(&key).unwrap());
+    assert!(!s.delivery_reconcile(&key).unwrap(), "one notification only");
+    let mail = s
+        .collaboration_call(Some("owner"), "peer_read", json!({"afterSeq":0,"limit":50}))
+        .unwrap();
+    assert_eq!(
+        mail["messages"].as_array().unwrap().iter()
+            .filter(|m| m["metadata"]["kind"] == "delivery" && m["metadata"]["status"] == "needs_judgment")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_delivery_continue_to_a_new_head_is_refused_when_the_pr_used_its_started_rounds() {
+    let (_d, s, t) = setup();
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result"))
+        .unwrap();
+    finish(&s, start(&s, &t, "one"), "changes_requested");
+    // Another counted round of a different candidate takes the second slot.
+    completed_review(&s, &t, "extra", Some(&"c".repeat(40)), Some(&"d".repeat(40)));
+    s.github_refresh_object(
+        "7:pull:1",
+        Ok((Repository { id: 7, full_name: "o/r".into() },
+            json!({"baseSha":"a".repeat(40),"headSha":"c".repeat(40),"state":"open"}))),
+    )
+    .unwrap();
+    let error = s.collaboration_call(None, "delivery_continue", next(&s, &t, "c")).unwrap_err().to_string();
+    assert!(error.starts_with("round_limit:"), "{error}");
+    assert!(error.ends_with("No delivery round was authorized."), "{error}");
+    assert_eq!(get(&s, &t)["rounds"].as_array().unwrap().len(), 1, "the refused round is not saved");
+}
