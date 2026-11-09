@@ -11,7 +11,10 @@
 //! drops Git's record of it; its branch stays. `cleanup_restore` puts it
 //! back: `git worktree add` at its path from its branch when that still
 //! points at the pinned commit (else detached at the ref), then its
-//! snapshot and its diff. A scratch entry gets back only the evidence files
+//! snapshot and its diff. Of Git's records only this worktree's own is
+//! dropped (`drop_record`), never with `git worktree prune`, which drops
+//! every worktree whose folder is away for now, such as one on a drive not
+//! mounted (Lead, mail 10748). A scratch entry gets back only the evidence files
 //! its snapshot kept. Snapshots are deleted after `snapshotDays` (Settings).
 use super::*;
 use crate::build_output::{git, git_limited};
@@ -160,6 +163,79 @@ pub(super) fn write_snapshot(root: &Path, files: &[String], diff: Option<&str>, 
     Ok(record)
 }
 
+/// `p` without `.` or `..`, its existing part as this host resolves it:
+/// the path a worktree's record names may be gone already.
+fn settle(p: &Path) -> PathBuf {
+    let mut plain = PathBuf::new();
+    for part in p.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                plain.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => plain.push(other),
+        }
+    }
+    let mut rest = Vec::new();
+    let mut head = plain.clone();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&head) {
+            return rest.iter().rev().fold(real, |at, name: &std::ffi::OsString| at.join(name));
+        }
+        match (head.file_name().map(|n| n.to_owned()), head.parent().map(Path::to_path_buf)) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                head = parent;
+            }
+            _ => return plain,
+        }
+    }
+}
+
+/// Drops Git's record of the worktree that was at `path`, and only it: the
+/// one folder in `<common>/worktrees/` whose `gitdir` names `<path>/.git`
+/// (absolute, or relative to that folder as worktree.useRelativePaths
+/// writes it), as `git worktree prune` would for this worktree alone. Kept,
+/// with why, while its folder is there, when no record or more than one
+/// names it, or when it is locked. Ok(Some(id)): dropped; Ok(None): none.
+pub(super) fn drop_record(common: &Path, path: &Path) -> std::result::Result<Option<String>, String> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err("its folder is still there".into());
+    }
+    let records = common.join("worktrees");
+    let entries = match std::fs::read_dir(&records) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Git's worktree records cannot be read: {error}")),
+    };
+    let want = settle(&path.join(".git"));
+    let mut named = Vec::new();
+    for entry in entries.flatten() {
+        let record = entry.path();
+        if !std::fs::symlink_metadata(&record).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let Ok(gitdir) = std::fs::read_to_string(record.join("gitdir")) else { continue };
+        let gitdir = Path::new(gitdir.trim());
+        let gitdir = if gitdir.is_absolute() { gitdir.to_path_buf() } else { record.join(gitdir) };
+        if settle(&gitdir) == want {
+            named.push(record);
+        }
+    }
+    match named.as_slice() {
+        [] => Ok(None),
+        [record] => {
+            if std::fs::symlink_metadata(record.join("locked")).is_ok() {
+                return Err(format!("its record {} is locked (git worktree lock)", record.display()));
+            }
+            let id = record.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            std::fs::remove_dir_all(record).map_err(|e| format!("its record {} could not be removed: {e}", record.display()))?;
+            Ok(Some(id))
+        }
+        more => Err(format!("{} of Git's worktree records name it", more.len())),
+    }
+}
+
 /// The ref that pins a reclaimed worktree's HEAD.
 pub(super) fn ref_name(task: &str, plan: &str, item: &str) -> String {
     let clean = |s: &str| -> String {
@@ -219,16 +295,14 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
     let removed = tokio::task::spawn_blocking(move || super::apply::remove_aside(&target, dev, ino))
         .await
         .unwrap_or_else(|e| Err(("failed", e.to_string())));
-    // Moved aside, wholly or partly removed: Git's record of it goes either way.
+    // Moved aside, wholly or partly removed: Git's record of it goes
+    // either way, and only its own.
     let gone = !matches!(&removed, Err(("refused", _)));
     if gone {
-        let pruned = match git(&ctx.project, &["worktree", "prune"]).await {
-            Ok(Ok(_)) => None,
-            Ok(Err(why)) => Some(format!("git worktree prune failed: {why}")),
-            Err(error) => Some(format!("git worktree prune failed: {error}")),
-        };
-        record["pruned"] = json!(pruned.is_none());
-        record["note"] = json!(pruned);
+        match drop_record(Path::new(&ctx.common), path) {
+            Ok(id) => record["record"] = json!({"dropped": id.is_some(), "id": id}),
+            Err(why) => record["record"] = json!({"dropped": false, "kept": why}),
+        }
     }
     if let Err((state, why)) = removed {
         return Err((state, format!("{why}; its HEAD stays pinned at {pinned}"), Some(record), Some(snapshot)));
@@ -318,8 +392,14 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         let project = project.clone().context("project_folder_missing: its task's Project has no folder on this host")?;
         let pinned = result["ref"].as_str().context("no_ref: Core pinned no commit for it")?;
         let head = result["head"].as_str().unwrap_or_default();
-        // A record its reclaim could not prune would refuse the path.
-        let _ = git(&project, &["worktree", "prune"]).await;
+        // A record its reclaim could not drop would refuse the path: only
+        // that one goes, never another worktree's.
+        let common = git(&project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await?
+            .map_err(|why| anyhow::anyhow!("project_not_git: {why}"))?;
+        let common = PathBuf::from(common.trim());
+        if let Err(why) = drop_record(&common, &target) {
+            bail!("restore_failed: Git still has a record of a worktree at {path}, which Core keeps: {why}");
+        }
         let branch = result["branch"].as_str().filter(|b| !b.is_empty());
         let tip = match branch {
             Some(b) => git(&project, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).await?.ok().map(|t| t.trim().to_owned()),
@@ -366,7 +446,10 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         let aside = target.with_file_name(format!(".yuzuno-restore-failed-{}", uuid::Uuid::new_v4()));
         let moved = std::fs::rename(&target, &aside).is_ok();
         if let (true, Some(project)) = (moved && kind == "worktree", project.as_ref()) {
-            let _ = git(project, &["worktree", "prune"]).await;
+            // The record of what came back names the path again: only it goes.
+            if let Ok(Ok(common)) = git(project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+                let _ = drop_record(Path::new(common.trim()), &target);
+            }
         }
         let failed = json!({"at": now(), "why": format!("{error:#}"), "aside": moved.then(|| aside.clone())});
         let (store, plan_id, item_id) = (ws.store.clone(), plan.id.clone(), input.item_id.clone());

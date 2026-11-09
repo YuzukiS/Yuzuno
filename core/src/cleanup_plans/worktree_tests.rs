@@ -233,3 +233,60 @@ fn worktree_on(lab: &Lab, path: &Path, branch: &str) -> PathBuf {
     git(&lab.project, &["worktree", "add", "-q", &path.display().to_string(), branch]);
     std::fs::canonicalize(path).unwrap()
 }
+
+/// Lead, mail 10748: only the reclaimed worktree's own record goes. Another
+/// worktree whose folder is away for now (a drive not mounted) keeps its
+/// record, and comes back to it.
+#[tokio::test]
+async fn only_the_reclaimed_worktree_s_record_goes_not_one_whose_folder_is_away_for_now() {
+    let lab = lab();
+    gated(&lab);
+    let away = worktree(&lab, &lab.project.join(".worktrees/away"), "feat/away");
+    let tree = worktree(&lab, &lab.project.join(".worktrees/done"), "feat/done");
+    let stored = lab.root().join("unmounted-drive");
+    std::fs::rename(&away, &stored).unwrap();
+    let listed = |lab: &Lab| git(&lab.project, &["worktree", "list", "--porcelain"]);
+    assert!(listed(&lab).contains(&format!("worktree {}", away.display())), "Git still has its record");
+    let plan = reclaim(&lab, "own-record", vec![item("w", "d", "worktree", &tree)]).await;
+    let items = items_of(&lab, &plan).await;
+    assert_eq!(items[0]["result"]["record"]["dropped"], true, "{:#}", items[0]);
+    let after = listed(&lab);
+    assert!(!after.contains(&format!("worktree {}", tree.display())), "its own record went: {after}");
+    assert!(after.contains(&format!("worktree {}", away.display())), "the other one's stays: {after}");
+    // Its drive comes back: it is a worktree as before.
+    std::fs::rename(&stored, &away).unwrap();
+    assert_eq!(git(&away, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat/away");
+    // Restoring drops nothing but the restored worktree's own record either.
+    std::fs::rename(&away, &stored).unwrap();
+    restore(&lab, None, "r1", &plan, "w").await.unwrap();
+    assert!(listed(&lab).contains(&format!("worktree {}", away.display())), "still there after a restore");
+    std::fs::rename(&stored, &away).unwrap();
+}
+
+#[test]
+fn a_record_is_dropped_only_when_it_alone_names_a_path_that_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let common = root.join("repo/.git");
+    let record = |id: &str, gitdir: &str| {
+        let at = common.join("worktrees").join(id);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join("gitdir"), format!("{gitdir}\n")).unwrap();
+        at
+    };
+    let gone = root.join("wt/gone");
+    let rel = record("rel", "../../../../wt/gone/.git");
+    assert_eq!(worktrees::drop_record(&common, &gone), Ok(Some("rel".to_owned())), "a relative gitdir names it too");
+    assert!(!rel.exists());
+    let here = root.join("wt/here");
+    std::fs::create_dir_all(&here).unwrap();
+    record("here", &format!("{}/.git", here.display()));
+    assert!(worktrees::drop_record(&common, &here).unwrap_err().contains("still there"));
+    let locked = record("locked", &format!("{}/.git", gone.display()));
+    std::fs::write(locked.join("locked"), "on a drive\n").unwrap();
+    assert!(worktrees::drop_record(&common, &gone).unwrap_err().contains("locked"));
+    std::fs::remove_file(locked.join("locked")).unwrap();
+    record("twin", &format!("{}/.git", gone.display()));
+    assert!(worktrees::drop_record(&common, &gone).unwrap_err().contains("2 of Git's"), "two records: neither goes");
+    assert_eq!(worktrees::drop_record(&common, &root.join("wt/none")), Ok(None));
+}
