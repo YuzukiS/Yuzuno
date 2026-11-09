@@ -478,7 +478,8 @@ export class ClaudeBridge {
     // Tool calls of background sub-agents made while no native turn runs.
     this.subagentCalls = new Set();
     // Follow-ups sent while turnId runs, by uuid: { uuid, clientMessageId,
-    // text, turnId (the Yuzuno turn they belong to), followUpTurnId, accepted }.
+    // text, turnId (the Yuzuno turn they belong to), followUpTurnId, accepted,
+    // unconfirmed (its turn ended with no word of it) }.
     this.appends = new Map();
     // Follow-ups an interrupt receipt says are still queued, for its turn's end.
     this.stillQueued = new Set();
@@ -737,7 +738,7 @@ export class ClaudeBridge {
    * turn ends first, run as the next turn (followUpTurnId). The running turn
    * is a prompt's or one of Claude's own (a notice's, a restart's rescue).
    * Acknowledges local enqueue only; a `message_delivery` event reports
-   * Claude naming it.
+   * Claude taking it in or naming it, or its turn ending without either.
    */
   append(command) {
     if (!this.ready) throw new Error('Runtime has not finished initialization');
@@ -790,6 +791,19 @@ export class ClaudeBridge {
   ours(prompts) {
     return Boolean(this.turnId) && prompts.some(id => id === this.promptUuid
       || (this.appends.has(id) && !(this.native && this.appends.get(id).turnId === this.native.id)));
+  }
+
+  /**
+   * A follow-up Claude Code says it took into the native turn now running,
+   * the one it was sent to: `command_lifecycle` 'started', between tool
+   * rounds. A turn a prompt started names it on no later reply, only on its
+   * result (CLI 2.1.318, YN-82). One starting a turn of its own, or taken
+   * into another turn, waits for the frames that name it.
+   */
+  taken(event) {
+    if (event.type !== 'command_lifecycle' || event.state !== 'started' || !this.native?.owner) return null;
+    const append = this.appends.get(event.command_uuid);
+    return append && !append.accepted && append.turnId === this.native.owner ? event.command_uuid : null;
   }
 
   /** Follow-ups Claude names here have been taken off its queue. */
@@ -1247,9 +1261,14 @@ export class ClaudeBridge {
       // the one of Claude's own that was running.
       const stillQueued = new Set(Array.isArray(receipt?.still_queued) ? receipt.still_queued : []);
       if (turn && this.turnId === turn) this.stillQueued = stillQueued;
-      else if (turn && !this.turnId) this.runQueued(turn, uuid => stillQueued.has(uuid));
-      else if (!turn && native && this.native === native) this.stillQueued = stillQueued;
-      else if (!turn && native && !this.turnId) this.runQueued(native.id, uuid => stillQueued.has(uuid));
+      else if (turn && !this.turnId) {
+        this.runQueued(turn, uuid => stillQueued.has(uuid));
+        this.unconfirmed(turn);
+      } else if (!turn && native && this.native === native) this.stillQueued = stillQueued;
+      else if (!turn && native && !this.turnId) {
+        this.runQueued(native.id, uuid => stillQueued.has(uuid));
+        this.unconfirmed(native.id);
+      }
       // Both native result and control receipt must settle before another send.
       return { interrupted: true, ...(receipt ? { receipt } : {}) };
     } finally {
@@ -1289,6 +1308,8 @@ export class ClaudeBridge {
         .find(append => append && !append.accepted && !(this.native && append.turnId === this.native.id));
       if (waiting) this.promote(waiting, waiting.turnId);
     }
+    const taken = this.taken(event);
+    if (taken) this.delivered([taken], this.native.owner);
     // Frames ahead of their init, or a repeated init, stay in the open turn.
     // A sub-agent's frame opens none: Core finds its turn from its call.
     if (!this.native && turnFrame && !subagentFrame(event)) this.native = this.open(event);
@@ -1370,6 +1391,8 @@ export class ClaudeBridge {
       this.promptUuid = null;
       for (const [uuid, append] of this.appends) if (append.accepted) this.appends.delete(uuid);
       this.runQueued(ended, this.leftQueued(event));
+      // An interrupt's receipt still to come may say which wait: it decides.
+      if (!this.interrupting) this.unconfirmed(ended);
     } else {
       for (const [uuid, append] of this.appends) if (append.accepted && append.turnId === native.id) this.appends.delete(uuid);
       // A follow-up sent to this turn of Claude's own and not read in it:
@@ -1377,7 +1400,10 @@ export class ClaudeBridge {
       // that prompt's turn; otherwise it runs next, as one sent to ours does.
       if (this.turnId) {
         for (const append of this.appends.values()) if (append.turnId === native.id) append.turnId = this.turnId;
-      } else this.runQueued(native.id, this.leftQueued(event));
+      } else {
+        this.runQueued(native.id, this.leftQueued(event));
+        if (!this.interrupting) this.unconfirmed(native.id);
+      }
     }
     this.native = null;
     for (const [tool, turn] of this.toolTurns) if (turn === native) this.toolTurns.delete(tool);
@@ -1413,10 +1439,27 @@ export class ClaudeBridge {
     }
   }
 
+  /**
+   * Follow-ups of a turn that ended with no word of them: Claude neither
+   * named them nor, on evidence, left them queued (an older Claude Code's
+   * result lists nothing; a list at its cap may leave them out). Whether
+   * Claude read them is unknown, said once, so none keeps waiting for a
+   * confirmation that will not come; a frame naming one later still runs
+   * or confirms it.
+   */
+  unconfirmed(turnId) {
+    for (const append of this.appends.values()) {
+      if (append.accepted || append.unconfirmed || append.turnId !== turnId) continue;
+      append.unconfirmed = true;
+      this.emit({ type: 'message_delivery', clientMessageId: append.clientMessageId, status: 'unconfirmed', turnId });
+    }
+  }
+
   /** Runs a follow-up as the next turn, or as part of `joined`, the next turn another started. */
   promote(append, previousTurnId, joined = null) {
     const turnId = joined ?? append.followUpTurnId;
     append.turnId = turnId;
+    append.unconfirmed = false;
     if (!joined) {
       this.turnId = turnId;
       this.promptUuid = append.uuid;

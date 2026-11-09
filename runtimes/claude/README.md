@@ -152,8 +152,14 @@ names yet is held, not shown, and refuses it. The message is queued with the def
 priority (never `'now'`, which stops the turn), folded into the running turn
 between tool rounds, or, if that turn ends first, run as the next turn, which
 then is `followUpTurnId`. Several may wait at once, in order. Each follow-up is
-confirmed only when a turn names its uuid (`user_message_uuids`). In a turn
-started by a typed prompt, that usually happens only on the result. A turn that
+confirmed when Claude Code says it took it into the running turn it was sent
+to (`command_lifecycle` with its uuid as `command_uuid` and state `started`,
+between tool rounds), or when a turn names its uuid (`user_message_uuids`). A
+turn started by a typed prompt names a folded message on no later reply, only
+on its result (checked with CLI 2.1.318 and a local API fixture,
+`acceptance/yn82-folded-message`), so without that frame it is confirmed only
+as the turn ends. A `started` frame while no turn runs, or for a follow-up sent
+to another turn, confirms nothing by itself. A turn that
 names any follow-up still held is answering it, so that follow-up belongs to
 that turn. A result naming any of them, even by the single
 `user_message_uuid`, ends that turn.
@@ -166,7 +172,9 @@ the uuids it names.
 Such follow-ups run next as one turn: the first one's `followUpTurnId`, which
 the rest join. Without that evidence a follow-up claims no turn. The next native
 turn is held until a frame names it, which makes that turn the follow-up's. A
-missing confirmation never moves a follow-up on by itself.
+missing confirmation never moves a follow-up on by itself. The turn's end
+reports it `unconfirmed` once, after an interrupt receipt still due has
+decided: whether Claude read it is unknown, and nothing sends it again.
 
 A follow-up sent to a native turn of Claude's own is folded into that turn
 when one of its frames names it, and is `accepted` there; that frame does not
@@ -236,10 +244,10 @@ Notifications:
   `respond`). A native turn's end cancels only its own requests.
 - `{type:"permission_cancelled",requestId}` revokes an unresolved callback.
 - `{type:"message_delivery",clientMessageId,status,turnId,previousTurnId?}`
-  reports a follow-up: `accepted` once a frame or result names its uuid (Claude
-  took it off its queue; a turn started by a typed prompt names a folded
-  message only on its result), in `turnId`; `next` when its turn
-  (`previousTurnId`) ended first and Claude runs it as `turnId`.
+  reports a follow-up: `accepted` once Claude Code says it took it into
+  `turnId` (`command_lifecycle` `started`) or a frame or result names its uuid;
+  `next` when its turn (`previousTurnId`) ended first and Claude runs it as
+  `turnId`; `unconfirmed` when `turnId` ended with no word of it either way.
 - `{type:"exit",error?}` means the native stream ended.
 
 Whose a native turn is comes only from what Claude reports, never from
