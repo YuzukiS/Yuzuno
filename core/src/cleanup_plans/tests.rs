@@ -528,6 +528,7 @@ async fn only_the_task_s_executor_registers_a_retry_is_the_same_plan_and_a_newer
         [newer["planId"].as_str()]).unwrap();
     let current = lab.ws.stored(|s| current_plan(s, "T-1")).await.unwrap();
     assert!(current["plan"].is_null());
+    assert_eq!(current["planned"], true, "it had plans: a gate ask of it is still a cleanup approval");
     let read = lab.ws.collaboration_call(None, "cleanup_plan_get", json!({"planId": newer["planId"]})).await.unwrap();
     assert_eq!(read["state"], "expired");
 }
@@ -535,6 +536,7 @@ async fn only_the_task_s_executor_registers_a_retry_is_the_same_plan_and_a_newer
 #[tokio::test]
 async fn its_executor_a_lead_and_the_user_read_it_and_items_come_in_pages() {
     let lab = lab();
+    assert_eq!(lab.ws.stored(|s| current_plan(s, "T-1")).await.unwrap()["planned"], false, "no plan yet");
     for name in ["a", "b", "c"] {
         std::fs::create_dir_all(lab.scratch.join(name)).unwrap();
     }

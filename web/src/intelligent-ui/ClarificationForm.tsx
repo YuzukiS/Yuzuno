@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, Check, Clock, LoaderCircle } from "lucide-react";
 import {
   carryClarification,
@@ -88,6 +88,12 @@ type Props = {
     values?: ClarificationValues;
   };
   blockedReason?: string;
+  /**
+   * What an option shows in place of its label and description, when it
+   * returns one: a cleanup approval shows Core's own summary of each group
+   * there (YN-74 ①b). The choice and its answer are the option's as ever.
+   */
+  optionView?: (fieldId: string, option: { id: string; label: string; description?: string }) => ReactNode | null;
   onSubmit?: (values: ClarificationValues) => Promise<void>;
   onCheck?: () => void;
   /**
@@ -113,6 +119,7 @@ function Form({
   agentName,
   delivery,
   blockedReason,
+  optionView,
   onSubmit,
   onCheck,
   carry = false,
@@ -435,12 +442,14 @@ function Form({
                             )
                           }
                         />
-                        <span>
-                          <strong>{option.label}</strong>
-                          {option.description && (
-                            <small>{option.description}</small>
-                          )}
-                        </span>
+                        {optionView?.(field.id, option) ?? (
+                          <span>
+                            <strong>{option.label}</strong>
+                            {option.description && (
+                              <small>{option.description}</small>
+                            )}
+                          </span>
+                        )}
                       </label>
                     );
                   })}
