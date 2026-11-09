@@ -60,6 +60,11 @@ const cl = { id: "cl", enabled: true, harness: "claude", model: "opus", credenti
 const savedView = (over = {}) => ({ version: 3, updatedAt: "2026-11-08T04:00:00Z", limits: { candidates: 8 },
   policy: { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, futureFlag: "kept", candidates: [clone(ds), clone(cl)] }, ...over });
 
+/** The Workspace's keys as Core lists them: never a value. */
+const KEYS = [
+  { id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: "2026-11-08T03:00:00Z" },
+  { id: "anthropic", provider: "anthropic", source: "1password", set: true, setAt: "2026-11-08T03:00:00Z", reference: "op://Vault/Anthropic/credential" },
+];
 /** Each tool's list as Core answers it (YN-57 S2b): Claude Code's CLI aliases and what each points to now, Codex's
  * model/list, and OpenCode's as a new executor lists them (docs/executor-routing.md). */
 const CATALOGS = {
@@ -88,8 +93,8 @@ const CATALOGS = {
 
 /** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
  * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default. */
-function core({ view = savedView(), put, lists } = {}) {
-  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 } };
+function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
+  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: clone(keys) };
   return { state, route(url, method, body) {
     const u = new URL(url, "http://isolated.test");
     const p = u.pathname;
@@ -106,10 +111,15 @@ function core({ view = savedView(), put, lists } = {}) {
       state.view = { ...state.view, version: state.view.version + 1, policy: body.policy, updatedAt: "2026-11-08T05:00:00Z" };
       return [200, state.view];
     }
-    if (p === "/api/routing/keys") return [200, { keys: [
-      { id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: "2026-11-08T03:00:00Z" },
-      { id: "anthropic", provider: "anthropic", source: "1password", set: true, setAt: "2026-11-08T03:00:00Z", reference: "op://Vault/Anthropic/credential" },
-    ], onePasswordToken: { set: true } }];
+    if (p === "/api/routing/keys") return [200, { keys: state.keys, onePasswordToken: { set: true } }];
+    // A key kept (S1's write, YN-57 S3): the answer says only that it is set.
+    const key = p.match(/^\/api\/routing\/keys\/([^/]+)$/);
+    if (key && method === "PUT") {
+      const kept = { id: decodeURIComponent(key[1]), provider: body.provider, source: body.source, set: true, setAt: "2026-11-09T01:00:00Z",
+        ...(body.reference ? { reference: body.reference } : {}) };
+      state.keys = [...state.keys.filter((k) => k.id !== kept.id), kept];
+      return [200, kept];
+    }
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
       { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAIL },
       { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
@@ -430,6 +440,21 @@ test("a saved model the list lacks stays chosen and says so; Other takes a typed
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   assert.equal(puts(page)[0].body.policy.candidates.find((c) => c.id === "cy").model, "gpt-7-preview");
+});
+
+test("a candidate added by hand offers an API key for its tool with no keys added yet (YN-57 S3)", async () => {
+  const page = mount(core({ keys: [] }));
+  await opened(page);
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const id = cards(page)[2].dataset.cand;
+  const offered = () => [...editorField(page, id, "Account or key").options].map((o) => [o.value, o.textContent]);
+  assert.ok(offered().some(([value, label]) => value === "new:anthropic" && label === "Add an API key for Anthropic…"),
+    `Claude Code takes an Anthropic key, and one can be added from here: ${JSON.stringify(offered())}`);
+  await set(page, editorField(page, id, "Tool"), "opencode");
+  for (const provider of ["DeepSeek", "Anthropic", "OpenAI"]) {
+    assert.ok(offered().some(([, label]) => label === `Add an API key for ${provider}…`), `OpenCode takes ${provider}'s: ${JSON.stringify(offered())}`);
+  }
 });
 
 test("routing off, the Workspace cap, a weekly schedule of its own and a pool of chosen accounts", async () => {
