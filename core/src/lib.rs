@@ -113,6 +113,7 @@ pub mod task_workspaces;
 mod build_output;
 mod build_cleanup;
 pub mod updates;
+mod waits_live;
 pub mod workspace;
 pub mod workspace_backup;
 mod web_push;

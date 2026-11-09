@@ -821,9 +821,10 @@ fn live_counts_follow_each_agents_unfinished_jobs_only() {
             json!({"bootId":"boot"}),
         )
         .unwrap();
+    // The oldest unfinished Job whose outcome is known names the wait (YN-51).
     assert_eq!(
         counts(&s),
-        json!({"a":{"active":2,"unknown":0},"b":{"active":1,"unknown":0}})
+        json!({"a":{"active":2,"unknown":0,"name":"Small job"},"b":{"active":1,"unknown":0,"name":"Small job"}})
     );
     // Starting, running and finishing: only the finished one drops out.
     let started = s.reserve_next_job(None, None, None).unwrap().unwrap();
@@ -833,17 +834,23 @@ fn live_counts_follow_each_agents_unfinished_jobs_only() {
         .unwrap();
     s.update_job_evidence(first["id"].as_str().unwrap(), evidence(&started, "succeeded"))
         .unwrap();
-    assert_eq!(counts(&s)["a"], json!({"active":1,"unknown":0}));
+    assert_eq!(counts(&s)["a"], json!({"active":1,"unknown":0,"name":"Small job"}));
     // Cancelling a queued job ends it at once; Agent b has nothing left.
     s.request_job_cancel(Some("b"), other["id"].as_str().unwrap())
         .unwrap();
-    assert_eq!(counts(&s), json!({"a":{"active":1,"unknown":0}}));
+    assert_eq!(counts(&s), json!({"a":{"active":1,"unknown":0,"name":"Small job"}}));
     // An unknown outcome still holds its reservation: unfinished, counted apart.
     let started = s.reserve_next_job(None, None, None).unwrap().unwrap();
     assert_eq!(started["id"], second["id"]);
     s.job_unknown(second["id"].as_str().unwrap(), "process state could not be confirmed")
         .unwrap();
+    // Its only Job's outcome is unknown: nothing it is waiting on to name.
     assert_eq!(counts(&s), json!({"a":{"active":1,"unknown":1}}));
+    // A newer Job is named only while no older one is unfinished.
+    let mut later = input("later");
+    later.name = "web-tests".into();
+    s.create_job(Some("a"), later, json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap();
+    assert_eq!(counts(&s), json!({"a":{"active":2,"unknown":1,"name":"web-tests"}}));
 }
 
 // T-95: free space where jobs write, and launches that never started.
