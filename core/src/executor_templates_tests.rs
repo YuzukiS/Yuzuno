@@ -590,8 +590,11 @@ fn a_template_before_yn56_reads_as_a_level_and_one_that_follows_routing_names_no
     stored_at(&store, KEY, before.clone());
     let read = store.executor_templates().unwrap();
     assert_eq!((read.version, read.later_templates), (7, 0));
-    let shape = |t: &Template| (t.id.as_str(), t.fixed(), t.harness.as_deref(), t.model.as_deref(), t.reasoning_effort.as_deref(),
-        t.permission_level.as_deref(), t.permission_preset.as_deref(), t.permission_mode.as_deref());
+    type Shape<'a> = (&'a str, bool, Option<&'a str>, Option<&'a str>, Option<&'a str>, Option<&'a str>, Option<&'a str>, Option<&'a str>);
+    fn shape(t: &Template) -> Shape<'_> {
+        (t.id.as_str(), t.fixed(), t.harness.as_deref(), t.model.as_deref(), t.reasoning_effort.as_deref(),
+            t.permission_level.as_deref(), t.permission_preset.as_deref(), t.permission_mode.as_deref())
+    }
     assert_eq!(read.templates.iter().map(shape).collect::<Vec<_>>(), [
         ("c-auto", false, None, None, None, Some("auto"), None, None),
         ("c-default", false, None, None, None, Some("ask"), None, None),
