@@ -432,7 +432,15 @@ fn sha(text: &str) -> String {
 /// main at e676b0e8): a round whose merge base didn't change, a round of an
 /// older coverage policy and every full or continuation round keep them byte
 /// for byte. Change these only with a deliberate prompt change.
-const PINNED: &[&str] = &[];
+const PINNED: &[&str] = &[
+    "full-v1 9fab5f526414969bf7d45352766478e4455145edb5b35cd87a7f10593dc48424 52a1bfe7bf683c8245cd54356b802695d48d60f5e3e432cb7e170542154fd9e6",
+    "full-v2 11088ad621d9405cd9affdc84950ab957debd02e8d1aebfc20e729e8c4df34b9 52a1bfe7bf683c8245cd54356b802695d48d60f5e3e432cb7e170542154fd9e6",
+    "full-v3 4c13c1d4e5335908996127418f6a90fa6d46d27ce26022470ab02ae4922f4eb7 52a1bfe7bf683c8245cd54356b802695d48d60f5e3e432cb7e170542154fd9e6",
+    "full-v3-outside bebaa28d8e1ab3f28964f6f7c48dffc094351d4754fae0d6007c6707947a935f 52a1bfe7bf683c8245cd54356b802695d48d60f5e3e432cb7e170542154fd9e6",
+    "continuation-v3 698f50af13b97be510e0c5f9e7e213df0ed15b1440ccfdf10c17b0e252314d55 52a1bfe7bf683c8245cd54356b802695d48d60f5e3e432cb7e170542154fd9e6",
+    "incremental-same-base 5c5313d6e7438d8c3d2e63b66ac7300d2423a1655d3a70088ae8303aaf714e42 80778ef5583ac70fede2c9f76ef431a3c5c2f6ff0348d5ab389ef68e3ee2b037",
+    "incremental-v2-base-changed 9e986e9a83301c214f5511c47e9e9b025cabb12966a57107e518ece21bc75195 80778ef5583ac70fede2c9f76ef431a3c5c2f6ff0348d5ab389ef68e3ee2b037",
+];
 
 #[test]
 fn only_a_round_whose_merge_base_changed_is_offered_fixed_by_base_and_every_other_prompt_stays_byte_for_byte() {

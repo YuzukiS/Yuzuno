@@ -6,7 +6,10 @@
 //! both sides, with the same merge base, carry over. Every other changed path
 //! is read again. None of its findings disappear: one is settled only when
 //! this round shows, by its own complete reads of paths that changed since,
-//! where it was fixed.
+//! where it was fixed, or, after a new merge base, what the base changed
+//! that answers it (YN-67): paths Core itself lists as changed between the
+//! two merge bases, which this round read whole. Code that moved into the
+//! base is not fixed by it.
 use super::{continuation, policy, source};
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
@@ -16,6 +19,10 @@ mod tests;
 
 /// The longest explanation a settled finding keeps.
 const MAX_EXPLANATION_BYTES: usize = 20_000;
+/// At most this many paths changed between the two merge bases are kept,
+/// and this many are listed to the reviewer.
+const MAX_BASE_CHANGES: usize = 2_000;
+const LISTED_BASE_CHANGES: usize = 300;
 
 fn round(previous: &Value) -> String {
     format!("Round {} ({})", previous["round"], previous["id"].as_str().unwrap_or_default())
@@ -165,6 +172,42 @@ pub(super) fn compare(previous: &Value, run: &mut Value) -> Result<Vec<Value>> {
     Ok(proofs)
 }
 
+/// What changed between the earlier round's merge base and this one's, from
+/// `git diff-tree -r --raw -z --no-renames` of the two: each path's status
+/// and both sides' blob and mode, never content. A side that doesn't exist
+/// is null. Output Core can't read leaves it unavailable.
+pub(super) fn base_changes(raw: &[u8], from: &str, to: &str) -> Value {
+    let unavailable = |why: &str| json!({"state":"unavailable","from":from,"to":to,"error":why});
+    let present = |sha: &str| (!sha.bytes().all(|b| b == b'0')).then(|| sha.to_owned());
+    let (mut paths, mut total) = (Vec::new(), 0usize);
+    let mut tokens = raw.split(|b| *b == 0).filter(|t| !t.is_empty());
+    while let Some(meta) = tokens.next() {
+        let (Some(path), Ok(meta)) = (tokens.next(), std::str::from_utf8(meta)) else {
+            return unavailable("unexpected diff-tree output");
+        };
+        let fields: Vec<&str> = meta.strip_prefix(':').unwrap_or(meta).split(' ').collect();
+        let [from_mode, to_mode, from_blob, to_blob, status] = fields[..] else {
+            return unavailable("unexpected diff-tree output");
+        };
+        total += 1;
+        // A path that isn't UTF-8 can't be named in an answer; it is counted.
+        if let (true, Ok(path)) = (paths.len() < MAX_BASE_CHANGES, std::str::from_utf8(path)) {
+            paths.push(json!({"path":path,"status":status.get(..1).unwrap_or(status),"fromBlob":present(from_blob),"fromMode":present(from_mode),
+                "toBlob":present(to_blob),"toMode":present(to_mode)}));
+        }
+    }
+    json!({"state":"read","from":from,"to":to,"total":total,"truncated":total > paths.len(),"paths":paths})
+}
+
+/// Whether this round may answer a finding fixed by its new merge base: the
+/// merge base changed, Core read what changed, and the round is of coverage
+/// policy 3, the one these instructions are written for.
+fn base_offered(run: &Value) -> bool {
+    run["incremental"]["sameMergeBase"] == false
+        && run["incremental"]["baseChanges"]["state"] == "read"
+        && run["coveragePolicyVersion"].as_u64().is_some_and(|v| v >= 3)
+}
+
 /// The fetched snapshot's own evidence, with what the reviewer must know of
 /// the earlier round. All of it counts as context bytes.
 pub(super) fn evidence(collected: &str, run: &Value) -> Result<String> {
@@ -180,29 +223,123 @@ pub(super) fn evidence(collected: &str, run: &Value) -> Result<String> {
     evidence["alreadyCovered"] = json!(covered);
     evidence["targets"] = i["targets"].clone();
     evidence["leftThePr"] = i["leftThePr"].clone();
+    if base_offered(run) {
+        let changes = &i["baseChanges"];
+        let listed: Vec<Value> = changes["paths"].as_array().into_iter().flatten().take(LISTED_BASE_CHANGES)
+            .map(|p| json!({"path":p["path"],"status":p["status"]}))
+            .collect();
+        evidence["mergeBaseChanged"] = json!({"from":changes["from"],"to":changes["to"],"listed":listed.len(),"total":changes["total"],"paths":listed});
+    }
     Ok(serde_json::to_string(&evidence)?)
 }
 
 /// The report's extra field for an incremental review: one disposition per
-/// earlier finding, by index.
-pub(super) fn schema(findings: usize) -> Value {
-    json!({"type":"array","maxItems":findings,"items":{"type":"object","additionalProperties":false,"required":["index","disposition","fix_paths","explanation"],"properties":{
+/// earlier finding, by index. After a new merge base (`base`) it may also be
+/// fixed_by_base, naming base paths.
+pub(super) fn schema(findings: usize, base: bool) -> Value {
+    let mut schema = json!({"type":"array","maxItems":findings,"items":{"type":"object","additionalProperties":false,"required":["index","disposition","fix_paths","explanation"],"properties":{
         "index":{"type":"integer","minimum":0,"description":"The earlier finding's index in incrementalOf.findings"},
         "disposition":{"type":"string","enum":["fixed","still_valid"]},
         "fix_paths":{"type":"array","items":{"type":"string"},"description":"For fixed: the targets you read completely at this head that contain the fix; empty for still_valid"},
         "explanation":{"type":"string","description":format!("Nonblank, at most {MAX_EXPLANATION_BYTES} UTF-8 bytes")}
-    }}})
+    }}});
+    if base {
+        let items = &mut schema["items"];
+        items["properties"]["disposition"]["enum"] = json!(["fixed", "still_valid", "fixed_by_base"]);
+        items["properties"]["base_paths"] = json!({"type":"array","items":{"type":"string"},
+            "description":"For fixed_by_base: paths from mergeBaseChanged, added or changed in the new merge base, that you read completely there and that make the finding hold no longer; empty otherwise"});
+        items["required"].as_array_mut().unwrap().push(json!("base_paths"));
+    }
+    schema
+}
+
+/// What a new merge base brought, as this round may rely on it (YN-67).
+struct Base<'a> {
+    /// The merge base differs from the earlier round's.
+    changed: bool,
+    /// What Core read of the change, when it could.
+    paths: Option<&'a [Value]>,
+    targets: Vec<&'a str>,
+    reads: &'a [Value],
+}
+
+/// Whether this round's own `source_read` receipts deliver every line of
+/// `path` as the object `blob`.
+fn read_whole(reads: &[Value], path: &str, blob: &str) -> bool {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    let mut total = None;
+    for read in reads.iter().filter(|r| r["tool"] == "source_read" && r["path"] == path && r["blobSha"] == blob) {
+        if let (Some(start), Some(end), Some(lines)) = (read["startLine"].as_u64(), read["endLine"].as_u64(), read["totalLines"].as_u64()) {
+            ranges.push((start, end));
+            total = Some(lines);
+        }
+    }
+    let Some(total) = total.filter(|lines| *lines > 0) else {
+        return false;
+    };
+    ranges.sort_unstable();
+    let mut next = 1;
+    for (start, end) in ranges {
+        if start > next {
+            return false;
+        }
+        next = next.max(end + 1);
+    }
+    next > total
+}
+
+/// `fixed_by_base`: the merge base changed and Core read what it changed;
+/// the finding's own path didn't change there (else the code it is about
+/// may be in the base now) and is a target this round read completely; and
+/// each base path is one the new merge base added or changed, other than
+/// that path, which this round read whole at its new object.
+fn settle_by_base(answer: &Value, finding: &Value, base: &Base, read_here: &dyn Fn(&str) -> bool) -> Result<Value, &'static str> {
+    if !base.changed {
+        return Err("the merge base didn't change since the earlier round");
+    }
+    let changes = base.paths.ok_or("Core couldn't read what the new merge base changed")?;
+    let entry = |path: &str| changes.iter().find(|c| c["path"] == path);
+    let own = finding["path"].as_str().unwrap_or_default();
+    if entry(own).is_some() {
+        return Err("its own path changed in the new merge base, so the code it is about may be there now");
+    }
+    if !base.targets.contains(&own) || !read_here(own) {
+        return Err("its own path isn't a target this round read completely");
+    }
+    let listed = answer["base_paths"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let paths: Vec<&str> = listed.iter().filter_map(Value::as_str).collect();
+    let distinct = paths.iter().collect::<std::collections::BTreeSet<_>>().len() == paths.len();
+    if paths.is_empty() || paths.len() != listed.len() || !distinct {
+        return Err("fixed by the base without base paths");
+    }
+    let mut used = Vec::new();
+    for path in paths {
+        let Some(change) = entry(path).filter(|c| c["toBlob"].is_string() && path != own) else {
+            return Err("a base path isn't one the new merge base added or changed");
+        };
+        let target_read = base.targets.contains(&path) && read_here(path);
+        if !target_read && !read_whole(base.reads, path, change["toBlob"].as_str().unwrap_or_default()) {
+            return Err("a base path wasn't read completely by this round at the new merge base");
+        }
+        used.push(json!({"path":path,"fromBlob":change["fromBlob"],"toBlob":change["toBlob"]}));
+    }
+    let explanation = answer["explanation"].as_str().filter(|e| !e.trim().is_empty() && e.len() <= MAX_EXPLANATION_BYTES).ok_or("fixed without an explanation")?;
+    Ok(json!({"disposition":"fixed_by_base","fixPaths":[],"basePaths":used,"explanation":explanation}))
 }
 
 /// Why an earlier finding stays, or the settlement this round's own reads
 /// support: `fixed`, once, with fix paths that changed since the earlier
-/// head and that this round covered itself, and an explanation.
-fn settle(answers: &[&Value], changed: &[&str], read_here: &dyn Fn(&str) -> bool) -> Result<Value, &'static str> {
+/// head and that this round covered itself, and an explanation; or
+/// `fixed_by_base` (settle_by_base).
+fn settle(answers: &[&Value], changed: &[&str], read_here: &dyn Fn(&str) -> bool, finding: &Value, base: &Base) -> Result<Value, &'static str> {
     let answer = match answers {
         [] => return Err("not answered"),
         [answer] => *answer,
         _ => return Err("answered more than once"),
     };
+    if answer["disposition"] == "fixed_by_base" {
+        return settle_by_base(answer, finding, base, read_here);
+    }
     if answer["disposition"] != "fixed" {
         return Err("not shown fixed");
     }
@@ -234,6 +371,12 @@ pub(super) fn conclude(run: &mut Value, answers: &Value) {
         covered.as_array().into_iter().flatten()
             .any(|c| c["path"] == path && (c["byReview"].is_null() || c["byReview"] == id))
     };
+    let base = Base {
+        changed: i["sameMergeBase"] == false,
+        paths: (i["baseChanges"]["state"] == "read").then(|| i["baseChanges"]["paths"].as_array().map(Vec::as_slice)).flatten(),
+        targets: i["targets"].as_array().into_iter().flatten().filter_map(|t| t["path"].as_str()).collect(),
+        reads: run["contextReads"].as_array().map(Vec::as_slice).unwrap_or_default(),
+    };
     let mut by_index: HashMap<u64, Vec<&Value>> = HashMap::new();
     for answer in answers.as_array().into_iter().flatten() {
         if let Some(index) = answer["index"].as_u64() {
@@ -245,7 +388,7 @@ pub(super) fn conclude(run: &mut Value, answers: &Value) {
         let mut f = earlier.clone();
         f["origin"] = json!({"reviewId":i["previousReviewId"],"carried":true});
         let given = by_index.get(&(index as u64)).map(Vec::as_slice).unwrap_or_default();
-        match settle(given, &changed, &read_here) {
+        match settle(given, &changed, &read_here, earlier, &base) {
             Ok(settlement) => {
                 f["settlement"] = settlement;
                 f["settlement"]["settledBy"] = id.clone();

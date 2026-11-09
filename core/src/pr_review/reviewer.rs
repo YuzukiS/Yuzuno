@@ -495,7 +495,7 @@ pub(super) fn schema(evidence: &str) -> Value {
     let mut schema = output_schema();
     let parsed = serde_json::from_str::<Value>(evidence).unwrap_or(Value::Null);
     if let Some(findings) = parsed["incrementalOf"]["findings"].as_array() {
-        schema["properties"]["previous_findings"] = super::incremental::schema(findings.len());
+        schema["properties"]["previous_findings"] = super::incremental::schema(findings.len(), base_changed(&parsed));
         schema["required"].as_array_mut().unwrap().push(json!("previous_findings"));
     }
     schema
@@ -544,6 +544,19 @@ pub(super) fn incomplete(run: &Value) -> String {
     )
 }
 
+/// An incremental round of coverage policy 3 whose merge base changed and
+/// whose evidence lists what changed there (YN-67): only it is offered
+/// fixed_by_base, so every other round's instructions and schema stay as they
+/// were, byte for byte.
+fn base_changed(parsed: &Value) -> bool {
+    parsed["incrementalOf"].is_object()
+        && parsed["mergeBaseChanged"].is_object()
+        && parsed["coveragePolicyVersion"].as_u64().is_some_and(|v| v >= 3)
+}
+
+/// What an incremental round of a new merge base is told of it.
+const BASE_CHANGED: &str = " The merge base changed since that round: mergeBaseChanged lists the paths whose object differs between its merge base and this one (listed of total). An earlier finding that no longer holds only because of that change may be answered fixed_by_base: base_paths names the listed paths, added or changed there, that make it hold no longer, each read completely with source_read at revision mergeBase (every line); fix_paths stays empty, and the explanation says how. Read the finding's own path completely as a target too. Code that is in the base now is not fixed by it: when the finding's own path changed in the new merge base or left this PR, answer still_valid.";
+
 pub(super) fn prompt(evidence: &str) -> String {
     let parsed = serde_json::from_str::<Value>(evidence).unwrap_or(Value::Null);
     let outside = if parsed["knownOutsideScope"].as_array().is_some_and(|paths| !paths.is_empty()) {
@@ -569,6 +582,14 @@ pub(super) fn prompt(evidence: &str) -> String {
         "Review the ENTIRE fixed PR from mergeBaseSha to headSha. Full file contents are NOT included. First page review_changes until nextCursor is null. Every modified or removed file requires all source_diff pages (offset 0 through nextOffset null). For an added regular UTF-8 text file only, you may instead read its entire head source with source_read, retaining the matching change metadata, revision, blob and mode. Cover every actual line without gaps; for an empty file request line 1 and use the returned empty-file evidence. Complete added-source reading is full_added_source coverage, not a delivered diff. A rename is deletion plus addition: reading its new path alone never covers the deletion. Binary and special files cannot use this alternative."
     } else {
         "Review the ENTIRE fixed PR from mergeBaseSha to headSha. Full file contents are NOT included. First page review_changes until nextCursor is null, then source_diff for EVERY changed path, beginning offset 0 and following nextOffset until null. A clean conclusion requires every diff page to have been delivered."
+    };
+    // Only an incremental round of a new merge base hears of it.
+    let based;
+    let coverage = if base_changed(&parsed) {
+        based = format!("{coverage}{BASE_CHANGED}");
+        based.as_str()
+    } else {
+        coverage
     };
     let budget = if continuing {
         "This continuation has only the calls, bytes and seconds in budgets: what the earlier round left of the review's shared 1.5 MB, 160 calls and 900 seconds. Nothing is refilled."

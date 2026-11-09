@@ -239,6 +239,29 @@ impl ContextStore {
             )
             .await
     }
+    /// What changed between two commits' trees, by path: `git diff-tree`
+    /// of their blob ids and modes, never content (YN-67). A review's own
+    /// store has a remote: `from` is fetched first, one commit deep and
+    /// without blobs, so nothing is fetched lazily. A local store (tests)
+    /// has it already.
+    pub(super) async fn tree_changes(&self, from: &str, to: &str) -> Result<Vec<u8>> {
+        for sha in [from, to] {
+            ensure!(
+                sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "A merge base must be a full lowercase commit SHA"
+            );
+        }
+        let remote = self.git.run_accepting(&["config", "--get", "remote.origin.url"], 4096, &[0, 1]).await?.0 == 0;
+        if remote {
+            self.git
+                .metadata(&["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--depth=1", "--filter=blob:none", "origin", from])
+                .await?;
+        }
+        let identity = self.git.run(&["rev-parse", "--verify", &format!("{from}^{{commit}}")], 4096).await?;
+        ensure!(String::from_utf8(identity)?.trim() == from, "Fetched commit identity differs from the earlier merge base");
+        self.git.metadata(&["diff-tree", "-r", "--raw", "-z", "--no-renames", from, to]).await
+    }
+
     async fn prepare(&mut self, run: &mut Value) -> Result<()> {
         let base = sha(&run["mergeBaseSha"])?.to_owned();
         let head = sha(&run["headSha"])?.to_owned();
