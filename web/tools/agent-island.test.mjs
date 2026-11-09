@@ -155,3 +155,14 @@ test("the island writes its clock short, and shorter on request", () => {
   assert.equal(clockMs({ kind: "live", from: 1_000, to: null }, 61_000), 60_000);
   assert.equal(clockMs({ kind: "total", from: 1_000, to: 31_000 }, 999_999), 30_000, "an ended executor's total stands still");
 });
+
+test("an executor queued for a routing candidate has a pill of its own, from when one's reason ends (YN-57)", () => {
+  const waiting = exec(life("queued", { position: 1, route: { kind: "waiting", earliest: "2026-11-09T04:00:00Z" } }), agent());
+  assert.equal(waiting.state, "idle");
+  assert.deepEqual(waiting.stay, { kind: "candidate", earliest: at("2026-11-09T04:00:00Z") }, "not its place in the slot queue");
+  assert.deepEqual(exec(life("queued", { route: { kind: "waiting" } }), agent()).stay, { kind: "candidate", earliest: null });
+  // A slot's wait, routed or not, is its place in line.
+  assert.deepEqual(exec(life("queued", { position: 2, route: { kind: "chosen", candidate: "c", harness: "codex", model: "m", credential: { kind: "login" } } }), agent()).stay,
+    { kind: "queued", position: 2 });
+  assert.deepEqual(exec(life("queued", { position: 2 }), agent()).stay, { kind: "queued", position: 2 });
+});
