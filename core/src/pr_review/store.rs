@@ -311,10 +311,10 @@ impl Store {
         let config = serde_json::to_value(&settings)?;
         let admitted = super::continuation::admit(&parent, input, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No continuation was started."))?;
         // At most two started rounds of this PR, the continuation included,
-        // whichever task they belong to. Only a round recorded with a ledger
-        // that failed before its native start was recorded provably started
-        // nothing; every other one, older history and unknown ones included,
-        // counts.
+        // whichever task they belong to. A round counts unless its record
+        // shows it reached no verdict (round_limit.rs): it started nothing,
+        // or its harness failed before any report; every other one, older
+        // history and unknown ones included, counts.
         let (started, uncounted) = started_rounds(&tx, &linked)?;
         ensure!(
             started < super::continuation::MAX_STARTED_ROUNDS,
