@@ -69,7 +69,7 @@ fn each_kind_of_mail_wakes_as_the_table_says() {
     release(&store, "gone", &released, "agent:lead");
     release(&store, "late", &closed, "agent:lead");
     let version = store.collaboration_call(None, "task_get", json!({"taskId":late_task})).unwrap()["task"]["version"].clone();
-    store.collaboration_call(None, "task_update", json!({"requestId":"close","taskId":late_task,"expectedVersion":version,"status":"done"})).unwrap();
+    store.collaboration_call(None, "task_update", json!({"requestId":"close","taskId":late_task,"expectedVersion":version,"patch":{"status":"done"}})).unwrap();
 
     let (working, released, nobody, closed) = (working.as_str(), released.as_str(), nobody.as_str(), closed.as_str());
     let green = json!({"kind":"merge","status":"done","reason":null,"mainCi":"success","entryKind":null});
