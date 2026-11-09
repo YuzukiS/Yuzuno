@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { API_BASE } from "./api";
 import { strings, useStrings } from "./i18n";
 import {
@@ -53,6 +53,7 @@ export function CoreBacklog({
   const [streaks, setStreaks] = useState<Streaks>({});
   const t = useStrings(text);
   const [open, setOpen] = useState(false);
+  const detailsId = useId();
   const unsupported = useRef(false);
 
   useEffect(() => {
@@ -145,6 +146,7 @@ export function CoreBacklog({
         type="button"
         className="core-backlog-hint"
         aria-expanded={open}
+        aria-controls={open ? detailsId : undefined}
         onClick={() => setOpen((value) => !value)}
       >
         {compact ? (
@@ -158,6 +160,7 @@ export function CoreBacklog({
       </button>
       {open && (
         <div
+          id={detailsId}
           className="core-backlog-details"
           role="region"
           aria-label={t.region}

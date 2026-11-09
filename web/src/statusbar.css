@@ -252,6 +252,11 @@ button.statusbar-item:focus-visible {
     box-shadow: 0 10px 28px rgb(50 54 44 / 18%);
     /* Read as a list, not as a line of small print. */
     font-size: calc(10px + var(--font-adjust, 3px));
+    /* Never past the window's bottom: 12px clear of it, as of the right
+       edge. A window too short for all of it scrolls it (YN-76). */
+    max-height: calc(var(--safe-dvh) - 48px - 4px - 12px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .app:not(.phone) > .statusbar[data-open] {
     display: flex;
@@ -264,10 +269,30 @@ button.statusbar-item:focus-visible {
     margin-left: 0;
     overflow: visible;
   }
-  /* In the panel the backlog's details hang from the hint, as before
-     YN-75; where they land there is not this bar's rule. */
+  /* Core's backlog in the panel (YN-76): the hint is one of its rows, and
+     its details open in place under it, as part of the panel. Hung from the
+     hint as in the bar, they went up past the window's top (-24px at
+     951x669) and, 360px wide in a 320px panel at the right edge, past the
+     right edge too. In place they stay in the panel, and it in the window. */
   .app:not(.phone) > .statusbar .core-backlog {
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    align-self: stretch;
+  }
+  .app:not(.phone) > .statusbar .core-backlog-hint {
+    min-height: 40px;
+    margin-left: 0;
+    padding: 0;
+    border-left: 0;
+    text-align: left;
+  }
+  .app:not(.phone) > .statusbar .core-backlog-details {
+    position: static;
+    align-self: stretch;
+    width: auto;
+    margin: 0 0 6px;
+    box-shadow: none;
   }
   /* Each line in the panel is a row a finger can hit, which the 13px it had
      as a bar was not. */
