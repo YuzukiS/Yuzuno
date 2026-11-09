@@ -2222,6 +2222,38 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
+  // A review (YN-64): the file on the Ask, the verdict and comments by section in one form.
+  review: {
+    op: "put",
+    key: "design-doc/review",
+    kind: "ask",
+    title: "Design doc v2: review it and pick the name",
+    time: { due: "2026-11-12T09:00:00Z" },
+    attachments: [{ name: "design-v2.pdf", path: "/home/me/docs/design-v2.pdf", caption: "Design doc, version 2" }],
+    ask: {
+      question: "Does version 2 of the design doc pass, and which name should it use?",
+      reply: {
+        form: {
+          id: "review",
+          title: "Design doc v2",
+          fields: [
+            { id: "verdict", type: "single", label: "Verdict", required: true, options: [{ id: "approve", label: "Approve" }, { id: "changes", label: "Needs changes" }] },
+            { id: "name", type: "single", label: "Name", required: true, options: [{ id: "harbor", label: "Harbor" }, { id: "lantern", label: "Lantern" }] },
+            { id: "goals", type: "text", label: "Section 1, Goals: comments", required: false },
+            { id: "design", type: "text", label: "Section 2, Design: comments", required: false },
+          ],
+        },
+      },
+    },
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["what", "file"] },
+        what: { type: "Markdown", props: { text: "Version 2 rewrites section 2 after the first round. Leave a section's box empty if it is fine." } },
+        file: { type: "Attachments", props: { items: [{ name: "design-v2.pdf", caption: "Design doc v2 (PDF)" }] } },
+      },
+    },
+  },
 } as const;
 
 // Built on first use: the validator Core runs never needs the guide.
@@ -2251,7 +2283,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- question: 1-${L.questionChars} characters. reply needs at least one of options, freeText, form or choice; otherwise the change is rejected.`,
     `- options: ${L.askOptionsMin}-${L.askOptionsMax} buttons; each sends one prefilled reply message to you. freeText: true, or {prompt} to label the text box. choice: two approaches a and b.`,
     formatComponentGuide("form", clarificationSchema, COMPONENT_DESCRIPTIONS.Clarification, spaced(`At most ${L.formFields} fields, ${L.formOptions} options each.`)),
-    `Use options for one choice and a form for several related answers, as in the decision and form examples.`,
+    `Use options for one choice and a form for several related answers, as in the decision and form examples; a review of a file, as in the review example (when and how: yuzuno_guide topic brief, "Ask for a review").`,
     `- gate {taskId, step}: only for an executor at a gate step of its task's template (step counts from 0, as executor_templates_list lists them): the approval it asks for. Core refuses it from any other Agent (gate_not_yours) or for a step that is not a gate (gate_step_unknown). The executor's Overview shows the ask at that step and the user can answer it there too; the step is done once the ask is replied.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
