@@ -203,7 +203,8 @@
   display: grid; gap: 12px; margin-top: 2px; padding: 12px; min-width: 0;
   border: 1px dashed var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
 }
-.routing-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 10px 14px; }
+/* Each field as tall as itself: the model's line under its select doesn't stretch its neighbours (YN-57 S2b). */
+.routing-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: start; gap: 10px 14px; }
 .routing-edit-grid .settings-input, .routing-edit-grid .settings-select { width: 100%; }
 .routing-field-wide { grid-column: 1 / -1; }
 /* A candidate's model (YN-57 S2b): its select, a typed one under it, and where the list comes from or why it couldn't be read. */

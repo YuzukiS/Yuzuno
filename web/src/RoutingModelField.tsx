@@ -46,7 +46,7 @@ export function ModelField({ c, t, keyProvider, onChange }: {
   const reread = () => { fresh.current = true; setRead(null); setAgain((n) => n + 1); };
   const rereadButton = <button type="button" className="quiet-button routing-model-reread" onClick={reread}><RefreshCw size={12} aria-hidden="true" /> {t.modelReread}</button>;
   return (
-    <div className="routing-field routing-model">
+    <div className="routing-field routing-field-wide routing-model">
       <span>{t.model}</span>
       <select className="settings-select" aria-label={t.model} value={other ? OTHER : model}
         onChange={(e) => { if (e.target.value === OTHER) setOther(true); else { setOther(false); onChange(e.target.value); } }}>
