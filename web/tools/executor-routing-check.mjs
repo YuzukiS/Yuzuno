@@ -386,7 +386,11 @@ async function run({ width, height, theme, lang }) {
     await press(tierGroup.getByRole("button", { name: w.workFast, exact: true }));
     const simResult = order.locator(".routing-simulate .routing-sim-result");
     await simResult.getByText(w.notServed).waitFor({ timeout: 10_000 });
-    assert.ok(report.asked.some((a) => a.path === "/api/routing/simulate" && a.tier === "fast"), `${tag}: the week asked for fast work`);
+    // The picked time is asked 250 ms after a change, the week 350 ms after: wait for the week's request too.
+    for (const end = Date.now() + 10_000; !report.asked.some((a) => a.path === "/api/routing/simulate" && a.tier === "fast");) {
+      assert.ok(Date.now() < end, `${tag}: the week asked for fast work`);
+      await page.waitForTimeout(50);
+    }
     assert.equal(await tierGroup.getByRole("button", { name: w.workFast, exact: true }).getAttribute("aria-pressed"), "true");
     await order.locator(".routing-simulate").scrollIntoViewIfNeeded();
     await page.mouse.move(0, 0);
