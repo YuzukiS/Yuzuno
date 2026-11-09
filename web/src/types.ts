@@ -7,8 +7,19 @@ export interface WorkSummary {
   itemId?: string;
   requestId?: string;
 }
+/** What an Agent's running Turn is stopped on (YN-51), as Core reads it from
+ * the harness's records of its calls: a shell command or a sub-agent. */
+export interface TurnWait {
+  kind: "shell" | "subAgent";
+  /** The call's Item: one call told from the next. */
+  itemId: string;
+  /** The command, or what the sub-agent was given to do; may be empty. */
+  label: string;
+}
 export interface Agent {
   workSummary?: WorkSummary | null;
+  /** Absent from a Core without it (before YN-51), and while nothing holds its Turn. */
+  turnWait?: TurnWait | null;
   harness?: "codex" | "claude" | "opencode";
   claudeSessionId?: string;
   opencodeSessionId?: string;

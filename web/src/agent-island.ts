@@ -1,6 +1,9 @@
 import type { ExecutorDetail, ExecutorView } from "./executor-display";
 import type { ExecutorLifecycle } from "./executor-lifecycle";
-import type { Agent } from "./types";
+import type { AgentCI } from "./live-ci";
+import type { AgentJobs } from "./live-jobs";
+import type { AgentWaits } from "./live-waits";
+import type { Agent, TurnWait } from "./types";
 
 /**
  * The Agent row's island (T-43, rail v11, the user's answers of 2026-11-07
@@ -52,9 +55,71 @@ export type IslandLine =
  * for a Turn that failed or one that ended unseen. */
 export type IslandAction = "answer" | "why" | "result" | "queue" | "task" | "turn" | "reply";
 
+/** What a turning ring waits on (YN-51), in the user's order of which one
+ * shows when it waits on several. */
+export const WAIT_ORDER = ["review", "ci", "job", "subAgent", "shell"] as const;
+export type WaitKind = (typeof WAIT_ORDER)[number];
+/** The wait its ring shows, and what its card says of it: a review's PR and
+ * round; CI's PR (an executor's) or its runs; a Job's name or how many; the
+ * call a Turn waits for, or how many run in the background; and the others
+ * it waits on too. */
+export type IslandWait = {
+  kind: WaitKind;
+  count: number;
+  pr?: number | null;
+  round?: number | null;
+  name?: string | null;
+  label?: string;
+  background?: boolean;
+  also: { kind: WaitKind; count: number }[];
+};
+
+/** What an Agent waits on, as its row reads it (YN-51). */
+export type WaitFacts = {
+  /** A Turn runs: only the call it is stopped on counts. */
+  turn: boolean;
+  /** That call, once it has held the Turn a moment (the row's to time). */
+  call: TurnWait | null;
+  jobs?: AgentJobs;
+  ci?: AgentCI;
+  waits?: AgentWaits;
+  /** An executor's PR, which its CI runs on. */
+  pr?: number | null;
+};
+
+/**
+ * The one wait a turning ring shows, by WAIT_ORDER (YN-51): while a Turn
+ * runs, the call it is stopped on (a sub-agent or a shell command), and
+ * nothing while it thinks or writes; while none runs, what the Agent started
+ * that hasn't ended: reviews mailed to it, CI it watches (running, being
+ * found, or awaiting its first run), Jobs (not those whose outcome is
+ * unknown: a thing to check is no wait), background sub-agents and shells.
+ */
+export function waitOn(f: WaitFacts): IslandWait | null {
+  type Found = Omit<IslandWait, "kind" | "also">;
+  const found: Partial<Record<WaitKind, Found>> = {};
+  if (f.turn) {
+    if (f.call) found[f.call.kind] = { count: 1, label: f.call.label };
+  } else {
+    const review = f.waits?.reviews;
+    if (review?.running) found.review = { count: review.running, pr: review.pr, round: review.round };
+    const runs = f.ci ? f.ci.running + f.ci.discovering + (f.ci.waitingForRun ?? 0) : 0;
+    if (runs > 0) found.ci = { count: runs, pr: f.pr ?? null };
+    const jobs = f.jobs ? f.jobs.active - f.jobs.unknown : 0;
+    if (jobs > 0) found.job = { count: jobs, name: jobs === 1 ? f.jobs?.name ?? null : null };
+    if (f.waits?.subAgents) found.subAgent = { count: f.waits.subAgents, background: true };
+    if (f.waits?.shells) found.shell = { count: f.waits.shells, background: true };
+  }
+  const [kind, ...rest] = WAIT_ORDER.filter((k) => found[k]);
+  if (!kind) return null;
+  return { kind, ...found[kind]!, also: rest.map((k) => ({ kind: k, count: found[k]!.count })) };
+}
+
 export type IslandView = {
   /** The ring: one of five. */
   state: IslandState;
+  /** What a turning ring waits on (YN-51); null for every other ring. */
+  wait: IslandWait | null;
   /** The pill that stays while a state other than the ring's holds. */
   stay: IslandStay | null;
   clock: IslandClock | null;
@@ -88,6 +153,8 @@ export type IslandFacts = {
   compacting?: boolean;
   /** Its oldest wait in Home's Needs you (ms). */
   waitingSince?: number | null;
+  /** What it waits on (`waitOn`, YN-51): only a turning ring shows it. */
+  wait?: IslandWait | null;
 };
 
 const time = (iso: string | null | undefined) => {
@@ -115,7 +182,9 @@ function standing(facts: IslandFacts): Read {
   if (facts.compacting) return out("working", null, text(facts.statusLabel));
   // The runtime gives no start for a standing Agent's Turn: it says it works, without a clock.
   if (agent.status === "working" || agent.status === "uncertain") return out("working", null, first(summary, text(facts.statusLabel)));
-  if (facts.waiting) return out("working", null, text(facts.waiting));
+  // What it started and left running (its Jobs, CI, reviews, background
+  // work) turns its ring; a Turn's end not seen yet is said first (done).
+  if (facts.waiting || (facts.wait && !facts.unseen)) return out("working", null, text(facts.waiting));
   // Done is a Turn it ended that this device hasn't shown; updates unread are no state (the user, v11).
   if (facts.unseen === "finished") return out("done", since(ended), summary);
   return out("idle", since(ended), summary);
@@ -187,6 +256,7 @@ export function islandView(facts: IslandFacts): IslandView {
   const name = task?.shortName?.trim() || task?.title?.trim() || null;
   return {
     state, stay, clock, line,
+    wait: state === "working" ? facts.wait ?? null : null,
     title: view ? name : null,
     dot: facts.agent.kind === "lead" && (facts.agent.unreadCount || 0) > 0,
     auto: state === "waiting" || state === "failed",

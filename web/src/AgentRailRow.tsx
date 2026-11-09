@@ -3,15 +3,16 @@ import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
 import { AgentActionsMenu, type AgentActionsMenuHandle, type MenuPoint } from "./AgentActionsMenu";
-import type { Agent, WorkSummary } from "./types";
+import type { Agent, TurnWait, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
+import { useAgentWaits } from "./live-waits";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
 import { executorView, type ExecutorPR } from "./executor-display";
 import { stateText } from "./ExecutorRowState";
-import { AgentIsland, clockShort, islandText, lineText, stayText, stayTone, useIslandShell, type IslandPill } from "./AgentIsland";
-import { islandView, type IslandAction, type IslandForm } from "./agent-island";
+import { AgentIsland, clockShort, islandText, lineText, stayText, stayTone, useIslandShell, waitText, type IslandPill } from "./AgentIsland";
+import { islandView, waitOn, type IslandAction, type IslandForm } from "./agent-island";
 import { AgentRowCard } from "./AgentRowCard";
 import { Tip, type TipSide } from "./Tip";
 import { useExecutorPR, useMinute } from "./live-executors";
@@ -205,19 +206,29 @@ export function AgentRailRow({
   // place of a runtime status and a lifecycle badge, and says it once.
   const pr = useExecutorPR(agent.id);
   const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince, asking }) : null;
+  // What it waits on (YN-51): while a Turn runs, the call it is stopped on,
+  // once that call has held it a moment; while none runs (plainly idle, its
+  // last end seen), what it started and left running. Its ring shows one.
+  const waits = useAgentWaits(agent.id);
+  const call = useHeldCall(agent.turnWait);
+  const turn = agent.status === "working" || agent.status === "uncertain";
+  const wait = !agent.closedAt && (turn || (idle && !unseen))
+    ? waitOn({ turn, call, jobs, ci, waits, pr: lifecycle ? pr?.number ?? null : null }) : null;
   const shown = executor ? stateText(executor, language) : label;
   const kind = agent.kind === "lead" ? t.lead : agent.kind === "executor" ? t.executor : null;
   // Updates unread are a lead's only (the user, rail v11).
   const unread = agent.kind === "lead" ? agent.unreadCount : 0;
-  const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, unread);
   // Its island (T-43, rail v11, the user's answers): a ring at the row's
   // right, centred on its lines (YN-41), says one of five states; every
   // other state is a pill beside it that stays while it holds. A click on
   // the row opens the conversation; a click on the ring goes straight to
   // its state's place (Home for what it asks, its task, or the
   // conversation). Needs you and failed are row islands until handled.
-  const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
+  const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince, wait });
   const words = islandText(language);
+  const waitWords = island.wait ? waitText(island.wait, language) : null;
+  // The row says what its ring waits on too, for whoever doesn't see the icon.
+  const said = t.description(waitWords ? `${shown}${words.gap}${waitWords.short}` : shown, executor ? null : waiting?.detail ?? null, machine, unread);
   const now = useMinute();
   const timeDisplay = useTimeDisplay();
   const stay: IslandPill | null = island.stay && !island.auto
@@ -292,7 +303,7 @@ export function AgentRailRow({
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={t.open(agent.name)}
-        aria-description={kind ? `${kind} · ${description}` : description}
+        aria-description={kind ? `${kind} · ${said}` : said}
         aria-current={selected ? "true" : undefined}
         onKeyDown={actions ? (event) => {
           // The keyboard's way to the actions (rail v11, no "…" button): the context-menu key or Shift+F10.
@@ -358,11 +369,34 @@ export function AgentRailRow({
       onOpenChange={card.onOpenChange}
       className="agent-card"
       content={<AgentRowCard agent={agent} island={island} executor={executor} lifecycle={lifecycle}
-        machine={machine} badge={agent.kind === "lead" ? t.lead : null} activity={activity} waits={executor ? null : waiting?.detail ?? null} />}
+        machine={machine} badge={agent.kind === "lead" ? t.lead : null} activity={activity} waits={executor ? null : waiting?.detail ?? null}
+        wait={island.wait} />}
     >
       {body}
     </Tip>
   );
+}
+
+/** How long a Turn's call holds it before its ring says so (YN-51): a call
+ * under a second is not felt as a wait (the usual response-time limit), so
+ * quick reads and commands never flash an icon. */
+export const WAIT_AFTER_MS = 1000;
+
+/** The call a Turn waits for, once it has held the Turn WAIT_AFTER_MS: from
+ * when this row first saw it (Core keeps no start for a tool call); another
+ * call starts its own wait, and none clears it at once. */
+function useHeldCall(call: TurnWait | null | undefined): TurnWait | null {
+  const key = call ? `${call.kind}:${call.itemId}` : null;
+  const [held, setHeld] = useState<string | null>(null);
+  useEffect(() => {
+    if (!key) {
+      setHeld(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setHeld(key), WAIT_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [key]);
+  return call && held === key ? call : null;
 }
 
 /** The ring's area for a finger, as its button's on touch (agent-island.css). */

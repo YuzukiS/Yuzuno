@@ -1,5 +1,6 @@
 import { forwardRef, useLayoutEffect, useRef, type RefObject } from "react";
-import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandStay, type IslandView } from "./agent-island";
+import { BriefcaseBusiness, Bot, Github, GitPullRequest, SquareTerminal, type LucideIcon } from "lucide-react";
+import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandStay, type IslandView, type IslandWait, type WaitKind } from "./agent-island";
 import { detailText, executorRowText } from "./ExecutorRowState";
 import { strings, useLanguage, type Language } from "./i18n";
 import { timeFormatter, type TimeDisplay } from "./time-preferences";
@@ -28,6 +29,20 @@ export const islandText = strings({
     task: (key: string | null) => (key ? `Open task ${key}` : "Open its task"), turn: "See the Turn that failed", reply: "Read its reply",
   },
   pill: { ciGreen: "CI green", ciFailed: "CI failed", started: "Started", merged: "Merged" },
+  /** What a turning ring waits on (YN-51): the ring's and the row's words, and the card's line. */
+  wait: {
+    short: { review: "Waiting on a review", ci: "Waiting on CI", job: "Waiting on a Job", subAgent: "Waiting on a sub-agent", shell: "Waiting on a shell command" } as Record<WaitKind, string>,
+    review: (pr: number | null, round: number | null) => (pr ? `Waiting on a review: PR #${pr}${round ? `, round ${round}` : ""}` : "Waiting on a review"),
+    ci: (pr: number | null, runs: number) => (pr ? `Waiting on CI: PR #${pr}` : `Waiting on CI: ${runs} run${runs === 1 ? "" : "s"}`),
+    job: (name: string | null, count: number) => (name ? `Waiting on a Job: ${name}` : count === 1 ? "Waiting on a Job" : `Waiting on ${count} Jobs`),
+    subAgent: (label: string, count: number, background: boolean) => (label ? `Waiting on a sub-agent: ${label}`
+      : background ? (count === 1 ? "Waiting on a background sub-agent" : `Waiting on ${count} background sub-agents`) : "Waiting on a sub-agent"),
+    shell: (label: string, count: number, background: boolean) => (label ? `Waiting on a shell command: ${label}`
+      : background ? (count === 1 ? "Waiting on a background shell" : `Waiting on ${count} background shells`) : "Waiting on a shell command"),
+    also: (parts: string[]) => `Also: ${parts.join(", ")}`,
+    part: { review: (n: number) => (n === 1 ? "a review" : `${n} reviews`), ci: () => "CI", job: (n: number) => (n === 1 ? "1 Job" : `${n} Jobs`),
+      subAgent: (n: number) => (n === 1 ? "a sub-agent" : `${n} sub-agents`), shell: (n: number) => (n === 1 ? "a shell" : `${n} shells`) } as Record<WaitKind, (n: number) => string>,
+  },
 }, {
   word: { idle: "空闲", working: "在做", waiting: "等你", done: "完成", failed: "出错" },
   stay: {
@@ -45,7 +60,37 @@ export const islandText = strings({
     task: (key) => (key ? `看任务 ${key}` : "看任务"), turn: "看出错的那一轮", reply: "看它的回复",
   },
   pill: { ciGreen: "CI 绿了", ciFailed: "CI 红了", started: "开始了", merged: "已合入" },
+  wait: {
+    short: { review: "在等审查", ci: "在等 CI", job: "在等 Job", subAgent: "在等子代理", shell: "在等 shell" },
+    review: (pr, round) => (pr ? `在等审查：PR #${pr}${round ? ` 第 ${round} 轮` : ""}` : "在等审查"),
+    ci: (pr, runs) => (pr ? `在等 CI：PR #${pr}` : `在等 CI：${runs} 个运行`),
+    job: (name, count) => (name ? `在等 Job：${name}` : count === 1 ? "在等 Job" : `在等 ${count} 个 Job`),
+    subAgent: (label, count, background) => (label ? `在等子代理：${label}`
+      : background ? (count === 1 ? "在等后台子代理" : `在等 ${count} 个后台子代理`) : "在等子代理"),
+    shell: (label, count, background) => (label ? `在等 shell：${label}`
+      : background ? (count === 1 ? "在等后台 shell" : `在等 ${count} 个后台 shell`) : "在等 shell"),
+    also: (parts) => `另有：${parts.join("、")}`,
+    part: { review: (n) => (n === 1 ? "审查" : `${n} 轮审查`), ci: () => "CI", job: (n) => `${n} 个 Job`,
+      subAgent: (n) => (n === 1 ? "子代理" : `${n} 个子代理`), shell: (n) => (n === 1 ? "shell" : `${n} 个 shell`) },
+  },
 });
+
+/** Each wait's icon (YN-51): the ones the conversation's work dock and the
+ * Jobs panel already use for these kinds, so an icon means one thing. */
+export const WAIT_ICONS: Record<WaitKind, LucideIcon> = {
+  review: GitPullRequest, ci: Github, job: BriefcaseBusiness, subAgent: Bot, shell: SquareTerminal,
+};
+
+/** A wait in words: what the ring says (`short`), the card's line, and the others it waits on too. */
+export function waitText(wait: IslandWait, language: Language): { short: string; line: string; also: string | null } {
+  const t = islandText(language).wait;
+  const label = wait.label?.trim() ?? "";
+  const line = wait.kind === "review" ? t.review(wait.pr ?? null, wait.round ?? null)
+    : wait.kind === "ci" ? t.ci(wait.pr ?? null, wait.count)
+      : wait.kind === "job" ? t.job(wait.name ?? null, wait.count)
+        : t[wait.kind](label, wait.count, !!wait.background);
+  return { short: t.short[wait.kind], line, also: wait.also.length ? t.also(wait.also.map((a) => t.part[a.kind](a.count))) : null };
+}
 
 const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EASE_OUT = "cubic-bezier(0.2, 0.8, 0.2, 1)";
@@ -151,14 +196,19 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
   function AgentIsland({ view, form, name, pill, onGo, ...hooks }, ref) {
     const language = useLanguage();
     const ring: RingState = form === "pill" && pill?.ring ? pill.ring : view.state;
+    // Only the turning ring holds it: a passing event's ✓ or ✕ takes the ring's place.
+    const wait = ring === "working" ? view.wait : null;
+    const Wait = wait ? WAIT_ICONS[wait.kind] : null;
     const go = view.go;
     const body = (
       <>
         {form === "pill" && pill && (
           <span className="island-pill" data-tone={pill.tone} data-event={pill.event || undefined} aria-hidden="true">{pill.text}</span>
         )}
-        <span className="island-ringbox" data-ring={ring}>
+        <span className="island-ringbox" data-ring={ring} data-wait={wait?.kind}>
           <IslandRing state={ring} />
+          {/* What the turning ring waits on (YN-51): still, in its colour; the ring stays the state. */}
+          {Wait && <Wait className="island-wait" size={11} strokeWidth={2.4} aria-hidden="true" focusable="false" />}
           {view.dot && <span className="island-dot" aria-hidden="true" />}
         </span>
       </>
@@ -177,12 +227,13 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
     // the ring says in full is the row's card (AgentRowCard.tsx).
     if (!go) return <span {...shared} aria-hidden="true">{body}</span>;
     const where = goText(go, view, language);
+    const waits = wait ? `${waitText(wait, language).short} · ` : "";
     return (
       <button
         ref={ref}
         type="button"
         {...shared}
-        aria-label={`${name} · ${where}`}
+        aria-label={`${name} · ${waits}${where}`}
         onClick={(event) => { event.stopPropagation(); onGo(go); }}
       >
         {body}

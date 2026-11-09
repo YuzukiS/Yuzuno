@@ -193,6 +193,7 @@ import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
 import { clearLiveCI, refreshLiveCI } from "./live-ci";
 import { clearLiveExecutors, refreshLiveExecutors } from "./live-executors";
+import { clearLiveWaits, refreshLiveWaits } from "./live-waits";
 import { TurnNavigator } from "./TurnNavigator";
 import { useConversationInputs } from "./useConversationInputs";
 import { entryInput, inputEntries, readingEntry, type ReadBy } from "./input-dock";
@@ -1196,6 +1197,14 @@ export function App() {
     const timer = setInterval(() => refreshLiveCI(workspaceId), 30_000);
     return () => { clearInterval(timer); clearLiveCI(); };
   }, [workspaceId, previewMode]);
+  // What each Agent left running besides its Jobs and CI, for its ring
+  // (YN-51): its reviews under way and its background shells and sub-agents.
+  // Read again when Core says an Agent changed (a background count, a Turn
+  // ending) or the board did (a review starting or ending); one local read.
+  useEffect(() => {
+    if (previewMode || !workspaceId) { clearLiveWaits(); return; }
+    refreshLiveWaits(workspaceId);
+  }, [workspaceRevision, boardRevision, workspaceId, previewMode]);
   // Each open executor's PR for its row (T-43 S2): read again on every
   // collaboration change (a link, a GitHub refresh, a review's end) and
   // when the open executors change; one local read, never GitHub.
