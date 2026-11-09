@@ -7,6 +7,7 @@ import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
 import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import { copyText } from "./clipboard";
+import { desktopBadge } from "./desktop-badge";
 import {
   memo,
   useCallback,
@@ -1852,6 +1853,13 @@ export function App() {
     const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
     done?.catch(() => {});
   }, [previewMode, needsYou]);
+  // The desktop app's taskbar button shows the same count (YN-43), with its
+  // words for screen readers in the language shown; sent only on a change.
+  const sendDesktopBadge = useMemo(() => desktopBadge(), []);
+  useEffect(() => {
+    if (previewMode) return;
+    sendDesktopBadge(needsYou, language === "zh-Hans" ? "zh" : "en");
+  }, [previewMode, needsYou, language, sendDesktopBadge]);
   // Next needs you: Home's Needs you in Core's order (attention.ts). After an
   // Ask, Home stays the place shown.
   const needsTargets = useMemo(

@@ -3178,6 +3178,49 @@ test("the tab title, the app badge and Home's count are Needs you's rows, an exe
   }
 });
 
+test("the desktop app's taskbar button gets the same count, once per change, its words in the language shown (YN-43)", async () => {
+  const sent = [];
+  const p = await mount({
+    workspaceAgents: attentionAgents(),
+    home: attentionHome(),
+    storage: startOnSora,
+    before: (w) => {
+      w.document.title = "Yuzuno · test";
+      // The desktop window's command bridge; its other commands (appearance,
+      // updates, notifications) are not this test's concern.
+      w.__TAURI_INTERNALS__ = {};
+      w.__TAURI__ = { core: { invoke: async (command, args) => {
+        // A copy made here: the page's own object has the page's prototypes.
+        if (command === "desktop_badge") sent.push({ ...args });
+        return null;
+      } } };
+    },
+  });
+  const key = (s) => `${s.count} ${s.lang}`;
+  try {
+    await waitFor(() => p.doc.title === "(3) Yuzuno · test", `the title counts: ${p.doc.title}`);
+    await waitFor(() => sent.at(-1)?.count === 3, "the taskbar gets Home's count");
+    assert.deepEqual(sent.at(-1), { count: 3, lang: "en" });
+    const settled = sent.length;
+    // Another conversation and Home again: rendered anew, the count still 3, nothing sent.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
+    await waitFor(() => shown(p) === "Hana", "Hana's conversation");
+    p.button("Home").click();
+    await waitFor(() => p.doc.querySelector(".home-view"), "Home again");
+    assert.equal(sent.length, settled, "nothing more while the count is the same");
+    // The language shown changes: the same count again, for its words.
+    p.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
+    await waitFor(() => sent.at(-1)?.lang === "zh", "the words follow the language");
+    assert.deepEqual(sent.slice(settled), [{ count: 3, lang: "zh" }]);
+    // Every send was a change from the one before.
+    sent.forEach((s, i) => assert.notEqual(i && key(sent[i - 1]), key(s), `send ${i} repeats the one before`));
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("an executor you dispatched says in Needs you why it waits: why its start failed, what blocks its task (T-43 S4a)", async () => {
   const home = attentionHome();
   home.needsYou.push({ kind: "executor", projectId: "p-app", agentId: "b", agentName: "Hana", state: "blocked", taskId: "T-7", title: "Release notes",

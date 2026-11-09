@@ -5431,6 +5431,7 @@ name = "yuzuno-desktop"
 version = "0.1.0"
 dependencies = [
  "mac-usernotifications",
+ "png 0.18.1",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
  "serde",
@@ -5442,6 +5443,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "url",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
