@@ -355,11 +355,12 @@ const E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 fn base_round(previous: &Value) -> Value {
     let mut run = round(previous);
     run["mergeBaseSha"] = json!(E);
+    run["coveragePolicyVersion"] = json!(3);
     let i = &mut run["incremental"];
     i["sameMergeBase"] = json!(false);
     i["targets"] = json!(["a.rs", "b.rs", "c.rs"].map(|path| json!({"path":path,"status":"modified","why":"merge_base_changed","changedSinceEarlierHead":false})));
     i["carriedPaths"] = json!([]);
-    i["baseChanges"] = json!({"state":"read","from":C,"to":E,"truncated":false,"paths":[
+    i["baseChanges"] = json!({"state":"read","from":C,"to":E,"truncated":false,"total":3,"paths":[
         {"path":"z.rs","status":"A","fromBlob":null,"toBlob":"5".repeat(40)},
         {"path":"w.rs","status":"M","fromBlob":"6".repeat(40),"toBlob":"7".repeat(40)},
         {"path":"v.rs","status":"D","fromBlob":"8".repeat(40),"toBlob":null}]});
@@ -398,6 +399,14 @@ fn a_finding_a_new_merge_base_answers_is_settled_only_by_base_paths_this_round_r
     stays(&|r: &mut Value| r["incremental"]["sameMergeBase"] = json!(true), z(), "the merge base didn't change since the earlier round");
     stays(&|r: &mut Value| r["incremental"]["baseChanges"] = json!({"state":"unavailable","error":"Fixed Git objects are unavailable"}), z(), "Core couldn't read what the new merge base changed");
     stays(&|r: &mut Value| { r["incremental"].as_object_mut().unwrap().remove("baseChanges"); }, z(), "Core couldn't read what the new merge base changed");
+    // Not offered it: a round of an older coverage policy (R1 P3).
+    stays(&|r: &mut Value| r["coveragePolicyVersion"] = json!(2), z(), "this round wasn't offered fixed_by_base");
+    // A list Core cut short can't show the finding's own path didn't change
+    // there, so nothing is settled by the base (R1 P1).
+    stays(&|r: &mut Value| { r["incremental"]["baseChanges"]["truncated"] = json!(true); r["incremental"]["baseChanges"]["total"] = json!(2_001); },
+        z(), "the new merge base changed more paths than Core lists, so it can't show the finding's own path didn't change there");
+    stays(&|r: &mut Value| r["incremental"]["baseChanges"]["total"] = json!(4), z(),
+        "the new merge base changed more paths than Core lists, so it can't show the finding's own path didn't change there");
     // Code that is in the base now: the finding's own file changed there.
     stays(&|r: &mut Value| r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"b.rs","status":"M","fromBlob":"9".repeat(40),"toBlob":"a".repeat(40)})),
         z(), "its own path changed in the new merge base, so the code it is about may be there now");
@@ -412,6 +421,10 @@ fn a_finding_a_new_merge_base_answers_is_settled_only_by_base_paths_this_round_r
     for path in ["a.rs", "v.rs", "elsewhere.rs", "b.rs"] {
         stays(&none, json!([by_base(0, json!([path]))]), "a base path isn't one the new merge base added or changed");
     }
+    // Not read whole at its new object: a target's complete diff isn't its
+    // whole content at the new merge base (R1 P3).
+    stays(&|r: &mut Value| r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"c.rs","status":"M","fromBlob":"b".repeat(40),"toBlob":"c".repeat(40)})),
+        json!([by_base(0, json!(["c.rs"]))]), "a base path wasn't read completely by this round at the new merge base");
     // Not read whole at its new object.
     stays(&|r: &mut Value| { r["contextReads"].as_array_mut().unwrap().pop(); }, json!([by_base(0, json!(["w.rs"]))]), "a base path wasn't read completely by this round at the new merge base");
     stays(&|r: &mut Value| r["contextReads"][0]["blobSha"] = json!("9".repeat(40)), z(), "a base path wasn't read completely by this round at the new merge base");
