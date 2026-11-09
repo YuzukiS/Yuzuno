@@ -639,8 +639,27 @@ fn a_fixed_templates_level_is_stored_as_its_harnesss_own_permission_for_an_older
     let mut older = raw.clone();
     older["templates"][0]["permissionMode"] = json!("auto");
     older["version"] = json!(2);
-    stored_at(&store, KEY, older);
+    stored_at(&store, KEY, older.clone());
     assert_eq!(store.executor_template("c").unwrap().unwrap().permission_level.as_deref(), Some("auto"));
+    // #820 R2: whatever it changes the permission to, the level follows, and the template stays usable.
+    let level_of = |change: &dyn Fn(&mut Value)| -> (Option<String>, Option<String>, usize) {
+        let mut list = older.clone();
+        change(&mut list);
+        stored_at(&store, KEY, list);
+        let read = store.executor_templates().unwrap();
+        let x = read.templates.iter().find(|t| t.id == "x").cloned();
+        (x.as_ref().and_then(|t| t.permission_level.clone()), x.and_then(|t| t.permission_preset), read.later_templates)
+    };
+    assert_eq!(level_of(&|l: &mut Value| { l["templates"][1]["permissionPreset"] = json!("config"); }), (None, Some("config".into()), 0),
+        "switched to the machine's Codex configuration: no level");
+    assert_eq!(level_of(&|l: &mut Value| { l["templates"][1].as_object_mut().unwrap().remove("permissionPreset"); }), (None, None, 0),
+        "back to inheriting: no stale level");
+    assert_eq!(level_of(&|l: &mut Value| { l["templates"][1]["harness"] = json!("claude"); l["templates"][1].as_object_mut().unwrap().remove("permissionPreset");
+        l["templates"][1].as_object_mut().unwrap().remove("model"); }), (None, None, 0),
+        "moved to Claude Code, which doesn't keep Full access: no level, still usable");
+    assert_eq!(level_of(&|l: &mut Value| { l["templates"][1]["harness"] = json!("claude"); l["templates"][1].as_object_mut().unwrap().remove("permissionPreset");
+        l["templates"][1].as_object_mut().unwrap().remove("model"); l["templates"][1]["permissionMode"] = json!("default"); }),
+        (Some("ask".into()), None, 0), "moved to Claude Code in its default mode: Ask you first");
 }
 
 /// YN-56: a dispatch starts a template on a harness with its level as that
