@@ -83,6 +83,10 @@ pub(crate) struct Subscribe {
     task_id: String,
     agent_id: Option<String>,
     url: String,
+    /// A full SHA, or for a PR or run its first 7 or more hexadecimal
+    /// characters, or left out (empty) for a commit URL: resolved to the
+    /// full SHA Core read before anything is stored (YN-69 S5).
+    #[serde(default)]
     expected_sha: String,
     /// A commit URL's target: GitHub's exact head branch and event. Required
     /// for a commit URL, refused for a PR or run URL. Absent fields keep old
@@ -91,6 +95,19 @@ pub(crate) struct Subscribe {
     branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     event: Option<String>,
+    /// The prefix the request named its PR's or run's head by, once Core has
+    /// resolved it to the full head: a lost-reply retry is compared with the
+    /// request as sent (see store::as_sent). Never read from a request.
+    #[serde(skip)]
+    sent_sha: Option<String>,
+}
+impl Subscribe {
+    /// Watch the full head Core read, keeping the prefix the caller sent.
+    fn resolve(&mut self, head: String) {
+        if self.expected_sha != head {
+            self.sent_sha = Some(std::mem::replace(&mut self.expected_sha, head));
+        }
+    }
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -236,19 +253,26 @@ pub async fn call(
                 !q.request_id.trim().is_empty() && q.request_id.len() <= 128,
                 "requestId must contain 1–128 bytes"
             );
-            ensure!(
-                client::sha(&q.expected_sha),
-                "{}",
-                crate::commit_sha::problem("expectedSha", &q.expected_sha, crate::commit_sha::Form::GitHub)
-            );
             q.expected_sha = q.expected_sha.to_ascii_lowercase();
             q.url = q.url.trim().to_owned();
-            let (repo_name, kind, number) = match client::commit(&q.url)? {
+            let commit = client::commit(&q.url)?;
+            // A commit URL names its commit; a PR's or a run's is a full SHA
+            // or its first 7 or more hexadecimal characters, which Core
+            // matches against the head it reads below (YN-69 S5).
+            if !(commit.is_some() && q.expected_sha.is_empty()) {
+                ensure!(
+                    (7..=40).contains(&q.expected_sha.len()) && q.expected_sha.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "{}",
+                    expected_problem(&q.expected_sha)
+                );
+            }
+            let (repo_name, kind, number) = match commit {
                 Some((repo, sha)) => {
                     ensure!(
-                        sha == q.expected_sha,
+                        sha.starts_with(&q.expected_sha),
                         "expectedSha must be the commit the URL names"
                     );
+                    q.expected_sha = sha;
                     let branch = q.branch.as_deref().context(
                         "A commit watch needs branch: GitHub's exact head branch of the runs to watch, such as main",
                     )?;
@@ -288,6 +312,7 @@ pub async fn call(
                 .await
                 .context("busy: GitHub reads are busy; retry shortly")??;
             let operation = async {
+                let mut q = q;
                 let repo = client::read(&ws, format!("repos/{repo_name}"), 300).await?;
                 let id = repo["value"]["id"]
                     .as_i64()
@@ -316,10 +341,13 @@ pub async fn call(
                             && raw["value"]["base"]["repo"]["id"].as_i64() == Some(id),
                         "PR identity changed"
                     );
+                    let head = raw["value"]["head"]["sha"].as_str().unwrap_or_default().to_ascii_lowercase();
                     ensure!(
-                        raw["value"]["head"]["sha"] == q.expected_sha,
-                        "PR head changed; choose its actual commit before subscribing"
+                        client::sha(&head) && head.starts_with(&q.expected_sha),
+                        "PR head changed: the PR head is {head}, not {}; choose its actual commit before subscribing",
+                        q.expected_sha
                     );
+                    q.resolve(head);
                 } else if kind == "commit" {
                     ensure!(
                         raw["value"]["sha"] == q.expected_sha,
@@ -327,10 +355,12 @@ pub async fn call(
                     );
                 } else {
                     let r = client::run(&raw["value"], id, &name)?;
+                    let head = r["headSha"].as_str().unwrap_or_default().to_ascii_lowercase();
                     ensure!(
-                        r["runId"] == number.to_string() && r["headSha"] == q.expected_sha,
+                        r["runId"] == number.to_string() && client::sha(&head) && head.starts_with(&q.expected_sha),
                         "Run does not match the expected commit"
                     );
+                    q.resolve(head);
                 }
                 ws.stored(move |s| {
                     s.ci_subscribe(
@@ -920,6 +950,25 @@ async fn observe(ws: &Arc<Workspace>, w: &Value, ttl: i64) -> Result<Observed> {
         excluded,
     })
 }
+/// ci_subscribe's expectedSha (YN-69 S5): a full SHA, a PR's or run's head
+/// by its first 7 or more hexadecimal characters, or left out for a commit URL.
+fn expected_schema() -> Value {
+    json!({"type":"string","pattern":"^[0-9a-fA-F]{7,40}$","description":format!(
+        "The commit to watch: the PR head or the run's head, as a full commit SHA or its first 7 or more hexadecimal \
+        characters, which Core matches against the head it reads now and watches in full; for a commit URL optional, \
+        the commit the URL names. {}", crate::commit_sha::HOW)})
+}
+
+fn expected_problem(sha: &str) -> String {
+    let got = match sha.chars().count() {
+        0 => "it is empty".to_owned(),
+        n if sha.chars().all(|c| c.is_ascii_hexdigit()) => format!("got {n} characters"),
+        n => format!("got {n} characters, not all hexadecimal"),
+    };
+    format!("expectedSha must be a full commit SHA, or for a PR or run its first 7 or more hexadecimal characters; {got}. {}",
+        crate::commit_sha::HOW)
+}
+
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
@@ -928,11 +977,10 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make(
             "ci_subscribe",
             "Persistently watch an explicit GitHub.com PR at expectedSha, an Actions run, or a commit's runs on one branch for one event (a commit URL with branch and event, for example a merge commit on main for push, before any run exists), for your Agent and existing task. Core shares bounded reads, monitors for up to seven days and sends each completed run/attempt once through normal system mailbox; you may end your Turn. A commit watch waits for runs to appear (state waiting_for_run), reading less often while none does; it matches only runs of that exact SHA, branch, event and repository, never a PR's run or another branch's; if no matching run was observed by its expiry, one mail says so (with any failed reads), which is not proof that none ran. PR head changes never change the watched SHA. Same SHA reruns remain separate attempts. No workflow trigger/cancel/rerun, local CPU/RAM reservation, task completion or PR approval. Use a stable requestId for lost-reply retries; a new request explicitly renews monitoring. PR candidates close on task closure or observed PR merge; run and commit verification survive task closure until their fresh terminal results are notified (a commit watch also needs ten minutes of complete reads after the request that see nothing new, a bounded window for later workflows). Old request replay never reactivates monitoring.",
-            json!({"requestId":string,"taskId":task_reference,"url":{"type":"string","description":"A GitHub.com pull request, Actions run or commit URL (https://github.com/{owner}/{repo}/commit/{sha})."},"expectedSha":crate::commit_sha::schema(
-                crate::commit_sha::Form::GitHub, false, "The commit to watch: the PR head, the run's head, or the commit the commit URL names."),
+            json!({"requestId":string,"taskId":task_reference,"url":{"type":"string","description":"A GitHub.com pull request, Actions run or commit URL (https://github.com/{owner}/{repo}/commit/{sha})."},"expectedSha":expected_schema(),
                 "branch":{"type":"string","description":"Commit URL only, and required there: GitHub's exact head branch of the runs to watch, for example main."},
                 "event":{"type":"string","description":"Commit URL only, and required there: GitHub's exact event of the runs to watch, for example push."}}),
-            vec!["requestId", "taskId", "url", "expectedSha"],
+            vec!["requestId", "taskId", "url"],
         ),
         make(
             "ci_list",

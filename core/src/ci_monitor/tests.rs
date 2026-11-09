@@ -31,6 +31,7 @@ fn input(id: &str) -> Subscribe {
         expected_sha: "a".repeat(40),
         branch: None,
         event: None,
+        sent_sha: None,
     }
 }
 fn subscribe(s: &Store, agent: &str, id: &str) -> Value {
@@ -1155,18 +1156,73 @@ fn renewal_in_same_second_cannot_close_on_cached_terminal_evidence() {
     assert_eq!(mail(&s, "a").len(), 2);
 }
 
-/// T-131: the watched commit is the full 40-character SHA; a shorter one is
-/// refused with how to get it, before anything is watched.
+/// T-131, YN-69 S5: the watched commit is a full SHA, or for a PR or run at
+/// least its first 7 hexadecimal characters; a shorter one is refused with
+/// how to get it, before anything is watched. A commit URL names its own.
 #[tokio::test]
 async fn an_abbreviated_expected_sha_is_refused_with_how_to_get_the_full_one() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().into(), "/workspace".into(), "unused".into()).unwrap();
     let error = ask(&ws, "ci_subscribe", json!({"requestId":"watch","taskId":"T-1",
-        "url":"https://github.com/o/r/pull/1","expectedSha":"e635e5e"})).await.unwrap_err().to_string();
-    assert!(error.starts_with("expectedSha must be a full commit SHA, 40 hexadecimal characters, as GitHub shows it; got 7 characters."), "{error}");
+        "url":"https://github.com/o/r/pull/1","expectedSha":"e635e5"})).await.unwrap_err().to_string();
+    assert!(error.starts_with("expectedSha must be a full commit SHA, or for a PR or run its first 7 or more hexadecimal characters; got 6 characters."), "{error}");
     assert!(error.contains("git rev-parse"), "{error}");
+    let missing = ask(&ws, "ci_subscribe", json!({"requestId":"watch2","taskId":"T-1",
+        "url":"https://github.com/o/r/pull/1"})).await.unwrap_err().to_string();
+    assert!(missing.contains("expectedSha") && missing.contains("PR"), "{missing}");
     let tool = tool_definitions().into_iter().find(|tool| tool["name"] == "ci_subscribe").unwrap();
-    assert_eq!(tool["inputSchema"]["properties"]["expectedSha"]["pattern"], "^[0-9a-fA-F]{40}$");
+    assert_eq!(tool["inputSchema"]["properties"]["expectedSha"]["pattern"], "^[0-9a-fA-F]{7,40}$");
+    assert!(!tool["inputSchema"]["required"].as_array().unwrap().contains(&json!("expectedSha")), "a commit URL names its commit");
+}
+
+/// YN-69 S5: a PR watch takes the first 7 or more hexadecimal characters of
+/// the PR's head, matched against the head Core reads now and watched in
+/// full; another prefix names the head in full. A commit watch needs no
+/// expectedSha: its URL names the commit.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_watch_takes_a_prefix_of_its_head_and_a_commit_watch_needs_no_sha() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, s) = setup();
+    drop(s);
+    let program = dir.path().join("gh-fixture");
+    std::fs::write(&program, r##"#!/usr/bin/python3
+import json,sys
+ep=next(v for v in sys.argv if v.startswith(('repos/','repositories/')))
+head='ab12cd34'+'e'*32
+if ep=='repos/o/r':data={'id':123,'full_name':'o/r'}
+elif ep.endswith('/pulls/7'):data={'number':7,'base':{'repo':{'id':123}},'head':{'sha':head}}
+elif '/git/commits/' in ep:data={'sha':ep.rsplit('/',1)[1]}
+else:
+ print('HTTP/2.0 404 Not Found\r\n\r\n{}')
+ print('HTTP 404',file=sys.stderr)
+ sys.exit(1)
+print('HTTP/2.0 200 OK\r\nEtag: "x"\r\n\r\n'+json.dumps(data))
+"##).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut ws = Workspace::new(dir.path().into(), "/workspace".into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = program.to_string_lossy().into();
+    let head = format!("ab12cd34{}", "e".repeat(32));
+    let watched = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":"AB12CD3"})).await.unwrap();
+    assert_eq!(watched["watch"]["expectedSha"], json!(head), "the full head Core read: {watched}");
+    // A lost-reply retry of the same request, its prefix and all, is the same subscription.
+    let again = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":"AB12CD3"})).await.unwrap();
+    assert_eq!(again["id"], watched["id"], "a retry is the subscription it made: {again}");
+    let full = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":head})).await.unwrap_err().to_string();
+    assert!(full.contains("idempotency_conflict"), "another request under its requestId is refused: {full}");
+    let other = ask(&ws, "ci_subscribe", json!({"requestId":"q","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":"ab12cd35"})).await.unwrap_err().to_string();
+    assert!(other.contains("PR head changed") && other.contains(&head), "names the PR's head in full: {other}");
+    let merge = "f".repeat(40);
+    let commit = ask(&ws, "ci_subscribe", json!({"requestId":"c","taskId":"T-1","agentId":"a",
+        "url":format!("https://github.com/o/r/commit/{merge}"),"branch":"main","event":"push"})).await.unwrap();
+    assert_eq!(commit["watch"]["expectedSha"], json!(merge), "{commit}");
+    let replay = ask(&ws, "ci_subscribe", json!({"requestId":"c","taskId":"T-1","agentId":"a",
+        "url":format!("https://github.com/o/r/commit/{merge}"),"branch":"main","event":"push"})).await.unwrap();
+    assert_eq!(replay["id"], commit["id"], "{replay}");
 }
 /// T-36: an executor's release stops its own CI watches, closed as
 /// `executor_released`, what they observed kept; another Agent's stay. A

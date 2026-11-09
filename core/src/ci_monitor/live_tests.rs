@@ -39,6 +39,7 @@ fn sub(s: &Store, agent: &str, task: &str, kind: &str, number: u64) -> Value {
             expected_sha: "a".repeat(40),
             branch: None,
             event: None,
+            sent_sha: None,
         },
         crate::github::client::Repository {
             id: 123,

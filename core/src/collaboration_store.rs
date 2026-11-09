@@ -1743,7 +1743,8 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
 
 /// Keep the protocol narrow: native plans and turn completion are not task APIs.
 /// How every tool describes a taskId parameter.
-pub(crate) const TASK_ID: &str = "Existing task ID, for example T-1, or a Project task key such as YN-3; any key a task had still names it. Reuse the same task across steps and retries.";
+/// Said by every tool's taskId (YN-69 S7: 39 tools repeat it, so it stays short).
+pub(crate) const TASK_ID: &str = "An existing task: T-1, a Project key such as YN-3, or any key it had; keep one task across retries.";
 
 pub fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});

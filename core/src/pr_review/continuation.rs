@@ -40,10 +40,23 @@ pub(crate) struct Continue {
     pub(super) task_id: String,
     /// The completed round to continue.
     pub(super) review_id: String,
+    /// Left out (empty), the parent round's: see fill_from_parent (YN-69 S5).
+    #[serde(default)]
     pub(super) base_sha: String,
+    #[serde(default)]
     pub(super) head_sha: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) acknowledge_unreviewable: Option<bool>,
+}
+
+/// The parent round's fixed base and head for those the request left out;
+/// given ones stay, and admission checks them against the parent as before.
+pub(super) fn fill_from_parent(input: &mut Continue, parent: &Value) {
+    for (field, key) in [(&mut input.base_sha, "baseSha"), (&mut input.head_sha, "headSha")] {
+        if field.is_empty() {
+            *field = parent[key].as_str().unwrap_or_default().to_owned();
+        }
+    }
 }
 
 fn round(parent: &Value) -> String {
