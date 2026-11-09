@@ -172,7 +172,7 @@
  {
   "id": "runbook",
   "deliveryMode": "none",
-  "permissions": {"codex": "ask", "claude": "default"},
+  "permissionLevel": "ask",
   "steps": [
    {"kind": "materials"},
    {"kind": "work", "label": {"zh-Hans": "预检", "en": "Pre-checks"}},

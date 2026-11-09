@@ -56,7 +56,7 @@ const policy = { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, candidates
   { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deepseek-flash", credential: { kind: "apiKey", keyId: "deepseek-main" }, unknown: "skip",
     conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }] },
   { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, unknown: "skip",
-    conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] },
+    conditions: [{ kind: "quota", weekLeftPct: 10 }] },
   { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, unknown: "skip", conditions: [] },
 ] };
 // Core's evaluation (route_json), at "preview"; accounts by number and fingerprint only.
@@ -65,11 +65,9 @@ const record = (over = {}) => ({ policyVersion: 3, evaluatedAt: minutesAgo(0), a
     { id: "ds", harness: "opencode", model: "deepseek/deepseek-flash", state: "skipped",
       reasons: [{ code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", params: { until: minutesAgo(-90) }, condition: 0 }], readings: [] },
     { id: "cl", harness: "claude", model: "opus", state: "chosen",
-      reasons: [{ code: "poolPick", message: "Account #2: 71% of 5 hours and 58% of the week left, the most of the usable accounts", messageZh: "账号 #2：5 小时剩 71%，本周剩 58%，是可用账号里较少一项最多的" }],
+      reasons: [{ code: "poolPick", message: "Account #2: 58% of the week left, the most of the usable accounts", messageZh: "账号 #2：本周剩 58%，是可用账号里最多的" }],
       readings: [
-        { what: "fiveHourLeft", account: "1", value: 8, observedAt: minutesAgo(2), source: "cswap" },
-        { what: "weekLeft", account: "1", value: 64, observedAt: minutesAgo(2), source: "cswap" },
-        { what: "fiveHourLeft", account: "2", value: 71, observedAt: minutesAgo(2), source: "cswap" },
+        { what: "weekLeft", account: "1", value: 4, observedAt: minutesAgo(2), source: "cswap" },
         { what: "weekLeft", account: "2", value: 58, observedAt: minutesAgo(2), source: "cswap" }],
       accounts: [{ number: 1, fingerprint: "a1b2c3d4e5f60718", state: "low" }, { number: 2, fingerprint: "0f1e2d3c4b5a6978", state: "pick" }] },
     { id: "cx", harness: "codex", model: "gpt-6.1-sol", state: "notTried", reasons: [], readings: [] },
@@ -143,7 +141,7 @@ test("the card above the order says whom Core would choose now, why not the ones
   assert.equal(q(page, ".routing-now-title").textContent, "Now it would choose Claude Code · opus — Account #2");
   assert.deepEqual([...page.document.querySelectorAll(".routing-now-why li")].map((li) => li.textContent), [
     "1OpenCode · deepseek-flash · API: DeepSeek's peak price now; off-peak from 12:00",
-    "2Account #2: 71% of 5 hours and 58% of the week left, the most of the usable accounts"]);
+    "2Account #2: 58% of the week left, the most of the usable accounts"]);
   assert.match(q(page, ".routing-now .settings-row-meta").textContent, /^From readings 2 min ago$/);
   // Only the title is a live region: the "N min ago" under it changes every minute.
   assert.equal(q(page, ".routing-now").getAttribute("role"), null);
@@ -155,7 +153,9 @@ test("the card above the order says whom Core would choose now, why not the ones
   assert.ok(card(page, "cl").classList.contains("is-chosen"));
   const parts = (li) => [...li.querySelectorAll(".routing-live-account, .routing-reading, .routing-reading-at, .settings-tag")].map((x) => x.textContent.trim());
   assert.deepEqual([...card(page, "cl").querySelectorAll(".routing-live-accounts li")].map(parts),
-    [["Account #1", "5-hour left 8%", "Week left 64%", "2 min ago", "Not enough"], ["Account #2", "5-hour left 71%", "Week left 58%", "2 min ago", "Would use"]]);
+    [["Account #1", "Week left 4%", "2 min ago", "Not enough"], ["Account #2", "Week left 58%", "2 min ago", "Would use"]]);
+  // No 5-hour words on the card (YN-60).
+  assert.ok(!/5-hour|5 hours/.test(q(page, ".routing-now").textContent + card(page, "cl").textContent));
   assert.equal(card(page, "cx").querySelector(".routing-state").textContent, "Not reached");
   assert.deepEqual(page.errors, []);
 });

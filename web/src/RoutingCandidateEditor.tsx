@@ -4,6 +4,7 @@ import { Plus, Trash2, X } from "lucide-react";
 import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
 import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
 import { shortFingerprint, type AccountsView, type RoutingKey } from "./routing-keys";
+import { ModelField } from "./RoutingModelField";
 
 
 /** Whether a condition fits a credential: a daily spend cap is for an API key, the subscription left for an account (S3a). */
@@ -33,6 +34,8 @@ export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition
   onEdit: (change: (c: Candidate) => Candidate) => void; onRemove: () => void; onClose: () => void;
 }) {
   const choices = credentialChoices(c.harness, t, keys, accounts, c.credential);
+  // The provider of its API key: OpenCode's list puts that provider's models first (YN-57 S2b).
+  const keyProvider = c.credential.kind === "apiKey" ? keys.find((k) => k.id === (c.credential as { keyId: string }).keyId)?.provider ?? null : null;
   const api = usesApi(c);
   const has = (kind: string) => c.conditions.some((x) => x.kind === kind);
   const setConditions = (change: (list: AnyCondition[]) => AnyCondition[]) => onEdit((x) => ({ ...x, conditions: change(x.conditions) }));
@@ -65,11 +68,7 @@ export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition
             {HARNESSES.map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
           </select>
         </label>
-        <label className="routing-field"><span>{t.model}</span>
-          <input className="settings-input" value={c.model ?? ""} list={`routing-models-${c.harness}`} spellCheck={false} placeholder={t.modelPlaceholder}
-            onChange={(e) => onEdit((x) => ({ ...x, model: e.target.value }))} />
-          <datalist id={`routing-models-${c.harness}`}>{MODEL_HINTS[c.harness].map((m) => <option key={m} value={m} />)}</datalist>
-        </label>
+        <ModelField c={c} t={t} keyProvider={keyProvider} onChange={(model) => onEdit((x) => ({ ...x, model }))} />
         {c.harness === "codex" && (
           <label className="routing-field"><span>{t.effort}</span>
             <select className="settings-select" value={c.reasoningEffort ?? ""} onChange={(e) => field("reasoningEffort", e.target.value)}>
@@ -124,7 +123,7 @@ export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition
         </ul>
         <div className="routing-add-menu">
           {!has("timeWindow") && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "timeWindow", inside: false, schedule: DEEPSEEK_PEAK, minMinutesLeft: 30 }])}><Plus size={13} /> {t.addTime}</button>}
-          {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
+          {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
           {!has("dailyApiCap") && api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "dailyApiCap", usd: 5 }])}><Plus size={13} /> {t.addCap}</button>}
         </div>
       </div>
@@ -152,18 +151,16 @@ const fromField = (value: string) => (value === "00:00" ? "24:00" : value);
 function ConditionEditor({ cond, n, t, onChange }: { cond: AnyCondition; n: number; t: Text; onChange: (next: AnyCondition) => void }) {
   if (!isKnown(cond)) return <span className="routing-cond-kind">{t.chipUnknownKind(cond.kind)}</span>;
   if (cond.kind === "quota") {
-    const set = (key: "fiveHourLeftPct" | "weekLeftPct", value: string) => {
+    const set = (value: string) => {
       const next: Condition = { ...cond };
       const v = numberOrUnset(value);
-      if (v == null) delete next[key]; else next[key] = Math.max(0, Math.min(100, v));
+      if (v == null) delete next.weekLeftPct; else next.weekLeftPct = Math.max(0, Math.min(100, v));
       onChange(next);
     };
     return <>
       <b className="routing-cond-kind">{t.quota}</b>
-      <label className="routing-inline-field">{t.fiveHour}
-        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.fiveHourLeftPct ?? ""} onChange={(e) => set("fiveHourLeftPct", e.target.value)} />%</label>
       <label className="routing-inline-field">{t.week}
-        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.weekLeftPct ?? ""} onChange={(e) => set("weekLeftPct", e.target.value)} />%</label>
+        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.weekLeftPct ?? ""} onChange={(e) => set(e.target.value)} />%</label>
     </>;
   }
   if (cond.kind === "dailyApiCap") {

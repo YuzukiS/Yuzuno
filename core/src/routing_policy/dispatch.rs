@@ -42,25 +42,19 @@ fn failed_before(tx: &Connection, request_id: &str) -> Result<Vec<String>> {
 }
 
 /// A template made to start as `candidate` says: its harness, model and effort,
-/// and the permission field of that harness only.
+/// and the template's permission level as that harness's own permission (YN-56).
+/// No level, or one the harness doesn't keep (the evaluator passes over such a
+/// candidate), is that harness's defaults for new Agents.
 pub(crate) fn apply(template: &Template, candidate: &Value) -> Template {
     let mut t = template.clone();
     let harness = candidate["harness"].as_str().unwrap_or("codex").to_owned();
     let model = candidate["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned);
     t.model = model;
     t.reasoning_effort = if harness == "codex" { candidate["reasoningEffort"].as_str().map(str::to_owned) } else { None };
-    if harness != "codex" {
-        t.permission_preset = None;
-    }
-    if harness != "claude" {
-        t.permission_mode = None;
-    }
-    if harness != template.harness {
-        // Another harness's permissions are not this one's: its own defaults.
-        t.permission_preset = None;
-        t.permission_mode = None;
-    }
-    t.harness = harness;
+    let native = template.permission_level.as_deref().and_then(|level| crate::permission_levels::native(level, &harness));
+    t.permission_preset = native.filter(|_| harness == "codex").map(str::to_owned);
+    t.permission_mode = native.filter(|_| harness == "claude").map(str::to_owned);
+    t.harness = Some(harness);
     t
 }
 
@@ -71,7 +65,7 @@ fn host_only(candidate: &Value) -> bool {
 /// Routing for a dispatch, in its transaction: None while routing is off, for
 /// a `fixed` template, or with no candidate at all.
 pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, request_id: &str, machine: Option<&str>) -> Result<Option<Routed>> {
-    if template.routing.as_deref() == Some("fixed") {
+    if template.fixed() {
         return Ok(None);
     }
     let stored = super::stored_in(tx)?;
@@ -79,21 +73,24 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
         return Ok(None);
     }
     let exclude = failed_before(tx, request_id)?;
+    let level = template.permission_level.as_deref();
     // `auto` or unset chooses its machine after routing: any candidate may run.
     let machine = machine.filter(|m| *m != super::super::collaboration_store::executor_choice::AUTO);
     let assume = Assume::default();
-    let route = evaluate(stored.version, &stored.policy, "dispatch", &gathered.inputs(Utc::now(), machine, &exclude, None, None, &assume));
+    let route = evaluate(stored.version, &stored.policy, "dispatch", &gathered.inputs(Utc::now(), machine, &exclude, None, level, &assume));
     let mut record = route.record;
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
         let machine = host_only(&candidate).then(|| "local".to_owned());
         return Ok(Some(Routed { template: apply(template, &candidate), route: record, profile: route.profile, machine }));
     }
-    // None now: the first enabled candidate that could run there gives the
-    // executor its harness, and it waits for one of that harness.
+    // None now: the first enabled candidate that could run there, and keeps
+    // the template's permission level, gives the executor its harness, and it
+    // waits for one of that harness.
     let first = stored.policy["candidates"].as_array().into_iter().flatten()
         .find(|c| c["enabled"] == true && !exclude.iter().any(|e| c["id"] == e.as_str())
-            && (!host_only(c) || machine.is_none_or(|m| m == "local")));
+            && (!host_only(c) || machine.is_none_or(|m| m == "local"))
+            && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default()));
     let Some(first) = first else {
         return Ok(None);
     };

@@ -1,8 +1,9 @@
 // T-34 S1: Settings → Executor templates in Chromium (en-US), with every API
 // answered here (no Core, no CLI, no daily configuration). Through the real
 // Settings: an empty list, a template added (its id following its label),
-// its harness, permissions and instructions chosen, and saved as a whole list
-// against the version read; the editor in Chinese after a language change in
+// following routing with a permission level and instructions, saved as a whole
+// list against the version read; fixed to a tool that doesn't keep its level,
+// then to one that does (YN-56); the editor in Chinese after a language change in
 // another window, unsaved text kept; on a phone, the editor fits its width.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-templates-check.mjs
 import assert from "node:assert/strict";
@@ -31,7 +32,8 @@ const home = { generatedAt: new Date().toISOString(), order: ["p1"], needsYou: [
 // What Core keeps and answers (executor_templates::view).
 let saved = { version: 0, templates: [] };
 const view = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
-  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false,
+  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: true,
+  general: { label: "Executor", harness: "codex", harnessSource: "builtin" },
   appliesTo: "Dispatches from a template from now on; executors already created keep their own settings." });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
@@ -114,20 +116,39 @@ try {
   await box.getByRole("button", { name: "Add template" }).click();
   await box.locator('input[aria-label="Label"]').fill("Code reviewer");
   assert.equal(await box.locator('input[aria-label="Id"]').inputValue(), "code-reviewer", "a new template's id follows its label");
-  await box.locator('select[aria-label="Harness"]').selectOption("claude");
+  assert.equal(await box.locator('select[aria-label="Runs with"]').inputValue(), "", "a new template follows routing");
+  assert.equal(await box.locator('input[aria-label="Model"]').count(), 0, "and names no model");
   await box.locator('select[aria-label="Permissions"]').selectOption("auto");
+  await box.locator(".executor-level-on").getByText("On each tool: Codex: Approve for me · Claude Code: Auto mode · OpenCode: doesn't keep it").waitFor({ timeout: 10_000 });
+  await box.getByText("Routing passes over OpenCode for this template.").waitFor({ timeout: 10_000 });
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first, then the linked PR.");
   await bar.getByText("1 change not saved").waitFor({ timeout: 10_000 });
+  await box.locator(".executor-template-level").scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(output, "1-unsaved.png") });
   await bar.getByRole("button", { name: "Save", exact: true }).click();
   await box.getByText("Saved.").waitFor({ timeout: 10_000 });
   const put = report.writes.find((w) => w.path === "/api/executor-templates");
-  assert.deepEqual(put.body, { expectedVersion: 0, templates: [{ id: "code-reviewer", label: "Code reviewer", harness: "claude",
-    permissionMode: "auto", instructions: "Read the acceptance first, then the linked PR." }] });
+  assert.deepEqual(put.body, { expectedVersion: 0, templates: [{ id: "code-reviewer", label: "Code reviewer",
+    permissionLevel: "auto", instructions: "Read the acceptance first, then the linked PR." }] });
   await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 }); // what was saved is what is shown
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
   await page.screenshot({ path: join(output, "2-saved.png") });
-  check("a template added, its id following its label, and saved as the whole list against version 0", { body: put.body });
+  check("a template added, its id following its label, following routing with a level, and saved as the whole list against version 0", { body: put.body });
+
+  // ---- Fixed to a tool: one that doesn't keep its level needs a fix; then one that does.
+  await box.locator('select[aria-label="Permissions"]').selectOption("full");
+  await box.locator('select[aria-label="Runs with"]').selectOption("claude");
+  await box.getByText("Claude Code doesn't keep this level: choose another.").waitFor({ timeout: 10_000 });
+  await box.getByText("Fixed: always Claude Code on this host's login, whatever routing says.").waitFor({ timeout: 10_000 });
+  assert.equal(await box.locator('input[aria-label="Model"]').count(), 1, "a fixed template names its model");
+  await box.locator(".executor-template-level").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(output, "2a-fixed-refused.png") });
+  assert.equal(await bar.getByRole("button", { name: "Save", exact: true }).isDisabled(), true, "a level its tool doesn't keep is not saved");
+  await box.locator('select[aria-label="Permissions"]').selectOption("auto");
+  await box.locator('select[aria-label="Runs with"]').selectOption("");
+  // As saved again: nothing left to save, so the bar says nothing is unsaved.
+  await page.waitForFunction(() => !/not saved/.test(document.querySelector(".settings-savebar:not([hidden])")?.textContent ?? ""), null, { timeout: 10_000 });
+  check("fixed to Claude Code, Full access needs a fix and isn't saved; back to following routing, nothing changed");
 
   // ---- In Chinese after a language change elsewhere; unsaved text kept.
   // The template's page (YN-8 S5b) stays open: its way back names the list.

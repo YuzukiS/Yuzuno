@@ -55,10 +55,18 @@ const words = strings({
   codexTitle: (who: string, source: string) => `Codex plan usage${who ? ` for ${who}` : ""}, from ${source}`,
   codexStale: "This is the last report; refresh it from the Agent's details.",
   codexNotAllowed: "Ordinary usage is not allowed (reported).",
-  machines: (count: number, down: number) => `${count} ${count === 1 ? "machine" : "machines"}${down ? ` · ${down} unreachable` : ""}`,
+  machines: (count: number, down: number, off: number) =>
+    [
+      `${count} ${count === 1 ? "machine" : "machines"}`,
+      down ? `${down} unreachable` : "",
+      off ? `${off} ${off === 1 ? "Agent" : "Agents"} disconnected` : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
   checked: (reachable: boolean, when: string) => `${reachable ? "reachable" : "unreachable"} at its last check, ${when}`,
   unchecked: "not checked yet",
-  machine: (name: string, check: string, off: number) => `${name}: ${check}${off ? `; ${off} Agent${off === 1 ? "" : "s"} disconnected` : ""}`,
+  machine: (name: string, check: string, off: string[]) =>
+    `${name}: ${check}${off.length ? `; ${off.length === 1 ? "Agent" : "Agents"} disconnected: ${off.join(", ")}` : ""}`,
   openMachines: "Open Machines",
   // The way into all of this from the toolbar, where the bar itself has no
   // room to stand (T-15 V5).
@@ -105,10 +113,11 @@ const words = strings({
   codexTitle: (who, source) => `Codex 套餐用量${who ? `（${who}）` : ""}，来自 ${source}`,
   codexStale: "这是上次的报告；请在 Agent 的详情中刷新。",
   codexNotAllowed: "不允许普通用量（据报告）。",
-  machines: (count, down) => `${count} 台机器${down ? ` · ${down} 台无法连接` : ""}`,
+  machines: (count, down, off) =>
+    [`${count} 台机器`, down ? `${down} 台无法连接` : "", off ? `${off} 个 Agent 未连接` : ""].filter(Boolean).join(" · "),
   checked: (reachable, when) => `上次检查时${reachable ? "可以连接" : "无法连接"}，${when}`,
   unchecked: "尚未检查",
-  machine: (name, check, off) => `${name}：${check}${off ? `；${off} 个 Agent 已断开` : ""}`,
+  machine: (name, check, off) => `${name}：${check}${off.length ? `；未连接的 Agent：${off.join("、")}` : ""}`,
   openMachines: "打开“机器”",
   details: "Core 与后台工作",
   detailsNeed: (count) => `${count} 个待查看`,
@@ -789,11 +798,14 @@ export function useCodex(agent: Agent | null, streamConnected: boolean, language
 
 /**
  * Remote machines, only while an open Agent works on one (and read only
- * then): how many, and how many could not be reached at their last check or
- * have an Agent whose runtime is disconnected. A check is manual, so its age
- * is in the tip.
+ * then): how many, how many could not be reached at their last check, and
+ * how many open Agents on them are disconnected. Only a failed check makes a
+ * machine unreachable (YN-61): one that answered while its Agents are
+ * disconnected is not, and is shown in the bar's quiet colour, with the tip
+ * naming those Agents under their machine. A check is manual, so its age is
+ * in the tip.
  */
-function useMachines(revision: string, enabled: boolean, agents: Agent[], language: Language = "en") {
+export function useMachines(revision: string, enabled: boolean, agents: Agent[], language: Language = "en") {
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   const remoteInUse = agents.some((a) => !a.closedAt && !!a.remote);
   useEffect(() => {
@@ -808,26 +820,22 @@ function useMachines(revision: string, enabled: boolean, agents: Agent[], langua
   }, [revision, enabled, remoteInUse]);
   const remote = machines.filter((m) => m.kind === "ssh");
   if (!remote.length) return null;
-  const down = remote.filter(
-    (m) =>
-      m.lastCheck?.reachable === false ||
-      agents.some(
-        (a) => !a.closedAt && a.remote?.machine.id === m.id && a.connectionState === "disconnected",
-      ),
-  );
+  const off = (m: WorkspaceMachine) =>
+    agents
+      .filter((a) => !a.closedAt && a.remote?.machine.id === m.id && a.connectionState === "disconnected")
+      .map((a) => a.name);
+  const unreachable = remote.filter((m) => m.lastCheck?.reachable === false).length;
+  const disconnected = remote.reduce((sum, m) => sum + off(m).length, 0);
   const t = words(language);
   return {
-    unreachable: down.length,
-    text: t.machines(remote.length, down.length),
+    unreachable,
+    text: t.machines(remote.length, unreachable, disconnected),
     title: [
       ...remote.map((m) => {
         const check = m.lastCheck
           ? t.checked(m.lastCheck.reachable, new Date(m.lastCheck.checkedAt).toLocaleString())
           : t.unchecked;
-        const off = agents.filter(
-          (a) => !a.closedAt && a.remote?.machine.id === m.id && a.connectionState === "disconnected",
-        ).length;
-        return t.machine(m.name, check, off);
+        return t.machine(m.name, check, off(m));
       }),
       t.openMachines,
     ].join("\n"),

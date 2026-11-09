@@ -218,9 +218,15 @@
   display: grid; gap: 12px; margin-top: 2px; padding: 12px; min-width: 0;
   border: 1px dashed var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
 }
-.routing-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 10px 14px; }
+/* Each field as tall as itself: the model's line under its select doesn't stretch its neighbours (YN-57 S2b). */
+.routing-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); align-items: start; gap: 10px 14px; }
 .routing-edit-grid .settings-input, .routing-edit-grid .settings-select { width: 100%; }
 .routing-field-wide { grid-column: 1 / -1; }
+/* A candidate's model (YN-57 S2b): its select, a typed one under it, and where the list comes from or why it couldn't be read. */
+.routing-model-other { margin-top: 2px; }
+.routing-model-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin: 0; color: var(--text-quiet); font-size: calc(9px + var(--font-adjust, 3px)); line-height: 1.45; }
+.routing-model-note.is-warn { color: var(--warning-ink, var(--text-secondary)); }
+.routing-model-note .routing-model-reread { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px; min-height: 0; font-size: inherit; }
 .routing-pool, .routing-unknown { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .routing-pool legend, .routing-unknown legend { float: left; width: 100%; padding: 0; margin-bottom: 2px; }
 .routing-pool label, .routing-unknown label, .routing-pool-accounts label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
@@ -343,6 +349,7 @@
 .routing-simulate, .routing-templates { display: grid; gap: 6px; }
 .routing-simulate .settings-group-title, .routing-simulate .settings-block-help,
 .routing-templates .settings-group-title, .routing-templates .settings-block-help { margin: 0; }
+.routing-template-action { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .routing-sim-box { display: grid; gap: 10px; padding: 12px 14px; }
 .routing-sim-at { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
 .routing-sim-slider { display: grid; flex: 1 1 18rem; gap: 6px; min-width: 0; color: var(--text-secondary); font-size: calc(10px + var(--font-adjust, 3px)); }
@@ -376,4 +383,5 @@
 .settings-center.is-phone .routing-strip-row { grid-template-columns: 2.6em minmax(0, 1fr); gap: 6px; }
 .settings-center.is-phone .routing-strip-axis { margin-left: calc(2.6em + 6px); }
 .settings-center.is-phone .routing-templates .routing-seg button { min-height: 40px; }
+.settings-center.is-phone .routing-template-action .settings-select { min-height: 40px; }
 .settings-center.is-phone .routing-sim-slider input { min-height: 40px; }

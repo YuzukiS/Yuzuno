@@ -17,7 +17,9 @@ version; a later slice adds to it.
 | S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | Done |
 | S3b3 | A real DeepSeek executor through routing: a lab check | Done |
 | S4 | The Settings page (YN-49) | Done |
-| YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | This version |
+| YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
+| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
+| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -275,7 +277,9 @@ It answers from what Core last observed and starts no read itself.
 
 ### Subscription quotas
 
-These are what is left of each account's 5-hour and weekly windows.
+These are what is left of each account's weekly window. Claude and Codex
+have no 5-hour quota now (YN-60), so no 5-hour window is read, and one an
+older Core kept is not shown.
 
 - **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
   - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
@@ -290,10 +294,10 @@ These are what is left of each account's 5-hour and weekly windows.
 ```jsonc
   "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read
     "accounts": [ { "number": 2, "fingerprint": "3f2a…", "active": false,
-      "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
+      "week": { "leftPct": 40, "resetsAt": "…" },
       "observedAt": "…", "source": "cswap",           // "cswap" | "agent" (reported by a running Agent)
       "unknown": { "code": "…", "message": "…", "messageZh": "…" } } ] },
-  "codex": [ { "home": "login", "fiveHour": { … }, "week": { … }, "observedAt": "…", "source": "codex" },
+  "codex": [ { "home": "login", "week": { … }, "observedAt": "…", "source": "codex" },
              { "home": "work", "unknown": { … } } ]
 ```
 
@@ -365,7 +369,9 @@ executors as it says, whatever the policy is.
 
 `conditions[]` entries take one of these forms:
 - `{ "kind": "timeWindow", "inside": bool, "schedule": { "timeZone": "UTC" | "local", "slots": […] }, "minMinutesLeft"?: n }`. With `minMinutesLeft`, the condition must still hold for that many more minutes.
-- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials. It is the share left.
+- `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
+  - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
+  - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
 
 ### `route_json`: why a candidate was chosen (S3b)
@@ -382,7 +388,7 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
-      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
+      "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
   "changedAtStart": { "from": "c-claude", "reason": "…" },        // only when the start-time check chose another
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
@@ -400,10 +406,10 @@ is chosen. The other candidates are marked `notTried`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
-- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of min(5-hour, week) left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of its week left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
 - **Its conditions hold:**
-  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left;
-  - `quota`: `quotaLow`;
+  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
+  - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);
   - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
@@ -413,7 +419,7 @@ know, is unknown. Codex API-key spend is unknown too. The candidate's
 `pass` lets it be chosen, with the unknowns kept as its reasons.
 
 When none is chosen, `earliest` names the soonest time a reason gives
-(`params.until`), such as the end of a time window or a quota's reset.
+(`params.until`), such as when a time window next holds or a quota's reset.
 
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
@@ -433,9 +439,12 @@ No level is each harness's own default for new Agents, kept everywhere.
 OpenCode keeps no level: Core adds no permission rule of its own to it, so
 only its own configuration applies.
 
-At this version a level reaches routing only through the previews'
-`permissionLevel` (below). A dispatch carries none, so routing at dispatch is
-as before.
+A template's level goes with each dispatch from it ([Executor
+templates](executor-model.md#executor-templates)): routing passes over a
+candidate whose harness doesn't keep it. When no enabled candidate keeps it,
+the dispatch is not routed and starts on the default harness for new Agents,
+with the level; one that harness doesn't keep is refused (`level_not_kept`).
+The previews take one too (`permissionLevel`, below).
 
 ### Routing at dispatch (S3b2)
 
@@ -444,13 +453,14 @@ dispatch is routed:
 
 - **A candidate is chosen in the dispatch's own transaction.** It reads the
   readings as Core last observed them, and gives the executor:
-  - its harness, model and effort. Its permissions are the template's for that harness, else that harness's defaults;
+  - its harness, model and effort. Its permission is the template's [permission level](#permission-levels-yn-56) on that harness; a template with none gets that harness's defaults for new Agents. A candidate whose harness doesn't keep the level is passed over;
   - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
   A candidate that runs on this Core host only makes it run here. The record
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
-  harness of the first candidate that could run there, and stays in the
+  harness of the first candidate that could run there and keeps its level,
+  and stays in the
   queue while executors after it start. At each slot pass routing is read
   again, among the candidates of its harness only. The first that holds
   gives it its model, effort and account or key (`changedAtStart`), and it
