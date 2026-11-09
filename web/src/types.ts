@@ -556,6 +556,10 @@ export interface Model {
   description?: string;
   isDefault?: boolean;
   supportsAutoMode?: boolean;
+  /** Claude: the full model id an alias row points to now ("opus" → "claude-opus-5-5"), when its CLI says (YN-57). */
+  resolvedModel?: string;
+  /** Codex: a model its list keeps out of pickers. */
+  hidden?: boolean;
   /** Claude: whether the model takes a reasoning effort, and which levels. */
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];

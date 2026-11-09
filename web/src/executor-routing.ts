@@ -118,8 +118,9 @@ export const credentialFits = (harness: Harness, credential: Credential) =>
   || (credential.kind === "pool" && harness === "claude") || (credential.kind === "codexHome" && harness === "codex");
 export const usesApi = (c: Candidate) => c.credential.kind === "apiKey";
 
+/** A tool's first model for a new or changed candidate, and Yuzuno's short list when the tool's own can't be read (YN-57 S2b). */
 export const MODEL_HINTS: Record<Harness, string[]> = {
-  claude: ["opus", "sonnet"],
+  claude: ["opus", "sonnet", "haiku"],
   codex: ["gpt-6.1-sol"],
   opencode: ["deepseek/deepseek-flash"],
 };

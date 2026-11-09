@@ -60,11 +60,44 @@ const cl = { id: "cl", enabled: true, harness: "claude", model: "opus", credenti
 const savedView = (over = {}) => ({ version: 3, updatedAt: "2026-11-08T04:00:00Z", limits: { candidates: 8 },
   policy: { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, futureFlag: "kept", candidates: [clone(ds), clone(cl)] }, ...over });
 
-/** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. */
-function core({ view = savedView(), put } = {}) {
-  const state = { view };
+/** Each tool's list as Core answers it (YN-57 S2b): Claude Code's CLI aliases and what each points to now, Codex's
+ * model/list, and OpenCode's as a new executor lists them (docs/executor-routing.md). */
+const CATALOGS = {
+  claude: { models: [
+    { id: "default", model: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5" },
+    { id: "opus", model: "opus", displayName: "Opus", resolvedModel: "claude-opus-5-5" },
+    { id: "sonnet", model: "sonnet", displayName: "Sonnet", resolvedModel: "claude-sonnet-5-5" },
+    { id: "haiku", model: "haiku", displayName: "Haiku", resolvedModel: "claude-haiku-5-5" },
+  ] },
+  codex: { models: [
+    { id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+    { id: "gpt-6.1-sol-mini", model: "gpt-6.1-sol-mini", displayName: "GPT-6.1 Sol Mini" },
+    { id: "gpt-old", model: "gpt-old", displayName: "Old", hidden: true },
+  ] },
+  opencode: { opencode: { version: "2.2.5", verified: "2.2.5" }, models: [
+    { id: "anthropic/claude-x", model: "anthropic/claude-x", providerId: "anthropic", providerName: "Anthropic", name: "Claude X", displayName: "Anthropic · Claude X" },
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek Flash", displayName: "DeepSeek · DeepSeek Flash" },
+    { id: "deepseek/deepseek-v4-pro", model: "deepseek/deepseek-v4-pro", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek V4 Pro", displayName: "DeepSeek · DeepSeek V4 Pro" },
+    { id: "opencode/big-pickle", model: "opencode/big-pickle", providerId: "opencode", providerName: "OpenCode", name: "Big Pickle", displayName: "OpenCode · Big Pickle" },
+  ], providers: [
+    { id: "anthropic", name: "Anthropic", source: "routingKey", keyProvider: "anthropic" },
+    { id: "deepseek", name: "DeepSeek", source: "routingKey", keyProvider: "deepseek" },
+    { id: "opencode", name: "OpenCode", source: "ready" },
+  ] },
+};
+
+/** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
+ * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default. */
+function core({ view = savedView(), put, lists } = {}) {
+  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 } };
   return { state, route(url, method, body) {
-    const p = new URL(url, "http://isolated.test").pathname;
+    const u = new URL(url, "http://isolated.test");
+    const p = u.pathname;
+    const harness = p === "/api/models" ? (u.searchParams.get("harness") ?? "codex") : p === "/api/routing/models" ? u.searchParams.get("harness") : null;
+    if (harness && method === "GET") {
+      const n = ++state.asked[harness];
+      return lists?.(harness, n) ?? [200, clone(CATALOGS[harness])];
+    }
     if (p === "/api/routing/policy" && method === "GET") return [200, state.view];
     if (p === "/api/routing/policy" && method === "PUT") {
       const answer = put?.(body, state);
@@ -79,7 +112,7 @@ function core({ view = savedView(), put } = {}) {
     ], onePasswordToken: { set: true } }];
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
       { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAIL },
-      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "alias" },
+      { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
       { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "other@example.test" },
     ] }, codexHomes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }] }];
     return [404, { error: `not answered: ${method} ${p}` }];
@@ -205,11 +238,13 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   await set(page, editorField(page, id, "Account or key"), "home:work");
   button(page, "Subscription left", card(page, id)).click();
   await tick();
-  await set(page, editorField(page, id, "Model"), "gpt 6.1");
+  // A model the list lacks: Other, then typed (YN-57 S2b).
+  await set(page, editorField(page, id, "Model"), " other");
+  await set(page, byLabel(page, "Model, typed"), "gpt 6.1");
   assert.ok(card(page, id).textContent.includes("A model is one name, without spaces."), "as Core's check would refuse it");
   assert.match(bar(page).textContent, /Correct the marked block to save/);
   assert.equal(button(page, "Save", bar(page)).disabled, true);
-  await set(page, editorField(page, id, "Model"), "gpt-6.1-sol");
+  await set(page, byLabel(page, "Model, typed"), "gpt-6.1-sol");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.policy.candidates[2], { id, enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high",
@@ -326,6 +361,104 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
   assert.equal(new Set(sent.map((c) => c.id)).size, 4, "each its own id");
 });
 
+/** An open editor's model select: its groups and options as shown, and the line under it. */
+function modelView(page, id) {
+  const select = card(page, id).querySelector(".routing-edit .routing-model select");
+  const field = select.closest(".routing-model");
+  return {
+    select,
+    value: select.value,
+    groups: [...select.querySelectorAll("optgroup")].map((g) => g.label),
+    options: [...select.options].map((o) => o.textContent),
+    grouped: Object.fromEntries([...select.querySelectorAll("optgroup")].map((g) => [g.label, [...g.querySelectorAll("option")].map((o) => o.value)])),
+    notes: [...field.querySelectorAll(".routing-model-note")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
+  };
+}
+const asks = (page) => page.calls.filter((c) => /\/api\/(routing\/)?models/.test(c.url)).map((c) => new URL(c.url, "http://isolated.test").pathname + new URL(c.url, "http://isolated.test").search);
+
+test("Claude Code's model is chosen from its CLI's aliases and the versions they point to, read when its editor opens (YN-57)", async () => {
+  const page = mount(core());
+  await opened(page);
+  assert.deepEqual(asks(page), [], "no list is read before an editor opens");
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => modelView(page, "cl").groups.length === 2, "Claude Code's list");
+  const view = modelView(page, "cl");
+  assert.equal(view.value, "opus", "the saved alias stays chosen");
+  assert.deepEqual(view.groups, ["Aliases · follow new releases", "Pinned versions"]);
+  assert.deepEqual(view.grouped["Aliases · follow new releases"], ["default", "opus", "sonnet", "haiku"]);
+  assert.deepEqual(view.grouped["Pinned versions"], ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"], "each once");
+  assert.equal(view.options[0], "The tool's default");
+  assert.equal(view.options.at(-1), "Other (type it)…");
+  assert.ok(view.options.includes("Opus · opus"));
+  assert.match(view.notes[0], /^From Claude Code on this Core host: its aliases, and the versions they point to now\. Read again$/);
+  assert.deepEqual(asks(page), ["/api/models?harness=claude"], "only the open candidate's tool, once");
+  await set(page, view.select, "claude-sonnet-5-5");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.policy.candidates.find((c) => c.id === "cl").model, "claude-sonnet-5-5");
+});
+
+test("OpenCode's list puts the candidate's key's provider first, and says when a model needs another key (YN-57)", async () => {
+  const page = mount(core(), "zh-Hans");
+  await opened(page);
+  button(page, "编辑 OpenCode · deepseek-flash · API").click();
+  await until(() => modelView(page, "ds").groups.length === 3, "OpenCode's list");
+  let view = modelView(page, "ds");
+  assert.equal(view.value, "deepseek/deepseek-flash");
+  assert.deepEqual(view.groups, ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"]);
+  assert.deepEqual(view.grouped["DeepSeek · 用这个候选的 API key"], ["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
+  assert.ok(view.options.includes("DeepSeek V4 Pro · deepseek/deepseek-v4-pro"));
+  assert.match(view.notes[0], /^来自这台 Core 主机上的 OpenCode 2\.2\.5：它这个版本自带的目录加上你的 OpenCode 配置，也就是新执行者看到的那份。 重新读取$/);
+  assert.deepEqual(asks(page), ["/api/routing/models?harness=opencode"]);
+  await set(page, view.select, "anthropic/claude-x");
+  view = modelView(page, "ds");
+  assert.equal(view.notes[1], "Anthropic 的模型需要 Anthropic 的 API key：在「账号或 key」里选一把。", "said, not refused");
+  await until(() => button(page, "保存", bar(page)), "the bar");
+  assert.equal(button(page, "保存", bar(page)).disabled, false, "the save is not held for it");
+});
+
+test("a tool whose list can't be read shows Yuzuno's short list and why, until Read again reads it (YN-57)", async () => {
+  const view0 = savedView();
+  view0.policy.candidates.push({ id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, conditions: [], unknown: "skip" });
+  const page = mount(core({ view: view0, lists: (harness, n) => (harness === "codex" && n === 1 ? [503, { code: "unavailable", error: "Codex did not start" }] : undefined) }));
+  await opened(page);
+  button(page, "Edit Codex · gpt-6.1-sol").click();
+  await until(() => modelView(page, "cx").groups.length === 1, "the short list");
+  let view = modelView(page, "cx");
+  assert.deepEqual(view.groups, ["Yuzuno's short list"]);
+  assert.deepEqual(view.grouped["Yuzuno's short list"], ["gpt-6.1-sol"]);
+  assert.equal(view.value, "gpt-6.1-sol");
+  assert.match(view.notes[0], /^Couldn't read Codex's models on this Core host \(Codex did not start\)\. Showing Yuzuno's short list; choose Other to type any model\. Read again$/);
+  button(page, "Read again", card(page, "cx")).click();
+  await until(() => modelView(page, "cx").groups[0] === "Codex's models", "Codex's own list");
+  view = modelView(page, "cx");
+  assert.deepEqual(view.grouped["Codex's models"], ["gpt-6.1-sol", "gpt-6.1-sol-mini"], "a hidden model stays out");
+  assert.match(view.notes[0], /^From Codex on this Core host: its own model list\./);
+  assert.deepEqual(asks(page), ["/api/models", "/api/models"], "asked again");
+});
+
+test("a saved model the list lacks stays chosen and says so; Other takes a typed one (YN-57)", async () => {
+  const view0 = savedView();
+  view0.policy.candidates.push({ id: "cy", enabled: true, harness: "codex", model: "gpt-legacy", credential: { kind: "login" }, conditions: [], unknown: "skip" });
+  const page = mount(core({ view: view0 }));
+  await opened(page);
+  button(page, "Edit Codex · gpt-legacy").click();
+  await until(() => modelView(page, "cy").groups.length === 1, "Codex's list");
+  let view = modelView(page, "cy");
+  assert.equal(view.value, "gpt-legacy", "not changed for the user");
+  assert.equal(view.select.selectedOptions[0].textContent, "gpt-legacy · not in the list now");
+  await set(page, view.select, " other");
+  const typed = byLabel(page, "Model, typed");
+  assert.equal(typed.value, "gpt-legacy", "the typed field starts from it");
+  await set(page, typed, "gpt-7-preview");
+  view = modelView(page, "cy");
+  assert.equal(view.value, " other", "Other stays chosen while typing");
+  assert.ok(view.notes.includes("Codex doesn't list this model now: it runs only if the executor's Codex has it."));
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.policy.candidates.find((c) => c.id === "cy").model, "gpt-7-preview");
+});
+
 test("a candidate that can't be saved says so on its card, with a pill that opens its editor (YN-57)", async () => {
   const view = savedView();
   view.policy.candidates[0].credential = { kind: "apiKey", keyId: "deepseek-gone" };
@@ -372,7 +505,7 @@ test("routing off, the Workspace cap, a weekly schedule of its own and a pool of
   await tick();
   [...card(page, "cl").querySelectorAll(".routing-pool-accounts label")].find((l) => l.textContent.includes("Account #2")).querySelector("input").click();
   await tick();
-  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("alias"), "accounts by number and fingerprint only");
+  assert.ok(!page.document.documentElement.outerHTML.includes(EMAIL) && !page.document.documentElement.outerHTML.includes("fixture-alias-label"), "accounts by number and fingerprint only");
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   const sent = puts(page)[0].body.policy;
