@@ -95,6 +95,17 @@ Three small shapes cover most other cards; `brief_guide examples` has each, as `
 - **Compare**: the answer in one sentence, then one chart or a short `Table` of measured values, with the sample and what it cannot show beside them.
 - **Decision**: an Ask with the question, the options and what each costs, in a few lines; the background stays on the task. Several related answers go in one form, as in the `form` example.
 
+### Ask for a review
+
+To have the user review a document, a report or a design, ask with an Ask; `brief_guide examples` has this shape as `review`. A report holds only what is settled: the user's Seen mark takes it off Home at once, and Seen means read, not reviewed, so nothing still to decide (a name to choose, a draft to approve) belongs in a report.
+
+- Attach what is to be reviewed (a PDF, a report file, a screenshot) to the Ask itself and show it in an `Attachments` block, so the user opens it from the Ask they answer.
+- Offer the verdict, approve or needs changes, as `options` or a `choice`. A button sends its reply at once, and a reply is either a button or a form's answers, never both: when comments should come with the verdict, make the verdict a required `single` field of a form, with the same two options, instead of buttons.
+- For comments on one place, give the form a text field for each section ("Section 1", "Section 2"; at most 8 fields in all). Home has no comments anchored inside a file or a block.
+- `time.due` may say by when. Home shows it on the card as it is; nothing reminds the user, and nothing happens when it passes.
+- When changes are needed, make them, then put the Ask again with the new version: that is the next round, and it returns to Needs you. Once the review is done, resolve the Ask yourself, as its author.
+- A task in review waits for its dispatcher: Needs you lists a result only for an executor the user dispatched, and a lead's executors are the lead's to follow. When the user must accept a task themselves, its lead asks for that with an Ask.
+
 ### Maintain the section
 
 - Before a block update, glance over the whole section for repetition and stale phases. Keep `status.asOf` aligned with the facts actually checked; changing the card's text does not refresh that observation time. Do not stamp unchecked facts as fresh. If nothing material changed, use `noChange` when permitted, instead of adding a progress paragraph merely because a Turn ended.

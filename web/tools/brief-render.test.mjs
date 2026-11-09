@@ -873,6 +873,7 @@ test("the contract's examples render without a failed part", async (t) => {
     calculator: ["¥684", "People", "None", "15%", "Round each share up", "Total", "¥752", "Each", "¥188.10", "Back to 4, 10%"],
     flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
     timeline: ["the user installs it", "Nov 3, 2026", "Candidate cut", "Notes reviewed", "Week 46", "Planned", "Installing it", "Step 1 of 4", "Download the bundle"],
+    review: ["Version 2 rewrites section 2", "design-v2.pdf", "Design doc v2 (PDF)"],
   };
   const reads = {
     note: [],
@@ -888,6 +889,7 @@ test("the contract's examples render without a failed part", async (t) => {
     calculator: [],
     flowchart: [],
     timeline: [],
+    review: [attachment("design-v2.pdf", "pdf", "application/pdf", { caption: "Design doc, version 2" })],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
