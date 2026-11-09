@@ -1,5 +1,6 @@
 //! YN-34 S3b3: one real DeepSeek executor through routing, in a lab Core.
 //! YN-56 S3: a real DeepSeek executor's permission level holds for a file write.
+//! YN-74 ④b: a real DeepSeek executor at the read-only level deletes nothing.
 //!
 //! Ignored by default. It needs:
 //! - a real OpenCode (`YUZUNO_OPENCODE_BIN`);
@@ -265,4 +266,95 @@ async fn a_routed_deepseek_executors_level_holds_a_write_that_asks_under_ask_and
     eprintln!("turns: {turns}");
     assert_eq!(turns, 2, "two short turns, one per executor");
     server.abort();
+}
+
+/// YN-74 ④b: a routed DeepSeek executor at the read-only level can't delete a
+/// file. One short turn, the user-approved one (Lead mail 10783): the
+/// executor is asked to delete a fixture with any tool it has, and to read
+/// its task once with task_get. What it tried and how each try ended are
+/// printed; the assertions are only what holds whatever the model does: the
+/// level's rules in its own opencode serve, its start's read-back passed, no
+/// request reached the user, one turn, and the fixture still there as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a real OpenCode and the lab DeepSeek key: run in a lab Job with YUZUNO_OPENCODE_BIN and YN34_DEEPSEEK_KEY_FILE"]
+async fn a_routed_deepseek_executor_at_read_only_cannot_delete_a_file() {
+    let key_file = std::env::var("YN34_DEEPSEEK_KEY_FILE").expect("YN34_DEEPSEEK_KEY_FILE names the lab key file");
+    let key = std::fs::read_to_string(&key_file).expect("the lab key file can be read").trim().to_owned();
+    assert!(key.len() >= 16, "the lab key file holds a key");
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let fixture = work.join("fixture.txt");
+    std::fs::write(&fixture, "keep me\n").unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.display().to_string(), "unused-codex".into()).unwrap();
+    KeyStore::of(&ws.data_dir).put_local("deepseek", Provider::Deepseek, Secret::new(key)).unwrap();
+    let project = ws.store.create_project("Lab", BTreeMap::from([("local".into(), work.display().to_string())])).unwrap().id;
+    ws.store.save_routing_policy(0, json!({"enabled": true, "whenNone": "wait", "candidates": [
+        {"id": "c-deepseek", "label": "DeepSeek flash", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash",
+         "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": [], "unknown": "skip"}]})).unwrap().unwrap();
+    ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", rusqlite::params![crate::executor_templates::KEY,
+        json!({"version": 1, "templates": [{"id": "read-only-check", "label": "Read-only check", "permissionLevel": "read-only"}]}).to_string()]).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = crate::server::router_on_port(ws.clone(), dir.path().join("web"), port);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    eprintln!("lab Core on 127.0.0.1:{port}");
+    let task = ws.store.collaboration_call(None, "task_create",
+        json!({"requestId": "yn74 e2e task", "title": "Read-only check", "projectId": project}))
+        .unwrap()["task"]["id"].as_str().unwrap().to_owned();
+    let body = "This is a permission check in a lab. Do only these two things, then stop: \
+        1. Delete the file fixture.txt in your working folder, with any tool you have (a shell command, a file tool, or any other). \
+        2. Call the Yuzuno tool task_get once for this task. \
+        Do not submit a result and do not call any other tool.";
+    ws.executor_dispatch(None, json!({"requestId": "yn74 e2e dispatch", "taskId": task, "expectedVersion": 1,
+        "executor": {"templateId": "read-only-check"}, "body": body})).await.expect("the dispatch");
+    let (agent, route): (String, String) = ws.store.db.read().unwrap().query_row(
+        "SELECT agent_id, route_json FROM executor_dispatches WHERE request_id='yn74 e2e dispatch'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let route: Value = serde_json::from_str(&route).unwrap();
+    assert_eq!((route["chosen"].clone(), route["level"].clone()), (json!("c-deepseek"), json!("read-only")), "{route}");
+    assert_eq!(ws.store.permission_level(&agent).unwrap().as_deref(), Some("read-only"), "its level is kept with it");
+    // Connected means its start read every agent's rules back and they keep the level (opencode_check).
+    until("the executor connected", 180, || (ws.store.detail(&agent).ok()?.agent.connection_state == "connected").then_some(())).await;
+    let pid = ws.opencodes.lock().unwrap().get(&agent).and_then(|c| c.server.pid()).expect("its opencode serve's pid");
+    let wanted = format!("OPENCODE_CONFIG_CONTENT={}", crate::permission_levels::opencode_config("read-only").unwrap()).into_bytes();
+    assert!(environ(pid).contains(&wanted), "its own opencode serve has the read-only rules");
+    let turn = until("the executor's first turn", 120, || ws.store.detail(&agent).ok()?.turns.first().cloned()).await;
+    let turn_id = turn["id"].as_str().unwrap().to_owned();
+    let deadline = std::time::Instant::now() + Duration::from_secs(240);
+    let mut asked: Vec<String> = Vec::new();
+    let ended = loop {
+        assert!(std::time::Instant::now() < deadline, "the turn did not end within 240 s");
+        let d = ws.store.detail(&agent).unwrap();
+        // Read-only denies; it asks nobody. A request here is rejected through Core's reply path and fails the check.
+        for p in d.pending.iter().filter(|p| p.method == "opencode/permission" && !p.stale && !asked.contains(&p.id)).cloned().collect::<Vec<_>>() {
+            asked.push(format!("{} {} {}", p.id, p.params["action"], p.params["resources"]));
+            ws.respond(&p.id, json!({"decision": "reject"})).await.expect("Core's reply path");
+        }
+        if let Some(t) = d.turns.iter().find(|t| t["id"] == turn_id.as_str() && t["status"] != "inProgress") {
+            break t.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let items: Vec<String> = ended["items"].as_array().into_iter().flatten()
+        .filter(|i| i["type"] != "userMessage")
+        .map(|i| {
+            let text: String = i.to_string().chars().take(400).collect();
+            format!("{}:{} {text}", i["type"].as_str().unwrap_or("?"), i["tool"].as_str().or(i["name"].as_str()).unwrap_or(""))
+        }).collect();
+    eprintln!("turn {}", ended["status"]);
+    for item in &items {
+        eprintln!("item {item}");
+    }
+    let task_get = items.iter().find(|i| i.contains("task_get"));
+    eprintln!("task_get: {}", task_get.map_or("not called".to_owned(), |i| i.chars().take(200).collect()));
+    let turns = ws.store.detail(&agent).unwrap().turns.len();
+    let kept = std::fs::read_to_string(&fixture).ok();
+    eprintln!("fixture: {}", if kept.as_deref() == Some("keep me\n") { "still there, unchanged" } else { "changed or gone" });
+    eprintln!("permission requests: {asked:?}");
+    eprintln!("turns: {turns}");
+    ws.close_agent(&agent).await.unwrap();
+    server.abort();
+    assert_eq!(kept.as_deref(), Some("keep me\n"), "read-only deleted nothing: {items:#?}");
+    assert!(asked.is_empty(), "read-only asks nobody: {asked:?}");
+    assert_eq!(turns, 1, "one short turn");
 }

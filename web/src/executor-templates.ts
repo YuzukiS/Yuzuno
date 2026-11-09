@@ -3,8 +3,9 @@ import { api } from "./api";
 /** An executor template as Core keeps it (`/api/executor-templates`, T-34). */
 export type ExecutorHarness = "codex" | "claude" | "opencode";
 /** A permission said once for every harness, which Core maps to each one's own (YN-56). */
-export type PermissionLevel = "ask" | "auto" | "full";
-export const PERMISSION_LEVELS: PermissionLevel[] = ["ask", "auto", "full"];
+export type PermissionLevel = "ask" | "auto" | "full" | "read-only";
+/** read-only (YN-74): reads and proposes, changes nothing itself; Core serves its labels. */
+export const PERMISSION_LEVELS: PermissionLevel[] = ["ask", "auto", "full", "read-only"];
 /** The kind of model a template's work wants (YN-70): strong for designing and deciding, fast for building what was decided. */
 export type ModelTier = "strong" | "fast";
 export type ExecutorTemplate = {

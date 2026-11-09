@@ -1079,6 +1079,30 @@ mod routing {
         assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
     }
 
+    /// YN-74 ④b: read-only is kept with its executor on every harness, since
+    /// each start applies more than a mode: as Claude Code's default mode and
+    /// as Codex's read-only preset, the level beside it.
+    #[test]
+    fn read_only_is_kept_with_its_executor_on_every_harness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        let p = project(&store);
+        templates(&store, json!([{"id":"cleanup","label":"Cleanup","permissionLevel":"read-only"}]));
+        for (harness, model, mode, preset) in [("claude", "opus", Some("default"), None), ("codex", "gpt-test", None, Some("read-only"))] {
+            let policy = json!({"enabled": true, "whenNone": "wait", "candidates": [
+                {"id": format!("c-{harness}"), "enabled": true, "harness": harness, "model": model, "credential": {"kind": "login"}, "conditions": []}]});
+            let version = store.routing_policy().unwrap().version;
+            store.save_routing_policy(version, policy).unwrap().unwrap();
+            let mut input = dispatch(&task(&store, harness, Some(&p), None), harness);
+            input["executor"]["templateId"] = json!("cleanup");
+            let planned = routed(&store, input, true);
+            assert_eq!((planned.template.harness(), planned.template.permission_mode.as_deref(), planned.template.permission_preset.as_deref()),
+                (harness, mode, preset));
+            create_as_planned(&store, &planned);
+            assert_eq!(store.permission_level(&planned.dispatch.agent_id).unwrap().as_deref(), Some("read-only"), "{harness}");
+        }
+    }
+
     /// YN-70, from YN-66: at dispatch, a candidate of a harness its machine can't
     /// run (Codex on a contained machine) is passed over, with `harnessUnavailable`,
     /// rather than chosen and the dispatch refused; nor does it stand in for one

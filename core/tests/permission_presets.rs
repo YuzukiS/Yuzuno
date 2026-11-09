@@ -17,6 +17,8 @@ fn explicit_modes_route_to_native_reviewers_and_keep_their_boundaries() {
         ("ask", "user", "on-request", "workspaceWrite"),
         ("auto", "auto_review", "on-request", "workspaceWrite"),
         ("full", "user", "never", "dangerFullAccess"),
+        // YN-74 ④b: the read-only level's preset.
+        ("read-only", "user", "never", "readOnly"),
     ] {
         let p = permissions::resolve(&settings(mode), &Value::Null, "/workspace").unwrap();
         let mut turn = json!({"threadId":"same-thread","input":[{"text":"Keep working"}]});
@@ -132,7 +134,7 @@ async fn defaults_match_installed_codex_in_a_trusted_workspace() {
     std::fs::write(
         codex_home.join("config.toml"),
         format!(
-            "approvals_reviewer = \"auto_review\"\n[projects.{}]\ntrust_level = \"trusted\"\n",
+            "approvals_reviewer = \"auto_review\"\n[projects.{}]\ntrust_level = \"trusted\"\n[mcp_servers.other]\ncommand = \"true\"\n",
             json!(cwd)
         ),
     )
@@ -157,10 +159,17 @@ async fn defaults_match_installed_codex_in_a_trusted_workspace() {
         .request("thread/start", json!({"cwd":cwd,"ephemeral":true}))
         .await
         .unwrap();
-    for mode in ["ask", "auto", "full", "config"] {
+    // YN-74 ④b: what a read-only executor's thread relies on. config/read
+    // names the machine's MCP servers, and a thread can turn one off.
+    let named = rpc.request("config/read", json!({"cwd":cwd,"includeLayers":false})).await.unwrap();
+    assert!(named["config"]["mcp_servers"]["other"].is_object(), "{}", named["config"]["mcp_servers"]);
+    for mode in ["ask", "auto", "full", "config", "read-only"] {
         let expected =
             permissions::resolve(&settings(mode), &config, cwd.to_str().unwrap()).unwrap();
         let mut params = json!({"cwd":cwd,"ephemeral":true});
+        if mode == "read-only" {
+            params["config"] = json!({"mcp_servers.other.enabled": false});
+        }
         expected.apply(&mut params, false);
         let started = rpc.request("thread/start", params).await.unwrap();
         assert_eq!(
@@ -175,6 +184,10 @@ async fn defaults_match_installed_codex_in_a_trusted_workspace() {
             started["sandbox"]["type"], expected.sandbox_policy["type"],
             "{mode}"
         );
+        if mode == "read-only" {
+            assert_eq!((started["sandbox"]["type"].as_str(), started["sandbox"]["networkAccess"].as_bool(), started["approvalPolicy"].as_str()),
+                (Some("readOnly"), Some(false), Some("never")), "as permission_levels::codex_check reads it: {started}");
+        }
     }
     let error = rpc.request("turn/steer", json!({"threadId":native["thread"]["id"],"expectedTurnId":"finished","input":[{"type":"text","text":"fixture"}]})).await.unwrap_err();
     rpc.close();

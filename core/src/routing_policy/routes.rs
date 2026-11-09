@@ -97,7 +97,7 @@ fn level_of(body: &Value) -> Result<Option<String>, Response> {
     match body.get("permissionLevel") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(level)) if crate::permission_levels::check(level).is_ok() => Ok(Some(level.clone())),
-        Some(_) => Err(answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": "permissionLevel is ask, auto or full", "path": "permissionLevel"}))),
+        Some(_) => Err(answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": "permissionLevel is ask, auto, full or read-only", "path": "permissionLevel"}))),
     }
 }
 

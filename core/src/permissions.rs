@@ -21,6 +21,9 @@ pub fn resolve(settings: &AgentSettings, config: &Value, cwd: &str) -> Result<Pe
         Some("ask") => (json!("on-request"), "user", "workspace-write"),
         Some("auto") => (json!("on-request"), "auto_review", "workspace-write"),
         Some("full") => (json!("never"), "user", "danger-full-access"),
+        // The read-only level (YN-74 ④b): Codex's own read-only sandbox,
+        // which its OS enforces, no network, and nothing ever asked.
+        Some("read-only") => (json!("never"), "user", "read-only"),
         Some("config") => {
             anyhow::ensure!(
                 config.is_object(),
