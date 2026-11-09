@@ -110,10 +110,14 @@ pub(crate) struct Context {
     pub upstream: Option<String>,
     pub mounts: Option<Vec<PathBuf>>,
     pub settings: Settings,
+    /// The rules on for this Project (rules.rs `enabled`).
+    pub on: BTreeSet<&'static str>,
     pub deadline: Instant,
 }
 
-pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &Path, project: &str, others: &[String], settings: Settings) -> Result<Context> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &Path, project: &str, project_id: Option<&str>, others: &[String],
+    settings: Settings) -> Result<Context> {
     let project = std::fs::canonicalize(project)
         .map_err(|e| anyhow::anyhow!("project_folder_missing: its task's Project folder {project} cannot be read on this host: {e}"))?;
     let common = match git(&project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await? {
@@ -151,6 +155,7 @@ pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &P
         worktrees,
         upstream,
         mounts,
+        on: super::rules::enabled(&settings, project_id),
         settings,
         deadline: Instant::now() + PLAN_TIME,
     })
@@ -242,24 +247,56 @@ fn cachedir_tag(dir: &Path) -> Option<String> {
     text.starts_with(CACHEDIR_SIGNATURE).then(|| text.lines().nth(1).unwrap_or("").trim().chars().take(160).collect())
 }
 
-/// The rule that recognizes dir as rebuildable, and what it went by. Cargo's
-/// own tag goes by the cargo rule: people put other things in target/, so
-/// only what Cargo makes there goes. No file in a repository adds a rule.
-pub(crate) fn recognize(dir: &Path) -> Option<(&'static str, String)> {
+/// The rule that recognizes dir as rebuildable, and what it went by; Err
+/// names the rule that would but is off for this Project. A CACHEDIR.TAG
+/// first: Cargo's goes by the cargo rule, since people put other things in
+/// target/ and only what Cargo makes there goes; any other valid tag by
+/// cachedir-tag. Then each ecosystem's rule (rules.rs). `in_git`: inside a
+/// Git working tree; `in_scratch`: inside a scratch root. No file in a
+/// repository adds a rule.
+pub(crate) fn recognize(dir: &Path, on: &BTreeSet<&'static str>, in_git: bool, in_scratch: bool)
+    -> std::result::Result<Option<(&'static str, String)>, &'static str> {
+    use super::rules::{CACHEDIR_TAG, CARGO};
     if cargo_target(dir) {
         let basis = match cachedir_tag(dir) {
             Some(who) => format!("CACHEDIR.TAG written by Cargo ({who})"),
             None => "Cargo's .rustc_info.json".to_owned(),
         };
-        return Some(("cargo", basis));
+        return if on.contains(CARGO) { Ok(Some((CARGO, basis))) } else { Err(CARGO) };
     }
-    cachedir_tag(dir).map(|who| ("cachedir-tag", if who.is_empty() { "CACHEDIR.TAG".to_owned() } else { format!("CACHEDIR.TAG ({who})") }))
+    if let Some(who) = cachedir_tag(dir) {
+        let basis = if who.is_empty() { "CACHEDIR.TAG".to_owned() } else { format!("CACHEDIR.TAG ({who})") };
+        return if on.contains(CACHEDIR_TAG) { Ok(Some((CACHEDIR_TAG, basis))) } else { Err(CACHEDIR_TAG) };
+    }
+    super::rules::ecosystem(dir, on, in_git, in_scratch)
 }
 
-/// The Cargo profiles in a target folder that hold only what Cargo makes,
-/// each with its identity, and the names beside them that stay.
-fn cargo_profiles(target: &Path) -> (Vec<Value>, Vec<String>) {
-    const CARGO_FILES: [&str; 5] = ["CACHEDIR.TAG", ".rustc_info.json", ".future-incompat-report.json", ".package-cache", ".package-cache-mutate"];
+/// Cargo's own files at a target folder's top, which stay with it.
+const CARGO_FILES: [&str; 5] = ["CACHEDIR.TAG", ".rustc_info.json", ".future-incompat-report.json", ".package-cache", ".package-cache-mutate"];
+/// What Cargo makes at a target folder's top besides its profiles and the
+/// folders of each target triple (Build Cache): its docs, packaged crates,
+/// scratch files and, from Cargo 1.91, its separate build-dir. Cargo says
+/// this layout is no stable interface, so a name it doesn't list stays.
+const CARGO_NAMED: [&str; 4] = ["doc", "package", "tmp", "build"];
+
+/// A profile folder: Cargo's fingerprints or its build lock in it, and
+/// nothing Cargo does not make. One left half removed (its lock gone, or
+/// only some of its folders) is one still.
+fn cargo_profile(path: &Path) -> bool {
+    is_dir(path) && (is_dir(&path.join(".fingerprint")) || is_file(&path.join(".cargo-lock"))) && foreign_entries(path).is_empty()
+}
+
+/// A target triple's folder (`x86_64-unknown-linux-gnu`): only profiles in it.
+fn cargo_triple(path: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else { return false };
+    let entries: Vec<_> = entries.flatten().collect();
+    name.matches('-').count() >= 2 && !entries.is_empty()
+        && entries.iter().all(|e| e.file_type().is_ok_and(|t| t.is_dir()) && cargo_profile(&e.path()))
+}
+
+/// The subtrees of a target folder that Cargo makes, each with its identity
+/// and kind (profile, triple, named), and the names beside them that stay.
+pub(super) fn cargo_profiles(target: &Path) -> (Vec<Value>, Vec<String>) {
     let (mut profiles, mut kept) = (Vec::new(), Vec::new());
     let Ok(entries) = std::fs::read_dir(target) else { return (profiles, kept) };
     for entry in entries.flatten() {
@@ -268,10 +305,18 @@ fn cargo_profiles(target: &Path) -> (Vec<Value>, Vec<String>) {
         if CARGO_FILES.contains(&name.as_str()) || name.starts_with(REMOVING) {
             continue;
         }
-        let profile = is_dir(&path) && is_file(&path.join(".cargo-lock")) && is_dir(&path.join(".fingerprint"));
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if profile && foreign_entries(&path).is_empty() => {
-                profiles.push(json!({"name": name, "dev": meta.dev(), "ino": meta.ino(), "mtimeNs": mtime_ns(&meta).to_string()}));
+        let kind = if cargo_profile(&path) {
+            Some("profile")
+        } else if is_dir(&path) && cargo_triple(&path, &name) {
+            Some("triple")
+        } else if is_dir(&path) && CARGO_NAMED.contains(&name.as_str()) {
+            Some("named")
+        } else {
+            None
+        };
+        match (kind, std::fs::symlink_metadata(&path)) {
+            (Some(kind), Ok(meta)) if !meta.file_type().is_symlink() => {
+                profiles.push(json!({"name": name, "kind": kind, "dev": meta.dev(), "ino": meta.ino(), "mtimeNs": mtime_ns(&meta).to_string()}));
             }
             _ => kept.push(name),
         }
@@ -394,9 +439,15 @@ async fn worktree_facts(ctx: &Context, path: &Path) -> std::result::Result<Value
     }
     let unique = git(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await.map_err(|e| e.to_string())??;
     let unique: u64 = unique.trim().parse().map_err(|_| "Git did not count its commits".to_owned())?;
+    // Three states (Lead mail 10772): its HEAD is in the default branch,
+    // isn't (exit 1), or Git could not say, which is never taken as either.
     let merged = match &ctx.upstream {
-        Some(upstream) => matches!(git(path, &["merge-base", "--is-ancestor", "HEAD", upstream]).await, Ok(Ok(_))),
-        None => false,
+        Some(upstream) => match crate::build_output::git_status(path, &["merge-base", "--is-ancestor", "HEAD", upstream]).await {
+            Ok(Some(0)) => json!(true),
+            Ok(Some(1)) => json!(false),
+            _ => Value::Null,
+        },
+        None => Value::Null,
     };
     Ok(json!({"trackedChanges": tracked, "untrackedFiles": untracked, "uniqueCommits": unique, "merged": merged,
         "upstream": ctx.upstream}))
@@ -461,7 +512,7 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
                 }
                 Err(why) => return Checked::refused("git", format!("Git could not check it: {why}"), pre),
             };
-            if let Some((code, why)) = super::worktrees::preflight(&path, item.save_diff, &ctx.settings, &mut pre).await {
+            if let Some((code, why)) = super::worktrees::preflight(&path, item.save_diff, &ctx.settings, &ctx.on, &mut pre).await {
                 return Checked::refused(code, why, pre);
             }
         }
@@ -494,8 +545,13 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
             } else if !ctx.scratch.iter().any(|root| path.starts_with(root) && path != *root) {
                 return Checked::refused("notInRoot", "Not inside this Project's folder, one of its worktrees or a scratch root", pre);
             }
-            let Some((rule, basis)) = recognize(&path) else {
-                return Checked::refused("noRule", "No cleanup rule recognizes it (CACHEDIR.TAG, or Cargo's target folder)", pre);
+            let in_git = tree_of(ctx, &path).is_some();
+            let in_scratch = ctx.scratch.iter().any(|root| path.starts_with(root) && path != *root);
+            let (rule, basis) = match recognize(&path, &ctx.on, in_git, in_scratch) {
+                Ok(Some(found)) => found,
+                Ok(None) => return Checked::refused("noRule",
+                    "No cleanup rule recognizes it: a CACHEDIR.TAG, Cargo's target folder, or an ecosystem's folder beside its manifest (Settings lists the rules)", pre),
+                Err(off) => return Checked::refused("ruleOff", format!("Only the rule {off} would recognize it, and it is off for this Project (Settings)"), pre),
             };
             if let Some(given) = item.rule.as_deref().filter(|given| *given != rule) {
                 return Checked::refused("ruleMismatch", format!("Core recognizes it by the rule {rule}, not {given}"), pre);
@@ -505,7 +561,7 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
             if rule == "cargo" {
                 let (profiles, kept) = cargo_profiles(&path);
                 if profiles.is_empty() {
-                    return Checked::refused("noRule", "It holds no Cargo profile with only what Cargo makes", pre);
+                    return Checked::refused("noRule", "It holds nothing Cargo makes that Core can tell apart: no profile, target triple, doc, package, tmp or build folder of Cargo's alone", pre);
                 }
                 roots = profiles.iter().map(|p| path.join(p["name"].as_str().unwrap_or_default())).collect();
                 pre["profiles"] = json!(profiles);

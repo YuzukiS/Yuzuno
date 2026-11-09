@@ -186,14 +186,54 @@ class Inventory(unittest.TestCase):
         self.assertIn("not a Git checkout", done.stderr.decode())
         self.assertFalse(out.exists())
 
-    def test_its_rules_are_core_s(self):
-        source = SCRIPT.read_text()
-        self.assertIn('RULE_IDS = ("cargo", "cachedir-tag")', source)
-        # Core's recognize() names exactly these two; ③ adds rules on both sides.
-        core = CORE_CHECK.read_text()
-        self.assertIn('Some(("cargo", basis))', core)
-        self.assertIn('("cachedir-tag", ', core)
+    def test_it_reads_core_s_rule_table_with_its_meaning(self):
+        # The node-modules rule as Core's table gives it (cleanup_plans/rules.rs); the parity
+        # of every rule with Core's own recognition is a Core test (inventory_tests.rs).
+        table = {"cachedirTag": True, "cargo": False, "rules": [
+            {"id": "node-modules", "names": ["node_modules"], "siblings": [["package.json"], ["package-lock.json", "yarn.lock"]],
+             "inside": [], "packageScript": None, "onlySuffix": None, "needsGit": False, "scratchOnly": False},
+            {"id": "dotnet", "names": ["bin", "obj"], "siblings": [["*.csproj"]], "inside": [], "packageScript": None,
+             "onlySuffix": None, "needsGit": False, "scratchOnly": False}]}
+        app = self.project / "app"
+        (app / "node_modules" / "left-pad" / "node_modules").mkdir(parents=True)
+        (app / "node_modules" / "left-pad" / "package.json").write_text("{}")
+        (app / "node_modules" / "left-pad" / "yarn.lock").write_text("")
+        (app / "package.json").write_text("{}")
+        (app / "package-lock.json").write_text("{}")
+        bare = self.project / "bare"
+        (bare / "node_modules").mkdir(parents=True)
+        (bare / "package.json").write_text("{}")
+        (self.project / "svc" / "bin").mkdir(parents=True)
+        (self.project / "svc" / "Svc.csproj").write_text("<Project/>")
+        (self.project / "other" / "bin").mkdir(parents=True)
+        self.cargo(self.project / "target")
+        (self.project / ".gitignore").write_text("target/\n.worktrees/\nnode_modules/\nbin/\n")
+        result = self.run_script("--rules", json.dumps(table))
+        found = {c["path"]: c["rule"] for c in result["cacheDirs"]}
+        self.assertEqual(found.get(str(app / "node_modules")), "node-modules", found)
+        self.assertNotIn(str(app / "node_modules" / "left-pad" / "node_modules"), found, "only the outermost")
+        self.assertNotIn(str(bare / "node_modules"), found, "no lockfile, no rule")
+        self.assertEqual(found.get(str(self.project / "svc" / "bin")), "dotnet")
+        self.assertNotIn(str(self.project / "other" / "bin"), found, "no manifest beside it")
+        self.assertNotIn(str(self.project / "target"), found, "the cargo rule is off in this table")
+        self.assertEqual(result["rules"], ["cachedir-tag", "node-modules", "dotnet"])
+        # Without --rules: only the two CACHEDIR.TAG rules.
+        plain = {c["path"]: c["rule"] for c in self.run_script()["cacheDirs"]}
+        self.assertEqual(plain, {str(self.project / "target"): "cargo"})
+        refused = self.run_script("--rules", "[1, 2]", expect=1)
+        self.assertIn("not Core's rule table", refused.stderr.decode())
 
+    def test_a_merge_git_cannot_tell_is_not_known_never_false(self):
+        # The remote's default branch names a branch that is gone: merge-base can't say (exit 128).
+        git(self.project, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
+        main = {w["path"]: w for w in self.run_script()["worktrees"]}[str(self.project)]
+        self.assertIsNone(main["git"]["merged"], main)
+        self.assertIsNone(main["git"]["cherryUnmerged"], main)
+        # Not in it: exit 1, merged False.
+        git(self.project, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(self.project, "commit", "-q", "--allow-empty", "-m", "ahead")
+        ahead = {w["path"]: w for w in self.run_script()["worktrees"]}[str(self.project)]
+        self.assertIs(ahead["git"]["merged"], False)
 
 if __name__ == "__main__":
     unittest.main()

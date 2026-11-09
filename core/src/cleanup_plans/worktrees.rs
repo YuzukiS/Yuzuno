@@ -42,7 +42,7 @@ fn split(text: &str) -> Vec<String> {
 /// ignore, and ignored ones under no folder a cleanup rule recognizes. Git
 /// names an untracked folder it does not enter (a nested repository) as one
 /// `dir/` entry: every file under it is kept (review daaf3749).
-pub(super) async fn keep_list(path: &Path) -> std::result::Result<Keep, String> {
+pub(super) async fn keep_list(path: &Path, on: &BTreeSet<&'static str>) -> std::result::Result<Keep, String> {
     let untracked = git_limited(path, &["ls-files", "-z", "--others", "--exclude-standard"], LIST_BYTES)
         .await
         .map_err(|e| e.to_string())??;
@@ -50,6 +50,7 @@ pub(super) async fn keep_list(path: &Path) -> std::result::Result<Keep, String> 
         .await
         .map_err(|e| e.to_string())??;
     let (root, untracked, ignored) = (path.to_path_buf(), split(&untracked), split(&ignored));
+    let on = on.clone();
     tokio::task::spawn_blocking(move || {
         let (mut budget, deadline) = (WALK_ENTRIES, Instant::now() + WALK_TIME);
         let mut keep = Keep { complete: true, ..Default::default() };
@@ -68,8 +69,8 @@ pub(super) async fn keep_list(path: &Path) -> std::result::Result<Keep, String> 
                 budget -= 1;
                 let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
                 if meta.is_dir() {
-                    // A folder a rule recognizes is rebuildable: not kept.
-                    if recognize(&at).is_some() {
+                    // A folder a rule on for this Project recognizes is rebuildable: not kept.
+                    if recognize(&at, &on, true, false).is_ok_and(|found| found.is_some()) {
                         continue;
                     }
                     if let Ok(entries) = std::fs::read_dir(&at) {
@@ -98,12 +99,13 @@ pub(super) async fn tracked_diff(path: &Path) -> std::result::Result<String, Str
 
 /// A worktree's checks when its plan is registered, beyond check.rs's:
 /// changes Git tracks need saveDiff, and its snapshot must fit.
-pub(super) async fn preflight(path: &Path, save_diff: bool, settings: &Settings, pre: &mut Value) -> Option<(&'static str, String)> {
+pub(super) async fn preflight(path: &Path, save_diff: bool, settings: &Settings, on: &BTreeSet<&'static str>, pre: &mut Value)
+    -> Option<(&'static str, String)> {
     let tracked = pre["worktree"]["trackedChanges"].as_u64().unwrap_or(0);
     if tracked > 0 && !save_diff {
         return Some(("trackedChanges", "Git tracks changes in it: keep them in its snapshot (saveDiff) or commit them".into()));
     }
-    let keep = match keep_list(path).await {
+    let keep = match keep_list(path, on).await {
         Ok(keep) => keep,
         Err(why) => return Some(("git", format!("Git could not list what its snapshot keeps: {why}"))),
     };
@@ -266,7 +268,7 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
         return Err(before("trackedChanges", "Git tracks changes in it: keep them in its snapshot (saveDiff) or commit them"));
     }
     let head = facts["head"].as_str().filter(|h| h.len() >= 40).ok_or_else(|| before("git", "Its HEAD is not known"))?.to_owned();
-    let keep = keep_list(path).await.map_err(|why| before("git", format!("Git could not list what its snapshot keeps: {why}")))?;
+    let keep = keep_list(path, &ctx.on).await.map_err(|why| before("git", format!("Git could not list what its snapshot keeps: {why}")))?;
     if !keep.complete {
         return Err(before("tooLarge", "Too large to check within the bounds of a plan"));
     }
