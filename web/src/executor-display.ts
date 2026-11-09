@@ -54,6 +54,8 @@ export function prStatus(pr: ExecutorPR): { status: PRStatus; tone: PRTone } {
 /** What the state's word is followed by. */
 export type ExecutorDetail =
   | { kind: "position"; position: number }
+  /** Queued for a routing candidate, not a slot (YN-57). */
+  | { kind: "candidate" }
   | { kind: "starting" }
   | { kind: "awaitingRelease" }
   | { kind: "pr"; status: PRStatus }
@@ -126,7 +128,9 @@ export function executorView(facts: ExecutorFacts): ExecutorView {
     case "closed":
       return view("stopped", { kind: "closed" }, closed);
     case "queued":
-      return view("queued", lifecycle.position ? { kind: "position", position: lifecycle.position } : null);
+      // Waiting for a routing candidate is not a place in the slot queue (YN-57).
+      return view("queued", lifecycle.route?.kind === "waiting" ? { kind: "candidate" }
+        : lifecycle.position ? { kind: "position", position: lifecycle.position } : null);
     case "starting":
       return view("queued", { kind: "starting" });
   }

@@ -50,7 +50,7 @@ export const cardText = strings({
   route: (what: string) => `Route: ${what}`,
   routeWaiting: (from: string | null) => (from ? `Route: waiting for a candidate · from ${from}` : "Route: waiting for a candidate"),
   unrouted: (why: string) => ({
-    off: "Not routed: routing was off at dispatch",
+    none: "Not routed at its dispatch",
     fixed: "Not routed: its template is fixed",
     routingOff: "Not routed: routing was turned off while it waited; started on the host's login",
     noCandidate: "Not routed: no candidate was left for it; started on the host's login",
@@ -92,7 +92,7 @@ export const cardText = strings({
   route: (what) => `路由：${what}`,
   routeWaiting: (from) => (from ? `路由：在等一个候选 · 最早 ${from}` : "路由：在等一个候选"),
   unrouted: (why) => ({
-    off: "未经路由：派发时路由没开",
+    none: "派发时没有经过路由",
     fixed: "未经路由：模板固定了工具和模型",
     routingOff: "未经路由：等候选时路由被关了，按主机的登录启动",
     noCandidate: "未经路由：没有能给它的候选了，按主机的登录启动",

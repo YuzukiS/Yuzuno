@@ -74,7 +74,7 @@ const agents = () => [
   // Queued too, but for a routing candidate, not a slot (YN-57): its place in the slot queue doesn't apply.
   executor("c", "YN-c · Design first", "queued", {}, { position: 1, route: { kind: "waiting", earliest: CANDIDATE_AT } }),
   // Made from no template (an empty id).
-  executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null }, route: { kind: "unrouted", why: "off" } }),
+  executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null }, route: { kind: "unrouted", why: "none" } }),
 ];
 const live = {
   executors: {
@@ -230,6 +230,9 @@ test("an executor waiting for a routing candidate says so, from when; one waitin
     const q = await readTip(p.w, p.row("q").querySelector(".agent-select"));
     assert.equal(q[2], "Waits for an executor slot; starts in turn");
     assert.ok(!q.some((line) => line.startsWith("Route:")), "no route said where Core gave none");
+    // Its description says the same as its pill: not a place in the slot queue.
+    assert.match(p.row("c").querySelector(".agent-select").getAttribute("aria-description") ?? "", /Queued · waiting for a routing candidate/);
+    assert.match(p.row("q").querySelector(".agent-select").getAttribute("aria-description") ?? "", /Queued · 2 in line/);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -249,7 +252,7 @@ test("the row's card says the template and what routing gave it, a key by its id
     const v = await card("v");
     assert.ok(v.includes("Route: Claude Code · opus · claude-swap #2 · 0f1e2d3c"), v.join(" | "));
     const g = await card("g");
-    assert.ok(g.includes("Template: none") && g.includes("Not routed: routing was off at dispatch"), g.join(" | "));
+    assert.ok(g.includes("Template: none") && g.includes("Not routed at its dispatch"), g.join(" | "));
     assert.ok(g.includes("Agent g · Core host"), g.join(" | "));
     for (const lines of [k, v, g]) assert.doesNotMatch(lines.join("\n"), /@|sk-/, "never an email or a key");
     assert.deepEqual(p.errors, []);
@@ -332,7 +335,7 @@ test("in Chinese the row reads in Chinese", async () => {
     const k = await readTip(p.w, p.row("k").querySelector(".agent-select"));
     assert.ok(k.includes("模板：Design first") && k.includes("路由：OpenCode · deepseek-flash · API key deepseek-main"), k.join(" | "));
     const g = await readTip(p.w, p.row("g").querySelector(".agent-select"));
-    assert.ok(g.includes("模板：无") && g.includes("未经路由：派发时路由没开"), g.join(" | "));
+    assert.ok(g.includes("模板：无") && g.includes("派发时没有经过路由"), g.join(" | "));
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

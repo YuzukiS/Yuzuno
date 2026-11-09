@@ -395,6 +395,8 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       // YN-57: the card of an executor waiting for a routing candidate says so, its template and its route.
       // The time as the page writes it: its own locale and time zone (the context's), not this process's.
       const at = await page.evaluate((iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso)), "2026-11-09T04:00:00Z");
+      // In the middle of the rail first: a row far down it has no size until it is near the view.
+      await rowOf("yn57").evaluate((row) => row.scrollIntoView({ block: "center" }));
       await rowOf("yn57").locator(".agent-select").hover();
       const tip = page.locator(".tip");
       await tip.waitFor({ timeout: 10_000 });
