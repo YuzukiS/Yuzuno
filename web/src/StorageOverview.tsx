@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "./api";
+import { BuildCleanupPolicy } from "./BuildCleanupPolicy";
 import { ClaudeRuntimeCopies } from "./ClaudeRuntimeCopies";
 import {
   browserEstimate,
@@ -89,7 +90,7 @@ const entryLabelsZh: Record<string, string> = {
 };
 const text = strings({
   title: "Data & storage",
-  intro: "Where this Workspace's data is kept, who keeps it and what is known of its size. Nothing here deletes or changes anything, except prepared Claude runtimes you choose to remove below.",
+  intro: "Where this Workspace's data is kept, who keeps it and what is known of its size. Nothing here deletes or changes anything, except released executors' build output once you turn its cleanup on, and prepared Claude runtimes you choose to remove below.",
   device: "On this device, for this site",
   deviceNote: "Kept only in this browser at this address. It is not in a Workspace backup, and clearing this site's data in the browser removes it.",
   deviceReason: (reason: string) => reason,
@@ -135,6 +136,7 @@ const text = strings({
   taskFoldersNote:
     "Cargo's build output in a task's registered work folders can be removed from that task's Workspace section. It lists each folder, previews what would go and removes only what you then choose: regenerable Cargo build output, never source files, the folder or its branch. Whether it can run there, and why not, is what Core reports in that section. Choosing a task here only opens it: nothing is previewed or removed. Archived tasks are not listed.",
   taskFoldersElsewhere: "Open a task's Workspace section from Tasks to remove its build output.",
+  byHand: "One task's folders, by hand",
   readingTasks: "Reading this Workspace's tasks…",
   tasksNotRead: (reason: string) => `The tasks could not be read: ${reason}`,
   noTasks: "This Workspace has no tasks.",
@@ -153,7 +155,7 @@ const text = strings({
   notInBackup: "Not in a backup",
 }, {
   title: "数据与存储",
-  intro: "这个 Workspace 的数据存放在哪里、由谁保存，以及已知的大小。除了你在下方选择移除的已准备 Claude 运行环境，这里不会删除或更改任何内容。",
+  intro: "这个 Workspace 的数据存放在哪里、由谁保存，以及已知的大小。除了你打开自动清理后已释放执行者的构建输出，以及你在下方选择移除的已准备 Claude 运行环境，这里不会删除或更改任何内容。",
   device: "在此设备上，此站点",
   deviceNote: "只保存在此浏览器的这个地址下。它不在 Workspace 备份中，在浏览器中清除此站点的数据会删除它。",
   deviceReason: (reason) => {
@@ -196,6 +198,7 @@ const text = strings({
   taskFoldersNote:
     "任务已登记工作目录中由 Cargo 生成的构建输出，可以在该任务的 Workspace 部分移除。那里列出每个目录，先预览将移除的内容，然后只移除你选中的部分：可再生成的 Cargo 构建输出，从不包括源代码、目录本身或其分支。能否在那里执行以及原因，以 Core 在那部分报告的为准。在这里选择任务只会打开它：不会预览或移除任何内容。已归档的任务不在此列出。",
   taskFoldersElsewhere: "从“任务”打开任务的 Workspace 部分，即可移除它的构建输出。",
+  byHand: "手动清理一个任务的目录",
   readingTasks: "正在读取此 Workspace 的任务…",
   tasksNotRead: (reason) => `无法读取任务：${reason}`,
   noTasks: "此 Workspace 没有任务。",
@@ -223,7 +226,8 @@ function at(iso: string) {
  * keeps it and what is known of its size. It reads this browser's storage and
  * Core's overview while it is shown; a size that is not known is said to be
  * unknown, never 0. Nothing here deletes or changes anything, except the
- * prepared Claude runtimes chosen in ClaudeRuntimeCopies.
+ * build output cleanup the user turns on in BuildCleanupPolicy (YN-65) and
+ * the prepared Claude runtimes chosen in ClaudeRuntimeCopies.
  */
 export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
   active: boolean;
@@ -358,6 +362,8 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
 
         <section className="storage-part appearance-field" aria-labelledby="storage-task-folders">
           <h4 id="storage-task-folders">{t.taskFolders}</h4>
+          <BuildCleanupPolicy active={active} />
+          <h5 className="build-cleanup-manual">{t.byHand}</h5>
           <p className="storage-note">{t.taskFoldersNote}</p>
           {!onOpenTaskWorkspaces ? (
             <p className="storage-note">{t.taskFoldersElsewhere}</p>

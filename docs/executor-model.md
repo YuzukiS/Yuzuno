@@ -724,8 +724,10 @@ A released executor takes no more mail or work:
   dispatched the executor, or if its dispatcher is closed or no longer
   exists.
 - **Its build output can go, by the user's policy.** The build output cleanup
-  (`/api/build-cleanup`) is off unless the user turns it on, and only the user
-  changes it. Once on, the chosen number of days (0–30, 1 unless changed)
+  (Settings → Data & storage → *Build output in task work folders*;
+  `/api/build-cleanup`) is off unless the user turns it on, and only the user
+  changes it. Turning it on first counts what earlier releases left, and the
+  user chooses whether that goes too. Once on, the chosen number of days (0–30, 1 unless changed)
   after the executor's close, Core removes the Cargo `debug` build output of
   the folders its records show were the executor's: the folder it worked in,
   the folders its Jobs ran in and the target directories they named in

@@ -52,7 +52,9 @@ const overview = () => ({
   ],
   notInBackup: ["Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace"],
 });
-function mount(seed = {}, { tasks = { tasks: [], hasMore: false }, runtimes = null } = {}) {
+// Core's build output cleanup (YN-65): off, nothing done yet, unless a test says.
+const cleanupOff = () => ({ policy: { enabled: false, keepDays: 1, since: null, version: 0, changedAt: null }, maxKeepDays: 30, recent: [], waiting: 0 });
+function mount(seed = {}, { tasks = { tasks: [], hasMore: false }, runtimes = null, cleanup = null } = {}) {
   const vc = new VirtualConsole();
   const errors = [], calls = [];
   vc.on("jsdomError", (error) => errors.push(error.message));
@@ -72,7 +74,15 @@ function mount(seed = {}, { tasks = { tasks: [], hasMore: false }, runtimes = nu
     // The prepared Claude runtimes (T-193): each read and removal answered in turn.
     const runtime = String(url).endsWith("/api/claude-sdk/copies") ? runtimes?.copies(calls.filter((c) => c.url.endsWith("/api/claude-sdk/copies")).length)
       : String(url).endsWith("/api/claude-sdk/copies/remove") ? runtimes?.remove(JSON.parse(init.body)) : null;
-    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? runtime ?? {};
+    // The build output cleanup: each read, change and backlog count answered in turn.
+    const cleaning = /\/api\/build-cleanup(\/backlog)?$/.test(String(url))
+      ? (cleanup ?? { read: cleanupOff })[String(url).endsWith("/backlog") ? "backlog" : method === "PUT" ? "change" : "read"]?.(init.body ? JSON.parse(init.body) : undefined)
+      : null;
+    if (cleaning?.httpStatus) {
+      const body = { error: cleaning.error };
+      return { ok: false, status: cleaning.httpStatus, json: async () => body, text: async () => JSON.stringify(body) };
+    }
+    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? runtime ?? cleaning ?? {};
     return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
   w.eval(bundle);
@@ -130,8 +140,10 @@ test("opening it only reads: this device by group and Core's overview once, with
   assert.match(p.text(), /Claude Code · lab box.*size unknown.*Kept by Claude Code in its own folder on that computer/);
   assert.match(p.text(), /Codex · the Core host.*3 Agents \(1 closed\)/);
   assert.match(p.text(), /Releases: 300 MiB \(3 kept, up to 3\)\. Database copies made before updates: 20 MiB/);
-  assert.deepEqual([...p.doc.querySelectorAll("#settings-storage button")].map((b) => b.textContent), ["Check prepared runtimes"],
+  assert.deepEqual([...p.doc.querySelectorAll("#settings-storage button:not([role=switch])")].map((b) => b.textContent), ["Check prepared runtimes"],
     "the one thing to press is a read, and nothing was read for it yet");
+  assert.equal(p.doc.querySelector("#settings-storage [role=switch]").getAttribute("aria-checked"), "false", "the build output cleanup is off, as Core keeps it");
+  assert.equal(p.calls.filter((c) => c.url.endsWith("/api/build-cleanup")).length, 1, "read once");
   assert.ok(!p.calls.some((c) => c.url.includes("/claude-sdk")), "prepared runtimes are not read until asked");
   assert.deepEqual(p.errors, []);
 });
@@ -194,7 +206,9 @@ test("a task is chosen by its ID and only opened: nothing is previewed, removed,
   // Only reads: the overview and the task list's pages, the board's own read.
   assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
     ["/api/collaboration/task_list", { limit: 200 }], ["/api/collaboration/task_list", { limit: 200, afterSeq: 7 }]]);
-  assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url)), "no task folder is read, previewed or removed here");
+  // The build output cleanup's own policy is read (YN-65); nothing of a task's folders.
+  assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url) && !(c.url.endsWith("/api/build-cleanup") && c.method === "GET")),
+    "no task folder is read, previewed or removed here");
   assert.deepEqual(p.errors, []);
 });
 
@@ -327,4 +341,125 @@ test("prepared runtimes: a refusal is said and offers nothing; a removal Core re
   assert.match(alert.textContent, /^The runtime of an installed or downloaded release couldn't be read, so what it needs can't be told\. Nothing is offered for removal\.$/);
   assert.equal(late.doc.querySelectorAll("[data-result]").length, 0, "no result claimed");
   assert.deepEqual(late.errors, []);
+});
+
+// YN-65: the build output cleanup after an executor's release, in its section.
+const section = (p) => p.doc.querySelector('[aria-labelledby="storage-task-folders"]');
+const toggle = (p) => section(p)?.querySelector("[role=switch]") ?? null;
+const puts = (p) => p.calls.filter((c) => c.url.endsWith("/api/build-cleanup") && c.method === "PUT").map((c) => c.body);
+function cleanupCore(start) {
+  let policy = { enabled: false, keepDays: 1, since: null, version: 0, changedAt: null, ...start };
+  const changes = [];
+  const view = () => ({ policy: structuredClone(policy), maxKeepDays: 30, recent: [], waiting: 0 });
+  return {
+    changes,
+    read: () => view(),
+    change: (body) => {
+      changes.push(body);
+      if (body.expectedVersion !== policy.version) return { httpStatus: 400, error: `version_conflict: the build output cleanup was changed since it was read (now version ${policy.version}); read it again` };
+      policy = { ...policy, enabled: body.enabled, keepDays: body.keepDays, version: policy.version + 1,
+        since: body.enabled && !policy.enabled ? (body.earlier ? null : "2026-11-09T03:00:00Z") : policy.since };
+      return view();
+    },
+    backlog: () => ({ executors: 3, checked: 3, complete: true, folders: 2, bytes: 8 * 2 ** 30, kept: 1,
+      items: [{ executor: "Executor YN-56", path: ".worktrees/yn56/target/debug", bytes: 6 * 2 ** 30 }, { executor: "Executor YN-57", path: "target/yn-x/debug", bytes: 2 * 2 ** 30 }] }),
+  };
+}
+
+test("the build output cleanup is turned on only once what earlier releases left is counted and the choice confirmed", async (t) => {
+  const core = cleanupCore();
+  const p = mount({}, { cleanup: core }); t.after(p.close);
+  p.w.renderStorage({ active: true, updates: managed });
+  await until(() => toggle(p), "the cleanup's switch");
+  assert.match(section(p).textContent, /Clean up after an executor is released.*only once nothing uses it/);
+  assert.match(section(p).textContent, /Off: nothing is removed automatically\. Only you can turn it on here; Agents have no tool for it\./);
+  assert.match(section(p).textContent, /One task's folders, by hand/, "the cleanup by hand stays below");
+
+  toggle(p).click();
+  await until(() => section(p).querySelector("[data-backlog]"), "the backlog counted");
+  assert.match(section(p).textContent, /Executors released before left 2 debug folders that can go, about 8\.0 GiB; 1 more hold files Cargo didn't make and are kept\./);
+  assert.match(section(p).textContent, /\.worktrees\/yn56\/target\/debug6\.0 GiBExecutor YN-56/);
+  assert.match(section(p).textContent, /Only counted: nothing was checked for use or removed\./);
+  assert.deepEqual(puts(p), [], "counting changes nothing");
+  assert.equal(toggle(p).disabled, true, "the switch waits for the choice");
+  p.button("Cancel").click();
+  await until(() => !section(p).querySelector("[role=group]"));
+  assert.deepEqual(puts(p), [], "cancelled: nothing saved");
+  assert.equal(toggle(p).getAttribute("aria-checked"), "false");
+
+  toggle(p).click();
+  await until(() => p.button("Turn on and clean"), "the confirmation, cleaning the earlier ones by default");
+  section(p).querySelectorAll('input[name="build-cleanup-earlier"]')[1].click();
+  await until(() => p.button("Turn on"), "only later releases: just turned on");
+  p.button("Turn on").click();
+  await until(() => toggle(p).getAttribute("aria-checked") === "true", "on, as Core answered");
+  assert.deepEqual(puts(p), [{ enabled: true, keepDays: 1, earlier: false, expectedVersion: 0 }]);
+  assert.match(section(p).textContent, /On for executors released since .*What is in use is tried again every hour for a week\./);
+  assert.deepEqual(p.errors, []);
+});
+
+test("the days are saved against the version read, a wrong number is refused, a conflict is said and read again, off saves at once", async (t) => {
+  const core = cleanupCore({ enabled: true, keepDays: 1, version: 3, since: null });
+  const p = mount({}, { cleanup: core }); t.after(p.close);
+  p.w.renderStorage({ active: true, updates: managed });
+  await until(() => toggle(p)?.getAttribute("aria-checked") === "true");
+  assert.match(section(p).textContent, /On for every released executor\./);
+  const days = section(p).querySelector("#build-cleanup-days");
+  const type = (value) => {
+    Object.getOwnPropertyDescriptor(p.w.HTMLInputElement.prototype, "value").set.call(days, value);
+    days.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+  };
+  type("31");
+  await until(() => section(p).textContent.includes("A whole number from 0 to 30."));
+  assert.equal(p.button("Save").disabled, true);
+  type("5");
+  await until(() => p.button("Save") && !p.button("Save").disabled);
+  p.button("Save").click();
+  await until(() => !p.button("Save"), "saved");
+  assert.deepEqual(puts(p).at(-1), { enabled: true, keepDays: 5, earlier: false, expectedVersion: 3 });
+
+  // Changed elsewhere meanwhile: refused, said, and read again.
+  core.change({ enabled: true, keepDays: 7, expectedVersion: 4 });
+  type("2");
+  await until(() => p.button("Save"));
+  const before = p.calls.filter((c) => c.url.endsWith("/api/build-cleanup") && c.method === "GET").length;
+  p.button("Save").click();
+  await until(() => section(p).textContent.includes("Not saved: version_conflict"), "the conflict");
+  await until(() => p.calls.filter((c) => c.url.endsWith("/api/build-cleanup") && c.method === "GET").length === before + 1, "read again");
+  await until(() => days.value === "7", "the days Core keeps now");
+
+  toggle(p).click();
+  await until(() => toggle(p).getAttribute("aria-checked") === "false", "off at once");
+  assert.deepEqual(puts(p).at(-1), { enabled: false, keepDays: 7, earlier: false, expectedVersion: 5 });
+  assert.equal(p.calls.filter((c) => c.url.endsWith("/backlog")).length, 0, "turning off counts nothing");
+});
+
+test("the latest cleanups: a row per folder with its state, the reasons Core gave and the next try", async (t) => {
+  const outcome = (state, results, extra = {}) => ({ state, nextTryAt: state === "waiting" ? "2026-11-10T03:00:00Z" : null, updatedAt: "2026-11-10T02:15:00Z",
+    executor: { id: `e-${state}`, name: `Executor ${state}`, releasedAt: "2026-11-09T01:00:00Z" }, taskId: "YN-56", results, ...extra });
+  const p = mount({}, { cleanup: { read: () => ({ policy: { enabled: true, keepDays: 1, since: null, version: 2, changedAt: null }, maxKeepDays: 30, waiting: 1, recent: [
+    outcome("done", [
+      { path: ".worktrees/yn56/target/debug", how: ["it worked there"], state: "removed", reasons: [], bytes: 8.3 * 2 ** 30 },
+      { path: ".worktrees/yn56/shots/target/debug", how: ["its Jobs ran there"], state: "kept", reasons: ["It holds what Cargo does not make: shots"], bytes: null },
+    ]),
+    outcome("waiting", [{ path: ".worktrees/yn57/target/debug", how: ["on its pull request's branch"], state: "waiting", reasons: ["Cargo is building here now"], bytes: 7 * 2 ** 30 }]),
+    outcome("gaveUp", [{ path: ".worktrees/yn60/target/debug", how: ["it worked there"], state: "waiting", reasons: ["Agent Mori works in this folder"], bytes: 1024 }]),
+  ] }) } }); t.after(p.close);
+  p.w.renderStorage({ active: true, updates: managed });
+  await until(() => p.doc.querySelector("[data-recent]"), "the latest cleanups");
+  const rows = [...p.doc.querySelectorAll("[data-recent] li")].map((li) => [li.dataset.result, li.textContent]);
+  assert.deepEqual(rows.map(([state]) => state), ["removed", "kept", "waiting", "gaveUp"]);
+  assert.match(rows[0][1], /^Removed YN-56 · \.worktrees\/yn56\/target\/debug8\.3 GiBExecutor done · it worked there · /);
+  assert.match(rows[1][1], /^Kept .*size unknown.*It holds what Cargo does not make: shots/);
+  assert.match(rows[2][1], /^Will retry .*Cargo is building here now · next try /);
+  assert.match(rows[3][1], /^Given up .*Agent Mori works in this folder · in use for a week: left as it is/);
+  assert.match(section(p).textContent, /1 executor waits for the next try\./);
+  assert.deepEqual(p.posts(), [], "showing them changes nothing");
+});
+
+test("an answer without a policy is said, never shown as off", async (t) => {
+  const p = mount({}, { cleanup: { read: () => ({ recent: [] }) } }); t.after(p.close);
+  p.w.renderStorage({ active: true, updates: managed });
+  await until(() => section(p)?.textContent.includes("Could not read the build output cleanup: Core's answer has no policy"));
+  assert.equal(toggle(p), null, "no switch to press");
 });

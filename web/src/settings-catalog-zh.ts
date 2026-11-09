@@ -47,7 +47,8 @@ export const entriesZh: Record<string, EntryText> = {
   home: { title: "Home 展示", scope: "此 Workspace", source: "由 Core 保存的共享 Home 展示偏好。", effect: "用于之后的 Home 与结果交互。不会更改编辑权限或 Agent 权限。" },
   budget: { title: "Core 主机 Job 预算", scope: "Core 执行机器", source: "由 Core 保存的托管 Job 的 CPU、内存与交换空间、同时运行的数量、磁盘保留、Windows 上限与 GPU 设置；未保存时为默认值。", effect: "新 Job 的准入使用它们。运行中的 Job 保留各自的预留；原生后台任务不在其内。Job 面板显示 Job 现在的用量。" },
   "remote-budget": { title: "远程机器 Job 预算", scope: "所选执行机器", source: "所选机器保存的同时运行的 Job 数、Job 预算与限制方式，由 Core 随机器保存。", effect: "编辑前先选择机器。保存只影响尚未开始的 Job；限制取决于该执行器的能力。" },
-  storage: { title: "数据与存储概览", scope: "此设备 · Workspace 服务 · 原生 CLI", source: "此浏览器为此站点保存的数据，在这里读取；Core 的数据文件夹，由 Core 读取。原生会话历史只计数，不测量大小。", effect: "打开它只会读取。这里不测量文件夹大小，也不删除任何内容。" },
+  storage: { title: "数据与存储概览", scope: "此设备 · Workspace 服务 · 原生 CLI", source: "此浏览器为此站点保存的数据，在这里读取；Core 的数据文件夹，由 Core 读取。原生会话历史只计数，不测量大小。", effect: "打开它只会读取。这里不测量文件夹大小。除了你打开的构建输出自动清理和你移除的已准备 Claude 运行环境，这里不删除任何内容。" },
+  "build-cleanup": { title: "构建输出自动清理", scope: "此 Workspace · Core 主机", source: "Core 保存的策略；你打开之前保持关闭。只有你能在这里更改；Agent 没有对应的工具。", effect: "打开后，执行者释放满你选的天数，Core 会在没有人使用时删除 Core 的记录能确认是它的目录里的 Cargo debug 构建输出；从不删源代码、分支或 release 构建。打开时会先统计之前释放的执行者留下了多少。" },
   diagnostics: { title: "复制诊断信息", scope: "此客户端 · Workspace 服务", source: "按需收集、已脱敏的诊断报告。", effect: "复制报告不会自动上传它。清除只会删除此设备上记录的错误。" },
   history: { title: "历史与内存信息", scope: "Workspace 服务", source: "Core 报告的历史构成与内存信息。", effect: "只读信息；不会清除会话或原生会话。" },
   backup: { title: "Workspace 备份与恢复", scope: "Workspace 服务 · 其电脑上的一个文件夹", source: "此 Core 制作的备份：数据库、图片副本、Brief 附件、已完成的审查和 Job 文件夹，并附一份未包含内容的清单。更新恢复用的数据库副本不是它。", effect: "在 Core 运行且没有 Job 运行时备份；只恢复到新的或空的文件夹。原生会话与 CLI 账户从不在备份中。" },
@@ -63,6 +64,6 @@ export const entriesShortZh: Record<string, string> = {
   clock: "时钟", language: "语言", notifications: "通知", "agent-model": "模型与权限", "agent-context": "上下文",
   "auto-continue": "自动继续", "auto-continue-default": "自动继续默认值", "agent-defaults": "新 Agent 默认值", "executor-templates": "执行者模板", "executor-routing": "执行者路由", "routing-keys": "路由密钥",
   review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", "merge-queue": "合并队列", home: "Home",
-  budget: "Core 主机预算", "remote-budget": "远程预算", storage: "存储", diagnostics: "诊断", history: "历史与内存",
+  budget: "Core 主机预算", "remote-budget": "远程预算", storage: "存储", "build-cleanup": "构建清理", diagnostics: "诊断", history: "历史与内存",
   backup: "备份", drafts: "草稿", updates: "版本与更新", runtime: "运行环境", about: "关于与帮助",
 };
