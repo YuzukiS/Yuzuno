@@ -334,6 +334,8 @@ pub(super) struct Plan {
     pub link: String,
     pub author: TaskActor,
     pub source: Value,
+    /// The acknowledged findings (YN-67), as resolved against the last round.
+    pub findings: Option<Vec<Value>>,
 }
 /// `proof`: the entry's proof that the released head is the reviewed head
 /// plus merges (YN-33), once read; before it is, the reviewed head's round is
@@ -377,6 +379,20 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     let (latest, running) = review(db, &link)?;
     let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).unwrap_or(&input.head_sha).to_owned();
     let later = reviewed != input.head_sha && !running;
+    // P2 findings the user accepted (YN-67), each bound to the last round and,
+    // for a lead, to the user's reply that names it.
+    let findings = match (&input.acknowledge_findings, &latest) {
+        (None, _) => None,
+        (Some(_), None) => bail!("findings_refused: PR #{number} has no completed review round whose findings could be acknowledged"),
+        (Some(listed), Some(round)) => {
+            let home = project.clone().unwrap_or_default();
+            let reply = |key: &str| crate::project_brief::cited_reply(db, &home, key);
+            match super::findings::resolve(listed, round, number, actor.is_none(), &reply)? {
+                Ok(items) => Some(items),
+                Err(why) => bail!("findings_refused: {why}"),
+            }
+        }
+    };
     let mut candidate = match proof {
         Some(proof) => json!({"headSha":input.head_sha,"repositoryId":repository_id,"reviewMerges":proof}),
         // Before the proof is read, only the reviewed head's round is checked.
@@ -385,6 +401,9 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     };
     if let Some(files) = binaries {
         candidate["binaries"] = json!({"files":files});
+    }
+    if let Some(items) = &findings {
+        candidate["acknowledgedFindings"] = json!({"items":items});
     }
     let at_heads = rounds_at_heads(db, &link, &reviewed, &candidate)?;
     let merged = merged_rounds(db, &candidate)?;
@@ -398,6 +417,12 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     if let Some(r) = latest.as_ref().filter(|r| binaries.is_some() && crate::pr_review::policy::passes(r)) {
         bail!(
             "binaries_refused: the last completed review round ({}) passes by itself, so it left no binary file to acknowledge; release without acknowledgeBinaries",
+            r["id"].as_str().unwrap_or("?")
+        );
+    }
+    if let Some(r) = latest.as_ref().filter(|r| findings.is_some() && crate::pr_review::policy::passes(r)) {
+        bail!(
+            "findings_refused: the last completed review round ({}) passes by itself, so it has no finding to acknowledge; release without acknowledgeFindings",
             r["id"].as_str().unwrap_or("?")
         );
     }
@@ -421,6 +446,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
         link,
         author,
         source,
+        findings,
     })
 }
 
@@ -466,7 +492,7 @@ fn short(sha: &Value) -> String {
 fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
-        "release":e["release"],"binaries":e["binaries"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
+        "release":e["release"],"binaries":e["binaries"],"acknowledgedFindings":e["acknowledgedFindings"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
         "batch":e["batch"],"merge":e["merge"],"grouping":e["grouping"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
@@ -771,10 +797,11 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let at = now();
         let binaries = binaries.map(|files| json!({"by":p.author,"at":at,"files":files}));
+        let findings = p.findings.as_ref().map(|items| json!({"by":p.author,"at":at,"items":items}));
         let e = json!({"id":id,"entryId":id,"taskId":p.task,"taskReference":p.reference,"repositoryId":p.repository_id,
             "repository":p.repository,"number":p.number,"url":format!("https://github.com/{}/pull/{}",p.repository,p.number),
             "linkId":p.link,"headSha":input.head_sha,"baseBranch":pr["base"]["ref"],"mainAtRelease":main,"mainAnchoredAt":at,
-            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,"reviewMerges":proof,"binaries":binaries,
+            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,"reviewMerges":proof,"binaries":binaries,"acknowledgedFindings":findings,
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
             "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
@@ -802,8 +829,31 @@ impl Store {
             ),
             None => String::new(),
         };
+        // Each acknowledged finding, and the user's reply that accepts it.
+        let accepted = match e["acknowledgedFindings"]["items"].as_array() {
+            Some(items) => format!(
+                " The release acknowledges {} P2 finding(s) of review round {} as intended: {}.",
+                items.len(),
+                items[0]["round"],
+                items
+                    .iter()
+                    .map(|i| {
+                        let cited = &i["userReply"];
+                        let why = if cited.is_object() {
+                            format!(", citing the user's reply to `{}` ({}): “{}”", cited["key"].as_str().unwrap_or("?"), cited["repliedAt"].as_str().unwrap_or("?"),
+                                cited["reply"].as_str().unwrap_or_default().chars().take(200).collect::<String>())
+                        } else {
+                            ", by the user".to_owned()
+                        };
+                        format!("“{}” ({}:{}){why}", i["title"].as_str().unwrap_or("?"), i["path"].as_str().unwrap_or("?"), i["startLine"])
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            None => String::new(),
+        };
         collab::activity(&tx, &p.task, "comment", &p.author, &p.source, json!({"mergeEntryId":id,
-            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete.{merges}{acknowledged} Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
+            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete.{merges}{acknowledged}{accepted} Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
                 p.number, &main[..12.min(main.len())], p.repository)}))?;
         tx.commit()?;
         Ok(e)
