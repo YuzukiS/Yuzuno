@@ -436,7 +436,7 @@ test('a release that acknowledged binary files lists each with its format, size 
 test('a release that acknowledged a P2 the user accepted shows the finding, the round and the reply, in English and Chinese', async () => {
   for (const [language, label, lead, round, reply] of [
     ['en', 'Findings accepted', '1 P2 accepted as intended by Lead Sora, citing your reply; the review round\'s conclusion stays', 'Round 2 e38ff3c7', 'your reply to design/yn-example-q1'],
-    ['zh', '确认的发现', 'Lead Sora 引用你的回复，确认 1 个 P2 是有意为之；审查轮的结论不变', '第 2 轮 e38ff3c7', '你在 design/yn-example-q1 的回复'],
+    ['zh-Hans', '确认的发现', 'Lead Sora 引用你的回复，确认 1 个 P2 是有意为之；审查轮的结论不变', '第 2 轮 e38ff3c7', '你在 design/yn-example-q1 的回复'],
   ]) {
     const p = mount({ language });
     try {
