@@ -3912,3 +3912,197 @@ async fn an_incremental_round_after_a_test_only_commit_is_admitted_when_its_only
     let r = &e["lastEvidence"]["review"];
     assert_eq!((r["id"].clone(), r["round"].clone(), r["admittedBy"].clone()), (json!(incremental), json!(2), json!("acknowledgedBinaries")), "{r}");
 }
+
+const ACCEPTED: &str = "Old templates follow routing after upgrade";
+
+/// A completed, complete round at the released head that found the given
+/// (title, priority) findings, as coverage policy 3 records it (YN-67).
+fn finding_round(s: &Store, task: &str, findings: &[(&str, u64)], edit: impl FnOnce(&mut Value)) -> String {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let findings: Vec<Value> = findings.iter().map(|(title, priority)| json!({"title":title,"body":"Found by the reviewer","priority":priority,
+        "path":"core/src/executor_templates.rs","startLine":430,"endLine":454})).collect();
+    let mut data = json!({"id":id,"status":"completed","conclusion":"changes_requested","headSha":head(),"round":2,"policyVersion":3,"coveragePolicyVersion":3,
+        "nativeCorrectness":"patch is incorrect","reasonCodes":[],"contextIncomplete":false,"findings":findings,
+        "coverage":{"coveredFileCount":3,"fileCount":3,"terminalLimit":null,"failedRequests":[],"unresolvedRequests":0}});
+    edit(&mut data);
+    s.db.write()
+        .unwrap()
+        .execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:11','completed',?3)", rusqlite::params![id, task, data.to_string()])
+        .unwrap();
+    id
+}
+
+/// A live ask of `project` under `key` whose question is `question`, that
+/// the user replied to with `reply` at 01:02, last written at `written`.
+fn replied_ask(s: &Store, project: &str, key: &str, question: &str, reply: Option<&str>, written: &str) {
+    let data = json!({"title":"A design choice","ask":{"question":question,"reply":{"options":[{"id":"a","label":"Intended"},{"id":"b","label":"Fix it"}]}},
+        "body":{"root":"r","elements":{"r":{"type":"Markdown","props":{"text":"Context for the choice"}}}}});
+    let (state, at) = if reply.is_some() { ("replied", Some("2026-11-09T01:02:00+00:00")) } else { ("open", None) };
+    s.db.write().unwrap().execute(
+        "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,replied_at,reply_text,updated_at)
+         VALUES(?1,?2,1,'ask',3,'dev','Dev',?3,?4,'2026-11-09T01:00:00+00:00',?5,?6,?7)",
+        rusqlite::params![project, key, data.to_string(), state, at, reply, written],
+    ).unwrap();
+}
+fn project_of(lab: &Lab) -> String {
+    lab.ws.store.db.read().unwrap().query_row("SELECT project_id FROM project_tasks", [], |r| r.get(0)).unwrap()
+}
+const ASKED: &str = "2026-11-09T01:01:00+00:00";
+impl Lab {
+    async fn release_accepting(&self, actor: Option<&str>, key: &str, findings: Value) -> Result<Value> {
+        self.ws
+            .collaboration_call(actor, "merge_enqueue", json!({"requestId":key,"taskId":self.task,
+                "pullUrl":"https://github.com/owner/repo/pull/11","headSha":head(),"acknowledgeFindings":findings}))
+            .await
+    }
+}
+
+/// YN-67, the #824 shape: the review round's one P2 is the behaviour the
+/// user chose. The lead cites the user's reply to a Home ask that names the
+/// PR and the finding; Core reads the reply, records it on the entry and
+/// the task, admits the round as it is, and merges as usual. The round's
+/// own record keeps its conclusion.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_p2_the_user_accepted_on_home_is_released_by_the_lead_and_merges_with_the_rounds_conclusion_unchanged() {
+    let lab = lab(green());
+    let round = finding_round(&lab.ws.store, &lab.task, &[(ACCEPTED, 2)], |_| {});
+    let refused = lab.release(Some("lead"), "r0").await.unwrap_err().to_string();
+    assert!(refused.starts_with("review_not_passing") && refused.contains("concluded changes_requested"), "{refused}");
+    let question = format!("Review round 2 of PR #11 found “{ACCEPTED}” (P2). It is the behaviour you chose in Q1: release it as it is?");
+    replied_ask(&lab.ws.store, &project_of(&lab), "design/yn-example-q1", &question, Some("Intended: release it"), ASKED);
+    let findings = json!([{"reviewId":round,"index":0,"title":ACCEPTED,"userReply":{"key":"design/yn-example-q1"},"note":"chosen in Q1"}]);
+    let e = lab.release_accepting(Some("lead"), "r1", findings).await.unwrap();
+    let accepted = &e["acknowledgedFindings"];
+    assert_eq!((&accepted["by"], &accepted["at"]), (&e["release"]["by"], &e["release"]["at"]), "the releaser acknowledged it: {e}");
+    let item = &accepted["items"][0];
+    assert_eq!((item["reviewId"].as_str(), item["index"].as_u64(), item["priority"].as_u64(), item["title"].as_str()), (Some(round.as_str()), Some(0), Some(2), Some(ACCEPTED)));
+    assert_eq!((item["path"].as_str(), item["startLine"].as_u64(), item["note"].as_str()), (Some("core/src/executor_templates.rs"), Some(430), Some("chosen in Q1")));
+    let cited = &item["userReply"];
+    assert_eq!(cited["key"], "design/yn-example-q1");
+    assert_eq!((cited["question"].as_str(), cited["reply"].as_str(), cited["repliedAt"].as_str()), (Some(question.as_str()), Some("Intended: release it"), Some("2026-11-09T01:02:00+00:00")));
+    assert_eq!((cited["version"].as_i64(), cited["askedBy"]["id"].as_str()), (Some(3), Some("dev")));
+    let comment = lab.comments().into_iter().find(|c| c.contains("released #11")).unwrap();
+    assert!(
+        comment.contains("acknowledges 1 P2 finding(s) of review round 2 as intended")
+            && comment.contains(&format!("“{ACCEPTED}” (core/src/executor_templates.rs:430), citing the user's reply to `design/yn-example-q1`"))
+            && comment.contains("“Intended: release it”"),
+        "{comment}"
+    );
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    let r = &e["lastEvidence"]["review"];
+    assert_eq!((r["id"].clone(), r["conclusion"].clone(), r["passes"].clone(), r["admittedBy"].clone()),
+        (json!(round), json!("changes_requested"), json!(false), json!("acknowledgedFindings")), "{r}");
+    assert_eq!(r["findings"], json!([{"reviewId":round,"index":0,"title":ACCEPTED}]));
+    assert_eq!(e["evidence"]["acknowledgedFindings"], e["acknowledgedFindings"], "the evidence record carries the acceptance");
+    let stored: String = lab.ws.store.db.read().unwrap().query_row("SELECT data FROM pr_reviews WHERE id=?1", [&round], |row| row.get(0)).unwrap();
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!((stored["conclusion"].clone(), stored.get("acknowledgedFindings")), (json!("changes_requested"), None), "the review record is unchanged");
+}
+
+/// Every way an acknowledgement can fail to be the user's acceptance of
+/// exactly this round's P2 findings is refused at release, naming what
+/// didn't match; nothing is queued. A P0 or P1 is never acknowledged, not
+/// even by the user.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_acknowledgement_that_isnt_the_users_acceptance_of_exactly_these_p2_findings_is_refused_naming_what_didnt_match() {
+    let named = |title: &str| format!("PR #11: review round 2 found “{title}”. Intended?");
+    struct Case {
+        findings: Vec<(&'static str, u64)>,
+        ask: Option<(String, Option<&'static str>, &'static str)>,
+        actor: Option<&'static str>,
+        edit: fn(&mut Value),
+        list: fn(&str) -> Value,
+        says: &'static str,
+    }
+    let cases: Vec<Case> = vec![
+        // A lead cites no reply, or one that isn't the user's answer to this.
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "cites no userReply: a lead acknowledges a finding only by citing the user's Home reply that accepts it" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]), says: "which is no ask of this task's Project that the user replied to" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: Some((String::new(), None, ASKED)), actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]), says: "which is no ask of this task's Project that the user replied to" },
+        // Its owner changed it after the reply: the question isn't the one answered.
+        Case { findings: vec![(ACCEPTED, 2)], ask: Some((String::new(), Some("Intended"), "2026-11-09T01:05:00+00:00")), actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]), says: "which changed after the user replied" },
+        // It doesn't name the PR, or the finding.
+        Case { findings: vec![(ACCEPTED, 2)], ask: Some(("PR #110 found “Old templates follow routing after upgrade”. Intended?".into(), Some("Intended"), ASKED)), actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]), says: "whose ask doesn't name PR #11 and this finding" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: Some(("PR #11: keep the new behaviour?".into(), Some("Intended"), ASKED)), actor: Some("lead"), edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]), says: "whose ask doesn't name PR #11 and this finding" },
+        // Not a P2 of the last round, by anyone.
+        Case { findings: vec![(ACCEPTED, 1)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "is a P1: only a P2 finding can be acknowledged, and a P0 or P1 never is" },
+        Case { findings: vec![(ACCEPTED, 0)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "is a P0: only a P2 finding can be acknowledged" },
+        Case { findings: vec![(ACCEPTED, 3), ("Blocker", 2)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "is a P3, which doesn't block" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":"Another title"}]), says: "its title there is “Old templates follow routing after upgrade”, not “Another title”" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":1,"title":ACCEPTED}]), says: "that round has 1 finding(s)" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: None, edit: |_| {},
+            list: |_| json!([{"reviewId":"an-older-round","index":0,"title":ACCEPTED}]), says: "names another round: the last completed review round of PR #11 is" },
+        // Every P0–P2 finding must be one, and nothing else may keep it from passing.
+        Case { findings: vec![(ACCEPTED, 2), ("Second", 2)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "the acknowledged findings don't admit it: review round" },
+        Case { findings: vec![(ACCEPTED, 2), ("Severe", 1)], ask: None, actor: None, edit: |_| {},
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "found “Severe” (P1), and a P0 or P1 is never acknowledged" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: None, edit: |d| { d["contextIncomplete"] = json!(true); },
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "didn't cover every changed path" },
+        Case { findings: vec![(ACCEPTED, 2)], ask: None, actor: None, edit: |d| { d["nativeCorrectness"] = json!("unknown"); d["reasonCodes"] = json!(["model_unknown"]); },
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "has reasons of its own (model_unknown)" },
+        Case { findings: vec![], ask: None, actor: None, edit: |d| { d["conclusion"] = json!("no_findings"); d["nativeCorrectness"] = json!("patch is correct"); },
+            list: |r| json!([{"reviewId":r,"index":0,"title":ACCEPTED}]), says: "that round has 0 finding(s)" },
+    ];
+    for (n, case) in cases.into_iter().enumerate() {
+        let lab = lab(green());
+        let round = finding_round(&lab.ws.store, &lab.task, &case.findings, case.edit);
+        if let Some((question, reply, written)) = &case.ask {
+            let question = if question.is_empty() { named(ACCEPTED) } else { question.clone() };
+            replied_ask(&lab.ws.store, &project_of(&lab), "design/q", &question, *reply, written);
+        }
+        let refused = lab.release_accepting(case.actor, &format!("r{n}"), (case.list)(&round)).await.unwrap_err().to_string();
+        assert!(refused.contains(case.says), "case {n}: {refused}");
+        assert!(lab.ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM merge_entries", [], |r| r.get::<_, i64>(0)).unwrap() == 0, "case {n}: nothing queued");
+    }
+    // An ask of another Project doesn't count; binary files and findings
+    // aren't acknowledged together; the task's executor never releases.
+    let lab = lab(green());
+    let round = finding_round(&lab.ws.store, &lab.task, &[(ACCEPTED, 2)], |_| {});
+    let other = lab.ws.store.create_project("Elsewhere", Default::default()).unwrap();
+    replied_ask(&lab.ws.store, &other.id, "design/q", &named(ACCEPTED), Some("Intended"), ASKED);
+    let cited = json!([{"reviewId":round,"index":0,"title":ACCEPTED,"userReply":{"key":"design/q"}}]);
+    let refused = lab.release_accepting(Some("lead"), "x1", cited.clone()).await.unwrap_err().to_string();
+    assert!(refused.contains("which is no ask of this task's Project that the user replied to"), "{refused}");
+    let both = lab.ws.collaboration_call(None, "merge_enqueue", json!({"requestId":"x2","taskId":lab.task,"pullUrl":"https://github.com/owner/repo/pull/11","headSha":head(),
+        "acknowledgeFindings":cited,"acknowledgeBinaries":[{"path":"icons/a.png","sha256":"a".repeat(64)}]})).await.unwrap_err().to_string();
+    assert!(both.contains("findings_refused: a release acknowledges binary files or findings, not both"), "{both}");
+    replied_ask(&lab.ws.store, &project_of(&lab), "design/q", &named(ACCEPTED), Some("Intended"), ASKED);
+    let executor = lab.release_accepting(Some("dev"), "x3", cited).await.unwrap_err().to_string();
+    assert!(executor.contains("merge_release_not_allowed"), "{executor}");
+}
+
+/// The user releasing needs no reply; the acceptance is theirs, and the
+/// task says so. It holds for that round only: a later round at the same
+/// head with another P2 stops the entry, naming it.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_users_own_acceptance_needs_no_reply_and_holds_only_for_that_round() {
+    let lab = lab(green());
+    let round = finding_round(&lab.ws.store, &lab.task, &[(ACCEPTED, 2)], |_| {});
+    let e = lab.release_accepting(None, "u1", json!([{"reviewId":round,"index":0,"title":ACCEPTED}])).await.unwrap();
+    assert_eq!((e["acknowledgedFindings"]["by"]["kind"].as_str(), &e["acknowledgedFindings"]["items"][0]["userReply"]), (Some("user"), &Value::Null), "{e}");
+    let comment = lab.comments().into_iter().find(|c| c.contains("released #11")).unwrap();
+    assert!(comment.contains(&format!("“{ACCEPTED}” (core/src/executor_templates.rs:430), by the user")), "{comment}");
+    finding_round(&lab.ws.store, &lab.task, &[("A new problem", 2)], |_| {});
+    let e = lab.step().await;
+    assert_eq!((e["state"].as_str(), e["reason"].as_str()), (Some("stopped"), Some("review_not_passing")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("found “A new problem” (P2), which the release doesn't acknowledge"), "{e}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing was written to GitHub");
+}
