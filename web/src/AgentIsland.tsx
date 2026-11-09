@@ -10,8 +10,9 @@ export const islandText = strings({
   word: { idle: "Idle", working: "Working", waiting: "Needs you", done: "Done", failed: "Failed" } as Record<IslandState, string>,
   stay: {
     queued: (position: number | null) => (position ? `Queued · ${position} in line` : "Queued"),
-    /** Waiting for a routing candidate (YN-57), from when one's reason ends. */
-    candidate: (from: string | null) => (from ? `Waiting for a candidate · from ${from}` : "Waiting for a candidate"),
+    /** Waiting for a routing candidate (YN-57), from when one's reason ends. As short as the
+     *  other pills: a longer one leaves line one no width in a 240 px rail. The card says it in full. */
+    candidate: (from: string | null) => (from ? `Candidate from ${from}` : "Awaiting candidate"),
     starting: "Starting", lead: "Lead's turn", review: "In review", changes: "Changes asked", ciFailed: "CI failed",
     ready: "Ready to merge", merged: "Merged", offline: "Offline",
   },

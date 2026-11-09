@@ -397,19 +397,23 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       const at = await page.evaluate((iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso)), "2026-11-09T04:00:00Z");
       // In the middle of the rail first: a row far down it has no size until it is near the view.
       await rowOf("yn57").evaluate((row) => row.scrollIntoView({ block: "center" }));
+      // Its pill leaves line one room, as the slot queue's pills do: a long one took all of it (light-en, Job c3c7a0ae).
+      const lineOne = async (id) => rowOf(id).locator(".agent-select").evaluate((b) => b.getBoundingClientRect().width);
+      const [waitingOne, queuedOne] = [await lineOne("yn57"), await lineOne("yn45")];
+      assert.ok(waitingOne >= 40 && waitingOne >= queuedOne - 24, `${tag}: yn57's line one keeps room beside its pill (${waitingOne} px; yn45's ${queuedOne} px)`);
       await rowOf("yn57").locator(".agent-select").hover();
       const tip = page.locator(".tip");
       await tip.waitFor({ timeout: 10_000 });
       const said = await tip.innerText();
       const zh = tag.endsWith("-zh");
       for (const line of zh ? [`等候选 · ${at} 起`, "在等路由候选；有候选满足条件就启动", "模板：Design first", `路由：在等一个候选 · 最早 ${at}`]
-        : [`Waiting for a candidate · from ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
+        : [`Candidate from ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
         assert.ok(said.includes(line), `${tag}: the card says "${line}": ${said}`);
       await page.screenshot({ path: join(output, `${tag}-3-card-route.png`) });
       report.screenshots.push(`${tag}-3-card-route`);
       await page.mouse.move(0, 0);
       await tip.waitFor({ state: "detached", timeout: 10_000 }).catch(() => {});
-      check(`${tag}: an executor waiting for a routing candidate says so on its pill and card, with its template and route`);
+      check(`${tag}: an executor waiting for a routing candidate says so on its pill and card, with its template and route; its line one ${Math.round(waitingOne)} px beside its pill (yn45's ${Math.round(queuedOne)} px)`);
     }
   } catch (error) {
     await page.screenshot({ path: join(output, `${tag}-failure.png`) }).catch(() => {});

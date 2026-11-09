@@ -219,10 +219,10 @@ test("an executor waiting for a routing candidate says so, from when; one waitin
   const p = await mount();
   try {
     await waitFor(() => p.pill("c") !== null, "c's pill");
-    assert.equal(p.pill("c"), `Waiting for a candidate · from ${hhmm(CANDIDATE_AT)}`, "not its place in the slot queue");
+    assert.equal(p.pill("c"), `Candidate from ${hhmm(CANDIDATE_AT)}`, "not its place in the slot queue");
     assert.deepEqual(p.state("c"), ["idle", "Work c"]);
     const c = await readTip(p.w, p.row("c").querySelector(".agent-select"));
-    assert.match(c[1], new RegExp(`^Waiting for a candidate · from ${hhmm(CANDIDATE_AT)} for \\S+$`), "the pill and since when");
+    assert.match(c[1], new RegExp(`^Candidate from ${hhmm(CANDIDATE_AT)} for \\S+$`), "the pill and since when");
     assert.equal(c[2], "Waits for a routing candidate; starts once one's conditions hold");
     assert.ok(c.includes(`Route: waiting for a candidate · from ${hhmm(CANDIDATE_AT)}`), c.join(" | "));
     // Waiting for a slot: its place, as before.
