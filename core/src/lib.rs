@@ -109,6 +109,7 @@ pub mod subagents;
 pub mod storage_overview;
 pub mod task_proposals;
 pub mod task_workspaces;
+mod build_output;
 pub mod updates;
 pub mod workspace;
 pub mod workspace_backup;

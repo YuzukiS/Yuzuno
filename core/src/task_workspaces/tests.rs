@@ -2,6 +2,7 @@
 //! workspace shows, what creating one registers, and that cleanup removes
 //! only selected, unprotected Cargo profile output, once, as previewed.
 use super::*;
+use crate::build_output::{mounts, GIT_SECONDS, REMOVING};
 use crate::model::AgentDetail;
 use std::collections::BTreeMap;
 

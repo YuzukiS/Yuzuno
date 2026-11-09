@@ -268,6 +268,8 @@ type Draft = {
   origin?: ExecutorTemplate["origin"];
   /** Kept as saved while it follows routing: the harness it named before core.29 (#824 R1). */
   formerHarness?: ExecutorHarness;
+  /** Kept as saved, or its preset's: the kind of model its work wants (YN-70). */
+  tier?: ExecutorTemplate["tier"];
   /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
   savedId?: string;
   /** YN-23: "" is unset, which is "pr". */
@@ -293,6 +295,7 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
   ...(t.formerHarness ? { formerHarness: t.formerHarness } : {}),
+  ...(t.tier ? { tier: t.tier } : {}),
   deliveryMode: t.deliveryMode ?? "",
   steps: t.steps ? t.steps.map(stepOf) : null,
   whenToChoose: t.whenToChoose ?? "",
@@ -350,6 +353,7 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   if (d.deliveryMode) template.deliveryMode = d.deliveryMode;
   if (d.steps) template.steps = d.steps.map(stepTemplate);
   if (set(d.whenToChoose)) template.whenToChoose = set(d.whenToChoose);
+  if (d.tier) template.tier = d.tier;
   return template;
 };
 /** A step this template's delivery can't have: pr, review, ci and merge are for pull requests only. */
@@ -389,6 +393,7 @@ const draftFromPreset = (p: ExecutorPreset, id: string): Draft => ({
     ...(p.steps ? { steps: p.steps } : {}),
     ...(p.whenToChoose ? { whenToChoose: p.whenToChoose } : {}),
     ...(p.permissionLevel ? { permissionLevel: p.permissionLevel } : {}),
+    ...(p.tier ? { tier: p.tier } : {}),
   }),
   preset: { modelHint: p.modelHint },
 });
