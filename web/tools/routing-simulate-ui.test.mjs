@@ -206,10 +206,12 @@ test("tiers (YN-70): a candidate that takes one kind of work says so on its card
   await until(() => q(page, "#routing-edit-ds .routing-tiers"), "its editor");
   const box = (words) => [...q(page, "#routing-edit-ds .routing-tiers").querySelectorAll("label")].find((l) => l.textContent.startsWith(words)).querySelector("input");
   assert.deepEqual([box("Strong work").checked, box("Fast work").checked, box("Fast work").disabled], [false, true, true], "the last one stays");
+  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last").textContent, "It takes at least one kind of work, so the last one ticked stays.", "and says why");
   box("Strong work").click();
   await tick();
   assert.equal(chip(), null, "both: as a candidate saved before");
   assert.equal(box("Fast work").disabled, false);
+  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last"), null, "nothing held, nothing to say");
   box("Fast work").click();
   await tick();
   assert.equal(chip(), "Strong work only");

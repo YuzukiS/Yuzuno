@@ -197,7 +197,7 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           const on = served.includes(tier);
           const last = on && served.length === 1;
           return (
-            <label key={tier} title={last ? t.servesLast : undefined}>
+            <label key={tier}>
               <input type="checkbox" checked={on} disabled={last}
                 onChange={() => onEdit((x) => withTiers(x, on ? tiersOf(x).filter((s) => s !== tier) : [...tiersOf(x), tier]))} />
               {tier === "strong" ? t.servesStrong : t.servesFast}
@@ -205,6 +205,8 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           );
         })}
         <p className="settings-row-meta">{t.servesHelp}</p>
+        {/* Said, not a native tip (YN-44): why the last box can't be cleared. */}
+        {tiersOf(c).length === 1 && <p className="settings-row-meta routing-tiers-last">{t.servesLast}</p>}
       </fieldset>
       <fieldset className="routing-field routing-unknown">
         <legend>{t.unknown}</legend>
