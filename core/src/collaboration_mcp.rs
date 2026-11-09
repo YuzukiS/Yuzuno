@@ -259,7 +259,7 @@ impl ServerHandler for CollaborationHandler {
             .into());
         }
         // An Agent's default views and short receipts (mcp_views.rs).
-        let review_view = match crate::mcp_views::prepare(&request.name, &mut arguments) {
+        let view = match crate::mcp_views::prepare(&request.name, &mut arguments) {
             Ok(view) => view,
             Err(error) => return Ok(CallToolResult::structured_error(json!({"error": error})).into()),
         };
@@ -269,7 +269,7 @@ impl ServerHandler for CollaborationHandler {
             .await
         {
             Ok(result) => {
-                let mut result = crate::mcp_views::answer(&request.name, result, review_view.as_deref());
+                let mut result = crate::mcp_views::answer(&request.name, result, view.as_deref());
                 // Probe provenance is public identity, never a credential.
                 // Readiness requires a successful tool call through this Core
                 // epoch, not a cached tool catalog from a previous process.

@@ -592,7 +592,22 @@ The record holds:
 - the stop reason and detail, if any.
 
 `merge_get` returns an entry with its history and evidence. `merge_list` lists
-entries.
+entries, newest first, without their history and last check, at most 50 a
+page (`limit`, then `before` with the page's `nextBefore` while `hasMore`).
+
+Through MCP an Agent reads less by default, and loses nothing (YN-69):
+
+- **`merge_get` and the merge writes:** they answer with the entry's summary.
+  It leaves out `lastEvidence` (the last check as Core read it) and the
+  evidence fields that repeat the entry, whose own fields are current. Its
+  history keeps the newest 10 steps, with `historyCount` saying how many there
+  are. `view: "full"` returns the whole record.
+- **`merge_list`:** it lists 20 a page unless the Agent gives `limit`. Each row
+  is the entry, its PR, head, state, reason and detail, its times and its
+  merge: `sha`, `mergedAt` and `mainCi`. `view: "full"` returns the rows as
+  stored.
+
+The web app reads the whole records over HTTP, as before.
 
 ## Going back to an older Core
 

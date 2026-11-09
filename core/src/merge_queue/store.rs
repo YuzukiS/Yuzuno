@@ -860,19 +860,28 @@ impl Store {
         Ok(serde_json::from_str(&raw.context("merge_entry_not_found: This task has no merge entry")?)?)
     }
 
+    /// Newest first, a page of `limit` (50 when not given) before the cursor
+    /// `before` (YN-69): nextBefore is the cursor of the page after it.
     pub(super) fn merge_list(&self, input: &Scope) -> Result<Value> {
+        let limit = input.limit.unwrap_or(50);
+        ensure!((1..=50).contains(&limit), "invalid_input: limit 1..50");
         let db = self.db.read()?;
         let task = input.task_id.as_deref().map(|t| collab::task_key(&db, t)).transpose()?.map(|t| t.0);
         let mut q = db.prepare(
-            "SELECT json_remove(data,'$.history','$.lastEvidence') FROM merge_entries
+            "SELECT rowid, json_remove(data,'$.history','$.lastEvidence') FROM merge_entries
              WHERE (?1 IS NULL OR repository_id=?1) AND (?2 IS NULL OR state=?2) AND (?3 IS NULL OR task_id=?3)
-             ORDER BY rowid DESC LIMIT 50",
+               AND (?4 IS NULL OR rowid<?4)
+             ORDER BY rowid DESC LIMIT ?5",
         )?;
-        let rows = q
-            .query_map(params![input.repository_id, input.state, task], |r| r.get::<_, String>(0))?
-            .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
+        let mut rows = q
+            .query_map(params![input.repository_id, input.state, task, input.before, limit + 1],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .map(|r| { let (rowid, data) = r?; Ok((rowid, serde_json::from_str::<Value>(&data)?)) })
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!({"entries":rows}))
+        let more = rows.len() as i64 > limit;
+        rows.truncate(limit as usize);
+        let next = rows.last().map(|(rowid, _)| *rowid);
+        Ok(json!({"entries":rows.into_iter().map(|(_, e)| e).collect::<Vec<_>>(),"nextBefore":next,"hasMore":more}))
     }
 
     /// Whether `actor` may cancel or retry entry `id`: the Agent that released
