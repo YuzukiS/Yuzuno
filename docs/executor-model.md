@@ -153,6 +153,19 @@ not a template's or a Project's.
     Codex `config` on it becomes no level;
   - a fixed one keeps its harness, model and `config`.
 
+  This is the user's choice (YN-56): templates name no tool, and while
+  routing is off they use the default for new Agents. So a template that
+  named a tool other than that default runs on the default with routing off.
+  A level the default doesn't keep is refused, for example Full access when
+  the default is Claude Code. Two things keep this from surprising you:
+  - **The way back is kept.** The tool it named is kept as `formerHarness`
+    until the template is fixed to a tool. A refused dispatch's reason names
+    it: "It named Codex before core.29: fix it to Codex…".
+  - **Settings warns first.** The template's page says it would be refused,
+    with that way back. While routing is off, its row in the list is marked
+    "Refused with routing off". The warning follows the default tool for new
+    Agents and whether routing is on.
+
   A fixed template is stored with its harness's own permission beside its
   level, so a Core before core.29 starts it as before. That Core can't read
   a template that follows routing, since it names no harness: it counts it

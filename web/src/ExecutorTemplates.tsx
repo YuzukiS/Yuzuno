@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 import { api, errorText } from "./api";
+import { readPolicy } from "./executor-routing";
 import { claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
   MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, keepsLevel, presetsIn, readExecutorTemplates, saveExecutorTemplates,
@@ -79,6 +80,11 @@ const text = strings({
   levelSkips: (names: string) => `Routing passes over ${names} for this template.`,
   levelNotKept: (name: string) => `${name} doesn't keep this level: choose another.`,
   levelNotKeptOption: "not kept",
+  refusedOff: (tool: string, level: string) => `Refused while routing is off: the default tool for new Agents here, ${tool}, doesn't keep ${level}.`,
+  refusedOn: (tool: string, level: string) => `Refused when routing gives no tool that keeps it: the default tool for new Agents here, ${tool}, doesn't keep ${level}.`,
+  refusedWayBack: (tool: string) => `It named ${tool} before core.29: choose ${tool} in Runs with to fix it there, or change the default tool for new Agents.`,
+  refusedFix: "Fix it to a tool that keeps this level, or change the default tool for new Agents.",
+  refusedTag: "Refused with routing off",
   opencodeRules: "its own rules",
   opencodeNote: "On OpenCode nothing reviews an action: everything inside the project is allowed, and only a folder outside it or a call that keeps failing asks you. Its commands aren't sandboxed.",
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
@@ -186,6 +192,11 @@ const text = strings({
   levelSkips: (names) => `路由不会把这个模板派给 ${names}。`,
   levelNotKept: (name) => `${name} 不支持这个等级：请换一个。`,
   levelNotKeptOption: "不支持",
+  refusedOff: (tool, level) => `路由关着时会被拒绝：这里新 Agent 的默认工具 ${tool} 不支持「${level}」。`,
+  refusedOn: (tool, level) => `路由给不出支持它的工具时会被拒绝：这里新 Agent 的默认工具 ${tool} 不支持「${level}」。`,
+  refusedWayBack: (tool) => `这个模板在 core.29 之前写的是 ${tool}：在「运行环境」里选回 ${tool}（固定），或者改新 Agent 的默认工具。`,
+  refusedFix: "把它固定到支持这个等级的工具，或者改新 Agent 的默认工具。",
+  refusedTag: "路由关着时会被拒绝",
   opencodeRules: "它自己的规则",
   opencodeNote: "OpenCode 没有自动审查：项目内全部放行，只有项目外的文件夹或反复失败的调用才问你。它的命令也不在沙箱里。",
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
@@ -255,6 +266,8 @@ type Draft = {
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
+  /** Kept as saved while it follows routing: the harness it named before core.29 (#824 R1). */
+  formerHarness?: ExecutorHarness;
   /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
   savedId?: string;
   /** YN-23: "" is unset, which is "pr". */
@@ -279,6 +292,7 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
+  ...(t.formerHarness ? { formerHarness: t.formerHarness } : {}),
   deliveryMode: t.deliveryMode ?? "",
   steps: t.steps ? t.steps.map(stepOf) : null,
   whenToChoose: t.whenToChoose ?? "",
@@ -331,6 +345,8 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
   if (d.harness) template.routing = "fixed";
+  // The way back stays until the template is fixed to a harness.
+  else if (d.formerHarness) template.formerHarness = d.formerHarness;
   if (d.deliveryMode) template.deliveryMode = d.deliveryMode;
   if (d.steps) template.steps = d.steps.map(stepTemplate);
   if (set(d.whenToChoose)) template.whenToChoose = set(d.whenToChoose);
@@ -357,6 +373,13 @@ const levelName = (levels: LevelInfo[], level: string, language: Language) => {
 /** A fixed template's level its harness doesn't keep, or `config` on a harness other than Codex. */
 const levelRefused = (d: Draft, levels: LevelInfo[]) =>
   !!d.harness && !!d.level && (d.level === "config" ? d.harness !== "codex" : !keepsLevel(levels, d.level, d.harness));
+/** The default tool for new Agents here (the view's general executor's), when it doesn't keep a template's level:
+ * a template that follows routing is refused while routing is off, or gives no tool that keeps it (#824 R1). */
+const refusedOn = (d: Draft, view: ExecutorTemplatesView): ExecutorHarness | null => {
+  const tool = view.general?.harness;
+  if (d.harness || !d.level || d.level === "config" || (tool !== "codex" && tool !== "claude" && tool !== "opencode")) return null;
+  return keepsLevel(view.levels, d.level, tool) ? null : tool;
+};
 /** A template made from a preset, following routing, under a free id. */
 const draftFromPreset = (p: ExecutorPreset, id: string): Draft => ({
   ...draftOf({
@@ -546,6 +569,8 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   // Whether that list has been read: a saved machine is called missing only
   // from a list that was read and lacks it (#645 R1 e4931a53).
   const [machinesRead, setMachinesRead] = useState<"reading" | "read" | "failed">("reading");
+  // Whether routing is on, for what a template's warning says (#824 R1); null: not known.
+  const [routingOn, setRoutingOn] = useState<boolean | null>(null);
   const own = (from: ExecutorTemplatesView) => from.workspace;
   // A saved machine the select doesn't offer. Before the list is read it is
   // just its id; a failed read says so. Once read, a listed machine is one this
@@ -575,6 +600,8 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       if (!controller.signal.aborted) adopt(next);
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
     setMachinesRead("reading");
+    readPolicy(controller.signal).then(p => { if (!controller.signal.aborted) setRoutingOn(p.policy.enabled === true); })
+      .catch(() => { if (!controller.signal.aborted) setRoutingOn(null); });
     api<{ machines: WorkspaceMachine[] }>("/machines", { signal: controller.signal }).then(list => {
       if (controller.signal.aborted) return;
       setMachines(Array.isArray(list.machines) ? list.machines : []);
@@ -703,7 +730,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       {open && view ? (
         <>
           {open.savedId && view.lastModified?.[open.savedId] && <LastChange change={view.lastModified[open.savedId]} t={t} />}
-          <TemplatePage key={open.key} d={open} t={t} language={language} view={view} locked={locked} machines={machines}
+          <TemplatePage key={open.key} d={open} t={t} language={language} view={view} locked={locked} machines={machines} routingOn={routingOn}
             savedMachine={savedMachine} edit={(change) => edit(open.key, change)}
             remove={() => { setDone(false); setOpenKey(null); setDrafts(list => list.filter(x => x.key !== open.key)); }} />
           {saveLine}
@@ -732,6 +759,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
                           </span>
                         </span>
                         {needsFix(d) && <span className="settings-tag is-error">{t.needsFix}</span>}
+                        {!needsFix(d) && routingOn === false && refusedOn(d, view) && <span className="settings-tag is-error">{t.refusedTag}</span>}
                         {d.id.trim() && <span className="settings-tag is-mono">{d.id.trim()}</span>}
                         <ChevronRight size={15} className="settings-list-chev" aria-hidden="true" />
                       </button>
@@ -840,12 +868,13 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
 /** One template's page (YN-8 S5b), in the design's order: its name and
  * purpose and how it runs, its delivery and steps, where it runs and its
  * instructions, then removing it on a card of its own. */
-function TemplatePage({ d, t, language, view, locked, machines, savedMachine, edit, remove }: {
-  d: Draft; t: Text; language: Language; view: ExecutorTemplatesView; locked: boolean; machines: WorkspaceMachine[];
+function TemplatePage({ d, t, language, view, locked, machines, routingOn, savedMachine, edit, remove }: {
+  d: Draft; t: Text; language: Language; view: ExecutorTemplatesView; locked: boolean; machines: WorkspaceMachine[]; routingOn: boolean | null;
   savedMachine: (id: string) => string; edit: (change: Partial<Draft>) => void; remove: () => void;
 }) {
   const name = d.label.trim() || t.newTemplate;
   const noLabel = !d.label.trim();
+  const refused = refusedOn(d, view);
   // The harness for new Agents while routing is off, as a general executor's: the Workspace's here.
   const general = view.general?.harness;
   const defaultHarness = general === "codex" || general === "claude" || general === "opencode" ? harnessName(general) : "Codex";
@@ -921,6 +950,12 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
           )}
           {!d.harness && d.preset?.modelHint && <p className="settings-row-help executor-template-note">{t.modelHint(d.preset.modelHint)}</p>}
           <LevelField d={d} t={t} language={language} levels={view.levels} opencode={view.opencodeEnabled} edit={edit} />
+          {refused && (
+            <p className="inline-error executor-template-refused" role="note">
+              {(routingOn === false ? t.refusedOff : t.refusedOn)(harnessName(refused), levelName(view.levels, d.level, language))}{" "}
+              {d.formerHarness ? t.refusedWayBack(harnessName(d.formerHarness)) : t.refusedFix}
+            </p>
+          )}
         </fieldset>
       </fieldset>
       <fieldset className="settings-group appearance-group" disabled={locked}>

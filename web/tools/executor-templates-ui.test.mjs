@@ -291,6 +291,39 @@ test("YN-56 S3: where Core says OpenCode keeps a level, its line says its own ru
   assert.deepEqual(page.errors, []);
 });
 
+test("#824 R1: a template the default tool can't start is flagged before a dispatch is refused, with its way back; fixing it clears both", async () => {
+  for (const enabled of [false, true]) {
+    let workspace = { version: 1, templates: [{ id: "old", label: "Old full", permissionLevel: "full", formerHarness: "codex" },
+      { id: "fine", label: "Fine", permissionLevel: "auto" }] };
+    const page = mount((url, method, body) => {
+      if (url.endsWith("/routing/policy")) return [200, { version: 3, policy: { enabled, candidates: [], whenNone: "wait" } }];
+      if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+      return [200, { ...view(workspace), general: { label: "Executor", harness: "claude", harnessSource: "workspace" } }];
+    });
+    page.window.renderTemplates();
+    const section = () => page.document.querySelector("#settings-executor-templates").textContent;
+    await until(() => row(page, "Old full"), "the list");
+    const tag = (title) => [...row(page, title).querySelectorAll(".settings-tag.is-error")].map((t) => t.textContent);
+    await until(() => !enabled ? tag("Old full").length === 1 : true, "the tag");
+    assert.deepEqual([tag("Old full"), tag("Fine")], [enabled ? [] : ["Refused with routing off"], []], `routing ${enabled}`);
+    await openTemplate(page, "Old full");
+    await until(() => page.document.querySelector(".executor-template-refused"), "the warning");
+    assert.equal(page.document.querySelector(".executor-template-refused").textContent,
+      (enabled ? "Refused when routing gives no tool that keeps it: " : "Refused while routing is off: ")
+      + "the default tool for new Agents here, Claude Code, doesn't keep Full access. "
+      + "It named Codex before core.29: choose Codex in Runs with to fix it there, or change the default tool for new Agents.");
+    await type(page, "Runs with", "codex");
+    assert.equal(page.document.querySelector(".executor-template-refused"), null, "fixed to Codex, which keeps it");
+    button(page, "Save templates").click();
+    await until(() => puts(page).length === 1, "the save");
+    assert.deepEqual(puts(page)[0].body.templates[0], { id: "old", label: "Old full", harness: "codex", routing: "fixed", permissionLevel: "full" },
+      "fixed: the way back is no longer kept");
+    assert.deepEqual(puts(page)[0].body.templates[1], { id: "fine", label: "Fine", permissionLevel: "auto" });
+    await until(() => /Saved\./.test(section()), "saved");
+    assert.deepEqual(page.errors, []);
+  }
+});
+
 // As Core serves presets (executor_templates.rs `presets`, YN-23): each in each language, with no harness.
 const presetPair = (id, en, zh, extra = {}) => [
   { id, language: "en", label: en, whenToChoose: `When ${en}`, modelHint: "A strong model.", instructions: `Do ${en}.`, deliveryMode: "pr", ...extra },

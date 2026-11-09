@@ -20,6 +20,8 @@ export type ExecutorTemplate = {
   permissionLevel?: PermissionLevel;
   /** A fixed Codex template's `config` only: its machine's own Codex configuration. */
   permissionPreset?: string;
+  /** The harness a template that follows routing named before core.29 (#824 R1): the way back, kept until it is fixed. */
+  formerHarness?: ExecutorHarness;
   /** Where its executors run: unset or "local" for this Core host, a
    * registered machine's id, or "auto" for Core to choose at each dispatch (T-35 S3). */
   machineId?: string;
