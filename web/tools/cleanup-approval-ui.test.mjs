@@ -153,6 +153,8 @@ test("without a plan Core can show as the Ask asks it, it can't be sent", async 
     { name: "an older plan", respond: () => ({ body: { plan, planned: true } }), section: ask({ question: `Approve cleanup plan ${PLAN}?` }), says: /does not name the plan waiting now/ },
     { name: "other choices", respond: () => ({ body: { plan, planned: true } }), section: ask({ options: ["d", "x"] }), says: /choices are not this plan's groups/ },
     { name: "unreadable", respond: () => ({ status: 500, body: { error: "boom" } }), section: ask(), says: /couldn't be read/ },
+    { name: "a group Core did not summarize", respond: () => ({ body: { plan: { ...plan, groups: [plan.groups[0], { ...plan.groups[1], summary: null }] }, planned: true } }),
+      section: ask(), says: /Core has no summary of group r/ },
   ];
   for (const { name, respond, section, says } of cases) {
     const { window } = mount({ respond });

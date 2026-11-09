@@ -65,6 +65,7 @@ const text = strings({
   noPlan: "No cleanup plan of this task waits for approval now: it expired, was replaced by a newer one or was applied. Ask the executor to register it again.",
   mismatch: "This ask does not name the plan waiting now (its ID and sha256): it may be about an older plan. Ask the executor to ask again.",
   options: "The ask's choices are not this plan's groups. Ask the executor to ask again.",
+  noSummary: (group: string) => `Core has no summary of group ${group}: it can't be approved until Core shows what it holds.`,
   heading: (id: string, sha: string, until: string) => `Core's summary of plan ${id} (sha256 ${sha}…), valid until ${until}. Each group below is what Core's own checks found; the executor's words are only a note.`,
   remote: (machine: string) => `Inventoried on ${machine}: Core can't remove anything there yet.`,
   decision: { delete: "Delete", rebuildable: "Rebuildable", keep: "Keep (never run)", ask: "Ask (never run)" } as Record<string, string>,
@@ -87,6 +88,7 @@ const text = strings({
   noPlan: "这个任务现在没有等待批准的清理计划：已过期、被新计划取代或已执行。请让执行者重新登记。",
   mismatch: "这个提问没有写明现在等待批准的计划（它的 ID 和 sha256），可能是在问旧计划。请让执行者重新提问。",
   options: "提问的选项不是这个计划的组。请让执行者重新提问。",
+  noSummary: (group) => `Core 没有组 ${group} 的摘要：在 Core 显示出它里面有什么之前不能批准。`,
   heading: (id, sha, until) => `Core 对计划 ${id}（sha256 ${sha}…）的摘要，${until} 前有效。下面每一组都是 Core 自己检查的结果；执行者写的只是说明。`,
   remote: (machine) => `在 ${machine} 上盘点：Core 现在还不能删那里的东西。`,
   decision: { delete: "删除", rebuildable: "可重建", keep: "保留（不会执行）", ask: "问用户（不会执行）" },
@@ -136,6 +138,9 @@ export function judge(section: Section, read: CleanupPlanRead, language: Languag
   const offered = (groupsField(section)?.options ?? []).map((o) => o.id).sort();
   const groups = plan.groups.map((g) => g.id).sort();
   if (offered.length !== groups.length || offered.some((id, i) => id !== groups[i])) return { state: "blocked", reason: t.options };
+  // Every group as Core summarized it, or none: never the executor's words alone (review ac3c3d8f).
+  const bare = plan.groups.find((g) => !g.summary);
+  if (bare) return { state: "blocked", reason: t.noSummary(bare.id) };
   return { state: "ready", plan };
 }
 
