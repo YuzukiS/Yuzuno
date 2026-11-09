@@ -201,6 +201,17 @@ pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &
         result["reportedBy"]["id"].as_str().unwrap_or("unknown"),
         result["id"].as_str().unwrap_or_default(), result["dispatchId"].as_str().unwrap_or_default(),
         excerpt, if excerpt.len() < summary.len() { "…" } else { "" }, seq - 1);
+    // Main CI on the task's merges, by Core's records rather than the
+    // author's (YN-68): a lead closes the task from this mail.
+    // A failed read leaves it out; it never fails the result.
+    match crate::merge_queue::store::task_summary(db, &task.id) {
+        Ok(Some(merges)) => {
+            body.push('\n');
+            body.push_str(&merges);
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("Merge records for {number}'s result mail: {error:#}"),
+    }
     // The recipient may be the one who keeps the Project's Home: advice only.
     // A failed lookup leaves the advice out; it never fails the result.
     if let Some(recipient) = notification["recipient"]["id"].as_str() {

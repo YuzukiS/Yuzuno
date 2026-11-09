@@ -692,7 +692,12 @@ A released executor takes no more mail or work:
   first line. An executor you dispatched has no Agent to pass it to: that
   mail is kept in the executor's mailbox, never dropped, where you can still
   read it. Either way the task's own records of the Job, the CI run or the
-  review are written as always.
+  review are written as always. While the task is open such mail wakes the
+  dispatcher, as it would have woken the executor. Once the task is done,
+  cancelled or archived, a passed-on success (a Job that succeeded, CI that
+  passed, a review that passed, a pull request made, a merge) is quiet: it
+  is kept and read as usual, and comes with the dispatcher's next wake-up
+  instead of starting a Turn (YN-68). A failure always wakes it.
 - **Other mail is refused.** Mail to it, and a dispatch naming it, is refused
   with `executor_archived`, naming its task and its dispatcher. Write to the
   dispatcher instead, or dispatch the task again for new work.
