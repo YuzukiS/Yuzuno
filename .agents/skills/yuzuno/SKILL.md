@@ -16,7 +16,7 @@ Core enforces identity, permissions, idempotency, resource admission and state c
 
 ## Taking a task
 
-- To find work among many tasks, call `task_list` with `compact: true`: short rows without description, result or GitHub snapshots, with the same filters, counts and paging. Read the one you need with `task_get`.
+- To find work among many tasks, call `task_list`: through MCP it lists short rows by default (`compact: true`), without description, result or GitHub snapshots, with the same filters, counts and paging. Before core.30 the default was whole rows; give `compact: false` for them. Read the one you need with `task_get`.
 - A task's ID is `T-<n>`, or, for a task in a Project, the Project's key and the task's number there, such as `YN-3`. Every key a task or its Project had still names it, and `task_get` lists them in `keys`. Use the IDs Core gives; the user sets a Project's key in the Projects window.
 - A task is an outcome, not a turn. Read it with `task_get`: it answers with the task as it is now and its current delivery; page its history with `view: "activity"` and ask for `view: "full"` only when you need the whole record. When you were dispatched, read the fixed materials with `task_get` and the message's `dispatchId`, and keep that `dispatchId` for the result; never substitute a newer one.
 - A Project's handover document is what an executor that starts cold is given: read it with `handover_get`. A lead that learns something lasting writes the whole document with `handover_update`, against the version it read, with an optional note of what changed; it is saved at once, and the Project's settings show the user who changed it last. Executors and other members only read it.
