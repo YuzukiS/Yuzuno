@@ -134,6 +134,11 @@ An older Core has none of these routes and never reads the key file: it
 leaves the `secrets` folder as it is, and a newer Core uses it again. A file
 written by a later Core (a higher `version`) is not changed by this one.
 
+An OpenCode executor's permission level (YN-56) is kept in its own table,
+which a Core before core.29 doesn't read. Such a Core starts it with
+OpenCode's own configuration: its default allows everything but reading a
+`.env` file.
+
 ## Accounts
 
 ### claude-swap accounts
@@ -449,8 +454,21 @@ hold over an `opencode.json` that allows more.
   start is refused. A configuration OpenCode reads after Yuzuno's, such as a
   managed one, is what can make them differ. The refused start is a definite
   failure, so a routed executor's rebuild tries the next candidate.
-- **No sandbox confines OpenCode's commands, at any level.** Under Auto-approve
-  and Full access, OpenCode's own read-only `plan` agent may edit too.
+- **On OpenCode, nothing reviews an action.** Codex's Auto-approve has an
+  automatic reviewer and Claude Code's its classifier. OpenCode's has neither:
+  everything inside the project is allowed, and only a folder outside it or a
+  call that keeps failing asks you.
+- **No sandbox confines OpenCode's commands, at any level.** OpenCode 2.2.5
+  scans each shell command for its working folder and the folders it names,
+  and asks for those outside the project (`external_directory`). It refuses a
+  command it can't scan. A path the scan can't see, such as one inside a
+  script the command runs or in a variable, is not checked, and nothing
+  confines what the command does while it runs.
+- **OpenCode's own read-only `plan` agent may edit too** under Auto-approve and
+  Full access.
+- **A Core before core.29** keeps no OpenCode level: it starts an OpenCode
+  executor with OpenCode's own configuration, whose default allows everything
+  but reading a `.env` file (see [With an older Core](#with-an-older-core)).
 
 A template's level goes with each dispatch from it ([Executor
 templates](executor-model.md#executor-templates)): routing passes over a

@@ -871,7 +871,9 @@ impl Workspace {
         // Its agents must keep the level: a configuration OpenCode reads after Yuzuno's
         // can override it. A server that doesn't is dropped, which ends it.
         if let Some(level) = &level {
-            crate::permission_levels::opencode_check(level, &server.agents().await?)?;
+            let managed = crate::permission_levels::OPENCODE_MANAGED;
+            let managed = std::path::Path::new(managed).exists().then_some(managed);
+            crate::permission_levels::opencode_check(level, &server.agent_rules(cwd).await?, managed)?;
         }
         let pid = server.pid();
         // OpenCode's folders as it was started: Core's environment with the Agent's own on top.

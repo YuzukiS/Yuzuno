@@ -167,11 +167,16 @@ fn decided<'a>(rules: impl DoubleEndedIterator<Item = (&'a str, &'a str, &'a str
 const PROBES: [(&str, &str); 6] = [("edit", "src/main.rs"), ("shell", "cargo test"), ("webfetch", "https://example.com/"),
     ("external_directory", "/elsewhere/*"), ("read", "project/.env"), ("read", "project/README.md")];
 
+/// OpenCode's managed configuration on this host (2.2.5 `Ux`: /etc/opencode on
+/// Linux), which it reads after Yuzuno's: named when a start check fails.
+pub(crate) const OPENCODE_MANAGED: &str = if cfg!(target_os = "macos") { "/Library/Application Support/opencode" } else { "/etc/opencode" };
+
 /// Refuses an OpenCode server whose agents (`GET /api/agent`'s data) don't
 /// keep level `id`: for each probe, each agent's own rules must decide what
 /// the level's rules alone do. A configuration OpenCode reads after Yuzuno's,
-/// such as a managed one, is what can make them differ.
-pub(crate) fn opencode_check(id: &str, agents: &Value) -> Result<()> {
+/// such as a managed one, is what can make them differ: `managed` names the
+/// managed one when it is there.
+pub(crate) fn opencode_check(id: &str, agents: &Value, managed: Option<&str>) -> Result<()> {
     let ours = opencode_ruleset(id);
     ensure!(!ours.is_empty(), "OpenCode keeps no permission level {id}");
     let agents = agents.as_array().filter(|a| !a.is_empty())
@@ -186,8 +191,13 @@ pub(crate) fn opencode_check(id: &str, agents: &Value) -> Result<()> {
             .collect();
         for (action, resource) in PROBES {
             let (got, want) = (decided(rules.iter().copied(), action, resource), decided(ours.iter().copied(), action, resource));
-            ensure!(got == want, "OpenCode's agent {name} doesn't keep the permission level {id}: for {action} on {resource} it decides {got}, \
-                the level {want}. A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it");
+            if got != want {
+                let why = match managed {
+                    Some(path) => format!("OpenCode's managed configuration in {path}, which it reads after Yuzuno's, overrides it"),
+                    None => "A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it".to_owned(),
+                };
+                bail!("OpenCode's agent {name} doesn't keep the permission level {id}: for {action} on {resource} it decides {got}, the level {want}. {why}");
+            }
         }
     }
     Ok(())
@@ -394,16 +404,19 @@ mod tests {
     #[test]
     fn an_opencode_start_is_checked_to_keep_its_level_in_every_agent() {
         for id in ["ask", "auto", "full"] {
-            opencode_check(id, &agents(Some(id), &[])).unwrap_or_else(|e| panic!("{id}: {e:#}"));
+            opencode_check(id, &agents(Some(id), &[]), None).unwrap_or_else(|e| panic!("{id}: {e:#}"));
         }
-        let without = opencode_check("ask", &agents(None, &[])).unwrap_err().to_string();
+        let without = opencode_check("ask", &agents(None, &[]), None).unwrap_err().to_string();
         assert!(without.starts_with("OpenCode's agent build doesn't keep the permission level ask: for edit on src/main.rs it decides allow, the level ask"),
             "{without}");
-        let overridden = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")])).unwrap_err().to_string();
+        let overridden = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")]), None).unwrap_err().to_string();
         assert!(overridden.contains("for external_directory on /elsewhere/* it decides allow, the level ask")
             && overridden.ends_with("A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it"), "{overridden}");
-        assert!(opencode_check("ask", &json!([])).unwrap_err().to_string().contains("listed no agent"));
-        assert!(opencode_check("ask", &json!([{"id": "build"}])).unwrap_err().to_string().contains("lists no permission rules"));
-        assert!(opencode_check("readonly", &agents(Some("ask"), &[])).is_err());
+        let managed = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")]), Some("/etc/opencode"))
+            .unwrap_err().to_string();
+        assert!(managed.ends_with("OpenCode's managed configuration in /etc/opencode, which it reads after Yuzuno's, overrides it"), "{managed}");
+        assert!(opencode_check("ask", &json!([]), None).unwrap_err().to_string().contains("listed no agent"));
+        assert!(opencode_check("ask", &json!([{"id": "build"}]), None).unwrap_err().to_string().contains("lists no permission rules"));
+        assert!(opencode_check("readonly", &agents(Some("ask"), &[]), None).is_err());
     }
 }

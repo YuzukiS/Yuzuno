@@ -746,12 +746,6 @@ impl Server {
         !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
     }
 
-    /// The agents OpenCode holds, each with the permission rules it decides by
-    /// (`GET /api/agent`'s data).
-    pub async fn agents(&self) -> Result<Value> {
-        self.data(Method::GET, "/api/agent", &[], None).await
-    }
-
     /// A new session; OpenCode's record of it (its `id` names it).
     pub async fn create_session(&self, title: &str) -> Result<Value> {
         // 2.x takes the session's folder from its body, not from the request (server/src/handlers/session.ts).
@@ -1007,6 +1001,15 @@ impl Server {
         let listed = listed.as_array().context("OpenCode's /api/agent is not a list")?;
         Ok(listed.iter().filter_map(|agent| Some((agent["id"].as_str()?.to_owned(), agent["mode"].as_str()?.to_owned(),
             agent["hidden"].as_bool().unwrap_or(false)))).collect())
+    }
+
+    /// The agents 2.x has for `directory`, each as `{id, permissions}`: the
+    /// permission rules it decides by (YN-56 S3). Only those fields are kept,
+    /// since an agent's `request` may hold its provider's headers.
+    pub async fn agent_rules(&self, directory: &str) -> Result<Value> {
+        let listed = self.data(Method::GET, "/api/agent", &[(LOCATION, directory)], None).await?;
+        let listed = listed.as_array().context("OpenCode's /api/agent is not a list")?;
+        Ok(listed.iter().map(|agent| serde_json::json!({"id": agent["id"], "permissions": agent["permissions"]})).collect())
     }
 
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
