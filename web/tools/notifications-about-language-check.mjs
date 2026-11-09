@@ -166,7 +166,8 @@ try {
 
   // ---- Notifications, set up in English.
   await openSettings();
-  await page.locator('[role="tab"]', { hasText: "Notifications & attention" }).click();
+  // Its own page in Settings' sidebar since YN-8, no longer a category tab.
+  await page.locator("#settings-tab-notifications").click();
   let box = page.locator("#settings-editor-notifications");
   await box.waitFor({ timeout: 10_000 });
   assert.equal((await notifications(box)).access, "Not asked yet");
@@ -242,7 +243,7 @@ try {
   assert.deepEqual(pageOwn(meanwhile), []);
   check("changed to English in another window: About is English, the opened license and the failed read stay, nothing read again", { failed: aboutEn.licenses[1].alert, meanwhile });
 
-  await page.locator('[role="tab"]', { hasText: "Notifications & attention" }).click();
+  await page.locator("#settings-tab-notifications").click();
   box = page.locator("#settings-editor-notifications");
   await box.locator("h3", { hasText: "Notifications" }).waitFor({ timeout: 10_000 });
   assert.deepEqual(await notifications(box), en, "Notifications as it was in English");
