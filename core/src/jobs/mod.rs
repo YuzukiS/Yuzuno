@@ -1780,8 +1780,8 @@ const STAGE_CHECKPOINT: &str = "For a stage, the stop and resume are of its runn
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
     // A Job or run named by its whole ID or a unique prefix of it (T-30).
-    let job_ref = json!({"type":"string","description":"The Job's ID, or a unique prefix of it: at least 8 of its hexadecimal characters from the start, as mail and notes name it."});
-    let run_ref = json!({"type":"string","description":"The run's ID, or a unique prefix of it: at least 8 of its hexadecimal characters from the start, as mail and notes name it."});
+    let job_ref = json!({"type":"string","description":"The Job's ID, or a unique prefix of it: at least 8 hexadecimal characters, as mail names it."});
+    let run_ref = json!({"type":"string","description":"The run's ID, or a unique prefix of it: at least 8 hexadecimal characters, as mail names it."});
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
