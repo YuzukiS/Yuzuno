@@ -233,7 +233,7 @@ def main():
                                      headers={'Content-Type': 'application/json', 'X-Yuzuno-Client': 'desktop'})
         urllib.request.urlopen(req, timeout=30).read()
         req = urllib.request.Request(BASE + '/api/executor-templates', method='PUT',
-                                     data=json.dumps({'expectedVersion': 0, 'templates': [{'id': 'worker', 'label': 'Worker', 'harness': 'codex',
+                                     data=json.dumps({'expectedVersion': 0, 'templates': [{'id': 'worker', 'label': 'Worker', 'harness': 'codex', 'routing': 'fixed',
                                                                                            'instructions': 'Lab executor.'}]}).encode(),
                                      headers={'Content-Type': 'application/json', 'X-Yuzuno-Client': 'desktop'})
         urllib.request.urlopen(req, timeout=30).read()

@@ -53,7 +53,7 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();
     let saved = client.put(format!("http://127.0.0.1:{port}/api/executor-templates")).header("X-Yuzuno-Client", "desktop")
-        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
 
@@ -223,7 +223,7 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}/api");
     let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
-        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
     // This Core host's limit (YN-2 S5: each machine's is the only one).
@@ -358,7 +358,7 @@ async fn a_failed_start_is_rebuilt_once_and_a_second_failure_blocks_the_task() {
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}/api");
     let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
-        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
     let lead: AgentDetail = serde_json::from_value(json!({"agent":{"id":"lead","name":"Lead fixture","cwd":work,"model":"","harness":"claude",
@@ -433,7 +433,7 @@ async fn a_lead_releases_its_executor_over_mcp_and_the_freed_slot_starts_the_nex
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}/api");
     let saved = client.put(format!("{base}/executor-templates")).header("X-Yuzuno-Client", "desktop")
-        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
+        .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
     let slots = client.put(format!("{base}/machines/local/executor-slots")).header("X-Yuzuno-Client", "desktop")
