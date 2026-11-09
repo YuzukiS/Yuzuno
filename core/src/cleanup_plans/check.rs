@@ -461,6 +461,9 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
                 }
                 Err(why) => return Checked::refused("git", format!("Git could not check it: {why}"), pre),
             };
+            if let Some((code, why)) = super::worktrees::preflight(&path, item.save_diff, &ctx.settings, &mut pre).await {
+                return Checked::refused(code, why, pre);
+            }
         }
         "cache-dir" => {
             if !meta.is_dir() {

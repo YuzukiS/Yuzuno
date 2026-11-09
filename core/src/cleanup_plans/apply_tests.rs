@@ -219,8 +219,8 @@ async fn at_apply_what_changed_is_in_use_or_cannot_be_checked_stays() {
     assert_eq!(refused(&states, "changed"), "changed");
     assert_eq!(refused(&states, "busy"), "inUse");
     assert_eq!(refused(&states, "named"), "inUse");
-    assert_eq!(refused(&states, "tree"), "unsupported", "this Core removes no worktree");
-    assert!(changed.exists() && busy.exists() && named.exists() && tree.exists());
+    assert_eq!(states["tree"].0, "removed", "a clean worktree goes once its checks pass (②)");
+    assert!(changed.exists() && busy.exists() && named.exists() && !tree.exists());
     // Where the processes cannot be read, nothing goes.
     let other = old_entry(&lab, "other");
     let plan = submit(&lab, "unchecked", vec![group("d", "delete")], vec![item("other", "d", "entry", &other)]).await;
@@ -282,3 +282,6 @@ async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
         "SELECT COUNT(*) FROM collaboration_messages WHERE recipient_id='ex' AND json_extract(data,'$.metadata.kind')='cleanup'", [], |r| r.get(0)).unwrap();
     assert_eq!(mails, 1);
 }
+
+#[path = "worktree_tests.rs"]
+mod worktree_tests;

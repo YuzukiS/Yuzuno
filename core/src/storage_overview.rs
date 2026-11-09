@@ -33,6 +33,7 @@ const KNOWN: &[(&str, &str)] = &[
     (crate::routing_keys::DIR, "routingKeys"),
     (workspace_backup::online::JOURNAL, "backupOperations"),
     (workspace_backup::schedule::FILE, "backupSchedule"),
+    ("cleanup-snapshots", "cleanupSnapshots"),
 ];
 /// The one-off database copy record_rows makes before converting old Agents
 /// (`record_rows::backup_path`): `workspace.before-record-rows-<UTC>[-n].sqlite`.
