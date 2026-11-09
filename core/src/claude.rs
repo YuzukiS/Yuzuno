@@ -3383,6 +3383,8 @@ pub(crate) fn deliver_message(d: &mut AgentDetail, root: &std::path::Path, clien
             "accepted" => {
                 item.as_object_mut().map(|item| item.remove("_yuzunoDelivery"));
             }
+            // Never over a confirmation: read stays read.
+            "unconfirmed" if item.get("_yuzunoDelivery").is_none() => {}
             "unconfirmed" => item["_yuzunoDelivery"] = "unknown".into(),
             _ => item["_yuzunoDelivery"] = "queued".into(),
         }
@@ -3394,6 +3396,7 @@ pub(crate) fn deliver_message(d: &mut AgentDetail, root: &std::path::Path, clien
                 receipt.status = "accepted".into();
                 receipt.error = None;
             }
+            "unconfirmed" if receipt.status == "accepted" => {}
             "unconfirmed" => {
                 receipt.status = "unknown".into();
                 receipt.error = Some("这一轮结束时 Claude Code 没有确认读到这条消息；不会重发".into());
@@ -5831,6 +5834,11 @@ mod tests {
         ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"accepted","turnId":"follow-1"})).await;
         let d = ws.store.detail("a").unwrap();
         assert!(shown(&d, "follow-1").unwrap().get("_yuzunoDelivery").is_none(), "read");
+        assert_eq!(receipt(&d).status, "accepted");
+        // A late or repeated word never undoes a confirmation.
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"unconfirmed","turnId":"follow-1"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert!(shown(&d, "follow-1").unwrap().get("_yuzunoDelivery").is_none(), "still read");
         assert_eq!(receipt(&d).status, "accepted");
         assert_eq!(seen.lock().unwrap().len(), 1, "sent once, never again");
     }
