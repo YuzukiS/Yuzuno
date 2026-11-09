@@ -423,7 +423,10 @@ fn a_finding_a_new_merge_base_answers_is_settled_only_by_base_paths_this_round_r
     }
     // Not read whole at its new object: a target's complete diff isn't its
     // whole content at the new merge base (R1 P3).
-    stays(&|r: &mut Value| r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"c.rs","status":"M","fromBlob":"b".repeat(40),"toBlob":"c".repeat(40)})),
+    stays(&|r: &mut Value| {
+            r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"c.rs","status":"M","fromBlob":"b".repeat(40),"toBlob":"c".repeat(40)}));
+            r["incremental"]["baseChanges"]["total"] = json!(4);
+        },
         json!([by_base(0, json!(["c.rs"]))]), "a base path wasn't read completely by this round at the new merge base");
     // Not read whole at its new object.
     stays(&|r: &mut Value| { r["contextReads"].as_array_mut().unwrap().pop(); }, json!([by_base(0, json!(["w.rs"]))]), "a base path wasn't read completely by this round at the new merge base");

@@ -257,8 +257,13 @@ pub(super) fn schema(findings: usize, base: bool) -> Value {
 struct Base<'a> {
     /// The merge base differs from the earlier round's.
     changed: bool,
+    /// The round is one `fixed_by_base` was offered to (base_offered).
+    offered: bool,
     /// What Core read of the change, when it could.
     paths: Option<&'a [Value]>,
+    /// That list is every path the new merge base changed: not cut short at
+    /// MAX_BASE_CHANGES, and without a path it couldn't name.
+    whole: bool,
     targets: Vec<&'a str>,
     reads: &'a [Value],
 }
@@ -288,16 +293,24 @@ fn read_whole(reads: &[Value], path: &str, blob: &str) -> bool {
     next > total
 }
 
-/// `fixed_by_base`: the merge base changed and Core read what it changed;
-/// the finding's own path didn't change there (else the code it is about
-/// may be in the base now) and is a target this round read completely; and
-/// each base path is one the new merge base added or changed, other than
-/// that path, which this round read whole at its new object.
+/// `fixed_by_base`, in a round it was offered to: the merge base changed and
+/// Core read every path it changed; the finding's own path didn't change
+/// there (else the code it is about may be in the base now) and is a target
+/// this round read completely; and each base path is one the new merge base
+/// added or changed, other than that path, which this round read whole at
+/// its new object with source_read.
 fn settle_by_base(answer: &Value, finding: &Value, base: &Base, read_here: &dyn Fn(&str) -> bool) -> Result<Value, &'static str> {
     if !base.changed {
         return Err("the merge base didn't change since the earlier round");
     }
+    if !base.offered {
+        return Err("this round wasn't offered fixed_by_base");
+    }
     let changes = base.paths.ok_or("Core couldn't read what the new merge base changed")?;
+    // A list cut short can't show that the finding's own path is not in it.
+    if !base.whole {
+        return Err("the new merge base changed more paths than Core lists, so it can't show the finding's own path didn't change there");
+    }
     let entry = |path: &str| changes.iter().find(|c| c["path"] == path);
     let own = finding["path"].as_str().unwrap_or_default();
     if entry(own).is_some() {
@@ -317,8 +330,8 @@ fn settle_by_base(answer: &Value, finding: &Value, base: &Base, read_here: &dyn 
         let Some(change) = entry(path).filter(|c| c["toBlob"].is_string() && path != own) else {
             return Err("a base path isn't one the new merge base added or changed");
         };
-        let target_read = base.targets.contains(&path) && read_here(path);
-        if !target_read && !read_whole(base.reads, path, change["toBlob"].as_str().unwrap_or_default()) {
+        // A target's complete diff isn't its whole content at the new base.
+        if !read_whole(base.reads, path, change["toBlob"].as_str().unwrap_or_default()) {
             return Err("a base path wasn't read completely by this round at the new merge base");
         }
         used.push(json!({"path":path,"fromBlob":change["fromBlob"],"toBlob":change["toBlob"]}));
@@ -371,9 +384,12 @@ pub(super) fn conclude(run: &mut Value, answers: &Value) {
         covered.as_array().into_iter().flatten()
             .any(|c| c["path"] == path && (c["byReview"].is_null() || c["byReview"] == id))
     };
+    let listed = (i["baseChanges"]["state"] == "read").then(|| i["baseChanges"]["paths"].as_array().map(Vec::as_slice)).flatten();
     let base = Base {
         changed: i["sameMergeBase"] == false,
-        paths: (i["baseChanges"]["state"] == "read").then(|| i["baseChanges"]["paths"].as_array().map(Vec::as_slice)).flatten(),
+        offered: base_offered(run),
+        paths: listed,
+        whole: listed.is_some_and(|paths| i["baseChanges"]["truncated"] == false && i["baseChanges"]["total"].as_u64() == Some(paths.len() as u64)),
         targets: i["targets"].as_array().into_iter().flatten().filter_map(|t| t["path"].as_str()).collect(),
         reads: run["contextReads"].as_array().map(Vec::as_slice).unwrap_or_default(),
     };
