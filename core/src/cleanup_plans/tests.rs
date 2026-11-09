@@ -377,6 +377,30 @@ async fn cache_folders_go_by_rule_and_git_must_ignore_them_inside_the_project() 
 }
 
 #[tokio::test]
+async fn a_project_that_is_a_folder_of_a_larger_repository_has_its_cache_folders_checked_from_the_repository_s_top() {
+    let lab = lab();
+    let app = lab.project.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("Cargo.toml"), "[package]\n").unwrap();
+    git(&lab.project, &["add", "app/Cargo.toml"]);
+    git(&lab.project, &["commit", "-q", "-m", "app"]);
+    cargo_target(&app.join("target"), &["debug"]);
+    let loose = app.join("cachey");
+    std::fs::create_dir_all(&loose).unwrap();
+    std::fs::write(loose.join("CACHEDIR.TAG"), TAG_PYTEST).unwrap();
+    lab.ws.store.db.write().unwrap().execute("UPDATE projects SET data=json_set(data,'$.defaultDirs.local',?1) WHERE json_extract(data,'$.name')='Demo'",
+        [app.display().to_string()]).unwrap();
+    let plan = submit(&lab, "mono", vec![group("r", "rebuildable")],
+        vec![item("target", "r", "cache-dir", &app.join("target")), item("loose", "r", "cache-dir", &loose)]).await;
+    let states = item_states(&lab, &plan).await;
+    pending(&states, "target");
+    assert_eq!(refused(&states, "loose"), "notIgnored");
+    // The Project's folder itself stays fixed.
+    let plan = submit(&lab, "mono-self", vec![group("d", "delete")], vec![item("app", "d", "worktree", &app)]).await;
+    assert_eq!(refused(&item_states(&lab, &plan).await, "app"), "forbidden");
+}
+
+#[tokio::test]
 async fn fresh_writes_and_the_evidence_window_keep_items_and_snapshots_have_a_limit() {
     let lab = lab();
     let job = lab.scratch.join("job-2");

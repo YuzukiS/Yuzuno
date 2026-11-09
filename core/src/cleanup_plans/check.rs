@@ -98,6 +98,9 @@ pub(crate) struct Context {
     pub env: HostEnv,
     pub data: PathBuf,
     pub project: PathBuf,
+    /// The Git working tree the Project's folder is in: the folder itself, or
+    /// its repository's top when the Project is a folder of a larger one.
+    pub top: PathBuf,
     pub common: String,
     pub others: Vec<PathBuf>,
     pub protected: Vec<PathBuf>,
@@ -115,6 +118,10 @@ pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &P
         .map_err(|e| anyhow::anyhow!("project_folder_missing: its task's Project folder {project} cannot be read on this host: {e}"))?;
     let common = match git(&project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await? {
         Ok(text) => text.trim().to_owned(),
+        Err(why) => bail!("project_not_git: its task's Project folder is not a Git checkout: {why}"),
+    };
+    let top = match git(&project, &["rev-parse", "--show-toplevel"]).await? {
+        Ok(text) => real(Path::new(text.trim())),
         Err(why) => bail!("project_not_git: its task's Project folder is not a Git checkout: {why}"),
     };
     let worktrees = match git_limited(&project, &["worktree", "list", "--porcelain"], LIST_BYTES).await? {
@@ -139,6 +146,7 @@ pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &P
         protected: canonical(&settings.protected_paths),
         scratch: canonical(&settings.scratch_roots).into_iter().filter(|p| is_dir(p)).collect(),
         project,
+        top,
         common,
         worktrees,
         upstream,
@@ -350,13 +358,13 @@ fn mib(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64)
 }
 
-/// The Git working tree a cache folder is in, when it is this Project's
-/// folder or one of its registered worktrees.
+/// The Git working tree a cache folder is in, when it is inside this
+/// Project's folder or one of its registered worktrees.
 fn tree_of<'a>(ctx: &'a Context, path: &Path) -> Option<&'a Path> {
     let worktree = ctx.worktrees.iter().filter(|w| !w.main && inside(path, &w.path)).max_by_key(|w| w.path.as_os_str().len());
     match worktree {
         Some(w) => Some(&w.path),
-        None if inside(path, &ctx.project) => Some(&ctx.project),
+        None if inside(path, &ctx.project) => Some(&ctx.top),
         None => None,
     }
 }

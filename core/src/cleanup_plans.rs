@@ -320,7 +320,8 @@ fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str) -> Res
     ensure!(!applying, "plan_applying: a plan of this task is being applied; register the next one when it has finished");
     let project: Option<String> = db.query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [&task], |r| r.get(0)).optional()?;
     let project = project.context("no_project: the task is in no Project, so no folder of it can be cleaned")?;
-    let projects = store.projects()?;
+    // Through the connection held: without WAL a second read would ask for the writer again (db.rs).
+    let projects = crate::projects::all(&db)?;
     let project_dir = projects.iter().find(|p| p.id == project).and_then(|p| p.default_dirs.get("local").cloned());
     let others = projects.iter().filter(|p| p.id != project).filter_map(|p| p.default_dirs.get("local").cloned()).collect();
     let reference = json!({"jobId": input.inventory.job_id, "attempt": input.inventory.attempt, "path": input.inventory.path,

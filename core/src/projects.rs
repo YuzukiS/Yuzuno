@@ -77,7 +77,7 @@ fn load(db: &Connection, id: &str) -> Result<Project> {
     read(&data, key)
 }
 
-fn all(db: &Connection) -> Result<Vec<Project>> {
+pub(crate) fn all(db: &Connection) -> Result<Vec<Project>> {
     let mut query = db.prepare("SELECT data, key FROM projects ORDER BY rowid")?;
     let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
     rows.map(|r| {
