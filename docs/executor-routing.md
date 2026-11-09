@@ -416,7 +416,7 @@ is chosen. The other candidates are marked `notTried`.
 
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
-- **Of a harness it can be given:** at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. An executor something of which already ran is given its own harness only (`otherHarness`).
+- **Of a harness it can be given:** at dispatch (YN-70) and at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. At dispatch `machine` is null when the dispatch and its template name none (this Core host) or `auto`. An executor something of which already ran is given its own harness only (`otherHarness`).
 - **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Serves the tier:** with a [tier](#tiers-yn-70), a candidate whose `tiers` don't include it is `skipped`, with `tierNotServed` and `params: { tier }`.
@@ -535,8 +535,8 @@ dispatch is routed:
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
-  harness of the first candidate that could run there, keeps its level and
-  serves its tier, a stand-in, and stays in the queue while executors after it start. At each
+  harness of the first candidate that could run there (of a harness its
+  machine runs), keeps its level and serves its tier, a stand-in, and stays in the queue while executors after it start. At each
   slot pass routing is read again, among every candidate it could be given,
   whatever its harness (YN-66). The first that holds gives it its harness,
   model, effort, permission and account or key, and it starts in turn:

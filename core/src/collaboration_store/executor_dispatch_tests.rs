@@ -1078,4 +1078,43 @@ mod routing {
             ("codex", Some("full"), None), "the built-in default for new Agents, with the level");
         assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
     }
+
+    /// YN-70, from YN-66: at dispatch, a candidate of a harness its machine can't
+    /// run (Codex on a contained machine) is passed over, with `harnessUnavailable`,
+    /// rather than chosen and the dispatch refused; nor does it stand in for one
+    /// that waits.
+    #[test]
+    fn a_dispatch_passes_over_a_harness_its_machine_cant_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        machine(&store, "boxed", "Boxed", true);
+        let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+            ("boxed".into(), "/srv/boxed/project".into())])).unwrap().id;
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer"}]));
+        let codex = json!({"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "conditions": []});
+        let claude = json!({"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"}, "conditions": []});
+        store.save_routing_policy(0, json!({"enabled": true, "whenNone": "wait", "candidates": [codex, claude]})).unwrap().unwrap();
+        let on = |title: &str, request: &str| {
+            let mut input = dispatch(&task(&store, title, Some(&p), None), request);
+            input["executor"]["machineId"] = json!("boxed");
+            input
+        };
+        let plan = routed(&store, on("Review", "boxed"), false);
+        assert_eq!((plan.machine.as_str(), plan.template.harness(), plan.template.model.as_deref()), ("boxed", "claude", Some("opus")));
+        let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
+        let first = &route["candidates"][0];
+        assert_eq!((first["state"].clone(), first["reasons"][0]["code"].clone(), first["reasons"][0]["params"].clone()),
+            (json!("skipped"), json!("harnessUnavailable"), json!({"harness": "codex", "machine": "boxed"})), "{route}");
+        // Here Codex is chosen, as before.
+        let here = routed(&store, dispatch(&task(&store, "Here", Some(&p), None), "here"), false);
+        assert_eq!(here.template.harness(), "codex");
+
+        // Claude Code can't be chosen now (its quota is unknown, and skips): Codex doesn't stand in on the contained machine.
+        let mut waiting = store.routing_policy().unwrap();
+        waiting.policy["candidates"][1]["conditions"] = json!([{"kind": "quota", "weekLeftPct": 30}]);
+        store.save_routing_policy(waiting.version, waiting.policy).unwrap().unwrap();
+        let waits = routed(&store, on("Wait", "wait"), false);
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((waits.template.harness(), waits.machine.as_str(), route["waiting"].clone()), ("claude", "boxed", json!(true)), "{route}");
+    }
 }

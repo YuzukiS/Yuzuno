@@ -85,7 +85,12 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     // `auto` or unset chooses its machine after routing: any candidate may run.
     let machine = machine.filter(|m| *m != super::super::collaboration_store::executor_choice::AUTO);
     let assume = Assume::default();
+    // Harnesses its machine can't run (OpenCode while it is off here, Codex on a contained
+    // machine) are passed over, as at a waiting executor's start, rather than chosen and
+    // then refused with the whole dispatch (YN-70, from YN-66). Unset is this Core host.
+    let unavailable = unavailable(tx, machine.unwrap_or("local"))?;
     let mut inputs = gathered.inputs(Utc::now(), machine, &exclude, None, level, &assume);
+    inputs.unavailable = &unavailable;
     (inputs.tier, inputs.tier_source) = (tier.map(|(tier, _)| tier), tier.map(|(_, source)| source));
     let route = evaluate(stored.version, &stored.policy, "dispatch", &inputs);
     let mut record = route.record;
@@ -102,6 +107,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
         .find(|c| c["enabled"] == true && !exclude.iter().any(|e| c["id"] == e.as_str())
             && (!host_only(c) || machine.is_none_or(|m| m == "local"))
             && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default())
+            && !unavailable.contains(&c["harness"].as_str().unwrap_or_default())
             && serves(c, tier.map(|(tier, _)| tier)));
     let Some(first) = first else {
         return Ok(None);
