@@ -251,7 +251,7 @@ test("YN-56: a template that follows routing has a level on every tool; a fixed 
   assert.match(section(), /Fixed: always Claude Code on this host's login, whatever routing says\./);
   assert.match(section(), /Claude Code doesn't keep this level: choose another\./);
   assert.equal(field(page, "Permissions").getAttribute("aria-invalid"), "true");
-  assert.equal(field(page, "Permissions").querySelector('option[value="full"]').textContent, "Full access (Claude Code doesn't keep it)");
+  assert.equal(field(page, "Permissions").querySelector('option[value="full"]').textContent, "Full access (not kept)");
   assert.equal(button(page, "Save templates").disabled, true, "a level its tool doesn't keep is not saved");
   await type(page, "Runs with", "codex");
   assert.equal(button(page, "Save templates").disabled, false, "Codex keeps it");
@@ -460,7 +460,7 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, keeping 
       // OpenCode keeps no level here: only the defaults, its own configuration, can be chosen.
       assert.deepEqual([...field(page, "Permissions").options].map((o) => [o.value, o.disabled]),
         [["", false], ["ask", true], ["auto", true], ["full", true]]);
-      assert.match(field(page, "Permissions").options[1].textContent, /\(OpenCode doesn’t keep it\)|\(OpenCode doesn't keep it\)/);
+      assert.equal(field(page, "Permissions").options[1].textContent, "Ask you first (not kept)");
       assert.match(page.document.querySelector(".executor-templates-settings").textContent, /As OpenCode names it, provider\/model, such as deepseek\/deepseek-flash/);
     }
     assert.deepEqual(page.errors, []);

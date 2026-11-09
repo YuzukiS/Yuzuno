@@ -78,7 +78,7 @@ const text = strings({
   notKept: "doesn't keep it",
   levelSkips: (names: string) => `Routing passes over ${names} for this template.`,
   levelNotKept: (name: string) => `${name} doesn't keep this level: choose another.`,
-  levelNotKeptOption: (name: string) => `${name} doesn't keep it`,
+  levelNotKeptOption: "not kept",
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
   opencodeOwnModel: "Its own configuration’s model",
   opencodeOption: "OpenCode (Experimental)",
@@ -183,7 +183,7 @@ const text = strings({
   notKept: "不支持",
   levelSkips: (names) => `路由不会把这个模板派给 ${names}。`,
   levelNotKept: (name) => `${name} 不支持这个等级：请换一个。`,
-  levelNotKeptOption: (name) => `${name} 不支持`,
+  levelNotKeptOption: "不支持",
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
   opencodeOwnModel: "其自身配置中的模型",
   opencodeOption: "OpenCode（实验性）",
@@ -820,7 +820,7 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
           const kept = !d.harness || keepsLevel(levels, l.level, d.harness);
           return (
             <option key={l.level} value={l.level} disabled={!kept && d.level !== l.level}>
-              {levelName(levels, l.level, language)}{kept || !d.harness ? "" : ` (${t.levelNotKeptOption(harnessName(d.harness))})`}
+              {levelName(levels, l.level, language)}{kept || !d.harness ? "" : language === "zh-Hans" ? `（${t.levelNotKeptOption}）` : ` (${t.levelNotKeptOption})`}
             </option>
           );
         })}

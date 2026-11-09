@@ -146,7 +146,8 @@ try {
   assert.equal(await bar.getByRole("button", { name: "Save", exact: true }).isDisabled(), true, "a level its tool doesn't keep is not saved");
   await box.locator('select[aria-label="Permissions"]').selectOption("auto");
   await box.locator('select[aria-label="Runs with"]').selectOption("");
-  await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 });
+  // As saved again: nothing left to save, so the bar says nothing is unsaved.
+  await page.waitForFunction(() => !/not saved/.test(document.querySelector(".settings-savebar:not([hidden])")?.textContent ?? ""), null, { timeout: 10_000 });
   check("fixed to Claude Code, Full access needs a fix and isn't saved; back to following routing, nothing changed");
 
   // ---- In Chinese after a language change elsewhere; unsaved text kept.
