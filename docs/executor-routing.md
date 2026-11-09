@@ -18,7 +18,8 @@ version; a later slice adds to it.
 | S3b3 | A real DeepSeek executor through routing: a lab check | Done |
 | S4 | The Settings page (YN-49) | Done |
 | YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
-| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | This version |
+| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
+| YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -426,13 +427,29 @@ to each harness's own setting, so it holds whichever harness routing chooses.
 
 | Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
 | --- | --- | --- | --- | --- |
-| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Doesn't keep it |
-| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Doesn't keep it |
-| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Doesn't keep it |
+| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
+| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
 
-No level is each harness's own default for new Agents, kept everywhere.
-OpenCode keeps no level: Core adds no permission rule of its own to it, so
-only its own configuration applies.
+No level is each harness's own default for new Agents, kept everywhere. On
+OpenCode that is its own configuration: its default agent allows everything
+but reading a `.env` file.
+
+OpenCode keeps a level as rules of its own. Each start of an OpenCode
+executor that has a level gives that executor's `opencode serve`, and no
+other process, the level's rules in `OPENCODE_CONFIG_CONTENT`. The level is
+kept in its own table and read again at every start. OpenCode 2.2.5 appends
+those rules to every agent's rules, after its defaults and the user's and the
+project's configuration, and decides by the last rule that matches. So they
+hold over an `opencode.json` that allows more.
+- **The start checks it.** Core reads every agent's rules back
+  (`GET /api/agent`). If an agent doesn't decide as the level does for an
+  edit, a command, a fetch, a folder outside its own or a `.env` file, the
+  start is refused. A configuration OpenCode reads after Yuzuno's, such as a
+  managed one, is what can make them differ. The refused start is a definite
+  failure, so a routed executor's rebuild tries the next candidate.
+- **No sandbox confines OpenCode's commands, at any level.** Under Auto-approve
+  and Full access, OpenCode's own read-only `plan` agent may edit too.
 
 A template's level goes with each dispatch from it ([Executor
 templates](executor-model.md#executor-templates)): routing passes over a

@@ -125,6 +125,9 @@ impl Plan {
         // A general executor (YN-2) has no template: its role names none.
         let template = Some(self.template.id.clone()).filter(|id| !id.is_empty());
         let (project, task) = (self.project_id.clone(), self.task_id.clone());
+        // An OpenCode executor's permission level, which each start of its server reads
+        // (permission_levels.rs, YN-56 S3); another harness takes it as its own permission.
+        let level = self.template.permission_level.clone().filter(|_| self.template.harness() == "opencode");
         Box::new(move |db| {
             let at = now();
             let moved = db.execute(
@@ -138,6 +141,10 @@ impl Plan {
                  VALUES(?1,'executor',?2,?3,?4,?5,?6,?6)",
                 params![agent, project, template, task, actor, at],
             )?;
+            if let Some(level) = &level {
+                db.execute("INSERT INTO agent_permission_levels(agent_id,level,updated_at) VALUES(?1,?2,?3)
+                    ON CONFLICT(agent_id) DO UPDATE SET level=excluded.level, updated_at=excluded.updated_at", params![agent, level, at])?;
+            }
             Ok(())
         })
     }

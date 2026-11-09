@@ -182,13 +182,14 @@ fn a_candidate_whose_harness_does_not_keep_the_permission_level_is_skipped_with_
     // 12:00 UTC on a Monday: off-peak, so DeepSeek would hold; account 2 holds the pool's quota.
     let at = utc(9, 12, 0);
     let full = f.run_level(&policy(), at, None, Some("full"));
-    assert_eq!(states(&full), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "skipped".into()), ("c-codex".into(), "chosen".into())]);
-    assert_eq!((codes(&full, "c-pool"), codes(&full, "c-deepseek")), (vec!["levelNotKept".to_owned()], vec!["levelNotKept".to_owned()]));
+    assert_eq!(states(&full), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "chosen".into()), ("c-codex".into(), "notTried".into())],
+        "OpenCode keeps Full access as its own rules (S3)");
+    assert_eq!(codes(&full, "c-pool"), vec!["levelNotKept".to_owned()]);
     let why = &full.record["candidates"][0]["reasons"][0];
     assert_eq!((why["params"].clone(), why["messageZh"].clone()),
         (json!({"level": "full", "harness": "claude"}), json!("它的权限等级是「完全放开」，Claude Code 不支持这个等级")));
     assert_eq!(full.record["level"], "full");
-    assert!(full.profile.is_none() && full.record.get("account").is_none(), "Codex on the host's login");
+    assert_eq!(full.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
     // Claude Code keeps auto: the pool is chosen as it is with no level.
     let auto = f.run_level(&policy(), at, None, Some("auto"));
     assert_eq!((auto.record["chosen"].clone(), auto.record["level"].clone()), (json!("c-pool"), json!("auto")));
@@ -196,8 +197,11 @@ fn a_candidate_whose_harness_does_not_keep_the_permission_level_is_skipped_with_
     let none = f.run_level(&policy(), at, None, None);
     assert_eq!(none.record["chosen"], "c-pool");
     assert!(none.record.get("level").is_none());
-    // At a first start, among one harness: OpenCode keeps no level yet, so none can be chosen.
+    // At a first start, among one harness: OpenCode keeps each level.
     let start = f.run_level(&policy(), at, Some("opencode"), Some("ask"));
-    assert_eq!(start.record["chosen"], Value::Null);
-    assert_eq!((codes(&start, "c-pool"), codes(&start, "c-deepseek")), (vec!["otherHarness".to_owned()], vec!["levelNotKept".to_owned()]));
+    assert_eq!(start.record["chosen"], "c-deepseek");
+    assert_eq!(codes(&start, "c-pool"), vec!["otherHarness".to_owned()]);
+    // Full access at a first start among Claude Code's candidates: none keeps it.
+    let claude = f.run_level(&policy(), at, Some("claude"), Some("full"));
+    assert_eq!((claude.record["chosen"].clone(), codes(&claude, "c-pool")), (Value::Null, vec!["levelNotKept".to_owned()]));
 }

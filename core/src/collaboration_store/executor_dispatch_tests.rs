@@ -978,21 +978,29 @@ mod routing {
         assert_eq!((auto.template.harness(), auto.template.model.as_deref(), auto.template.permission_mode.as_deref()),
             ("claude", Some("opus"), Some("auto")), "Claude Code keeps Auto-approve as its Auto mode");
         assert_eq!(route_of(&store, &auto.dispatch.agent_id).unwrap()["level"], "auto");
+        create_as_planned(&store, &auto);
+        assert_eq!(store.permission_level(&auto.dispatch.agent_id).unwrap(), None, "Claude Code takes the level as its own mode");
+        // Full access: Claude Code doesn't keep it; OpenCode does, as its own rules (S3).
         let full = from("full", "full");
-        assert_eq!((full.template.harness(), full.template.permission_preset.as_deref()), ("codex", Some("full")));
+        assert_eq!((full.template.harness(), full.template.permission_preset.as_deref(), full.template.permission_mode.as_deref()),
+            ("opencode", None, None));
+        assert_eq!(full.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
         let route = route_of(&store, &full.dispatch.agent_id).unwrap();
         let states: Vec<(Value, Value)> = route["candidates"].as_array().unwrap().iter()
             .map(|c| (c["state"].clone(), c["reasons"][0]["code"].clone())).collect();
-        assert_eq!(states, [(json!("skipped"), json!("levelNotKept")), (json!("skipped"), json!("levelNotKept")), (json!("chosen"), Value::Null)]);
+        assert_eq!(states, [(json!("skipped"), json!("levelNotKept")), (json!("chosen"), Value::Null), (json!("notTried"), Value::Null)]);
+        create_as_planned(&store, &full);
+        assert_eq!(store.permission_level(&full.dispatch.agent_id).unwrap().as_deref(), Some("full"),
+            "an OpenCode executor's level is kept with it, in the dispatch's transaction");
 
-        // Only OpenCode left: it keeps no level yet, so the dispatch is not routed, and doesn't wait.
+        // No candidate keeps the level (Claude Code alone, for Full access): the dispatch is not routed.
         let mut only = store.routing_policy().unwrap();
-        only.policy["candidates"][0]["enabled"] = json!(false);
+        only.policy["candidates"][1]["enabled"] = json!(false);
         only.policy["candidates"][2]["enabled"] = json!(false);
         store.save_routing_policy(only.version, only.policy).unwrap().unwrap();
-        let unrouted = from("reviewer", "unrouted");
+        let unrouted = from("full", "unrouted");
         assert_eq!((unrouted.template.harness(), unrouted.template.permission_preset.as_deref(), unrouted.profile.clone()),
-            ("codex", Some("auto"), None), "the built-in default for new Agents, with the level");
+            ("codex", Some("full"), None), "the built-in default for new Agents, with the level");
         assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
     }
 }

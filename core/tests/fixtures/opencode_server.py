@@ -1004,6 +1004,26 @@ GIVEN = {name: os.environ.get(name) for name in ('XDG_DATA_HOME', 'XDG_STATE_HOM
                                                   'OPENCODE_DISABLE_AUTOUPDATE', 'OPENCODE_DISABLE_MODELS_FETCH')}
 # A routing key Core gives one Agent's server (YN-34 S1c), recorded apart so `env` stays as it was.
 ROUTING_KEYS = {name: os.environ.get(name) for name in ('DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')}
+# An executor's permission level as OpenCode's rules (YN-56 S3), recorded apart too.
+CONFIG_CONTENT = os.environ.get('OPENCODE_CONFIG_CONTENT')
+
+
+def config_rules():
+    """As 2.2.5 lists an agent's rules when OPENCODE_CONFIG_CONTENT gives a top-level `permission`
+    (lab Jobs 07d33af5, ae58aecc): its defaults, the configuration's rules in their order, then its
+    browser denies. Switch `permission-after`: JSON rules a later configuration adds (a managed one)."""
+    if not CONFIG_CONTENT:
+        return []
+    rules = [{'action': '*', 'resource': '*', 'effect': 'allow'}, {'action': 'read', 'resource': '*.env', 'effect': 'ask'},
+             {'action': 'read', 'resource': '*.env.*', 'effect': 'ask'}, {'action': 'read', 'resource': '*.env.example', 'effect': 'allow'}]
+    permission = json.loads(CONFIG_CONTENT).get('permission', {})
+    for action, rule in ({'*': permission} if isinstance(permission, str) else permission).items():
+        if isinstance(rule, str):
+            rules.append({'action': action, 'resource': '*', 'effect': rule})
+        else:
+            rules.extend({'action': action, 'resource': pattern, 'effect': effect} for pattern, effect in rule.items())
+    rules.extend(json.loads(switch('permission-after') or '[]'))
+    return rules + [{'action': 'browser', 'resource': '*', 'effect': 'deny'}, {'action': 'skill', 'resource': 'browser', 'effect': 'deny'}]
 # OpenCode's own folders (`core/src/global.ts`: xdg-basedir and `os.homedir()`), from the environment it runs with.
 HOME = os.environ['HOME'] if 'HOME' in os.environ else pwd.getpwuid(os.getuid()).pw_dir
 
@@ -1682,7 +1702,7 @@ class Handler(BaseHTTPRequestHandler):
             # `plan` primary, `general` a sub-agent, `title` hidden; mode `agents`: another list.
             asked = parse_qs(url.query).get('location[directory]', [None])[0]
             listed = modes['agents'] if modes.get('agents') is not None else [
-                {'id': name, 'name': name, 'mode': mode, 'hidden': hidden, 'permissions': [],
+                {'id': name, 'name': name, 'mode': mode, 'hidden': hidden, 'permissions': config_rules(),
                  'request': {'settings': {}, 'headers': {}, 'body': {}}}
                 for name, mode, hidden in (('build', 'primary', False), ('plan', 'primary', False), ('general', 'subagent', False),
                                            ('title', 'primary', True))]
@@ -2552,7 +2572,7 @@ def main():
     child = subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     seen = {'argv': argv, 'cwd': os.getcwd(), 'pid': os.getpid(), 'pgid': os.getpgid(0), 'child': child.pid,
-            'database': os.environ.get('OPENCODE_DB'), 'env': GIVEN, 'routingKeys': ROUTING_KEYS, 'passwordFrom': PASSWORD_FROM, 'passwordLength': len(PASSWORD),
+            'database': os.environ.get('OPENCODE_DB'), 'env': GIVEN, 'routingKeys': ROUTING_KEYS, 'configContent': CONFIG_CONTENT, 'passwordFrom': PASSWORD_FROM, 'passwordLength': len(PASSWORD),
             'passwordInArgv': bool(PASSWORD) and any(PASSWORD in arg for arg in argv)}
     if switch('stubborn'):
         # As a server, or a tool it runs, that does not stop on SIGTERM.

@@ -127,6 +127,10 @@ pub struct Launch {
     /// set on its process only, never in `environment`, which other processes
     /// started for the Agent read.
     pub extra: Vec<(String, crate::routing_keys::Secret)>,
+    /// OPENCODE_CONFIG_CONTENT for this server alone: an executor's permission
+    /// level as OpenCode's rules (permission_levels.rs, YN-56 S3). None leaves
+    /// Core's own environment as it is.
+    pub config: Option<String>,
 }
 
 impl Launch {
@@ -134,7 +138,8 @@ impl Launch {
     /// `cache`, the cache Core's Agents share.
     pub fn new(program: PathBuf, directory: PathBuf, folder: &Path, cache: PathBuf) -> Self {
         let own = folder.join("xdg");
-        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new() }
+        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new(),
+            config: None }
     }
 
     /// What OpenCode gets besides Core's own environment: the database and
@@ -559,6 +564,7 @@ impl Server {
             .env("OPENCODE_PASSWORD", &password)
             .envs(launch.environment())
             .envs(launch.extra.iter().map(|(name, value)| (name.as_str(), value.expose())))
+            .envs(launch.config.iter().map(|config| ("OPENCODE_CONFIG_CONTENT", config.as_str())))
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -738,6 +744,12 @@ impl Server {
         let Some(pid) = self.group.0.and_then(|pid| Pid::from_raw(pid as i32)) else { return true };
         let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
         !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
+    }
+
+    /// The agents OpenCode holds, each with the permission rules it decides by
+    /// (`GET /api/agent`'s data).
+    pub async fn agents(&self) -> Result<Value> {
+        self.data(Method::GET, "/api/agent", &[], None).await
     }
 
     /// A new session; OpenCode's record of it (its `id` names it).

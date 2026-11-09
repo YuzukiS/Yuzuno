@@ -864,7 +864,15 @@ impl Workspace {
         let mut launch = Launch::new(start, cwd.into(), &folder, cache);
         // A routing key goes to this Agent's server only (YN-34 S1c).
         launch.extra = self.opencode_launch(id).await?;
+        // So does its permission level, as OpenCode's rules (YN-56 S3).
+        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
         let server = Arc::new(Server::start(&launch).await?);
+        // Its agents must keep the level: a configuration OpenCode reads after Yuzuno's
+        // can override it. A server that doesn't is dropped, which ends it.
+        if let Some(level) = &level {
+            crate::permission_levels::opencode_check(level, &server.agents().await?)?;
+        }
         let pid = server.pid();
         // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
         let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();

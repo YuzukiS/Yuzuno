@@ -15,10 +15,20 @@
 //!   Yuzuno never starts it in a mode that skips its checks
 //!   (`claude::SELECTABLE_PERMISSION_MODES`).
 //!
-//! No level is each harness's own default for new Agents, as before. OpenCode
-//! keeps no level: Core adds no permission rule of its own to it
-//! (opencode_agent.rs), so only its own configuration applies there.
-use anyhow::{ensure, Result};
+//! No level is each harness's own default for new Agents, as before.
+//!
+//! OpenCode keeps each level as rules of its own (`opencode_config`), given to
+//! that executor's `opencode serve` alone in OPENCODE_CONFIG_CONTENT. OpenCode
+//! 2.2.5 appends a top-level `permission` from there to every agent's rules,
+//! after its defaults and the user's and the project's configuration, and
+//! decides by the last rule that matches (YN-56 S3, lab Jobs 07d33af5 and
+//! ae58aecc). Its default agent allows everything but reading `.env`. A start
+//! reads every agent's rules back and refuses one that doesn't keep the level
+//! (`opencode_check`): a configuration read after Yuzuno's, such as a managed
+//! one, can override it.
+use crate::store::Store;
+use anyhow::{bail, ensure, Result};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 /// Each level, with what it is on Codex (its permission preset) and on Claude
@@ -56,16 +66,131 @@ pub(crate) fn check(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// What `id` is on `harness`: a Codex permission preset (`agent_defaults::CODEX_PRESETS`)
-/// or a Claude Code permission mode (`agent_defaults::CLAUDE_MODES`); None when that
-/// harness doesn't keep it, or `id` is no level.
+/// What `id` is on `harness`: a Codex permission preset (`agent_defaults::CODEX_PRESETS`),
+/// a Claude Code permission mode (`agent_defaults::CLAUDE_MODES`), or for OpenCode the
+/// level itself, which its rules say (`opencode_config`); None when that harness
+/// doesn't keep it, or `id` is no level.
 pub(crate) fn native(id: &str, harness: &str) -> Option<&'static str> {
     let level = level(id)?;
     match harness {
         "codex" => level.codex,
         "claude" => level.claude,
+        "opencode" => opencode_rules(level.id).map(|_| level.id),
         _ => None,
     }
+}
+
+/// One entry of OpenCode's `permission` configuration: an action's effect, or
+/// its effect by resource pattern, in order.
+enum Rule {
+    Effect(&'static str),
+    Patterns(&'static [(&'static str, &'static str)]),
+}
+
+/// Reading a file: allowed, but `.env` files ask, as OpenCode's own default.
+const READS: &[(&str, &str)] = &[("*", "allow"), ("*.env", "ask"), ("*.env.*", "ask"), ("*.env.example", "allow")];
+static OPENCODE_ASK: [(&str, Rule); 8] = [("*", Rule::Effect("ask")), ("read", Rule::Patterns(READS)), ("grep", Rule::Effect("allow")),
+    ("glob", Rule::Effect("allow")), ("list", Rule::Effect("allow")), ("question", Rule::Effect("allow")),
+    ("todowrite", Rule::Effect("allow")), ("todoread", Rule::Effect("allow"))];
+static OPENCODE_AUTO: [(&str, Rule); 4] = [("*", Rule::Effect("allow")), ("external_directory", Rule::Effect("ask")),
+    ("doom_loop", Rule::Effect("ask")), ("read", Rule::Patterns(READS))];
+static OPENCODE_FULL: [(&str, Rule); 1] = [("*", Rule::Effect("allow"))];
+
+/// OpenCode's rules for level `id`, in order:
+/// - `ask`: everything asks but reading, searching, listing, asking the user and its to-do list;
+/// - `auto`: everything is allowed but a folder outside its own and a loop of the same failing call;
+/// - `full`: everything is allowed.
+///
+/// No sandbox confines OpenCode's commands, at any level.
+fn opencode_rules(id: &str) -> Option<&'static [(&'static str, Rule)]> {
+    match id {
+        "ask" => Some(&OPENCODE_ASK),
+        "auto" => Some(&OPENCODE_AUTO),
+        "full" => Some(&OPENCODE_FULL),
+        _ => None,
+    }
+}
+
+/// The configuration an OpenCode executor of level `id` starts with
+/// (OPENCODE_CONFIG_CONTENT), its rules in their order: OpenCode decides by
+/// the last that matches.
+pub(crate) fn opencode_config(id: &str) -> Option<String> {
+    let rules = opencode_rules(id)?;
+    let quoted = |text: &str| serde_json::to_string(text).expect("a string is JSON");
+    let entries: Vec<String> = rules.iter().map(|(action, rule)| match rule {
+        Rule::Effect(effect) => format!("{}:{}", quoted(action), quoted(effect)),
+        Rule::Patterns(patterns) => format!("{}:{{{}}}", quoted(action),
+            patterns.iter().map(|(pattern, effect)| format!("{}:{}", quoted(pattern), quoted(effect))).collect::<Vec<_>>().join(",")),
+    }).collect();
+    Some(format!("{{\"permission\":{{{}}}}}", entries.join(",")))
+}
+
+/// Level `id`'s rules as OpenCode holds them: (action, resource pattern, effect).
+fn opencode_ruleset(id: &str) -> Vec<(&'static str, &'static str, &'static str)> {
+    opencode_rules(id).into_iter().flatten().flat_map(|(action, rule)| match rule {
+        Rule::Effect(effect) => vec![(*action, "*", *effect)],
+        Rule::Patterns(patterns) => patterns.iter().map(|(pattern, effect)| (*action, *pattern, *effect)).collect(),
+    }).collect()
+}
+
+/// Whether `text` matches OpenCode's wildcard `pattern`: `*` is any run of
+/// characters, `?` any one.
+fn wildcard(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut i, mut j, mut star, mut mark) = (0, 0, None, 0);
+    while j < t.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == t[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some(i);
+            mark = j;
+            i += 1;
+        } else if let Some(at) = star {
+            i = at + 1;
+            mark += 1;
+            j = mark;
+        } else {
+            return false;
+        }
+    }
+    p[i..].iter().all(|c| *c == '*')
+}
+
+/// OpenCode's decision for `action` on `resource`: the last rule that matches,
+/// else ask.
+fn decided<'a>(rules: impl DoubleEndedIterator<Item = (&'a str, &'a str, &'a str)>, action: &str, resource: &str) -> &'a str {
+    rules.rev().find(|(a, r, _)| wildcard(a, action) && wildcard(r, resource)).map_or("ask", |(_, _, effect)| effect)
+}
+
+/// What a start checks each OpenCode agent decides as the level does.
+const PROBES: [(&str, &str); 6] = [("edit", "src/main.rs"), ("shell", "cargo test"), ("webfetch", "https://example.com/"),
+    ("external_directory", "/elsewhere/*"), ("read", "project/.env"), ("read", "project/README.md")];
+
+/// Refuses an OpenCode server whose agents (`GET /api/agent`'s data) don't
+/// keep level `id`: for each probe, each agent's own rules must decide what
+/// the level's rules alone do. A configuration OpenCode reads after Yuzuno's,
+/// such as a managed one, is what can make them differ.
+pub(crate) fn opencode_check(id: &str, agents: &Value) -> Result<()> {
+    let ours = opencode_ruleset(id);
+    ensure!(!ours.is_empty(), "OpenCode keeps no permission level {id}");
+    let agents = agents.as_array().filter(|a| !a.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("OpenCode listed no agent, so its permission level {id} can't be checked"))?;
+    for agent in agents {
+        let name = agent["id"].as_str().unwrap_or("?");
+        let Some(rules) = agent["permissions"].as_array() else {
+            bail!("OpenCode's agent {name} lists no permission rules, so its permission level {id} can't be checked");
+        };
+        let rules: Vec<(&str, &str, &str)> = rules.iter()
+            .map(|r| (r["action"].as_str().unwrap_or(""), r["resource"].as_str().unwrap_or(""), r["effect"].as_str().unwrap_or("")))
+            .collect();
+        for (action, resource) in PROBES {
+            let (got, want) = (decided(rules.iter().copied(), action, resource), decided(ours.iter().copied(), action, resource));
+            ensure!(got == want, "OpenCode's agent {name} doesn't keep the permission level {id}: for {action} on {resource} it decides {got}, \
+                the level {want}. A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it");
+        }
+    }
+    Ok(())
 }
 
 /// Whether `harness` keeps `id`. No level is kept everywhere: each harness's own default.
@@ -96,7 +221,7 @@ pub(crate) fn table() -> Value {
         "level": l.id, "label": l.label, "labelZh": l.label_zh,
         "codex": l.codex.map(|p| json!({"permissionPreset": p})),
         "claude": l.claude.map(|m| json!({"permissionMode": m})),
-        "opencode": null,
+        "opencode": opencode_config(l.id).and_then(|text| serde_json::from_str::<Value>(&text).ok()),
     })).collect()
 }
 
@@ -108,6 +233,44 @@ pub(crate) fn not_kept(id: &str, harness: &str) -> Value {
         "message": format!("Its permission level is {label}, which {name} doesn't keep"),
         "messageZh": format!("它的权限等级是「{label_zh}」，{name} 不支持这个等级"),
         "params": {"level": id, "harness": harness}})
+}
+
+/// An OpenCode executor's level, which each start of its `opencode serve`
+/// reads again: kept in its own table, as the runtime profile is
+/// (routing_launch.rs), since older Cores rewrite the Agent's record and drop
+/// what they don't know. Runs on every open, idempotent; older Cores never
+/// create or read it.
+pub(crate) fn migrate(db: &Connection) -> Result<()> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_permission_levels(
+            agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+            level TEXT NOT NULL,
+            updated_at TEXT NOT NULL);
+        DELETE FROM agent_permission_levels WHERE agent_id NOT IN (SELECT id FROM agents);",
+    )?;
+    Ok(())
+}
+
+impl Store {
+    /// Agent `agent`'s permission level, if a dispatch gave it one.
+    pub(crate) fn permission_level(&self, agent: &str) -> Result<Option<String>> {
+        Ok(self.db.read()?.query_row("SELECT level FROM agent_permission_levels WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?)
+    }
+
+    /// Sets (or with None clears) an Agent's level; it takes effect at its next start.
+    pub(crate) fn set_permission_level(&self, agent: &str, level: Option<&str>) -> Result<()> {
+        let db = self.db.write()?;
+        match level {
+            Some(level) => {
+                check(level)?;
+                db.execute("INSERT INTO agent_permission_levels(agent_id,level,updated_at) VALUES(?1,?2,?3)
+                    ON CONFLICT(agent_id) DO UPDATE SET level=excluded.level, updated_at=excluded.updated_at",
+                    params![agent, level, chrono::Utc::now().to_rfc3339()])?
+            }
+            None => db.execute("DELETE FROM agent_permission_levels WHERE agent_id=?1", [agent])?,
+        };
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -123,21 +286,20 @@ mod tests {
             check(id).unwrap();
             assert!(native(id, "codex").is_some_and(|preset| CODEX_PRESETS.contains(&preset)), "{id}");
             assert!(native(id, "claude").is_none_or(|mode| CLAUDE_MODES.contains(&mode)), "{id}");
-            assert_eq!(native(id, "opencode"), None);
+            assert_eq!(native(id, "opencode"), Some(id), "OpenCode keeps each, as its own rules");
         }
         assert_eq!(native("readonly", "codex"), None);
     }
 
     #[test]
-    fn no_level_is_kept_everywhere_and_opencode_or_an_unknown_harness_keeps_none_of_them() {
+    fn no_level_is_kept_everywhere_opencode_keeps_each_and_an_unknown_harness_none() {
         for harness in ["codex", "claude", "opencode", "later"] {
             assert!(keeps(None, harness), "{harness}");
         }
         assert!(["ask", "auto", "full"].into_iter().all(|id| keeps(Some(id), "codex")));
         assert!(keeps(Some("ask"), "claude") && keeps(Some("auto"), "claude") && !keeps(Some("full"), "claude"));
-        for harness in ["opencode", "later"] {
-            assert!(["ask", "auto", "full"].into_iter().all(|id| !keeps(Some(id), harness)), "{harness}");
-        }
+        assert!(["ask", "auto", "full"].into_iter().all(|id| keeps(Some(id), "opencode")));
+        assert!(["ask", "auto", "full"].into_iter().all(|id| !keeps(Some(id), "later")));
         assert!(!keeps(Some("readonly"), "codex"), "not a level");
         assert!(check("readonly").unwrap_err().to_string().contains("ask, auto or full"));
         assert!(check("").is_err() && check("Ask").is_err());
@@ -169,7 +331,8 @@ mod tests {
         assert_eq!(table[0]["codex"], json!({"permissionPreset": "ask"}));
         assert_eq!(table[0]["claude"], json!({"permissionMode": "default"}));
         assert_eq!((table[2]["claude"].clone(), table[2]["labelZh"].clone()), (Value::Null, json!("完全放开")));
-        assert!(table.as_array().unwrap().iter().all(|l| l["opencode"].is_null()));
+        assert_eq!(table[2]["opencode"], json!({"permission": {"*": "allow"}}));
+        assert!(table.as_array().unwrap().iter().all(|l| l["opencode"]["permission"]["*"].is_string()));
         assert_eq!(label("auto"), ("Auto-approve", "自动审批"));
     }
 
@@ -180,6 +343,67 @@ mod tests {
         assert_eq!(why["params"], json!({"level": "full", "harness": "claude"}));
         assert_eq!(why["message"], "Its permission level is Full access, which Claude Code doesn't keep");
         assert_eq!(why["messageZh"], "它的权限等级是「完全放开」，Claude Code 不支持这个等级");
-        assert_eq!(not_kept("auto", "opencode")["message"], "Its permission level is Auto-approve, which OpenCode doesn't keep");
+        assert_eq!(not_kept("auto", "later")["message"], "Its permission level is Auto-approve, which later doesn't keep");
+    }
+
+    #[test]
+    fn opencodes_rules_for_each_level_are_written_in_their_order() {
+        assert_eq!(opencode_config("ask").unwrap(), concat!(r#"{"permission":{"*":"ask","read":{"*":"allow","*.env":"ask","*.env.*":"ask","#,
+            r#""*.env.example":"allow"},"grep":"allow","glob":"allow","list":"allow","question":"allow","todowrite":"allow","todoread":"allow"}}"#));
+        assert_eq!(opencode_config("auto").unwrap(), concat!(r#"{"permission":{"*":"allow","external_directory":"ask","doom_loop":"ask","#,
+            r#""read":{"*":"allow","*.env":"ask","*.env.*":"ask","*.env.example":"allow"}}}"#));
+        assert_eq!(opencode_config("full").unwrap(), r#"{"permission":{"*":"allow"}}"#);
+        assert_eq!(opencode_config("readonly"), None);
+        for id in ["ask", "auto", "full"] {
+            serde_json::from_str::<Value>(&opencode_config(id).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn opencodes_wildcards_and_last_matching_rule() {
+        assert!(wildcard("*", "") && wildcard("*", "a/b c") && wildcard("*.env", "project/.env") && wildcard("*.env.*", "x/.env.local"));
+        assert!(!wildcard("*.env", "x/.env.local") && !wildcard("read", "reader") && wildcard("re?d", "read") && wildcard("*plan/*", "/h/.opencode/plan/a.md"));
+        let ask = opencode_ruleset("ask");
+        let on = |action: &str, resource: &str| decided(ask.iter().copied(), action, resource);
+        assert_eq!((on("edit", "src/a.rs"), on("read", "README.md"), on("read", "app/.env"), on("read", "app/.env.example"), on("grep", "*")),
+            ("ask", "allow", "ask", "allow", "allow"));
+        let auto = opencode_ruleset("auto");
+        let on = |action: &str, resource: &str| decided(auto.iter().copied(), action, resource);
+        assert_eq!((on("edit", "src/a.rs"), on("shell", "cargo test"), on("external_directory", "/elsewhere/*"), on("read", "app/.env")),
+            ("allow", "allow", "ask", "ask"));
+        assert_eq!(decided(std::iter::empty(), "edit", "x"), "ask", "no rule: OpenCode asks");
+    }
+
+    /// Agents as OpenCode 2.2.5's GET /api/agent lists them (lab Job ae58aecc, a synthetic path):
+    /// its own rules, then the configuration's, then its browser denies.
+    fn agents(level: Option<&str>, after: &[(&str, &str, &str)]) -> Value {
+        let defaults = [("*", "*", "allow"), ("read", "*.env", "ask"), ("read", "*.env.*", "ask"), ("read", "*.env.example", "allow")];
+        let own: [(&str, Vec<(&str, &str, &str)>); 3] = [
+            ("build", vec![("question", "*", "allow")]),
+            ("plan", vec![("question", "*", "allow"), ("edit", "*", "deny"), ("edit", "/synthetic/home/.opencode/plan/*", "allow")]),
+            ("title", vec![("*", "*", "deny")]),
+        ];
+        let tail = [("browser", "*", "deny"), ("skill", "browser", "deny")];
+        Value::Array(own.iter().map(|(id, rules)| {
+            let all: Vec<Value> = defaults.iter().chain(rules).copied().chain(level.map(opencode_ruleset).unwrap_or_default())
+                .chain(after.iter().copied()).chain(tail).map(|(a, r, e)| json!({"action": a, "resource": r, "effect": e})).collect();
+            json!({"id": id, "mode": "primary", "permissions": all})
+        }).collect())
+    }
+
+    #[test]
+    fn an_opencode_start_is_checked_to_keep_its_level_in_every_agent() {
+        for id in ["ask", "auto", "full"] {
+            opencode_check(id, &agents(Some(id), &[])).unwrap_or_else(|e| panic!("{id}: {e:#}"));
+        }
+        let without = opencode_check("ask", &agents(None, &[])).unwrap_err().to_string();
+        assert!(without.starts_with("OpenCode's agent build doesn't keep the permission level ask: for edit on src/main.rs it decides allow, the level ask"),
+            "{without}");
+        let overridden = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")])).unwrap_err().to_string();
+        assert!(overridden.contains("for external_directory on /elsewhere/* it decides allow, the level ask")
+            && overridden.ends_with("A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it"), "{overridden}");
+        assert!(opencode_check("ask", &json!([])).unwrap_err().to_string().contains("listed no agent"));
+        assert!(opencode_check("ask", &json!([{"id": "build"}])).unwrap_err().to_string().contains("lists no permission rules"));
+        assert!(opencode_check("readonly", &agents(Some("ask"), &[])).is_err());
     }
 }
