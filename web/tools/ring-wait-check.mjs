@@ -240,7 +240,7 @@ async function run({ width, height, theme, lang, motion = false }) {
     for (const [id, [wait, line, also]] of Object.entries(EXPECTED)) {
       await page.keyboard.press("Tab");
       await rowOf(id).locator(".agent-select").focus();
-      const tip = page.locator('.tip[role="tooltip"]');
+      const tip = page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])');
       await tip.waitFor({ timeout: 5_000 });
       const text = (await tip.innerText()).replace(/\s+/g, " ");
       if (wait) {
@@ -265,8 +265,8 @@ async function run({ width, height, theme, lang, motion = false }) {
     await shot(`${tag}-list.png`, list);
     await page.keyboard.press("Tab");
     await rowOf("yn12").locator(".agent-select").focus();
-    await page.locator('.tip[role="tooltip"]').waitFor({ timeout: 5_000 });
-    const card = await page.locator('.tip[role="tooltip"]').boundingBox();
+    await page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])').waitFor({ timeout: 5_000 });
+    const card = await page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])').boundingBox();
     const listBox = await list.boundingBox();
     const x = Math.max(0, Math.min(card.x, listBox.x) - 8), y = Math.max(0, Math.min(card.y, listBox.y) - 8);
     await page.screenshot({ path: join(output, `${tag}-card.png`), animations: "disabled",
