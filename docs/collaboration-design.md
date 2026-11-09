@@ -37,8 +37,8 @@
   - **`task_get` 的 `view: "full"`：** 登记资料只出现在 `task.materials` 一处，`materialsSource` 用 `valueIn` 指向它；活动历史不变。
 - 一个 MCP 回答最多 48 KiB（紧凑 JSON 49,152 字节，YN-69 S8）。原因是 OpenCode 显示不了超过 51,200 字节的一行工具输出，而紧凑 JSON 只有一行。
   - **`peer_read` 和 `task_get` 的 `activity`、`full`：** 超过时提前结束这一页。`nextAfterSeq` 是这一页最后一条，`hasMore` 为 true，`more` 写明怎么接着读。
-    - 信件按 seq 截断：这一页包含 `nextAfterSeq` 及以前的全部信件，之后的一封也没有，所以接着读不会漏信，也不会重复。
-    - 正文不截。只有一封信自己就超过 48 KiB 时，才截它的正文，并在 `more` 里写明是哪一封。
+    - 信件按 seq 截断，由 Core 在读信时完成：这一页包含 `nextAfterSeq` 及以前的全部信件，之后的一封也没有，所以接着读不会漏信，也不会重复。只有这一页里的信算已读，没放进来的信仍是未读，照常唤醒收件人。
+    - 正文不截。只有一封信自己就超过 48 KiB 时，才截它的正文，并在 `more` 里写明是哪一封；截掉的部分通过 MCP 读不到，在应用里可以看到全文。
     - `full` 给全任务本身，再用活动填满剩下的空间。任务本身就超过 48 KiB 时，活动留给 `view: "activity"` 去读。
   - **调用方明确要全量的回答：** `task_list` 的 `compact: false`、`review_get` 的 `view: "full"`、带 `dispatchId` 的 `task_get`，对所有调用方都不改行为，工具说明里写明可能超过 48 KiB。
   - **OpenCode 调用方：** 回答超过 51,200 字节时，不发原文，改成一条简短错误 `answer_too_large_for_opencode`，写明大小、上限和分页读法。其他调用方照常拿到全量。

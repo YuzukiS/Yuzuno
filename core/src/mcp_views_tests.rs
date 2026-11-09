@@ -342,47 +342,21 @@ fn message(seq: i64, body: &str) -> Value {
         "body":body,"taskId":"T-1","createdAt":"t","priority":"normal","delivery":{"state":"delivered","detail":{}},"firstReadAt":null})
 }
 
-/// YN-69 S8: a mailbox page larger than an answer holds ends early, at a seq:
-/// every message up to nextAfterSeq is in it and none after, whatever order
-/// the page lists them in, so paging on reads each message once.
+/// YN-69 S8: the store ends an Agent's mailbox page within the budget and
+/// marks as read only what it returns (collaboration_mcp answer_budget_tests),
+/// so a page is never cut short here: no message the store marked read is
+/// dropped. An Agent's peer_read asks the store for that budget.
 #[test]
-fn a_mailbox_page_larger_than_an_answer_ends_early_at_a_seq_and_pages_on() {
+fn a_mailbox_page_is_never_cut_short_after_the_store_read_it() {
     assert_eq!((BUDGET, OPENCODE_LINE), (PAGE_BUDGET, 51_200));
+    let mut read = arguments(json!({"afterSeq":4,"limit":50}));
+    assert_eq!(prepare("peer_read", &mut read), Ok(None));
+    assert_eq!(read["byteBudget"], json!(PAGE_BUDGET));
     let body = "b".repeat(3000);
-    // A session notice (seq 40) is listed first, as peer_read lists them.
-    let mut messages: Vec<Value> = vec![message(40, &body)];
-    messages.extend((1..40).map(|seq| message(seq, &body)));
-    let page = json!({"messages":messages,"nextAfterSeq":40,"hasMore":false});
-    let short = answer("peer_read", page.clone(), None);
-    assert!(short.to_string().len() <= PAGE_BUDGET, "{}", short.to_string().len());
-    let next = short["nextAfterSeq"].as_i64().unwrap();
-    let seqs: Vec<i64> = short["messages"].as_array().unwrap().iter().map(|m| m["seq"].as_i64().unwrap()).collect();
-    assert!(next < 40 && short["hasMore"] == true, "{next}");
-    let mut sorted = seqs.clone();
-    sorted.sort();
-    assert_eq!(sorted, (1..=next).collect::<Vec<_>>(), "every message up to nextAfterSeq, none after");
-    assert!(short["messages"].as_array().unwrap().iter().all(|m| m["body"] == json!(body)), "bodies are whole");
-    assert!(short["more"].as_str().unwrap().contains("nextAfterSeq"));
-    // Paging on, as peer_read gives what is after nextAfterSeq: every message once.
-    let mut all = seqs;
-    let mut after = next;
-    loop {
-        let rest: Vec<Value> = page["messages"].as_array().unwrap().iter().filter(|m| m["seq"].as_i64().unwrap() > after).cloned().collect();
-        let more = answer("peer_read", json!({"messages":rest,"nextAfterSeq":40,"hasMore":false}), None);
-        assert!(more.to_string().len() <= PAGE_BUDGET);
-        all.extend(more["messages"].as_array().unwrap().iter().map(|m| m["seq"].as_i64().unwrap()));
-        let next = more["nextAfterSeq"].as_i64().unwrap();
-        assert!(next > after, "each page moves on");
-        after = next;
-        if more["hasMore"] != true {
-            break;
-        }
-    }
-    all.sort();
-    assert_eq!(all, (1..=40).collect::<Vec<_>>(), "every message once");
-    // A page that fits is as it was, projected.
-    let small = json!({"messages":[message(1, "hi")],"nextAfterSeq":1,"hasMore":false});
-    assert_eq!((answer("peer_read", small.clone(), None)["hasMore"].clone(), answer("peer_read", small, None).get("more").is_none()), (json!(false), true));
+    let page = json!({"messages":(1..=40).map(|seq| message(seq, &body)).collect::<Vec<_>>(),"nextAfterSeq":40,"hasMore":false});
+    let short = answer("peer_read", page, None);
+    assert_eq!(short["messages"].as_array().unwrap().len(), 40);
+    assert_eq!((short["nextAfterSeq"].clone(), short["hasMore"].clone()), (json!(40), json!(false)));
 }
 
 #[test]
@@ -393,7 +367,8 @@ fn one_message_larger_than_an_answer_is_cut_and_says_so() {
     assert_eq!((short["nextAfterSeq"].clone(), short["messages"][0]["seq"].clone()), (json!(7), json!(7)));
     let body = short["messages"][0]["body"].as_str().unwrap();
     assert!(body.starts_with("xxx") && body.contains("more characters"), "{}", &body[body.len() - 80..]);
-    assert!(short["more"].as_str().unwrap().contains("m7"), "{}", short["more"]);
+    let more = short["more"].as_str().unwrap();
+    assert!(more.contains("m7") && more.contains("not readable through MCP"), "{more}");
 }
 
 fn activity(seq: i64, body: &str) -> Value {

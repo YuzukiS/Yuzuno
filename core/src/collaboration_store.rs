@@ -1670,7 +1670,7 @@ pub(crate) fn insert_message(db: &Connection, mut message: Value) -> Result<Valu
 }
 
 fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Value> {
-    allowed(input, &["agentId", "afterSeq", "limit", "priority", "wake"])?;
+    allowed(input, &["agentId", "afterSeq", "limit", "priority", "wake", "byteBudget"])?;
     let requested = optional_text(input, "agentId", 128)?;
     if let (Some(actor), Some(requested)) = (actor, requested.as_deref()) {
         ensure!(
@@ -1698,24 +1698,47 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let has_more = rows.len() > limit as usize;
+    let mut has_more = rows.len() > limit as usize;
+    // An Agent's page through MCP holds this many bytes as it reads them
+    // (YN-69 S8: mcp_views::agent_message): it ends early, before the message
+    // that would not fit, which stays unread for the next page and its wake-up.
+    let budget = input.get("byteBudget").and_then(Value::as_u64).map(|bytes| bytes as usize);
+    let mut used = 512;
+    let mut cut = false;
     let mut messages = Vec::new();
     let mut next = after;
     for (id, seq) in rows.into_iter().take(limit as usize) {
-        if let Some(actor) = actor {
-            db.execute("INSERT OR IGNORE INTO collaboration_message_reads(message_seq,reader_id,read_at) VALUES(?1,?2,?3)", params![seq,actor,now()])?;
-        }
+        let read = match actor {
+            Some(actor) => db.execute("INSERT OR IGNORE INTO collaboration_message_reads(message_seq,reader_id,read_at) VALUES(?1,?2,?3)", params![seq,actor,now()])?,
+            None => 0,
+        };
         let mut message = load_message(db, &id)?;
         if message.get("wake").is_none_or(Value::is_null) {
             message["wake"] = json!(crate::mail_wake::RING);
         }
+        if let Some(budget) = budget {
+            let bytes = crate::mcp_views::agent_message(&message).to_string().len() + 1;
+            if !messages.is_empty() && used + bytes > budget {
+                if read == 1 {
+                    db.execute("DELETE FROM collaboration_message_reads WHERE message_seq=?1 AND reader_id=?2", params![seq, actor])?;
+                }
+                cut = true;
+                break;
+            }
+            used += bytes;
+        }
         messages.push(message);
         next = seq;
     }
+    has_more |= cut;
     // Core's session notice first: it says what the rest is read with (YN-5).
     // Only the order within this page changes; its cursor does not.
     messages.sort_by_key(|m| m["metadata"]["kind"] != crate::session_baseline::KIND);
-    Ok(json!({"messages":messages,"nextAfterSeq":next,"hasMore":has_more}))
+    let mut page = json!({"messages":messages,"nextAfterSeq":next,"hasMore":has_more});
+    if cut {
+        page["more"] = json!(crate::mcp_views::MAIL_MORE);
+    }
+    Ok(page)
 }
 
 /// Keep the protocol narrow: native plans and turn completion are not task APIs.

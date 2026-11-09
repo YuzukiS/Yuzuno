@@ -15,7 +15,8 @@ pub(crate) const BUDGET: usize = 48 * 1024;
 /// OpenCode shows nothing of a tool output line longer than this, and compact
 /// JSON is one line (YN-69 S6); collaboration_mcp refuses it such an answer.
 pub(crate) const OPENCODE_LINE: usize = 51_200;
-const MAIL_MORE: &str = "This page ends early, at nextAfterSeq, to fit one answer (49152 bytes): peer_read with afterSeq nextAfterSeq reads on";
+/// Said by a peer_read page the store ended early for the budget.
+pub(crate) const MAIL_MORE: &str = "This page ends early, at nextAfterSeq, to fit one answer (49152 bytes): peer_read with afterSeq nextAfterSeq reads on";
 const HISTORY_MORE: &str = "This page ends early, at nextAfterSeq, to fit one answer (49152 bytes): task_get with view \"activity\" and afterSeq nextAfterSeq reads on";
 
 /// Task writes whose answer to an Agent is a short receipt.
@@ -39,6 +40,13 @@ pub(crate) fn prepare(tool: &str, arguments: &mut Map<String, Value>) -> Result<
         "task_get" if !arguments.contains_key("view") && !arguments.contains_key("dispatchId") => {
             let paged = arguments.contains_key("afterSeq") || arguments.contains_key("limit");
             arguments.insert("view".into(), json!(if paged { "activity" } else { "current" }));
+            Ok(None)
+        }
+        // The store ends an Agent's mailbox page within one answer, and marks
+        // as read only what the page holds (YN-69 S8). An Agent cannot give
+        // byteBudget: arguments not in the schema are refused before this.
+        "peer_read" => {
+            arguments.insert("byteBudget".into(), json!(BUDGET));
             Ok(None)
         }
         // Short rows unless the Agent asks for whole ones with compact:false (YN-69).
@@ -134,19 +142,26 @@ fn merge_row(entry: &Value) -> Value {
 /// thread and answers none says neither.
 fn mailbox(mut page: Value) -> Value {
     for message in page["messages"].as_array_mut().into_iter().flatten() {
-        let Some(map) = message.as_object_mut() else { continue };
-        let state = map.get("delivery").map(|d| d["state"].clone()).unwrap_or(Value::Null);
-        map.insert("delivery".into(), json!({"state": state}));
-        map.remove("recipient");
-        map.remove("notice");
-        if map.get("threadId").is_some() && map.get("threadId") == map.get("id") {
-            map.remove("threadId");
-        }
-        if map.get("replyTo").is_some_and(Value::is_null) {
-            map.remove("replyTo");
-        }
+        *message = agent_message(message);
     }
     page
+}
+
+/// One message as an Agent reads it (see mailbox); the store measures pages by it.
+pub(crate) fn agent_message(message: &Value) -> Value {
+    let mut message = message.clone();
+    let Some(map) = message.as_object_mut() else { return message };
+    let state = map.get("delivery").map(|d| d["state"].clone()).unwrap_or(Value::Null);
+    map.insert("delivery".into(), json!({"state": state}));
+    map.remove("recipient");
+    map.remove("notice");
+    if map.get("threadId").is_some() && map.get("threadId") == map.get("id") {
+        map.remove("threadId");
+    }
+    if map.get("replyTo").is_some_and(Value::is_null) {
+        map.remove("replyTo");
+    }
+    message
 }
 
 /// The bytes of `value` as an Agent reads it: its compact JSON text.
@@ -163,51 +178,25 @@ fn cut_to(text: &str, bytes: usize) -> &str {
     &text[..end]
 }
 
-/// A mailbox page larger than an answer holds (YN-69 S8) ends early, at a
-/// seq: every message up to nextAfterSeq and none after it, whatever order
-/// the page lists them in (session notices first), so paging on from
-/// nextAfterSeq reads each message once. Bodies are whole; only a message
-/// larger than an answer by itself is cut, and more says which.
+/// A mailbox page within one answer (YN-69 S8). The store ends an Agent's
+/// page early, at a seq, and marks as read only the messages it returns
+/// (collaboration_store peer_read, byteBudget), so no message is dropped
+/// here: a page still larger than an answer is one message larger than an
+/// answer by itself, whose body is cut, and more says so.
 fn mail_within_budget(mut page: Value) -> Value {
-    if size(&page) <= BUDGET {
+    if size(&page) <= BUDGET || page["messages"].as_array().is_none_or(|m| m.len() != 1) {
         return page;
     }
-    let messages = page["messages"].as_array().cloned().unwrap_or_default();
-    let mut order: Vec<(i64, usize)> = messages.iter().map(|m| (m["seq"].as_i64().unwrap_or(0), size(m) + 1)).collect();
-    order.sort();
-    page["messages"] = json!([]);
-    page["hasMore"] = json!(true);
-    page["nextAfterSeq"] = json!(i64::MAX);
-    page["more"] = json!(MAIL_MORE);
-    let mut room = BUDGET.saturating_sub(size(&page));
-    let mut through = None;
-    for (seq, bytes) in &order {
-        if *bytes > room {
-            break;
-        }
-        room -= bytes;
-        through = Some(*seq);
-    }
-    match through {
-        Some(through) => {
-            page["messages"] = json!(messages.into_iter().filter(|m| m["seq"].as_i64().unwrap_or(0) <= through).collect::<Vec<_>>());
-            page["nextAfterSeq"] = json!(through);
-        }
-        None => {
-            // The first message alone is more than an answer: its body, cut.
-            let Some(seq) = order.first().map(|(seq, _)| *seq) else { return page };
-            let mut message = messages.into_iter().find(|m| m["seq"].as_i64() == Some(seq)).unwrap_or_default();
-            let body = message["body"].as_str().unwrap_or_default().to_owned();
-            let over = size(&message) + 1 - room;
-            let kept = cut_to(&body, body.len().saturating_sub(over + 200));
-            let left = body[kept.len()..].chars().count();
-            message["body"] = json!(format!("{kept}… [{left} more characters: this message is larger than one answer]"));
-            page["more"] = json!(format!("{} Message {} is larger than one answer by itself: its body is cut.", MAIL_MORE,
-                message["id"].as_str().unwrap_or("?")));
-            page["messages"] = json!([message]);
-            page["nextAfterSeq"] = json!(seq);
-        }
-    }
+    let mut message = page["messages"][0].clone();
+    let body = message["body"].as_str().unwrap_or_default().to_owned();
+    let over = size(&page) - BUDGET;
+    let kept = cut_to(&body, body.len().saturating_sub(over + 400));
+    let left = body[kept.len()..].chars().count();
+    message["body"] = json!(format!("{kept}… [{left} more characters: this message is larger than one answer]"));
+    page["more"] = json!(format!("Message {} is larger than one answer (49152 bytes) by itself: its body is cut, and the rest of it \
+        is not readable through MCP (the app shows it whole). peer_read with afterSeq nextAfterSeq reads on",
+        message["id"].as_str().unwrap_or("?")));
+    page["messages"] = json!([message]);
     page
 }
 
