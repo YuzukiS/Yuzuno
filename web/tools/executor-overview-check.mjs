@@ -268,12 +268,17 @@ const measure = (page) => page.evaluate(() => {
   const steps = [...panel.querySelectorAll(".executor-overview-steps .step")].map((s) => {
     const label = s.querySelector(".label").getBoundingClientRect(), ref = s.querySelector(".ref").getBoundingClientRect();
     const row = s.querySelector(".text").getBoundingClientRect().width;
+    // Its mark against its name's first line: their middles, in px.
+    const mark = s.querySelector(".mark").getBoundingClientRect(), range = document.createRange();
+    range.selectNodeContents(s.querySelector(".label"));
+    const first = range.getClientRects()[0];
     const name = widths(s.querySelector(".label")), record = widths(s.querySelector(".ref"));
     const round = (n) => Math.round(n * 10) / 10;
     return { text: s.querySelector(".label").textContent, ref: s.querySelector(".ref").textContent,
       overlap: ref.width > 0 && label.right > ref.left + 1 && label.bottom > ref.top + 1 && label.top < ref.bottom - 1,
       row: round(row), label: { width: round(name.width), full: round(name.full), word: round(name.word), lines: lines(s.querySelector(".label")) },
-      record: { width: round(record.width), full: round(record.full), word: round(record.word), lines: lines(s.querySelector(".ref")) }, under: ref.width > 0 && ref.top >= label.bottom - 1 };
+      record: { width: round(record.width), full: round(record.full), word: round(record.word), lines: lines(s.querySelector(".ref")) }, under: ref.width > 0 && ref.top >= label.bottom - 1,
+      markOffset: first ? round((mark.top + mark.height / 2) - (first.top + first.height / 2)) : null };
   });
   const wide = [...panel.querySelectorAll("*")].filter((el) => {
     const r = el.getBoundingClientRect();
@@ -326,6 +331,8 @@ function assertNames(tag, id, rows) {
     assert.ok(w.width + 0.5 >= Math.min(w.word, r.row), `${tag} ${id} step ${i + 1}: its ${what} ${w.width} px, under its longest word's ${w.word} px`);
     assert.ok(w.width + 0.5 >= Math.min(w.full, r.row), `${tag} ${id} step ${i + 1}: its ${what} ${w.width} px, narrower than it (${w.full} px) or its row (${r.row} px)`);
   }
+  // Its mark on its name's first line, in English and Chinese alike.
+  for (const [i, r] of rows.entries()) assert.ok(Math.abs(r.markOffset) <= 2.5, `${tag} ${id} step ${i + 1}: its mark ${r.markOffset} px off its name's first line`);
 }
 
 // Two columns where the pane is 1000 px or wider, one below: checked against what is drawn.
