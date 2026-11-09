@@ -129,7 +129,10 @@ const notifications = (box) => box.evaluate((el) => ({
   heading: el.querySelector("h3").textContent,
   current: el.querySelector(".settings-current").textContent,
   access: el.querySelector(".notification-access").textContent,
-  rows: [...el.querySelectorAll("label.settings-row")].map((row) => [row.querySelector(".settings-row-title").textContent, row.querySelector("input").checked]),
+  // This browser's notification rows; the iPhone Home Screen push row (T-200)
+  // has its own group, and no switch where push is unavailable, as here.
+  rows: [...el.querySelectorAll("label.settings-row")].filter((row) => !row.closest(".push-settings"))
+    .map((row) => [row.querySelector(".settings-row-title").textContent, row.querySelector("input").checked]),
   test: el.querySelector(".notification-test-result")?.textContent ?? null,
   outcome: el.querySelector(".notification-test-result")?.dataset.outcome ?? null,
   button: el.querySelector(".settings-row-action button").textContent,
@@ -166,7 +169,8 @@ try {
 
   // ---- Notifications, set up in English.
   await openSettings();
-  await page.locator('[role="tab"]', { hasText: "Notifications & attention" }).click();
+  // Its own page in Settings' sidebar since YN-8, no longer a category tab.
+  await page.locator("#settings-tab-notifications").click();
   let box = page.locator("#settings-editor-notifications");
   await box.waitFor({ timeout: 10_000 });
   assert.equal((await notifications(box)).access, "Not asked yet");
@@ -242,7 +246,7 @@ try {
   assert.deepEqual(pageOwn(meanwhile), []);
   check("changed to English in another window: About is English, the opened license and the failed read stay, nothing read again", { failed: aboutEn.licenses[1].alert, meanwhile });
 
-  await page.locator('[role="tab"]', { hasText: "Notifications & attention" }).click();
+  await page.locator("#settings-tab-notifications").click();
   box = page.locator("#settings-editor-notifications");
   await box.locator("h3", { hasText: "Notifications" }).waitFor({ timeout: 10_000 });
   assert.deepEqual(await notifications(box), en, "Notifications as it was in English");

@@ -318,6 +318,11 @@ try {
   await page.reload();
   await page.locator(".turn .user-text .pasted-text-chip").nth(1).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
+  // A phone shows its Agent list first (T-170); the conversation is opened
+  // from it, as there.
+  await page
+    .getByRole("button", { name: "Open Codex fixture", exact: true })
+    .click();
   await page.locator(".turn .user-text .pasted-text-chip").first().click();
   const modal = page.getByRole("dialog");
   await modal.waitFor();

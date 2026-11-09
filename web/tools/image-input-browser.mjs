@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 import { installConnectionFixture, FIXTURE_WORKSPACE } from "./connection-fixture.mjs";
+import { tipText } from "./tip-browser.mjs";
 const root = resolve(process.env.YUZUNO_UI_DIST || "../target/t31/ui");
 const remoteFixture = process.env.T31_REMOTE_FIXTURE === "1";
 const output = new URL(remoteFixture ? "../../target/t31/browser-remote/" : "../../target/t31/browser/", import.meta.url);
@@ -231,8 +232,8 @@ try {
     .first()
     .click();
   await input().waitFor();
-  // The composer's "+" offers images (T-44); the entry says in its tooltip
-  // that Claude gets large images scaled.
+  // The composer's "+" offers images (T-44); the entry says in its tip
+  // (YN-44: no longer a native title) that Claude gets large images scaled.
   await page.locator("form.composer .composer-plus").click();
   const addImages = page.getByRole("menuitem", { name: "Add images" });
   assert.ok(
@@ -240,7 +241,7 @@ try {
     "a Claude Agent takes images too, including SSH destinations",
   );
   assert.match(
-    (await addImages.getAttribute("title")) || "",
+    (await tipText(page, addImages)) || "",
     /scaled or compressed when sent to Claude · originals are kept/,
   );
   await page.keyboard.press("Escape");
@@ -289,7 +290,11 @@ try {
   report.checks.push("light/dark 20px layout");
   await page.evaluate(() => (window.imageFixture.fail = true));
   await page.getByRole("button", { name: "Send message", exact: true }).click();
-  await page.getByText("fixture connection lost", { exact: true }).waitFor();
+  // The fixture's lost connection, in the page's own words: no answer from
+  // Core (T-170's NetworkError), not the browser's.
+  await page
+    .locator(".inline-error", { hasText: "No answer from Core over the network." })
+    .waitFor();
   const first = await page.evaluate(() => window.imageFixture.sent[0]);
   assert.ok((await saved()).images.length >= 1);
   while (await images().count())

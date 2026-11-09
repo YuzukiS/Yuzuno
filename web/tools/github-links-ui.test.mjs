@@ -60,22 +60,26 @@ async function mount({links=[object()],errorOnLink=false,workspaceDelay=0}={}) {
 async function openTask(p,id='T-1'){p.doc.querySelector(`button[data-task-id="${id}"]`).click();await pause(100);}
 async function type(p,input,value){Object.getOwnPropertyDescriptor(p.w.HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new p.w.Event('input',{bubbles:true}));await pause();}
 const panel=p=>p.doc.querySelector('[aria-label="GitHub delivery"]');
+// The task's links are read once it opens: wait until its panel has them,
+// however long that read takes, rather than a fixed pause (YN-50: CI
+// 42562887741 still showed "Loading links…" after pause(100)).
+const linksLoaded=p=>waitFor(()=>!!panel(p)&&!panel(p).textContent.includes('Loading links…'),'the task\'s links loaded');
 // Linking, unlinking and PR operations sit behind the Delivery section's Manage.
 async function manage(p){const toggle=p.doc.querySelector('.collab-delivery button[aria-expanded]');assert.equal(toggle.getAttribute('aria-expanded'),'false');toggle.click();await pause();}
 
 test('task cards and detail show exact-head checks; link/unlink stay on this task',async()=>{
  const p=await mount({workspaceDelay:150});try{
   assert.match(p.doc.querySelector('.github-summary').textContent,/repo#8.*Open.*Checks passed/);
-  await openTask(p);assert.match(panel(p).textContent,/aaaaaaaa/);
+  await openTask(p);await linksLoaded(p);assert.match(panel(p).textContent,/aaaaaaaa/);
   // Booleans only: a failing assert must never print a jsdom node.
   assert.ok(!panel(p).querySelector('.github-link-form'),'no link form until Manage');
   assert.ok(!panel(p).querySelector('[aria-label="Unlink owner/repo#8"]'),'no Unlink until Manage');
   await manage(p);
   await type(p,panel(p).querySelector('.github-link-form input'),'https://github.com/owner/repo/pull/9');
-  panel(p).querySelector('button[type="submit"]').click();await pause(100);
-  assert.equal(panel(p).querySelectorAll('.github-entry').length,2);
-  panel(p).querySelector('[aria-label="Unlink owner/repo#8"]').click();await pause(100);
-  assert.equal(panel(p).querySelectorAll('.github-entry').length,1);
+  panel(p).querySelector('button[type="submit"]').click();
+  await waitFor(()=>panel(p).querySelectorAll('.github-entry').length===2,'the linked PR is listed');
+  panel(p).querySelector('[aria-label="Unlink owner/repo#8"]').click();
+  await waitFor(()=>panel(p).querySelectorAll('.github-entry').length===1,'the unlinked PR is gone');
   assert.ok(p.calls.filter(c=>c.body.action==='link'||c.body.action==='unlink').every(c=>c.body.taskId==='T-1'));
   assert.equal(p.calls.filter(c=>/task_update|task_submit_result|review$/.test(c.url)).length,0);
   assert.deepEqual(p.errors,[]);
