@@ -67,7 +67,7 @@ async fn a_policy_is_saved_whole_against_its_version_and_keeps_what_a_later_core
     let later = json!({"id": "c-later", "enabled": true, "harness": "claude", "model": "",
         "credential": {"kind": "vault", "ref": "x"}, "conditions": [{"kind": "moonPhase", "full": true}]});
     let codex = json!({"id": "c-codex", "enabled": false, "harness": "codex", "model": "gpt-test", "reasoningEffort": "high",
-        "credential": {"kind": "codexHome", "id": "work"}, "conditions": [{"kind": "quota", "fiveHourLeftPct": 30}]});
+        "credential": {"kind": "codexHome", "id": "work"}, "conditions": [{"kind": "quota", "weekLeftPct": 30}]});
     let claude = json!({"id": "c-pool", "enabled": true, "harness": "claude", "model": "opus",
         "credential": {"kind": "pool", "manager": "cswap", "accounts": "all", "pick": "mostRemaining"},
         "conditions": [{"kind": "quota", "weekLeftPct": 20}], "unknown": "pass"});
@@ -115,9 +115,9 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
         (with(&|c| c["conditions"][0]["schedule"]["timeZone"] = json!("Asia/Somewhere")), "candidates[0].conditions[0].schedule", "UTC or local"),
         (with(&|c| c["conditions"][0]["minMinutesLeft"] = json!(0)), "candidates[0].conditions[0].minMinutesLeft", "1 to 1440"),
         (with(&|c| c["conditions"][1]["usd"] = json!(-1)), "candidates[0].conditions[1].usd", "above 0"),
-        (with(&|c| c["conditions"][1] = json!({"kind": "quota", "fiveHourLeftPct": 30})), "candidates[0].conditions[1].kind", "login, a pool"),
+        (with(&|c| c["conditions"][1] = json!({"kind": "quota", "weekLeftPct": 30})), "candidates[0].conditions[1].kind", "login, a pool"),
         (with(&|c| { c["credential"] = json!({"kind": "login"}); c["conditions"] = json!([{"kind": "quota"}]); }),
-            "candidates[0].conditions[0].kind", "names fiveHourLeftPct"),
+            "candidates[0].conditions[0].kind", "names weekLeftPct"),
         (with(&|c| { c["credential"] = json!({"kind": "login"}); c["conditions"] = json!([{"kind": "quota", "weekLeftPct": 101}]); }),
             "candidates[0].conditions[0].weekLeftPct", "0 to 100"),
     ];
@@ -129,6 +129,31 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
     let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 0, "policy": policy(vec![]), "extra": 1})), vec![]).await;
     assert_eq!((status, refused["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid")), "the body is exactly {{expectedVersion, policy}}");
     assert_eq!(lab.ws.store.routing_policy().unwrap().version, 0, "no refused save changed it");
+}
+
+#[tokio::test]
+async fn a_saved_five_hour_share_is_not_read_back_and_an_older_pages_save_is_taken_without_it() {
+    let lab = lab();
+    // As a Core before YN-60 saved it: quota conditions with a 5-hour share, one with nothing else.
+    let codex = |id: &str, quota: Value| json!({"id": id, "enabled": true, "harness": "codex", "model": "gpt-test",
+        "credential": {"kind": "login"}, "conditions": [quota]});
+    let before = policy(vec![codex("c-both", json!({"kind": "quota", "fiveHourLeftPct": 15, "weekLeftPct": 10})),
+        codex("c-five", json!({"kind": "quota", "fiveHourLeftPct": 30}))]);
+    lab.ws.store.save_routing_policy(0, before.clone()).unwrap().unwrap();
+    let (status, read) = call(&lab.local, "GET", None, vec![]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((read["policy"]["candidates"][0]["conditions"].clone(), read["policy"]["candidates"][1]["conditions"].clone()),
+        (json!([{"kind": "quota", "weekLeftPct": 10}]), json!([{"kind": "quota"}])),
+        "no 5-hour share is read back; the condition left with nothing is shown for the page to mark: {read}");
+    // A page from before YN-60 still sends it: taken, not refused, and dropped; a condition that named only it goes.
+    let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 1, "policy": before})), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!((saved["version"].clone(), saved["policy"]["candidates"][0]["conditions"].clone(), saved["policy"]["candidates"][1]["conditions"].clone()),
+        (json!(2), json!([{"kind": "quota", "weekLeftPct": 10}]), json!([])), "{saved}");
+    assert!(!lab.ws.store.routing_policy().unwrap().policy.to_string().contains("fiveHour"), "not kept");
+    // A condition sent with no share at all is still refused.
+    let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 2, "policy": policy(vec![codex("c-none", json!({"kind": "quota"}))])})), vec![]).await;
+    assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!("candidates[0].conditions[0].kind")), "{refused}");
 }
 
 #[tokio::test]
