@@ -170,7 +170,7 @@ fn only_a_finished_answers_plausible_cost_is_read() {
 }
 
 #[tokio::test]
-async fn the_readings_route_is_the_users_own_browsers_only_and_shows_spend_and_schedules() {
+async fn the_readings_route_is_the_users_own_page_on_either_entry_and_shows_spend_and_schedules() {
     use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}};
     use tower::ServiceExt;
     let tmp = tempfile::tempdir().unwrap();
@@ -203,7 +203,15 @@ async fn the_readings_route_is_the_users_own_browsers_only_and_shows_spend_and_s
     assert!(read["presets"]["deepseek-peak"]["inside"].is_boolean() && read["presets"]["deepseek-peak"]["schedule"]["timeZone"] == "UTC", "{read}");
     let (status, _) = call(local.clone(), vec![("authorization", "Bearer an-agents-token".into())]).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "an Agent's credential is refused");
-    let (status, body) = call(remote, vec![("host", "core.example-tailnet.ts.net:8444".into()),
-        ("tailscale-user-login", "person@example.com".into()), ("origin", "https://core.example-tailnet.ts.net:8444".into())]).await;
-    assert!(!body.contains("totalUsd"), "not on the phone entry: {status} {body}");
+    // The phone entry reads it too (YN-79), and refuses an Agent's credential.
+    let phone = || vec![("host", "core.example-tailnet.ts.net:8444".into()),
+        ("tailscale-user-login", "person@example.com".into()), ("origin", "https://core.example-tailnet.ts.net:8444".into())];
+    let (status, body) = call(remote.clone(), phone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let read: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(read["spend"]["totalUsd"], json!(0.3), "the same answer on the phone entry: {read}");
+    let (status, _) = call(remote.clone(), [phone(), vec![("authorization", "Bearer an-agents-token".into())]].concat()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the phone entry, an Agent's credential");
+    let (status, _) = call(remote, phone().into_iter().filter(|(n, _)| *n != "tailscale-user-login").collect()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "no login");
 }

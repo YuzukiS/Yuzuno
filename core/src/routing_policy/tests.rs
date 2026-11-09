@@ -162,17 +162,33 @@ async fn a_saved_five_hour_share_is_not_read_back_and_an_older_pages_save_is_tak
 }
 
 #[tokio::test]
-async fn the_policy_is_the_users_own_browsers_only() {
+async fn the_policy_is_the_users_own_page_on_either_entry() {
     let lab = lab();
     let body = json!({"expectedVersion": 0, "policy": policy(vec![deepseek()])});
+    let phone = || vec![("host", "core.example-tailnet.ts.net:8444".into()),
+        ("tailscale-user-login", "person@example.com".into()), ("origin", "https://core.example-tailnet.ts.net:8444".into())];
     for method in ["GET", "PUT"] {
         let (status, _) = call(&lab.local, method, Some(body.clone()), vec![("authorization", "Bearer an-agents-token".into())]).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method}: an Agent's credential is refused");
-        let (status, answer) = call(&lab.remote, method, Some(body.clone()), vec![("host", "core.example-tailnet.ts.net:8444".into()),
-            ("tailscale-user-login", "person@example.com".into()), ("origin", "https://core.example-tailnet.ts.net:8444".into())]).await;
-        assert!(answer.get("policy").is_none() && answer.get("version").is_none(), "{method} not on the phone entry: {status} {answer}");
+        // The phone entry serves it with its own login (YN-79), and refuses an Agent's credential as Core's port does.
+        let (status, answer) = call(&lab.remote, method, Some(body.clone()),
+            [phone(), vec![("authorization", "Bearer an-agents-token".into())]].concat()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "the phone entry, an Agent's credential: {method}: {answer}");
+        assert!(answer.get("policy").is_none() && answer.get("version").is_none(), "{answer}");
     }
-    assert_eq!(lab.ws.store.routing_policy().unwrap().version, 0);
+    assert_eq!(lab.ws.store.routing_policy().unwrap().version, 0, "nothing was written");
+    // Read, then change it from the phone entry.
+    let (status, read) = call(&lab.remote, "GET", None, phone()).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["version"], 0, "{read}");
+    let (status, saved) = call(&lab.remote, "PUT", Some(body.clone()), phone()).await;
+    assert_eq!((status, saved["version"].clone()), (StatusCode::OK, json!(1)), "{saved}");
+    assert_eq!(lab.ws.store.routing_policy().unwrap().version, 1, "the phone's change was saved");
+    // No login, or another login, is the phone entry's own boundary to refuse.
+    for extra in [vec![], phone().into_iter().filter(|(n, _)| *n != "tailscale-user-login").collect()] {
+        let (status, _) = call(&lab.remote, "GET", None, extra).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
 }
 
 async fn post(app: &axum::Router, uri: &str, body: Value, extra: Vec<(&'static str, String)>) -> (StatusCode, Value) {

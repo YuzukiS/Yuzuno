@@ -32,6 +32,18 @@
   font-size: calc(10px + var(--font-adjust, 3px));
   line-height: 1.55;
 }
+/* A change asked from the phone entry that would disconnect it (YN-79). */
+.remote-access-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border, var(--border));
+  border-radius: 8px;
+  background: var(--warning-surface, transparent);
+}
+.remote-access-confirm .remote-access-note {
+  color: var(--text-primary);
+}
 /* Saved, listening, Serve and the last check: one fact per line. */
 .remote-access-states {
   display: grid;

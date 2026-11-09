@@ -1,10 +1,10 @@
-//! The routing keys' write-only routes (YN-34 S1a). They are merged inside
-//! `local_browser_boundary` only (server.rs), beside the OpenCode login: on
-//! Core's own port, for the user's own browser, never on the phone entry,
-//! never through MCP. A request that carries an Agent's credential (any
-//! Authorization header) is refused before it reaches them. No route answers
-//! with a key's or the token's value: a read says only whether one is set,
-//! when, and its source.
+//! The routing keys' write-only routes (YN-34 S1a). They are merged in
+//! `server::settings_routes`, on Core's own port and on the phone entry
+//! (YN-79): the phone entry admits only its configured Tailscale login, so a
+//! device signed in to that account may write them; a program cannot, and no
+//! Agent can, since any Authorization header is refused before the routes
+//! are reached. No route answers with a key's or the token's value: a read
+//! says only whether one is set, when, and its source.
 use super::{op, Provider, Secret, Store};
 use crate::workspace::Workspace;
 use anyhow::Context;
@@ -134,10 +134,10 @@ async fn remove_token(State(ws): State<Arc<Workspace>>) -> Result<Json<Value>, R
 }
 
 /// An Agent's credential is not the user: any Authorization header is
-/// refused, so no Agent bearer token is ever accepted here.
+/// refused, so no Agent bearer token is ever accepted here, on either entry.
 pub(crate) async fn no_agent_credential(request: Request, next: Next) -> Response {
     if request.headers().contains_key(AUTHORIZATION) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error": "Routing keys take no Agent credential: only the user's own browser on Core's port changes them"})))
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "These settings take no Agent credential: only the user's page changes them, on the computer or on the phone"})))
             .into_response();
     }
     next.run(request).await

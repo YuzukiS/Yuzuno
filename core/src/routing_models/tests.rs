@@ -208,7 +208,7 @@ async fn one_read_at_a_time_and_a_request_that_waited_takes_its_answer() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn the_route_reads_opencodes_only_on_cores_own_port() {
+async fn the_route_reads_opencodes_on_cores_own_port_and_the_phone_entry() {
     process_program();
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
@@ -218,7 +218,11 @@ async fn the_route_reads_opencodes_only_on_cores_own_port() {
         crate::server::RemoteEntry::new("https://core.example-tailnet.ts.net:8444", "person@example.com").unwrap());
     let get = |app: axum::Router, uri: &'static str, phone: bool| async move {
         let mut request = Request::builder().uri(uri).header("x-yuzuno-client", "desktop");
-        request = if phone { request.header("tailscale-user-login", "person@example.com") } else { request.header("host", "127.0.0.1:4317") };
+        request = if phone {
+            request.header("host", "core.example-tailnet.ts.net:8444")
+                .header("origin", "https://core.example-tailnet.ts.net:8444")
+                .header("tailscale-user-login", "person@example.com")
+        } else { request.header("host", "127.0.0.1:4317") };
         let response = app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
         let status = response.status();
         (status, serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap_or(Value::Null))
@@ -228,6 +232,12 @@ async fn the_route_reads_opencodes_only_on_cores_own_port() {
     assert!(catalog["models"].as_array().is_some_and(|m| m.len() == 4), "{catalog}");
     let (status, refused) = get(local.clone(), "/api/routing/models?harness=codex", false).await;
     assert_eq!((status, refused["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid")));
-    let (status, _) = get(remote, "/api/routing/models?harness=opencode", true).await;
-    assert_ne!(status, StatusCode::OK, "never through the phone entry");
+    // The phone entry reads it too (YN-79).
+    let (status, phone) = get(remote.clone(), "/api/routing/models?harness=opencode", true).await;
+    assert_eq!((status, &phone), (StatusCode::OK, &catalog), "the phone entry: {phone}");
+    // A request without the allowed login is still refused there.
+    let request = Request::builder().uri("/api/routing/models?harness=opencode").header("host", "core.example-tailnet.ts.net:8444")
+        .header("origin", "https://core.example-tailnet.ts.net:8444").header("x-yuzuno-client", "desktop")
+        .body(Body::empty()).unwrap();
+    assert_eq!(remote.oneshot(request).await.unwrap().status(), StatusCode::FORBIDDEN, "no login");
 }

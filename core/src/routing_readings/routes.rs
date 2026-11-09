@@ -1,8 +1,7 @@
 //! `GET /api/routing/readings` (YN-34 S2a): read-only, beside the routing keys'
-//! and accounts' routes inside `local_browser_boundary` (server.rs). It is on
-//! Core's own port only, never on the phone entry or through MCP, and refuses
-//! any Authorization header. It answers from what Core last observed and
-//! starts no read itself.
+//! and accounts' routes in `server::settings_routes`. It is on Core's own port
+//! and on the phone entry (YN-79), and refuses any Authorization header. It
+//! answers from what Core last observed and starts no read itself.
 use crate::workspace::Workspace;
 use axum::{extract::State, http::StatusCode, middleware, response::IntoResponse, routing::get, Json, Router};
 use chrono::Utc;

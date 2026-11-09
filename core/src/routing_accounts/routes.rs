@@ -1,7 +1,8 @@
-//! Routing accounts' routes (YN-34 S1b), beside the routing keys' inside
-//! `local_browser_boundary` (server.rs): on Core's own port only, never on
-//! the phone entry or through MCP, and refusing any Authorization header,
-//! since the cswap command they set is a program Core runs.
+//! Routing accounts' routes (YN-34 S1b), beside the routing keys' in
+//! `server::settings_routes`: on Core's own port and on the phone entry
+//! (YN-79), and refusing any Authorization header, since the cswap command
+//! they set is a program Core runs. The phone entry admits only its Tailscale
+//! login, so any device signed in to that account may change them.
 use super::{check_command, CodexHome, CswapSettings, CSWAP_PINNED};
 use crate::workspace::Workspace;
 use axum::{

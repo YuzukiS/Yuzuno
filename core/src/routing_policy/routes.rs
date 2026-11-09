@@ -1,7 +1,9 @@
 //! `GET` and `PUT /api/routing/policy` (YN-34 S3a). They sit beside the routing
-//! keys' routes inside `local_browser_boundary` (server.rs):
-//! - on Core's own port only, never on the phone entry or through MCP;
+//! keys' routes in `server::settings_routes`:
+//! - on Core's own port and on the phone entry (YN-79);
 //! - any Authorization header is refused, so no Agent writes the policy.
+//! The phone entry admits only its configured Tailscale login, so any device
+//! signed in to that account may change the policy.
 use super::{check, Known};
 use crate::{routing_keys::Store as KeyStore, workspace::Workspace};
 use axum::{
