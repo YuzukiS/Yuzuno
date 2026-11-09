@@ -175,7 +175,8 @@ LIBPROC = ctypes.CDLL("/usr/lib/libproc.dylib") if DARWIN else None
 def darwin_boot_id():
     """kern.bootsessionuuid: a UUID of this boot, as Linux's boot_id is."""
     out = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
-                         capture_output=True, text=True, check=True)
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         universal_newlines=True, check=True)
     return out.stdout.strip()
 
 
@@ -590,7 +591,8 @@ def own_scope(root, intent):
     try:
         shown = subprocess.run(["systemctl", "--user", "show", "-p", "Description", "-p", "ControlGroup",
                                 "-p", "ActiveState", "--", unit],
-                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as error:
         return None, "this account's systemd could not be asked about its scope (%s)" % error
     props = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
@@ -605,7 +607,8 @@ def scope_control(scope, verb):
     (return code, error text)."""
     try:
         done = subprocess.run(["systemctl", "--user", verb, "--", scope["unit"]], stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=8)
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, timeout=8)
     except (OSError, subprocess.SubprocessError) as error:
         return None, str(error)[:300]
     return done.returncode, done.stderr.strip()[:500]
@@ -645,7 +648,8 @@ def unit_absent(unit):
     """Whether this account's systemd has no unit by that name (it answered)."""
     try:
         state = subprocess.run(["systemctl", "--user", "show", "-p", "LoadState", "--value", unit],
-                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
     return state.returncode == 0 and state.stdout.strip() == "not-found"
@@ -702,7 +706,8 @@ def confine(pids, attempt, plan):
         for name, kind, value in named:
             args += [name, kind, value]
         args.append("0")
-        return subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+        return subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
     before = cgroup_of(pid)
     try:
         done, oom_policy = ask(True), "continue"
@@ -1063,7 +1068,8 @@ def host_id():
         # (32 hex digits) so that nothing downstream tells the two apart.
         try:
             out = subprocess.run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                                 capture_output=True, text=True, check=True).stdout
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 universal_newlines=True, check=True).stdout
         except (OSError, subprocess.CalledProcessError):
             return None
         found = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]{36})"', out)
@@ -1146,7 +1152,9 @@ def capabilities():
         pass
     try:
         group = subprocess.run(["systemctl", "--user", "show", "-p", "ControlGroup", "--value"],
-                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10).stdout.strip()
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True,
+                               timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return facts
     if group.startswith("/"):
