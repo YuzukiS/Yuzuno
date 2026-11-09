@@ -136,3 +136,31 @@ async fn a_process_working_in_running_from_or_reading_it_keeps_it() {
     }
     assert_eq!(local_protections(&root, &debug).await, Vec::<String>::new());
 }
+
+/// The removal holds every build lock there is across its rename (review
+/// 9b839d5f): any one held elsewhere refuses it, and while it holds them a
+/// build can take none.
+#[test]
+fn the_removal_holds_every_build_lock_a_profile_has() {
+    let (_dir, _root, debug) = checkout();
+    let held = hold_build_locks(&debug).unwrap();
+    assert_eq!(held.len(), 1, "an older Cargo's profile has only .cargo-lock");
+    drop(held);
+    for name in [".cargo-build-lock", ".cargo-artifact-lock"] {
+        std::fs::write(debug.join(name), "").unwrap();
+    }
+    for name in [".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock"] {
+        let elsewhere = std::fs::File::open(debug.join(name)).unwrap();
+        elsewhere.lock().unwrap();
+        assert_eq!(hold_build_locks(&debug).unwrap_err(), "Cargo started building here", "{name}");
+        drop(elsewhere);
+    }
+    let held = hold_build_locks(&debug).unwrap();
+    assert_eq!(held.len(), 3);
+    for name in [".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock"] {
+        let build = std::fs::File::open(debug.join(name)).unwrap();
+        assert!(matches!(build.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)), "{name}: a build waits");
+    }
+    drop(held);
+    assert!(std::fs::File::open(debug.join(".cargo-build-lock")).unwrap().try_lock().is_ok(), "released with the removal");
+}

@@ -725,6 +725,10 @@ pub(crate) struct State {
     /// it starts that executor: it waits there, up to five seconds.
     #[cfg(test)]
     pub(crate) take_meet: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's meeting point for a pass routing a waiting executor, `unlocked`
+    /// or `locked` (routing_policy/dispatch.rs `route_meet`), taken by the first.
+    #[cfg(test)]
+    pub(crate) route_meet: std::sync::Mutex<Option<(&'static str, Arc<tokio::sync::Barrier>)>>,
     /// A test's write between a rebuild's read of the task's version and
     /// its dispatch, run once.
     #[cfg(test)]

@@ -660,11 +660,7 @@ impl Workspace {
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
-        ensure!(machine_id.as_deref().is_none_or(|id| id == "local"), "OpenCode Agent 目前只支持 Core 所在的本机");
-        // A template's model (YN-34 S1c), checked against OpenCode's providers when it first sends.
-        if !model.is_empty() {
-            check_model_id(&model)?;
-        }
+        check_new(machine_id.as_deref().unwrap_or("local"), &model)?;
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -872,7 +868,17 @@ impl Workspace {
         let mut launch = Launch::new(start, cwd.into(), &folder, cache);
         // A routing key goes to this Agent's server only (YN-34 S1c).
         launch.extra = self.opencode_launch(id).await?;
+        // So does its permission level, as OpenCode's rules (YN-56 S3).
+        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
         let server = Arc::new(Server::start(&launch).await?);
+        // Its agents must keep the level: a configuration OpenCode reads after Yuzuno's
+        // can override it. A server that doesn't is dropped, which ends it.
+        if let Some(level) = &level {
+            let managed = crate::permission_levels::OPENCODE_MANAGED;
+            let managed = std::path::Path::new(managed).exists().then_some(managed);
+            crate::permission_levels::opencode_check(level, &server.agent_rules(cwd).await?, managed)?;
+        }
         let pid = server.pid();
         // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
         let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();
@@ -3167,6 +3173,17 @@ pub(crate) use import::{migrate as import_migrate, router as import_router};
 
 /// An OpenCode model as Yuzuno names it, `<provider>/<model>` (ModelChoice::id):
 /// a provider, a slash, and a model of one or more parts, no spaces.
+/// Refuses what an OpenCode Agent can't be made with: another machine than this
+/// Core host, or a model that names no provider. A template's model (YN-34 S1c) is
+/// checked against OpenCode's providers when it first sends.
+pub(crate) fn check_new(machine: &str, model: &str) -> Result<()> {
+    ensure!(machine == "local", "OpenCode Agent 目前只支持 Core 所在的本机");
+    if !model.is_empty() {
+        check_model_id(model)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_model_id(model: &str) -> Result<()> {
     let ok = model.len() <= 200
         && !model.chars().any(|c| c.is_whitespace() || c.is_control())

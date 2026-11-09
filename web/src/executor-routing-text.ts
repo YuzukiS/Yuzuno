@@ -45,7 +45,7 @@ export const text = strings({
   chipPeakOn: "DeepSeek peak hours",
   chipInside: (s: string, m?: number) => `Within ${s}${m ? ` · ${m} min left at least` : ""}`,
   chipOutside: (s: string, m?: number) => `Outside ${s}${m ? ` · ${m} min left at least` : ""}`,
-  chipQuota: (five?: number, week?: number) => [five != null ? `5-hour left ≥ ${five}%` : "", week != null ? `week left ≥ ${week}%` : ""].filter(Boolean).join(" · "),
+  chipQuota: (week?: number) => (week != null ? `Week left ≥ ${week}%` : ""),
   chipCap: (usd: number) => `Today ≤ $${usd}`,
   chipPick: "The account with most left",
   chipSkip: "Skipped when a reading is unavailable",
@@ -64,6 +64,27 @@ export const text = strings({
   harness: "Tool",
   model: "Model",
   effort: "Reasoning effort",
+  // The model picker (YN-57 S2b): where each tool's list comes from, and its groups.
+  modelOther: "Other (type it)…",
+  modelTyped: "Model, typed",
+  modelReading: (tool: string) => `Reading ${tool}'s models…`,
+  modelFromClaude: "From Claude Code on this Core host: its aliases, and the versions they point to now.",
+  modelFromCodex: "From Codex on this Core host: its own model list.",
+  modelFromOpencode: (version: string) => `From OpenCode${version ? ` ${version}` : ""} on this Core host: its release's catalog and your OpenCode config, as a new executor sees them.`,
+  modelUnreadable: (tool: string, why: string) => `Couldn't read ${tool}'s models on this Core host (${why}). Showing Yuzuno's short list; choose Other to type any model.`,
+  modelReread: "Read again",
+  modelNotListed: (model: string) => `${model} · not in the list now`,
+  modelNotListedNote: (tool: string) => `${tool} doesn't list this model now: it runs only if the executor's ${tool} has it.`,
+  modelNeedsKey: (provider: string) => `${provider}'s models need an API key for ${provider}: choose one under Account or key.`,
+  groupAliases: "Aliases · follow new releases",
+  groupPinned: "Pinned versions",
+  groupCodex: "Codex's models",
+  groupWithKey: (provider: string) => `${provider} · with this candidate's API key`,
+  groupNeedsKey: (provider: string) => `${provider} · only with its own API key`,
+  groupEnv: (provider: string) => `${provider} · from this host's environment`,
+  groupReady: (provider: string) => `${provider} · no login needed`,
+  groupLoggedIn: (provider: string) => `${provider} · logged in`,
+  groupShortList: "Yuzuno's short list",
   effortDefault: "The model's own",
   credential: "Account or key",
   credLoginClaude: "This host's login",
@@ -72,6 +93,12 @@ export const text = strings({
   credPool: "claude-swap pool (the account with most left)",
   credKey: (provider: string, id: string) => `API key: ${provider} (${id})`,
   credHome: (label: string) => `Codex account: ${label}`,
+  // An API key for a candidate, added in place (YN-57 S3).
+  credGroupAccounts: "Accounts",
+  credGroupKeys: "API keys",
+  credAddKey: (provider: string) => `Add an API key for ${provider}…`,
+  credAddKeyNotHere: (provider: string) => `Add an API key for ${provider} (keys can't be read here)`,
+  keyInlineNote: "Saved under Accounts and keys as soon as you save it here, and never shown again. The candidate itself is saved with the page.",
   poolAccounts: "Accounts in the pool",
   poolAll: "All accounts claude-swap lists",
   poolSome: "Only these:",
@@ -99,7 +126,6 @@ export const text = strings({
   minLeft: "At least this many minutes left in it",
   minutes: "min",
   quota: "Subscription left",
-  fiveHour: "5-hour window left at least",
   week: "This week left at least",
   cap: "Daily spend",
   capOwn: "This candidate, at most $ a day",
@@ -119,7 +145,7 @@ export const text = strings({
   labelTooLong: "A name is at most 60 characters.",
   credNotFit: "This tool can't use that account or key.",
   poolEmpty: "Choose an account, or all.",
-  quotaEmpty: "Give a 5-hour or weekly share, or remove the condition.",
+  quotaEmpty: "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.",
   capBad: "A daily spend above $0, at most $10,000.",
   slotsEmpty: "A time window needs a period.",
   slotNoDay: (n: number) => `Period ${n} needs a day.`,
@@ -183,7 +209,7 @@ export const text = strings({
   chipPeakOn: "DeepSeek 高峰时段",
   chipInside: (s, m) => `在 ${s} 内${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
   chipOutside: (s, m) => `在 ${s} 以外${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
-  chipQuota: (five, week) => [five != null ? `5 小时剩 ≥ ${five}%` : "", week != null ? `本周剩 ≥ ${week}%` : ""].filter(Boolean).join(" · "),
+  chipQuota: (week) => (week != null ? `本周剩 ≥ ${week}%` : ""),
   chipCap: (usd) => `今日本项 ≤ $${usd}`,
   chipPick: "选剩余最多的账号",
   chipSkip: "读不到时跳过",
@@ -201,6 +227,26 @@ export const text = strings({
   harness: "工具",
   model: "模型",
   effort: "推理强度",
+  modelOther: "其他（手动输入）…",
+  modelTyped: "手动输入的模型",
+  modelReading: (tool) => `正在读取 ${tool} 的模型…`,
+  modelFromClaude: "来自这台 Core 主机上的 Claude Code：它的别名，和别名现在指向的版本。",
+  modelFromCodex: "来自这台 Core 主机上 Codex 自己的模型列表。",
+  modelFromOpencode: (version) => `来自这台 Core 主机上的 OpenCode${version ? ` ${version}` : ""}：它这个版本自带的目录加上你的 OpenCode 配置，也就是新执行者看到的那份。`,
+  modelUnreadable: (tool, why) => `读不到这台 Core 主机上 ${tool} 的模型（${why}）。先列出 Yuzuno 自带的几个；要别的就选「其他（手动输入）」。`,
+  modelReread: "重新读取",
+  modelNotListed: (model) => `${model} · 现在不在列表里`,
+  modelNotListedNote: (tool) => `${tool} 现在没有列出这个模型：只有执行者的 ${tool} 有它时才能跑。`,
+  modelNeedsKey: (provider) => `${provider} 的模型需要 ${provider} 的 API key：在「账号或 key」里选一把。`,
+  groupAliases: "别名 · 跟着新版本走",
+  groupPinned: "固定版本",
+  groupCodex: "Codex 的模型",
+  groupWithKey: (provider) => `${provider} · 用这个候选的 API key`,
+  groupNeedsKey: (provider) => `${provider} · 只能用它自己的 API key`,
+  groupEnv: (provider) => `${provider} · 来自主机的环境变量`,
+  groupReady: (provider) => `${provider} · 免登录`,
+  groupLoggedIn: (provider) => `${provider} · 已登录`,
+  groupShortList: "Yuzuno 自带的几个",
   effortDefault: "模型自己的",
   credential: "账号或 key",
   credLoginClaude: "主机的登录",
@@ -209,6 +255,11 @@ export const text = strings({
   credPool: "claude-swap 账号池（选剩余最多的）",
   credKey: (provider, id) => `API key：${provider}（${id}）`,
   credHome: (label) => `Codex 账号：${label}`,
+  credGroupAccounts: "账号",
+  credGroupKeys: "API key",
+  credAddKey: (provider) => `添加 ${provider} 的 API key…`,
+  credAddKeyNotHere: (provider) => `添加 ${provider} 的 API key（这里读不到 key）`,
+  keyInlineNote: "在这里一保存就存进「账号和密钥」，之后不再显示。候选本身随页面一起保存。",
   poolAccounts: "池里的账号",
   poolAll: "claude-swap 列出的全部账号",
   poolSome: "只用这些：",
@@ -236,7 +287,6 @@ export const text = strings({
   minLeft: "至少还剩多少分钟",
   minutes: "分钟",
   quota: "订阅额度",
-  fiveHour: "5 小时窗口至少剩",
   week: "本周至少剩",
   cap: "每日花费",
   capOwn: "这一项每天最多 $",
@@ -254,7 +304,7 @@ export const text = strings({
   labelTooLong: "名称最多 60 个字。",
   credNotFit: "这个工具用不了这个账号或 key。",
   poolEmpty: "选一个账号，或全部。",
-  quotaEmpty: "填 5 小时或本周的下限，或删掉这个条件。",
+  quotaEmpty: "填本周至少剩多少，或删掉这个条件：5 小时额度已不再判断。",
   capBad: "每日花费要大于 $0，最多 $10,000。",
   slotsEmpty: "时间窗口至少要有一个时段。",
   slotNoDay: (n) => `时段 ${n} 要选至少一天。`,
@@ -300,7 +350,7 @@ export function scheduleWords(schedule: Schedule, t: Text): string {
 
 export function chipText(c: AnyCondition, t: Text): string {
   if (!isKnown(c)) return t.chipUnknownKind(c.kind);
-  if (c.kind === "quota") return t.chipQuota(c.fiveHourLeftPct, c.weekLeftPct) || t.quota;
+  if (c.kind === "quota") return t.chipQuota(c.weekLeftPct) || t.quota;
   if (c.kind === "dailyApiCap") return t.chipCap(c.usd);
   if (sameSchedule(c.schedule, DEEPSEEK_PEAK)) return c.inside ? t.chipPeakOn : t.chipPeakOff(c.minMinutesLeft);
   return (c.inside ? t.chipInside : t.chipOutside)(scheduleWords(c.schedule, t), c.minMinutesLeft);
@@ -348,7 +398,7 @@ export function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, acc
   c.conditions.forEach((cond, i) => {
     if (!isKnown(cond)) return;
     const at = String(i);
-    if (cond.kind === "quota" && cond.fiveHourLeftPct == null && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
+    if (cond.kind === "quota" && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
     if (cond.kind === "dailyApiCap" && !usdFits(cond.usd)) list.push({ at, text: t.capBad });
     if (cond.kind === "timeWindow") {
       if (!cond.schedule.slots.length) list.push({ at, text: t.slotsEmpty });

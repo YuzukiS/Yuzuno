@@ -19,7 +19,9 @@ version; a later slice adds to it.
 | S4 | The Settings page (YN-49) | Done |
 | YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
 | YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
-| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | This version |
+| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
+| YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | Done |
+| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -132,6 +134,11 @@ words of `op`'s message.
 An older Core has none of these routes and never reads the key file: it
 leaves the `secrets` folder as it is, and a newer Core uses it again. A file
 written by a later Core (a higher `version`) is not changed by this one.
+
+An OpenCode executor's permission level (YN-56) is kept in its own table,
+which a Core before core.29 doesn't read. Such a Core starts it with
+OpenCode's own configuration: its default allows everything but reading a
+`.env` file.
 
 ## Accounts
 
@@ -277,7 +284,9 @@ It answers from what Core last observed and starts no read itself.
 
 ### Subscription quotas
 
-These are what is left of each account's 5-hour and weekly windows.
+These are what is left of each account's weekly window. Claude and Codex
+have no 5-hour quota now (YN-60), so no 5-hour window is read, and one an
+older Core kept is not shown.
 
 - **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
   - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
@@ -292,10 +301,10 @@ These are what is left of each account's 5-hour and weekly windows.
 ```jsonc
   "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read
     "accounts": [ { "number": 2, "fingerprint": "3f2a…", "active": false,
-      "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
+      "week": { "leftPct": 40, "resetsAt": "…" },
       "observedAt": "…", "source": "cswap",           // "cswap" | "agent" (reported by a running Agent)
       "unknown": { "code": "…", "message": "…", "messageZh": "…" } } ] },
-  "codex": [ { "home": "login", "fiveHour": { … }, "week": { … }, "observedAt": "…", "source": "codex" },
+  "codex": [ { "home": "login", "week": { … }, "observedAt": "…", "source": "codex" },
              { "home": "work", "unknown": { … } } ]
 ```
 
@@ -367,7 +376,9 @@ executors as it says, whatever the policy is.
 
 `conditions[]` entries take one of these forms:
 - `{ "kind": "timeWindow", "inside": bool, "schedule": { "timeZone": "UTC" | "local", "slots": […] }, "minMinutesLeft"?: n }`. With `minMinutesLeft`, the condition must still hold for that many more minutes.
-- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials. It is the share left.
+- `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
+  - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
+  - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
 
 ### `route_json`: why a candidate was chosen (S3b)
@@ -384,9 +395,11 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
-      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
+      "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
-  "changedAtStart": { "from": "c-claude", "reason": "…" },        // only when the start-time check chose another
+  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds
+                      "harnessFrom": "opencode" },                // only when its harness changed then (YN-66)
+  "applyFailed": { "candidate": "c-codex", "message": "…", "at": "…" }, // still waiting: it could not be given that one now
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
 
@@ -397,15 +410,16 @@ is chosen. The other candidates are marked `notTried`.
 
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
+- **Of a harness it can be given:** at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. An executor something of which already ran is given its own harness only (`otherHarness`).
 - **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
-- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of min(5-hour, week) left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of its week left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
 - **Its conditions hold:**
-  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left;
-  - `quota`: `quotaLow`;
+  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
+  - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);
   - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
@@ -415,7 +429,9 @@ know, is unknown. Codex API-key spend is unknown too. The candidate's
 `pass` lets it be chosen, with the unknowns kept as its reasons.
 
 When none is chosen, `earliest` names the soonest time a reason gives
-(`params.until`), such as the end of a time window or a quota's reset.
+(`params.until`), such as when a time window next holds or a quota's reset.
+At a waiting executor's start every candidate it could be given counts,
+whatever its harness.
 
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
@@ -427,13 +443,42 @@ to each harness's own setting, so it holds whichever harness routing chooses.
 
 | Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
 | --- | --- | --- | --- | --- |
-| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Doesn't keep it |
-| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Doesn't keep it |
-| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Doesn't keep it |
+| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
+| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
 
-No level is each harness's own default for new Agents, kept everywhere.
-OpenCode keeps no level: Core adds no permission rule of its own to it, so
-only its own configuration applies.
+No level is each harness's own default for new Agents, kept everywhere. On
+OpenCode that is its own configuration: its default agent allows everything
+but reading a `.env` file.
+
+OpenCode keeps a level as rules of its own. Each start of an OpenCode
+executor that has a level gives that executor's `opencode serve`, and no
+other process, the level's rules in `OPENCODE_CONFIG_CONTENT`. The level is
+kept in its own table and read again at every start. OpenCode 2.2.5 appends
+those rules to every agent's rules, after its defaults and the user's and the
+project's configuration, and decides by the last rule that matches. So they
+hold over an `opencode.json` that allows more.
+- **The start checks it.** Core reads every agent's rules back
+  (`GET /api/agent`). If an agent doesn't decide as the level does for an
+  edit, a command, a fetch, a folder outside its own or a `.env` file, the
+  start is refused. A configuration OpenCode reads after Yuzuno's, such as a
+  managed one, is what can make them differ. The refused start is a definite
+  failure, so a routed executor's rebuild tries the next candidate.
+- **On OpenCode, nothing reviews an action.** Codex's Auto-approve has an
+  automatic reviewer and Claude Code's its classifier. OpenCode's has neither:
+  everything inside the project is allowed, and only a folder outside it or a
+  call that keeps failing asks you.
+- **No sandbox confines OpenCode's commands, at any level.** OpenCode 2.2.5
+  scans each shell command for its working folder and the folders it names,
+  and asks for those outside the project (`external_directory`). It refuses a
+  command it can't scan. A path the scan can't see, such as one inside a
+  script the command runs or in a variable, is not checked, and nothing
+  confines what the command does while it runs.
+- **OpenCode's own read-only `plan` agent may edit too** under Auto-approve and
+  Full access.
+- **A Core before core.29** keeps no OpenCode level: it starts an OpenCode
+  executor with OpenCode's own configuration, whose default allows everything
+  but reading a `.env` file (see [With an older Core](#with-an-older-core)).
 
 A template's level goes with each dispatch from it ([Executor
 templates](executor-model.md#executor-templates)): routing passes over a
@@ -456,17 +501,30 @@ dispatch is routed:
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
   harness of the first candidate that could run there and keeps its level,
-  and stays in the
-  queue while executors after it start. At each slot pass routing is read
-  again, among the candidates of its harness only. The first that holds
-  gives it its model, effort and account or key (`changedAtStart`), and it
-  starts in turn. **An executor's harness is fixed at its dispatch.**
+  a stand-in, and stays in the queue while executors after it start. At each
+  slot pass routing is read again, among every candidate it could be given,
+  whatever its harness (YN-66). The first that holds gives it its harness,
+  model, effort, permission and account or key, and it starts in turn:
+  - Nothing of it has run, so a candidate of another harness than its
+    stand-in's is given it in place. It keeps its Agent, task, mail and place
+    in the queue, and gets exactly what a dispatch choosing that candidate
+    gives an executor: harness, model, effort and settings, the level as that
+    harness's own permission, and the account or key.
+  - This is done under the executor's own lock, its route written last. No
+    slot pass starts it before that write, and another pass that read it as
+    waiting reads it again under the lock and leaves it as it is.
+  - Its route says `changedAtStart`, with `harnessFrom` when its harness changed.
+  - A candidate it can't be given now, such as a default model that can't be
+    checked, leaves it waiting with `applyFailed`; the next pass tries again.
+  - Its machine is fixed at its dispatch: waiting on another machine, it is
+    never given a candidate that runs on this Core host only.
+
   If none ever could, it is released and starts in turn as it would without
   routing, on the host's own login: its route says `released`, with
   `routingOff` when routing was turned off, or `noCandidate` when no candidate
-  it could be given is left: none enabled of its harness that is not excluded
-  for it after a failed start and, while it waits on another machine, not this
-  Core host's only.
+  it could be given is left: none enabled that is not excluded for it after a
+  failed start, of a harness its machine runs and that keeps its level, and,
+  while it waits on another machine, not this Core host's only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.

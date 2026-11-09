@@ -66,9 +66,7 @@ pub(crate) fn redirect(db: &Connection, message: &mut Value) -> Result<()> {
         return Ok(());
     }
     let Some(recipient) = message["recipient"]["id"].as_str() else { return Ok(()) };
-    let Some(executor) = archived(db, recipient)? else { return Ok(()) };
-    let Some(dispatcher) = executor.dispatcher else { return Ok(()) };
-    let Some(dispatcher_name) = name(db, &dispatcher)? else { return Ok(()) };
+    let Some((executor, dispatcher, dispatcher_name)) = passed_on(db, recipient)? else { return Ok(()) };
     let task = executor.task.as_deref().map(|task| format!(" of {task}")).unwrap_or_default();
     let body = message["body"].as_str().unwrap_or_default();
     message["body"] = json!(format!(
@@ -78,6 +76,22 @@ pub(crate) fn redirect(db: &Connection, message: &mut Value) -> Result<()> {
     message["originalRecipient"] = message["recipient"].take();
     message["recipient"] = json!({"kind":"agent","id":dispatcher,"name":dispatcher_name});
     Ok(())
+}
+
+/// `agent`, if Core's mail to it goes to its dispatcher ([`redirect`]): the
+/// archived executor, and the Agent that dispatched it, with its name.
+fn passed_on(db: &Connection, agent: &str) -> Result<Option<(Archived, String, String)>> {
+    let Some(executor) = archived(db, agent)? else { return Ok(None) };
+    let Some(dispatcher) = executor.dispatcher.clone() else { return Ok(None) };
+    let Some(dispatcher_name) = name(db, &dispatcher)? else { return Ok(None) };
+    Ok(Some((executor, dispatcher, dispatcher_name)))
+}
+
+/// The Agent Core's mail to `agent` reaches: its dispatcher when [`redirect`]
+/// passes it on, else `agent` itself. A sender that mails several Agents
+/// about one event writes once to each it reaches (YN-68).
+pub(crate) fn delivered_to(db: &Connection, agent: &str) -> Result<String> {
+    Ok(passed_on(db, agent)?.map(|(_, dispatcher, _)| dispatcher).unwrap_or_else(|| agent.to_owned()))
 }
 
 /// Mail and dispatches to an archived executor are refused, naming its task

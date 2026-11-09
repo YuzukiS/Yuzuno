@@ -493,8 +493,10 @@ outcome is unknown (`merge_unknown`). The rule behind the list: a stop after
 which main may carry a merge Core sent but never verified pauses the queue
 until a person has looked; a stop after which Core certainly merged nothing
 does not. While it is
-paused, entries are still checked but none merges, and the pause and its end
-are mailed, urgent, to the releaser and the leads of the repository's Projects.
+paused, entries are still checked but none merges. The pause is mailed,
+urgent, to the releaser and the leads of the repository's Projects; its end is
+mailed to them too, as a quiet notice (see Evidence below): the waiting entries go
+on by themselves.
 
 A pause belongs to the base branch it was recorded on. Only an entry on that
 branch can end it by a newer green main, and only that branch's waiting entries
@@ -551,11 +553,22 @@ version.
 
 When an entry merges, ends or stops, Core writes a comment to the task as
 Yuzuno Core, with the evidence record attached as `mergeEvidence`. It also
-mails the Agent that released the entry and the task's executor. A `conflict`
-stop says what comes next: the executor merges the current main into the PR
+mails the Agent that released the entry and the task's executor, once to each
+Agent: a released executor's copy goes to the Agent that dispatched it, and
+that is often the releaser. A `conflict` stop says what comes next: the executor merges the current main into the PR
 branch, resolves and pushes, one review round runs at the new head, and the
 lead releases that head. `merge_retry` cannot help there, since the head
 changes.
+
+Some of this mail is quiet (YN-68): it is saved and read like any other, with
+`wake: "quiet"`, but starts no Turn. It comes with its recipient's next
+wake-up, which counts it, and `peer_read` with `wake: "quiet"` lists it. While
+the task has an executor at work, the merge is quiet for everyone, and main
+CI's success is quiet for everyone but that executor, which is woken to
+report. Without one (none, or released), both wake whoever they are mailed to:
+that is how a lead knows the task can close. A queue's unpause is quiet too.
+A revert, a red, cancelled or unobserved main CI, a stop and a pause always
+wake.
 
 The record holds:
 

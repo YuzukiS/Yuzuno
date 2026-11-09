@@ -1,5 +1,6 @@
-//! Subscription quotas (YN-34 S2b): what is left of each account's 5-hour and
-//! weekly windows, read in the background while the routing policy needs them.
+//! Subscription quotas (YN-34 S2b): what is left of each account's weekly
+//! window, read in the background while the routing policy needs them. Only
+//! the week is read (YN-60): Claude and Codex have no 5-hour quota now.
 //!
 //! - **claude-swap accounts** come from `cswap list --json`.
 //! - **Codex** quotas are read per home: the host's own login and each listed
@@ -77,8 +78,9 @@ fn codex_window(v: &Value) -> Value {
     json!({"leftPct": left, "resetsAt": epoch(&v["resetsAt"])})
 }
 
-/// Codex's limits answer as `{fiveHour, week}`, taking the `codex` limit and
-/// its windows by their length: about five hours, about a week.
+/// Codex's limits answer as `{week}`, taking the `codex` limit and its window
+/// of about a week by its length. A shorter window, such as the 5-hour one
+/// Codex had before, is not read (YN-60).
 pub fn codex_windows(limits: &Value) -> Value {
     let bucket = limits["rateLimitsByLimitId"]["codex"].as_object().map(|_| &limits["rateLimitsByLimitId"]["codex"])
         .unwrap_or(&limits["rateLimits"]);
@@ -89,13 +91,14 @@ pub fn codex_windows(limits: &Value) -> Value {
             continue;
         }
         let minutes = w["windowDurationMins"].as_i64();
-        let slot = match minutes {
-            Some(m) if m <= 12 * 60 => "fiveHour",
-            Some(m) if m >= 5 * 24 * 60 => "week",
-            _ if n == 0 => "fiveHour",
-            _ => "week",
+        let week = match minutes {
+            Some(m) if m <= 12 * 60 => false,
+            Some(m) if m >= 5 * 24 * 60 => true,
+            _ => n == 1,
         };
-        out[slot] = codex_window(w);
+        if week {
+            out["week"] = codex_window(w);
+        }
     }
     out
 }
@@ -163,18 +166,28 @@ pub fn stale(at: &str, now: DateTime<Utc>) -> bool {
     DateTime::parse_from_rfc3339(at).map_or(true, |t| (now - t.with_timezone(&Utc)).num_seconds() > STALE_AFTER_SECONDS)
 }
 
+/// A reading without the 5-hour window an older Core kept.
+fn weeks_only(reading: &mut Value) {
+    if let Some(map) = reading.as_object_mut() {
+        map.remove("fiveHour");
+    }
+}
+
 /// The kept readings in the shape of `GET /api/routing/readings`: `{cswap, codex}`.
+/// A 5-hour window an older Core kept is left out (YN-60).
 pub fn view(kept: &[(String, Value, String)], now: DateTime<Utc>) -> (Value, Value) {
     let mut cswap = Value::Null;
     let mut codex = Vec::new();
     for (source, reading, at) in kept {
         if source == "cswap" {
             let mut r = reading.clone();
+            r.get_mut("accounts").and_then(Value::as_array_mut).into_iter().flatten().for_each(weeks_only);
             r["observedAt"] = at.clone().into();
             r["stale"] = stale(at, now).into();
             cswap = r;
         } else if let Some(home) = source.strip_prefix("codex:") {
             let mut r = reading.clone();
+            weeks_only(&mut r);
             r["home"] = home.into();
             r["observedAt"] = at.clone().into();
             r["source"] = "codex".into();
@@ -194,9 +207,8 @@ impl Workspace {
             let reading = match routing_accounts::cswap_accounts(&command).await {
                 Ok(accounts) => json!({"accounts": accounts.iter().map(|a| {
                     let mut row = json!({"number": a.number, "fingerprint": a.fingerprint, "active": a.active, "source": "cswap"});
-                    if let Some(w) = &a.five_hour { row["fiveHour"] = json!(w); }
                     if let Some(w) = &a.week { row["week"] = json!(w); }
-                    if a.usage_status.as_deref() != Some("ok") || (a.five_hour.is_none() && a.week.is_none()) {
+                    if a.usage_status.as_deref() != Some("ok") || a.week.is_none() {
                         let status = a.usage_status.clone().unwrap_or_else(|| "none".into());
                         row["unknown"] = unknown(&format!("usage:{status}"), format!("claude-swap has no usage for this account ({status})"),
                             format!("claude-swap 没有这个账号的用量（{status}）"));

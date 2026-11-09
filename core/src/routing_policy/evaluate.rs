@@ -8,6 +8,11 @@
 //! whose conditions all hold is chosen. A reading
 //! that is missing, stale or unknown makes its condition unknown, and the
 //! candidate's `unknown` rule decides: `skip` (the default) or `pass`.
+//!
+//! A quota condition reads the week only (YN-60, the user's decision of
+//! 2026-11-09: Claude and Codex have no 5-hour quota now). A `fiveHourLeftPct`
+//! saved before is ignored; a condition that named only it limits nothing, and
+//! its candidate's row says so (`quotaRetired`).
 use crate::{routing_keys::Provider, routing_launch::RuntimeProfile, routing_readings::{DaySpend, Schedule}};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -27,8 +32,12 @@ pub struct Inputs<'a> {
     pub machine: Option<&'a str>,
     /// Candidates this request already failed to start with: each is tried once.
     pub exclude: &'a [String],
-    /// Only candidates of this harness (the check at an executor's first start).
+    /// Only candidates of this harness: at the start of an executor something of which
+    /// already ran, its own (YN-66). None: any harness but `unavailable`.
     pub harness: Option<&'a str>,
+    /// Harnesses the executor's machine can't run (YN-66): OpenCode while this Core has it
+    /// off, Codex on a contained machine.
+    pub unavailable: &'a [&'a str],
     /// The executor's permission level (permission_levels): only candidates whose harness keeps it.
     pub level: Option<&'a str>,
     pub assume: &'a Assume,
@@ -84,24 +93,33 @@ fn left(window: &Value) -> Option<f64> {
     window["leftPct"].as_f64()
 }
 
-/// Whether a quota condition holds for one account's reading.
+/// Whether a quota condition holds for one account's reading: by the week's share only.
+/// One that names no week's share holds, as no condition (see `retired`).
 fn quota_holds(condition: &Value, reading: &Value) -> Check {
+    let Some(want) = condition["weekLeftPct"].as_f64() else { return Check::Holds };
     if reading.is_null() || reading["stale"] == true || reading.get("unknown").is_some_and(|u| !u.is_null()) {
         return Check::Unknown(reason("quotaUnknown", "This account's quota is not known now", "这个账号此刻的额度不清楚"));
     }
-    for (field, window, name, name_zh) in [("fiveHourLeftPct", "fiveHour", "5-hour", "5 小时"), ("weekLeftPct", "week", "weekly", "本周")] {
-        let Some(want) = condition[field].as_f64() else { continue };
-        match left(&reading[window]) {
-            None => return Check::Unknown(reason("quotaUnknown", format!("The {name} quota is not known now"), format!("{name_zh}额度此刻不清楚"))),
-            Some(have) if have < want => {
-                return Check::Fails(with(reason("quotaLow", format!("{have:.0}% of the {name} quota is left, below {want:.0}%"),
-                    format!("{name_zh}额度只剩 {have:.0}%，低于 {want:.0}%")), json!({"params": {"left": have, "want": want,
-                    "until": reading[window]["resetsAt"]}})));
-            }
-            Some(_) => {}
-        }
+    match left(&reading["week"]) {
+        None => Check::Unknown(reason("quotaUnknown", "The weekly quota is not known now", "本周额度此刻不清楚")),
+        Some(have) if have < want => Check::Fails(with(reason("quotaLow", format!("{have:.0}% of the weekly quota is left, below {want:.0}%"),
+            format!("本周额度只剩 {have:.0}%，低于 {want:.0}%")), json!({"params": {"left": have, "want": want,
+            "until": reading["week"]["resetsAt"]}}))),
+        Some(_) => Check::Holds,
     }
-    Check::Holds
+}
+
+/// A note for each quota condition that names no week's share: saved with only a
+/// 5-hour share before YN-60, it limits nothing now, and the row says so rather
+/// than let it hold unremarked.
+fn retired(candidate: &Value) -> Vec<Value> {
+    candidate["conditions"].as_array().into_iter().flatten().enumerate()
+        .filter(|(_, c)| c["kind"] == "quota" && !c["weekLeftPct"].is_number())
+        .map(|(n, _)| with(reason("quotaRetired",
+            format!("Condition {} named only a 5-hour share, which is no longer read: it limits nothing now. Give it the share of the week left, or remove it.", n + 1),
+            format!("第 {} 个条件只限了 5 小时额度，5 小时额度已不再判断：它现在什么都不限制。请填本周至少剩多少，或删掉它。", n + 1)),
+            json!({"condition": n})))
+        .collect()
 }
 
 fn time_window(condition: &Value, now: DateTime<Utc>) -> Check {
@@ -109,19 +127,42 @@ fn time_window(condition: &Value, now: DateTime<Utc>) -> Check {
         return Check::Unknown(reason("scheduleUnreadable", "The schedule cannot be read", "无法读这个时间表"));
     };
     let want = condition["inside"] == true;
+    let minutes = condition["minMinutesLeft"].as_i64();
     let changes = schedule.changes_at(now);
+    let until = || next_usable(&schedule, want, minutes, now).map(|t| t.to_rfc3339());
     if schedule.inside(now) != want {
         return Check::Fails(with(reason("outsideWindow", "Not in its time window now", "此刻不在它的时间窗口内"),
-            json!({"params": {"until": changes.map(|t| t.to_rfc3339())}})));
+            json!({"params": {"until": until()}})));
     }
-    if let (Some(minutes), Some(changes)) = (condition["minMinutesLeft"].as_i64(), changes) {
+    if let (Some(minutes), Some(changes)) = (minutes, changes) {
         let left = (changes - now).num_minutes();
         if left < minutes {
             return Check::Fails(with(reason("windowEndsSoon", format!("Its time window ends in {left} minutes, under {minutes}"),
-                format!("时间窗口 {left} 分钟后结束，不到 {minutes} 分钟")), json!({"params": {"until": changes.to_rfc3339()}})));
+                format!("时间窗口 {left} 分钟后结束，不到 {minutes} 分钟")), json!({"params": {"until": until()}})));
         }
     }
     Check::Holds
+}
+
+/// When a time window condition next holds after `now`: the start of the next stretch
+/// of time where the schedule is as wanted and that lasts at least `minutes` (YN-60:
+/// not the end of the stretch it is in). None when there is none within eight days.
+fn next_usable(schedule: &Schedule, want: bool, minutes: Option<i64>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let horizon = now + chrono::Duration::days(8);
+    let mut at = now;
+    while at < horizon {
+        // Each change flips it: one into the wanted state starts a stretch.
+        let start = schedule.changes_at(at)?;
+        if schedule.inside(start) != want {
+            at = start;
+            continue;
+        }
+        match (minutes, schedule.changes_at(start)) {
+            (Some(minutes), Some(end)) if (end - start).num_minutes() < minutes => at = end,
+            _ => return Some(start),
+        }
+    }
+    None
 }
 
 /// The Codex home a Codex candidate runs in: `login` for the host's own, else its Codex home's id.
@@ -156,6 +197,10 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
     match condition["kind"].as_str().unwrap_or_default() {
         "timeWindow" => time_window(condition, inputs.now),
         "quota" => {
+            // One that names no week's share limits nothing, read or not (see `retired`).
+            if !condition["weekLeftPct"].is_number() {
+                return Check::Holds;
+            }
             // A Codex account is named by the candidate itself, so a preview can assume it used
             // up before Core has a reading of it (YN-49, from a lab Core). A Claude login's account
             // is claude-swap's active one, known only from a reading.
@@ -204,6 +249,10 @@ pub fn evaluate(version: i64, policy: &Value, at: &str, inputs: &Inputs) -> Rout
             decide(candidate, inputs, cap)
         };
         row["state"] = state.into();
+        let mut reasons = reasons;
+        if !matches!(state, "off" | "notTried") {
+            reasons.extend(retired(candidate));
+        }
         for r in &reasons {
             if let Some(until) = r["params"]["until"].as_str() {
                 if earliest.as_ref().is_none_or(|(at, _)| until < at.as_str()) {
@@ -256,6 +305,11 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
     }
     if inputs.harness.is_some_and(|h| h != harness) {
         return ("skipped", vec![reason("otherHarness", "The executor was made for another harness", "这个执行者是为另一个工具建的")], None, None, None);
+    }
+    if inputs.unavailable.contains(&harness) {
+        let name = crate::permission_levels::harness_name(harness);
+        return ("skipped", vec![with(reason("harnessUnavailable", format!("Its machine can't run {name} now"), format!("它所在的机器现在跑不了 {name}")),
+            json!({"params": {"harness": harness, "machine": inputs.machine}}))], None, None, None);
     }
     if let Some(level) = inputs.level.filter(|level| !crate::permission_levels::keeps(Some(*level), harness)) {
         return ("skipped", vec![crate::permission_levels::not_kept(level, harness)], None, None, None);
@@ -331,8 +385,8 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
 }
 
 /// A pool's account: among its listed accounts, those for which each quota
-/// condition holds; the one with the most of min(5-hour, week) left, ties to
-/// the lower number. Answers each account's state too.
+/// condition holds; the one with the most of its week left, ties to the lower
+/// number. Answers each account's state too.
 fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Check, Value)> {
     let wanted = &candidate["credential"]["accounts"];
     let accounts: Vec<&Value> = inputs.cswap["accounts"].as_array().into_iter().flatten()
@@ -360,11 +414,7 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
         if used_up {
             state = "low";
         }
-        let score = match (left(&reading["fiveHour"]), left(&reading["week"])) {
-            (Some(a), Some(b)) => a.min(b),
-            (Some(a), None) | (None, Some(a)) => a,
-            (None, None) => if state == "ok" && quotas.is_empty() { 0.0 } else { -1.0 },
-        };
+        let score = left(&reading["week"]).unwrap_or(if state == "ok" && quotas.is_empty() { 0.0 } else { -1.0 });
         if state == "unknown" {
             any_unknown = true;
         }
@@ -384,7 +434,7 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
     let why = if any_unknown {
         Check::Unknown(reason("quotaUnknown", "No account of the pool is known to have quota now", "此刻不知道池里哪个账号还有额度"))
     } else {
-        let until = accounts.iter().filter_map(|a| a["fiveHour"]["resetsAt"].as_str()).min().map(str::to_owned);
+        let until = accounts.iter().filter_map(|a| a["week"]["resetsAt"].as_str()).min().map(str::to_owned);
         Check::Fails(with(reason("quotaLow", "Every account of the pool is below its quota", "池里每个账号都低于额度要求"),
             json!({"params": {"until": until}})))
     };
@@ -404,7 +454,7 @@ impl Gathered {
     pub fn inputs<'a>(&'a self, now: DateTime<Utc>, machine: Option<&'a str>, exclude: &'a [String], harness: Option<&'a str>,
         level: Option<&'a str>, assume: &'a Assume) -> Inputs<'a> {
         Inputs { now, keys: &self.keys, codex_homes: &self.codex_homes, spend: &self.spend, cswap: &self.cswap, codex: &self.codex,
-            machine, exclude, harness, level, assume }
+            machine, exclude, harness, unavailable: &[], level, assume }
     }
 }
 
