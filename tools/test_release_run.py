@@ -440,6 +440,13 @@ class FreezeTests(FreezeCase):
         self.assertIn('not the one init wrote', self.call('resume', '--release-json-sha', '0' * 64)[2])
         self.assertEqual([c[0] for c in self.recorded], ['init'])
 
+    def test_a_publish_whose_read_back_fails_still_reports_the_publication(self):
+        self.resume()
+        rc, out, _ = self.call('publish', '--resume-sha', digest(self.rundir / 'resume.json'))
+        self.assertEqual(rc, 0)
+        self.assertIn('published; reading the tag and release back for the receipts failed', out)
+        self.assertEqual([c[0] for c in self.recorded], ['init', 'resume', 'publish', 'status'])
+
     def test_publish_takes_only_the_passing_summary_it_is_given(self):
         self.resume()
         sha = digest(self.rundir / 'resume.json')
@@ -468,9 +475,10 @@ class VerifyTests(FreezeCase):
             rc, out, err = self.call('verify')
             self.assertEqual(rc, 0, err)
             self.assertIn('verify-download', [c[0] for c in self.recorded])
-            shutil.rmtree(self.t / 'anonymous-download')
             (served / NAMES[2]).write_text('other bytes')
             self.assertIn('differs from the signed file', self.call('verify')[2])
+            self.assertTrue((self.t / 'anonymous-download-2').is_dir(), 'a second attempt downloads into its own directory')
+            self.assertEqual((self.t / 'anonymous-download' / NAMES[2]).read_text(), NAMES[2], 'the first is kept')
 
 
 class MilestoneTests(ReleaseCase):

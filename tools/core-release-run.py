@@ -387,7 +387,7 @@ def baseline(env, args):
 
 def facts(env, args):
     """What the notes and the review string are written from; never their text."""
-    sha, repo, prev, ci_run = env.need('SHA', 'REPO', 'PREV_TAG', 'CI_RUN')
+    sha, repo, prev, ci_run, _ = env.need('SHA', 'REPO', 'PREV_TAG', 'CI_RUN', 'MILESTONE')
     prev_sha = commit_of_tag(repo, prev)
     merges = []
     for line in git(env, 'log', '--merges', '--first-parent', '--reverse', '--format=%H%x09%s', f'{prev_sha}..{sha}').splitlines():
@@ -495,9 +495,13 @@ def publish(env, args):
     rc = core_release(env, 'publish', '--work-dir', env.work, '--minisign', minisign)
     core_release(env, 'status', '--work-dir', env.work)
     if rc == 0:
-        tag = gh(f'repos/{env.REPO}/git/ref/tags/{env.RELEASE_ID}')
-        (env.run / 'tag-ref.txt').write_text(f"{tag['object']['sha']}\t{tag['ref']}\n")
-        write(env.run / 'remote-release.json', gh(f'repos/{env.REPO}/releases/tags/{env.RELEASE_ID}'))
+        # core-release.py has checked the tag and the release; these receipts only record them.
+        try:
+            tag = gh(f'repos/{env.REPO}/git/ref/tags/{env.RELEASE_ID}')
+            (env.run / 'tag-ref.txt').write_text(f"{tag['object']['sha']}\t{tag['ref']}\n")
+            write(env.run / 'remote-release.json', gh(f'repos/{env.REPO}/releases/tags/{env.RELEASE_ID}'))
+        except RuntimeError as error:
+            say(f'published; reading the tag and release back for the receipts failed ({error}): verify reads them again')
     return rc
 
 
@@ -509,8 +513,9 @@ def verify(env, args):
     signed = env.work / 'signed'
     names = sorted(p.name for p in signed.iterdir())
     require(len(names) == 3, 'Expected three signed files')
-    target = Path(env.T) / 'anonymous-download'
-    require(not target.exists(), f'{target} exists')
+    # Each attempt downloads into a directory of its own; an earlier one is kept, never reused.
+    attempts = [Path(env.T) / ('anonymous-download' + (f'-{n}' if n > 1 else '')) for n in range(1, 100)]
+    target = next(p for p in attempts if not p.exists())
     target.mkdir()
     for name in names:
         subprocess.run(['/usr/bin/env', '-i', f'PATH={ANON_PATH}', 'HOME=/nonexistent', 'curl', '-fsSL', '--netrc-file', '/dev/null',
@@ -522,7 +527,7 @@ def verify(env, args):
                               '-p', env.work / 'publisher.pub'], text=True, capture_output=True)
     require(checked.returncode == 0 and f'Trusted comment: Yuzuno Core {env.RELEASE_ID}' in checked.stdout,
             f'The anonymous download does not verify: {checked.stdout.strip()} {checked.stderr.strip()}')
-    write(env.run / 'anonymous-download.json', {'passed': True, 'files': {n: digest(target / n) for n in names},
+    write(env.run / 'anonymous-download.json', {'passed': True, 'directory': str(target), 'files': {n: digest(target / n) for n in names},
                                                 'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')})
     say('anonymous download matches the signed files and verifies')
     return 0
@@ -614,7 +619,7 @@ def main(argv=None):
     except Refused as error:
         print(f'refusing to start: {error}', file=sys.stderr)
         return 2
-    except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
         print(f'stopped: {error}', file=sys.stderr)
         return 1
 

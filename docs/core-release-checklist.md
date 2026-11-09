@@ -127,7 +127,7 @@ The user's reply on this Ask authorizes the steps after it; a reply relayed by a
 ### 8. Publish, verify, milestone
 
 1. Run `publish --resume-sha <the Job's resume.json SHA-256>`. It checks minisign, `W`, `release.json` against the env file and the summary. It prints the three signed SHA-256s and calls `core-release.py publish`. It then writes `tag-ref.txt` and `remote-release.json`.
-2. Run `verify`. It calls `core-release.py verify-download` through gh, then downloads the three files anonymously into `T/anonymous-download`: `env -i`, no token, no netrc. Each must equal the signed file, and the descriptor must verify with the frozen `publisher.pub`.
+2. Run `verify`. It calls `core-release.py verify-download` through gh, then downloads the three files anonymously into a new `T/anonymous-download` directory (`-2`, `-3` for a later attempt): `env -i`, no token, no netrc. Each must equal the signed file, and the descriptor must verify with the frozen `publisher.pub`.
 3. Edit the Ask's `text` and `plan` blocks with `edit`, not `put`, so it stays replied. Run `milestone --close core.N`.
 4. Submit a `doing` result naming:
    - the release ID and tag;
