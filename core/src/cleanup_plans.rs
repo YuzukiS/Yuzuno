@@ -22,7 +22,8 @@
 //! the plan's sha256 covers its items, their checks and that summary.
 //!
 //! A plan is valid for `planHours` (Settings), and a newer plan of its task
-//! cancels it. This Core registers and shows plans; it removes nothing.
+//! cancels it. Only the user's approval of its groups on Home, read by Core
+//! itself, lets its executor apply it (`apply`).
 use crate::{
     collaboration_store::{self as collaboration, TaskActor},
     model::now,
@@ -48,6 +49,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod apply;
 mod check;
 mod settings;
 mod summary;
@@ -77,6 +79,9 @@ pub(crate) struct State {
     pub mounts: std::sync::Mutex<Option<Option<Vec<PathBuf>>>>,
     #[cfg(test)]
     pub skip_kind_check: std::sync::atomic::AtomicBool,
+    /// The processes using a folder cannot be read (as without /proc).
+    #[cfg(test)]
+    pub processes_unavailable: std::sync::atomic::AtomicBool,
 }
 
 impl State {
@@ -94,6 +99,14 @@ impl State {
             return mounts;
         }
         crate::build_output::mounts()
+    }
+
+    fn processes_unavailable(&self) -> bool {
+        #[cfg(test)]
+        if self.processes_unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+            return true;
+        }
+        false
     }
 
     fn kind_check(&self) -> bool {
@@ -130,7 +143,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/tasks/{task}/cleanup-plan", get(http_plan))
 }
 
-pub(crate) const TOOLS: [&str; 2] = ["cleanup_plan_submit", "cleanup_plan_get"];
+pub(crate) const TOOLS: [&str; 3] = ["cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply"];
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let request = json!({"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."});
@@ -156,12 +169,14 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "planId":{"type":"string"},"view":{"type":"string","enum":["summary","items"],"default":"summary"},
                 "afterItem":{"type":"string","description":"items: the item after which the page starts (nextAfterItem)."},
                 "limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE,"default":PAGE}}}}),
+        apply::tool_definition(),
     ]
 }
 
 pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, input: Value) -> Result<Value> {
     match operation.as_str() {
         "cleanup_plan_submit" => submit(&ws, actor, input).await,
+        "cleanup_apply" => apply::apply(&ws, actor, input).await,
         "cleanup_plan_get" => {
             let get: GetInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
             ws.stored(move |s| plan_get(s, actor.as_deref(), &get)).await
@@ -515,7 +530,8 @@ fn header(db: &Connection, plan: &Plan) -> Result<Value> {
         "SELECT COUNT(*), COALESCE(SUM(state='refused'),0) FROM cleanup_items WHERE plan_id=?1", [&plan.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(json!({"planId": plan.id, "taskId": collaboration::task_shown(db, &plan.task), "title": plan.data["title"], "state": plan.state,
         "sha256": plan.sha256, "createdAt": plan.created_at, "expiresAt": plan.expires_at, "machine": plan.data["machine"],
-        "items": counts.0, "refused": counts.1, "groups": groups, "cancelled": plan.data["cancelled"]}))
+        "items": counts.0, "refused": counts.1, "groups": groups, "cancelled": plan.data["cancelled"],
+        "approval": approval(db, &plan.id)?, "applied": plan.data["applied"]}))
 }
 
 fn submit_answer(db: &Connection, id: &str) -> Result<Value> {
@@ -586,7 +602,7 @@ fn plan_get(store: &Store, actor: Option<&str>, input: &GetInput) -> Result<Valu
                 None => -1,
             };
             let mut q = db.prepare(
-                "SELECT item_id, group_id, kind, path, decision, state, pre, result FROM cleanup_items
+                "SELECT item_id, group_id, kind, path, decision, state, pre, result, snapshot FROM cleanup_items
                  WHERE plan_id=?1 AND seq>?2 ORDER BY seq LIMIT ?3",
             )?;
             let mut items = q
@@ -596,7 +612,8 @@ fn plan_get(store: &Store, actor: Option<&str>, input: &GetInput) -> Result<Valu
                     Ok(json!({"item": r.get::<_, String>(0)?, "group": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
                         "path": r.get::<_, String>(3)?, "decision": r.get::<_, String>(4)?, "state": r.get::<_, String>(5)?,
                         "category": pre["category"], "rule": pre["rule"], "basis": pre["basis"], "bytes": pre["bytes"],
-                        "worktree": pre["worktree"], "snapshot": pre["snapshot"], "refusal": result}))
+                        "worktree": pre["worktree"], "snapshot": pre["snapshot"], "refusal": result.clone(), "result": result,
+                        "snapshotKept": r.get::<_, Option<String>>(8)?.and_then(|t| serde_json::from_str::<Value>(&t).ok())}))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let more = items.len() > limit;
@@ -608,6 +625,34 @@ fn plan_get(store: &Store, actor: Option<&str>, input: &GetInput) -> Result<Valu
         other => bail!("invalid_input: view is summary or items, not {other}"),
     }
     Ok(answer)
+}
+
+/// What Core recorded of a plan's approval, without its request digest.
+fn approval(db: &Connection, id: &str) -> Result<Value> {
+    let raw: Option<String> = db.query_row("SELECT approval FROM cleanup_plans WHERE id=?1", [id], |r| r.get(0))?;
+    let mut approval: Value = raw.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
+    if let Some(object) = approval.as_object_mut() {
+        object.remove("requestDigest");
+    }
+    Ok(approval)
+}
+
+impl Workspace {
+    /// Once at start: plans a stopped Core left applying are finished, what
+    /// was not reached kept, and their executors told.
+    pub(crate) fn start_cleanup_recovery(self: &Arc<Self>) {
+        let ws = self.clone();
+        tokio::spawn(async move {
+            match ws.stored(apply::recover).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("[cleanup] {n} plan(s) left applying by a stopped Core were finished; nothing was retried");
+                    ws.collaboration_wakeup.notify_one();
+                }
+                Err(error) => eprintln!("[cleanup] recovery failed: {error:#}"),
+            }
+        });
+    }
 }
 
 /// The plan of a task the user could approve now (Home's gate card, design

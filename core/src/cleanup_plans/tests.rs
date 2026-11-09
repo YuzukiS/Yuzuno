@@ -611,3 +611,6 @@ fn git_worktree_list_is_read_with_its_main_worktree_first() {
     assert!(listed[1].locked && !listed[0].locked);
     assert!(listed[2].prunable && listed[2].branch.is_none());
 }
+
+#[path = "apply_tests.rs"]
+mod apply_tests;

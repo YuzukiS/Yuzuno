@@ -705,8 +705,14 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             (None, text) => text.unwrap_or_default().to_owned(),
         };
         let reply: String = reply.chars().take(2000).collect();
+        // The form's answers by option id, kept only as form_answers took them
+        // for the version shown (a retry sent the same answers).
+        let form = match (&shown, &input.form) {
+            (Some(row), Some(form)) if form_answers(row, form, &input.text).is_ok() => Some(json!({"formId": form.form_id, "answers": form.answers})),
+            _ => None,
+        };
         let (store, key, id) = (ws.store.clone(), key.clone(), project.clone());
-        if crate::db::blocking(move || sections::mark_replied(&store, &id, &key, version, &reply)).await? {
+        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref())).await? {
             announce(ws, Some(&project));
         }
     }
