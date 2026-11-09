@@ -20,7 +20,8 @@ version; a later slice adds to it.
 | YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
 | YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
 | YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
-| YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | This version |
+| YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | Done |
+| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -396,7 +397,9 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
       "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
-  "changedAtStart": { "from": "c-claude", "reason": "…" },        // only when the start-time check chose another
+  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds
+                      "harnessFrom": "opencode" },                // only when its harness changed then (YN-66)
+  "applyFailed": { "candidate": "c-codex", "message": "…", "at": "…" }, // still waiting: it could not be given that one now
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
 
@@ -407,6 +410,7 @@ is chosen. The other candidates are marked `notTried`.
 
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
+- **Of a harness it can be given:** at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. An executor something of which already ran is given its own harness only (`otherHarness`).
 - **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Its credential is there:**
@@ -426,6 +430,8 @@ know, is unknown. Codex API-key spend is unknown too. The candidate's
 
 When none is chosen, `earliest` names the soonest time a reason gives
 (`params.until`), such as when a time window next holds or a quota's reset.
+At a waiting executor's start every candidate it could be given counts,
+whatever its harness.
 
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
@@ -495,17 +501,30 @@ dispatch is routed:
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
   harness of the first candidate that could run there and keeps its level,
-  and stays in the
-  queue while executors after it start. At each slot pass routing is read
-  again, among the candidates of its harness only. The first that holds
-  gives it its model, effort and account or key (`changedAtStart`), and it
-  starts in turn. **An executor's harness is fixed at its dispatch.**
+  a stand-in, and stays in the queue while executors after it start. At each
+  slot pass routing is read again, among every candidate it could be given,
+  whatever its harness (YN-66). The first that holds gives it its harness,
+  model, effort, permission and account or key, and it starts in turn:
+  - Nothing of it has run, so a candidate of another harness than its
+    stand-in's is given it in place. It keeps its Agent, task, mail and place
+    in the queue, and gets exactly what a dispatch choosing that candidate
+    gives an executor: harness, model, effort and settings, the level as that
+    harness's own permission, and the account or key.
+  - This is done under the executor's own lock, its route written last. No
+    slot pass starts it before that write, and another pass that read it as
+    waiting reads it again under the lock and leaves it as it is.
+  - Its route says `changedAtStart`, with `harnessFrom` when its harness changed.
+  - A candidate it can't be given now, such as a default model that can't be
+    checked, leaves it waiting with `applyFailed`; the next pass tries again.
+  - Its machine is fixed at its dispatch: waiting on another machine, it is
+    never given a candidate that runs on this Core host only.
+
   If none ever could, it is released and starts in turn as it would without
   routing, on the host's own login: its route says `released`, with
   `routingOff` when routing was turned off, or `noCandidate` when no candidate
-  it could be given is left: none enabled of its harness that is not excluded
-  for it after a failed start and, while it waits on another machine, not this
-  Core host's only.
+  it could be given is left: none enabled that is not excluded for it after a
+  failed start, of a harness its machine runs and that keeps its level, and,
+  while it waits on another machine, not this Core host's only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.

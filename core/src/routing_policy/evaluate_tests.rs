@@ -50,13 +50,19 @@ impl Fixture {
 
     fn run(&self, policy: &Value, now: DateTime<Utc>, machine: Option<&str>, exclude: &[String], assume: &Assume) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, level: None, assume })
+            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, unavailable: &[], level: None, assume })
+    }
+
+    /// At a waiting executor's start (YN-66): among one harness, or any but those its machine can't run.
+    fn run_start(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, unavailable: &[&str]) -> Route {
+        evaluate(3, policy, "start", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable, level: None, assume: &Assume::default() })
     }
 
     /// At the executor's first start (`harness`) or dispatch, for a permission level (YN-56).
     fn run_level(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, level: Option<&str>) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, level, assume: &Assume::default() })
+            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable: &[], level, assume: &Assume::default() })
     }
 }
 
@@ -282,4 +288,35 @@ fn a_window_that_ends_soon_waits_for_the_next_window_long_enough_to_use() {
     let route = f.run(&p, utc(9, 2, 0), Some("local"), &[], &Assume::default());
     let why = &route.record["candidates"][0]["reasons"][0];
     assert_eq!((why["code"].clone(), why["params"]["until"].clone()), (json!("outsideWindow"), json!("2026-11-09T10:00:00+00:00")), "{}", route.record);
+}
+
+/// YN-66: at a waiting executor's start every harness its machine runs is read, so the
+/// soonest time a reason gives is any of theirs, not only its stand-in's; a harness its
+/// machine can't run is passed over, and gives no time.
+#[test]
+fn at_a_start_every_harness_its_machine_runs_counts_and_one_it_cant_is_passed_over() {
+    let mut f = Fixture::new();
+    // Both pool accounts below the 30% the pool wants, until the week resets at 03:00.
+    f.cswap = cswap(&[10.0, 20.0]);
+    for account in f.cswap["accounts"].as_array_mut().unwrap() {
+        account["week"]["resetsAt"] = json!("2026-11-09T03:00:00+00:00");
+    }
+    let mut p = policy();
+    p["candidates"] = json!([p["candidates"][0].clone(), p["candidates"][1].clone()]);
+    // 02:00 on a Monday: DeepSeek's peak, until 04:00.
+    let at = utc(9, 2, 0);
+    let stand_in = f.run_start(&p, at, Some("opencode"), &[]);
+    assert_eq!((codes(&stand_in, "c-pool"), stand_in.record["earliest"].clone()),
+        (vec!["otherHarness".to_owned()], json!({"at": "2026-11-09T04:00:00+00:00", "candidate": "c-deepseek"})),
+        "among its stand-in's harness only, as before");
+    let any = f.run_start(&p, at, None, &[]);
+    assert_eq!((codes(&any, "c-pool"), any.record["chosen"].clone(), any.record["earliest"].clone()),
+        (vec!["quotaLow".to_owned()], Value::Null, json!({"at": "2026-11-09T03:00:00+00:00", "candidate": "c-pool"})),
+        "the pool's week resets first");
+    let off = f.run_start(&p, at, None, &["opencode"]);
+    assert_eq!(codes(&off, "c-deepseek"), ["harnessUnavailable"]);
+    let why = &off.record["candidates"][1]["reasons"][0];
+    assert_eq!((why["params"].clone(), why["messageZh"].clone()),
+        (json!({"harness": "opencode", "machine": "local"}), json!("它所在的机器现在跑不了 OpenCode")));
+    assert_eq!(off.record["earliest"], json!({"at": "2026-11-09T03:00:00+00:00", "candidate": "c-pool"}));
 }

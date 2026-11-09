@@ -282,11 +282,13 @@ async fn the_listing_says_what_routing_gave_each_executor() {
         Some(json!({"at":"dispatch","chosen":null,"waiting":true,"earliest":{"at":"2026-11-09T04:00:00Z","candidate":"c-ds"},"candidates":[]})));
     routed("e-wait-open", "opencode", "", None, reviewer.clone(), Some(json!({"at":"dispatch","chosen":null,"waiting":true,"candidates":[]})));
     // Released as release_waiting writes it: its reason an object (R1 e7dfa1a9).
-    let mut released = crate::routing_policy::dispatch::release_reason(&json!({"enabled":true,"candidates":[]}), "claude", &[], "local").unwrap();
+    let waits = crate::routing_policy::dispatch::WaitingExecutor { agent: "e-released".into(), harness: "claude".into(),
+        machine: "local".into(), project: None, route: json!({"waiting":true}), unstarted: true, unavailable: vec![] };
+    let mut released = crate::routing_policy::dispatch::release_reason(&json!({"enabled":true,"candidates":[]}), &waits).unwrap();
     released["at"] = json!("2026-11-09T01:00:00Z");
     routed("e-released", "claude", "", None, reviewer.clone(),
         Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":released,"candidates":[]})));
-    let mut off = crate::routing_policy::dispatch::release_reason(&json!({"enabled":false}), "claude", &[], "local").unwrap();
+    let mut off = crate::routing_policy::dispatch::release_reason(&json!({"enabled":false}), &waits).unwrap();
     off["at"] = json!("2026-11-09T01:00:00Z");
     routed("e-released-off", "claude", "", None, reviewer.clone(),
         Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":off,"candidates":[]})));
