@@ -238,10 +238,15 @@ async function run({ width, height, theme, lang, motion = false }) {
     assert.equal(spin, motion ? "island-turn" : "none", `${tag}: the arc ${motion ? "turns" : "rests"}`);
     // Each card says which one, and the rest.
     for (const [id, [wait, line, also]] of Object.entries(EXPECTED)) {
+      // In view first: a scroll of what holds a tip closes it (Tip.tsx).
+      await rowOf(id).scrollIntoViewIfNeeded();
       await page.keyboard.press("Tab");
       await rowOf(id).locator(".agent-select").focus();
       const tip = page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])');
-      await tip.waitFor({ timeout: 5_000 });
+      await tip.waitFor({ timeout: 5_000 }).catch(async (error) => {
+        const tips = await page.locator(".tip").evaluateAll((all) => all.map((t) => `${t.className} [${t.dataset.state}] ${t.textContent.slice(0, 40)}`));
+        throw new Error(`${tag}: ${id}'s card did not open (tips: ${JSON.stringify(tips)}): ${error.message}`);
+      });
       const text = (await tip.innerText()).replace(/\s+/g, " ");
       if (wait) {
         assert.ok(text.includes(line[i]), `${tag}: ${id}'s card says "${line[i]}": ${text}`);
@@ -263,6 +268,7 @@ async function run({ width, height, theme, lang, motion = false }) {
     };
     await page.mouse.move(0, 0);
     await shot(`${tag}-list.png`, list);
+    await rowOf("yn12").scrollIntoViewIfNeeded();
     await page.keyboard.press("Tab");
     await rowOf("yn12").locator(".agent-select").focus();
     await page.locator('.tip.agent-card[role="tooltip"]:not([data-state="closed"])').waitFor({ timeout: 5_000 });
