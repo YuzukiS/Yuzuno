@@ -346,3 +346,116 @@ fn a_restart_leaves_an_unfinished_incremental_round_unknown_counted_and_never_ru
     // It may have started a model, so it counts.
     assert!(store.create_pr_review(None, &start(&task, "r3", D, Some("earlier")), "third").unwrap_err().to_string().contains("already has 2"));
 }
+
+const E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+/// A round at a new merge base E, which brought in z.rs, changed w.rs and
+/// removed v.rs since C. Every path is a target and this round read each
+/// completely, and z.rs and w.rs whole at their new objects.
+fn base_round(previous: &Value) -> Value {
+    let mut run = round(previous);
+    run["mergeBaseSha"] = json!(E);
+    let i = &mut run["incremental"];
+    i["sameMergeBase"] = json!(false);
+    i["targets"] = json!(["a.rs", "b.rs", "c.rs"].map(|path| json!({"path":path,"status":"modified","why":"merge_base_changed","changedSinceEarlierHead":false})));
+    i["carriedPaths"] = json!([]);
+    i["baseChanges"] = json!({"state":"read","from":C,"to":E,"truncated":false,"paths":[
+        {"path":"z.rs","status":"A","fromBlob":null,"toBlob":"5".repeat(40)},
+        {"path":"w.rs","status":"M","fromBlob":"6".repeat(40),"toBlob":"7".repeat(40)},
+        {"path":"v.rs","status":"D","fromBlob":"8".repeat(40),"toBlob":null}]});
+    run["coverage"]["coveredFiles"] = json!(["a.rs", "b.rs", "c.rs"].map(|path| json!({"path":path,"evidenceKind":"complete_diff","byReview":"now"})));
+    let whole = |path: &str, blob: &str, start: u64, end: u64, total: u64| json!({"tool":"source_read","path":path,"blobSha":blob,"startLine":start,"endLine":end,"totalLines":total});
+    run["contextReads"] = json!([whole("z.rs", &"5".repeat(40), 1, 3, 3), whole("w.rs", &"7".repeat(40), 1, 500, 900), whole("w.rs", &"7".repeat(40), 501, 900, 900)]);
+    run
+}
+
+fn by_base(index: u64, paths: Value) -> Value {
+    json!({"index":index,"disposition":"fixed_by_base","fix_paths":[],"base_paths":paths,"explanation":"The new base defines what b.rs calls"})
+}
+
+#[test]
+fn a_finding_a_new_merge_base_answers_is_settled_only_by_base_paths_this_round_read_whole() {
+    let earlier = previous();
+    let mut run = base_round(&earlier);
+    reviewer::complete_report(&report("patch is correct", json!([]), json!([by_base(0, json!(["z.rs", "w.rs"])), by_base(1, json!(["z.rs"]))])), &mut run);
+    assert_eq!(run["status"], "completed", "{}", run["error"]);
+    assert_eq!(run["settledFindings"][0]["settlement"], json!({"disposition":"fixed_by_base","fixPaths":[],
+        "basePaths":[{"path":"z.rs","fromBlob":null,"toBlob":"5".repeat(40)},{"path":"w.rs","fromBlob":"6".repeat(40),"toBlob":"7".repeat(40)}],
+        "explanation":"The new base defines what b.rs calls","settledBy":"now"}));
+    assert_eq!(run["conclusion"], "no_findings");
+    assert!(policy::passes(&run));
+    // Anything else leaves the P1, and it blocks.
+    let stays = |edit: &dyn Fn(&mut Value), answers: Value, reason: &str| {
+        let mut run = base_round(&earlier);
+        edit(&mut run);
+        reviewer::complete_report(&report("patch is correct", json!([]), answers), &mut run);
+        let bug = run["findings"].as_array().unwrap().iter().find(|f| f["title"] == "Bug").expect("the P1 stays");
+        assert_eq!(bug["disposition"]["reason"], reason);
+        assert_eq!(run["conclusion"], "changes_requested", "{reason}");
+    };
+    let none = |_: &mut Value| {};
+    let z = || json!([by_base(0, json!(["z.rs"]))]);
+    stays(&|r: &mut Value| r["incremental"]["sameMergeBase"] = json!(true), z(), "the merge base didn't change since the earlier round");
+    stays(&|r: &mut Value| r["incremental"]["baseChanges"] = json!({"state":"unavailable","error":"Fixed Git objects are unavailable"}), z(), "Core couldn't read what the new merge base changed");
+    stays(&|r: &mut Value| { r["incremental"].as_object_mut().unwrap().remove("baseChanges"); }, z(), "Core couldn't read what the new merge base changed");
+    // Code that is in the base now: the finding's own file changed there.
+    stays(&|r: &mut Value| r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"b.rs","status":"M","fromBlob":"9".repeat(40),"toBlob":"a".repeat(40)})),
+        z(), "its own path changed in the new merge base, so the code it is about may be there now");
+    // Its file left the PR, or this round didn't read it completely.
+    stays(&|r: &mut Value| { r["incremental"]["targets"].as_array_mut().unwrap().retain(|t| t["path"] != "b.rs"); r["incremental"]["leftThePr"] = json!(["b.rs"]); },
+        z(), "its own path isn't a target this round read completely");
+    stays(&|r: &mut Value| r["coverage"]["coveredFiles"].as_array_mut().unwrap().retain(|c| c["path"] != "b.rs"), z(), "its own path isn't a target this round read completely");
+    stays(&none, json!([by_base(0, json!([]))]), "fixed by the base without base paths");
+    stays(&none, json!([by_base(0, json!(["z.rs", 7]))]), "fixed by the base without base paths");
+    stays(&none, json!([by_base(0, json!(["z.rs", "z.rs"]))]), "fixed by the base without base paths");
+    // Not something the new merge base brought: unchanged there, removed, or the finding's own file.
+    for path in ["a.rs", "v.rs", "elsewhere.rs", "b.rs"] {
+        stays(&none, json!([by_base(0, json!([path]))]), "a base path isn't one the new merge base added or changed");
+    }
+    // Not read whole at its new object.
+    stays(&|r: &mut Value| { r["contextReads"].as_array_mut().unwrap().pop(); }, json!([by_base(0, json!(["w.rs"]))]), "a base path wasn't read completely by this round at the new merge base");
+    stays(&|r: &mut Value| r["contextReads"][0]["blobSha"] = json!("9".repeat(40)), z(), "a base path wasn't read completely by this round at the new merge base");
+    stays(&|r: &mut Value| r["contextReads"][0]["tool"] = json!("source_search"), z(), "a base path wasn't read completely by this round at the new merge base");
+    stays(&none, json!([{"index":0,"disposition":"fixed_by_base","fix_paths":[],"base_paths":["z.rs"],"explanation":" "}]), "fixed without an explanation");
+    // Answered once only, as any other disposition.
+    stays(&none, json!([by_base(0, json!(["z.rs"])), by_base(0, json!(["z.rs"]))]), "answered more than once");
+    // The plain fix still needs a path that changed since the earlier head.
+    stays(&none, json!([fixed(0, json!(["b.rs"]))]), "a fix path didn't change since the earlier head or wasn't read completely by this round");
+}
+
+fn sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Every round's instructions and report schema before YN-67 (computed on
+/// main at e676b0e8): a round whose merge base didn't change, a round of an
+/// older coverage policy and every full or continuation round keep them byte
+/// for byte. Change these only with a deliberate prompt change.
+const PINNED: &[&str] = &[];
+
+#[test]
+fn only_a_round_whose_merge_base_changed_is_offered_fixed_by_base_and_every_other_prompt_stays_byte_for_byte() {
+    let findings = json!([{"index":0},{"index":1}]);
+    let moved = json!({"from":C,"to":E,"paths":[{"path":"z.rs","status":"A"}],"listed":1,"total":1});
+    let changed = json!({"coveragePolicyVersion":3,"incrementalOf":{"reviewId":"earlier","findings":findings},"mergeBaseChanged":moved}).to_string();
+    let schema = reviewer::schema(&changed);
+    let items = &schema["properties"]["previous_findings"]["items"];
+    assert_eq!(items["properties"]["disposition"]["enum"], json!(["fixed","still_valid","fixed_by_base"]));
+    assert!(items["required"].as_array().unwrap().contains(&json!("base_paths")));
+    let prompt = reviewer::prompt(&changed);
+    assert!(prompt.contains("mergeBaseChanged") && prompt.contains("fixed_by_base") && prompt.contains("base_paths"), "{prompt}");
+    assert!(prompt.contains("in the base now is not fixed by it"), "{prompt}");
+    let variants = [
+        ("full-v1", "fixed evidence".to_owned()),
+        ("full-v2", json!({"coveragePolicyVersion":2}).to_string()),
+        ("full-v3", json!({"coveragePolicyVersion":3}).to_string()),
+        ("full-v3-outside", json!({"coveragePolicyVersion":3,"knownOutsideScope":[{"path":"x.bin","state":"unsupported","reason":"binary"}]}).to_string()),
+        ("continuation-v3", json!({"coveragePolicyVersion":3,"continuationOf":{"reviewId":"earlier"}}).to_string()),
+        ("incremental-same-base", json!({"coveragePolicyVersion":3,"incrementalOf":{"reviewId":"earlier","findings":findings}}).to_string()),
+        ("incremental-v2-base-changed", json!({"coveragePolicyVersion":2,"incrementalOf":{"reviewId":"earlier","findings":findings},"mergeBaseChanged":moved}).to_string()),
+    ];
+    let actual: Vec<String> = variants.iter().map(|(name, e)| format!("{name} {} {}", sha(&reviewer::prompt(e)), sha(&reviewer::schema(e).to_string()))).collect();
+    println!("PINNED:\n{}", actual.join("\n"));
+    assert_eq!(actual, PINNED);
+}
