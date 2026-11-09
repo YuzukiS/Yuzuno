@@ -283,12 +283,17 @@ async fn a_process_waits_for_another_try_and_what_cargo_did_not_make_is_kept_onc
     assert_eq!(record(&lab, "e1").unwrap().0, "gaveUp");
 }
 
-/// One released executor whose only profile another open executor of its
-/// task may still use: it waits.
+/// One released executor whose profiles, known only through its task (its
+/// pull request's branch, a worktree registered on the task), another open
+/// executor of the task may still use: they wait (review 912c501e).
 async fn lab_with_waiting() -> Lab {
     let lab = lab();
     let branch = worktree(&lab, "pr", "feat/pr");
     target(&branch.join("target"), &["debug"]);
+    let registered = worktree(&lab, "registered", "feat/registered");
+    target(&registered.join("target"), &["debug"]);
+    lab.ws.store.db.write().unwrap().execute("INSERT INTO task_workspaces(id,task_id,data) VALUES('w1',?1,?2)",
+        params![lab.task, json!({"id": "w1", "path": registered}).to_string()]).unwrap();
     executor(&lab, "e1", &lab.project, Some(2));
     executor(&lab, "e2", &lab.project, None);
     pull_request(&lab, 9, "feat/pr");
@@ -296,8 +301,13 @@ async fn lab_with_waiting() -> Lab {
     assert_eq!(pass(&lab).await, 1);
     let (state, data) = record(&lab, "e1").unwrap();
     assert_eq!(state, "waiting");
-    assert!(data["results"][0]["reasons"].to_string().contains(SHARED), "{data}");
-    assert!(branch.join("target/debug").exists());
+    let results = data["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{data}");
+    for result in results {
+        assert_eq!(result["state"], "waiting", "{data}");
+        assert!(result["reasons"].to_string().contains(SHARED), "{data}");
+    }
+    assert!(branch.join("target/debug").exists() && registered.join("target/debug").exists());
     lab
 }
 
