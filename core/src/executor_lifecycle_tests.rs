@@ -240,3 +240,78 @@ fn only_a_write_that_can_move_a_lifecycle_announces_it() {
     assert!(!moves("task_create", &json!({})), "a new task has no executor yet");
     assert!(!moves("task_comment", &json!({})), "a comment");
 }
+
+/// YN-57 S4a: what routing gave each executor, for its row's card, from its
+/// dispatch's record (`route_json`), its template and what it starts with.
+/// Synthetic ids only; a key by its id and an account by number and fingerprint.
+#[tokio::test]
+async fn the_listing_says_what_routing_gave_each_executor() {
+    use crate::routing_launch::RuntimeProfile;
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    let (_, task) = task(s, "Routed work");
+    /// Executor `id` running `harness` · `model` (and `effort`), with its dispatch row: `template` its materials'
+    /// template, `route` routing's record of it (None: not routed).
+    let routed = |id: &str, harness: &str, model: &str, effort: Option<&str>, template: Value, route: Option<Value>| {
+        let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":format!("Agent {id}"),"cwd":"/synthetic/work",
+            "model":model,"harness":harness,"color":"sage","status":"offline","createdAt":"now","updatedAt":"now",
+            "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0,
+            "settings":{"reasoningEffort":effort,"approvalPolicy":"on-request","sandbox":"workspace-write"}},
+            "turns":[],"pending":[],"artifacts":[]})).unwrap();
+        s.insert(&detail).unwrap();
+        role(s, id, &task, "user", &format!("d-{id}"), "running", None);
+        s.db.write().unwrap().execute(
+            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,route_json)
+             VALUES('user',?1,'{}',?2,'reviewer',NULL,'local',?3,?4,'dispatched','now','now',?5)",
+            params![format!("r-{id}"), task, template.to_string(), id, route.map(|r| r.to_string())],
+        ).unwrap();
+    };
+    let reviewer = json!({"id":"reviewer","label":"Reviewer","source":"workspace"});
+    let candidate = |id: &str, label: Option<&str>| json!({"id":id,"label":label,"harness":"x","model":"y","state":"chosen","reasons":[],"readings":[]});
+    routed("e-key", "opencode", "deepseek/deepseek-flash", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":"c-ds","candidates":[candidate("c-ds", Some("DeepSeek off-peak"))]})));
+    s.set_runtime_profile("e-key", Some(&RuntimeProfile::ApiKey { key_id: "deepseek-main".into() })).unwrap();
+    routed("e-pool", "claude", "opus", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":"c-cl","account":{"number":2,"fingerprint":"0f1e2d3c4b5a6978"},"candidates":[candidate("c-cl", None)]})));
+    s.set_runtime_profile("e-pool", Some(&RuntimeProfile::ClaudeAccount { fingerprint: "0f1e2d3c4b5a6978".into() })).unwrap();
+    routed("e-home", "codex", "gpt-6.1-sol", Some("high"), reviewer.clone(),
+        Some(json!({"at":"start","chosen":"c-cx","candidates":[candidate("c-cx", Some("  "))]})));
+    s.set_runtime_profile("e-home", Some(&RuntimeProfile::CodexHome { id: "work".into() })).unwrap();
+    routed("e-login", "codex", "gpt-6.1-sol", None, reviewer.clone(), Some(json!({"at":"dispatch","chosen":"c-sub","candidates":[]})));
+    routed("e-wait", "opencode", "", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":null,"waiting":true,"earliest":{"at":"2026-11-09T04:00:00Z","candidate":"c-ds"},"candidates":[]})));
+    routed("e-wait-open", "opencode", "", None, reviewer.clone(), Some(json!({"at":"dispatch","chosen":null,"waiting":true,"candidates":[]})));
+    // Released as release_waiting writes it: its reason an object (R1 e7dfa1a9).
+    let mut released = crate::routing_policy::dispatch::release_reason(&json!({"enabled":true,"candidates":[]}), "claude", &[], "local").unwrap();
+    released["at"] = json!("2026-11-09T01:00:00Z");
+    routed("e-released", "claude", "", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":released,"candidates":[]})));
+    let mut off = crate::routing_policy::dispatch::release_reason(&json!({"enabled":false}), "claude", &[], "local").unwrap();
+    off["at"] = json!("2026-11-09T01:00:00Z");
+    routed("e-released-off", "claude", "", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":off,"candidates":[]})));
+    routed("e-fixed", "claude", "opus", None, json!({"id":"reviewer","label":"Reviewer","routing":"fixed"}), None);
+    routed("e-off", "codex", "", None, reviewer.clone(), None);
+    // On a task of its own: a task's view shows its newest dispatch's executor.
+    let (_, older) = super::tests::task(s, "Older work");
+    executor(s, "e-old", &older, "user", "d-old", "running", None);
+
+    assert_eq!(listed(s, "e-key")["route"], json!({"kind":"chosen","candidate":"c-ds","label":"DeepSeek off-peak","harness":"opencode",
+        "model":"deepseek/deepseek-flash","credential":{"kind":"apiKey","keyId":"deepseek-main"}}));
+    assert_eq!(listed(s, "e-pool")["route"], json!({"kind":"chosen","candidate":"c-cl","harness":"claude","model":"opus",
+        "credential":{"kind":"pool","account":{"fingerprint":"0f1e2d3c4b5a6978","number":2}}}), "an account by number and fingerprint");
+    assert_eq!(listed(s, "e-home")["route"], json!({"kind":"chosen","candidate":"c-cx","harness":"codex","model":"gpt-6.1-sol","effort":"high",
+        "credential":{"kind":"codexHome","id":"work"}}), "a blank label is none");
+    assert_eq!(listed(s, "e-login")["route"]["credential"], json!({"kind":"login"}), "no profile: the host's login");
+    assert_eq!(listed(s, "e-wait")["route"], json!({"kind":"waiting","earliest":"2026-11-09T04:00:00Z"}));
+    assert_eq!(listed(s, "e-wait-open")["route"], json!({"kind":"waiting"}));
+    assert_eq!(listed(s, "e-released")["route"], json!({"kind":"unrouted","why":"noCandidate"}));
+    assert_eq!(listed(s, "e-released-off")["route"], json!({"kind":"unrouted","why":"routingOff"}));
+    assert_eq!(listed(s, "e-fixed")["route"], json!({"kind":"unrouted","why":"fixed"}));
+    assert_eq!(listed(s, "e-off")["route"], json!({"kind":"unrouted","why":"none"}), "no record says it wasn't routed, not that routing was off");
+    assert!(listed(s, "e-old").get("route").is_none(), "one made before its dispatch row was kept says nothing of routing");
+    assert_eq!(listed(s, "e-key")["template"], json!({"id":"reviewer","label":"Reviewer"}), "its template, from the same row");
+    // A task's view of its executor (its newest dispatch's, e-off here) says it too.
+    let views = for_tasks(&s.db.read().unwrap(), &[task.as_str()]).unwrap();
+    assert_eq!(views[&task]["route"], json!({"kind":"unrouted","why":"none"}), "{}", views[&task]);
+}
