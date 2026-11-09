@@ -217,6 +217,8 @@ test("a template needs only a label, and follows routing; its row says what it i
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body, { expectedVersion: 2, templates: [copied, { id: "builder", label: "Builder" }] },
     "the copy keeps where it came from; the new one is a label, following routing");
+  await until(() => /Saved\./.test(section()?.textContent ?? ""), "saved");
+  await back(page);
   assert.equal(row(page, "Builder").querySelector(".settings-list-sub").textContent, "Follows routing · Pull request · This Core host");
   assert.deepEqual(page.errors, []);
 });
@@ -243,6 +245,7 @@ test("YN-56: a template that follows routing has a level on every tool; a fixed 
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.templates, [{ id: "router", label: "Router", permissionLevel: "full" }], "no tool, model or routing: a level");
+  await until(() => /Saved\./.test(section()), "saved");
 
   await type(page, "Runs with", "claude");
   assert.match(section(), /Fixed: always Claude Code on this host's login, whatever routing says\./);
@@ -492,7 +495,7 @@ test("OpenCode is marked experimental in a Chinese page's harness choice too (YN
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
   await openTemplate(page, "A");
-  assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
+  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
   assert.deepEqual(page.errors, []);
 });
 
