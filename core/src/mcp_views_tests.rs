@@ -408,3 +408,40 @@ fn a_task_history_larger_than_an_answer_pages_by_bytes() {
     let small = json!({"taskId":"T-1","version":1,"activities":[activity(1, "hi")],"nextAfterSeq":1,"hasMore":false,"keys":{}});
     assert_eq!(answer("task_get", small.clone(), None), small);
 }
+
+/// What one MCP answer holds (BUDGET), in bytes of compact JSON.
+const ANSWER_BUDGET: usize = 49_152;
+
+#[test]
+fn an_agents_brief_get_without_keys_and_brief_guide_without_part_are_answered_within_the_budget() {
+    let mut whole = arguments(json!({}));
+    assert_eq!(prepare("brief_get", &mut whole), Ok(Some("whole".into())));
+    let mut keyed = arguments(json!({"keys":[]}));
+    assert_eq!(prepare("brief_get", &mut keyed), Ok(None));
+    assert_eq!(prepare("brief_guide", &mut arguments(json!({}))), Ok(Some("whole".into())));
+    assert_eq!(prepare("brief_guide", &mut arguments(json!({"part":"limits"}))), Ok(None));
+}
+
+/// YN-69 S8: the whole brief_guide (68 KB) is more than an answer holds: an
+/// Agent gets its header and its parts in order while they fit, and the names
+/// of the rest, each of which brief_guide part reads whole.
+#[test]
+fn the_whole_brief_guide_is_its_leading_parts_and_the_names_of_the_rest() {
+    let whole = crate::project_brief::guide(&json!({})).unwrap();
+    assert!(whole.to_string().len() > ANSWER_BUDGET, "{}", whole.to_string().len());
+    let short = answer("brief_guide", whole.clone(), Some("whole"));
+    assert!(short.to_string().len() <= ANSWER_BUDGET, "{}", short.to_string().len());
+    let (text, full) = (short["guide"].as_str().unwrap(), whole["guide"].as_str().unwrap());
+    assert!(full.starts_with(text) && text.starts_with("# brief_guide"), "the header and leading parts, as written");
+    let shown: Vec<&str> = text.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+    let rest: Vec<String> = short["moreParts"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_owned()).collect();
+    let all: Vec<&str> = full.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+    assert!(!shown.is_empty() && !rest.is_empty());
+    assert_eq!([shown.clone(), rest.iter().map(String::as_str).collect()].concat(), all, "every part shown or named, in order");
+    for part in &rest {
+        let read = crate::project_brief::guide(&json!({"part":part})).unwrap();
+        assert!(read["guide"].as_str().is_some_and(|g| !g.is_empty()), "{part} reads on its own");
+        assert_eq!(answer("brief_guide", read.clone(), None), read, "a part is answered as it is");
+    }
+    assert!(short["more"].as_str().unwrap().contains("part"));
+}

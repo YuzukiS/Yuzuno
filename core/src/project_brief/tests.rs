@@ -233,6 +233,47 @@ async fn without_a_reliable_turn_nothing_counts_and_an_old_receipt_never_counts_
     assert_eq!(version(&ws, &project), 1);
 }
 
+/// What one MCP answer holds (mcp_views::BUDGET), in bytes of compact JSON.
+const ANSWER_BUDGET: usize = 49_152;
+
+/// YN-69 S8: a Brief larger than an MCP answer holds (48 KiB) reaches an
+/// Agent's brief_get without keys as every section's index entry, exactly as
+/// keys [] lists them, and the caller's own sections, newest first, while
+/// they fit; brief_get keys reads every other whole. A smaller one is whole.
+#[tokio::test]
+async fn a_brief_larger_than_an_answer_is_its_index_and_the_callers_newest_sections() {
+    let (_dir, ws, project) = lab();
+    let big = |key: &str| {
+        let mut change = put(key, "report");
+        change["body"] = body(&format!("{key} {}", "x".repeat(9000)));
+        change
+    };
+    let small = brief(&ws, "a");
+    assert_eq!(crate::mcp_views::answer("brief_get", small.clone(), Some("whole")), small, "a Brief that fits is whole");
+    for n in 0..6 {
+        accept(&ws, "a", input(&format!("a{n}"), version(&ws, &project), vec![big(&format!("a-{n}"))])).await;
+    }
+    accept(&ws, "b", input("b1", version(&ws, &project), (0..3).map(|n| big(&format!("b-{n}"))).collect())).await;
+    let whole = brief(&ws, "a");
+    assert!(whole.to_string().len() > ANSWER_BUDGET, "{}", whole.to_string().len());
+    let answer = crate::mcp_views::answer("brief_get", whole.clone(), Some("whole"));
+    assert!(answer.to_string().len() <= ANSWER_BUDGET, "{}", answer.to_string().len());
+    assert_eq!(answer["index"], get(&ws.store, Some("a"), &json!({"keys":[]})).unwrap()["index"], "as keys [] lists them");
+    let shown: Vec<&str> = answer["sections"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
+    assert_eq!(shown, ["a-5", "a-4", "a-3", "a-2"], "the caller's own, newest first, while they fit");
+    for key in &shown {
+        assert_eq!(section(&answer, key), section(&whole, key), "{key} whole");
+    }
+    let more = answer["more"].as_str().unwrap();
+    assert!(more.contains("a-1") && more.contains("a-0") && more.contains("brief_get"), "{more}");
+    for kept in ["version", "you", "projectId", "limits", "contentEditors"] {
+        assert_eq!(answer[kept], whole[kept], "{kept}");
+    }
+    // Everything left out is brief_get keys away.
+    let rest = get(&ws.store, Some("a"), &json!({"keys":["a-1","a-0","b-0","b-1","b-2"]})).unwrap();
+    assert_eq!(rest["sections"].as_array().unwrap().len(), 5);
+}
+
 #[tokio::test]
 async fn a_stale_write_to_a_section_is_rejected_with_the_latest_brief_and_changes_nothing() {
     let (_dir, ws, project) = lab();
