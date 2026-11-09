@@ -399,3 +399,99 @@ fn core_and_the_script_recognize_the_same_folders() {
     assert_eq!(script, core, "the script and Core recognize the same folders, by the same rules");
     assert_eq!(core.len(), built.len(), "each rule's fixture, and only it: {core:#?}");
 }
+
+/// Lead activity 8080 P2-1: "only .pyc" is never proven by a prefix. Over
+/// its cap, or with an entry it can't read, a folder is not one.
+#[test]
+fn a_pycache_over_its_cap_is_never_only_pyc_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("__pycache__");
+    for name in ["a.pyc", "b.pyc", "c.pyc", "d.pyc"] {
+        touch(&cache.join(name), "");
+    }
+    assert!(rules::only_files_ending(&cache, ".pyc", 10), "four .pyc files under a cap of ten");
+    assert!(!rules::only_files_ending(&cache, ".pyc", 3), "four entries over a cap of three: not proven, so not one");
+    touch(&cache.join("notes.txt"), "mine");
+    assert!(!rules::only_files_ending(&cache, ".pyc", 10));
+    std::fs::remove_file(cache.join("notes.txt")).unwrap();
+    std::os::unix::fs::symlink("/synthetic/elsewhere.pyc", cache.join("e.pyc")).unwrap();
+    assert!(!rules::only_files_ending(&cache, ".pyc", 10), "a link is no compiled file");
+}
+
+/// Lead activity 8080 P2-2: of Cargo's target, a subtree that holds a Git
+/// working tree or repository (doc, package, tmp or build by name) stays.
+#[tokio::test]
+async fn cargo_s_named_subtrees_holding_git_stay() {
+    let lab = lab();
+    gated(&lab);
+    let target = lab.project.join("target");
+    cargo_target(&target, &["debug"]);
+    // tmp is a clone of its own, with work not pushed anywhere.
+    touch(&target.join("tmp/.git/HEAD"), "ref: refs/heads/main\n");
+    touch(&target.join("tmp/unpushed.rs"), "fn mine() {}");
+    // doc holds a worktree's .git file.
+    touch(&target.join("doc/.git"), "gitdir: /synthetic/elsewhere/.git/worktrees/doc");
+    touch(&target.join("doc/notes.md"), "mine");
+    touch(&target.join("package/demo-0.1.0.crate"), "made by cargo");
+    let (subtrees, kept) = check::cargo_profiles(&target);
+    let names: Vec<&str> = subtrees.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["debug", "package"], "{subtrees:?}");
+    assert_eq!(kept, ["doc", "tmp"]);
+    let plan = submit(&lab, "git-in-target", vec![group("r", "rebuildable")], vec![item("target", "r", "cache-dir", &target)]).await;
+    assert_eq!(plan["refused"], 0, "{plan:#}");
+    ask(&lab, "gates/cleanup", "ex", 4, &naming(&plan), &["r"]);
+    reply(&lab, "gates/cleanup", &["r"], None);
+    apply_as(&lab, "ex", "go", &plan, "gates/cleanup", &[]).await.unwrap();
+    applied(&lab, &plan).await;
+    assert!(!target.join("debug").exists() && !target.join("package").exists());
+    for stays in ["tmp/.git/HEAD", "tmp/unpushed.rs", "doc/.git", "doc/notes.md"] {
+        assert!(target.join(stays).exists(), "{stays} stays");
+    }
+}
+
+/// Lead activity 8080 P2-2, the snapshot: a worktree's snapshot keeps what
+/// Cargo didn't make in its target (and a clone there), skipping only
+/// Cargo's own subtrees, since a reclaimed worktree goes whole.
+#[tokio::test]
+async fn a_worktree_snapshot_keeps_what_cargo_did_not_make_in_its_target() {
+    let lab = lab();
+    let tree = worktree(&lab, &lab.home.join("wt/cargo"), "feat/cargo");
+    let target = tree.join("target");
+    cargo_target(&target, &["debug"]);
+    touch(&target.join("notes/report.md"), "someone's");
+    touch(&target.join("tmp/.git/HEAD"), "ref: refs/heads/main\n");
+    touch(&target.join("tmp/work.txt"), "unpushed");
+    let keep = worktrees::keep_list(&tree, &all()).await.unwrap();
+    for kept in ["target/notes/report.md", "target/tmp/work.txt", "target/tmp/.git/HEAD"] {
+        assert!(keep.files.iter().any(|f| f == kept), "{kept} is kept: {:?}", keep.files);
+    }
+    assert!(!keep.files.iter().any(|f| f.starts_with("target/debug/")), "Cargo's profile is rebuildable: {:?}", keep.files);
+}
+
+/// Lead activity 8080 P2-3: an inventory is one only when Core's own
+/// cleanup_inventory started it. A Job of the task with Core's very command,
+/// or with a second --project after it, is none.
+#[tokio::test]
+async fn a_job_with_core_s_command_that_core_did_not_start_is_no_inventory() {
+    let lab = lab();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+        let exact = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
+        let mut twice = exact.clone();
+        let at = twice.len() - 2;
+        twice.splice(at..at, ["--project".to_owned(), "/synthetic/other".to_owned()]);
+        for (id, argv, sha) in [("copied", exact, "e"), ("twice", twice, "f")] {
+            let data = json!({"id": id, "taskId": task, "agentId": "ex", "attempt": ATTEMPT, "status": "succeeded", "target": {"kind": "local"},
+                "name": inventory::JOB_NAME, "argv": argv,
+                "result": {"attempt": ATTEMPT, "artifacts": [{"path": "out/inventory.json", "sha256": sha.repeat(64), "ok": true, "bytes": 2}]}});
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'ex','succeeded',?3)", params![id, task, data.to_string()]).unwrap();
+        }
+    }
+    for (job, sha) in [("copied", "e"), ("twice", "f")] {
+        let mut input = plan_input(&format!("from-{job}"), vec![group("g", "delete")], vec![item("e", "g", "entry", &lab.scratch.join("e"))]);
+        input["inventory"] = json!({"jobId": job, "attempt": ATTEMPT, "path": "out/inventory.json", "sha256": sha.repeat(64)});
+        let error = submit_as(&lab, Some("ex"), input).await.expect_err(&format!("a plan from {job} is refused")).to_string();
+        assert!(error.starts_with("invalid_input: inventory:"), "{job}: {error}");
+    }
+}

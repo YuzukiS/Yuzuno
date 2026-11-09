@@ -223,6 +223,22 @@ class Inventory(unittest.TestCase):
         refused = self.run_script("--rules", "[1, 2]", expect=1)
         self.assertIn("not Core's rule table", refused.stderr.decode())
 
+    def test_a_pycache_over_its_cap_is_never_only_pyc_files(self):
+        # Lead activity 8080 P2-1: never proven by a prefix, the same as Core.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("workspace_inventory", str(SCRIPT))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cache = self.root / "__pycache__"
+        cache.mkdir()
+        for name in ("a.pyc", "b.pyc", "c.pyc", "d.pyc"):
+            (cache / name).write_text("")
+        self.assertTrue(module.only_files_ending(str(cache), ".pyc", cap=10))
+        self.assertFalse(module.only_files_ending(str(cache), ".pyc", cap=3), "over the cap: not proven")
+        (cache / "notes.txt").write_text("mine")
+        self.assertFalse(module.only_files_ending(str(cache), ".pyc", cap=10))
+        self.assertFalse(module.only_files_ending(str(self.root / "gone"), ".pyc"), "unreadable: no")
+
     def test_a_merge_git_cannot_tell_is_not_known_never_false(self):
         # The remote's default branch names a branch that is gone: merge-base can't say (exit 128).
         git(self.project, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
