@@ -544,6 +544,9 @@ pub(crate) fn attach_review(
     );
     ensure!(r.review.id.is_none(), "Registered review already exists");
     r.review.id = Some(id.into());
+    // A decider's beyond-limit round may attach to a round whose start the
+    // limit refused; the review now exists, so that refusal no longer holds.
+    r.review.limit_refused = None;
     save(db, &f)
 }
 
@@ -677,11 +680,13 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
             "Submit a task result with this exact delivery candidate to start review and CI.",
         );
     }
-    if let Some(refused) = &r.review.limit_refused {
-        return state(
-            "needs_judgment",
-            &format!("This PR's two started review rounds were used before this delivery round could start ({refused}). No reviewer ran and it isn't retried; whoever decides can start a round beyond the limit or judge without one."),
-        );
+    if r.review.id.is_none() {
+        if let Some(refused) = &r.review.limit_refused {
+            return state(
+                "needs_judgment",
+                &format!("This PR's two started review rounds were used before this delivery round could start ({refused}). No reviewer ran and it isn't retried; whoever decides can start a round beyond the limit or judge without one."),
+            );
+        }
     }
     for (name, step) in [("Review", &r.review), ("CI subscription", &r.ci)] {
         if step.id.is_none() && step.attempts >= 3 {
@@ -909,8 +914,9 @@ impl Store {
             &mut r.ci
         };
         // A round the started-round limit refused is never retried; a person
-        // decides, as the needs_judgment state says.
-        if step.limit_refused.is_some() {
+        // decides, as the needs_judgment state says. A review a decider did
+        // start beyond the limit has an id, and its round goes on.
+        if step.id.is_none() && step.limit_refused.is_some() {
             tx.commit()?;
             return Ok(None);
         }

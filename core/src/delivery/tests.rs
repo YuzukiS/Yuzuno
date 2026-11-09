@@ -1215,3 +1215,32 @@ fn a_delivery_continue_to_a_new_head_is_refused_when_the_pr_used_its_started_rou
     assert!(error.ends_with("No delivery round was authorized."), "{error}");
     assert_eq!(get(&s, &t)["rounds"].as_array().unwrap().len(), 1, "the refused round is not saved");
 }
+
+#[test]
+fn a_beyond_limit_round_attached_after_a_refusal_clears_the_judgment_and_gets_ci() {
+    let (_d, s, t) = setup();
+    completed_review(&s, &t, "before", None, None);
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result"))
+        .unwrap();
+    completed_review(&s, &t, "late", Some(&"c".repeat(40)), Some(&"d".repeat(40)));
+    let key = internal(&s, &t);
+    let plan = s.delivery_claim(&key, "review").unwrap().unwrap();
+    let input: crate::pr_review::Start = serde_json::from_value(plan.input.clone()).unwrap();
+    let error = s.create_pr_review(Some("owner"), &input, "refused").unwrap_err().to_string();
+    s.delivery_finish(&key, &plan, Err(error)).unwrap();
+    assert_eq!(get(&s, &t)["state"], "needs_judgment");
+    // The decider starts the full round beyond the limit on the same candidate.
+    let beyond: crate::pr_review::Start = serde_json::from_value(json!({
+        "requestId":"beyond","taskId":t,"linkId":"7:pull:1",
+        "baseSha":"a".repeat(40),"headSha":"b".repeat(40),"beyondRoundLimit":true})).unwrap();
+    let (run, created) = s.create_pr_review(None, &beyond, "beyond").unwrap();
+    assert!(created);
+    assert_eq!(run["beyondRoundLimit"]["startedBefore"], 2);
+    let flow = get(&s, &t);
+    assert_eq!(flow["state"], "waiting_review", "{flow}");
+    assert!(flow["rounds"][0]["review"].get("limitRefused").is_none(), "{flow}");
+    finish(&s, run, "no_findings");
+    assert_eq!(get(&s, &t)["state"], "waiting_ci");
+    assert!(s.delivery_claim(&key, "ci").unwrap().is_some(), "CI is claimed again");
+}
