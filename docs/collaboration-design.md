@@ -31,6 +31,10 @@
   - 字段只删不改名，旧的读取路径读到的值不变。
 - Agent 的任务写入（create/update/claim/comment/submit_result/dispatch）返回短回执：完整回答删去字段后的子集，路径与名称不变（`task.id`、`task.version`、`task.result.id`、`message.id` 等）。存储的幂等回执仍是完整对象，重试经同一投影返回同样内容。`review_get` 默认返回摘要（结论、全部发现、覆盖计数和未覆盖路径及原因），`view: "full"` 返回原始报告、上下文读取和逐文件证据。
 - 旧派工没有材料快照时，显式查询返回 `dispatch_materials_not_found`，不会拿最新资料冒充旧快照。
+- Agent 经 MCP 读到的列表和信件也更短（YN-69）：
+  - **`task_list`：** 默认按 `compact: true` 返回短行。这是 core.30 起的默认变化；要像以前那样拿整行，写 `compact: false`。GUI 走 HTTP，读到的仍是整行。
+  - **`peer_read`：** 每封信原样保留，只有信封变短：`delivery` 只留 `state`，不带唤醒记录（`delivery.detail`，投递问题看 `task_get` 的 `mailProblems`）；不写 `recipient`（就是读信的人）和 `notice`（GUI 分组用的）；自成一个线程、也不回复谁的信，不写 `threadId` 和 `replyTo`。
+  - **`task_get` 的 `view: "full"`：** 登记资料只出现在 `task.materials` 一处，`materialsSource` 用 `valueIn` 指向它；活动历史不变。
 
 登记对象上限 32 KiB，固定快照上限 128 KiB（只计派工者能缩短的任务材料与本次派工材料；按执行者模板派发时附带的模板、Project 交接文档与任务摘要不计入，各有上限：说明 8 KiB、交接 32 KiB、摘要 4 KiB），最终消息正文上限 16 KiB（均为 UTF-8 字节）；Project 仓库最多 20 项、任务 GitHub 链接最多 30 项。正文中的长字段以固定快照字段入口代替，不静默截断；超过存储上限或引用无效时整个派工事务回滚。执行者沿原任务调用 `task_submit_result` 并保留原 `dispatchId`；自动通知不等于独立评审、合并或上线。
 

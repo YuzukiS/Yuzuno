@@ -5,6 +5,8 @@
 //! the stored receipt through the same projection, so it reads the same.
 //! A merge entry (YN-69) is its summary: the entry as it is now, its evidence
 //! once and its newest history; merge_list lists short rows, 20 a page.
+//! YN-69: an Agent's task_list is compact unless it gives compact; its mail
+//! leaves out the wake-up's bookkeeping; a full task says its materials once.
 use serde_json::{json, Map, Value};
 
 /// Task writes whose answer to an Agent is a short receipt.
@@ -28,6 +30,11 @@ pub(crate) fn prepare(tool: &str, arguments: &mut Map<String, Value>) -> Result<
         "task_get" if !arguments.contains_key("view") && !arguments.contains_key("dispatchId") => {
             let paged = arguments.contains_key("afterSeq") || arguments.contains_key("limit");
             arguments.insert("view".into(), json!(if paged { "activity" } else { "current" }));
+            Ok(None)
+        }
+        // Short rows unless the Agent asks for whole ones with compact:false (YN-69).
+        "task_list" if !arguments.contains_key("compact") => {
+            arguments.insert("compact".into(), json!(true));
             Ok(None)
         }
         "review_get" => take_view(arguments),
@@ -67,6 +74,10 @@ pub(crate) fn answer(tool: &str, value: Value, view: Option<&str>) -> Value {
             out["more"] = json!(MERGE_LIST_MORE);
         }
         out
+    } else if tool == "peer_read" {
+        mailbox(value)
+    } else if tool == "task_get" {
+        materials_once(value)
     } else {
         value
     }
@@ -104,6 +115,42 @@ fn merge_row(entry: &Value) -> Value {
         row["merge"] = pick(&entry["merge"], &["sha", "mergedAt", "mainCi"]);
     }
     row
+}
+
+/// A mailbox page as an Agent reads it (YN-69): each message whole, but its
+/// delivery is its state alone, not the wake-up's record (Core's, and the
+/// GUI's: an Agent's mail problems are task_get's mailProblems); it names no
+/// recipient (the reader) and no GUI grouping (notice: its kind, name and
+/// status are the sender's and metadata's); a message that starts its own
+/// thread and answers none says neither.
+fn mailbox(mut page: Value) -> Value {
+    for message in page["messages"].as_array_mut().into_iter().flatten() {
+        let Some(map) = message.as_object_mut() else { continue };
+        let state = map.get("delivery").map(|d| d["state"].clone()).unwrap_or(Value::Null);
+        map.insert("delivery".into(), json!({"state": state}));
+        map.remove("recipient");
+        map.remove("notice");
+        if map.get("threadId").is_some() && map.get("threadId") == map.get("id") {
+            map.remove("threadId");
+        }
+        if map.get("replyTo").is_some_and(Value::is_null) {
+            map.remove("replyTo");
+        }
+    }
+    page
+}
+
+/// A full task's registered materials once (YN-69): materialsSource says
+/// where they are when its value is task.materials; the history stays whole.
+fn materials_once(mut answer: Value) -> Value {
+    let same = answer["materialsSource"]["value"].is_object() && answer["materialsSource"]["value"] == answer["task"]["materials"];
+    if same {
+        if let Some(source) = answer["materialsSource"].as_object_mut() {
+            source.remove("value");
+            source.insert("valueIn".into(), json!("task.materials"));
+        }
+    }
+    answer
 }
 
 fn pick(from: &Value, keys: &[&str]) -> Value {

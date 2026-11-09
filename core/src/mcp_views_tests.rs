@@ -253,3 +253,83 @@ fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
     assert!(rows["more"].as_str().unwrap().contains("merge_get"));
     assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
 }
+
+#[test]
+fn an_agents_task_list_is_compact_unless_it_asks_for_whole_rows() {
+    let mut plain = arguments(json!({"statuses":["doing"]}));
+    assert_eq!(prepare("task_list", &mut plain), Ok(None));
+    assert_eq!(plain["compact"], true, "an Agent's task_list lists short rows by default (YN-69)");
+    let mut whole = arguments(json!({"compact":false}));
+    prepare("task_list", &mut whole).unwrap();
+    assert_eq!(whole["compact"], false, "compact:false still lists whole rows");
+}
+
+/// A mailbox page as peer_read reads it: a delivered job mail with the
+/// wake-up's bookkeeping, a dispatch, and a reply in another's thread.
+fn mailbox() -> Value {
+    let me = json!({"kind":"agent","id":"dev","name":"Dev"});
+    let detail = json!({"afterSeq":40,"agentId":"dev","clientMessageId":"peer-mail-1","mode":"start","priority":"normal",
+        "sessionId":"s","turnId":"t","mailbox":{"afterSeq":40,"count":1,"groups":[{"count":1,"kind":"job","name":"build","status":"failed"}],
+            "memberSeqs":[41],"messageCount":1,"priority":"normal","recipientId":"dev","remainingCount":0,"throughSeq":41,"version":1}});
+    json!({"messages":[
+        {"id":"m41","seq":41,"threadId":"m41","replyTo":null,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":me,
+         "body":"Local job build is failed.","taskId":"T-1","createdAt":"t41","source":{"jobId":"j","attempt":"a"},"priority":"normal",
+         "jobId":"j","metadata":{"kind":"job","name":"build","status":"failed","jobId":"j"},
+         "notice":{"key":"[\"job\",\"j\",\"a\",\"failed\"]","kind":"job","name":"build","status":"failed"},
+         "delivery":{"state":"delivered","detail":detail},"firstReadAt":"t42","wake":"ring"},
+        {"id":"m42","seq":42,"threadId":"m42","replyTo":null,"sender":{"kind":"agent","id":"lead","name":"Lead"},"recipient":me,
+         "body":"Work on task T-1.","taskId":"T-1","createdAt":"t42","source":{"agentId":"lead","turnId":"lt"},"priority":"normal",
+         "dispatchId":"d1","materialsRef":{"schemaVersion":1,"taskId":"T-1","dispatchId":"d1","taskVersion":2,"capturedAt":"t42"},
+         "resultInstructions":"Pass this message's dispatchId to task_submit_result.",
+         "notice":{"key":"m42","kind":"peer","name":"Lead","status":""},"delivery":{"state":"pending","detail":{}},"firstReadAt":null},
+        {"id":"m43","seq":43,"threadId":"m40","replyTo":"m40","sender":{"kind":"agent","id":"lead","name":"Lead"},"recipient":me,
+         "body":"Approved.","taskId":"T-1","createdAt":"t43","source":{"agentId":"lead"},"priority":"urgent",
+         "notice":{"key":"m43","kind":"peer","name":"Lead","status":""},"delivery":{"state":"delivered","detail":detail},
+         "firstReadAt":"t44","wake":"quiet","wakeReason":"a receipt"}],
+        "nextAfterSeq":43,"hasMore":false})
+}
+
+#[test]
+fn an_agents_mail_keeps_each_message_and_leaves_out_the_wake_up_bookkeeping() {
+    let full = mailbox();
+    let short = answer("peer_read", full.clone(), None);
+    assert_eq!((short["nextAfterSeq"].clone(), short["hasMore"].clone()), (json!(43), json!(false)));
+    let messages = short["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    for (n, message) in messages.iter().enumerate() {
+        let whole = &full["messages"][n];
+        assert_eq!(message["delivery"], json!({"state":whole["delivery"]["state"]}), "its delivery, not the wake-up's record");
+        for gone in ["recipient", "notice"] {
+            assert!(message.get(gone).is_none(), "{gone}: the reader, and the GUI's grouping: {message}");
+        }
+        for kept in ["id", "seq", "sender", "body", "taskId", "createdAt", "source", "priority", "firstReadAt"] {
+            assert_eq!(message.get(kept), whole.get(kept), "{kept}");
+        }
+        is_part_of(message, whole, &format!("messages[{n}]"));
+    }
+    assert!(messages[0].get("threadId").is_none() && messages[0].get("replyTo").is_none(), "a thread of its own, no reply");
+    assert_eq!((messages[2]["threadId"].clone(), messages[2]["replyTo"].clone()), (json!("m40"), json!("m40")));
+    for kept in ["dispatchId", "materialsRef", "resultInstructions"] {
+        assert_eq!(messages[1][kept], full["messages"][1][kept], "a dispatch keeps {kept}");
+    }
+    assert_eq!((messages[0]["metadata"].clone(), messages[0]["jobId"].clone()), (full["messages"][0]["metadata"].clone(), json!("j")));
+    assert_eq!((messages[2]["wake"].clone(), messages[2]["wakeReason"].clone()), (json!("quiet"), json!("a receipt")));
+    assert!(short.to_string().len() * 3 < full.to_string().len() * 2, "{} of {}", short.to_string().len(), full.to_string().len());
+}
+
+#[test]
+fn a_full_task_says_its_registered_materials_once() {
+    let materials = json!({"acceptance":"a".repeat(2000),"baseline":"b"});
+    let full = json!({"task":{"id":"T-1","materials":materials},"activities":[{"seq":1,"kind":"created","changes":{"materials":materials}}],
+        "materialsSource":{"value":materials,"taskVersion":1,"activitySeq":1,"at":"t1","actor":{"kind":"user"}},"keys":{"global":"T-1"}});
+    let short = answer("task_get", full.clone(), None);
+    assert_eq!(short["materialsSource"], json!({"valueIn":"task.materials","taskVersion":1,"activitySeq":1,"at":"t1","actor":{"kind":"user"}}));
+    assert_eq!((short["task"].clone(), short["activities"].clone()), (full["task"].clone(), full["activities"].clone()),
+        "the task and its history stay whole");
+    // A registration that is not the task's materials (none, or another) stays as it is.
+    let mut other = full.clone();
+    other["task"]["materials"] = json!({"acceptance":"x"});
+    assert_eq!(answer("task_get", other.clone(), None), other);
+    let current = json!({"current":{"taskId":"T-1","materialsRegistered":true},"keys":{"global":"T-1"}});
+    assert_eq!(answer("task_get", current.clone(), None), current);
+}
