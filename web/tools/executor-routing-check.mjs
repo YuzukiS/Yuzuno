@@ -6,6 +6,9 @@
 // The candidate order (S4a-2): reordered by dragging a handle (a mouse on the
 // desktop, the arrows on a phone), a candidate's editor, saved whole against
 // the version read; a newer version saved meanwhile is shown, not overwritten.
+// YN-57 S2b: a candidate's model is chosen from what its tool lists: Claude
+// Code's aliases and pinned versions; OpenCode's providers, the candidate's
+// key's first; and the line under it says where the list comes from.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -63,6 +66,21 @@ const fresh = () => ({
   templates: { version: 2, laterTemplates: 0, templates: [
     { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol" }, { id: "review", label: "Review", harness: "claude", routing: "fixed" }] },
 });
+/** Each tool's list, as Core answers it (YN-57 S2b). */
+const CATALOGS = {
+  "claude": { models: [
+    { id: "opus", model: "opus", displayName: "Opus", resolvedModel: "claude-opus-5-5" },
+    { id: "sonnet", model: "sonnet", displayName: "Sonnet", resolvedModel: "claude-sonnet-5-5" },
+    { id: "haiku", model: "haiku", displayName: "Haiku", resolvedModel: "claude-haiku-5-5" }] },
+  "codex": { models: [{ id: "gpt-6.1-sol", model: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" }, { id: "gpt-6.1-sol-mini", model: "gpt-6.1-sol-mini", displayName: "GPT-6.1 Sol Mini" }] },
+  "opencode": { opencode: { version: "2.2.5", verified: "2.2.5" }, models: [
+    { id: "anthropic/claude-x", model: "anthropic/claude-x", providerId: "anthropic", providerName: "Anthropic", name: "Claude X", displayName: "Anthropic · Claude X" },
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek V4.1 Flash", displayName: "DeepSeek · DeepSeek V4.1 Flash" },
+    { id: "deepseek/deepseek-v4-pro", model: "deepseek/deepseek-v4-pro", providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek V4 Pro", displayName: "DeepSeek · DeepSeek V4 Pro" },
+    { id: "opencode/big-pickle", model: "opencode/big-pickle", providerId: "opencode", providerName: "OpenCode", name: "Big Pickle", displayName: "OpenCode · Big Pickle" }],
+  providers: [{ id: "anthropic", name: "Anthropic", source: "routingKey", keyProvider: "anthropic" },
+    { id: "deepseek", name: "DeepSeek", source: "routingKey", keyProvider: "deepseek" }, { id: "opencode", name: "OpenCode", source: "ready" }] },
+};
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
 /** As Core would judge a policy at an hour of the day (Asia/Shanghai, as the page's clock): one rule for
@@ -109,6 +127,9 @@ async function route(r) {
   if (request.url().includes(SECRET) || request.url().includes(TOKEN)) report.errors.push(`a secret in a URL: ${method} ${path}`);
   const json = (value, status = 200) => r.fulfill({ status, json: value });
   if (path === "/api/routing/policy" && method === "GET") return json(state.policy);
+  // YN-57 S2b: each tool's list.
+  if (path === "/api/models" && method === "GET") return json(CATALOGS[url.searchParams.get("harness") ?? "codex"]);
+  if (path === "/api/routing/models" && method === "GET") return json(CATALOGS[url.searchParams.get("harness")]);
   // S4b: Core's evaluation of the draft it is sent, the recent choices and today's spend.
   if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy, body.at, body.assume));
   // The week, by the same rule: each day's stretches before 10:00, to 22:00 and to midnight.
@@ -171,12 +192,16 @@ const words = {
     value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
     replaceToken: "Replace token", token: "Service account token",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
-    saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model" },
+    saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model",
+    claudeGroups: ["Aliases · follow new releases", "Pinned versions"], fromClaude: /^From Claude Code on this Core host/,
+    opencodeGroups: ["DeepSeek · with this candidate's API key", "OpenCode · no login needed", "Anthropic · only with its own API key"], fromOpencode: /^From OpenCode 2\.2\.5 on this Core host/ },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
-    saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型" },
+    saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型",
+    claudeGroups: ["别名 · 跟着新版本走", "固定版本"], fromClaude: /^来自这台 Core 主机上的 Claude Code/,
+    opencodeGroups: ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"], fromOpencode: /^来自这台 Core 主机上的 OpenCode 2\.2\.5/ },
 };
 
 async function run({ width, height, theme, lang }) {
@@ -282,6 +307,28 @@ async function run({ width, height, theme, lang }) {
     await page.mouse.move(0, 0);
     assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the editor open`);
     await shot("order-editor");
+    // ---- YN-57 S2b: the model is chosen from what the tool lists.
+    const modelOf = (editor) => editor.locator(".routing-model").evaluate((field) => ({
+      value: field.querySelector("select").value,
+      groups: [...field.querySelectorAll("optgroup")].map((g) => g.label),
+      note: field.querySelector(".routing-model-note")?.textContent.trim() ?? "",
+    }));
+    const claudeEditor = order.locator(".routing-edit").first();
+    await page.waitForFunction(() => document.querySelectorAll(".executor-routing .routing-edit .routing-model optgroup").length === 2);
+    const claudeModel = await modelOf(claudeEditor);
+    assert.deepEqual([claudeModel.value, claudeModel.groups], ["opus", w.claudeGroups], `${tag}: Claude Code's aliases and pinned versions`);
+    assert.match(claudeModel.note, w.fromClaude);
+    await press(order.getByRole("button", { name: w.edit(w.firstName), exact: true }));
+    await page.waitForFunction(() => document.querySelectorAll(".executor-routing .routing-edit .routing-model optgroup").length === 3);
+    const opencodeEditor = order.locator(".routing-edit").first();
+    const opencodeModel = await modelOf(opencodeEditor);
+    assert.deepEqual([opencodeModel.value, opencodeModel.groups], ["deepseek/deepseek-flash", w.opencodeGroups], `${tag}: OpenCode's list, its key's provider first`);
+    assert.match(opencodeModel.note, w.fromOpencode);
+    await opencodeEditor.locator(".routing-model").scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the model picker open`);
+    await shot("model-opencode");
+    check(`${tag}: the model is chosen from Claude Code's and OpenCode's own lists, each saying where it comes from`);
     if (phone) {
       const short = await order.evaluate((el) => [...el.querySelectorAll("button, select, input:not([type=checkbox]):not([type=radio])")].filter((c) => c.offsetParent)
         .map((c) => ({ name: c.getAttribute("aria-label") || c.textContent.trim(), h: Math.round(c.getBoundingClientRect().height) })).filter((c) => c.h < 40));
