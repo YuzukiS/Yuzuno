@@ -31,6 +31,7 @@ fn input(id: &str) -> Subscribe {
         expected_sha: "a".repeat(40),
         branch: None,
         event: None,
+        sent_sha: None,
     }
 }
 fn subscribe(s: &Store, agent: &str, id: &str) -> Value {

@@ -95,6 +95,19 @@ pub(crate) struct Subscribe {
     branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     event: Option<String>,
+    /// The prefix the request named its PR's or run's head by, once Core has
+    /// resolved it to the full head: a lost-reply retry is compared with the
+    /// request as sent (see store::as_sent). Never read from a request.
+    #[serde(skip)]
+    sent_sha: Option<String>,
+}
+impl Subscribe {
+    /// Watch the full head Core read, keeping the prefix the caller sent.
+    fn resolve(&mut self, head: String) {
+        if self.expected_sha != head {
+            self.sent_sha = Some(std::mem::replace(&mut self.expected_sha, head));
+        }
+    }
 }
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -334,7 +347,7 @@ pub async fn call(
                         "PR head changed: the PR head is {head}, not {}; choose its actual commit before subscribing",
                         q.expected_sha
                     );
-                    q.expected_sha = head;
+                    q.resolve(head);
                 } else if kind == "commit" {
                     ensure!(
                         raw["value"]["sha"] == q.expected_sha,
@@ -347,7 +360,7 @@ pub async fn call(
                         r["runId"] == number.to_string() && client::sha(&head) && head.starts_with(&q.expected_sha),
                         "Run does not match the expected commit"
                     );
-                    q.expected_sha = head;
+                    q.resolve(head);
                 }
                 ws.stored(move |s| {
                     s.ci_subscribe(

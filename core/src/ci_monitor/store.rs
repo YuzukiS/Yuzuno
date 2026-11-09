@@ -60,13 +60,23 @@ pub(crate) fn subscription(db: &Connection, id: &str) -> Result<Value> {
     v["watch"] = watch(db, v["watchId"].as_str().unwrap())?;
     Ok(v)
 }
+/// The request as its caller sent it, which is what is kept and what a retry
+/// of its requestId is compared with: a head named by a prefix stays that
+/// prefix, though the watch holds the full head (YN-69 S5).
+fn as_sent(input: &Subscribe) -> Result<Value> {
+    let mut v = serde_json::to_value(input)?;
+    if let Some(sha) = &input.sent_sha {
+        v["expectedSha"] = json!(sha);
+    }
+    Ok(v)
+}
 fn previous(db: &Connection, actor: Option<&str>, input: &Subscribe) -> Result<Option<Value>> {
     let row: Option<(String,String)> = db.query_row("SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='ci_subscribe' AND request_id=?2",params![actor_key(actor),input.request_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((old, response)) = row else {
         return Ok(None);
     };
     ensure!(
-        serde_json::from_str::<Value>(&old)? == serde_json::to_value(input)?,
+        serde_json::from_str::<Value>(&old)? == as_sent(input)?,
         "idempotency_conflict: requestId already names a different CI subscription"
     );
     let response: Value = serde_json::from_str(&response)?;
@@ -279,7 +289,7 @@ impl Store {
         let expires = chrono::Utc::now() + chrono::Duration::days(7);
         let sub = json!({"id":id,"watchId":wid,"agentId":agent_id,"agent":recipient,"taskId":task,"taskRef":reference,"source":source,"createdAt":now(),"expiresAt":expires.to_rfc3339(),"active":true});
         tx.execute("INSERT INTO ci_subscriptions(id,watch_id,agent_id,task_id,active,expires,data) VALUES(?1,?2,?3,?4,1,?5,?6) ON CONFLICT(id) DO UPDATE SET active=1,expires=excluded.expires,data=excluded.data",params![id,wid,agent_id,task,expires.timestamp(),sub.to_string()])?;
-        tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'ci_subscribe',?2,?3,?4)",params![actor_key(actor),input.request_id,serde_json::to_string(&input)?,json!({"subscriptionId":id}).to_string()])?;
+        tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'ci_subscribe',?2,?3,?4)",params![actor_key(actor),input.request_id,as_sent(&input)?.to_string(),json!({"subscriptionId":id}).to_string()])?;
         super::lifecycle::register(
             &tx,
             &id,
