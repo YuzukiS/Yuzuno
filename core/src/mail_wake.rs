@@ -99,7 +99,7 @@ pub(crate) fn digest(db: &Connection, recipient: &str, through: i64, priority: &
             .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
             .map(|at| at.with_timezone(&chrono::Utc).format(" %H:%MZ").to_string())
             .unwrap_or_default();
-        let event = format!("{}{at}", event(&message["metadata"]));
+        let event = format!("{}{at}", event(&message));
         let entry = match tasks.iter_mut().position(|(t, ..)| *t == task) {
             Some(i) => &mut tasks[i],
             None => {
@@ -132,9 +132,15 @@ pub(crate) fn digest(db: &Connection, recipient: &str, through: i64, priority: &
     Ok(lines)
 }
 
-/// One quiet notice in a few words: its name (cut to 60 characters) and what happened.
-fn event(metadata: &Value) -> String {
-    let name: String = metadata["name"].as_str().unwrap_or("").chars().take(60).collect();
+/// One quiet notice in a few words: its name and what happened. The name
+/// may come from outside (a PR's or a Job's), and goes into a harness's
+/// input: it is the notice's, whitespace collapsed to single spaces as
+/// `mailbox_notice` keeps it (and so here again), cut to 60 characters, so
+/// that it can't break the digest's lines (#845 R1 6b0f8a5a).
+fn event(message: &Value) -> String {
+    let metadata = &message["metadata"];
+    let raw = message["notice"]["name"].as_str().or(metadata["name"].as_str()).unwrap_or("");
+    let name: String = raw.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
     let what = match (metadata["kind"].as_str().unwrap_or(""), metadata["status"].as_str().unwrap_or("")) {
         ("merge", "merged") => "merged",
         ("merge", "done") => "main CI success",
