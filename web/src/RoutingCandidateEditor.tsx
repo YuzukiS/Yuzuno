@@ -1,27 +1,41 @@
 /** A candidate's editor in its card (YN-49 S4a): its name, tool, model,
  * effort, account or key, conditions and what an unavailable reading counts as. */
+import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
+import { errorText } from "./api";
 import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
 import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
-import { shortFingerprint, type AccountsView, type RoutingKey } from "./routing-keys";
+import { useLanguage } from "./i18n";
+import { KEY_PROVIDERS, announceCredentialsChanged, putLocalKey, putReferenceKey, shortFingerprint, type AccountsView, type KeyProvider, type RoutingKey } from "./routing-keys";
+import { NewKeyForm, keysText } from "./RoutingKeys";
 import { ModelField } from "./RoutingModelField";
 
 
 /** Whether a condition fits a credential: a daily spend cap is for an API key, the subscription left for an account (S3a). */
 const fitsCredential = (cond: AnyCondition, credential: Credential) => (credential.kind === "apiKey" ? cond.kind !== "quota" : cond.kind !== "dailyApiCap");
 
-/** The credential choices a harness offers, by a value of the select: "login", "pool", "key:<id>", "home:<id>". */
-function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], accounts: AccountsView | null, current: Credential): { value: string; label: string }[] {
-  const choices: { value: string; label: string }[] = [
+type Choice = { value: string; label: string; disabled?: boolean };
+/** The credential choices a harness offers, by a value of the select. Accounts: "login", "pool", "home:<id>". API keys
+ * (YN-57 S3): "key:<id>" for each key it takes, then "new:<provider>" for each provider it takes a key of, which adds
+ * one in place; always offered, unusable only while the keys can't be read here. */
+function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRead: boolean, accounts: AccountsView | null, current: Credential): { accounts: Choice[]; keys: Choice[] } {
+  const accountChoices: Choice[] = [
     { value: "login", label: harness === "claude" ? t.credLoginClaude : harness === "codex" ? t.credLoginCodex : t.credLoginOpencode },
   ];
-  if (harness === "claude") choices.push({ value: "pool", label: t.credPool });
-  if (harness === "codex") for (const h of accounts?.codexHomes ?? []) choices.push({ value: `home:${h.id}`, label: t.credHome(h.label) });
-  for (const k of keys) if (keyFits(harness, k.provider)) choices.push({ value: `key:${k.id}`, label: t.credKey(providerName[k.provider] ?? k.provider, k.id) });
+  if (harness === "claude") accountChoices.push({ value: "pool", label: t.credPool });
+  if (harness === "codex") for (const h of accounts?.codexHomes ?? []) accountChoices.push({ value: `home:${h.id}`, label: t.credHome(h.label) });
+  const keyChoices: Choice[] = keys.filter((k) => keyFits(harness, k.provider)).map((k) => ({ value: `key:${k.id}`, label: t.credKey(providerName[k.provider] ?? k.provider, k.id) }));
+  for (const provider of KEY_PROVIDERS) {
+    if (keyFits(harness, provider)) keyChoices.push({ value: `new:${provider}`, disabled: !keysRead,
+      label: keysRead ? t.credAddKey(providerName[provider]) : t.credAddKeyNotHere(providerName[provider]) });
+  }
   // The saved one, even if it's no longer offered: it stays chosen, marked.
   const value = credentialValue(current);
-  if (!choices.some((c) => c.value === value)) choices.push({ value, label: current.kind === "apiKey" ? t.keyMissing(current.keyId) : current.kind === "codexHome" ? t.codexHomeMissing(current.id) : value });
-  return choices;
+  if (![...accountChoices, ...keyChoices].some((c) => c.value === value)) {
+    (current.kind === "apiKey" ? keyChoices : accountChoices).unshift({ value,
+      label: current.kind === "apiKey" ? t.keyMissing(current.keyId) : current.kind === "codexHome" ? t.codexHomeMissing(current.id) : value });
+  }
+  return { accounts: accountChoices, keys: keyChoices };
 }
 const credentialValue = (c: Credential) => (c.kind === "apiKey" ? `key:${c.keyId}` : c.kind === "codexHome" ? `home:${c.id}` : c.kind);
 const credentialOf = (value: string): Credential =>
@@ -29,13 +43,45 @@ const credentialOf = (value: string): Credential =>
     : value.startsWith("key:") ? { kind: "apiKey", keyId: value.slice(4) }
       : value.startsWith("home:") ? { kind: "codexHome", id: value.slice(5) } : { kind: "login" };
 
-export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition, onEdit, onRemove, onClose }: {
-  c: Candidate; t: Text; keys: RoutingKey[]; accounts: AccountsView | null; issues: { at: string; text: string }[]; refusedCondition?: number;
+export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refusedCondition, onEdit, onRemove, onClose }: {
+  c: Candidate; t: Text; keys: RoutingKey[];
+  /** Whether the Workspace's keys were read here: a key is added from a candidate only then (YN-57 S3). */
+  keysRead: boolean;
+  accounts: AccountsView | null; issues: { at: string; text: string }[]; refusedCondition?: number;
   onEdit: (change: (c: Candidate) => Candidate) => void; onRemove: () => void; onClose: () => void;
 }) {
-  const choices = credentialChoices(c.harness, t, keys, accounts, c.credential);
+  const keysT = keysText(useLanguage());
+  // A key being added in place (YN-57 S3), by its provider; what it said when refused; and the keys added here, shown
+  // until the page's own read of the keys lists them.
+  const [adding, setAdding] = useState<KeyProvider | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [keyError, setKeyError] = useState("");
+  const [added, setAdded] = useState<RoutingKey[]>([]);
+  useEffect(() => { setAdding(null); setKeyError(""); }, [c.harness]);
+  const shownKeys = [...keys, ...added.filter((a) => !keys.some((k) => k.id === a.id))];
+  const choices = credentialChoices(c.harness, t, shownKeys, keysRead, accounts, c.credential);
   // The provider of its API key: OpenCode's list puts that provider's models first (YN-57 S2b).
-  const keyProvider = c.credential.kind === "apiKey" ? keys.find((k) => k.id === (c.credential as { keyId: string }).keyId)?.provider ?? null : null;
+  const keyProvider = c.credential.kind === "apiKey" ? shownKeys.find((k) => k.id === (c.credential as { keyId: string }).keyId)?.provider ?? null : null;
+  /** Keeps the key the form gives (YN-49's write: the value goes in this one request, nowhere else), then makes it this
+   * candidate's. The candidate is saved with the page, as any change of it. */
+  async function addKey(id: string, provider: KeyProvider, source: "local" | "1password", value: string): Promise<boolean> {
+    setBusy(true);
+    setKeyError("");
+    try {
+      const kept = await (source === "local" ? putLocalKey(id, provider, value) : putReferenceKey(id, provider, value));
+      if (kept) setAdded((list) => [...list.filter((k) => k.id !== kept.id), kept]);
+      announceCredentialsChanged();
+      const credential: Credential = { kind: "apiKey", keyId: id };
+      onEdit((x) => ({ ...x, credential, conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) }));
+      setAdding(null);
+      return true;
+    } catch (error) {
+      setKeyError(errorText(error));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
   const api = usesApi(c);
   const has = (kind: string) => c.conditions.some((x) => x.kind === kind);
   const setConditions = (change: (list: AnyCondition[]) => AnyCondition[]) => onEdit((x) => ({ ...x, conditions: change(x.conditions) }));
@@ -78,13 +124,29 @@ export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition
           </label>
         )}
         <label className="routing-field routing-field-wide"><span>{t.credential}</span>
-          <select className="settings-select" value={credentialValue(c.credential)} onChange={(e) => {
+          <select className="settings-select" value={adding ? `new:${adding}` : credentialValue(c.credential)} disabled={busy} onChange={(e) => {
+            setKeyError("");
+            if (e.target.value.startsWith("new:")) { setAdding(e.target.value.slice(4) as KeyProvider); return; }
+            setAdding(null);
             const credential = credentialOf(e.target.value);
             onEdit((x) => ({ ...x, credential, conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) }));
           }}>
-            {choices.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <optgroup label={t.credGroupAccounts}>
+              {choices.accounts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </optgroup>
+            <optgroup label={t.credGroupKeys}>
+              {choices.keys.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+            </optgroup>
           </select>
         </label>
+        {/* A key added in place (YN-57 S3): Accounts and keys' own write-only form, its provider the one chosen. */}
+        {adding && (
+          <div className="routing-field-wide routing-key-inline">
+            <NewKeyForm key={adding} t={keysT} busy={busy} taken={shownKeys.map((k) => k.id)} fixed={adding} saveLabel={keysT.saveKey}
+              note={t.keyInlineNote} onSave={addKey} onCancel={() => { setAdding(null); setKeyError(""); }} />
+            {keyError && <p className="inline-error" role="alert">{keyError}</p>}
+          </div>
+        )}
       </div>
       {pool && (
         <fieldset className="routing-field routing-pool">

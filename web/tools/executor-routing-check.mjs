@@ -6,6 +6,8 @@
 // The candidate order (S4a-2): reordered by dragging a handle (a mouse on the
 // desktop, the arrows on a phone), a candidate's editor, saved whole against
 // the version read; a newer version saved meanwhile is shown, not overwritten.
+// YN-57 S3: a candidate added by hand adds an API key in place, in Accounts and
+// keys' own write-only form; the key is in its own write only, never the page.
 // YN-57 S1: a candidate that can't be saved says so with a pill in the error
 // tones (4.5:1 at least), a 40 px target on a phone, that opens its editor.
 // YN-57 S2b: a candidate's model is chosen from what its tool lists: Claude
@@ -31,6 +33,7 @@ const HOST = "yuzuno-executor-routing.test";
 // Synthetic only. Long and unusual, so a page holding one is found by a text search.
 const SECRET = "sk-fixture-yn49-BROWSER-WRITE-ONLY-51c7";
 const TOKEN = "ops_fixture-yn49-BROWSER-TOKEN-a90d";
+const IN_PLACE = "sk-fixture-yn57-BROWSER-IN-PLACE-c3a1";
 const EMAILS = ["first@example.test", "second@example.test"];
 
 const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", color: "sage",
@@ -137,7 +140,7 @@ async function route(r) {
   if (method !== "GET" && path !== "/api/routing/evaluate" && path !== "/api/routing/simulate") report.writes.push({ method, path, body });
   // A secret may be in its own write only.
   const own = (method === "PUT" && /^\/api\/routing\/keys\/[^/]+$/.test(path)) || (method === "PUT" && path === "/api/routing/1password/token");
-  if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
+  if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}|${IN_PLACE}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
   if (request.url().includes(SECRET) || request.url().includes(TOKEN)) report.errors.push(`a secret in a URL: ${method} ${path}`);
   const json = (value, status = 200) => r.fulfill({ status, json: value });
   if (path === "/api/routing/policy" && method === "GET") return json(state.policy);
@@ -209,7 +212,8 @@ const words = {
     saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model",
     claudeGroups: ["Aliases · follow new releases", "Pinned versions"], fromClaude: /^From Claude Code on this Core host/,
     opencodeGroups: ["DeepSeek · with this candidate's API key", "OpenCode · no login needed", "Anthropic · only with its own API key"], fromOpencode: /^From OpenCode 2\.2\.5 on this Core host/,
-    needsFix: "Needs a fix", fixIt: "Needs a fix: edit Claude Code · sonnet · API", keyNeeded: "The key anthropic-old isn't added yet" },
+    needsFix: "Needs a fix", fixIt: "Needs a fix: edit Claude Code · sonnet · API", keyNeeded: "The key anthropic-old isn't added yet",
+    addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key" },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
@@ -217,7 +221,8 @@ const words = {
     saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型",
     claudeGroups: ["别名 · 跟着新版本走", "固定版本"], fromClaude: /^来自这台 Core 主机上的 Claude Code/,
     opencodeGroups: ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"], fromOpencode: /^来自这台 Core 主机上的 OpenCode 2\.2\.5/,
-    needsFix: "需要修改", fixIt: "需要修改：编辑 Claude Code · sonnet · API", keyNeeded: "还没有 key anthropic-old" },
+    needsFix: "需要修改", fixIt: "需要修改：编辑 Claude Code · sonnet · API", keyNeeded: "还没有 key anthropic-old",
+    addCandidate: "添加候选", account: "账号或 key", newAnthropic: "新的 Anthropic API key", saveKey: "保存 key" },
 };
 
 async function run({ width, height, theme, lang }) {
@@ -256,12 +261,12 @@ async function run({ width, height, theme, lang }) {
    * site's storage, the URL, any field's value attribute or the console. */
   const clean = async (when) => {
     const htmlNow = await page.content();
-    for (const secret of [SECRET, TOKEN, ...EMAILS, "team alias"]) assert.ok(!htmlNow.includes(secret), `${tag} ${when}: the page holds ${secret}`);
+    for (const secret of [SECRET, TOKEN, IN_PLACE, ...EMAILS, "team alias"]) assert.ok(!htmlNow.includes(secret), `${tag} ${when}: the page holds ${secret}`);
     const kept = await page.evaluate(() => JSON.stringify([
       Object.entries(localStorage), Object.entries(sessionStorage), location.href,
       [...document.querySelectorAll("input")].map((i) => i.getAttribute("value") ?? ""),
     ]));
-    for (const secret of [SECRET, TOKEN]) {
+    for (const secret of [SECRET, TOKEN, IN_PLACE]) {
       assert.ok(!kept.includes(secret), `${tag} ${when}: storage, the URL or a value attribute holds ${secret}`);
       assert.ok(!consoleLines.some((line) => line.includes(secret)), `${tag} ${when}: the console holds ${secret}`);
     }
@@ -474,6 +479,41 @@ async function run({ width, height, theme, lang }) {
     await shot("needs-fix-open");
     report.pills = [...(report.pills ?? []), { tag, contrast: Number(ratio.toFixed(2)), color: look.color, background: look.background, height: look.height }];
     check(`${tag}: a candidate that can't be saved has a ${ratio.toFixed(1)}:1 pill${phone ? " with a 40 px target" : ""}, which opens its editor`);
+    // ---- YN-57 S3: a candidate added by hand takes an API key added in place.
+    await press(order.getByRole("button", { name: w.addCandidate, exact: true }));
+    const added = order.locator(".routing-cand").last();
+    await added.locator(".routing-edit").waitFor({ timeout: 10_000 });
+    const account = added.locator(".routing-edit .routing-field").filter({ has: page.getByText(w.account, { exact: true }) }).locator("select");
+    await account.selectOption("new:anthropic");
+    const keyForm = added.locator(`.routing-key-inline form[aria-label="${w.newAnthropic}"]`);
+    await keyForm.waitFor({ timeout: 10_000 });
+    assert.equal(await keyForm.locator("select").count(), 0, `${tag}: the form's provider is the one chosen`);
+    assert.equal(await keyForm.locator(".routing-new-key-grid input").inputValue(), "anthropic-2", `${tag}: the first id free for it`);
+    const keyValue = keyForm.locator('input[type="password"]');
+    await keyValue.fill(IN_PLACE);
+    await clean("while a key is typed in place");
+    await keyForm.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, a key's form in place`);
+    if (phone) {
+      const short = await keyForm.evaluate((el) => [...el.querySelectorAll("button, select, input")].filter((c) => c.offsetParent)
+        .map((c) => ({ name: c.getAttribute("aria-label") || c.textContent.trim(), h: Math.round(c.getBoundingClientRect().height) })).filter((c) => c.h < 40));
+      assert.deepEqual(short, [], `${tag}: the in-place form's targets under 40 px`);
+    }
+    await shot("key-in-place");
+    await press(keyForm.getByRole("button", { name: w.saveKey, exact: true }));
+    await keyForm.waitFor({ state: "detached", timeout: 10_000 });
+    assert.equal(await account.inputValue(), "key:anthropic-2", `${tag}: the candidate's key now`);
+    // This run's (not yet tagged): each run gives the key the same id.
+    const inPlace = report.writes.filter((x) => x.tag === undefined && x.path === "/api/routing/keys/anthropic-2");
+    assert.deepEqual(inPlace.map((x) => [x.method, x.body]), [["PUT", { source: "local", provider: "anthropic", value: IN_PLACE }]], `${tag}: one write, with the value`);
+    // This run's own writes: the next run's list of writes leaves them out.
+    for (const x of report.writes) if (x.tag === undefined) x.tag = tag;
+    await clean("once the key added in place is kept");
+    assert.equal(await page.evaluate((secret) => [...document.querySelectorAll("input")].some((i) => i.value === secret), IN_PLACE), false, `${tag}: no field holds it`);
+    await page.mouse.move(0, 0);
+    await shot("key-in-place-kept");
+    check(`${tag}: a candidate added by hand adds an API key in place, written once, never in the page${phone ? "; 40 px targets" : ""}`);
     check(`${tag}: page fits${phone ? ", 40 px targets" : ""}; the order ${phone ? "moved by its arrows" : "dragged"}, edited and saved; accounts by number and fingerprint; a key and the token typed and kept, never in the page`);
   } finally {
     await context.close();
