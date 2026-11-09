@@ -453,6 +453,7 @@ to each harness's own setting, so it holds whichever harness routing chooses.
 | `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
 | `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
 | `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
+| `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below |
 
 No level is each harness's own default for new Agents, kept everywhere. On
 OpenCode that is its own configuration: its default agent allows everything
@@ -486,6 +487,36 @@ hold over an `opencode.json` that allows more.
 - **A Core before core.29** keeps no OpenCode level: it starts an OpenCode
   executor with OpenCode's own configuration, whose default allows everything
   but reading a `.env` file (see [With an older Core](#with-an-older-core)).
+
+#### Read only (YN-74)
+
+`read-only` is for an executor that reads and proposes and changes nothing itself, such as a [workspace cleanup](workspace-cleanup.md)'s. It has no shell, except one in Codex's read-only sandbox. It has no tool that writes a file, starts no Job and has no network. Every harness keeps it.
+
+**Yuzuno's own tools.** The executor may call only these:
+- `cleanup_inventory`, `cleanup_plan_submit`, `cleanup_plan_get`, `cleanup_apply`;
+- `task_get`, `task_list`, `task_update`, `task_comment`, `task_submit_result`, `task_result_get`;
+- `brief_get`, `brief_update`, `brief_guide`;
+- `peer_read`, `peer_send`, `peers_list`;
+- `job_get` and `job_logs`, which read the inventory's Job;
+- `yuzuno_guide`.
+
+Core lists no other tool to that Agent and refuses any other call before anything runs (`read_only:`), whatever its harness was told. So `job_submit`, every other Job, run, merge, PR, review, CI, delivery and service tool, `task_create`, `task_dispatch`, `task_claim` and `cleanup_restore` are out. A tool added later is out until it is named in that list.
+
+**Each harness:**
+- **Claude Code** starts in `default` mode.
+  - Started without (`disallowedTools`): `Bash`, `BashOutput`, `KillShell`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Agent`, `Task`, and every Yuzuno tool outside the list.
+  - A `PreToolUse` hook lets only `Read`, `Glob`, `Grep`, `ToolSearch` and the listed Yuzuno tools run. Anything else is denied before any permission check, so a rule in the user's settings that allows another tool, such as another MCP server's, doesn't apply.
+  - It sends no permission request, and its mode can't be changed.
+- **Codex** starts with its `read-only` preset: a readOnly sandbox without network, which its operating system enforces, and approval `never`.
+  - On Yuzuno's MCP server, only the listed tools are enabled.
+  - Every other MCP server the machine's Codex configuration names (`config/read`) is turned off for that thread. The configuration file is never written.
+  - Core reads the thread back from Codex's answer to `thread/start` or `thread/resume`. A sandbox other than readOnly without network, or an approval other than `never`, refuses the start.
+  - The executor's Codex permission can't be changed.
+- **OpenCode** gets rules that deny everything (`"*": "deny"`), then allow `read` (but not a `.env` file), `grep`, `glob`, `list` and the listed tools as `yuzuno_<tool>`. The start reads every agent's rules back, as at every level, now also for `bash` and for a Yuzuno tool kept and one not kept.
+
+The level is kept with the executor on every harness, not only OpenCode, because each start applies more than a mode.
+
+A Core before core.31 doesn't know `read-only`, so it can't use a template with it.
 
 A template's level goes with each dispatch from it ([Executor
 templates](executor-model.md#executor-templates)): routing passes over a

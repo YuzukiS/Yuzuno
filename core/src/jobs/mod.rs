@@ -1119,6 +1119,28 @@ fn validate_budget(input: &Resources) -> Result<()> {
     Ok(())
 }
 
+/// A read-only executor reads only its own task's Jobs (YN-74 ④b, Lead mail
+/// 10783): job_get and job_logs refuse it any other, before anything of
+/// that Job is read. Anyone else reads as before.
+async fn own_task_only(ws: &Arc<Workspace>, actor: Option<&str>, job: &Value) -> Result<()> {
+    use rusqlite::OptionalExtension as _;
+    let Some(agent) = actor.map(str::to_owned) else { return Ok(()) };
+    let (task, id) = (job["taskId"].as_str().unwrap_or_default().to_owned(), job["id"].as_str().unwrap_or_default().to_owned());
+    ws.stored(move |s| {
+        // The level first, then the role: one read at a time (db.rs, without WAL).
+        if s.permission_level(&agent)?.as_deref() != Some(crate::permission_levels::READ_ONLY) {
+            return Ok(());
+        }
+        let db = s.db.read()?;
+        let own: Option<Option<String>> = db
+            .query_row("SELECT task_id FROM agent_roles WHERE agent_id=?1 AND kind='executor' AND archived_at IS NULL", [&agent], |r| r.get(0))
+            .optional()?;
+        ensure!(!task.is_empty() && own.flatten().as_deref() == Some(task.as_str()),
+            "not_own_job: you run at the permission level Read only and read only your own task's Jobs; Job {id} is not of your task");
+        Ok(())
+    }).await
+}
+
 pub async fn call(
     ws: Arc<Workspace>,
     actor: Option<String>,
@@ -1236,6 +1258,7 @@ pub async fn call(
             let q: Reference = serde_json::from_value(input)?;
             // The whole ID, or a unique prefix of it (T-30).
             let mut job = ws.stored(move |s| s.job(&s.resolve_id(ids::Kind::Job, &q.job_id)?)).await?;
+            own_task_only(&ws, actor.as_deref(), &job).await?;
             if actor.as_deref().is_some_and(|a| job["agentId"] != a) {
                 job["env"] = json!({"redacted":"Another Agent's explicit environment is private"});
             }
@@ -1288,6 +1311,7 @@ pub async fn call(
             let q: Log = serde_json::from_value(input)?;
             let id = q.job_id;
             let job = ws.stored(move |s| s.job(&s.resolve_id(ids::Kind::Job, &id)?)).await?;
+            own_task_only(&ws, actor.as_deref(), &job).await?;
             if job["executor"].is_object() {
                 return remote::logs(&ws, &job, q.offset).await;
             }

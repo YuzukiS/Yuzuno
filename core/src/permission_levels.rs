@@ -17,6 +17,20 @@
 //!
 //! No level is each harness's own default for new Agents, as before.
 //!
+//! - `read-only` (YN-74 ④b; design YN-72 v3 4.1): no shell but one in a
+//!   read-only sandbox, no tool that writes a file, no Job and no network. Of
+//!   Yuzuno's tools only `READ_ONLY_TOOLS`: Core lists no other to that Agent
+//!   and refuses any other call (collaboration_mcp.rs), whatever its harness
+//!   was told. Codex: its `read-only` preset (sandbox readOnly without
+//!   network, approval never), only those tools enabled on yuzuno and every
+//!   other MCP server off, read back from the thread it starts. Claude Code:
+//!   `default` mode with `claude_read_only`, which the bridge applies as
+//!   disallowedTools, a PreToolUse hook allowing only its list, and no
+//!   permission request. OpenCode: rules that deny all but reading and those
+//!   tools, read back as every level (`opencode_check`). Kept with the Agent
+//!   on every harness (`agent_permission_levels`), and its harness's own
+//!   permission can't be changed while it is.
+//!
 //! OpenCode keeps each level as rules of its own (`opencode_config`), given to
 //! that executor's `opencode serve` alone in OPENCODE_CONFIG_CONTENT. OpenCode
 //! 2.2.5 appends a top-level `permission` from there to every agent's rules,
@@ -33,11 +47,72 @@ use serde_json::{json, Value};
 
 /// Each level, with what it is on Codex (its permission preset) and on Claude
 /// Code (its permission mode); None where that harness doesn't keep it.
-static LEVELS: [Level; 3] = [
+static LEVELS: [Level; 4] = [
     Level { id: "ask", label: "Ask you first", label_zh: "先问你", codex: Some("ask"), claude: Some("default") },
     Level { id: "auto", label: "Auto-approve", label_zh: "自动审批", codex: Some("auto"), claude: Some("auto") },
     Level { id: "full", label: "Full access", label_zh: "完全放开", codex: Some("full"), claude: None },
+    Level { id: READ_ONLY, label: "Read only", label_zh: "只读", codex: Some(READ_ONLY), claude: Some("default") },
 ];
+
+/// The level of an executor that reads and proposes, and changes nothing
+/// itself: a workspace cleanup's (YN-74).
+pub(crate) const READ_ONLY: &str = "read-only";
+
+/// The Yuzuno tools a read-only Agent may call (design YN-72 v3 4.1, as the
+/// Lead approved in mail 10781): its cleanup's, reading and reporting on its
+/// own task, the Brief for its Ask, its mail, and reading the inventory's Job
+/// (job_get has the attempt and sha256 a plan names). No other: not
+/// job_submit or any other Job, run, merge, PR, review, CI, delivery or
+/// service tool, not task_create, task_dispatch or task_claim, and not
+/// cleanup_restore (a lead's). A tool added later is outside it until named here.
+pub(crate) const READ_ONLY_TOOLS: [&str; 19] = [
+    "cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply",
+    "task_get", "task_list", "task_update", "task_comment", "task_submit_result", "task_result_get",
+    "brief_get", "brief_update", "brief_guide",
+    "peer_read", "peer_send", "peers_list",
+    "job_get", "job_logs",
+    "yuzuno_guide",
+];
+
+/// Whether a read-only Agent may call Yuzuno's tool `tool`.
+pub(crate) fn read_only_allows(tool: &str) -> bool {
+    READ_ONLY_TOOLS.contains(&tool)
+}
+
+/// Claude Code's own tools a read-only Agent keeps: reading, finding and
+/// searching files, and ToolSearch, which only loads the schemas of tools it
+/// already has (Yuzuno's are deferred).
+const CLAUDE_READ_ONLY_KEPT: [&str; 4] = ["Read", "Glob", "Grep", "ToolSearch"];
+/// And those it is started without (design 4.1), named so a model never
+/// sees them: the shell, every file write, the web, and sub-agents. The
+/// bridge's hook refuses whatever else is not kept, these included.
+const CLAUDE_READ_ONLY_REMOVED: [&str; 11] =
+    ["Bash", "BashOutput", "KillShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"];
+
+/// What the Claude bridge starts a read-only Agent with: `disallowedTools`,
+/// Claude Code's tools above and every Yuzuno tool outside READ_ONLY_TOOLS;
+/// `allowedTools`, the only tools its PreToolUse hook lets run.
+pub(crate) fn claude_read_only() -> Value {
+    let yuzuno = |name: &str| format!("mcp__yuzuno__{name}");
+    let names: Vec<String> = crate::collaboration_store::tool_definitions().iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned)).collect();
+    let removed: Vec<String> = CLAUDE_READ_ONLY_REMOVED.iter().map(|t| (*t).to_owned())
+        .chain(names.iter().filter(|n| !read_only_allows(n)).map(|n| yuzuno(n))).collect();
+    let kept: Vec<String> = CLAUDE_READ_ONLY_KEPT.iter().map(|t| (*t).to_owned())
+        .chain(READ_ONLY_TOOLS.iter().map(|n| yuzuno(n))).collect();
+    json!({"disallowedTools": removed, "allowedTools": kept})
+}
+
+/// Refuses a Codex thread a read-only Agent was given that doesn't keep the
+/// level, as Codex answered thread/start or thread/resume: its sandbox must
+/// be readOnly without network, and it must never ask for approval.
+pub(crate) fn codex_check(answer: &Value) -> Result<()> {
+    let sandbox = &answer["sandbox"];
+    ensure!(sandbox["type"] == "readOnly" && sandbox["networkAccess"] == false && answer["approvalPolicy"] == "never",
+        "Codex didn't keep the permission level Read only: its thread runs with sandbox {} and approval {}, not readOnly without network and never. The executor was not started",
+        sandbox, answer["approvalPolicy"]);
+    Ok(())
+}
 
 struct Level {
     id: &'static str,
@@ -62,7 +137,7 @@ pub(crate) fn harness_name(harness: &str) -> &str {
 
 /// Refuses what is not a level.
 pub(crate) fn check(id: &str) -> Result<()> {
-    ensure!(level(id).is_some(), "A permission level is ask, auto or full, not {id}");
+    ensure!(level(id).is_some(), "A permission level is ask, auto, full or read-only, not {id}");
     Ok(())
 }
 
@@ -95,18 +170,33 @@ static OPENCODE_ASK: [(&str, Rule); 8] = [("*", Rule::Effect("ask")), ("read", R
 static OPENCODE_AUTO: [(&str, Rule); 4] = [("*", Rule::Effect("allow")), ("external_directory", Rule::Effect("ask")),
     ("doom_loop", Rule::Effect("ask")), ("read", Rule::Patterns(READS))];
 static OPENCODE_FULL: [(&str, Rule); 1] = [("*", Rule::Effect("allow"))];
+/// Read-only reads no `.env` file either: it can ask nobody.
+const READ_ONLY_READS: &[(&str, &str)] = &[("*", "allow"), ("*.env", "deny"), ("*.env.*", "deny"), ("*.env.example", "allow")];
+const ALLOW: Rule = Rule::Effect("allow");
+/// Everything denied, then reading, searching, listing and READ_ONLY_TOOLS
+/// as OpenCode names Yuzuno's tools (`yuzuno_<tool>`, opencode_agent.rs).
+static OPENCODE_READ_ONLY: [(&str, Rule); 24] = [("*", Rule::Effect("deny")), ("read", Rule::Patterns(READ_ONLY_READS)),
+    ("grep", ALLOW), ("glob", ALLOW), ("list", ALLOW),
+    ("yuzuno_cleanup_inventory", ALLOW), ("yuzuno_cleanup_plan_submit", ALLOW), ("yuzuno_cleanup_plan_get", ALLOW), ("yuzuno_cleanup_apply", ALLOW),
+    ("yuzuno_task_get", ALLOW), ("yuzuno_task_list", ALLOW), ("yuzuno_task_update", ALLOW), ("yuzuno_task_comment", ALLOW),
+    ("yuzuno_task_submit_result", ALLOW), ("yuzuno_task_result_get", ALLOW),
+    ("yuzuno_brief_get", ALLOW), ("yuzuno_brief_update", ALLOW), ("yuzuno_brief_guide", ALLOW),
+    ("yuzuno_peer_read", ALLOW), ("yuzuno_peer_send", ALLOW), ("yuzuno_peers_list", ALLOW),
+    ("yuzuno_job_get", ALLOW), ("yuzuno_job_logs", ALLOW), ("yuzuno_yuzuno_guide", ALLOW)];
 
 /// OpenCode's rules for level `id`, in order:
 /// - `ask`: everything asks but reading, searching, listing, asking the user and its to-do list;
 /// - `auto`: everything is allowed but a folder outside its own and a loop of the same failing call;
-/// - `full`: everything is allowed.
+/// - `full`: everything is allowed;
+/// - `read-only`: everything is denied but reading (no `.env`), searching, listing and READ_ONLY_TOOLS.
 ///
-/// No sandbox confines OpenCode's commands, at any level.
+/// No sandbox confines OpenCode's commands, at any level: read-only has none.
 fn opencode_rules(id: &str) -> Option<&'static [(&'static str, Rule)]> {
     match id {
         "ask" => Some(&OPENCODE_ASK),
         "auto" => Some(&OPENCODE_AUTO),
         "full" => Some(&OPENCODE_FULL),
+        READ_ONLY => Some(&OPENCODE_READ_ONLY),
         _ => None,
     }
 }
@@ -163,9 +253,11 @@ fn decided<'a>(rules: impl DoubleEndedIterator<Item = (&'a str, &'a str, &'a str
     rules.rev().find(|(a, r, _)| wildcard(a, action) && wildcard(r, resource)).map_or("ask", |(_, _, effect)| effect)
 }
 
-/// What a start checks each OpenCode agent decides as the level does.
-const PROBES: [(&str, &str); 6] = [("edit", "src/main.rs"), ("shell", "cargo test"), ("webfetch", "https://example.com/"),
-    ("external_directory", "/elsewhere/*"), ("read", "project/.env"), ("read", "project/README.md")];
+/// What a start checks each OpenCode agent decides as the level does: for
+/// read-only also a Yuzuno tool it keeps and one it doesn't.
+const PROBES: [(&str, &str); 9] = [("edit", "src/main.rs"), ("shell", "cargo test"), ("bash", "rm -rf src"), ("webfetch", "https://example.com/"),
+    ("external_directory", "/elsewhere/*"), ("read", "project/.env"), ("read", "project/README.md"),
+    ("yuzuno_job_submit", "*"), ("yuzuno_cleanup_plan_submit", "*")];
 
 /// OpenCode's managed configuration on this host (2.2.5 `Ux`: /etc/opencode on
 /// Linux), which it reads after Yuzuno's: named when a start check fails.
@@ -299,6 +391,9 @@ mod tests {
             assert_eq!(native(id, "opencode"), Some(id), "OpenCode keeps each, as its own rules");
         }
         assert_eq!(native("readonly", "codex"), None);
+        assert_eq!([native(READ_ONLY, "codex"), native(READ_ONLY, "claude"), native(READ_ONLY, "opencode")],
+            [Some("read-only"), Some("default"), Some("read-only")]);
+        assert!(CODEX_PRESETS.contains(&"read-only") && keeps(Some(READ_ONLY), "codex") && keeps(Some(READ_ONLY), "claude"));
     }
 
     #[test]
@@ -311,7 +406,8 @@ mod tests {
         assert!(["ask", "auto", "full"].into_iter().all(|id| keeps(Some(id), "opencode")));
         assert!(["ask", "auto", "full"].into_iter().all(|id| !keeps(Some(id), "later")));
         assert!(!keeps(Some("readonly"), "codex"), "not a level");
-        assert!(check("readonly").unwrap_err().to_string().contains("ask, auto or full"));
+        assert!(check("readonly").unwrap_err().to_string().contains("ask, auto, full or read-only"));
+        assert!(!keeps(Some(READ_ONLY), "later"), "a harness Core can't make read-only is passed over");
         assert!(check("").is_err() && check("Ask").is_err());
     }
 
@@ -337,7 +433,9 @@ mod tests {
     fn the_table_lists_each_level_in_order_with_null_where_a_harness_does_not_keep_it() {
         let table = table();
         let ids: Vec<&str> = table.as_array().unwrap().iter().map(|l| l["level"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["ask", "auto", "full"]);
+        assert_eq!(ids, ["ask", "auto", "full", "read-only"]);
+        assert_eq!(table[3]["codex"], json!({"permissionPreset": "read-only"}));
+        assert_eq!(table[3]["opencode"]["permission"]["*"], "deny");
         assert_eq!(table[0]["codex"], json!({"permissionPreset": "ask"}));
         assert_eq!(table[0]["claude"], json!({"permissionMode": "default"}));
         assert_eq!((table[2]["claude"].clone(), table[2]["labelZh"].clone()), (Value::Null, json!("完全放开")));
@@ -364,6 +462,16 @@ mod tests {
             r#""read":{"*":"allow","*.env":"ask","*.env.*":"ask","*.env.example":"allow"}}}"#));
         assert_eq!(opencode_config("full").unwrap(), r#"{"permission":{"*":"allow"}}"#);
         assert_eq!(opencode_config("readonly"), None);
+        let text = opencode_config(READ_ONLY).unwrap();
+        assert!(text.starts_with(r#"{"permission":{"*":"deny","read":{"*":"allow","*.env":"deny","#), "denied first; the rest decide after it: {text}");
+        let read_only: Value = serde_json::from_str(&text).unwrap();
+        let rules = read_only["permission"].as_object().unwrap();
+        let mut yuzuno: Vec<&str> = rules.keys().filter_map(|k| k.strip_prefix("yuzuno_")).collect();
+        let mut listed = READ_ONLY_TOOLS.to_vec();
+        yuzuno.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(yuzuno, listed, "OpenCode keeps exactly the tools Core lists");
+        assert!(rules.iter().filter(|(k, _)| k.as_str() != "*" && k.as_str() != "read").all(|(_, effect)| effect == "allow"));
         for id in ["ask", "auto", "full"] {
             serde_json::from_str::<Value>(&opencode_config(id).unwrap()).unwrap();
         }
@@ -418,5 +526,48 @@ mod tests {
         assert!(opencode_check("ask", &json!([]), None).unwrap_err().to_string().contains("listed no agent"));
         assert!(opencode_check("ask", &json!([{"id": "build"}]), None).unwrap_err().to_string().contains("lists no permission rules"));
         assert!(opencode_check("readonly", &agents(Some("ask"), &[]), None).is_err());
+        opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[]), None).unwrap();
+        // A user's rule read after Yuzuno's that lets the shell run is caught.
+        let shell = opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[("bash", "*", "allow")]), Some("/etc/opencode")).unwrap_err().to_string();
+        assert!(shell.contains("for bash on rm -rf src it decides allow, the level deny"), "{shell}");
+        let job = opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[("yuzuno_*", "*", "allow")]), None).unwrap_err().to_string();
+        assert!(job.contains("for yuzuno_job_submit on * it decides allow, the level deny"), "{job}");
+    }
+
+    #[test]
+    fn read_only_keeps_only_its_tools_on_every_harness() {
+        let ruleset = opencode_ruleset(READ_ONLY);
+        let on = |action: &str, resource: &str| decided(ruleset.iter().copied(), action, resource);
+        assert_eq!((on("edit", "src/a.rs"), on("bash", "rm -rf src"), on("webfetch", "https://example.com/"), on("external_directory", "/x/*")),
+            ("deny", "deny", "deny", "deny"));
+        assert_eq!((on("read", "src/a.rs"), on("read", "app/.env"), on("grep", "*"), on("list", "*")), ("allow", "deny", "allow", "allow"));
+        assert_eq!((on("yuzuno_cleanup_plan_submit", "*"), on("yuzuno_job_get", "*"), on("yuzuno_job_submit", "*"), on("yuzuno_task_dispatch", "*")),
+            ("allow", "allow", "deny", "deny"));
+        // Every listed tool exists; the ones that start or change other work are out.
+        let names: Vec<String> = crate::collaboration_store::tool_definitions().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect();
+        for tool in READ_ONLY_TOOLS {
+            assert!(names.iter().any(|n| n == tool), "{tool} is a Yuzuno tool");
+        }
+        for tool in ["job_submit", "job_run_submit", "job_run_retry", "job_cancel", "merge_enqueue", "github_pr_submit", "review_start",
+            "ci_subscribe", "delivery_enable", "task_create", "task_dispatch", "task_claim", "cleanup_restore", "service_register"] {
+            assert!(!read_only_allows(tool), "{tool}");
+        }
+        let claude = claude_read_only();
+        let removed: Vec<&str> = claude["disallowedTools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        let kept: Vec<&str> = claude["allowedTools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        for tool in ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "mcp__yuzuno__job_submit", "mcp__yuzuno__job_run_submit",
+            "mcp__yuzuno__job_run_retry", "mcp__yuzuno__job_cancel", "mcp__yuzuno__merge_enqueue", "mcp__yuzuno__github_pr_submit"] {
+            assert!(removed.contains(&tool), "{tool} is removed");
+        }
+        assert_eq!(&kept[..4], ["Read", "Glob", "Grep", "ToolSearch"]);
+        assert!(kept.contains(&"mcp__yuzuno__cleanup_plan_submit") && !kept.contains(&"mcp__yuzuno__job_submit"));
+        assert!(removed.iter().all(|t| !kept.contains(t)), "nothing is both");
+        assert_eq!(removed.len() - 11 + READ_ONLY_TOOLS.len(), names.len(), "each Yuzuno tool is kept or removed");
+        codex_check(&json!({"sandbox": {"type": "readOnly", "networkAccess": false}, "approvalPolicy": "never"})).unwrap();
+        for answer in [json!({"sandbox": {"type": "workspaceWrite", "networkAccess": false}, "approvalPolicy": "never"}),
+            json!({"sandbox": {"type": "readOnly", "networkAccess": true}, "approvalPolicy": "never"}),
+            json!({"sandbox": {"type": "readOnly", "networkAccess": false}, "approvalPolicy": "on-request"}), json!({})] {
+            assert!(codex_check(&answer).unwrap_err().to_string().contains("didn't keep the permission level Read only"), "{answer}");
+        }
     }
 }

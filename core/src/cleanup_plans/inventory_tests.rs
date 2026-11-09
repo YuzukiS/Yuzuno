@@ -249,3 +249,41 @@ fn its_rules_are_the_scripts() {
     let description = inventory::tool_definition()["description"].as_str().unwrap().encode_utf16().count();
     assert!(description <= 2048, "{description}");
 }
+
+/// YN-74 ④b (Lead mail 10783): a read-only executor reads its own task's Jobs
+/// and no other; job_get and job_logs refuse another task's with not_own_job.
+#[tokio::test]
+async fn a_read_only_executor_reads_only_its_own_task_s_jobs() {
+    let lab = lab();
+    lab.ws.store.collaboration_call(None, "task_create", json!({"requestId": "other", "title": "Other work", "status": "doing"})).unwrap();
+    let (own, other) = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222");
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        for (id, key) in [(own, "T-1"), (other, "T-2")] {
+            let (task, _) = collaboration::task_key(&db, key).unwrap();
+            let data = json!({"id": id, "taskId": task, "agentId": "lead", "attempt": ATTEMPT, "status": "succeeded",
+                "target": {"kind": "local"}, "result": {"attempt": ATTEMPT, "artifacts": []}});
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'lead','succeeded',?3)", params![id, task, data.to_string()]).unwrap();
+        }
+    }
+    let read = |tool: &'static str, job: &'static str| {
+        let ws = lab.ws.clone();
+        async move { ws.collaboration_call(Some("ex"), tool, json!({"jobId": job})).await.map_err(|e| e.to_string()) }
+    };
+    // Before it is read-only, it reads both, as any Agent does.
+    assert!(read("job_get", other).await.is_ok());
+    lab.ws.store.set_permission_level("ex", Some(crate::permission_levels::READ_ONLY)).unwrap();
+    for tool in ["job_get", "job_logs"] {
+        let error = read(tool, other).await.unwrap_err();
+        assert!(error.starts_with("not_own_job:") && error.contains(other), "{tool}: {error}");
+        // By a unique prefix, as mail names it, too.
+        let error = read(tool, "22222222").await.unwrap_err();
+        assert!(error.starts_with("not_own_job:"), "{tool}: {error}");
+        if let Err(error) = read(tool, own).await {
+            assert!(!error.starts_with("not_own_job"), "its own task's Job: {tool}: {error}");
+        }
+    }
+    assert_eq!(read("job_get", own).await.unwrap()["id"], own);
+    // Another Agent, not read-only, still reads it.
+    assert!(lab.ws.collaboration_call(Some("lead"), "job_get", json!({"jobId": other})).await.is_ok());
+}

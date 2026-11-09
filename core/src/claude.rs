@@ -491,6 +491,9 @@ impl Workspace {
             SELECTABLE_PERMISSION_MODES.contains(&mode),
             "Claude 权限模式无效"
         );
+        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        anyhow::ensure!(level.as_deref() != Some(crate::permission_levels::READ_ONLY),
+            "这个执行者的权限等级是「只读」，它的权限模式不能改");
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         let agent = self.listed(id).await?;
@@ -853,6 +856,13 @@ impl Workspace {
             }
         });
         let mut start = start_params(&d.agent);
+        // The read-only level (YN-74 ④b): `default` mode, and the tools the
+        // bridge removes and the only ones its hook lets run.
+        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        if level.as_deref() == Some(crate::permission_levels::READ_ONLY) {
+            start["permissionMode"] = "default".into();
+            start["readOnly"] = crate::permission_levels::claude_read_only();
+        }
         if let Some(executable) = &executable {
             start["executable"] = executable.display().to_string().into();
         }

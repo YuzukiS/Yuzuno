@@ -770,7 +770,10 @@ impl Workspace {
         // Compose both native overrides once so every start/resume path keeps
         // permission routing, reasoning settings and the Agent-scoped MCP.
         let initial_params = match permission_params(&connection, &a, start_params(&a), false).await {
-            Ok(params) => self.collaboration_codex_params(&a, params).await,
+            Ok(params) => match self.collaboration_codex_params(&a, params).await {
+                Ok(params) => read_only_params(self, &connection.rpc, &a, params).await,
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         // Start and resume alike: a compaction rebuilds the Thread's opening
@@ -935,6 +938,19 @@ impl Workspace {
                 return Err(e);
             }
         };
+        // A read-only executor's thread as Codex runs it (YN-74 ④b): refused
+        // unless its sandbox is readOnly without network and nothing asks.
+        if a.settings.permission_preset.as_deref() == Some(crate::permission_levels::READ_ONLY) {
+            if let Err(error) = crate::permission_levels::codex_check(&result) {
+                let message = error.to_string();
+                self.record_update(id, "codex/levelNotKept", json!({"message":message}), Sel::Meta, move |d| {
+                    d.agent.status = "error".into();
+                    d.agent.error = Some(message);
+                }).await?;
+                self.remove_connection(id, connection.generation).await;
+                return Err(error);
+            }
+        }
         let thread_id = result["thread"]["id"]
             .as_str()
             .context("Codex 未返回会话 ID")?
@@ -2021,6 +2037,7 @@ impl Workspace {
         // A resume ACK proves submission, never the provider's effective limit.
         let initial_params = permission_params(&connection, &detail.agent, start_params(&detail.agent), false).await?;
         let initial_params = self.collaboration_codex_params(&detail.agent, initial_params).await?;
+        let initial_params = read_only_params(self, &connection.rpc, &detail.agent, initial_params).await?;
         let initial_params = crate::results::with_capability_notice(&connection.rpc, &detail.agent.cwd, initial_params).await;
         let initial_params = crate::brief_turns::with_hard_rules(self, id, initial_params).await;
         let agent_id = id.to_owned();
@@ -2055,6 +2072,11 @@ impl Workspace {
     pub async fn update_settings(self: &Arc<Self>, id: &str, model: String, mut settings: AgentSettings) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         validate_settings(&settings)?;
+        // A read-only executor keeps Codex's read-only preset (YN-74 ④b).
+        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        anyhow::ensure!(level.as_deref() != Some(crate::permission_levels::READ_ONLY)
+            || settings.permission_preset.as_deref() == Some(crate::permission_levels::READ_ONLY),
+            "这个执行者的权限等级是「只读」，它的 Codex 权限不能改");
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         let agent = self.listed(id).await?;
@@ -2814,7 +2836,7 @@ fn turn_params(agent: &Agent, thread: &str, text: &str, client_id: Option<&str>)
 
 pub(crate) fn validate_settings(settings: &AgentSettings) -> Result<()> {
     crate::codex_context::Overrides::from(settings).validate()?;
-    if settings.permission_preset.as_deref().is_some_and(|mode| !["config", "ask", "auto", "full"].contains(&mode)) {
+    if settings.permission_preset.as_deref().is_some_and(|mode| !crate::agent_defaults::CODEX_PRESETS.contains(&mode)) {
         bail!("未知的 Codex 权限模式");
     }
     if !["on-request", "untrusted", "never"].contains(&settings.approval_policy.as_str())
@@ -2825,6 +2847,33 @@ pub(crate) fn validate_settings(settings: &AgentSettings) -> Result<()> {
         bail!("Claude 权限模式不适用于 Codex");
     }
     Ok(())
+}
+
+/// What a read-only executor's Codex thread is started with besides its
+/// preset (YN-74 ④b; permission_levels.rs): only READ_ONLY_TOOLS enabled
+/// on Yuzuno's server, and every other MCP server the machine's Codex
+/// configuration names turned off for this thread. Its own configuration is
+/// never written. Another Agent's parameters are as they were.
+async fn read_only_params(ws: &Workspace, rpc: &Rpc, agent: &Agent, mut params: Value) -> Result<Value> {
+    let level = { let id = agent.id.clone(); ws.stored(move |store| store.permission_level(&id)).await? };
+    if level.as_deref() != Some(crate::permission_levels::READ_ONLY) {
+        return Ok(params);
+    }
+    anyhow::ensure!(agent.settings.permission_preset.as_deref() == Some(crate::permission_levels::READ_ONLY),
+        "This executor's permission level is Read only, but its Codex permission is not Codex's read-only preset; it was not started");
+    if !params["config"].is_object() {
+        params["config"] = json!({});
+    }
+    if params["config"]["mcp_servers.yuzuno"].is_object() {
+        params["config"]["mcp_servers.yuzuno"]["enabled_tools"] = json!(crate::permission_levels::READ_ONLY_TOOLS);
+    }
+    let read = rpc.request("config/read", json!({"cwd":agent.cwd,"includeLayers":false})).await?;
+    let servers: Vec<String> = read["config"]["mcp_servers"].as_object().into_iter().flatten()
+        .map(|(name, _)| name.clone()).filter(|name| name != "yuzuno").collect();
+    for name in servers {
+        params["config"][format!("mcp_servers.{name}.enabled")] = json!(false);
+    }
+    Ok(params)
 }
 
 pub(crate) async fn permission_config(rpc: &Rpc, cwd: &str) -> Result<(Value, Value)> {

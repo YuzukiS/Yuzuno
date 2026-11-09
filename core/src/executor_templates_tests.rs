@@ -156,7 +156,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"permissionPreset":"root"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
         (with(json!({"permissionPreset":"auto"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
         (with(json!({"permissionPreset":"config","permissionLevel":"ask"})), "A fixed Codex template takes a permission level or its own configuration"),
-        (with(json!({"permissionLevel":"readonly"})), "A permission level is ask, auto or full, not readonly"),
+        (with(json!({"permissionLevel":"readonly"})), "A permission level is ask, auto, full or read-only, not readonly"),
         (with(json!({"harness":"claude","permissionLevel":"full"})), "Claude Code doesn't keep the permission level full (Full access)"),
         // YN-56: only a fixed template names its harness, model and effort; one that follows routing takes a level.
         (follows_with(json!({"harness":"codex"})), "A template that follows routing names no harness"),

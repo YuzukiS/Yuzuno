@@ -126,8 +126,10 @@ impl Plan {
         let template = Some(self.template.id.clone()).filter(|id| !id.is_empty());
         let (project, task) = (self.project_id.clone(), self.task_id.clone());
         // An OpenCode executor's permission level, which each start of its server reads
-        // (permission_levels.rs, YN-56 S3); another harness takes it as its own permission.
-        let level = self.template.permission_level.clone().filter(|_| self.template.harness() == "opencode");
+        // (permission_levels.rs, YN-56 S3); another harness takes it as its own permission,
+        // but read-only is kept on every harness: each start applies more than a mode (YN-74 ④b).
+        let level = self.template.permission_level.clone()
+            .filter(|level| self.template.harness() == "opencode" || level == crate::permission_levels::READ_ONLY);
         Box::new(move |db| {
             let at = now();
             let moved = db.execute(

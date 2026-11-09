@@ -657,6 +657,61 @@ test('Workspace MCP is scoped to this query and does not relax other tool permis
   await bridge.reader;
 });
 
+// YN-74 ④b: Core's read-only level. Claude Code starts without the tools
+// Core names, in default mode; only its kept tools run, nothing asks the user,
+// and its mode stays.
+const READ_ONLY = {
+  disallowedTools: ['Bash', 'Write', 'Edit', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Agent', 'mcp__yuzuno__job_submit'],
+  allowedTools: ['Read', 'Glob', 'Grep', 'ToolSearch', 'mcp__yuzuno__cleanup_plan_submit', 'mcp__yuzuno__job_get'],
+};
+
+test('a read-only start removes its tools, lets only its own run and asks nobody', async () => {
+  const f = await fixture({}, { collaborationMcp: { url: 'http://127.0.0.1:4379/mcp/ro', headers: { Authorization: 'Bearer fixture-only' } },
+    readOnly: READ_ONLY });
+  assert.equal(f.response('start').error, undefined);
+  const { options } = f.state;
+  assert.deepEqual(options.disallowedTools, READ_ONLY.disallowedTools);
+  assert.equal(options.permissionMode, 'default');
+  for (const tool of ['Read', 'Grep', 'ToolSearch', 'mcp__yuzuno__cleanup_plan_submit', 'mcp__yuzuno__job_get']) {
+    assert.deepEqual(hook(f, 'PreToolUse', { tool_name: tool }), {}, tool);
+  }
+  // Removed or never listed, a user's own allow rule included: denied before any permission check.
+  for (const tool of ['Bash', 'Write', 'mcp__yuzuno__job_submit', 'mcp__other__write_file', 'EnterWorktree']) {
+    const decided = hook(f, 'PreToolUse', { tool_name: tool });
+    assert.equal(decided.hookSpecificOutput.permissionDecision, 'deny', tool);
+    assert.match(decided.hookSpecificOutput.permissionDecisionReason, /permission level Read only/);
+  }
+  const asked = await options.canUseTool('mcp__other__write_file', {}, { signal: new AbortController().signal });
+  assert.equal(asked.behavior, 'deny');
+  assert.equal(f.events.filter(e => e.type === 'permission').length, 0, 'no request reaches the user');
+  await f.bridge.handle({ id: 'mode', op: 'set_permission_mode', permissionMode: 'auto' });
+  assert.match(f.response('mode').error, /keeps its permission mode/);
+  assert.equal(f.state.permissionMode, undefined);
+  f.bridge.close();
+  await f.bridge.reader;
+});
+
+test('a read-only start that lists no shell, overlaps or asks for another mode is refused', async () => {
+  for (const [readOnly, extra] of [
+    [{ ...READ_ONLY, disallowedTools: ['Write'] }, {}],
+    [{ ...READ_ONLY, allowedTools: ['Read', 'Bash'] }, {}],
+    [{ disallowedTools: 'Bash', allowedTools: [] }, {}],
+    [READ_ONLY, { permissionMode: 'auto' }],
+  ]) {
+    const f = await fixture({}, { readOnly, ...extra });
+    assert.match(f.response('start').error, /read-only|default mode/, JSON.stringify(readOnly));
+    assert.equal(f.state.options, undefined, 'no query was started');
+  }
+});
+
+test('without read-only nothing changes: no tool removed, no hook added', async () => {
+  const f = await fixture();
+  assert.equal(f.state.options.disallowedTools, undefined);
+  assert.equal(f.state.options.hooks.PreToolUse, undefined);
+  f.bridge.close();
+  await f.bridge.reader;
+});
+
 test('update status is read-only and distinguishes idle, working, approval and native control', async () => {
   const f = await fixture();
   const status = async (id) => {

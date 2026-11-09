@@ -196,6 +196,16 @@ struct CollaborationHandler {
 }
 
 impl CollaborationHandler {
+    /// Whether the caller runs at the read-only level (YN-74 ④b), read at
+    /// each listing and call: Core lists it only READ_ONLY_TOOLS and refuses
+    /// any other, whatever its harness was told. An unreadable level is
+    /// taken as read-only, so a failed read never lists more.
+    async fn read_only(&self) -> bool {
+        let actor = self.actor.clone();
+        self.ws.stored(move |store| store.permission_level(&actor)).await
+            .map_or(true, |level| level.as_deref() == Some(crate::permission_levels::READ_ONLY))
+    }
+
     /// The answer as the caller can read it (YN-69 S8): OpenCode shows nothing
     /// of a tool output line over 51,200 bytes, and compact JSON is one line,
     /// so an OpenCode Agent gets a short refusal saying how to read it in
@@ -236,6 +246,9 @@ impl ServerHandler for CollaborationHandler {
     ) -> Result<ListToolsResult, ErrorData> {
         let mut result = ListToolsResult::default();
         result.tools = self.tools.as_ref().clone();
+        if self.read_only().await {
+            result.tools.retain(|tool| crate::permission_levels::read_only_allows(&tool.name));
+        }
         Ok(result)
     }
 
@@ -247,6 +260,12 @@ impl ServerHandler for CollaborationHandler {
         let tool = self
             .get_tool(&request.name)
             .ok_or_else(|| ErrorData::invalid_params("Unknown collaboration tool", None))?;
+        if !crate::permission_levels::read_only_allows(&request.name) && self.read_only().await {
+            return Ok(CallToolResult::structured_error(json!({"error": format!(
+                "read_only: you run at the permission level Read only, which calls none of Yuzuno's tools but cleanup_inventory, \
+                 cleanup_plan_submit, cleanup_plan_get, cleanup_apply, reading and reporting on your task, the Brief, mail, job_get, job_logs \
+                 and yuzuno_guide; {} was refused and nothing was done", request.name)})).into());
+        }
         let mut arguments = request.arguments.unwrap_or_default();
         // These tools have a closed set of top-level parameters. Reject unknown
         // keys (including source/actor overrides), rather than silently accepting
@@ -676,6 +695,49 @@ mod tests {
         assert!(gui_note["task"]["description"].is_string());
         let _ = client.cancel().await;
         server.abort();
+    }
+
+    /// YN-74 ④b: Core lists a read-only Agent only READ_ONLY_TOOLS and
+    /// refuses any other call before anything runs; another Agent keeps all.
+    #[tokio::test]
+    async fn a_read_only_agent_lists_and_calls_only_its_tools() {
+        let (_directory, ws) = fixture();
+        ws.store.set_permission_level("agent-a", Some(crate::permission_levels::READ_ONLY)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(ws.clone(), port);
+        let _server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let connect = |agent: &'static str| {
+            let token = ws.store.collaboration_mcp_token(agent).unwrap();
+            let transport = StreamableHttpClientTransport::with_client(
+                reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+                StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/{agent}")).auth_header(token),
+            );
+            async move { tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap() }
+        };
+        let (reader, other) = (connect("agent-a").await, connect("agent-b").await);
+        let call = |name: &'static str, arguments: Value| CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone());
+        let listed: Vec<String> = reader.list_all_tools().await.unwrap().iter().map(|t| t.name.to_string()).collect();
+        let mut kept: Vec<String> = crate::permission_levels::READ_ONLY_TOOLS.iter().map(|t| (*t).to_owned()).collect();
+        kept.sort();
+        let mut sorted = listed.clone();
+        sorted.sort();
+        assert_eq!(sorted, kept, "only its tools are listed");
+        let everything = crate::collaboration_store::tool_definitions().len();
+        assert_eq!(other.list_all_tools().await.unwrap().len(), everything, "another Agent lists every tool");
+        for tool in ["job_submit", "task_dispatch", "merge_enqueue", "github_pr_submit", "cleanup_restore"] {
+            let refused = reader.call_tool(call(tool, json!({}))).await.unwrap();
+            assert_eq!(refused.is_error, Some(true), "{tool}");
+            let error = refused.structured_content.unwrap()["error"].as_str().unwrap().to_owned();
+            assert!(error.starts_with("read_only:") && error.contains(tool), "{error}");
+        }
+        let jobs: i64 = ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(jobs, 0, "nothing was submitted");
+        let peers = reader.call_tool(call("peers_list", json!({}))).await.unwrap();
+        assert_eq!(peers.is_error, Some(false), "{peers:?}");
+        let unrefused = other.call_tool(call("job_submit", json!({}))).await.unwrap();
+        let error = unrefused.structured_content.unwrap()["error"].as_str().unwrap_or_default().to_owned();
+        assert!(!error.starts_with("read_only:"), "another Agent is not read-only: {error}");
     }
 
     #[tokio::test]

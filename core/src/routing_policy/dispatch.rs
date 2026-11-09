@@ -442,7 +442,8 @@ impl crate::workspace::Workspace {
         }
         record["changedAtStart"] = changed;
         // As a dispatch's executor keeps it (collaboration_store/executor_dispatch.rs `Plan::then`).
-        let level = waiting.level().filter(|_| born.harness == "opencode").map(str::to_owned);
+        // Read-only on every harness: each start applies it (permission_levels.rs, YN-74 ④b).
+        let level = waiting.level().filter(|level| born.harness == "opencode" || *level == crate::permission_levels::READ_ONLY).map(str::to_owned);
         let crate::server::Born { harness, model, settings } = born;
         self.record_meta(&agent, "routing/chosen", event, move |m| {
             m.agent.harness = harness;
