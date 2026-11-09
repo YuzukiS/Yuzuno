@@ -397,7 +397,8 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       const at = await page.evaluate((iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso)), "2026-11-09T04:00:00Z");
       // In the middle of the rail first: a row far down it has no size until it is near the view.
       await rowOf("yn57").evaluate((row) => row.scrollIntoView({ block: "center" }));
-      // Its pill leaves line one room, as the slot queue's pills do: a long one took all of it (light-en, Job c3c7a0ae).
+      // Its pill leaves line one room, as the slot queue's pills do: a long one took all of it
+      // (light-en, a 12-hour clock: "Waiting for a candidate · from 12:00 PM", then "Candidate from 12:00 PM").
       const lineOne = async (id) => rowOf(id).locator(".agent-select").evaluate((b) => b.getBoundingClientRect().width);
       const [waitingOne, queuedOne] = [await lineOne("yn57"), await lineOne("yn45")];
       assert.ok(waitingOne >= 40 && waitingOne >= queuedOne - 24, `${tag}: yn57's line one keeps room beside its pill (${waitingOne} px; yn45's ${queuedOne} px)`);
@@ -407,7 +408,7 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       const said = await tip.innerText();
       const zh = tag.endsWith("-zh");
       for (const line of zh ? [`等候选 · ${at} 起`, "在等路由候选；有候选满足条件就启动", "模板：Design first", `路由：在等一个候选 · 最早 ${at}`]
-        : [`Candidate from ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
+        : [`From ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
         assert.ok(said.includes(line), `${tag}: the card says "${line}": ${said}`);
       await page.screenshot({ path: join(output, `${tag}-3-card-route.png`) });
       report.screenshots.push(`${tag}-3-card-route`);
