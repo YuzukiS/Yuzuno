@@ -133,7 +133,7 @@ pub(super) fn validate(
 /// record's Job sources are (T-17): this task's Job, its exact attempt, and the
 /// recorded check of that path with the same SHA-256. Refused unless it is a
 /// recorded match; the binding is returned.
-pub(super) fn matched(db: &Connection, task: &str, criterion: &str, artifact: &Value) -> Result<Value> {
+pub(crate) fn matched(db: &Connection, task: &str, criterion: &str, artifact: &Value) -> Result<Value> {
     required_text(artifact, "jobId", 128)?;
     let attempt = required_text(artifact, "attempt", 128)?;
     ensure!(

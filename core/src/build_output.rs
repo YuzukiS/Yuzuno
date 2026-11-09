@@ -33,7 +33,7 @@ const GIT_BYTES: usize = 64 * 1024;
 const WALK_DEPTH: usize = 6;
 const WALK_DIRS: usize = 50_000;
 const WALK_TIME: Duration = Duration::from_secs(5);
-const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+pub(crate) const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 /// A real .rustc_info.json is a few KiB; a larger file is not Cargo's.
 const RUSTC_INFO_BYTES: u64 = 1 << 20;
 pub(crate) const REMOVING: &str = ".yuzuno-removing-";
@@ -75,6 +75,12 @@ async fn bounded(mut reader: impl tokio::io::AsyncRead + Unpin, limit: usize) ->
 /// One bounded Git command in dir: no hooks, no fsmonitor, no optional
 /// locks, no prompts. Returns stdout, or the reason it failed.
 pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<std::result::Result<String, String>> {
+    git_limited(dir, args, GIT_BYTES).await
+}
+
+/// `git` with room for `limit` bytes of output, for a listing that grows with
+/// the repository (`git worktree list`, YN-74).
+pub(crate) async fn git_limited(dir: &Path, args: &[&str], limit: usize) -> Result<std::result::Result<String, String>> {
     let mut child = Command::new("git")
         .args(["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C"])
         .arg(dir)
@@ -90,14 +96,14 @@ pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<std::result::Result
     let out = child.stdout.take().context("Missing Git output")?;
     let err = child.stderr.take().context("Missing Git errors")?;
     let run = async {
-        let (a, b, status) = tokio::join!(bounded(out, GIT_BYTES), bounded(err, 4096), child.wait());
+        let (a, b, status) = tokio::join!(bounded(out, limit), bounded(err, 4096), child.wait());
         let ((stdout, more), (stderr, _)) = (a?, b?);
         Ok::<_, anyhow::Error>((status?, stdout, more, stderr))
     };
     let (status, stdout, more, stderr) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
         .await
         .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))??;
-    ensure!(!more, "Git's answer exceeded {} KiB", GIT_BYTES / 1024);
+    ensure!(!more, "Git's answer exceeded {} KiB", limit / 1024);
     Ok(if status.success() {
         Ok(String::from_utf8_lossy(&stdout).into_owned())
     } else {
@@ -180,7 +186,7 @@ pub(crate) fn mounts() -> Option<Vec<PathBuf>> {
 /// Cargo's own files say dir is a Cargo target directory: its CACHEDIR.TAG,
 /// or, in one made before Cargo ran and so without a tag, the rustc
 /// information Cargo keeps there.
-fn cargo_target(dir: &Path) -> bool {
+pub(crate) fn cargo_target(dir: &Path) -> bool {
     let tagged = std::fs::read_to_string(dir.join("CACHEDIR.TAG"))
         .is_ok_and(|text| text.starts_with(CACHEDIR_SIGNATURE) && text.to_ascii_lowercase().contains("cargo"));
     tagged || rustc_info(&dir.join(".rustc_info.json"))
@@ -196,11 +202,11 @@ fn rustc_info(path: &Path) -> bool {
             .is_some_and(|info| info["rustc_fingerprint"].is_u64() && info["outputs"].is_object())
 }
 
-fn is_dir(path: &Path) -> bool {
+pub(crate) fn is_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
 }
 
-fn is_file(path: &Path) -> bool {
+pub(crate) fn is_file(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
 }
 
