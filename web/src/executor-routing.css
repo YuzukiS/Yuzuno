@@ -184,6 +184,21 @@
   color: var(--ink); font-size: calc(11px + var(--font-adjust, 3px)); font-weight: 600;
 }
 .routing-cand-title > span:first-child { overflow-wrap: anywhere; }
+/* What keeps a candidate from being saved (YN-57): the palette's error tones
+   and an icon, so it reads as a call to act without filling the pill; a
+   button that opens its editor. Garden has no error tokens of its own: the
+   fallbacks are its light and dark inks (5.9:1 and 7.2:1 on their washes). */
+.routing-fix {
+  position: relative;
+  display: inline-flex; align-items: center; align-self: center; gap: 4px;
+  padding: 1px 8px 1px 6px; border: 1px solid var(--error-line, #e6c2b3); border-radius: 999px;
+  background: var(--error-wash, #fbefe9); color: var(--error-ink, #9c3f25);
+  font: inherit; font-size: calc(9px + var(--font-adjust, 3px)); font-weight: 650; line-height: 1.5; white-space: nowrap; cursor: pointer;
+}
+:root[data-theme="dark"] .routing-fix { border-color: var(--error-line, #7a4b3b); background: var(--error-wash, #45302a); color: var(--error-ink, #f2b9a1); }
+.routing-fix:hover { border-color: currentColor; }
+.routing-fix:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.routing-fix svg { flex: none; }
 .routing-cand-sub { color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); overflow-wrap: anywhere; }
 .routing-cand-sub.is-missing { color: var(--warning-ink, var(--text-secondary)); }
 .routing-cand-end { display: flex; flex: none; align-items: center; gap: 6px; }
@@ -250,6 +265,9 @@
 
 /* A phone: the card's controls under its title; 40 px targets. */
 .settings-center.is-phone .executor-routing :is(button, select, .settings-input):not(.routing-chip) { min-height: 40px; }
+/* The pill stays a pill on a phone; its target is 40 px tall all the same. */
+.settings-center.is-phone .executor-routing .routing-cand-title > .routing-fix { min-height: 0; }
+.settings-center.is-phone .routing-fix::after { content: ""; position: absolute; inset: -9px -4px; }
 .settings-center.is-phone .routing-days button { min-width: 40px; }
 .settings-center.is-phone .routing-cand-head { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px 6px 4px; }
 .settings-center.is-phone .routing-cand-main { flex-basis: calc(100% - 80px); }

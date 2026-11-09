@@ -307,7 +307,12 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
                   <span>{title}</span>
                   {c.credential.kind === "apiKey" ? <span className="settings-tag">{t.tagApi}</span>
                     : c.harness !== "opencode" && <span className="settings-tag">{t.tagSub}</span>}
-                  {issues.length > 0 && !expanded && <span className="settings-tag is-error">{t.needsFix}</span>}
+                  {/* What keeps it from being saved: a pill that reads as a call to act, and opens its editor (YN-57). */}
+                  {issues.length > 0 && !expanded && (
+                    <button type="button" className="routing-fix" aria-label={t.fixIt(name)} aria-controls={`routing-edit-${c.id}`} onClick={() => onOpen(c.id)}>
+                      <CircleAlert size={12} aria-hidden="true" />{t.needsFix}
+                    </button>
+                  )}
                 </div>
                 <div className={`routing-cand-sub${cred.missing ? " is-missing" : ""}`}>{cred.missing && <CircleAlert size={12} className="routing-icon" aria-hidden="true" />} {cred.text}</div>
               </div>
