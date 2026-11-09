@@ -285,7 +285,9 @@ async fn the_listing_says_what_routing_gave_each_executor() {
         Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":"noCandidate","candidates":[]})));
     routed("e-fixed", "claude", "opus", None, json!({"id":"reviewer","label":"Reviewer","routing":"fixed"}), None);
     routed("e-off", "codex", "", None, reviewer.clone(), None);
-    executor(s, "e-old", &task, "user", "d-old", "running", None);
+    // On a task of its own: a task's view shows its newest dispatch's executor.
+    let (_, older) = super::tests::task(s, "Older work");
+    executor(s, "e-old", &older, "user", "d-old", "running", None);
 
     assert_eq!(listed(s, "e-key")["route"], json!({"kind":"chosen","candidate":"c-ds","label":"DeepSeek off-peak","harness":"opencode",
         "model":"deepseek/deepseek-flash","credential":{"kind":"apiKey","keyId":"deepseek-main"}}));
@@ -301,7 +303,7 @@ async fn the_listing_says_what_routing_gave_each_executor() {
     assert_eq!(listed(s, "e-off")["route"], json!({"kind":"unrouted","why":"off"}));
     assert!(listed(s, "e-old").get("route").is_none(), "one made before its dispatch row was kept says nothing of routing");
     assert_eq!(listed(s, "e-key")["template"], json!({"id":"reviewer","label":"Reviewer"}), "its template, from the same row");
-    // A task's view of its executor says it too.
+    // A task's view of its executor (its newest dispatch's, e-off here) says it too.
     let views = for_tasks(&s.db.read().unwrap(), &[task.as_str()]).unwrap();
-    assert!(views[&task].get("route").is_some(), "{}", views[&task]);
+    assert_eq!(views[&task]["route"], json!({"kind":"unrouted","why":"off"}), "{}", views[&task]);
 }
