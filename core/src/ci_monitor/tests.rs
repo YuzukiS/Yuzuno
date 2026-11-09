@@ -1205,6 +1205,13 @@ print('HTTP/2.0 200 OK\r\nEtag: "x"\r\n\r\n'+json.dumps(data))
     let watched = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
         "url":"https://github.com/o/r/pull/7","expectedSha":"AB12CD3"})).await.unwrap();
     assert_eq!(watched["watch"]["expectedSha"], json!(head), "the full head Core read: {watched}");
+    // A lost-reply retry of the same request, its prefix and all, is the same subscription.
+    let again = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":"AB12CD3"})).await.unwrap();
+    assert_eq!(again["id"], watched["id"], "a retry is the subscription it made: {again}");
+    let full = ask(&ws, "ci_subscribe", json!({"requestId":"p","taskId":"T-1","agentId":"a",
+        "url":"https://github.com/o/r/pull/7","expectedSha":head})).await.unwrap_err().to_string();
+    assert!(full.contains("idempotency_conflict"), "another request under its requestId is refused: {full}");
     let other = ask(&ws, "ci_subscribe", json!({"requestId":"q","taskId":"T-1","agentId":"a",
         "url":"https://github.com/o/r/pull/7","expectedSha":"ab12cd35"})).await.unwrap_err().to_string();
     assert!(other.contains("PR head changed") && other.contains(&head), "names the PR's head in full: {other}");
@@ -1212,6 +1219,9 @@ print('HTTP/2.0 200 OK\r\nEtag: "x"\r\n\r\n'+json.dumps(data))
     let commit = ask(&ws, "ci_subscribe", json!({"requestId":"c","taskId":"T-1","agentId":"a",
         "url":format!("https://github.com/o/r/commit/{merge}"),"branch":"main","event":"push"})).await.unwrap();
     assert_eq!(commit["watch"]["expectedSha"], json!(merge), "{commit}");
+    let replay = ask(&ws, "ci_subscribe", json!({"requestId":"c","taskId":"T-1","agentId":"a",
+        "url":format!("https://github.com/o/r/commit/{merge}"),"branch":"main","event":"push"})).await.unwrap();
+    assert_eq!(replay["id"], commit["id"], "{replay}");
 }
 /// T-36: an executor's release stops its own CI watches, closed as
 /// `executor_released`, what they observed kept; another Agent's stay. A
