@@ -166,11 +166,17 @@ ONLY_FILES_CAP = 100000
 
 
 def only_files_ending(folder, suffix, cap=ONLY_FILES_CAP):
+    """Whether folder holds nothing but regular files ending so, every entry
+    read. More than cap entries, or one it can't read, proves nothing: no
+    (rules.rs `only_files_ending`)."""
     try:
-        names = os.listdir(folder)
+        with os.scandir(folder) as entries:
+            for seen, entry in enumerate(entries):
+                if seen >= cap or not entry.is_file(follow_symlinks=False) or not entry.name.endswith(suffix):
+                    return False
     except OSError:
         return False
-    return all(os.path.isfile(os.path.join(folder, n)) and not os.path.islink(os.path.join(folder, n)) and n.endswith(suffix) for n in names)
+    return True
 
 
 def rule_matches(rule, path, in_git, in_scratch):

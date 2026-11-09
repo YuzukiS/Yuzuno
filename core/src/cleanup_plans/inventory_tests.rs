@@ -83,7 +83,7 @@ async fn the_command_is_core_s_and_runs_here_to_an_inventory_of_its_schema() {
     assert_eq!(inventory_jobs(&lab), 0);
 
     // The job_submit Core makes, short of the systemd user manager a local Job needs.
-    let Prepared::New { actor, submit } = inventory::prepare(&lab.ws, Some("ex".into()), json!({"requestId": "inv-1", "taskId": "T-1"}))
+    let Prepared::New { actor, submit, .. } = inventory::prepare(&lab.ws, Some("ex".into()), json!({"requestId": "inv-1", "taskId": "T-1"}))
         .await.unwrap() else { panic!("a first call is new") };
     assert_eq!(actor, "ex");
     let python = inventory::local_python("python3").await.unwrap();

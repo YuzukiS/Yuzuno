@@ -277,7 +277,7 @@ pub(crate) fn recognize(dir: &Path, on: &BTreeSet<&'static str>, in_git: bool, i
 }
 
 /// Cargo's own files at a target folder's top, which stay with it.
-const CARGO_FILES: [&str; 5] = ["CACHEDIR.TAG", ".rustc_info.json", ".future-incompat-report.json", ".package-cache", ".package-cache-mutate"];
+pub(super) const CARGO_FILES: [&str; 5] = ["CACHEDIR.TAG", ".rustc_info.json", ".future-incompat-report.json", ".package-cache", ".package-cache-mutate"];
 /// What Cargo makes at a target folder's top besides its profiles and the
 /// folders of each target triple (Build Cache): its docs, packaged crates,
 /// scratch files and, from Cargo 1.91, its separate build-dir. Cargo says
@@ -314,7 +314,11 @@ pub(super) fn cargo_profiles(target: &Path) -> (Vec<Value>, Vec<String>) {
             Some("profile")
         } else if is_dir(&path) && cargo_triple(&path, &name) {
             Some("triple")
-        } else if is_dir(&path) && CARGO_NAMED.contains(&name.as_str()) {
+        } else if is_dir(&path) && CARGO_NAMED.contains(&name.as_str()) && std::fs::symlink_metadata(path.join(".git")).is_err() {
+            // A named subtree holding a Git working tree or repository
+            // (a .git folder or file) stays, as recognize keeps any such
+            // folder (Lead activity 8080 P2-2). Profiles and triples hold
+            // only Cargo's names, so a .git there already keeps them.
             Some("named")
         } else {
             None

@@ -102,6 +102,10 @@ fn inventory_job(db: &Connection, task: &str, id: &str, target: Value, folder: &
         "result":{"attempt":ATTEMPT,"artifacts":[{"path":"out/inventory.json","sha256":"b".repeat(64),"ok":true,"bytes":12}]}});
     db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'ex','succeeded',?3)", params![id, task, data.to_string()])
         .unwrap();
+    // As cleanup_inventory records the inventory it starts (inventory.rs `ours`).
+    let machine = data["target"]["machineId"].as_str().unwrap_or("local").to_owned();
+    db.execute("INSERT OR REPLACE INTO cleanup_inventories(actor,request_id,task_id,machine,folder,identity,job_id,created_at) VALUES('ex',?1,?2,?3,?4,?5,?6,'now')",
+        params![format!("cleanup-inventory/{id}"), task, machine, folder.display().to_string(), inventory::identity(&data), id]).unwrap();
 }
 
 fn settings_change(lab: &Lab, edit: impl FnOnce(&mut Settings)) {

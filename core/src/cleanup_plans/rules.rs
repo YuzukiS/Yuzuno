@@ -188,9 +188,18 @@ fn package_has_script(package: &Path, script: &str) -> bool {
 /// How many entries `only_files_ending` reads of a folder.
 pub(crate) const ONLY_FILES_CAP: usize = 100_000;
 
+/// Whether dir holds nothing but regular files ending so, every entry read.
+/// More than `cap` entries, or one that can't be read, proves nothing: not
+/// one (Lead activity 8080 P2-1). The script reads it the same.
 pub(crate) fn only_files_ending(dir: &Path, suffix: &str, cap: usize) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    entries.flatten().take(cap).all(|e| e.file_type().is_ok_and(|t| t.is_file()) && e.file_name().to_string_lossy().ends_with(suffix))
+    for (seen, entry) in entries.enumerate() {
+        let Ok(entry) = entry else { return false };
+        if seen >= cap || !entry.file_type().is_ok_and(|t| t.is_file()) || !entry.file_name().to_string_lossy().ends_with(suffix) {
+            return false;
+        }
+    }
+    true
 }
 
 /// The first ecosystem rule in `on` that recognizes dir, and what it went

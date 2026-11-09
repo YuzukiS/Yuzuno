@@ -350,7 +350,7 @@ async fn only_core_s_own_inventory_is_an_inventory() {
         let mut input = plan_input(&format!("from-{job}"), vec![group("g", "delete")], vec![item("e", "g", "entry", &lab.scratch.join("e"))]);
         input["inventory"] = json!({"jobId": job, "attempt": ATTEMPT, "path": "out/inventory.json", "sha256": sha.repeat(64)});
         let error = submit_as(&lab, Some("ex"), input).await.unwrap_err().to_string();
-        assert!(error.starts_with("invalid_input: inventory:") && error.contains("is not an inventory Core took"), "{job}: {error}");
+        assert!(error.starts_with("invalid_input: inventory: Job") && error.contains("cleanup_inventory"), "{job}: {error}");
     }
     let retry = lab.ws.collaboration_call(Some("ex"), "cleanup_inventory", json!({"requestId": "x", "taskId": "T-1"})).await.unwrap_err().to_string();
     assert!(retry.starts_with("idempotency_conflict:"), "{retry}");
@@ -494,4 +494,41 @@ async fn a_job_with_core_s_command_that_core_did_not_start_is_no_inventory() {
         let error = submit_as(&lab, Some("ex"), input).await.expect_err(&format!("a plan from {job} is refused")).to_string();
         assert!(error.starts_with("invalid_input: inventory:"), "{job}: {error}");
     }
+}
+
+/// Lead activity 8080 P2-3: even with a record, a Job whose command names a
+/// second --project is no inventory; and a retry after a job_submit whose
+/// answer was lost before its record named the Job names it then.
+#[tokio::test]
+async fn core_s_record_binds_one_folder_and_a_lost_answer_is_named_on_retry() {
+    let lab = lab();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+        let mut twice = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
+        let at = twice.len() - 2;
+        twice.splice(at..at, ["--project".to_owned(), "/synthetic/other".to_owned()]);
+        let data = json!({"id": "twice", "taskId": task, "agentId": "ex", "attempt": ATTEMPT, "status": "succeeded", "target": {"kind": "local"},
+            "name": inventory::JOB_NAME, "argv": twice,
+            "result": {"attempt": ATTEMPT, "artifacts": [{"path": "out/inventory.json", "sha256": "f".repeat(64), "ok": true, "bytes": 2}]}});
+        db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('twice',?1,'ex','succeeded',?2)", params![task, data.to_string()]).unwrap();
+        db.execute("INSERT INTO cleanup_inventories(actor,request_id,task_id,machine,folder,identity,job_id,created_at) VALUES('ex','cleanup-inventory/twice',?1,'local',?2,?3,'twice','now')",
+            params![task, lab.project.display().to_string(), inventory::identity(&data)]).unwrap();
+        // The lab's own inventory `inv`, as if its job_submit answered but the record never learned its Job.
+        db.execute("UPDATE cleanup_inventories SET job_id=NULL WHERE job_id='inv'", []).unwrap();
+        db.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES('agent:ex','job_submit','cleanup-inventory/inv',?1,?2)",
+            params![json!({"name": inventory::JOB_NAME, "taskId": task}).to_string(), json!({"jobId": "inv"}).to_string()]).unwrap();
+    }
+    let mut input = plan_input("from-twice", vec![group("g", "delete")], vec![item("e", "g", "entry", &lab.scratch.join("e"))]);
+    input["inventory"] = json!({"jobId": "twice", "attempt": ATTEMPT, "path": "out/inventory.json", "sha256": "f".repeat(64)});
+    let error = submit_as(&lab, Some("ex"), input).await.unwrap_err().to_string();
+    assert!(error.starts_with("invalid_input: inventory: Job twice is not the inventory"), "{error}");
+    // Not named yet: no plan takes it.
+    let unnamed = submit_as(&lab, Some("ex"), plan_input("before", vec![group("g", "delete")], vec![item("e", "g", "entry", &lab.scratch.join("e"))]))
+        .await.unwrap_err().to_string();
+    assert!(unnamed.starts_with("invalid_input: inventory: Job inv is no inventory"), "{unnamed}");
+    // Its retry finds the Job and names it; then a plan takes it.
+    let again = lab.ws.collaboration_call(Some("ex"), "cleanup_inventory", json!({"requestId": "inv", "taskId": "T-1"})).await.unwrap();
+    assert_eq!(again["jobId"], "inv", "{again}");
+    submit(&lab, "after", vec![group("g", "delete")], vec![item("e", "g", "entry", &lab.scratch.join("e"))]).await;
 }

@@ -157,7 +157,10 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             group_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL,
             pre TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('pending','removed','kept','refused','partial','failed','restored')),
-            result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(plan_id, item_id));",
+            result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(plan_id, item_id));
+         CREATE TABLE IF NOT EXISTS cleanup_inventories(
+            actor TEXT NOT NULL, request_id TEXT NOT NULL, task_id TEXT NOT NULL, machine TEXT NOT NULL, folder TEXT NOT NULL,
+            identity TEXT NOT NULL, job_id TEXT UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(actor, request_id));",
     )?;
     Ok(())
 }
@@ -379,11 +382,12 @@ fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str) -> Res
         .unwrap_or(Value::Null);
     let target = job["target"]["kind"].as_str().unwrap_or("local");
     // Only an inventory Core took of this Project's folder on that machine
-    // (inventory.rs `core_inventory`, the same check as a retry's).
+    // (inventory.rs `ours`, the same check as a retry's: Core's own record of it).
     let machine = if target == "local" { "local" } else { job["target"]["machineId"].as_str().unwrap_or_default() };
     let folder = projects.iter().find(|p| p.id == project).and_then(|p| p.default_dirs.get(machine).cloned());
     let folder = folder.with_context(|| format!("invalid_input: inventory: the task's Project has no folder on the inventory's machine {machine}"))?;
-    inventory::core_inventory(&job, &folder).map_err(|why| anyhow::anyhow!("invalid_input: inventory: {why}"))?;
+    let recorded = inventory::recorded_job(&db, &input.inventory.job_id)?;
+    inventory::ours(recorded.as_ref(), &job, &folder).map_err(|why| anyhow::anyhow!("invalid_input: inventory: {why}"))?;
     let remote = (target != "local").then(|| inventory["machineName"].as_str().unwrap_or("another machine").to_owned());
     let (author, source) = collaboration::actor_context(store, &db, Some(actor))?;
     Ok(Earlier::New(Box::new(Prepared { task, project, project_dir, others, settings, author, source, inventory: reference, remote })))

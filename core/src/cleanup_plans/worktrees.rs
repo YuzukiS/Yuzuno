@@ -69,9 +69,25 @@ pub(super) async fn keep_list(path: &Path, on: &BTreeSet<&'static str>) -> std::
                 budget -= 1;
                 let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
                 if meta.is_dir() {
-                    // A folder a rule on for this Project recognizes is rebuildable: not kept.
-                    if recognize(&at, &on, true, false).is_ok_and(|found| found.is_some()) {
-                        continue;
+                    match recognize(&at, &on, true, false) {
+                        // Of Cargo's target only its own subtrees are
+                        // rebuildable: the rest of it, someone's files or a
+                        // clone in tmp, is kept, as a plan's removal keeps
+                        // it (Lead activity 8080 P2-2).
+                        Ok(Some((super::rules::CARGO, _))) => {
+                            let (subtrees, _) = super::check::cargo_profiles(&at);
+                            let taken: HashSet<String> = subtrees.iter().filter_map(|s| s["name"].as_str().map(str::to_owned)).collect();
+                            if let Ok(entries) = std::fs::read_dir(&at) {
+                                stack.extend(entries.flatten().filter(|e| {
+                                    let name = e.file_name().to_string_lossy().into_owned();
+                                    !taken.contains(&name) && !super::check::CARGO_FILES.contains(&name.as_str())
+                                }).map(|e| e.path()));
+                            }
+                            continue;
+                        }
+                        // A folder another rule on for this Project recognizes is rebuildable: not kept.
+                        Ok(Some(_)) => continue,
+                        _ => {}
                     }
                     if let Ok(entries) = std::fs::read_dir(&at) {
                         stack.extend(entries.flatten().map(|e| e.path()));

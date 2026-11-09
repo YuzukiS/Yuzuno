@@ -24,7 +24,7 @@ const ARGV_BYTES: usize = 16384;
 /// What the Job runs with `-c`: the script compressed (zlib, then base64)
 /// in a one-line loader that unpacks and runs it. The script is more than a
 /// Job's argv may hold; packed, it is about two fifths of it. It is still
-/// the repository's file unchanged, and `core_inventory` compares the loader
+/// the repository's file unchanged, and `ours` compares the loader
 /// Core makes of it, so no other source passes.
 pub(super) fn loader() -> &'static str {
     static LOADER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -91,6 +91,52 @@ struct Known {
     scratch: Vec<String>,
     protected: Vec<String>,
     earlier: Option<(Value, Value)>,
+    /// What this call's own record says Core submitted (`record`), if anything.
+    recorded: Option<Recorded>,
+}
+
+/// Core's own record of an inventory it submits, written by cleanup_inventory
+/// alone (table cleanup_inventories): no job_submit makes one (Lead activity
+/// 8080 P2-3). It binds the call (its executor and requestId), the task, the
+/// machine, the Project's folder there and the submission's identity, and
+/// then the Job Core's job_submit answered with.
+pub(super) struct Recorded {
+    pub task: String,
+    pub folder: String,
+    pub identity: String,
+    pub job: Option<String>,
+}
+
+/// What of a submission makes its Job the inventory it is: its name, its
+/// whole command, its environment, its artifact and its machine. Read alike
+/// from the job_submit Core makes and from the Job it became.
+pub(super) fn identity(of: &Value) -> String {
+    sha256(&json!({"name": of["name"], "argv": of["argv"], "env": of["env"], "artifacts": of["artifacts"],
+        "machineId": of["machineId"]}).to_string())
+}
+
+/// Refuses a Job as an inventory of `folder` unless Core's own record names
+/// it with this very submission: the record's folder and task, the Job's
+/// identity, and its command's one `--project`, that folder. One check for a
+/// retry of cleanup_inventory and for cleanup_plan_submit.
+pub(super) fn ours(recorded: Option<&Recorded>, job: &Value, folder: &str) -> std::result::Result<(), String> {
+    let id = job["id"].as_str().unwrap_or("?");
+    let Some(recorded) = recorded else {
+        return Err(format!("Job {id} is no inventory: cleanup_inventory did not start it"));
+    };
+    let argv: Vec<&str> = job["argv"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let projects: Vec<&str> = argv.windows(2).filter(|w| w[0] == "--project").map(|w| w[1]).collect();
+    let shaped = argv.len() >= 8 && argv[1..4] == ["-I", "-c", loader()] && projects == [folder];
+    if recorded.folder != folder || job["taskId"] != recorded.task.as_str() || identity(job) != recorded.identity || !shaped {
+        return Err(format!("Job {id} is not the inventory cleanup_inventory started of this Project's folder {folder}: its command, settings or folder differ"));
+    }
+    Ok(())
+}
+
+/// Core's record of the inventory Job `job`, if cleanup_inventory started it.
+pub(super) fn recorded_job(db: &Connection, job: &str) -> Result<Option<Recorded>> {
+    Ok(db.query_row("SELECT task_id, folder, identity, job_id FROM cleanup_inventories WHERE job_id=?1", [job],
+        |r| Ok(Recorded { task: r.get(0)?, folder: r.get(1)?, identity: r.get(2)?, job: r.get(3)? })).optional()?)
 }
 
 /// A python3 that ran and answered as Python 3 does.
@@ -103,20 +149,46 @@ pub(super) struct Python {
 
 /// What a call comes to before anything is submitted.
 pub(super) enum Prepared {
-    /// The same call again: its Job's answer.
-    Earlier(Value),
-    /// The job_submit Core makes, as the caller.
-    New { actor: String, submit: Value },
+    /// The same call again: its Job's answer, and the Job its record is to name.
+    Earlier { answer: Value, actor: String, request: String, job: String },
+    /// The job_submit Core makes, as the caller, and what its record says of it.
+    New { actor: String, submit: Value, task: String, machine: String, folder: String },
 }
 
 pub(super) async fn inventory(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
     match prepare(ws, actor, input).await? {
-        Prepared::Earlier(answer) => Ok(answer),
-        Prepared::New { actor, submit } => {
-            let job = crate::jobs::call(ws.clone(), Some(actor), "job_submit".into(), submit.clone()).await?;
+        Prepared::Earlier { answer, actor, request, job } => {
+            // A call whose job_submit answered before its record was told.
+            ws.stored(move |s| named(&*s.db.write()?, &actor, &request, &job)).await?;
+            Ok(answer)
+        }
+        Prepared::New { actor, submit, task, machine, folder } => {
+            // Recorded before it is submitted, so no Job of this call goes
+            // unrecorded; a record without a Job is a call that never ran.
+            let request = submit["requestId"].as_str().unwrap_or_default().to_owned();
+            {
+                let (actor, request, identity) = (actor.clone(), request.clone(), identity(&submit));
+                ws.stored(move |s| {
+                    s.db.write()?.execute(
+                        "INSERT INTO cleanup_inventories(actor,request_id,task_id,machine,folder,identity,job_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,NULL,?7)
+                         ON CONFLICT(actor,request_id) DO UPDATE SET task_id=excluded.task_id, machine=excluded.machine, folder=excluded.folder,
+                             identity=excluded.identity, created_at=excluded.created_at WHERE cleanup_inventories.job_id IS NULL",
+                        params![actor, request, task, machine, folder, identity, now()])?;
+                    Ok(())
+                }).await?;
+            }
+            let job = crate::jobs::call(ws.clone(), Some(actor.clone()), "job_submit".into(), submit.clone()).await?;
+            let id = job["id"].as_str().unwrap_or_default().to_owned();
+            ws.stored(move |s| named(&*s.db.write()?, &actor, &request, &id)).await?;
             Ok(answer(&job, &submit))
         }
     }
+}
+
+/// The record of call `request` names its Job, once.
+fn named(db: &Connection, actor: &str, request: &str, job: &str) -> Result<()> {
+    db.execute("UPDATE cleanup_inventories SET job_id=?3 WHERE actor=?1 AND request_id=?2 AND job_id IS NULL", params![actor, request, job])?;
+    Ok(())
 }
 
 /// Everything up to job_submit: who asks, the records, and python3 on the machine.
@@ -133,13 +205,15 @@ pub(super) async fn prepare(ws: &Arc<Workspace>, actor: Option<String>, input: V
         let (actor, task_id, machine, request) = (actor.clone(), input.task_id.clone(), machine.clone(), request.clone());
         ws.stored(move |s| known(s, &actor, &task_id, &machine, &request)).await?
     };
-    if let Some((recorded, job)) = known.earlier {
-        // The same call again: its Job, whatever the machine says now.
-        // Only Core's own command, for this task, machine and the Project's folder there (Lead mail 10772).
-        let same = job["taskId"] == known.task.as_str() && recorded["machineId"].as_str().unwrap_or("local") == machine
-            && known.folder.as_deref().is_some_and(|folder| core_inventory(&job, folder).is_ok());
+    if let Some((submitted, job)) = known.earlier {
+        // The same call again: its Job, whatever the machine says now, only
+        // as Core's record of this call names it (Lead activity 8080 P2-3).
+        let named = known.recorded.as_ref().is_none_or(|r| r.job.as_deref().is_none_or(|j| Some(j) == job["id"].as_str()));
+        let same = named && submitted["machineId"].as_str().unwrap_or("local") == machine
+            && known.folder.as_deref().is_some_and(|folder| ours(known.recorded.as_ref(), &job, folder).is_ok());
         ensure!(same, "idempotency_conflict: requestId already names another Job of yours; use a new requestId");
-        return Ok(Prepared::Earlier(answer(&job, &recorded)));
+        let id = job["id"].as_str().unwrap_or_default().to_owned();
+        return Ok(Prepared::Earlier { answer: answer(&job, &submitted), actor, request, job: id });
     }
     let folder = known.folder.with_context(|| format!(
         "no_project_folder: the task's Project has no folder on {}; a lead sets one in the Project's settings",
@@ -170,7 +244,7 @@ pub(super) async fn prepare(ws: &Arc<Workspace>, actor: Option<String>, input: V
         fits(&argv)?;
         submission(&request, &input.task_id, Some(&machine), &there.root, argv, path, &out)
     };
-    Ok(Prepared::New { actor, submit })
+    Ok(Prepared::New { actor, submit, task: known.task, machine, folder })
 }
 
 fn known(store: &Store, actor: &str, task_id: &str, machine: &str, request: &str) -> Result<Known> {
@@ -182,6 +256,8 @@ fn known(store: &Store, actor: &str, task_id: &str, machine: &str, request: &str
     ensure!(own.flatten().as_deref() == Some(task.as_str()),
         "not_executor: only {task_id}'s own open executor takes its inventory");
     let earlier = crate::jobs::submitted(&db, actor, request)?;
+    let recorded = db.query_row("SELECT task_id, folder, identity, job_id FROM cleanup_inventories WHERE actor=?1 AND request_id=?2", params![actor, request],
+        |r| Ok(Recorded { task: r.get(0)?, folder: r.get(1)?, identity: r.get(2)?, job: r.get(3)? })).optional()?;
     if machine != "local" {
         let registered: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM machines WHERE id=?1)", [machine], |r| r.get(0))?;
         ensure!(registered || earlier.is_some(), "unknown_machine: {machine} is not a registered machine (machines_list); nothing was submitted");
@@ -191,7 +267,7 @@ fn known(store: &Store, actor: &str, task_id: &str, machine: &str, request: &str
     let folder = crate::projects::default_dir(&db, &project, machine)?;
     let settings = settings::read(&db)?;
     let rules = super::rules::table(&super::rules::enabled(&settings, Some(&project)));
-    Ok(Known { task, folder, rules, scratch: settings.scratch_roots, protected: settings.protected_paths, earlier })
+    Ok(Known { task, folder, rules, scratch: settings.scratch_roots, protected: settings.protected_paths, earlier, recorded })
 }
 
 /// The command, the same for every call but for these values.
@@ -205,24 +281,6 @@ pub(super) fn command(python: &str, folder: &str, scratch: &[String], protected:
     }
     argv.extend(["--rules".to_owned(), rules.to_string(), "--out".to_owned(), out.to_owned()]);
     argv
-}
-
-/// Refuses a Job that is not an inventory Core took of `folder`: its name,
-/// and its command's own python3 run as `-I -c` with this Core's script on
-/// that folder (Lead mail 10772). Both a retry of cleanup_inventory and
-/// cleanup_plan_submit's inventory are this check, so another Job of the
-/// task, whatever its name or output, never passes for one.
-pub(super) fn core_inventory(job: &Value, folder: &str) -> std::result::Result<(), String> {
-    let argv: Vec<&str> = job["argv"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    // The python3 that answered, by its path: a Homebrew one may name itself python3.12.
-    let python = |path: &str| Path::new(path).file_name().is_some_and(|n| n.to_string_lossy().starts_with("python"));
-    let ours = job["name"] == JOB_NAME && argv.len() >= 8 && python(argv[0])
-        && argv[1..4] == ["-I", "-c", loader()] && argv[4..6] == ["--project", folder];
-    if ours {
-        Ok(())
-    } else {
-        Err(format!("Job {} is not an inventory Core took of this Project's folder {folder} (cleanup_inventory)", job["id"].as_str().unwrap_or("?")))
-    }
 }
 
 /// Refuses a command over what a Job's argv may hold, saying what makes it long.

@@ -55,7 +55,9 @@ No file in a repository adds or changes a rule: whoever can change the repositor
   - the folders of each target triple;
   - `doc`, `package`, `tmp` and `build`.
 
-  Anything else in the target folder stays, and so do the folder itself and Cargo's own files at its top. Cargo calls this layout no stable interface, so a name Core doesn't know stays.
+  Anything else in the target folder stays, and so do the folder itself and Cargo's own files at its top. Cargo calls this layout no stable interface, so a name Core doesn't know stays. A subtree holding `.git` stays too, such as a clone in `tmp`.
+
+  A worktree's snapshot keeps the same: of its target folders, only Cargo's subtrees are left out.
 - Any other valid tag makes the whole folder rebuildable (`cachedir-tag`: pytest, ruff, uv and others write one).
 - A tag without the signature counts for nothing.
 
@@ -67,7 +69,7 @@ No file in a repository adds or changes a rule: whoever can change the repositor
 | `node-framework` | `.next`, `.nuxt`, `.svelte-kit`, `.angular`, `.turbo`, `.parcel-cache` | `package.json` beside it | yes |
 | `frontend-build` | `dist`, `build` | a `build` script in the `package.json` beside it, and only where Git ignores it | yes |
 | `python-cache` | `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, `*.egg-info` | — | yes |
-| `python-pycache` | `__pycache__` | only `.pyc` files in it (PEP 3147) | yes |
+| `python-pycache` | `__pycache__` | only `.pyc` files in it (PEP 3147), every entry read: more than 100,000, or one that can't be read, and it is none | yes |
 | `python-tox` | `.tox`, `.nox` | `tox.ini` or `noxfile.py` beside it | yes |
 | `python-venv` | `.venv`, `venv` | `pyvenv.cfg` in it, and `uv.lock`, `poetry.lock`, `requirements*.txt` or `pdm.lock` beside it | **no**: packages may have been installed by hand |
 | `maven` | `target` | `pom.xml` beside it | yes |
@@ -93,7 +95,11 @@ A folder that only a rule switched off would recognize is refused as `ruleOff`, 
 
 **Git facts Core can't establish never count.** Whether a worktree's HEAD is in the remote's default branch has three answers: yes, no (`merge-base --is-ancestor` exit 1), or not known (any other answer). A worktree is "clean and merged" only on yes, and a plan's summary warns about each one Git couldn't tell (`mergeUnknown`).
 
-**Only Core's own inventory counts.** `cleanup_plan_submit` takes an inventory only from a Job `cleanup_inventory` started: Core's script, run as `-I -c`, of this Project's folder on that machine. A retry of `cleanup_inventory` makes the same check. Any other Job of the task, whatever its name or output, is refused.
+**Only Core's own inventory counts.** `cleanup_plan_submit` takes an inventory only from a Job `cleanup_inventory` started, and a retry of `cleanup_inventory` makes the same check.
+- Before it submits, `cleanup_inventory` writes its own record (`cleanup_inventories`). The record holds the call, the task, the machine, the Project's folder there and a hash of the whole submission: its name, command, environment, artifact and machine. Once `job_submit` answers, the record names the Job.
+- No `job_submit` can write such a record.
+- A Job counts only when its record names it, its submission is the one recorded, and its command has one `--project`, this Project's folder.
+- Any other Job of the task is refused, whatever its name, command or output: one copying Core's command, or adding a second `--project`.
 
 ## The inventory needs python3
 
