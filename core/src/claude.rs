@@ -707,7 +707,7 @@ impl Workspace {
             id: id.clone(),
             name: name.trim().into(),
             goal: String::new(),
-            work_summary: None,
+            work_summary: None, turn_wait: None,
             project_id,
             kind: None,
             released_at: None,

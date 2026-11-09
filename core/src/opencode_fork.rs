@@ -403,7 +403,7 @@ impl Workspace {
         let at = now();
         Ok(AgentDetail {
             agent: crate::model::Agent {
-                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None,
+                id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, turn_wait: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None,
                 cwd: frozen.cwd.clone(), model: source.model.clone(), settings: source.settings.clone(), color: source.color.clone(),
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()),
                 opencode_version: Some(version.into()), opencode_major: crate::opencode::major(version), thread_id: None,

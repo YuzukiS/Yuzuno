@@ -269,6 +269,7 @@ fn brief(detail: &AgentDetail) -> Brief {
 fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     let mut agent = detail.agent.clone();
     agent.work_summary = crate::rail::project(detail);
+    agent.turn_wait = crate::rail::turn_wait(detail);
     agent.project_id = None;
     agent.kind = None;
     crate::executor_release::show(&mut agent, None);
@@ -1368,6 +1369,7 @@ impl Store {
     fn insert_record(&self, detail: &AgentDetail, machine_registered: bool, then: Option<InTransaction>) -> Result<()> {
         let mut detail = detail.clone();
         detail.agent.work_summary = None;
+        detail.agent.turn_wait = None;
         let project = detail.agent.project_id.take();
         detail.agent.kind = None;
         crate::executor_release::show(&mut detail.agent, None);
@@ -1576,6 +1578,7 @@ impl Store {
             detail.agent.project_id = self.agent_project(id)?;
             if !matches!(sel, Sel::Meta) {
                 detail.agent.work_summary = crate::rail::project(&detail);
+                detail.agent.turn_wait = crate::rail::turn_wait(&detail);
             }
             return Ok(detail);
         }
@@ -1934,6 +1937,8 @@ impl Store {
             rail.turns.push(turn);
         }
         detail.agent.work_summary = crate::rail::project(&rail);
+        // No turnWait here: this `rail` holds no calls, and the rail reads
+        // its listed entry (`brief_with`), never a window's.
         drop(rail);
         bodies.extend(kept);
         let mut body = |stats: &mut record_rows::window::ReadStats, t: usize, i: usize| -> Result<Value> {
@@ -3387,6 +3392,7 @@ pub mod whole {
         d.agent.project_id = store.agent_project(id)?;
         crate::mailbox_notice::annotate(&db, &mut d)?;
         d.agent.work_summary = crate::rail::project(&d);
+        d.agent.turn_wait = crate::rail::turn_wait(&d);
         Ok(d)
     }
 

@@ -1,6 +1,6 @@
 //! A small, evidence-based projection for the Agent rail. No observer, model
 //! call, cached summary, or persisted second source of truth is involved.
-use crate::model::{AgentDetail, PendingRequest, WorkSummary};
+use crate::model::{AgentDetail, PendingRequest, TurnWait, WorkSummary};
 use serde_json::Value;
 
 pub fn compact(text: &str) -> String {
@@ -107,6 +107,95 @@ pub fn project(d: &AgentDetail) -> Option<WorkSummary> {
     }
     task(turn)
 }
+
+/// What the Agent's running Turn is stopped on (YN-51): the foreground call
+/// it waits for, a sub-agent or a shell command, as its harness recorded it;
+/// None while it thinks, writes or calls anything else, and while no Turn
+/// runs. What it started and left running (Jobs, CI, reviews, background
+/// work) is not the Turn's: the rail reads those from Core's own records.
+/// A sub-agent comes before a shell (the user's order, YN-51): a sub-agent's
+/// own calls are its, and of several of a kind the newest is named.
+pub fn turn_wait(d: &AgentDetail) -> Option<TurnWait> {
+    let turn = d.turns.iter().rev().find(|t| t["status"] == "inProgress")?;
+    let items = turn["items"].as_array()?;
+    let wait = |kind: &str, item: &Value, label: Option<String>| {
+        Some(TurnWait { kind: kind.into(), item_id: item["id"].as_str().unwrap_or_default().into(),
+            label: label.map(|l| one_line(&l)).unwrap_or_default() })
+    };
+    // Codex: a child runs from its `started` (or a later `interacted`)
+    // activity until `completed` or `interrupted` names its thread.
+    let mut children: Vec<(&str, &Value)> = Vec::new();
+    for item in items.iter().filter(|i| i["type"] == "subAgentActivity") {
+        let Some(thread) = item["agentThreadId"].as_str() else { continue };
+        children.retain(|(t, _)| *t != thread);
+        if matches!(item["kind"].as_str(), Some("started" | "interacted")) {
+            children.push((thread, item));
+        }
+    }
+    let sub_agent = items.iter().rev().find_map(|item| match item["type"].as_str() {
+        Some("claudeToolUse") if claude_foreground_agent(item) => wait("subAgent", item,
+            text(&item["subAgent"]["description"]).or_else(|| text(&item["input"]["description"]))),
+        Some("opencodeTool") if item["status"] == "inProgress" && matches!(item["name"].as_str(), Some("task" | "subagent")) =>
+            wait("subAgent", item, text(&item["input"]["description"])),
+        _ => None,
+    }).or_else(|| children.last().and_then(|(_, item)| wait("subAgent", item, text(&item["agentPath"]))));
+    sub_agent.or_else(|| items.iter().rev().find_map(|item| match item["type"].as_str() {
+        // A sub-agent's own Bash calls (parentToolUseId) are the sub-agent's.
+        Some("claudeToolUse") if item["name"] == "Bash" && item["status"] == "inProgress" && item["parentToolUseId"].is_null() =>
+            wait("shell", item, command(&item["input"]["command"])),
+        // Codex's commands, and OpenCode's shell parts with OpenCode's own status.
+        Some("commandExecution") if matches!(item["status"].as_str(), Some("inProgress" | "running")) =>
+            wait("shell", item, command(&item["command"])),
+        Some("opencodeTool") if item["status"] == "inProgress" && item["name"] == "bash" =>
+            wait("shell", item, command(&item["input"]["command"])),
+        _ => None,
+    }))
+}
+
+/// A Claude Agent call the Turn waits for: its sub-agent running and not
+/// sent to the background, or, before Claude's task events give it a
+/// record, the call itself still open. Top-level only: a nested one is the
+/// outer sub-agent's.
+fn claude_foreground_agent(item: &Value) -> bool {
+    if !item["parentToolUseId"].is_null() {
+        return false;
+    }
+    let sub = &item["subAgent"];
+    if sub.is_object() {
+        return crate::claude::subagent_running(sub) && sub["background"] != true;
+    }
+    item["status"] == "inProgress" && matches!(item["name"].as_str(), Some("Agent" | "Task"))
+}
+
+fn text(value: &Value) -> Option<String> {
+    value.as_str().filter(|t| !t.trim().is_empty()).map(str::to_owned)
+}
+
+/// A command as text: Codex may give its argv.
+fn command(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(parts) => Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+        _ => text(value),
+    }
+}
+
+/// On one line, at most LABEL_CHARS characters (Unicode scalars, never bytes).
+fn one_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = line.chars();
+    let mut out: String = chars.by_ref().take(LABEL_CHARS).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// A wait's label at most: a command's start says what it is.
+pub(crate) const LABEL_CHARS: usize = 80;
+
+#[cfg(test)]
+#[path = "rail_wait_tests.rs"]
+mod wait_tests;
 
 #[cfg(test)]
 mod tests {

@@ -732,13 +732,16 @@ impl Store {
     }
     /// Each Agent's unfinished jobs: queued or still holding a reservation,
     /// the same live set the Jobs list keeps visible, with those whose outcome
-    /// is unknown counted apart. One row per Agent; finished history and job
-    /// details are not read.
+    /// is unknown counted apart, and the name of the oldest of the others
+    /// (the rail's "waiting on a Job: …", YN-51). One row per Agent; finished
+    /// history and job details are not read.
     pub(super) fn live_job_counts(&self) -> Result<Value> {
         let db = self.db.read()?;
         let mut q = db.prepare(
-            "SELECT agent_id,COUNT(*),SUM(status='unknown') FROM local_jobs
-             WHERE reserved=1 OR status IN ('queued','waiting') GROUP BY agent_id",
+            "SELECT agent_id,COUNT(*),SUM(status='unknown'),
+               (SELECT o.data ->> '$.name' FROM local_jobs o WHERE o.agent_id=j.agent_id
+                  AND (o.reserved=1 OR o.status IN ('queued','waiting')) AND o.status!='unknown' ORDER BY o.seq LIMIT 1)
+             FROM local_jobs j WHERE reserved=1 OR status IN ('queued','waiting') GROUP BY agent_id",
         )?;
         let mut agents = serde_json::Map::new();
         for row in q.query_map([], |r| {
@@ -746,10 +749,15 @@ impl Store {
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })? {
-            let (agent, active, unknown) = row?;
-            agents.insert(agent, json!({"active":active,"unknown":unknown}));
+            let (agent, active, unknown, name) = row?;
+            let mut counts = json!({"active":active,"unknown":unknown});
+            if let Some(name) = name {
+                counts["name"] = json!(name);
+            }
+            agents.insert(agent, counts);
         }
         Ok(json!({ "agents": agents }))
     }

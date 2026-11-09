@@ -114,6 +114,7 @@ mod build_output;
 mod build_cleanup;
 mod cleanup_plans;
 pub mod updates;
+mod waits_live;
 pub mod workspace;
 pub mod workspace_backup;
 mod web_push;

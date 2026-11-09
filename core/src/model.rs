@@ -291,6 +291,21 @@ pub struct WorkSummary {
     pub request_id: Option<String>,
 }
 
+/// What an Agent's running Turn is stopped on (YN-51), for the rail's ring:
+/// the foreground call it waits for, as its harness recorded it
+/// (`rail::turn_wait`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnWait {
+    /// `shell` or `subAgent`.
+    pub kind: String,
+    /// The call's Item, so a client tells one call from the next.
+    pub item_id: String,
+    /// The command, or what the sub-agent was given to do, on one line and
+    /// shortened; empty when the harness gave neither.
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
@@ -301,6 +316,9 @@ pub struct Agent {
     // Derived only for API responses; never deserialize a stale projection.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub work_summary: Option<WorkSummary>,
+    /// Derived only for API responses, like `work_summary`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub turn_wait: Option<TurnWait>,
     /// Projected from `project_agents` for API responses. Older builds rewrite
     /// Agent JSON, so membership never lives in the record itself.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]

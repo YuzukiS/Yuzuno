@@ -6,7 +6,7 @@
 //! count unknown, and unknown is never reported as zero. Shells are never
 //! inferred from tool items, old inProgress records or Core's own processes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -47,9 +47,10 @@ pub struct Registry {
     entries: Mutex<HashMap<String, Entry>>,
     tickets: std::sync::atomic::AtomicU64,
     /// Claude's latest snapshot, per Agent: the connection generation that
-    /// sent it, the ids of every task it lists (ambient ones included), and
-    /// how many of them are not ambient: real background work.
-    claude_live: Mutex<HashMap<String, (u64, HashSet<String>, usize)>>,
+    /// sent it, the ids of every task it lists (ambient ones included), how
+    /// many of them are not ambient (real background work), and how many of
+    /// those are sub-agents (`local_agent`, YN-51).
+    claude_live: Mutex<HashMap<String, (u64, HashSet<String>, usize, usize)>>,
 }
 
 impl Registry {
@@ -78,17 +79,18 @@ impl Registry {
     }
 
     /// Applies a Claude `background_tasks_changed` snapshot. Each snapshot
-    /// replaces the whole set; ambient tasks are not activity.
+    /// replaces the whole set; ambient tasks are not activity. Returns
+    /// whether what a reader sees changed: its shells, or its sub-agents.
     pub fn record_claude(&self, id: &str, generation: u64, event: &Value) -> bool {
         let Some(tasks) = event["tasks"].as_array() else { return false };
         let live = tasks.iter().filter_map(|task| task["task_id"].as_str().map(str::to_owned)).collect();
         let active = tasks.iter().filter(|task| task["ambient"] != true).count();
-        self.claude_live.lock().unwrap().insert(id.into(), (generation, live, active));
-        let shells = tasks
-            .iter()
-            .filter(|task| task["task_type"] == "local_bash" && task["ambient"] != true)
-            .count();
-        self.record(id, Harness::Claude, generation, self.ticket(), Some(shells))
+        let of = |kind: &str| tasks.iter().filter(|task| task["task_type"] == kind && task["ambient"] != true).count();
+        let agents = of("local_agent");
+        let before = self.claude_live.lock().unwrap().insert(id.into(), (generation, live, active, agents));
+        let agents_changed = before.is_none_or(|(seen, _, _, was)| seen != generation || was != agents);
+        let shells_changed = self.record(id, Harness::Claude, generation, self.ticket(), Some(of("local_bash")));
+        shells_changed || agents_changed
     }
 
     fn entry(&self, id: &str) -> Option<Entry> {
@@ -101,7 +103,7 @@ impl Registry {
     /// id, ended or unknown (CLI 2.1.280, T-25 probe).
     pub fn claude_running(&self, id: &str, generation: u64, task: &str) -> Option<bool> {
         let live = self.claude_live.lock().unwrap();
-        let (_, tasks, _) = live.get(id).filter(|(seen, _, _)| *seen == generation)?;
+        let (_, tasks, _, _) = live.get(id).filter(|(seen, ..)| *seen == generation)?;
         Some(tasks.contains(task))
     }
 
@@ -110,8 +112,46 @@ impl Registry {
     /// bridge does until a task starts (Disconnect, T-184).
     pub fn claude_active(&self, id: &str, generation: u64) -> Option<usize> {
         let live = self.claude_live.lock().unwrap();
-        live.get(id).filter(|(seen, _, _)| *seen == generation).map(|(_, _, active)| *active)
+        live.get(id).filter(|(seen, ..)| *seen == generation).map(|(_, _, active, _)| *active)
     }
+
+    /// Each Agent's background shells and Claude sub-agents its live
+    /// connection reported last (`live`): `claude` and `codex` say which
+    /// connection generation of an Agent is live now. A count that is
+    /// unknown, or from an older connection, is left out.
+    fn live_with(&self, claude: impl Fn(&str) -> Option<u64>, codex: impl Fn(&str) -> Option<u64>) -> BTreeMap<String, (usize, usize)> {
+        // Copied out first: the generations are read under other locks.
+        let entries: Vec<(String, Entry)> = self.entries.lock().unwrap().iter().map(|(id, e)| (id.clone(), e.clone())).collect();
+        let agents: Vec<(String, u64, usize)> =
+            self.claude_live.lock().unwrap().iter().map(|(id, (seen, _, _, agents))| (id.clone(), *seen, *agents)).collect();
+        let mut live = BTreeMap::new();
+        for (id, entry) in entries {
+            let now = match entry.harness {
+                Harness::Codex => codex(&id),
+                Harness::Claude => claude(&id),
+            };
+            if let Some(count) = entry.count.filter(|_| now == Some(entry.generation)) {
+                live.entry(id).or_insert((0, 0)).0 = count;
+            }
+        }
+        for (id, seen, count) in agents {
+            if claude(&id) == Some(seen) {
+                live.entry(id).or_insert((0, 0)).1 = count;
+            }
+        }
+        live
+    }
+}
+
+/// Each Agent's background work its harness reports now (YN-51), for the
+/// rail's ring: its shells (Claude, Codex) and Claude's sub-agents, as its
+/// live connection last reported them; unknown is left out, never said as
+/// none or as some. Lookups only: no lock is held while another is taken.
+pub fn live(ws: &Workspace) -> BTreeMap<String, (usize, usize)> {
+    ws.background_shells.live_with(
+        |id| ws.claudes.lock().unwrap().get(id).map(|c| c.generation),
+        |id| ws.codex_connection(id).map(|(generation, _)| generation),
+    )
 }
 
 /// The Agent's background shell state for its detail response, or None when
@@ -219,9 +259,16 @@ mod tests {
             {"task_id":"3","task_type":"local_agent","description":"subagent"},
         ]))));
         assert_eq!(registry.entry("a").unwrap().count, Some(1));
+        // The same shells and sub-agents: nothing a reader sees changed.
         assert!(!registry.record_claude("a", 1, &snapshot(json!([
             {"task_id":"1","task_type":"local_bash","description":"dev server"},
+            {"task_id":"3","task_type":"local_agent","description":"subagent"},
         ]))));
+        // Its sub-agent ended (YN-51): the rail sees that, its shells unchanged.
+        assert!(registry.record_claude("a", 1, &snapshot(json!([
+            {"task_id":"1","task_type":"local_bash","description":"dev server"},
+        ]))));
+        assert_eq!(registry.entry("a").unwrap().count, Some(1));
         assert!(registry.record_claude("a", 1, &snapshot(json!([]))));
         let entry = registry.entry("a").unwrap();
         assert_eq!((entry.count, entry.last_count), (Some(0), 0));
@@ -242,6 +289,28 @@ mod tests {
         assert_eq!(registry.claude_running("b", 1, "b1"), None);
         registry.record_claude("a", 1, &snapshot(json!([])));
         assert_eq!(registry.claude_running("a", 1, "b1"), Some(false));
+    }
+
+    #[test]
+    fn live_counts_come_from_each_agents_live_connection_only() {
+        let registry = Registry::default();
+        registry.record_claude("a", 3, &snapshot(json!([
+            {"task_id":"1","task_type":"local_bash","description":"dev server"},
+            {"task_id":"2","task_type":"local_agent","description":"survey"},
+            {"task_id":"3","task_type":"local_agent","description":"check","ambient":true},
+            {"task_id":"4","task_type":"monitor","description":"watch","ambient":true},
+        ])));
+        registry.record("b", Harness::Codex, 5, registry.ticket(), Some(2));
+        registry.record("c", Harness::Codex, 5, registry.ticket(), Some(1));
+        registry.record("c", Harness::Codex, 5, registry.ticket(), None);
+        let claude = |gen: u64| move |id: &str| (id == "a").then_some(gen);
+        let codex = |id: &str| matches!(id, "b" | "c").then_some(5);
+        // c's last check failed: unknown is left out, never its old count.
+        assert_eq!(registry.live_with(claude(3), codex),
+            BTreeMap::from([("a".to_string(), (1, 1)), ("b".to_string(), (2, 0))]));
+        // A newer connection's Agent: what the older one said is no longer known.
+        assert_eq!(registry.live_with(claude(4), codex), BTreeMap::from([("b".to_string(), (2, 0))]));
+        assert_eq!(registry.live_with(|_| None, |_| None), BTreeMap::new());
     }
 
     #[test]
