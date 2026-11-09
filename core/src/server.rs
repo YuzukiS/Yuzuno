@@ -706,7 +706,13 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
 /// Project; its runtime is left for the dispatch.
 pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::executor_templates::Template, name: String,
     cwd: String, machine: Option<String>, project_id: Option<String>, birth: crate::workspace::Birth) -> anyhow::Result<crate::model::Agent> {
-    let p = Create {
+    Ok(create_agent(ws, executor_request(template, name, cwd, machine, project_id), Some(birth)).await?.0)
+}
+
+/// What an executor from `template` asks of POST /api/agents' creation.
+fn executor_request(template: &crate::executor_templates::Template, name: String, cwd: String, machine: Option<String>,
+    project_id: Option<String>) -> Create {
+    Create {
         name,
         goal: String::new(),
         harness: template.harness.clone(),
@@ -718,13 +724,34 @@ pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::execu
         save_project_default: false,
         permission_preset: template.permission_preset.clone(),
         permission_mode: template.permission_mode.clone(),
-    };
-    Ok(create_agent(ws, p, Some(birth)).await?.0)
+    }
 }
 
 /// An Agent as POST /api/agents creates it, and where each of its settings
 /// came from; an executor with `birth`.
 async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::workspace::Birth>) -> anyhow::Result<(crate::model::Agent, Value)> {
+    let Settled { harness, model, settings, sources } = settle(ws, &p).await?;
+    let agent = match harness.as_str() {
+        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
+        _ => anyhow::bail!("未知 Harness"),
+    };
+    Ok((agent, sources))
+}
+
+/// What an Agent `p` asks for starts with, besides who it is and where: its
+/// harness, model and settings, and where each came from (`sources`).
+struct Settled {
+    harness: String,
+    model: String,
+    settings: crate::model::AgentSettings,
+    sources: Value,
+}
+
+/// The harness, model and settings of an Agent POST /api/agents creates as `p`
+/// asks, before anything of it exists.
+async fn settle(ws: &Arc<Workspace>, p: &Create) -> anyhow::Result<Settled> {
     // Defaults apply only here, to the Agent being created (T-190): its
     // project's overrides, when it is created in one, before the Workspace's.
     let in_project = p.project_id.clone();
@@ -783,13 +810,7 @@ async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::works
         }
         None => p.model.as_before(),
     };
-    let agent = match new.harness.as_str() {
-        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
-        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
-        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
-        _ => anyhow::bail!("未知 Harness"),
-    };
-    Ok((agent, sources))
+    Ok(Settled { harness: new.harness, model, settings, sources })
 }
 async fn projects(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     stored_json(&ws, |store| Ok(json!({"projects":store.projects()?}))).await

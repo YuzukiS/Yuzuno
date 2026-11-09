@@ -348,3 +348,21 @@ fn list_contract_covers_tool_errors_and_rejects_missing_paging_or_leaked_evidenc
         }
     }
 }
+
+#[test]
+fn a_round_that_ended_without_a_report_says_in_its_row_whether_it_counted() {
+    let (_dir, store, task) = setup();
+    insert(&store, &task, "r1", 1);
+    insert(&store, &task, "r2", 2);
+    let stamp = json!({"counts":false,"read":"some","uncountedRound":null,"why":"It ended without a report after reading source."});
+    store.db.write().unwrap().execute("UPDATE pr_reviews SET data=json_set(data,'$.roundLimit',json(?1)) WHERE id='r2'",
+        [stamp.to_string()]).unwrap();
+    let page = store.list_pr_review_summaries("T-1", None).unwrap();
+    assert!(conforms(&list_schema(), &page), "{page}");
+    let row = |id: &str| page["reviews"].as_array().unwrap().iter().find(|r| r["reviewId"] == id).unwrap().clone();
+    assert_eq!(row("r2")["roundLimit"], json!({"counts":false,"read":"some","why":"It ended without a report after reading source."}));
+    assert!(row("r1")["roundLimit"].is_null());
+    let mut bad = page.clone();
+    bad["reviews"][0]["roundLimit"] = json!({"counts":"no","read":"some","why":"x"});
+    assert!(!conforms(&list_schema(), &bad));
+}

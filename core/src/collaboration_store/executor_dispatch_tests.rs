@@ -593,6 +593,26 @@ fn a_template_dispatch_carries_its_delivery_mode_and_steps() {
     assert!(body.contains("\nSteps (descriptive: Core does not track them): materials → work: Write the memo → result: Options → gate (user): Your choice → gate (either): Go ahead\n"),
         "an approver left unset is the user: {body}");
     assert!(!body.contains("A choice between options"), "when to choose it is for whoever dispatches, not in the executor's mail: {body}");
+    assert!(!body.contains("\nTier: "), "a template without a tier says none: {body}");
+}
+
+/// YN-70: a template's tier reaches its executor's materials with whose it
+/// is, the template's, and its mail says both.
+#[test]
+fn a_template_dispatch_says_its_tier_and_whose_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([{"id":"reviewer","label":"Build from an approved design","harness":"codex","routing":"fixed","tier":"fast"}]));
+    let t = task(&store, "Build", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "build")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let template = &given["dispatchMaterials"]["template"];
+    assert_eq!((template["tier"].clone(), template["tierSource"].clone()), (json!("fast"), json!("template")), "{template}");
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("\nTier: fast · 快 (the template's default)\n"), "{body}");
 }
 
 /// T-34 S3a: what a template dispatch adds is held to its own limits, not to

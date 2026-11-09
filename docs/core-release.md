@@ -121,6 +121,14 @@ flow. Explicitly obtain another successful artifact for the same reviewed SHA;
 there is no silent local rebuild fallback. Older releases without this artifact
 retain their existing signed evidence; do not rebuild them to populate CI.
 
+## The release checklist
+
+[The release checklist](core-release-checklist.md) is the order a release
+executor follows around this tool: the gate before the inputs dispatch, the
+`resume` Job, the notes, the one approval, the milestones and the health check
+after the install. `tools/core-release-run.py` runs those steps from one
+release's values file; it calls the commands below and changes none of them.
+
 ## One entry point
 
 Use Python >= 3.11, `gh`, `minisign` and the existing publisher key on the
