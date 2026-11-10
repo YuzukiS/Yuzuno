@@ -864,7 +864,7 @@ async fn a_new_install_opens_the_rule_layer_and_an_upgrade_keeps_every_new_switc
 async fn a_walk_over_its_bound_is_incomplete_and_skips_protected_paths() {
     let lab = lab();
     // Three rule folders, one under a protected path: a bound of two sees two.
-    for name in ["a", "b", "protected/c"] {
+    for name in ["a", "b", "c", "protected/d"] {
         let dir = lab.project.join(name).join("node_modules");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(lab.project.join(name).join("package.json"), "{\"name\":\"x\"}").unwrap();
@@ -1048,6 +1048,10 @@ async fn an_interrupted_automatic_removal_with_its_snapshot_and_ref_can_be_resto
     drop(db);
     let back = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
     assert_eq!(back["state"], "restored");
+    assert_eq!(back["runId"], run.as_str(), "an automatic answer names its run");
+    assert!(back.get("planId").is_none(), "and no manual plan id");
+    let retry = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
+    assert_eq!((retry["state"].as_str(), retry["runId"].as_str()), (Some("restored"), Some(run.as_str())));
     assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "in the snapshot\n");
 }
@@ -1107,6 +1111,10 @@ async fn a_stop_after_the_snapshot_and_ref_leaves_a_restorable_prepared_item() {
     std::fs::remove_dir_all(&tree).unwrap();
     let back = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
     assert_eq!(back["state"], "restored");
+    assert_eq!(back["runId"], run.as_str(), "an automatic answer names its run");
+    assert!(back.get("planId").is_none(), "and no manual plan id");
+    let retry = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
+    assert_eq!((retry["state"].as_str(), retry["runId"].as_str()), (Some("restored"), Some(run.as_str())));
     assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "snapshot before removal\n");
 }
@@ -1353,4 +1361,45 @@ async fn recent_git_activity_keeps_a_worktree_after_an_old_release_and_the_check
     assert_eq!(item["result"]["code"], "recent", "{item:#}");
     let after = std::fs::metadata(&index).unwrap().modified().unwrap();
     assert_eq!(before, after, "checking the age does not refresh the index clock");
+}
+
+#[tokio::test]
+async fn cache_cursor_covers_multiple_roots_and_punctuation_over_repeated_rounds() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.max_items = 1;
+        c.fresh_days = 30; // every candidate is kept, so it comes back each round
+    });
+    exclude(&lab, "node_modules/");
+    let mut expected: Vec<PathBuf> = Vec::new();
+    for parent in ["a", "a-b", "b"] {
+        let dir = lab.project.join(parent);
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("package.json"), "{\"name\":\"x\"}").unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.join("node_modules/x.js"), "x\n").unwrap();
+        expected.push(std::fs::canonicalize(dir.join("node_modules")).unwrap());
+    }
+    // A second root: a registered worktree outside the Project folder.
+    let tree = worktree(&lab, &lab.home.join("work/wt/root"), "feat/root");
+    std::fs::create_dir_all(tree.join("node_modules")).unwrap();
+    std::fs::write(tree.join("package.json"), "{\"name\":\"root\"}").unwrap();
+    std::fs::write(tree.join("package-lock.json"), "{}").unwrap();
+    std::fs::write(tree.join("node_modules/x.js"), "x\n").unwrap();
+    expected.push(std::fs::canonicalize(tree.join("node_modules")).unwrap());
+    for _ in 0..expected.len() {
+        let _ = automatic(&lab).await;
+    }
+    let seen: Vec<PathBuf> = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut q = db.prepare("SELECT DISTINCT path FROM cleanup_automatic_items WHERE kind='cache-dir'").unwrap();
+        q.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|p| PathBuf::from(p.unwrap())).collect()
+    };
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort();
+    let mut seen_sorted = seen.clone();
+    seen_sorted.sort();
+    assert_eq!(seen_sorted, expected_sorted, "every root and punctuation case is reached over rounds");
 }

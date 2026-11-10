@@ -385,6 +385,16 @@ enum Origin {
     Automatic { run: String, item: String },
 }
 
+/// The caller's own identity, echoed as it was before the automatic records:
+/// a manual plan's answer keeps `planId`, an automatic run's has `runId`.
+fn with_origin(mut answer: Value, origin: &Origin) -> Value {
+    match origin {
+        Origin::Plan(plan) => answer["planId"] = json!(plan),
+        Origin::Automatic { run, .. } => answer["runId"] = json!(run),
+    }
+    answer
+}
+
 /// One item a manual plan or an automatic run removed.
 struct Removed {
     kind: String,
@@ -464,7 +474,8 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
     .await?;
     if removed.state == "restored" {
         ensure!(removed.result["restored"]["requestId"] == input.request_id.as_str(), "item_restored: it was restored already");
-        return Ok(json!({"item": input.item_id, "state": removed.state, "restored": removed.result["restored"]}));
+        return Ok(with_origin(json!({"item": input.item_id, "state": removed.state, "restored": removed.result["restored"]}),
+            &removed.origin));
     }
     // Removed, or partly: what went is in its snapshot either way.
     ensure!(matches!(removed.state.as_str(), "removed" | "partial" | "interrupted" | "prepared"),
@@ -573,7 +584,8 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
     }
     let by = actor.clone().map_or_else(|| "user".to_owned(), |a| format!("agent:{a}"));
     let restored = json!({"at": now(), "by": by, "how": how, "requestId": input.request_id});
-    let answer = json!({"item": input.item_id, "state": "restored", "path": removed.path, "restored": restored});
+    let answer = with_origin(json!({"item": input.item_id, "state": "restored", "path": removed.path, "restored": restored}),
+        &removed.origin);
     ws.stored(move |s| {
         let mut db = s.db.write()?;
         let tx = db.transaction()?;

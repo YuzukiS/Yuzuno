@@ -71,13 +71,16 @@ async fn a_worktree_with_its_own_commit_is_pinned_kept_removed_and_comes_back_as
     assert!(error.starts_with("not_allowed:"), "{error}");
     let back = restore(&lab, Some("lead"), "r1", &plan, "w").await.unwrap();
     assert_eq!(back["state"], "restored");
+    assert_eq!(back["planId"], plan["planId"], "a manual plan's answer still names its plan");
     assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
     assert_eq!(git(&tree, &["symbolic-ref", "HEAD"]), "refs/heads/feat/ahead", "on its branch again");
     assert_eq!(std::fs::read_to_string(tree.join("mine.txt")).unwrap(), "only here\n");
     assert_eq!(std::fs::read_to_string(tree.join("draft.md")).unwrap(), "untracked draft\n");
     assert_eq!(std::fs::read_to_string(tree.join("scratch-notes/n.txt")).unwrap(), "ignored, no rule\n");
     assert_eq!(git(&tree, &["status", "--porcelain"]), "?? draft.md", "as it was");
-    assert_eq!(restore(&lab, Some("lead"), "r1", &plan, "w").await.unwrap()["state"], "restored", "a retry is the same");
+    let retry = restore(&lab, Some("lead"), "r1", &plan, "w").await.unwrap();
+    assert_eq!((retry["state"].as_str(), retry["planId"].as_str()), (Some("restored"), plan["planId"].as_str()),
+        "an idempotent retry is the same and still names its plan");
     let error = restore(&lab, Some("lead"), "r2", &plan, "w").await.unwrap_err().to_string();
     assert!(error.starts_with("item_restored:"), "{error}");
 }

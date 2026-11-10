@@ -89,9 +89,11 @@ fn real(path: &Path) -> PathBuf {
 
 /// The walk of one root, never following a link and never going into a
 /// recognized cache, `.git`, a protected path, a mount or another Project.
-/// It stops at the existing bounds; over a bound the result says it did not
-/// see everything rather than pretending it did.
-fn walk(ctx: &check::Context, roots: &[PathBuf], limit: usize, after: Option<&str>) -> Found {
+/// It collects every candidate within the existing entry and time bounds;
+/// the caller sorts all of them before applying the cursor, so the walk's
+/// traversal order cannot starve a path the cursor has passed by string
+/// order. Over a bound the result says it did not see everything.
+fn walk(ctx: &check::Context, roots: &[PathBuf]) -> Found {
     let (mut found, mut entries) = (Found::default(), 0usize);
     let deadline = Instant::now() + WALK_TIME;
     let mut start = Vec::new();
@@ -143,14 +145,8 @@ fn walk(ctx: &check::Context, roots: &[PathBuf], limit: usize, after: Option<&st
                 Ok(Some((rule, basis))) => {
                     // A recognized cache goes as one; nothing in it is a
                     // separate candidate.
-                    if after.is_none_or(|after| path.to_string_lossy().as_ref() > after) {
-                        found.items.push(Candidate { kind: "cache-dir", path, rule: Some(rule.to_owned()),
-                            basis: Some(basis), listed: None });
-                    }
-                    if found.items.len() >= limit {
-                        found.incomplete = true;
-                        return found;
-                    }
+                    found.items.push(Candidate { kind: "cache-dir", path, rule: Some(rule.to_owned()),
+                        basis: Some(basis), listed: None });
                 }
                 // A rule that is off still marks the folder's whole tree: its
                 // contents are not separate candidates.
@@ -889,18 +885,13 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         let after = ws.stored({ let id = project.id.clone(); move |s| cursor(s, &id, "cache") }).await?;
         let want = (settings.max_items as usize).min(PER_PASS);
         let ctx2 = ctx.clone();
-        let mut found = tokio::task::spawn_blocking({
-            let ctx = ctx2.clone();
-            let roots = roots.clone();
-            let after = after.clone();
-            move || walk(&ctx, &roots, want, after.as_deref())
-        }).await.unwrap_or_default();
-        // Nothing after the cursor: the next pass starts again at the top.
-        if found.items.is_empty() && after.is_some() {
-            found = tokio::task::spawn_blocking(move || walk(&ctx2, &roots, want, None)).await.unwrap_or_default();
-        }
+        let found = tokio::task::spawn_blocking(move || walk(&ctx2, &roots)).await.unwrap_or_default();
         summary.incomplete |= found.incomplete;
         let mut cache = found.items;
+        cache.sort_by_key(key);
+        cache.dedup_by(|a, b| key(a) == key(b));
+        // The cursor now uses exactly the order the walk was sorted into, so
+        // no root or punctuation case can fall behind it (full R4 5a68314b).
         rotate(&mut cache, after.as_deref());
         if cache.len() > want {
             summary.incomplete = true;
