@@ -122,6 +122,96 @@
   .routing-seg { flex-wrap: wrap; }
 }
 
+/* YN-84 S3: a card per provider (layout A): its head, then its logins and its API keys, both open; each row
+   says which settings reference it, in words only. Then where keys come from. */
+.routing-keys .settings-section-heading .routing-refs-scope {
+  margin-top: 6px;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.routing-notices { display: grid; gap: 4px; }
+.routing-notices p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.routing-provider-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 16px;
+  padding: 12px 16px 10px;
+}
+.routing-provider-name { min-width: 0; }
+.routing-provider-head h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.routing-provider-sub,
+.routing-provider-refs {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.routing-provider-refs { color: var(--text-quiet); }
+.routing-layer { border-top: 1px solid var(--line); }
+.routing-layer-title {
+  margin: 0;
+  padding: 10px 16px 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.routing-layer > .settings-row:first-of-type { padding-top: 8px; }
+.routing-provider-note {
+  margin: 0;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+/* "Referenced by", then one setting a line: those in use, then those off, muted. */
+.routing-refs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 8px;
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.routing-refs ul { display: grid; gap: 1px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.routing-refs li { min-width: 0; overflow-wrap: anywhere; }
+.routing-refs-label,
+.routing-refs .is-off,
+.routing-refs.is-none { color: var(--text-quiet); }
+.routing-refs.is-none { display: block; }
+.routing-accounts li > .routing-refs { flex-basis: 100%; }
+.routing-others { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.routing-others-label { color: var(--text-secondary); font-size: calc(10px + var(--font-adjust, 3px)); }
+.routing-others .settings-row-meta { flex-basis: 100%; }
+.routing-sources { display: grid; gap: 8px; min-width: 0; }
+.routing-sources .settings-block-help { margin: 0; }
+/* A phone: each row is icon | content, its actions under the content. */
+.settings-center.is-phone .routing-keys .settings-row:not(.settings-row-end) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 12px;
+}
+.settings-center.is-phone .routing-keys .settings-row:not(.settings-row-end) > .settings-row-action {
+  grid-column: 2;
+  justify-content: flex-start;
+  width: auto;
+  padding-left: 0;
+}
+.settings-center.is-phone .routing-provider-head { flex-direction: column; align-items: flex-start; }
+
 /* ---- The candidate order (S4a). A candidate's colour follows it (--cc); its number is its place. */
 .executor-routing {
   --route-c1: #2a78d6; --route-c2: #eb6834; --route-c3: #1baf7a; --route-c4: #eda100;
