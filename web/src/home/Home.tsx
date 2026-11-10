@@ -8,14 +8,16 @@ import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link"
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
-import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
-import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
+import { keepUnchanged, projectDomId, requestDomId, sectionDomId, widgetsDomId } from "./brief-layout";
+import { markOpened, markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
-import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
+import { arrangeWidgets, HomeWidgets, type HomeWidget } from "./HomeWidgets";
+import { askKey, HomeJumps, latestReport, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
+import type { OpenedMark } from "./return-overview";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou, needsYouKey } from "./NeedsYou";
@@ -71,6 +73,9 @@ function leaveReportEntry(open: OpenReport | null) {
   const { [REPORT_STATE]: _entry, ...rest } = historyState();
   history.replaceState(Object.keys(rest).length ? rest : null, "", here());
 }
+
+/** No report opened here yet (YN-86): the same array while none is. */
+const NO_MARKS: OpenedMark[] = [];
 
 const reducedMotion = () =>
   typeof window.matchMedia === "function" &&
@@ -208,7 +213,10 @@ export function Home({
     if (unfoldAround(target)) requestAnimationFrame(show);
     else show();
   });
-  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number; block?: ScrollLogicalPosition } | null>(null);
+  // The Ask the bar last went to, so the next press goes to the next (YN-86).
+  const lastAsk = useRef<string | null>(null);
+  // `within`: a jump from Home's own bar (YN-86), which scrolls Home's scroller only, clear of the bar.
+  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number; block?: ScrollLogicalPosition; within?: boolean } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   // Refresh asked for and not yet answered (T-19 HM:H3): its icon turns and it says it is busy. The reads Home makes
   // on its own (a revision, the safety net) show nothing.
@@ -278,6 +286,29 @@ export function Home({
     },
     [reload, workspaceId],
   );
+  // The report versions the user opened whole here (YN-86): Core keeps each
+  // one; this Workspace's held overview takes them out of its changes.
+  const [openedHere, setOpenedHere] = useState<{ workspaceId: string; marks: OpenedMark[] }>({ workspaceId, marks: [] });
+  const openedMarks = openedHere.workspaceId === workspaceId ? openedHere.marks : NO_MARKS;
+  /** Records that the report page showed this very version of a live report whole (ReportPage says when). */
+  const opened = useCallback(
+    async (projectId: string, section: Section) => {
+      if (typeof section.id !== "number") return;
+      const sectionId = section.id;
+      const record = await markOpened(projectId, { workspaceId, sectionId, key: section.key, version: section.version });
+      // A late answer for a Workspace no longer shown changes nothing here.
+      if (activeWorkspace.current !== workspaceId) return;
+      // Its blocks as shown are the read version's only once Core has that very version.
+      if (record.sectionId === sectionId && record.version === section.version)
+        rememberSeenBlocks(workspaceId, projectId, section, section.version);
+      setOpenedHere((was) => ({
+        workspaceId,
+        marks: [...(was.workspaceId === workspaceId ? was.marks : []), { projectId, sectionId, version: record.version }],
+      }));
+      reload();
+    },
+    [reload, workspaceId],
+  );
   const panels = useMemo(() => {
     if (!data) return [];
     const byId = new Map(data.projects.map((p) => [p.project.id, p] as const));
@@ -327,9 +358,9 @@ export function Home({
         shellText(language).unknownProject
       : shellText(language).noProject;
   /** Shows the project's panel whole, then scrolls to and focuses the target in it. */
-  function revealIn(projectId: string, target: () => HTMLElement | null) {
+  function revealIn(projectId: string, target: () => HTMLElement | null, within = false) {
     const n = reveal.n + 1;
-    pendingJump.current = { target: () => target() || document.getElementById(projectDomId(projectId)), n };
+    pendingJump.current = { target: () => target() || document.getElementById(projectDomId(projectId)), n, within };
     setReveal({ n, projects: { ...reveal.projects, [projectId]: n } });
   }
   // A reply's "Open on Home" (T-9): once Home has read, to the section it
@@ -348,8 +379,8 @@ export function Home({
         onBack={onBackToReply ? () => onBackToReply(arrival.back) : undefined}
       />
     );
-  jumpToItem.current = jump;
-  function jump(item: NeedsYouItem) {
+  jumpToItem.current = (item) => jump(item);
+  function jump(item: NeedsYouItem, within = false) {
     // A question is answered in its conversation (T-42), and an executor's
     // result is released from its own (T-36 S3).
     if (item.kind === "question" || item.kind === "executor") {
@@ -369,6 +400,7 @@ export function Home({
         : item.sectionKey
           ? document.getElementById(sectionDomId(panel.project.id, item.sectionKey))
           : null,
+      within,
     );
   }
   useEffect(() => {
@@ -382,7 +414,8 @@ export function Home({
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
       const smooth = !reducedMotion();
-      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: jumpTo.block ?? "center" });
+      if (jumpTo.within) scrollWithinHome(target, jumpTo.block ?? "center", smooth);
+      else target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: jumpTo.block ?? "center" });
       target.focus({ preventScroll: true });
       // Where it landed, once the scroll has (T-19): kept until the next press.
       settled = settleWhenLanded(target, "data-home-highlight", smooth);
@@ -400,7 +433,8 @@ export function Home({
   // report link is in the address while the page is open, so a reload opens
   // it again; the browser's Back closes it as the page's Back and Escape do,
   // and focus returns to what opened it. Nothing here marks seen or touches
-  // a draft.
+  // a draft; the page records a live report it showed whole as opened
+  // (YN-86), which leaves it on Home where it is.
   const [openedReport, setReport] = useState<OpenReport | null>(null);
   // A report belongs to the Workspace its link names: from the first frame
   // after the Workspace changes (Core at this address answering as another),
@@ -737,6 +771,28 @@ export function Home({
       };
     }),
   ];
+  // Home's own jumps (YN-86): the open Asks Needs you lists, the report
+  // updated last, and My widgets as arranged (none it hides).
+  const asks = data ? waitingAsks(data.needsYou) : [];
+  const latest = data ? latestReport(data, panels.map((panel) => panel.project.id)) : null;
+  const arranged = readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout;
+  const widgetsOnShow = arranged ? arrangeWidgets(widgets, arranged).shown.length : 0;
+  const toAsk = () => {
+    const item = nextAsk(asks, lastAsk.current);
+    if (!item) return;
+    lastAsk.current = askKey(item);
+    jump(item, true);
+  };
+  const toReport = () => {
+    if (!latest) return;
+    const { projectId, section } = latest;
+    revealIn(projectId, () => document.getElementById(sectionDomId(projectId, section.key)), true);
+  };
+  const toWidgets = () => {
+    const n = reveal.n + 1;
+    pendingJump.current = { target: () => document.getElementById(widgetsDomId), n, block: "start", within: true };
+    setReveal({ n, projects: reveal.projects });
+  };
   const projectAgents = (id: string) => byProject.get(id) || noAgents;
   const needsFor = (panel: ProjectPanel) =>
     data?.needsYou.filter((item) => item.projectId === panel.project.id) || [];
@@ -807,6 +863,16 @@ export function Home({
           )}
         </span>
       </header>
+      {data && (
+        <HomeJumps
+          asks={asks.length}
+          report={latest && { title: latest.section.title, projectName: latest.projectName }}
+          widgets={widgetsOnShow}
+          onAsk={toAsk}
+          onReport={toReport}
+          onWidgets={toWidgets}
+        />
+      )}
       {densityRefusal && !densityRefusal.saved && (
         <p className="home-note home-density-note" role="status">
           {t.densityNotKept(densityRefusal.detail)}
@@ -835,6 +901,7 @@ export function Home({
             key={readOnly ? "preview" : workspaceId}
             data={data}
             readFailed={readFailed}
+            opened={openedMarks}
             onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
             onNeedsYou={() => showNeeds.current(null)}
             onNavigate={onNavigate}
@@ -849,7 +916,7 @@ export function Home({
           {/* The design preview has no workspace: its own default layout, not changed. */}
           <HomeWidgets
             widgets={widgets}
-            layout={readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout}
+            layout={arranged}
             onChange={layout ? widgetLayout.change : undefined}
             onResetSizes={layout ? resetSizes : undefined}
           />
@@ -918,6 +985,7 @@ export function Home({
         onOpenVersion={(link) => openReport(link, null, null)}
         onShowProject={(projectId) => closeReport(() => revealIn(projectId, () => null))}
         onSeen={seen}
+        onOpened={opened}
         readError={error?.kind === "read" || error?.kind === "unavailable" ? error : null}
         onRetry={reload}
       />

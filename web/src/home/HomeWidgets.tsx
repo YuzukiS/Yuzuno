@@ -16,6 +16,7 @@ import type { WidgetLayout } from "./widget-layout";
 import type { DeckItem } from "./deck-pack.ts";
 import { useDeckPacking } from "./deck-packing";
 import { Tip, TipText } from "../Tip";
+import { widgetsDomId } from "./brief-layout";
 
 /** A pinned card's size on the widget column: the user's, else its Agent's (`own`). */
 export type WidgetSize = { shown: CardSize; own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
@@ -104,7 +105,8 @@ export function HomeWidgets({
     );
   const canOrganize = !!onChange && !!layout;
   return (
-    <section className="home-widget-column" aria-label={t.widgets}>
+    // Where Home's jump to My widgets lands and takes the focus (YN-86).
+    <section className="home-widget-column" id={widgetsDomId} tabIndex={-1} aria-label={t.widgets}>
       <header className="home-widget-column-head">
         <h2>
           <LayoutGrid size={14} />

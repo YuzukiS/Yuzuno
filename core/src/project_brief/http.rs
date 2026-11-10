@@ -24,6 +24,7 @@ pub(super) fn routes() -> Router<Arc<Workspace>> {
         .route("/api/home/presentation", get(home_presentation).put(save_home_presentation))
         .route("/api/projects/{id}/home-editors", get(content_editors).put(save_content_editors))
         .route("/api/projects/{id}/brief/seen", post(seen))
+        .route("/api/projects/{id}/brief/opened", post(opened))
         .route("/api/projects/{id}/brief/defer", post(defer))
         .route("/api/projects/{id}/brief/reply", post(reply))
         .route("/api/projects/{id}/brief/attachments/{section}/{name}", get(attachment))
@@ -108,6 +109,18 @@ async fn seen(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(inp
     let project = id.clone();
     let marked = ws.stored(move |store| sections::mark_seen(store, &project, &items)).await?;
     super::announce(&ws, Some(&id));
+    Ok(Json(marked))
+}
+
+/// The user's browser showed a live report whole (YN-86): a receipt of
+/// reading, never a Seen mark; see sections::mark_opened. Home's own route,
+/// with no Agent tool.
+async fn opened(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<sections::Opened>) -> ApiResult<Json<Value>> {
+    let project = id.clone();
+    let marked = ws.stored(move |store| sections::mark_opened(store, &project, &input)).await?;
+    if marked["recorded"] == true {
+        super::announce(&ws, Some(&id));
+    }
     Ok(Json(marked))
 }
 

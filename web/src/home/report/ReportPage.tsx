@@ -8,7 +8,7 @@ import { useTimeDisplay } from "../../time-preferences";
 import type { Agent } from "../../types";
 import { changedBlocks, type BlockChanges } from "../brief/block-changes";
 import { reportMarkdown } from "../brief/brief-copy";
-import { changedSinceSeen } from "../brief-layout";
+import { changedSinceSeen, readBefore, readVersion, unreadChange } from "../brief-layout";
 import { unmaintained } from "../card-summary";
 import { CardReply, replyableIn } from "../CardReply";
 import { absolute, duration, relative } from "../format";
@@ -16,11 +16,13 @@ import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
+import type { BodyDrawn } from "../brief/BriefSectionBody";
 import { BriefStateScope } from "../brief/brief-state";
 import { SectionTime } from "../SectionCard";
 import type { HomeData, Section, SectionAttachment } from "../types";
 import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
 import { reportText } from "./report-text";
+import { useOpenedReceipt } from "./report-opened";
 import "./report.css";
 import { Tip, TipText } from "../../Tip";
 
@@ -50,6 +52,7 @@ export function ReportPage({
   onOpenVersion,
   onShowProject,
   onSeen,
+  onOpened,
   readError = null,
   onRetry,
 }: {
@@ -66,6 +69,8 @@ export function ReportPage({
   onOpenVersion: (link: ReportLink) => void;
   onShowProject: (projectId: string) => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
+  /** Records that this page showed a live report's version whole (YN-86); the page says when. */
+  onOpened?: (projectId: string, section: Section) => Promise<void>;
   /** Home's read failure, as Home words it ("" when it has no reason). */
   readError?: { reason: string } | null;
   /** Reads Home again, as Home's own Refresh does. */
@@ -95,9 +100,50 @@ export function ReportPage({
     if (!shown || !parts) return [];
     return [...(parts.summary?.visual ? figuresOf(shown, [parts.summary.visual]) : []), ...figuresOf(shown, parts.flow)];
   }, [shown, parts]);
-  const changes = useMemo(
-    () => (shown && live ? changedBlocks(workspaceId, link.projectId, shown) : null),
-    [shown, live, workspaceId, link.projectId],
+  // The blocks changed since the user last read it, as the page opened at this version: they stay marked while it is
+  // on screen, after Core has recorded it opened (YN-86) or a read brings the same version again.
+  const heldChanges = useRef<{ id: number | undefined; key: string; version: number; changes: BlockChanges | null } | null>(null);
+  const changes = useMemo(() => {
+    if (!shown || !live) return null;
+    const held = heldChanges.current;
+    if (held && held.id === shown.id && held.key === shown.key && held.version === shown.version) return held.changes;
+    const found = changedBlocks(workspaceId, link.projectId, shown);
+    heldChanges.current = { id: shown.id, key: shown.key, version: shown.version, changes: found };
+    return found;
+  }, [shown, live, workspaceId, link.projectId]);
+  // Whether this version's body drew on the page (YN-86): every block it shows has told what it showed, none that
+  // the section could not be drawn at all, and at least one drew real content; a block that shows only its unreadable
+  // note is tolerated beside them, never counted as the body. Only then, for the live version on this Workspace's
+  // Home, is it recorded as opened.
+  const blockIds = useMemo(
+    () => (parts ? [parts.summary?.lead, parts.summary?.visual, parts.summary?.conditions, ...parts.flow, ...parts.sources, ...parts.attachments]
+      .filter((id): id is string => typeof id === "string") : []),
+    [parts],
+  );
+  const expected = useRef(blockIds);
+  expected.current = blockIds;
+  const drawing = useRef<{ of: Section | null; told: Map<string, BodyDrawn> }>({ of: null, told: new Map() });
+  const [drawn, setDrawn] = useState<Section | null>(null);
+  const drawnBlock = useMemo(() => {
+    const tellers = new Map<string, (drawn: BodyDrawn) => void>();
+    return (id: string) => {
+      let tell = tellers.get(id);
+      if (!tell)
+        tellers.set(id, (tell = (what: BodyDrawn) => {
+          if (drawing.current.of !== shown) drawing.current = { of: shown, told: new Map() };
+          const { told } = drawing.current;
+          told.set(id, what);
+          const blocks = expected.current;
+          const whole = blocks.length > 0 && blocks.every((block) => told.has(block))
+            && blocks.every((block) => told.get(block) !== "failed") && blocks.some((block) => told.get(block) === "drawn");
+          setDrawn((was) => (whole ? shown : was === shown ? null : was));
+        }));
+      return tell;
+    };
+  }, [shown]);
+  const receipt = useOpenedReceipt(
+    !readOnly && live && shown && drawn === shown && link.workspaceId === workspaceId ? { workspaceId, projectId: link.projectId, section: shown } : null,
+    onOpened,
   );
   const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
   const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
@@ -168,7 +214,7 @@ export function ReportPage({
   ) : place?.kind === "gone" ? (
     <Notice actions={null}>{t.gone}</Notice>
   ) : null;
-  const block = (id: string) => <SectionBody section={shown!} projectId={link.projectId} changes={changes} only={[id]} />;
+  const block = (id: string) => <SectionBody section={shown!} projectId={link.projectId} changes={changes} only={[id]} onDrawn={drawnBlock(id)} />;
   const retry = onRetry && (
     <button type="button" className="report-notice-main" onClick={onRetry}>
       {t.retry}
@@ -274,7 +320,7 @@ export function ReportPage({
                   <header className="report-head">
                     <p className="report-kicker">
                       <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
-                      {live && changedSinceSeen(shown) && <span className="home-changed">{shown.seen ? home.updated : home.new}</span>}
+                      {live && unreadChange(shown) && <span className="home-changed">{readBefore(shown) ? home.updated : home.new}</span>}
                       {unmaintained(shown) && <span className="home-unmaintained">{home.notMaintained}</span>}
                       {!!shown.repairs?.length && <span className="home-repaired">{home.repaired}</span>}
                       {panel && <span>{panel.project.name}</span>}
@@ -302,6 +348,12 @@ export function ReportPage({
                       <SectionTime label={home.nextUpdate} iso={shown.time?.nextUpdate} />
                       {changes && changes.size > 0 && <span className="report-changes">{t.blocksUpdated(changes.size)}</span>}
                     </p>
+                    {/* Not recorded as read (YN-86): said, never retried here; it stays marked as changed. */}
+                    {receipt !== null && (
+                      <p className="home-note report-opened-note" role="status">
+                        {t.notRecorded(receipt)}
+                      </p>
+                    )}
                     {/* What Core repaired to keep it, in Core's words (YN-14). */}
                     {!!shown.repairs?.length && <RepairedNote section={shown} />}
                     {/* Who left it and that it can be claimed, in words, not only in the card's tip (T-173). */}
@@ -389,7 +441,7 @@ export function ReportPage({
                     <p>
                       {shown.version} · {live ? t.current : shown.history ? t.inHistory : t.version(shown.version)}
                     </p>
-                    {live && shown.seen && shown.seen.version < shown.version && <p className="report-rail-note">{t.lastSaw(shown.seen.version)}</p>}
+                    {live && (readVersion(shown) ?? shown.version) < shown.version && <p className="report-rail-note">{t.lastSaw(readVersion(shown)!)}</p>}
                   </section>
                 </aside>
               </div>

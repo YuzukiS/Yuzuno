@@ -272,8 +272,11 @@ test("Back, Escape and the browser's Back close the report, and focus returns to
   field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await tick();
   assert.ok(page.report(), "Escape in the reply field leaves the report open");
-  // Nothing was marked seen by opening and closing.
-  assert.deepEqual(page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories")), []);
+  // Nothing was marked seen by opening and closing: each opening of the live version it drew only says it was
+  // opened (YN-86), that version and no other.
+  const written = page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories"));
+  assert.ok(written.length > 0 && written.every((r) => r.url === "/api/projects/p1/brief/opened"), JSON.stringify(written.map((r) => r.url)));
+  assert.deepEqual(JSON.parse(written[0].body), { workspaceId: "ws-1", sectionId: 7, key: "eval", version: 3 });
   assert.deepEqual(page.errors, []);
 });
 
@@ -449,7 +452,9 @@ test("a report open in one Workspace is gone from the first frame of another, ev
   assert.doesNotMatch(page.document.body.textContent, /Model B lowers validation loss/);
   assert.equal(page.window.location.hash, "", "the report's address is left");
   assert.equal(page.window.history.state?.yuzunoReport, undefined);
-  assert.deepEqual(page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories")), [], "nothing was done in ws-2");
+  // Only ws-1's own report said it was opened there (YN-86); nothing was done in ws-2.
+  assert.deepEqual(page.requests.filter((r) => r.method !== "GET" && !r.url.endsWith("/github_repositories")
+    && !(r.url === "/api/projects/p1/brief/opened" && JSON.parse(r.body).workspaceId === "ws-1")), [], "nothing was done in ws-2");
   // Back on ws-1, nothing of that report comes back by itself.
   page.window.renderHomeNow(null, 0, "ws-1");
   assert.equal(page.report(), null);
@@ -691,6 +696,8 @@ test("YN-16 a report page's blocks share its variables, which are not its card's
   await until(() => /Stir in the olive oil/.test(report.querySelector("#report-block-method").textContent), "a block of another part follows");
   assert.doesNotMatch(report.querySelector("#report-block-method").textContent, /butter/);
   // Home reads its project's linked repositories with a POST (home-api.ts); nothing else is sent.
-  assert.deepEqual(page.requests.filter((request) => request.method !== "GET").map((request) => request.url).filter((url) => url !== "/api/collaboration/github_repositories"), [], "nothing is written");
+  // Nothing is written but that the report was opened (YN-86).
+  assert.deepEqual(page.requests.filter((request) => request.method !== "GET").map((request) => request.url)
+    .filter((url) => url !== "/api/collaboration/github_repositories" && url !== "/api/projects/p1/brief/opened"), [], "nothing is written");
   assert.deepEqual(page.errors, []);
 });

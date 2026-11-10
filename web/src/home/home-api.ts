@@ -72,6 +72,17 @@ export const saveHomeOrder = (projectIds: string[]) =>
 export const markSeen = (projectId: string, sections: SeenMark[]) =>
   post<unknown>(`${project(projectId)}/seen`, { sections });
 
+/**
+ * A live report shown whole on its page (YN-86): the Workspace whose Home
+ * showed it, the section's id and key there, and the version shown. Core
+ * records exactly that or nothing; it is never a Seen mark.
+ */
+export type OpenedReceipt = { workspaceId: string; sectionId: number; key: string; version: number };
+export type OpenedRecord = { projectId: string; sectionId: number; key: string; version: number; at: string; recorded: boolean };
+
+export const markOpened = (projectId: string, receipt: OpenedReceipt) =>
+  post<OpenedRecord>(`${project(projectId)}/opened`, receipt);
+
 export const deferSection = (projectId: string, key: string, until: string) =>
   post<unknown>(`${project(projectId)}/defer`, { key, until });
 

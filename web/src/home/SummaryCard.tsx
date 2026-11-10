@@ -16,7 +16,7 @@ import { useKeptImagePreview } from "./brief/image-preview";
 import { BriefMarkdown } from "./brief/Markdown";
 import { BriefStateScope } from "./brief/brief-state";
 import { DeskCardClaim } from "./brief/ResearchDesk";
-import { changedSinceSeen, sectionDomId } from "./brief-layout";
+import { changedSinceSeen, readBefore, sectionDomId, unreadChange } from "./brief-layout";
 import { PinOff } from "lucide-react";
 import { CardFoldWorkspace } from "./card-fold";
 import { CARD_FILES, cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, selfContained, shownSize, TABLE_PREVIEW, type CardFigure, type CardFile, type CardSize } from "./card-preview";
@@ -96,7 +96,10 @@ export const SummaryCard = memo(function SummaryCard({
   const { size, source, own } = deck || widget
     ? shownSize(section, content, widget?.chosen ?? null, sizes && sizable(section) ? (computed) => sizes.held(projectId, section.id!, computed) : undefined)
     : { size: null, source: null, own: null };
-  const changed = changedSinceSeen(section);
+  // New or Updated since the user last read it (YN-86: marked seen, or a report opened whole); Seen stays offered
+  // until they mark this version seen, which is what puts a report into History.
+  const changed = unreadChange(section);
+  const seenable = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
   // Where Home takes a reply (T-174): a live card, or a report marked seen that a reply can still refer to, so a
@@ -161,7 +164,7 @@ export const SummaryCard = memo(function SummaryCard({
         {changed && (
           <Tip content={<TipText body={home.changedTitle} />}>
             <span className="home-changed">
-              {section.seen ? home.updated : home.new}
+              {readBefore(section) ? home.updated : home.new}
             </span>
           </Tip>
         )}
@@ -197,7 +200,7 @@ export const SummaryCard = memo(function SummaryCard({
               </button>
             </Tip>
           )}
-          {changed && !readOnly && (
+          {seenable && !readOnly && (
             <Tip content={<TipText title={home.seen} />} describe={false}>
               <button
                 type="button"

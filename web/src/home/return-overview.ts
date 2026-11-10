@@ -1,3 +1,4 @@
+import { readVersion } from "./brief-layout.ts";
 import type { HomeData, Section } from "./types";
 
 /** A small, read-only projection. This is not a task state or a receipt of
@@ -47,10 +48,12 @@ export function returnOverview(data: HomeData): ReturnOverview {
     // Team details remain in their existing, explicitly opened area.
     const live = panel.brief.sections;
     for (const section of live) {
+      // Changed since the user last read it: marked seen, or a report
+      // opened whole (YN-86), as Home's New marks and Core's count say.
       if (
         section.kind !== "ask" &&
         !section.history &&
-        (!section.seen || section.seen.version < section.version)
+        (readVersion(section) ?? 0) < section.version
       )
         changes.push(entry(section));
     }
@@ -88,16 +91,20 @@ export function returnOverview(data: HomeData): ReturnOverview {
     }
   }
   // Preserve Core's project/card order; do not make a new urgency ranking.
-  // Project and owner metadata can change without a card revision. Compare
-  // the fields this reading shows, not generatedAt (a read is not a change).
-  const signature = JSON.stringify({
+  return { at: data.generatedAt, changes, replies, signature: overviewSignature(changes, replies) };
+}
+
+/** Project and owner metadata can change without a card revision. Compare
+ * the fields a reading shows, not generatedAt (a read is not a change). */
+function overviewSignature(changes: OverviewSection[], replies: ReplyReceipt[]) {
+  return JSON.stringify({
     changes: changes.map(({ identity, projectName, section: s }) => [
       identity,
       projectName,
       s.version,
       s.title,
       [s.owner.agentId, s.owner.name, s.owner.state],
-      s.seen?.version,
+      readVersion(s),
       s.status?.stale,
     ]),
     replies: replies.map(({ identity, projectName, section: s, state }) => [
@@ -112,7 +119,25 @@ export function returnOverview(data: HomeData): ReturnOverview {
       s.ask?.replyText,
     ]),
   });
-  return { at: data.generatedAt, changes, replies, signature };
+}
+
+/** A report version the user opened whole here (YN-86), by Core's identity of its section. */
+export type OpenedMark = { projectId: string; sectionId: number; version: number };
+
+/**
+ * A held reading without the changes the user has since opened here, each
+ * up to the version opened: the reading is otherwise kept as it was (its
+ * time, every other change and reply), never refreshed by it. A newer
+ * version than the one opened stays.
+ */
+export function withoutOpened(reading: ReturnOverview, opened: readonly OpenedMark[]): ReturnOverview {
+  if (!opened.length) return reading;
+  const read = (entry: OverviewSection) =>
+    opened.some((mark) => mark.projectId === entry.projectId && mark.sectionId === entry.section.id && mark.version >= entry.section.version);
+  const changes = reading.changes.filter((entry) => !read(entry));
+  return changes.length === reading.changes.length
+    ? reading
+    : { ...reading, changes, signature: overviewSignature(changes, reading.replies) };
 }
 
 /** A link to a card is offered only while this precise section lineage is

@@ -1,6 +1,6 @@
 //! Stored sections, as Agents and Home read them, and the user's own marks
-//! on them (seen, deferred, replied). Those marks are the user's state: they
-//! never change a section's or the Brief's version.
+//! on them (seen, opened, deferred, replied). Those marks are the user's
+//! state: they never change a section's or the Brief's version.
 use super::*;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -190,8 +190,83 @@ pub(super) fn seen(db: &Connection, project: &str) -> Result<HashMap<String, (i6
     rows.map(|row| Ok(row?)).collect()
 }
 
-pub(super) fn unseen(rows: &[Row], seen: &HashMap<String, (i64, String)>) -> usize {
-    rows.iter().filter(|row| seen.get(&row.key).is_none_or(|(version, _)| *version < row.version)).count()
+/// Per section identity on Home, the newest version the user's browser showed
+/// whole while it was live, and when (YN-86). Never a Seen mark.
+pub(super) fn opened(db: &Connection, project: &str) -> Result<HashMap<i64, (i64, String)>> {
+    let mut query = db.prepare("SELECT section_id,version,at FROM project_brief_opened WHERE project_id=?1")?;
+    let rows = query.query_map([project], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
+    rows.map(|row| Ok(row?)).collect()
+}
+
+/// The newest version of `row` the user has read: marked seen (by key) or
+/// opened whole (by identity), whichever is later (YN-86).
+pub(super) fn read_version(row: &Row, seen: &HashMap<String, (i64, String)>, opened: &HashMap<i64, (i64, String)>) -> Option<i64> {
+    let seen = seen.get(&row.key).map(|(version, _)| *version);
+    let opened = opened.get(&row.identity).map(|(version, _)| *version);
+    seen.max(opened)
+}
+
+/// Sections changed since the user last read them (read_version).
+pub(super) fn unseen(rows: &[Row], seen: &HashMap<String, (i64, String)>, opened: &HashMap<i64, (i64, String)>) -> usize {
+    rows.iter().filter(|row| read_version(row, seen, opened).is_none_or(|version| version < row.version)).count()
+}
+
+/// What a browser sends once it has shown a live report whole (YN-86): the
+/// Workspace whose Home showed it, the section's identity and key there, and
+/// the version it showed.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct Opened {
+    pub workspace_id: String,
+    pub section_id: i64,
+    pub key: String,
+    pub version: i64,
+}
+
+/// Records that the user's browser showed exactly `opened.version` of a live
+/// report (YN-86). Only that very section and version is recorded: another
+/// Workspace's, a key written anew since, an older or a newer version, or a
+/// section that is no longer a live report records nothing, and is never
+/// recorded as the version that is live. The same version again changes
+/// nothing. It changes no section, version, Seen mark, ask, task or the
+/// Brief's version, and puts nothing into history. `recorded` says whether
+/// this call recorded a newer version.
+pub(super) fn mark_opened(store: &Store, project: &str, opened: &Opened) -> Result<Value> {
+    // Read before the writer is held: it reads the database itself.
+    let workspace = store.workspace_id()?;
+    ensure!(
+        opened.workspace_id == workspace,
+        "workspace_changed: this report was shown on another Workspace's Home. Nothing was recorded."
+    );
+    let mut writer = store.db.write()?;
+    let tx = writer.transaction()?;
+    ensure_project(&tx, project)?;
+    let row = live_key(&tx, project, &opened.key)?
+        .context("section_not_found: no live section has this key now. Nothing was recorded.")?;
+    ensure!(
+        row.identity == opened.section_id,
+        "section_changed: the section under this key is another one now. Nothing was recorded."
+    );
+    ensure!(row.kind == "report", "not_report: only a report is recorded as opened. Nothing was recorded.");
+    ensure!(
+        row.version == opened.version,
+        "version_changed: version {} is live, not version {}. Nothing was recorded.",
+        row.version,
+        opened.version
+    );
+    let changed = tx.execute(
+        "INSERT INTO project_brief_opened(project_id,section_id,key,version,at) VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(project_id,section_id) DO UPDATE SET key=excluded.key,version=excluded.version,at=excluded.at
+         WHERE excluded.version>project_brief_opened.version",
+        params![project, row.identity, row.key, row.version, now()],
+    )?;
+    let (version, at): (i64, String) = tx.query_row(
+        "SELECT version,at FROM project_brief_opened WHERE project_id=?1 AND section_id=?2",
+        params![project, row.identity],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    tx.commit()?;
+    Ok(json!({"projectId":project,"sectionId":row.identity,"key":row.key,"version":version,"at":at,"recorded":changed == 1}))
 }
 
 /// A section's owner as it is now; the name from when it last wrote if the
@@ -436,7 +511,7 @@ pub(super) fn mark_seen(store: &Store, project: &str, items: &[(String, i64)]) -
         }
     }
     expire_history(&tx)?;
-    let unseen = unseen(&live(&tx, project)?, &seen(&tx, project)?);
+    let unseen = unseen(&live(&tx, project)?, &seen(&tx, project)?, &opened(&tx, project)?);
     tx.commit()?;
     Ok(json!({"projectId":project,"seen":recorded,"archived":archived,"unseen":unseen}))
 }
