@@ -344,13 +344,13 @@ async fn a_stop_holds_until_a_later_check_reaches_the_machine_as_it_is() {
     settle().await;
     get(&host).await;
     for ticket in [&before, &other_root, &other_target] {
-        host.registry.check_reached(ticket);
+        host.registry.check_reached(&host.registry.hold().await, ticket);
         assert_eq!(state(&get(&host).await, "m1").0, "unavailable", "{ticket:?}");
     }
     assert_eq!(starts(&sessions, "m1"), 1);
     // One started after the stop, of the machine as it is, that reached it.
     let after: CheckTicket = host.registry.check_started(&m1);
-    host.registry.check_reached(&after);
+    host.registry.check_reached(&host.registry.hold().await, &after);
     let rows = get(&host).await;
     assert_eq!(state(&rows, "m1").0, "connecting");
     assert_eq!(starts(&sessions, "m1"), 2);

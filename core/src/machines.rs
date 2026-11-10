@@ -392,14 +392,21 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
     match (probed, ticket) {
         (Some(machine), Some(ticket)) => {
             let made = result.clone();
+            // Under the remote sessions' gate, taken only now the probe is
+            // done: from the check against the record as stored, through
+            // its write, to its effect on a stop, no edit of the machine and
+            // no other check's write comes between (server.rs takes the same
+            // gate around its machine writes).
+            let held = ws.machine_live.hold().await;
             let stored = ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await?;
             #[cfg(test)]
             after_record(&made.machine_id).await;
             // Only a check that reached the machine and is the one kept
             // (the latest started) may end a stop there.
             if stored.reachable && stored == made {
-                ws.machine_live.check_reached(&ticket);
+                ws.machine_live.check_reached(&held, &ticket);
             }
+            drop(held);
             Ok(stored)
         }
         _ => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,

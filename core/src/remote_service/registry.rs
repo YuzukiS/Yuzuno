@@ -5,9 +5,11 @@
 //! interest that GET recorded lasts (60 s), the end of a backoff. Nothing
 //! else does: no other page, no Core start, no record change. Each start
 //! takes a short `Admission::enter_work` permit, so none starts once an
-//! update drains; a session Core started is asked to close when the interest
-//! ends, when an update drains, when its machine's target or data root
-//! changes or the machine is removed, and when Core shuts down.
+//! update drains, and none once Core's shutdown watch says true
+//! (`follow_shutdown`): every start reads that watch itself. A session Core
+//! started is asked to close when the interest ends, when an update drains,
+//! when its machine's target or data root changes or the machine is
+//! removed, and as soon as Core's shutdown is sent.
 //!
 //! Per machine, by its id: the record as stored, the current Link, since
 //! when its state holds, a stop, a backoff, and every child of an earlier
@@ -200,7 +202,7 @@ struct State {
     checks: u64,
     /// A managing task runs.
     manager: bool,
-    /// Core is ending: nothing starts again.
+    /// Core is ending: nothing starts again (see also `Inner::ending`).
     closed: bool,
 }
 
@@ -426,9 +428,25 @@ impl Registry {
         self.state().timing.closing()
     }
 
-    /// Core's shutdown watch (main.rs).
+    /// Core's shutdown watch (main.rs). From the moment it says true no
+    /// start passes, since each one reads it under the state lock; and every
+    /// session is asked to close then, before Core's other shutdown steps
+    /// (the HTTP server's graceful end, OpenCode's stop) have run.
+    /// `close_all` later only waits. Inside a Tokio runtime only.
     pub(crate) fn follow_shutdown(&self, shutdown: watch::Receiver<bool>) {
-        let _ = self.inner.shutdown.set(shutdown);
+        if self.inner.shutdown.set(shutdown.clone()).is_err() {
+            return;
+        }
+        let weak = Arc::downgrade(&self.inner);
+        let mut shutdown = shutdown;
+        tokio::spawn(async move {
+            if shutdown.wait_for(|ending| *ending).await.is_err() {
+                return;
+            }
+            if let Some(inner) = weak.upgrade() {
+                inner.begin_shutdown();
+            }
+        });
     }
 
     pub(crate) async fn hold(&self) -> Held<'_> {
@@ -461,10 +479,11 @@ impl Registry {
         CheckTicket { id: machine.id.clone(), target: machine.target.clone(), root: machine.root().to_owned(), seq: state.checks }
     }
 
-    /// The check reached the machine and is the one now stored for it. It
-    /// ends a stop or a backoff there only if it started after that began
-    /// and was of the machine's target and data root as they are now.
-    pub(crate) fn check_reached(&self, ticket: &CheckTicket) {
+    /// The check reached the machine and is the one now stored for it, as
+    /// written under `held` (machines.rs). It ends a stop or a backoff there
+    /// only if it started after that began and was of the machine's target
+    /// and data root as they are now.
+    pub(crate) fn check_reached(&self, _held: &Held<'_>, ticket: &CheckTicket) {
         let now = self.inner.clock.now();
         let mut state = self.state();
         let Some(entry) = state.entry(&ticket.id) else { return };
@@ -551,6 +570,24 @@ impl Registry {
 }
 
 impl Inner {
+    /// Core is ending: shut down here, or its shutdown watch says so.
+    fn ending(&self, state: &State) -> bool {
+        state.closed || self.shutdown.get().is_some_and(|shutdown| *shutdown.borrow())
+    }
+
+    /// Nothing starts again; every session is asked to close now.
+    fn begin_shutdown(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        for entry in &mut state.entries {
+            if let Some(run) = &mut entry.run {
+                run.link.close();
+            }
+        }
+        drop(state);
+        self.wake.notify_one();
+    }
+
     /// One session's news, if it is still this machine's current one.
     fn settle(&self, generation: u64) {
         let now = self.clock.now();
@@ -578,7 +615,7 @@ pub(crate) async fn answer<H: Host>(host: &Arc<H>) -> Result<Value> {
         state.reconcile(stored, now);
         state.settle(now);
         // No interest is recorded, and nothing started, while an update drains.
-        match (state.closed, host.admission().enter_work()) {
+        match (inner.ending(&state), host.admission().enter_work()) {
             (false, Ok(_permit)) => {
                 state.interest = Some(now);
                 state.entries.iter().filter(|entry| entry.can_start(now)).map(|entry| entry.machine.id.clone()).collect()
@@ -611,7 +648,7 @@ fn start<H: Host>(host: &Arc<H>, _held: &Held<'_>, id: &str, may: impl Fn(&Entry
     let (machine, generation) = {
         let now = inner.clock.now();
         let mut state = registry.state();
-        if state.closed {
+        if inner.ending(&state) {
             return false;
         }
         let Some(at) = state.entries.iter().position(|entry| entry.machine.id == id) else { return true };
@@ -627,7 +664,8 @@ fn start<H: Host>(host: &Arc<H>, _held: &Held<'_>, id: &str, may: impl Fn(&Entry
     {
         let mut state = registry.state();
         let checks = state.checks;
-        let closed = state.closed;
+        // Core's shutdown, sent while it started, reads here too.
+        let closed = inner.ending(&state);
         // Under the gate nothing else changes which machine this is.
         let Some(entry) = state.entry(id) else { return true };
         entry.retry_at = None;
@@ -636,7 +674,8 @@ fn start<H: Host>(host: &Arc<H>, _held: &Held<'_>, id: &str, may: impl Fn(&Entry
             Ok(mut link) => {
                 let changes = link.subscribe();
                 if draining || closed {
-                    // An update began draining while it started.
+                    // An update began draining, or Core's shutdown was
+                    // sent, while it started.
                     link.close();
                 }
                 entry.run = Some(Run { link, hello: false });
@@ -764,7 +803,7 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
     let due: Vec<String> = {
         let mut state = registry.state();
         state.settle(now);
-        let interested = state.interested(now) && !draining && !state.closed;
+        let interested = state.interested(now) && !draining && !inner.ending(&state);
         let mut due = vec![];
         for entry in &mut state.entries {
             if let Some(run) = &mut entry.run {
