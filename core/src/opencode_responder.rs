@@ -195,8 +195,11 @@ pub(crate) enum Outcome {
     /// The request was gone after the interrupt, but what took the answer is
     /// unknown.
     Interrupted,
-    /// The runtime was ended after an unknown delivery.
+    /// The runtime ended after an unknown delivery, as `ended_within` saw it.
     Closed,
+    /// SIGKILL was sent to the captured runtime after an unknown delivery;
+    /// the kernel's exit was not confirmed.
+    Killed,
     /// The generation changed before an answer was sent.
     Discarded,
     /// The connection closed on its queue's bound; nothing was sent.
@@ -221,6 +224,7 @@ pub(crate) struct Report {
 impl Report {
     fn size(&self) -> usize {
         self.session.len() + self.request.len() + self.notice.as_ref().map_or(0, String::len)
+            + if self.collateral { 4 } else { 0 }
             + self.answer.as_ref().map_or(0, |answer| match answer {
                 Answer::Once => 0,
                 Answer::Reject(reason) => reason.code().len() + reason.message().len(),
@@ -295,6 +299,8 @@ pub(crate) struct Engine<R: MessageReader + 'static, J: Judge + 'static, N: Nati
     runtime: Arc<dyn Runtime>,
     fs_connection: Arc<Semaphore>,
     fs_global: Arc<Semaphore>,
+    /// The bound on recorded request data: active work plus retained reports.
+    bytes_limit: usize,
     state: Mutex<State>,
     sessions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -309,6 +315,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             generation, session, children, calls, reader, judge, native, current, runtime,
             fs_connection: Arc::new(Semaphore::new(FS_CONNECTION)),
             fs_global: global_fs(),
+            bytes_limit: BYTES,
             state: Mutex::default(),
             sessions: Mutex::default(),
         }
@@ -321,6 +328,14 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     fn with_fs(mut self, connection: Arc<Semaphore>, global: Arc<Semaphore>) -> Self {
         self.fs_connection = connection;
         self.fs_global = global;
+        self
+    }
+
+    /// A smaller byte budget, so a test can prove retained history is evicted
+    /// before a submission is called overload.
+    #[cfg(test)]
+    fn with_bytes(mut self, limit: usize) -> Self {
+        self.bytes_limit = limit;
         self
     }
 
@@ -339,7 +354,15 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         if state.closing {
             return Submission::Full;
         }
-        if size > BYTES || state.active.len() >= REQUESTS || state.bytes.saturating_add(size) > BYTES {
+        // Retained reports share the bound with active work, so old history
+        // is dropped to make room before a submission is called overload.
+        while state.bytes.saturating_add(size) > self.bytes_limit {
+            let Some(oldest) = state.order.pop_front() else { break };
+            if let Some(gone) = state.done.remove(&oldest) {
+                state.bytes = state.bytes.saturating_sub(gone.size());
+            }
+        }
+        if size > self.bytes_limit || state.active.len() >= REQUESTS || state.bytes.saturating_add(size) > self.bytes_limit {
             drop(state);
             self.fault();
             return Submission::Full;
@@ -650,12 +673,12 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         let until = wait_until + crate::opencode::TEARDOWN;
         let limit = remaining(until).unwrap_or_default();
         if self.runtime.ended_within(limit).await {
-            return Outcome::Interrupted;
+            return Outcome::Closed;
         }
         if self.runtime.current() {
             self.runtime.kill();
         }
-        Outcome::Closed
+        Outcome::Killed
     }
 
     async fn finish(&self, entry: &Entry, answer: Option<Answer>, outcome: Outcome) {
@@ -692,7 +715,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             state.bytes = state.bytes.saturating_add(size);
             state.order.push_back(entry.key.clone());
             state.done.insert(entry.key.clone(), report.clone());
-            while state.bytes > BYTES {
+            while state.bytes > self.bytes_limit {
                 let Some(oldest) = state.order.pop_front() else { break };
                 if let Some(gone) = state.done.remove(&oldest) {
                     state.bytes = state.bytes.saturating_sub(gone.size());

@@ -330,6 +330,41 @@ async fn a_refused_payload_is_checked_and_resent_with_the_same_decision() {
     assert!(sent.iter().all(|sent| sent.answer == Answer::Once), "the same decision is sent again");
 }
 
+/// Retained history is evicted to make room for a new request; only active
+/// work can call the connection overloaded.
+#[tokio::test(start_paused = true)]
+async fn finished_history_is_evicted_before_a_new_request_is_overload() {
+    let native = FakeNative::new();
+    let runtime = FakeRuntime::live();
+    let engine = Arc::new(Engine::new(GENERATION, "ses_main".into(), Vec::new(), calls(), Arc::new(NoReader),
+        Arc::new(TestJudge(Arc::new(|_, _| once()))), native.clone(), {
+            let live = runtime.clone();
+            Arc::new(move || live.current())
+        }, runtime).with_bytes(64));
+    for index in 0..8 {
+        let report = match engine.submit(&asked(&format!("per_{index}"), "ses_main")) {
+            Submission::Accepted(receiver) => report(receiver).await,
+            other => panic!("history evicted but not accepted: {other:?}"),
+        };
+        assert_eq!(report.outcome, Outcome::Delivered);
+    }
+    assert_eq!(native.sent().len(), 8, "each new request was answered");
+}
+
+/// The collateral flag is part of a report's recorded size, so eviction
+/// subtracts what the flag added.
+#[test]
+fn a_report_counts_its_collateral_flag() {
+    let report = Report {
+        generation: 7, session: "ses_main".into(), request: "per_1".into(), answer: Some(Answer::Once),
+        outcome: Outcome::Delivered, rounds: 1, collateral: false, notice: None,
+    };
+    let plain = report.size();
+    let mut marked = report.clone();
+    marked.collateral = true;
+    assert_eq!(marked.size(), plain + 4);
+}
+
 /// Three rounds at most, each POST within 15 s, with a check and a backoff
 /// between them, then the unknown tail.
 #[tokio::test(start_paused = true)]
@@ -346,7 +381,7 @@ async fn delivery_rounds_are_bounded_and_shared() {
     assert_eq!(sent.len(), 3);
     assert!(sent.iter().all(|sent| sent.limit <= REQUEST_LIMIT), "each POST is within 15 s");
     assert_eq!(report.rounds, 3);
-    assert_eq!(report.outcome, Outcome::Interrupted);
+    assert_eq!(report.outcome, Outcome::Closed);
     assert_eq!(native.aborts.load(Ordering::SeqCst), 1, "one interrupt, not one per round");
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.killed.load(Ordering::SeqCst), 0, "the fake ended within TEARDOWN");
@@ -415,9 +450,25 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     assert!(sent[0].at >= submitted + PREPARE_LIMIT, "the delivery starts after the preparation bound");
 }
 
-/// An unknown delivery that cannot be settled interrupts once and then ends
-/// the captured runtime: SIGTERM, TEARDOWN, SIGKILL. It is not reported as
-/// rejected or exited before that.
+/// A request that disappears after the interrupt is `Interrupted`, and the
+/// captured runtime is not touched.
+#[tokio::test(start_paused = true)]
+async fn an_interrupt_that_settles_is_not_a_teardown() {
+    let native = FakeNative::new().pending([true, true, false]).results([Delivery::Unknown, Delivery::Unknown, Delivery::Unknown]);
+    let runtime = FakeRuntime::live();
+    let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
+    let report = match engine.submit(&asked("per_1", "ses_main")) {
+        Submission::Accepted(receiver) => report(receiver).await,
+        other => panic!("not accepted: {other:?}"),
+    };
+    assert_eq!(report.outcome, Outcome::Interrupted);
+    assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.killed.load(Ordering::SeqCst), 0);
+}
+
+/// A runtime that ended after SIGTERM is `Closed`; a KILL only sent is
+/// `Killed`, not a confirmed exit.
 #[tokio::test(start_paused = true)]
 async fn an_unknown_delivery_ends_the_captured_runtime() {
     let native = FakeNative::new().always_pending(true).results([Delivery::Unknown, Delivery::Unknown, Delivery::Unknown]);
@@ -427,7 +478,7 @@ async fn an_unknown_delivery_ends_the_captured_runtime() {
         Submission::Accepted(receiver) => report(receiver).await,
         other => panic!("not accepted: {other:?}"),
     };
-    assert_eq!(report.outcome, Outcome::Closed);
+    assert_eq!(report.outcome, Outcome::Killed);
     assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.killed.load(Ordering::SeqCst), 1);
@@ -596,47 +647,32 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     assert!(outcomes.iter().any(|outcome| *outcome == Outcome::Delivered));
 }
 
-/// A duplicate event does not move the preparation deadline.
+/// A duplicate joins the same work and does not move the preparation bound.
 #[tokio::test(start_paused = true)]
 async fn a_duplicate_event_does_not_refresh_the_deadline() {
-    let started = Arc::new(AtomicBool::new(false));
-    let release = Arc::new((StdMutex::new(false), Condvar::new()));
-    let (flag, gate) = (started.clone(), release.clone());
-    let judge = TestJudge(Arc::new(move |_, _| {
-        if !flag.swap(true, Ordering::SeqCst) {
-            let (lock, cond) = &*gate;
-            let mut done = lock.lock().unwrap();
-            while !*done {
-                done = cond.wait(done).unwrap();
-            }
-        }
-        once()
-    }));
     let native = FakeNative::new();
+    let gate = Arc::new(Notify::new());
+    *native.gate.lock().unwrap() = Some(gate.clone());
     let runtime = FakeRuntime::live();
-    let engine = engine(native.clone(), runtime, judge);
+    let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| once())));
     let asked = asked("per_1", "ses_main");
-    let submitted = Instant::now();
     let receiver = match engine.submit(&asked) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
     };
-    for _ in 0..100 {
-        if started.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(started.load(Ordering::SeqCst));
+    let key = Key { generation: GENERATION, session: "ses_main".into(), request: "per_1".into() };
+    let first = {
+        let state = engine.state.lock().unwrap();
+        state.active.get(&key).expect("the request is active").prepare_deadline
+    };
     tokio::time::advance(Duration::from_secs(10)).await;
     let _ = engine.submit(&asked);
-    tokio::time::advance(PREPARE_LIMIT - Duration::from_secs(10) + Duration::from_secs(1)).await;
+    let second = {
+        let state = engine.state.lock().unwrap();
+        state.active.get(&key).expect("the request is still active").prepare_deadline
+    };
+    assert_eq!(first, second, "the duplicate did not move the preparation deadline");
+    gate.notify_one();
     let report = report(receiver).await;
-    let (lock, cond) = &*release;
-    *lock.lock().unwrap() = true;
-    cond.notify_all();
-    assert_eq!(report.answer, Some(Answer::Reject(Reason::PreparationTimeout)));
-    let sent = native.sent();
-    assert!(sent[0].at >= submitted + PREPARE_LIMIT && sent[0].at < submitted + PREPARE_LIMIT + Duration::from_secs(5),
-        "the duplicate did not move the deadline to 30 s");
+    assert_eq!(report.outcome, Outcome::Delivered);
 }
