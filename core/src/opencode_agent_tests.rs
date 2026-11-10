@@ -316,3 +316,33 @@ fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for
     d.turns.pop();
     assert!(compaction_blocks(&d, "x").is_none(), "the others hold nothing back");
 }
+
+/// YN-78 S2a: an OpenCode executor whose level is auto gets its own
+/// temporary directory, actually in the environment of the process Core
+/// starts, recorded with its identity; an ordinary close does not release it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_executor_gets_its_own_temp_dir_in_the_environment() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,state,created_at,updated_at)
+         VALUES('oc','executor','template','lead','created','now','now')", []).unwrap();
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode/oc/start.json")).unwrap()).unwrap();
+    let expected = std::fs::canonicalize(data.join("t/oc")).unwrap();
+    for name in ["TMPDIR", "TMP", "TEMP"] {
+        assert_eq!(seen["env"][name].as_str(), expected.to_str(), "{name}");
+    }
+    let workspace = ws.store.workspace_id().unwrap();
+    let record = ws.store.executor_temp_dir(&workspace, "oc").unwrap().unwrap();
+    assert_eq!(record.path, expected.to_string_lossy());
+    assert_eq!(record.released_at, None);
+    // An ordinary close is not a release.
+    ws.close_agent("oc").await.unwrap();
+    assert_eq!(ws.store.executor_temp_dir(&workspace, "oc").unwrap().unwrap().released_at, None);
+}

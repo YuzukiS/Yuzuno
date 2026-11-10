@@ -1207,6 +1207,7 @@ impl Store {
         crate::agent_roles::migrate(&db)?;
         crate::routing_launch::migrate(&db)?;
         crate::permission_levels::migrate(&db)?;
+        crate::executor_temp::migrate(&db)?;
         crate::routing_readings::migrate(&db)?;
         crate::session_baseline::migrate(&db)?;
         crate::executor_archiving::migrate(&db)?;
@@ -1426,6 +1427,9 @@ impl Store {
             anyhow::ensure!(closed, "请先关闭 Agent，再删除 Workspace 记录");
             record_rows::delete_rows(&tx, id)?;
             tx.execute("DELETE FROM journal WHERE agent_id=?1", [id])?;
+            // Its temporary directory record stays, with its first release
+            // (YN-78 S2a): no foreign key deletes either, and nothing is removed.
+            crate::executor_temp::release_for_close(&tx, id, &crate::model::now())?;
             tx.execute("DELETE FROM agents WHERE id=?1", [id])?;
             crate::results::delete_agent(&tx, id)?;
             crate::project_brief::delete_agent(&tx, id)?;

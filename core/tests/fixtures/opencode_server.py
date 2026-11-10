@@ -1019,7 +1019,8 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
 WORK = Path.cwd().resolve()
 # OpenCode's folders and switches as Core started it (T-32), before a switch below changes one.
 GIVEN = {name: os.environ.get(name) for name in ('XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME',
-                                                  'OPENCODE_DISABLE_AUTOUPDATE', 'OPENCODE_DISABLE_MODELS_FETCH')}
+                                                  'OPENCODE_DISABLE_AUTOUPDATE', 'OPENCODE_DISABLE_MODELS_FETCH',
+                                                  'TMPDIR', 'TMP', 'TEMP')}
 # A routing key Core gives one Agent's server (YN-34 S1c), recorded apart so `env` stays as it was.
 ROUTING_KEYS = {name: os.environ.get(name) for name in ('DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')}
 # An executor's permission level as OpenCode's rules (YN-56 S3), recorded apart too.

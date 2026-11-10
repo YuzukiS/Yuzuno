@@ -195,9 +195,13 @@ async fn what_is_fixed_in_core_is_refused_whatever_the_settings_say() {
     std::fs::create_dir_all(lab.home.join(".cache/tool")).unwrap();
     std::fs::create_dir_all(lab.home.join("notes")).unwrap();
     std::fs::create_dir_all(root.join("junk")).unwrap();
+    std::fs::create_dir_all(root.join("data/t/abcdefgh")).unwrap();
     let main = lab.project.clone();
     let plan = submit(&lab, "fixed", vec![group("g", "delete")], vec![
         item("data", "g", "entry", &root.join("data")),
+        item("dataTempRoot", "g", "entry", &root.join("data/t")),
+        item("dataTemp", "g", "entry", &root.join("data/t/abcdefgh")),
+        item("dataAncestor", "g", "entry", &root),
         item("holdsHome", "g", "entry", &root.join("home")),
         item("firstLevel", "g", "entry", &lab.home.join("notes")),
         item("xdg", "g", "entry", &lab.home.join(".cache/tool")),
@@ -207,7 +211,7 @@ async fn what_is_fixed_in_core_is_refused_whatever_the_settings_say() {
         item("junk", "g", "entry", &root.join("junk")),
     ]).await;
     let states = item_states(&lab, &plan).await;
-    for id in ["data", "holdsHome", "firstLevel", "xdg", "other", "work", "project"] {
+    for id in ["data", "dataTempRoot", "dataTemp", "dataAncestor", "holdsHome", "firstLevel", "xdg", "other", "work", "project"] {
         assert_eq!(refused(&states, id), "forbidden", "{id}");
     }
     pending(&states, "junk");

@@ -107,6 +107,10 @@ pub(crate) fn follow_close(db: &Connection, agent: &Agent, kind: &str, data: &Va
         if archived > 0 {
             crate::executor_archiving::follow_archive(db, agent)?;
         }
+        // A release records its temporary directory's first release (YN-78 S2a).
+        if let Some(at) = agent.closed_at.as_deref() {
+            crate::executor_temp::release_for_close(db, &agent.id, at)?;
+        }
     }
     Ok(())
 }
@@ -179,6 +183,8 @@ fn archive_closed(store: &Store, agent: &str, by: &str) -> Result<bool> {
             crate::executor_archiving::follow_archive(&tx, &listed)?;
         }
     }
+    // Its temporary directory's first release (YN-78 S2a); a later one keeps it.
+    crate::executor_temp::release_for_close(&tx, agent, &at)?;
     tx.commit()?;
     Ok(archived)
 }

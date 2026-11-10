@@ -251,6 +251,11 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
         None => json!({"kind":"user"}),
     };
     let mut view = json!({"state":state,"agentId":role.agent,"dispatcher":dispatcher,"dispatchedAt":role.created_at});
+    // Its own temporary directory, or why it has none (YN-78 S2a), for its
+    // detail; nothing is created or changed by reading it.
+    if let Some(temp) = crate::executor_temp::view(db, &role.agent)? {
+        view["tempDir"] = temp;
+    }
     // Its dispatch row: the template it was made from, as its materials name
     // it (T-43 S2: the sidebar shows its label), whether that template is
     // fixed, and why routing chose what it did (YN-57 S4a). None for one made

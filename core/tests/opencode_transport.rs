@@ -840,3 +840,20 @@ async fn a_compaction_goes_through_2xs_route_under_cores_id_and_is_admitted_only
     assert_eq!(lab.calls().iter().filter(|c| c["path"].as_str().unwrap_or_default().ends_with("/summarize")).count(), 0, "never 1.19.3's route");
     server.shutdown().await.unwrap();
 }
+
+/// YN-78 S2a: an executor's own temporary directory reaches the OpenCode
+/// process as TMPDIR, TMP and TEMP, all three.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_server_gives_opencode_the_executors_temp_dir_in_all_three_variables() {
+    let mut lab = lab();
+    let temp = lab.root.join("tmp/executor");
+    std::fs::create_dir_all(&temp).unwrap();
+    lab.launch.temp_dir = Some(temp.clone());
+    let server = Server::start(&lab.launch).await.unwrap();
+    let seen = lab.seen();
+    for name in ["TMPDIR", "TMP", "TEMP"] {
+        assert_eq!(seen["env"][name].as_str(), temp.to_str(), "{name}");
+    }
+    server.shutdown().await.unwrap();
+}
