@@ -1539,11 +1539,10 @@ async fn a_failed_finish_write_is_repaired_from_the_ledger_next_entry() {
     inject_fault(&lab, "finish_run", 1);
     let _ = automatic(&lab).await;
     assert!(!tree.exists());
-    let (state, _) = demo_run(&lab);
-    assert_eq!(state, "running", "the body finished but its ledger did not");
+    let finished_run = demo_run_id(&lab);
+    assert_eq!(run_state(&lab, &finished_run), "running", "the body finished but its ledger did not");
     let _ = automatic(&lab).await;
-    let (state, _) = demo_run(&lab);
-    assert_eq!(state, "done", "the next entry repairs only the ledger");
+    assert_eq!(run_state(&lab, &finished_run), "done", "the next entry repairs the old run's ledger");
 }
 
 #[tokio::test]
@@ -1557,4 +1556,53 @@ async fn a_failed_failure_write_is_repaired_next_entry_without_running_forever()
     assert_eq!(run_state(&lab, &failed_run), "running", "the failure could not be recorded yet");
     let _ = automatic(&lab).await;
     assert_eq!(run_state(&lab, &failed_run), "failed", "the next entry repairs the ledger only");
+}
+
+#[tokio::test]
+async fn a_full_repair_queue_stops_new_runs_until_the_ledger_recovers() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/backpressure"), "feat/backpressure");
+    {
+        let mut repairs = lab.ws.cleanup.repairs.lock().unwrap();
+        for i in 0..100 {
+            repairs.push(super::automatic::AutomaticRepair::Finished {
+                run: format!("missing-{i}"), state: "done".into(), data: json!({}) });
+        }
+    }
+    inject_fault(&lab, "repair", 20);
+    let _ = automatic(&lab).await;
+    assert!(tree.exists(), "no new run starts while the repair queue is full");
+    let runs: i64 = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM cleanup_automatic_runs WHERE project_id=(SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo')",
+        [], |r| r.get(0)).unwrap();
+    assert_eq!(runs, 0, "the queue is not dropped and no run is admitted over it");
+    assert_eq!(lab.ws.cleanup.repairs.lock().unwrap().len(), 100);
+    // Storage recovers: the next entry repairs 20 and admits the run again.
+    let _ = automatic(&lab).await;
+    assert!(!tree.exists());
+}
+
+#[tokio::test]
+async fn a_registered_worktree_under_the_removal_namespace_is_never_discovered() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+        c.max_items = 50;
+    });
+    yn65_keep_days(&lab, 0);
+    exclude(&lab, "node_modules/");
+    let tree = worktree(&lab, &lab.home.join("work/.yuzuno-removing-root/wt"), "feat/removing-root");
+    let modules = tree.join("node_modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(tree.join("package.json"), "{\"name\":\"x\"}").unwrap();
+    std::fs::write(tree.join("package-lock.json"), "{}").unwrap();
+    std::fs::write(modules.join("x.js"), "x\n").unwrap();
+    let _ = automatic(&lab).await;
+    assert!(modules.exists(), "no discovery inside the removal namespace");
+    let items: i64 = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM cleanup_automatic_items WHERE path LIKE '%/.yuzuno-removing-%'", [], |r| r.get(0)).unwrap();
+    assert_eq!(items, 0, "not even a refused automatic item is created there");
 }

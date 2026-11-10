@@ -98,6 +98,12 @@ fn real(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// A path inside what a removal renamed; neither it nor its subtree is ever a
+/// candidate (Lead review of f9382460).
+fn in_removal_namespace(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str().to_string_lossy().starts_with(crate::build_output::REMOVING))
+}
+
 /// The walk of one root, never following a link and never going into a
 /// recognized cache, `.git`, a protected path, a mount or another Project.
 /// It collects every candidate within the existing entry and time bounds;
@@ -131,7 +137,7 @@ fn walk(ctx: &check::Context, roots: &[PathBuf]) -> Found {
             // A removal Core stopped after renaming keeps the same object
             // under this name; neither it nor anything below it is a new
             // candidate, whatever tag it still holds (Lead review of ac25bade).
-            if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(crate::build_output::REMOVING)) {
+            if in_removal_namespace(&path) {
                 continue;
             }
             if path.file_name().is_some_and(|name| name == ".git") {
@@ -777,11 +783,14 @@ async fn fail_run_now(ws: &Arc<Workspace>, run: &str, error: &str, stage: &str) 
 }
 
 fn queue_repair(ws: &Workspace, repair: AutomaticRepair) {
-    let mut repairs = ws.cleanup.repairs.lock().unwrap();
-    if repairs.len() < 100 {
-        repairs.push(repair);
-    }
+    // Never drop a failed ledger write: a dropped repair is a run that stays
+    // running forever. The pass admits no new run while the queue is full.
+    ws.cleanup.repairs.lock().unwrap().push(repair);
 }
+
+/// The repair queue is bounded; a full queue stops new runs rather than
+/// dropping a record. Each entry repairs at most REPAIRS_PER_ENTRY.
+const MAX_REPAIRS: usize = 100;
 
 /// Retry at most this many failed ledger writes at one entry.
 const REPAIRS_PER_ENTRY: usize = 20;
@@ -806,6 +815,12 @@ async fn repair_pending(ws: &Arc<Workspace>) {
                 AutomaticRepair::Failed { run, error, stage } => fail_run(s, run, error, stage),
             }
         }).await;
+        #[cfg(test)]
+        let result = if ws.cleanup.take_fault("repair") {
+            Err(anyhow::anyhow!("injected fault: repair"))
+        } else {
+            result
+        };
         if let Err(error) = result {
             queue_repair(ws, repair);
             eprintln!("[cleanup] automatic ledger repair failed: {error:#}");
@@ -1005,9 +1020,9 @@ async fn project_body(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // The Project's folder, and the worktrees its repository registers
         // outside it (one inside it is covered by the folder's own walk). A
         // worktree whose folder is away for now is not a root.
-        let mut roots = vec![ctx.project.clone()];
+        let mut roots: Vec<PathBuf> = if in_removal_namespace(&ctx.project) { Vec::new() } else { vec![ctx.project.clone()] };
         for listed in ctx.worktrees.iter().filter(|w| !w.main) {
-            if !listed.path.is_dir() {
+            if !listed.path.is_dir() || in_removal_namespace(&listed.path) {
                 continue;
             }
             match git(&listed.path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
@@ -1142,6 +1157,11 @@ pub(crate) async fn pass(ws: &Arc<Workspace>) -> Result<usize> {
     // A previous run's final ledger write may have failed; repair only the
     // ledger here, never a removal, and never pretend it was done.
     repair_pending(ws).await;
+    let backlog = ws.cleanup.repairs.lock().unwrap().len();
+    if backlog >= MAX_REPAIRS {
+        eprintln!("[cleanup] {backlog} automatic ledger repairs wait; no new automatic run starts this entry");
+        return Ok(0);
+    }
     let (settings, projects) = ws.stored(|s| {
         let db = s.db.read()?;
         Ok((settings::read(&db)?, crate::projects::all(&db)?))
