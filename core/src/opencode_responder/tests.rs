@@ -34,6 +34,9 @@ struct FakeNative {
     gate_for: StdMutex<Option<String>>,
     /// Runs after a delivery is recorded, before its result is returned.
     after_deliver: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Signalled when a POST has entered the native call, before any response.
+    entered: StdMutex<Option<Arc<Notify>>>,
+    entered_count: AtomicUsize,
     aborts: AtomicUsize,
 }
 
@@ -49,6 +52,8 @@ impl FakeNative {
             gate: StdMutex::default(),
             gate_for: StdMutex::default(),
             after_deliver: StdMutex::default(),
+            entered: StdMutex::default(),
+            entered_count: AtomicUsize::default(),
             aborts: AtomicUsize::default(),
         })
     }
@@ -88,6 +93,15 @@ impl FakeNative {
         self.clone()
     }
 
+    fn on_entered(self: &Arc<Self>, gate: Arc<Notify>) -> Arc<Self> {
+        *self.entered.lock().unwrap() = Some(gate);
+        self.clone()
+    }
+
+    fn entered_count(&self) -> usize {
+        self.entered_count.load(Ordering::SeqCst)
+    }
+
     fn sent(&self) -> Vec<Sent> {
         self.sent.lock().unwrap().clone()
     }
@@ -97,6 +111,12 @@ impl Native for FakeNative {
     fn deliver<'a>(&'a self, session: &'a str, request: &'a str, answer: &'a Answer, limit: Duration)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Delivery> + Send + 'a>> {
         Box::pin(async move {
+            let at = Instant::now();
+            self.entered_count.fetch_add(1, Ordering::SeqCst);
+            let entered = { self.entered.lock().unwrap().clone() };
+            if let Some(entered) = entered {
+                entered.notify_one();
+            }
             let delay = { self.delays.lock().unwrap().pop_front() };
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
@@ -107,7 +127,7 @@ impl Native for FakeNative {
                 gate.notified().await;
             }
             self.sent.lock().unwrap().push(Sent {
-                session: session.to_owned(), request: request.to_owned(), answer: answer.clone(), limit, at: Instant::now(),
+                session: session.to_owned(), request: request.to_owned(), answer: answer.clone(), limit, at,
             });
             let hook = { self.after_deliver.lock().unwrap().clone() };
             if let Some(hook) = hook {
@@ -147,6 +167,8 @@ struct FakeRuntime {
     terminated: AtomicUsize,
     killed: AtomicUsize,
     ends: AtomicBool,
+    /// When `kill` was called, for the t0 + 67 s bound.
+    killed_at: StdMutex<Option<Instant>>,
     /// Set current=false while `ended_within` waits, as a generation change
     /// during the TERM window.
     flip_on_wait: AtomicBool,
@@ -180,6 +202,7 @@ impl Runtime for FakeRuntime {
     }
 
     fn kill(&self) {
+        *self.killed_at.lock().unwrap() = Some(Instant::now());
         self.killed.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -198,6 +221,18 @@ struct TestJudge(Arc<dyn Fn(&Asked, &Call) -> Decision + Send + Sync>);
 impl Judge for TestJudge {
     fn decide(&self, asked: &Asked, call: &Call) -> Decision {
         (self.0)(asked, call)
+    }
+}
+
+/// Releases a blocking fixture however the test leaves it: a panic or an
+/// assertion cannot leave a `spawn_blocking` worker holding Tokio's exit.
+struct Unblock(Arc<(StdMutex<bool>, Condvar)>);
+
+impl Drop for Unblock {
+    fn drop(&mut self) {
+        let (lock, cond) = &*self.0;
+        *lock.lock().unwrap() = true;
+        cond.notify_all();
     }
 }
 
@@ -478,18 +513,18 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     let native = FakeNative::new();
     let runtime = FakeRuntime::live();
     let started = Arc::new(AtomicBool::new(false));
-    let active = Arc::new(AtomicUsize::new(0));
     let release = Arc::new((StdMutex::new(false), Condvar::new()));
-    let (running, held, in_flight) = (started.clone(), release.clone(), active.clone());
+    let _unblock = Unblock(release.clone());
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (running, held, finished_tx) = (started.clone(), release.clone(), done_tx);
     let judge = TestJudge(Arc::new(move |_, _| {
         running.store(true, Ordering::SeqCst);
-        in_flight.fetch_add(1, Ordering::SeqCst);
         let (lock, cond) = &*held;
-        let mut done = lock.lock().unwrap();
-        while !*done {
-            done = cond.wait(done).unwrap();
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = cond.wait(released).unwrap();
         }
-        in_flight.fetch_sub(1, Ordering::SeqCst);
+        let _ = finished_tx.send(());
         once()
     }));
     let engine = engine(native.clone(), runtime, judge);
@@ -511,13 +546,7 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     let (lock, cond) = &*release;
     *lock.lock().unwrap() = true;
     cond.notify_all();
-    for _ in 0..1000 {
-        if active.load(Ordering::SeqCst) == 0 {
-            break;
-        }
-        std::thread::yield_now();
-    }
-    assert_eq!(active.load(Ordering::SeqCst), 0, "the blocking judge finished");
+    done_rx.recv().await.expect("the blocking judge finished");
     assert_eq!(report.outcome, Outcome::Delivered);
     assert_eq!(report.answer, Some(Answer::Reject(Reason::PreparationTimeout)));
     assert!(report.notice.as_deref().unwrap_or_default().contains("preparing"));
@@ -559,6 +588,10 @@ async fn an_unknown_delivery_ends_the_captured_runtime() {
     assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.killed.load(Ordering::SeqCst), 1);
+    let t0 = native.sent()[0].at;
+    let killed = runtime.killed_at.lock().unwrap().expect("KILL was sent");
+    assert!(killed - t0 >= Duration::from_secs(66) && killed - t0 <= Duration::from_secs(67) + Duration::from_millis(10),
+        "KILL is sent within t0 + 67 s");
 }
 
 /// An older generation is not answered, and a new runtime is not ended.
@@ -615,6 +648,7 @@ async fn a_reject_answers_a_held_once_request_first() {
         reject_started: AtomicBool::new(false),
         collateral: AtomicBool::new(false),
         delivery_start: StdMutex::new(None),
+        terminal: StdMutex::new(false),
         rounds: std::sync::atomic::AtomicU8::new(0),
         finished: AtomicBool::new(false),
         report: send,
@@ -737,6 +771,48 @@ async fn a_fault_after_a_generation_change_sends_nothing() {
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
 }
 
+/// A POST whose response is still in flight when the connection is closed is
+/// counted as started: its overload report is unknown, not "nothing sent",
+/// and one fault closes the connection once.
+#[tokio::test(start_paused = true)]
+async fn an_in_flight_post_is_counted_when_overload_closes() {
+    let native = FakeNative::new();
+    let gate = Arc::new(Notify::new());
+    *native.gate.lock().unwrap() = Some(gate.clone());
+    let entered = Arc::new(Notify::new());
+    native.on_entered(entered.clone());
+    let runtime = FakeRuntime::live();
+    let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
+    let mut target = None;
+    for index in 0..REQUESTS {
+        let receiver = match engine.submit(&asked(&format!("per_{index}"), &format!("ses_{index}"))) {
+            Submission::Accepted(receiver) => receiver,
+            other => panic!("request {index} not accepted: {other:?}"),
+        };
+        if index == REQUESTS - 1 {
+            target = Some(receiver);
+        }
+    }
+    while native.entered_count() < REQUESTS {
+        entered.notified().await;
+    }
+    let target = target.unwrap();
+    assert!(matches!(engine.submit(&asked("per_extra", "ses_extra")), Submission::Full));
+    let report = report(target).await;
+    assert_eq!(report.outcome, Outcome::Overloaded);
+    assert!(report.rounds >= 1, "the POST had started before the close");
+    assert_eq!(report.notice, None);
+    assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
+    // The close continues after publishing the reports: abort, settle, TERM.
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
+    // A repeated submission does not run a second fault/close.
+    assert!(matches!(engine.submit(&asked("per_more", "ses_more")), Submission::Full));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
+    gate.notify_waiters();
+}
+
 /// The queue bound closes the connection once, with structured reports and
 /// no answers for what it held.
 #[tokio::test(start_paused = true)]
@@ -770,20 +846,19 @@ async fn the_queue_bound_closes_the_connection_once() {
 #[tokio::test(start_paused = true)]
 async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     let started = Arc::new(AtomicUsize::new(0));
-    let active = Arc::new(AtomicUsize::new(0));
     let counted = started.clone();
-    let in_flight = active.clone();
     let released = Arc::new((StdMutex::new(false), Condvar::new()));
+    let _unblock = Unblock(released.clone());
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
     let release = released.clone();
     let judge = TestJudge(Arc::new(move |_, _| {
         counted.fetch_add(1, Ordering::SeqCst);
-        in_flight.fetch_add(1, Ordering::SeqCst);
         let (lock, cond) = &*release;
-        let mut done = lock.lock().unwrap();
-        while !*done {
-            done = cond.wait(done).unwrap();
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = cond.wait(released).unwrap();
         }
-        in_flight.fetch_sub(1, Ordering::SeqCst);
+        let _ = done_tx.send(());
         once()
     }));
     let global = Arc::new(Semaphore::new(FS_GLOBAL));
@@ -826,13 +901,9 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     for receiver in receivers {
         outcomes.push(report(receiver).await.outcome);
     }
-    for _ in 0..1000 {
-        if active.load(Ordering::SeqCst) == 0 {
-            break;
-        }
-        std::thread::yield_now();
+    for _ in 0..FS_GLOBAL {
+        done_rx.recv().await.expect("every blocking decision finished");
     }
-    assert_eq!(active.load(Ordering::SeqCst), 0, "every blocking decision finished");
     assert!(outcomes.iter().any(|outcome| *outcome == Outcome::Delivered));
 }
 

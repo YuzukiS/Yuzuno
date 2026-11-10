@@ -202,7 +202,9 @@ pub(crate) enum Outcome {
     Killed,
     /// The generation changed before an answer was sent.
     Discarded,
-    /// The connection closed on its queue's bound; nothing was sent.
+    /// The connection closed on its queue's bound; `rounds` is how many POSTs
+    /// actually started. `rounds == 0` is the only "nothing was sent" case; a
+    /// positive count leaves delivery unknown and is never a rejection.
     Overloaded,
 }
 
@@ -216,6 +218,7 @@ pub(crate) struct Report {
     pub request: String,
     pub answer: Option<Answer>,
     pub outcome: Outcome,
+    /// How many POSTs actually started (0 only when none did).
     pub rounds: u8,
     pub collateral: bool,
     /// Core itself started the reject for this request.
@@ -268,6 +271,9 @@ struct Entry {
     /// The absolute first-POST t0 of this request's delivery, shared by its
     /// worker and any preflight that answers it first.
     delivery_start: Mutex<Option<Instant>>,
+    /// Attempts that have actually started, and the one terminal gate shared
+    /// with `finish`: a POST cannot start after the report is published.
+    terminal: Mutex<bool>,
     rounds: AtomicU8,
     finished: AtomicBool,
     report: watch::Sender<Option<Report>>,
@@ -278,11 +284,21 @@ impl Entry {
         self.finished.load(Ordering::SeqCst)
     }
 
-    /// This request's one first-POST time, set by whichever path sends its
-    /// first real POST (its own worker or a preflight for another reject).
-    fn start_delivery(&self) -> Instant {
-        let mut start = self.delivery_start.lock().unwrap();
-        *start.get_or_insert_with(Instant::now)
+    /// Reserves one POST before its HTTP starts: its first t0, one more
+    /// attempt, and its absolute deadline. None when the report is already
+    /// terminal or the three attempts are used.
+    fn start_post(&self) -> Option<Instant> {
+        let terminal = self.terminal.lock().unwrap();
+        if *terminal {
+            return None;
+        }
+        let attempts = self.rounds.load(Ordering::SeqCst);
+        if attempts >= ROUNDS {
+            return None;
+        }
+        let t0 = *self.delivery_start.lock().unwrap().get_or_insert_with(Instant::now);
+        self.rounds.store(attempts + 1, Ordering::SeqCst);
+        Some(t0)
     }
 }
 
@@ -414,6 +430,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             reject_started: AtomicBool::new(false),
             collateral: AtomicBool::new(false),
             delivery_start: Mutex::new(None),
+            terminal: Mutex::new(false),
             rounds: AtomicU8::new(0),
             finished: AtomicBool::new(false),
             report,
@@ -483,7 +500,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             state.active.values().cloned().collect()
         };
         for entry in held {
-            self.finish(&entry, None, Outcome::Overloaded).await;
+            let answer = entry.decision.lock().unwrap().clone();
+            self.finish(&entry, answer, Outcome::Overloaded).await;
         }
         let abort_until = Instant::now() + INTERRUPT_LIMIT;
         if (self.current)() {
@@ -639,25 +657,24 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     }
 
     /// One bounded POST for a request another reject is answering first. It
-    /// records the target's first-POST t0 and cumulative attempt; a failure
-    /// leaves the target active for its own worker to continue.
+    /// reserves the target's attempt and first-POST t0 before the HTTP starts,
+    /// so an overload close sees what really started; a failure leaves the
+    /// target active for its own worker to continue.
     async fn post_once(&self, target: &Entry, session: &str, request: &str, answer: Answer, caller_left: Duration) -> Option<Delivery> {
         if target.finished() || caller_left.is_zero() {
             return None;
         }
-        let rounds = target.rounds.load(Ordering::SeqCst);
-        if rounds >= ROUNDS {
-            return None;
-        }
-        let t0 = target.start_delivery();
-        let until = t0 + DELIVERY_LIMIT;
+        let t0 = *target.delivery_start.lock().unwrap();
+        let until = t0.map(|t0| t0 + DELIVERY_LIMIT).unwrap_or_else(|| Instant::now() + DELIVERY_LIMIT);
         let Some(target_left) = remaining(until) else { return None };
         let limit = min(REQUEST_LIMIT, min(caller_left, target_left));
         if limit.is_zero() || !(self.current)() {
             return None;
         }
+        let Some(t0) = target.start_post() else { return None };
+        let Some(target_left) = remaining(t0 + DELIVERY_LIMIT) else { return None };
+        let limit = min(limit, target_left);
         let result = self.native.deliver(session, request, &answer, limit).await;
-        target.rounds.store(rounds + 1, Ordering::SeqCst);
         match result {
             Delivery::Delivered => self.finish(target, Some(answer), Outcome::Delivered).await,
             Delivery::Gone => self.finish(target, Some(answer), Outcome::Gone).await,
@@ -672,9 +689,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         }
         // Its first POST, wherever it was sent (this worker or a preflight),
         // fixes one t0; every later POST shares its absolute deadline.
-        let t0 = entry.start_delivery();
-        let until = t0 + DELIVERY_LIMIT;
-        let mut rounds = entry.rounds.load(Ordering::SeqCst);
+        let mut t0 = *entry.delivery_start.lock().unwrap();
         loop {
             if entry.finished() {
                 return Outcome::Overloaded;
@@ -682,22 +697,44 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             if !(self.current)() {
                 return Outcome::Discarded;
             }
-            let Some(limit) = remaining(until) else { break };
-            if rounds >= ROUNDS {
+            let until = t0.map(|t0| t0 + DELIVERY_LIMIT).unwrap_or_else(|| Instant::now() + DELIVERY_LIMIT);
+            if remaining(until).is_none() {
                 break;
             }
+            if entry.rounds.load(Ordering::SeqCst) >= ROUNDS {
+                break;
+            }
+            // Reserve the attempt and its t0 before the HTTP starts: a close
+            // that publishes while this response is in flight must see it.
+            let start = match entry.start_post() {
+                Some(start) => start,
+                None => {
+                    if entry.finished() {
+                        return Outcome::Overloaded;
+                    }
+                    break;
+                }
+            };
+            t0 = Some(start);
             if matches!(answer, Answer::Reject(_)) {
                 entry.reject_started.store(true, Ordering::SeqCst);
             }
+            let until = start + DELIVERY_LIMIT;
+            let Some(limit) = remaining(until) else { break };
             let result = self.native.deliver(&asked.session, &asked.id, &answer, min(REQUEST_LIMIT, limit)).await;
-            rounds += 1;
-            entry.rounds.store(rounds, Ordering::SeqCst);
+            if entry.finished() {
+                return Outcome::Overloaded;
+            }
+            if !(self.current)() {
+                return Outcome::Discarded;
+            }
             match result {
                 Delivery::Delivered => return Outcome::Delivered,
                 Delivery::Gone => return Outcome::Gone,
                 Delivery::Invalid | Delivery::Unknown => {}
             }
-            if rounds >= ROUNDS {
+            let attempts = entry.rounds.load(Ordering::SeqCst);
+            if attempts >= ROUNDS {
                 break;
             }
             let Some(limit) = remaining(until) else { break };
@@ -705,7 +742,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
                 Ok(None) => return Outcome::Gone,
                 Ok(Some(_)) | Err(_) => {}
             }
-            let wait = BACKOFF[usize::from(rounds.saturating_sub(1)).min(BACKOFF.len() - 1)];
+            let wait = BACKOFF[usize::from(attempts.saturating_sub(1)).min(BACKOFF.len() - 1)];
             let Some(left) = remaining(until) else { break };
             if left <= wait {
                 break;
@@ -713,7 +750,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             sleep_until(Instant::now() + wait).await;
         }
         let _ = entry;
-        self.unknown_tail(asked, t0).await
+        self.unknown_tail(asked, t0.unwrap_or_else(Instant::now)).await
     }
 
     async fn unknown_tail(&self, asked: &Asked, t0: Instant) -> Outcome {
@@ -754,13 +791,17 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     }
 
     async fn finish(&self, entry: &Entry, answer: Option<Answer>, outcome: Outcome) {
-        if entry.finished.swap(true, Ordering::SeqCst) {
+        let mut terminal = entry.terminal.lock().unwrap();
+        if *terminal {
             return;
         }
+        *terminal = true;
+        entry.finished.store(true, Ordering::SeqCst);
+        drop(terminal);
         // The result is published only for the generation that is still the
         // live one; an older generation's delivery is discarded without a
         // notice, even if its last HTTP answer arrived.
-        let (answer, outcome) = if !(self.current)() && !matches!(outcome, Outcome::Discarded | Outcome::Overloaded) {
+        let (answer, outcome) = if !(self.current)() && !matches!(outcome, Outcome::Overloaded) {
             (None, Outcome::Discarded)
         } else {
             (answer, outcome)
