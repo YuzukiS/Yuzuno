@@ -1318,10 +1318,17 @@ async fn each_candidate_gets_a_fresh_context_deadline() {
     let settings = settings::read(&lab.ws.store.db.read().unwrap()).unwrap();
     let ctx = check::context(lab.ws.cleanup.env(), lab.ws.cleanup.mounts(), &lab.ws.data_dir, &lab.project.display().to_string(),
         Some(&project), &[], settings).await.unwrap();
-    let first = ctx.renewed_with(std::time::Duration::from_millis(20));
-    let second = ctx.renewed_with(std::time::Duration::from_millis(20));
-    assert!(second.deadline >= first.deadline, "a later candidate gets a fresh deadline");
-    assert!(second.deadline > std::time::Instant::now(), "and it has not expired");
+    let budget = std::time::Duration::from_secs(2);
+    // An expired Context is reset: the deadline lies in [before + budget,
+    // after + budget], whatever the scheduler does between the two reads.
+    let mut expired = ctx.clone();
+    expired.deadline = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let before = std::time::Instant::now();
+    let renewed = expired.renewed_with(budget);
+    let after = std::time::Instant::now();
+    assert!(before + budget <= renewed.deadline, "the deadline is at least before + budget");
+    assert!(renewed.deadline <= after + budget, "and at most after + budget");
+    assert!(renewed.deadline > expired.deadline, "the expired deadline was really reset");
 }
 
 #[tokio::test]
