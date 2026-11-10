@@ -1433,6 +1433,10 @@ impl Store {
             tx.execute("DELETE FROM agents WHERE id=?1", [id])?;
             crate::results::delete_agent(&tx, id)?;
             crate::project_brief::delete_agent(&tx, id)?;
+            // The retired cross-browser reading handoff (YN-87) left one
+            // workspace_meta row per Agent; deleting it here keeps an identity
+            // reusable without a reference to the removed module.
+            tx.execute("DELETE FROM workspace_meta WHERE key=?1", [format!("reading.handoff.v1:{id}")])?;
             crate::codex_sessions::release_forks(&tx, id)?;
             tx.commit()?;
         }

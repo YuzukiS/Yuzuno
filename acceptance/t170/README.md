@@ -65,7 +65,7 @@ It does not go through Serve, Tailscale or a phone.
 
 ## In WebKit, without a phone
 
-`web/tools/narrow-layout-check.mjs` and `webkit-phone-check.mjs` drive Playwright's Linux WebKit when `YUZUNO_WEBKIT_WS` names a server from `webkit.launchServer()` of the same Playwright version as `web/node_modules` (otherwise the system Chromium). `webkit-phone-check.mjs` adds, in a phone-sized context against a lab Core with the scripted Codex stand-in:
+`web/tools/narrow-layout-check.mjs` and `webkit-phone-check.mjs` drive Playwright's Linux WebKit when `YUZUNO_WEBKIT_WS` names a server from `webkit.launchServer()` of the same Playwright version as `web/node_modules` (otherwise the system Chromium). The `reading-handoff-check.mjs` named here retired with that feature in YN-87. `webkit-phone-check.mjs` adds, in a phone-sized context against a lab Core with the scripted Codex stand-in:
 - offline and back: the message draft stays and the page reconnects;
 - a native question's typed answer survives a reload and is sent once;
 - a message whose send answer is lost is not sent again, and appears once.

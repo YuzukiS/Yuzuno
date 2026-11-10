@@ -99,6 +99,9 @@ const keyGroups: [DeviceGroupId, string[]][] = [
   ]],
   ["reading", [
     "yuzuno.selected.", "yuzuno.selected", "yuzuno.reading.",
+    // The retired cross-browser handoff wrote these; they are still read here
+    // only to group them for cleanup, and nothing writes new ones (YN-87).
+    "yuzuno.reading-source.v1:", "yuzuno.reading-seq.v1:", "yuzuno.reading-offers.v1:",
     "yuzuno.home-seen-blocks.v1:", "yuzuno.result-view.", "yuzuno.hiddenDeliveries",
     "yuzuno.question-dismissed.v1:",
   ]],

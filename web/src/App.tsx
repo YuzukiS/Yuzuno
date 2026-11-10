@@ -63,6 +63,7 @@ import {
 import {
   artifactUrl,
   errorText,
+  isNative,
   isTauri,
   openDesktopConnection,
   post,

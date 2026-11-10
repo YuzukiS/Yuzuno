@@ -3012,6 +3012,12 @@ test("a remote reading position is never offered, opened or published; local rea
     button(page, "Mori").click();
     await until(() => /Answer 5/.test(text()), "Mori opens at its own latest");
     assert.equal(page.document.querySelector(".reading-offer"), null);
+    // pagehide is the desktop-app close and the hidden page: it saves locally
+    // and publishes nothing either.
+    page.window.dispatchEvent(new page.window.Event("pagehide"));
+    await pause();
+    assert.deepEqual(remote.puts, [], "pagehide publishes nothing");
+    assert.deepEqual(remote.gets, [], "pagehide reads nothing");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
