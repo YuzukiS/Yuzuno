@@ -204,17 +204,23 @@ test("tiers (YN-70): a candidate that takes one kind of work says so on its card
 
   q(page, '.routing-cand[data-cand="ds"] button[aria-label^="Edit"]').click();
   await until(() => q(page, "#routing-edit-ds .routing-tiers"), "its editor");
-  const box = (words) => [...q(page, "#routing-edit-ds .routing-tiers").querySelectorAll("label")].find((l) => l.textContent.startsWith(words)).querySelector("input");
-  assert.deepEqual([box("Strong work").checked, box("Fast work").checked, box("Fast work").disabled], [false, true, true], "the last one stays");
-  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last").textContent, "It takes at least one kind of work, so the last one ticked stays.", "and says why");
-  box("Strong work").click();
+  // YN-84 S1: one choice, not two boxes; fast only is the one shown, and nothing is held.
+  const radios = () => [...q(page, "#routing-edit-ds .routing-tiers").querySelectorAll('input[type="radio"]')];
+  assert.deepEqual(radios().map((r) => r.checked), [false, true, false], "fast only shows as the one choice");
+  assert.deepEqual(radios().map((r) => r.disabled), [false, false, false], "nothing held");
+  assert.deepEqual(radios().map((r) => r.closest("label").textContent),
+    ["Strong work only · design, investigation, decisions, checks", "Fast work only · building what was decided", "Both · as before"]);
+  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last"), null, "no last-box note");
+  radios()[0].click();
+  await tick();
+  assert.deepEqual(radios().map((r) => r.checked), [true, false, false]);
+  assert.equal(chip(), "Strong work only");
+  radios()[2].click();
   await tick();
   assert.equal(chip(), null, "both: as a candidate saved before");
-  assert.equal(box("Fast work").disabled, false);
-  assert.equal(q(page, "#routing-edit-ds .routing-tiers-last"), null, "nothing held, nothing to say");
-  box("Fast work").click();
+  radios()[1].click();
   await tick();
-  assert.equal(chip(), "Strong work only");
+  assert.equal(chip(), "Fast work only");
   assert.deepEqual(page.errors, []);
 });
 
