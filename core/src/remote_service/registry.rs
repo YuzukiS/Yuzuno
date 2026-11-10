@@ -143,6 +143,9 @@ struct Inner {
     state: Mutex<State>,
     /// Wakes the managing task: a session's news, or the registry gone.
     wake: Arc<Notify>,
+    /// Steps the managing task took (tests).
+    #[cfg(test)]
+    steps: std::sync::atomic::AtomicU64,
 }
 
 impl Drop for Inner {
@@ -375,8 +378,10 @@ impl State {
         rows
     }
 
+    /// The interest lasts until 60 s after the GET, that instant excluded:
+    /// the managing task wakes then and closes.
     fn interested(&self, now: Instant) -> bool {
-        self.interest.is_some_and(|at| now.saturating_duration_since(at) <= self.timing.interest)
+        self.interest.is_some_and(|at| now.saturating_duration_since(at) < self.timing.interest)
     }
 }
 
@@ -384,7 +389,16 @@ impl Registry {
     pub(crate) fn new(timing: Timing, clock: Arc<dyn Clock>) -> Registry {
         let mut state = State::new();
         state.timing = timing;
-        Registry { inner: Arc::new(Inner { clock, gate: tokio::sync::Mutex::new(()), state: Mutex::new(state), wake: Arc::new(Notify::new()) }) }
+        Registry {
+            inner: Arc::new(Inner {
+                clock,
+                gate: tokio::sync::Mutex::new(()),
+                state: Mutex::new(state),
+                wake: Arc::new(Notify::new()),
+                #[cfg(test)]
+                steps: Default::default(),
+            }),
+        }
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -503,6 +517,11 @@ impl Registry {
     #[cfg(test)]
     pub(crate) fn managing(&self) -> bool {
         self.state().manager
+    }
+
+    #[cfg(test)]
+    pub(crate) fn steps(&self) -> u64 {
+        self.inner.steps.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -689,19 +708,35 @@ fn ensure_manager<H: Host>(host: &Arc<H>) {
             let woken = wake.notified();
             tokio::pin!(woken);
             woken.as_mut().enable();
+            // Of the admission's changes only a drain's start or end is news
+            // here; every permit's end notifies too, and is let pass.
+            let draining = admission.snapshot().operation_id.is_some();
             let Some(host) = weak.upgrade() else { return };
             let Some(next) = manage(&host).await else { return };
             drop(host);
             let sleep = next.at.map(|at| clock.sleep_until(at));
-            tokio::select! {
-                _ = &mut woken => {}
-                _ = &mut changed, if next.runs => {}
-                _ = async move {
-                    match sleep {
-                        Some(sleep) => sleep.await,
-                        None => std::future::pending().await,
+            let sleep = async move {
+                match sleep {
+                    Some(sleep) => sleep.await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    _ = &mut woken => break,
+                    _ = &mut sleep => break,
+                    _ = &mut changed, if next.runs => {
+                        if admission.snapshot().operation_id.is_some() != draining {
+                            break;
+                        }
+                        changed.set(admission.changed.notified());
+                        changed.as_mut().enable();
+                        if admission.snapshot().operation_id.is_some() != draining {
+                            break;
+                        }
                     }
-                } => {}
+                }
             }
         }
     });
@@ -714,6 +749,8 @@ fn ensure_manager<H: Host>(host: &Arc<H>) {
 async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
     let registry = host.registry();
     let inner = &registry.inner;
+    #[cfg(test)]
+    inner.steps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let now = inner.clock.now();
     let draining = host.admission().snapshot().operation_id.is_some();
     let due: Vec<String> = {

@@ -37,6 +37,10 @@ impl Lab {
     /// A Workspace with one machine, `target`, its data root a private
     /// folder of this test's own.
     fn new(target: &str) -> Lab {
+        Lab::with_id("m1", target)
+    }
+
+    fn with_id(id: &str, target: &str) -> Lab {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         std::fs::create_dir(&root).unwrap();
@@ -44,7 +48,7 @@ impl Lab {
         let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused-codex".into()).unwrap();
         ws.store
             .add_machine(&RemoteMachine {
-                id: "m1".into(),
+                id: id.into(),
                 name: "Lab box".into(),
                 target: target.into(),
                 codex: "codex".into(),
@@ -158,6 +162,56 @@ async fn only_a_get_from_the_page_records_an_interest_or_starts_a_session() {
     assert_eq!((row["id"].as_str(), row["state"].as_str(), row["code"].as_str()), (Some("m1"), Some("unavailable"), Some("ssh_auth")), "{row}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(lab.calls(), 1);
+}
+
+/// The manual check as the Machines page runs it (machines::check), its
+/// probe answered by a stand-in for this test's own machine id
+/// (remote::STAND_INS): a failed one leaves the stop, one that reaches the
+/// machine as it is ends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_manual_check_that_reaches_the_machine_ends_its_stop_and_a_failed_one_does_not() {
+    const ID: &str = "yn83-pr4b-check-box";
+    let lab = Lab::with_id(ID, "box-a");
+    lab.ws.machine_live.configure(&lab.refusing_ssh(), Timing::PRODUCTION);
+    let app = server::router(lab.ws.clone(), lab.ws.data_dir.join("assets"));
+    let reaches = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let answers = reaches.clone();
+    crate::remote::STAND_INS.lock().unwrap().push((ID.into(), crate::remote::StandIn {
+        answer: Arc::new(move |request: &Value| {
+            anyhow::ensure!(request["action"] == "probe", "only a probe is expected: {request}");
+            anyhow::ensure!(answers.load(std::sync::atomic::Ordering::SeqCst), "ssh: connect to host box-a port 22: Connection refused");
+            Ok(serde_json::json!({"hostname": "box-a", "platform": "Linux", "home": "/home/tester"}))
+        }),
+        program: String::new(),
+    }));
+    let state = || async {
+        let (status, answer) = call(&app, "GET", "/api/machine-live", false, &["desktop"]).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let row = first(&answer);
+        (row["state"].as_str().unwrap_or_default().to_owned(), row["code"].as_str().unwrap_or_default().to_owned())
+    };
+    let mut seen = state().await;
+    let until = Instant::now() + Duration::from_secs(10);
+    while seen.0 != "unavailable" && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        seen = state().await;
+    }
+    assert_eq!(seen, ("unavailable".into(), "ssh_auth".into()));
+    // A check that does not reach it: still stopped, nothing started.
+    let failed = crate::machines::check(&lab.ws, ID).await.unwrap();
+    assert!(!failed.reachable, "{failed:?}");
+    assert_eq!(state().await, ("unavailable".into(), "ssh_auth".into()));
+    assert_eq!(lab.calls(), 1);
+    // One that does, of the machine as it is: the next GET starts it again.
+    reaches.store(true, std::sync::atomic::Ordering::SeqCst);
+    let reached = crate::machines::check(&lab.ws, ID).await.unwrap();
+    assert!(reached.reachable, "{reached:?}");
+    // Started again (it may already have been refused again by the time the
+    // answer is made): OpenSSH is called a second time.
+    let again = state().await.0;
+    assert!(matches!(again.as_str(), "connecting" | "unavailable"), "{again}");
+    eventually("a second call", Duration::from_secs(10), || lab.calls() == 2).await;
+    crate::remote::STAND_INS.lock().unwrap().retain(|(id, _)| id != ID);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

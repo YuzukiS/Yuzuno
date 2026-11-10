@@ -256,8 +256,9 @@ async fn sixty_seconds_after_the_last_interest_every_session_closes_by_itself() 
     clock.advance(59 * SECOND);
     settle().await;
     assert!(!closed(&sessions, "m1", 0) && !closed(&sessions, "m2", 0));
-    clock.advance(2 * SECOND);
-    // Online and still connecting alike, with no GET to see it.
+    // Exactly 60 s after that GET: online and still connecting alike, with
+    // no GET to see it (and no spinning at that instant).
+    clock.advance(SECOND);
     eventually("both closed", || closed(&sessions, "m1", 0) && closed(&sessions, "m2", 0)).await;
     // A proven clean end is idle, and the next interest starts it again.
     end(&sessions, "m1", 0, After::Clean, None, true);
@@ -525,6 +526,23 @@ async fn a_drain_starts_nothing_closes_every_session_and_reopening_keeps_stops_a
     get(&host).await;
     assert_eq!((starts(&sessions, "m1"), starts(&sessions, "m2")), (1, 0));
     assert!(closed(&sessions, "m1", 0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_admissions_other_changes_never_wake_the_registry_and_a_drain_does() {
+    let (host, _clock, sessions) = lab(vec![machine("m1", "box-a", "/srv/a")]);
+    get(&host).await;
+    settle().await;
+    let before = host.registry.steps();
+    // Every permit's end notifies the admission's waiters.
+    for _ in 0..1000 {
+        drop(host.admission.enter_completion().unwrap());
+    }
+    settle().await;
+    assert!(host.registry.steps() - before <= 1, "{} steps for 1000 permits", host.registry.steps() - before);
+    assert!(!closed(&sessions, "m1", 0));
+    host.admission.begin_drain("update").unwrap();
+    eventually("closed by the drain", || closed(&sessions, "m1", 0)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
