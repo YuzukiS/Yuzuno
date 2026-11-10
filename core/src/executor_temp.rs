@@ -9,10 +9,13 @@
 //!
 //! An executor's directory is recorded with its full ID, its canonical path
 //! and its device and inode, so a restart reuses it only while it is still
-//! that same directory. A directory already there without this Agent's
-//! record is never taken over: the next longer prefix is tried, and when
-//! none is free the executor starts as before without a temporary directory,
-//! with the reason kept for its detail.
+//! that same directory and still directly under this Core's current default
+//! root. A record from another data directory (a restored backup keeps the
+//! Workspace ID) is kept for history but never reused, rebound or deleted,
+//! and no environment is passed from it. A directory already there without
+//! this Agent's record is never taken over: the next longer prefix is tried,
+//! and when none is free the executor starts as before without a temporary
+//! directory, with the reason kept for its detail.
 use crate::{agent_roles, store::Store};
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -207,21 +210,26 @@ enum Outcome {
 
 #[cfg(unix)]
 fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<Outcome> {
+    let root = default_root(data)?;
+    let prefixes = prefixes(agent)?;
     if let Some(record) = store.executor_temp_dir(workspace, agent)? {
         if record.released_at.is_some() {
             return Ok(Outcome::Unavailable("its temporary directory was released with its executor".into()));
         }
-        return Ok(match verify(Path::new(&record.path), record.dev, record.ino) {
-            Ok(()) => Outcome::Ready(PathBuf::from(record.path)),
+        // The record must belong to *this* Core's current default root, not
+        // only still be the same directory: a restored backup keeps the
+        // Workspace and this record, but the cleanup protection covers the new
+        // data directory only. A record outside it is kept for history, never
+        // reused, deleted or rebound, and no environment is passed.
+        let path = Path::new(&record.path);
+        return Ok(match verify(path, record.dev, record.ino).and_then(|()| within_root(path, &root, &prefixes)) {
+            Ok(()) => Outcome::Ready(path.to_path_buf()),
             Err(why) => Outcome::Unavailable(format!("its recorded temporary directory can't be used: {why}")),
         });
     }
-    let root = default_root(data)?;
-    let root_meta = std::fs::symlink_metadata(&root)?;
-    let prefixes = prefixes(agent)?;
     let mut tried = Vec::new();
-    for prefix in prefixes {
-        let candidate = root.join(&prefix);
+    for prefix in &prefixes {
+        let candidate = root.join(prefix);
         if fits(&candidate).is_none() {
             return Ok(Outcome::Unavailable(format!(
                 "the default temporary directory would be {} bytes, more than the {} this platform allows",
@@ -253,13 +261,14 @@ fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<
             return Ok(Outcome::Unavailable(format!("Core could not read back {}. It was left in place.", candidate.display())));
         };
         let meta = std::fs::symlink_metadata(&canonical)?;
-        if !meta.is_dir() || meta.file_type().is_symlink() {
-            return Ok(Outcome::Unavailable(format!("{} is not a directory. It was left in place.", canonical.display())));
-        }
-        if meta.dev() != root_meta.dev() {
-            return Ok(Outcome::Unavailable(format!("{} is on another file system. It was left in place.", canonical.display())));
-        }
         let (dev, ino) = (meta.dev() as i64, meta.ino() as i64);
+        // Before it is recorded or handed to a server, the final canonical
+        // path must be the directory just made: inside this Core's current
+        // root, named for this Agent, 0700, the owner's, on the root's file
+        // system, and within the platform's limit.
+        if let Err(why) = verify(&canonical, dev, ino).and_then(|()| within_root(&canonical, &root, &prefixes)) {
+            return Ok(Outcome::Unavailable(format!("{} can't be used: {why}. It was left in place.", canonical.display())));
+        }
         store.save_executor_temp_dir(workspace, agent, &canonical.to_string_lossy(), dev, ino)?;
         return Ok(match store.executor_temp_dir(workspace, agent)? {
             Some(record) if record.path == canonical.to_string_lossy() => Outcome::Ready(canonical),
@@ -362,6 +371,23 @@ fn verify(path: &Path, dev: i64, ino: i64) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Whether `path` is a direct child of this Core's current temporary root and
+/// named with one of this Agent's prefixes. A restored backup's record can
+/// still verify by identity while pointing into another data directory; that
+/// path is outside the cleanup protection this Core fixed over its own root,
+/// so it is refused rather than used.
+#[cfg(unix)]
+fn within_root(path: &Path, root: &Path, prefixes: &[String]) -> std::result::Result<(), String> {
+    if path.parent() != Some(root) {
+        return Err(format!("{} is not directly under this Core's temporary root {}", path.display(), root.display()));
+    }
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    if !prefixes.iter().any(|prefix| prefix == name) {
+        return Err(format!("{} is not a name for this Agent's temporary directory", path.display()));
+    }
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -370,7 +396,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn lab() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
+        // A short root that canonicalizes to itself on this file system: the
+        // default temporary path must fit MAC_LIMIT (63 bytes), and macOS's
+        // /var is a symlink to /private/var. /tmp is short on both platforms
+        // (/private/tmp on macOS) and the fixture is removed with the lab.
+        let dir = tempfile::Builder::new().prefix("yn78-").tempdir_in("/tmp").unwrap();
         let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
         (dir, store)
     }
@@ -394,16 +424,23 @@ mod tests {
     }
 
     fn data(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("data")
+        // The canonical data directory, as Core sees it: on macOS /tmp is a
+        // symlink to /private/tmp, so expected paths must use the same form.
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::canonicalize(data).unwrap()
     }
 
     #[test]
     fn a_paths_limit_is_utf8_bytes_and_the_platforms() {
         assert_eq!((LINUX_LIMIT, MAC_LIMIT), (67, 63));
-        assert!(fits(Path::new(&"x".repeat(LINUX_LIMIT))).is_some());
-        assert!(fits(Path::new(&"x".repeat(LINUX_LIMIT + 1))).is_none());
-        assert!(fits(Path::new(&"数".repeat(22))).is_some(), "66 bytes");
-        assert!(fits(Path::new(&"数".repeat(23))).is_none(), "69 bytes, not 23 characters");
+        let limit = limit();
+        assert!(fits(Path::new(&"x".repeat(limit))).is_some());
+        assert!(fits(Path::new(&"x".repeat(limit + 1))).is_none());
+        // Bytes, not characters: 22 × 3 = 66 and 23 × 3 = 69. Whether each
+        // fits is this platform's limit (67 on Linux, 63 on macOS).
+        assert_eq!(fits(Path::new(&"数".repeat(22))).is_some(), 66 <= limit);
+        assert_eq!(fits(Path::new(&"数".repeat(23))).is_none(), 69 > limit);
     }
 
     #[test]
@@ -525,6 +562,65 @@ mod tests {
         assert_eq!(ensure_at_start(&store, &data(&dir), "auto").unwrap(), None);
         assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap(), record);
         std::fs::remove_dir(&aside).unwrap();
+    }
+
+    #[test]
+    fn a_record_from_another_data_directory_is_refused_and_kept() {
+        let (dir, store) = lab();
+        agent(&store, "auto");
+        executor(&store, "auto");
+        store.set_permission_level("auto", Some("auto")).unwrap();
+        let old = ensure_at_start(&store, &data(&dir), "auto").unwrap().unwrap();
+        let record = store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap();
+
+        // A restored backup keeps the Workspace and this record but starts
+        // under a new data directory. The old directory is still the same
+        // directory by identity, yet it is outside the root this Core protects
+        // and is never reused, rebound or deleted; no environment is passed.
+        let new_data = dir.path().join("restored");
+        std::fs::create_dir_all(&new_data).unwrap();
+        let new_data = std::fs::canonicalize(&new_data).unwrap();
+        assert_eq!(ensure_at_start(&store, &new_data, "auto").unwrap(), None);
+        assert!(old.is_dir(), "the old directory is never deleted");
+        assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap(), record, "the record is unchanged");
+        let note = store.executor_temp_view("auto").unwrap().unwrap();
+        assert!(note["note"].as_str().unwrap().contains("temporary root"), "{note}");
+        assert!(!new_data.join("t").join("auto").exists(), "nothing is made in the new root for it");
+    }
+
+    #[test]
+    fn a_data_directory_alias_that_canonicalizes_to_the_same_root_reuses_the_record() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        agent(&store, "auto");
+        executor(&store, "auto");
+        store.set_permission_level("auto", Some("auto")).unwrap();
+        let first = ensure_at_start(&store, &data, "auto").unwrap().unwrap();
+        let alias = dir.path().join("data-alias");
+        std::os::unix::fs::symlink(&data, &alias).unwrap();
+        assert_eq!(ensure_at_start(&store, &alias, "auto").unwrap().unwrap(), first);
+    }
+
+    #[test]
+    fn a_record_under_the_root_with_another_agents_name_is_refused() {
+        let (dir, store) = lab();
+        agent(&store, "auto");
+        executor(&store, "auto");
+        store.set_permission_level("auto", Some("auto")).unwrap();
+        let root = data(&dir).join("t");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let other = root.join("someone-else");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let meta = std::fs::symlink_metadata(&other).unwrap();
+        store.save_executor_temp_dir(&workspace(&store), "auto", &other.to_string_lossy(), meta.dev() as i64, meta.ino() as i64).unwrap();
+        let record = store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap();
+        assert_eq!(ensure_at_start(&store, &data(&dir), "auto").unwrap(), None);
+        assert!(other.is_dir(), "the directory is never taken over or deleted");
+        assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap(), record);
+        let note = store.executor_temp_view("auto").unwrap().unwrap();
+        assert!(note["note"].as_str().unwrap().contains("not a name"), "{note}");
     }
 
     #[test]
