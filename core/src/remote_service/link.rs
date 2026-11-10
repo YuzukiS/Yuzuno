@@ -110,6 +110,8 @@ impl Default for Options {
 pub(crate) enum Phase {
     Connecting,
     Online,
+    /// Ending: Core asked the session to close, or a write failed and
+    /// nothing more can be sent; what is left is read before the exit.
     Closing,
     Ended,
 }
@@ -591,6 +593,7 @@ impl Driver {
     async fn drain(&mut self, until: Instant, online: bool) -> Then {
         self.ended.get_or_insert(Ended::WriteFailed);
         self.frames = None;
+        self.state.send_modify(|now| now.phase = Phase::Closing);
         loop {
             tokio::select! {
                 read = self.lines.recv() => match read {

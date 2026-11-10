@@ -79,8 +79,8 @@ def online():
     hello()
 
 
-def serve(bye=None, code=0, loads=1):
-    """Answer until close (bye, then exit `code`) or stdin's end (exit 0)."""
+def serve(bye=None, code=0, loads=1, after=b""):
+    """Answer until close (bye, then `after`, then exit `code`) or stdin's end (exit 0)."""
     while True:
         line = readline()
         if line is None:
@@ -97,6 +97,7 @@ def serve(bye=None, code=0, loads=1):
         elif op == "close":
             if bye is not None:
                 frame({"ev": "bye", "data": bye})
+            out(after)
             os._exit(code)
 
 
@@ -171,6 +172,32 @@ elif MODE == "after-bye":
     frame({"ev": "bye", "data": CLEAN})
     frame({"re": 0, "ok": {}})
     time.sleep(60)
+elif MODE == "bye-partial":
+    # A clean bye, then the start of another frame and a plain exit.
+    online()
+    serve(CLEAN, after=b'{"re":')
+elif MODE.startswith("drain-"):
+    online()
+    # From here every write Core makes fails with EPIPE. The rest is sent
+    # only once the test has seen Core stop writing (LAB/go).
+    os.close(0)
+    go = os.path.join(LAB, "go")
+    give_up = time.monotonic() + 20
+    while not os.path.exists(go) and time.monotonic() < give_up:
+        time.sleep(0.01)
+    bye = json.dumps({"ev": "bye", "data": CLEAN}) + "\n"
+    reply = json.dumps({"re": 0, "ok": {}}) + "\n"
+    tail = {
+        "drain-clean": [bye],
+        "drain-invalid": ["not json\n", bye],
+        "drain-load": [bye, json.dumps(load(1)) + "\n"],
+        "drain-reply": [bye, reply],
+        "drain-two-byes": [bye, bye],
+        "drain-partial": [bye, '{"re":'],
+    }[MODE]
+    for part in tail:
+        out(part)
+    os._exit(0)
 elif MODE == "eof-alive":
     online()
     with open(os.path.join(LAB, "frames"), "a") as frames:

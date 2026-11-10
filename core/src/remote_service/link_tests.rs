@@ -389,6 +389,56 @@ async fn a_close_is_clean_only_with_a_clean_bye_the_end_of_stdout_and_exit_0() {
     }
 }
 
+/// After a failed write (EPIPE) the session only reads what is left, and
+/// every line is checked as before: anything but one clean bye and the end of
+/// stdout is protocol, never clean. The stand-in sends its tail only once the
+/// test has seen the session stop writing, so each case is read on that path.
+#[tokio::test]
+async fn after_a_failed_write_the_rest_is_checked_as_before() {
+    let lab = Lab::new();
+    let limits = Limits { exit_wait: Duration::from_secs(3), silence: Duration::from_secs(5), ..quick() };
+    let modes = ["drain-clean", "drain-invalid", "drain-load", "drain-reply", "drain-two-byes", "drain-partial"];
+    let mut seen = Vec::new();
+    for mode in modes {
+        let _ = std::fs::remove_file(lab.path("go"));
+        let mut link = Link::start(&lab.machine(), 1, Options { ssh: lab.fake(mode), limits, ..Default::default() }).unwrap();
+        // Online (a hello), then ending once a write failed: only then is the tail sent.
+        let ending = until(&link, |now| now.phase == Phase::Closing).await;
+        assert!(ending.phase == Phase::Closing && ending.hello.is_some(), "{mode}: {:?}", ending.terminal);
+        std::fs::write(lab.path("go"), "").unwrap();
+        let end = ended(&mut link).await;
+        assert_eq!(end.ended, Ended::WriteFailed, "{mode}");
+        assert!(end.reap.is_reaped(), "{mode}");
+        seen.push((mode, outcome(&end)));
+    }
+    let protocol = (After::Stop, Some(Code::Protocol));
+    assert_eq!(
+        seen,
+        vec![
+            ("drain-clean", (After::Clean, None)),
+            ("drain-invalid", protocol),
+            ("drain-load", protocol),
+            ("drain-reply", protocol),
+            ("drain-two-byes", protocol),
+            ("drain-partial", protocol),
+        ]
+    );
+}
+
+/// bye is the last frame: a whole frame after it, or the start of one before
+/// stdout ends, is protocol even with exit 0.
+#[tokio::test]
+async fn output_after_a_clean_bye_is_never_clean() {
+    let lab = Lab::new();
+    let mut link = start(&lab, lab.fake("bye-partial"));
+    online(&link).await;
+    link.close();
+    let partial = outcome(&*ended(&mut link).await);
+    let whole = outcome(&*run(&lab, lab.fake("after-bye")).await);
+    let protocol = (After::Stop, Some(Code::Protocol));
+    assert_eq!(vec![("bye-partial", partial), ("after-bye", whole)], vec![("bye-partial", protocol), ("after-bye", protocol)]);
+}
+
 #[tokio::test]
 async fn stdout_closed_while_the_child_lives_is_killed_and_reaped_within_4_s() {
     let lab = Lab::new();
