@@ -1,6 +1,8 @@
 //! The S1 remote program: a session started over SSH, with no port, socket,
-//! daemon, or GPU access. This slice packages and starts it (PR2); sampling,
-//! Core's connection manager and Home are later slices.
+//! daemon, or GPU access. package.rs packages and starts it; program.py
+//! answers frames and, once watched, samples CPU, memory and the data root's
+//! free space (program_tests.py, run from tests.rs). Core's connection
+//! manager and Home are later slices.
 
 mod package;
 
