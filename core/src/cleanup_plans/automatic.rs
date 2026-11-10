@@ -397,6 +397,8 @@ fn git_activity(path: &Path, common: &str) -> Result<chrono::DateTime<chrono::Ut
     if !inside(&gitdir, &records) {
         anyhow::bail!("Its gitdir is not one of this repository's worktree records");
     }
+    times.push(std::fs::symlink_metadata(&gitdir).and_then(|m| m.modified())
+        .map_err(|e| anyhow::anyhow!("Its gitdir has no time: {e}"))?);
     let meta = std::fs::symlink_metadata(gitdir.join("HEAD")).map_err(|e| anyhow::anyhow!("Its HEAD cannot be read: {e}"))?;
     times.push(meta.modified()?);
     for relative in ["index", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG",
@@ -819,7 +821,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // outside it (one inside it is covered by the folder's own walk). A
         // worktree whose folder is away for now is not a root.
         let mut roots = vec![ctx.project.clone()];
-        for listed in ctx.worktrees.iter().filter(|w| !w.main && !inside(&w.path, &ctx.project)) {
+        for listed in ctx.worktrees.iter().filter(|w| !w.main) {
             if !listed.path.is_dir() {
                 continue;
             }

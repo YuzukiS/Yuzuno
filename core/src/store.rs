@@ -1196,7 +1196,7 @@ impl Store {
         // schema. Only a database with none is a new install here (YN-74
         // ③b, design 3.3); an unknown answer is kept as an upgrade, off.
         let fresh_install = db
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'", [], |r| r.get::<_, i64>(0))
             .ok()
             .map(|tables| tables == 0);
         // FULL is SQLite's default; stated because the writer's unsynced

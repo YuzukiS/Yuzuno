@@ -378,6 +378,7 @@ pub(super) fn restore_definition() -> Value {
 }
 
 type ItemRow = (String, String, String, Option<String>, Option<String>);
+type AutoItemRow = (String, String, String, Option<String>, Option<String>, Option<String>);
 
 enum Origin {
     Plan(String),
@@ -447,14 +448,14 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
                         ensure!(crate::agent_roles::leads(&db, actor, &run.0)?, "not_allowed: only a lead of the run's Project or the user restores what an automatic run removed");
                     }
                     ensure!(run.1 == "local", "remote: an automatic run on another machine cannot be restored here");
-                    let row: Option<ItemRow> = db
-                        .query_row("SELECT kind,path,state,result,snapshot FROM cleanup_automatic_items WHERE run_id=?1 AND item_id=?2", params![run_id, item_id],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                    let row: Option<AutoItemRow> = db
+                        .query_row("SELECT kind,path,state,result,snapshot,task_id FROM cleanup_automatic_items WHERE run_id=?1 AND item_id=?2", params![run_id, item_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
                         .optional()?;
-                    let (kind, path, state, result, snapshot) = row.context("item_not_found: the run has no such item")?;
+                    let (kind, path, state, result, snapshot, item_task) = row.context("item_not_found: the run has no such item")?;
                     let dir = projects.iter().find(|p| p.id == run.0).and_then(|p| p.default_dirs.get("local").cloned());
                     Ok(Removed { kind, path, state, result: parse(result), snapshot: parse(snapshot), dir,
-                        task: run.2, origin: Origin::Automatic { run: run_id, item: item_id } })
+                        task: item_task.or(run.2), origin: Origin::Automatic { run: run_id, item: item_id } })
                 }
                 _ => unreachable!("checked above"),
             }

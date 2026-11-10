@@ -1110,3 +1110,95 @@ async fn a_stop_after_the_snapshot_and_ref_leaves_a_restorable_prepared_item() {
     assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "snapshot before removal\n");
 }
+
+#[tokio::test]
+async fn a_registered_worktree_inside_the_project_is_walked_for_rule_folders() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+    });
+    yn65_keep_days(&lab, 0);
+    exclude(&lab, "node_modules/");
+    let tree = worktree(&lab, &lab.project.join(".worktrees/inner"), "feat/inner");
+    let modules = tree.join("node_modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(tree.join("package.json"), "{\"name\":\"inner\"}").unwrap();
+    std::fs::write(tree.join("package-lock.json"), "{}").unwrap();
+    std::fs::write(modules.join("x.js"), "inner\n").unwrap();
+    assert!(automatic(&lab).await >= 1);
+    assert!(!modules.exists(), "a rule folder inside an in-Project worktree goes too");
+}
+
+#[tokio::test]
+async fn an_automatic_restore_writes_the_item_s_task_activity() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/tasked"), "feat/tasked");
+    let db = lab.ws.store.db.write().unwrap();
+    let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+    db.execute("INSERT INTO task_workspaces(id,task_id,data) VALUES('w1',?1,?2)",
+        params![task, json!({"id":"w1","path":tree}).to_string()]).unwrap();
+    drop(db);
+    assert!(automatic(&lab).await >= 1);
+    assert!(!tree.exists());
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["task"], task, "the item carries the task");
+    let (run, item_id): (String, String) = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT run_id,item_id FROM cleanup_automatic_items WHERE path=?1", [tree.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item_id})).await.unwrap();
+    let comments: i64 = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM collaboration_task_activity WHERE task_id=?1 AND json_extract(data,'$.kind')='comment'
+           AND json_extract(data,'$.body') LIKE 'Restored %'", [&task], |r| r.get(0)).unwrap();
+    assert_eq!(comments, 1, "the task gets the restore line");
+}
+
+#[tokio::test]
+async fn a_worktree_gitdir_directory_s_time_counts_as_activity() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 7);
+    let tree = worktree(&lab, &lab.home.join("work/wt/gitdir-time"), "feat/gitdir-time");
+    let text = std::fs::read_to_string(tree.join(".git")).unwrap();
+    let gitdir = std::fs::canonicalize(text.trim().strip_prefix("gitdir: ").unwrap()).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 3600);
+    // The worktree's own metadata files are ten days old; the gitdir itself
+    // (its directory entry) was touched now.
+    for relative in ["HEAD", "index", "commondir", "gitdir", "logs/HEAD", "ORIG_HEAD", "FETCH_HEAD"] {
+        if let Ok(file) = std::fs::File::open(gitdir.join(relative)) {
+            file.set_modified(old).unwrap();
+        }
+    }
+    std::fs::File::open(tree.join(".git")).unwrap().set_modified(old).unwrap();
+    assert!(automatic(&lab).await >= 1);
+    assert!(tree.exists(), "the gitdir directory's own time is recent");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "recent", "{item:#}");
+}
+
+#[test]
+fn a_workspace_with_a_view_or_a_sqlite_prefixed_name_is_not_a_new_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let view = dir.path().join("view.db");
+    {
+        let db = rusqlite::Connection::open(&view).unwrap();
+        db.execute_batch("CREATE VIEW user_data AS SELECT 1 AS n;").unwrap();
+    }
+    let store = crate::store::Store::open(&view).unwrap();
+    {
+        let db = store.db.read().unwrap();
+        assert!(!settings::read(&db).unwrap().rule_layer, "a view is a user schema: upgrade, off");
+        assert_eq!(settings::initialization(&db).unwrap()["fresh"], false);
+    }
+    // "sqlite_" is escaped: a table named sqliteXuser is a user table, not an
+    // internal sqlite_ one.
+    let named = dir.path().join("named.db");
+    {
+        let db = rusqlite::Connection::open(&named).unwrap();
+        db.execute_batch("CREATE TABLE sqliteXuser(id INTEGER);").unwrap();
+    }
+    let store = crate::store::Store::open(&named).unwrap();
+    let db = store.db.read().unwrap();
+    assert!(!settings::read(&db).unwrap().rule_layer, "sqliteXuser is a user table: upgrade, off");
+    assert_eq!(settings::initialization(&db).unwrap()["fresh"], false);
+}
