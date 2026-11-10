@@ -668,6 +668,14 @@ fn auto_settings(lab: &Lab, worktrees: bool, caches: bool, keep_days: u32) {
     });
 }
 
+fn yn65_keep_days(lab: &Lab, days: u32) {
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO build_cleanup_policy(id,data) VALUES(1,?1)
+         ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        [json!({"enabled":false,"keepDays":days,"since":null,"version":0,"changedAt":null}).to_string()],
+    ).unwrap();
+}
+
 async fn automatic(lab: &Lab) -> usize {
     super::automatic::pass(&lab.ws).await.unwrap()
 }
@@ -905,6 +913,7 @@ async fn the_rule_layer_removes_only_cargo_s_own_subtrees_and_leaves_the_rest() 
         c.fresh_days = 0;
         c.worktree_keep_days = 0;
     });
+    yn65_keep_days(&lab, 0);
     let target = lab.project.join("target");
     cargo_target(&target, &["debug", "release"]);
     std::fs::write(target.join("mine.txt"), "not Cargo's\n").unwrap();
@@ -947,6 +956,7 @@ async fn the_rule_layer_walks_a_registered_worktree_outside_the_project_folder()
         c.rule_layer = true;
         c.fresh_days = 0;
     });
+    yn65_keep_days(&lab, 0);
     exclude(&lab, "node_modules/");
     let tree = worktree(&lab, &lab.home.join("work/wt/outside"), "feat/outside");
     let modules = tree.join("node_modules");
@@ -956,4 +966,47 @@ async fn the_rule_layer_walks_a_registered_worktree_outside_the_project_folder()
     std::fs::write(modules.join("x.js"), "x\n").unwrap();
     assert!(automatic(&lab).await >= 1);
     assert!(!modules.exists(), "a rule folder in a registered worktree outside the Project goes");
+}
+
+#[tokio::test]
+async fn an_open_executor_or_a_live_job_in_a_worktree_keeps_it() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let busy = worktree(&lab, &lab.home.join("work/wt/busy"), "feat/busy");
+    let running = worktree(&lab, &lab.home.join("work/wt/running"), "feat/running");
+    agent(&lab.ws, "busy");
+    let db = lab.ws.store.db.write().unwrap();
+    let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+    db.execute("UPDATE agents SET data=json_set(data,'$.cwd',?1) WHERE id='busy'", [busy.to_string_lossy().as_ref()]).unwrap();
+    db.execute("INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at)
+        VALUES('busy','executor','workspace-cleanup',?1,'agent:lead','running','now','now')", [&task]).unwrap();
+    db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('live',?1,'ex','running',?2)",
+        params![task, json!({"cwd": running, "status": "running", "target": {"kind": "local"}}).to_string()]).unwrap();
+    drop(db);
+    assert!(automatic(&lab).await >= 1);
+    assert!(busy.exists(), "an open executor's worktree stays");
+    assert!(running.exists(), "a live Job's worktree stays");
+    let busy_item = auto_item(&lab, &busy).unwrap();
+    assert_eq!(busy_item["result"]["code"], "inUse", "{busy_item:#}");
+    let running_item = auto_item(&lab, &running).unwrap();
+    assert_eq!(running_item["result"]["code"], "inUse", "{running_item:#}");
+}
+
+#[tokio::test]
+async fn cache_folders_wait_for_yn65_s_keep_days() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+    });
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO build_cleanup_policy(id,data) VALUES(1,?1)",
+        [json!({"enabled":false,"keepDays":3,"since":null,"version":0,"changedAt":null}).to_string()],
+    ).unwrap();
+    cargo_target(&lab.project.join("target"), &["debug"]);
+    assert!(automatic(&lab).await >= 1);
+    assert!(lab.project.join("target/debug").exists(), "YN-65 keepDays still protects a fresh profile");
+    let item = auto_item(&lab, &lab.project.join("target")).unwrap();
+    assert_eq!(item["result"]["code"], "keepDays", "{item:#}");
 }

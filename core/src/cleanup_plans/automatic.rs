@@ -278,6 +278,12 @@ fn days_since(at: chrono::DateTime<chrono::Utc>) -> f64 {
     (chrono::Utc::now() - at).num_milliseconds() as f64 / 86_400_000.0
 }
 
+/// Days since a file system write recorded in nanoseconds.
+fn days_since_ns(ns: i128) -> f64 {
+    let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX) as i128;
+    (now - ns) as f64 / 86_400e9
+}
+
 /// Related local executors and Jobs, and the newest thing Core's records say
 /// about the worktree. Reuse: a Job run there after its release counts as
 /// newer activity than the release (Lead, design 3.2).
@@ -296,20 +302,22 @@ fn records_age(store: &Store, path: &Path, settings: &Settings, common: &str) ->
         .query_map(params![text, prefix], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if let Some((agent, _, _, _)) = rows.iter().find(|(_, _, archived, _)| archived.is_none()) {
-        return Ok(Age { evidence: json!({"openExecutor": agent, "eligible": false}), refusal: None });
+        return Ok(Age { evidence: json!({"openExecutor": agent, "eligible": false}),
+            refusal: Some(("inUse", format!("Executor {agent} is still open in it"))) });
     }
     let mut q = db.prepare(
-        "SELECT json_extract(data,'$.cwd'),json_extract(data,'$.startedAt'),json_extract(data,'$.finishedAt'),
-                json_extract(data,'$.status')
-         FROM local_jobs WHERE COALESCE(json_extract(data,'$.target.kind'),'local')='local'
-           AND (json_extract(data,'$.cwd')=?1 OR substr(json_extract(data,'$.cwd'),1,length(?2))=?2) ORDER BY seq DESC LIMIT 500",
+        "SELECT json_extract(j.data,'$.cwd'),json_extract(j.data,'$.startedAt'),json_extract(j.data,'$.finishedAt'),
+                COALESCE(j.status,json_extract(j.data,'$.status'))
+         FROM local_jobs j WHERE COALESCE(json_extract(j.data,'$.target.kind'),'local')='local'
+           AND (json_extract(j.data,'$.cwd')=?1 OR substr(json_extract(j.data,'$.cwd'),1,length(?2))=?2) ORDER BY j.seq DESC LIMIT 500",
     )?;
     type JobRow = (Option<String>, Option<String>, Option<String>, Option<String>);
     let jobs: Vec<JobRow> = q
         .query_map(params![text, prefix], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if let Some(job) = jobs.iter().find(|(_, _, _, status)| status.as_deref().is_some_and(|s| matches!(s, "running" | "queued" | "pending"))) {
-        return Ok(Age { evidence: json!({"job": job.0, "status": job.3, "eligible": false}), refusal: None });
+        return Ok(Age { evidence: json!({"job": job.0, "status": job.3, "eligible": false}),
+            refusal: Some(("inUse", format!("A Job is still {} in it", job.3.as_deref().unwrap_or("open")))) });
     }
     let released = rows.iter().filter_map(|(_, _, at, _)| at.as_deref().and_then(parse_time)).max();
     let job_at = jobs.iter().filter_map(|(_, started, finished, _)| finished.as_deref().or(started.as_deref()).and_then(parse_time)).max();
@@ -723,6 +731,12 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         }
     }
     if settings.rule_layer {
+        // YN-65's keepDays is the rule layer's too (design 3.1/3.3): it never
+        // shortens what a plan's own freshness already protects.
+        let keep_days = ws.stored(|s| {
+            let db = s.db.read()?;
+            Ok(crate::build_cleanup::policy(&db)?.keep_days)
+        }).await?;
         // The Project's folder, and the worktrees its repository registers
         // outside it (one inside it is covered by the folder's own walk). A
         // worktree whose folder is away for now is not a root.
@@ -758,6 +772,17 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                 ws.stored({ let run = run.clone(); let c = candidate.clone(); let evidence = evidence.clone();
                     let code = code.to_owned(); let why = why.clone();
                     move |s| keep_item(s, &run, seq, &c, None, &evidence, "kept", json!({"code": code, "why": why})) }).await?;
+                summary.kept += 1;
+                continue;
+            }
+            // Cache folders wait for YN-65's keepDays as well as freshDays.
+            let age = pre.pre["newestNs"].as_str().and_then(|n| n.parse::<i128>().ok()).map(days_since_ns);
+            if age.is_some_and(|age| age < f64::from(keep_days)) {
+                seq += 1;
+                let evidence = json!({"rule": candidate.rule, "basis": candidate.basis, "ageDays": age});
+                ws.stored({ let run = run.clone(); let c = candidate.clone(); let evidence = evidence.clone();
+                    let why = format!("Written within the last {keep_days} days (YN-65 keepDays)");
+                    move |s| keep_item(s, &run, seq, &c, None, &evidence, "kept", json!({"code": "keepDays", "why": why})) }).await?;
                 summary.kept += 1;
                 continue;
             }
