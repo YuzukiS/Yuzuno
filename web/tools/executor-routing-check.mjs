@@ -289,12 +289,20 @@ async function run({ width, height, theme, lang }) {
       assert.ok(!consoleLines.some((line) => line.includes(secret)), `${tag} ${when}: the console holds ${secret}`);
     }
   };
+  /** A page from the sidebar: on a phone Back goes to the list of pages first, which is where the tabs live. */
+  const openPage = async (id) => {
+    if (phone) {
+      const back = dialog.locator(".settings-back");
+      if (await back.count()) await press(back);
+    }
+    await press(dialog.locator(`#settings-tab-${id}`));
+  };
   /** Settings, opened at Executor routing (YN-84 S2: accounts are their own page next to it). */
   const openRouting = async () => {
     await page.locator(".workspace-settings").waitFor({ timeout: 15_000 });
     await press(page.locator(".workspace-settings"));
     await dialog.locator(".settings-center").waitFor({ timeout: 10_000 });
-    await press(dialog.locator("#settings-tab-routing"));
+    await openPage("routing");
     await page.locator(".executor-routing .routing-cand").first().waitFor({ timeout: 15_000 });
   };
   try {
@@ -306,7 +314,7 @@ async function run({ width, height, theme, lang }) {
     const accountsTab = dialog.locator("#settings-tab-accounts");
     assert.equal(await accountsTab.evaluate((el) => el.previousElementSibling === document.getElementById("settings-tab-routing")), true,
       `${tag}: Accounts & keys comes right after Executor routing`);
-    await press(accountsTab);
+    await openPage("accounts");
     await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
     assert.equal((await accountsTab.locator(".settings-nav-label").innerText()).trim(), w.accountsTab);
     assert.equal((await section.locator("#routing-keys-title").innerText()).trim(), w.title);
@@ -321,7 +329,7 @@ async function run({ width, height, theme, lang }) {
       assert.deepEqual(short, [], `${tag}: targets under 40 px`);
     }
     // Back to the routing itself: the candidate order.
-    await press(routingTab);
+    await openPage("routing");
     const order = page.locator(".executor-routing");
     const titles = () => order.locator(".routing-cand .routing-cand-title > span:first-child").allInnerTexts();
     await order.locator(".routing-now").waitFor({ timeout: 10_000 });
@@ -486,7 +494,7 @@ async function run({ width, height, theme, lang }) {
     }
     // The keys and accounts are their own page (YN-84 S2): switch to it, scrolled to a 1Password key whose
     // reference isn't there.
-    await press(accountsTab);
+    await openPage("accounts");
     await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
     const openai = section.locator('.routing-key[data-key="openai"]');
     await openai.scrollIntoViewIfNeeded();
