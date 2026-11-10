@@ -471,6 +471,9 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
     let Some(path) = plain(&item.path) else {
         return Checked::refused("path", "Not an absolute path without . or .. on this host", pre);
     };
+    if path.components().any(|c| c.as_os_str().to_string_lossy().starts_with(REMOVING)) {
+        return Checked::refused("removing", "A cleanup is removing it, or stopped after renaming it; it is never a new item", pre);
+    }
     let Ok(meta) = std::fs::symlink_metadata(&path) else {
         return Checked::refused("missing", "It does not exist", pre);
     };

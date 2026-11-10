@@ -1202,3 +1202,48 @@ fn a_workspace_with_a_view_or_a_sqlite_prefixed_name_is_not_a_new_install() {
     assert!(!settings::read(&db).unwrap().rule_layer, "sqliteXuser is a user table: upgrade, off");
     assert_eq!(settings::initialization(&db).unwrap()["fresh"], false);
 }
+
+#[tokio::test]
+async fn a_renamed_removal_residue_is_never_a_new_item_after_recovery() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+        c.worktree_keep_days = 0;
+    });
+    yn65_keep_days(&lab, 0);
+    exclude(&lab, "ignored/");
+    let parent = lab.project.join("ignored");
+    std::fs::create_dir_all(&parent).unwrap();
+    let original = parent.join(".pytest_cache");
+    std::fs::create_dir_all(&original).unwrap();
+    std::fs::write(original.join("CACHEDIR.TAG"), TAG_PYTEST).unwrap();
+    std::fs::write(original.join("state"), "cache\n").unwrap();
+    // The registry still names the path Core planned; remove_aside has already
+    // renamed the object to the removal namespace.
+    let residue = parent.join(".yuzuno-removing-test");
+    std::fs::rename(&original, &residue).unwrap();
+    let db = lab.ws.store.db.write().unwrap();
+    let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    db.execute("INSERT INTO cleanup_automatic_runs(id,project_id,machine,task_id,policy_version,params,state,started_at,data)
+        VALUES('renamed',?1,'local',NULL,0,'{}','running','now','{}')", [&project]).unwrap();
+    db.execute("INSERT INTO cleanup_automatic_items(run_id,item_id,seq,kind,path,state,evidence,pre,updated_at)
+        VALUES('renamed','1',1,'cache-dir',?1,'removing','{}','{}','now')", [original.to_string_lossy().as_ref()]).unwrap();
+    drop(db);
+    lab.ws.stored(super::automatic::recover).await.unwrap();
+    // Nothing at the residue's path is a new item, and the residue stays.
+    let _ = automatic(&lab).await;
+    assert!(residue.join("state").exists(), "the renamed object is left as it is");
+    let at_residue: i64 = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM cleanup_automatic_items WHERE path=?1", [residue.to_string_lossy().as_ref()], |r| r.get(0)).unwrap();
+    assert_eq!(at_residue, 0, "the removal namespace is never discovered as a candidate");
+    // Execution refuses it too, even if a plan or a race names it directly.
+    let settings = settings::read(&lab.ws.store.db.read().unwrap()).unwrap();
+    let ctx = check::context(lab.ws.cleanup.env(), lab.ws.cleanup.mounts(), &lab.ws.data_dir, &lab.project.display().to_string(),
+        Some(&project), &[], settings).await.unwrap();
+    let item = check::Item { id: "r".into(), group: "g".into(), kind: "cache-dir".into(), rule: None,
+        path: residue.display().to_string(), save_diff: false };
+    let checked = check::preflight(&ctx, &item).await;
+    assert_eq!(checked.refusal.map(|(code, _)| code), Some("removing"), "{:#}", checked.pre);
+}

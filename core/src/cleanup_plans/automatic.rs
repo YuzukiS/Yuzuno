@@ -115,6 +115,12 @@ fn walk(ctx: &check::Context, roots: &[PathBuf], limit: usize, after: Option<&st
             if meta.file_type().is_symlink() || !meta.is_dir() {
                 continue;
             }
+            // A removal Core stopped after renaming keeps the same object
+            // under this name; neither it nor anything below it is a new
+            // candidate, whatever tag it still holds (Lead review of ac25bade).
+            if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(crate::build_output::REMOVING)) {
+                continue;
+            }
             if path.file_name().is_some_and(|name| name == ".git") {
                 continue;
             }
@@ -822,7 +828,9 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // worktree whose folder is away for now is not a root.
         let mut roots = vec![ctx.project.clone()];
         for listed in ctx.worktrees.iter().filter(|w| !w.main) {
-            if !listed.path.is_dir() {
+            if !listed.path.is_dir()
+                || listed.path.components().any(|c| c.as_os_str().to_string_lossy().starts_with(crate::build_output::REMOVING))
+            {
                 continue;
             }
             // The path must still be this Project's repository's worktree: a
