@@ -976,6 +976,7 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     allowed(input, &["requestId", "taskId", "expectedVersion", "patch"])?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
     check_version(&task, input)?;
+    let was_closed = task.archived_at.is_some() || matches!(task.status.as_str(), "done" | "cancelled");
     let previous_assignee = task.assignee_agent_id.clone();
     let patch = &input["patch"];
     allowed(
@@ -1058,6 +1059,11 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     }
     result_dispatch::invalidate(&mut task, previous_assignee.as_deref());
     save_task(db, &mut task, actor)?;
+    // A task that just closed leaves its recorded folders for the next
+    // cleanup, without any file system or Git work while this lock is held.
+    if !was_closed && (task.archived_at.is_some() || matches!(task.status.as_str(), "done" | "cancelled")) {
+        crate::cleanup_plans::note_task_closed(db, &task.id)?;
+    }
     let event = activity(
         db,
         &task.id,

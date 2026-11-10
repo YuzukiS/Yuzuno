@@ -50,6 +50,7 @@ use std::{
 };
 
 mod apply;
+mod automatic;
 mod check;
 mod inventory;
 mod rules;
@@ -91,6 +92,8 @@ pub(crate) struct State {
     /// The OpenSSH program a remote inventory's probe calls (a stand-in).
     #[cfg(test)]
     pub ssh: std::sync::Mutex<Option<String>>,
+    /// One automatic pass at a time, however many ticks fire.
+    pub automatic: tokio::sync::Mutex<()>,
 }
 
 impl State {
@@ -143,9 +146,11 @@ impl State {
     }
 }
 
-pub(crate) fn migrate(db: &Connection) -> Result<()> {
+pub(crate) fn migrate(db: &Connection, fresh: Option<bool>) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS cleanup_settings(scope TEXT PRIMARY KEY, data TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS cleanup_initialization(
+            id INTEGER PRIMARY KEY CHECK(id=1), fresh INTEGER NOT NULL, initialized_at TEXT NOT NULL, notice TEXT);
          CREATE TABLE IF NOT EXISTS cleanup_plans(
             id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT, author_agent TEXT NOT NULL, request_id TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('submitted','applying','applied','expired','cancelled')),
@@ -160,9 +165,66 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(plan_id, item_id));
          CREATE TABLE IF NOT EXISTS cleanup_inventories(
             actor TEXT NOT NULL, request_id TEXT NOT NULL, task_id TEXT NOT NULL, machine TEXT NOT NULL, folder TEXT NOT NULL,
-            identity TEXT NOT NULL, job_id TEXT UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(actor, request_id));",
+            identity TEXT NOT NULL, job_id TEXT UNIQUE, created_at TEXT NOT NULL, PRIMARY KEY(actor, request_id));
+         CREATE TABLE IF NOT EXISTS cleanup_automatic_runs(
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, machine TEXT NOT NULL, task_id TEXT,
+            policy_version INTEGER NOT NULL, params TEXT NOT NULL, state TEXT NOT NULL
+              CHECK(state IN ('running','done','partial','incomplete','failed','interrupted')),
+            started_at TEXT NOT NULL, finished_at TEXT, data TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS cleanup_automatic_runs_project ON cleanup_automatic_runs(project_id, started_at);
+         CREATE TABLE IF NOT EXISTS cleanup_automatic_items(
+            run_id TEXT NOT NULL REFERENCES cleanup_automatic_runs(id) ON DELETE CASCADE, item_id TEXT NOT NULL, seq INTEGER NOT NULL,
+            kind TEXT NOT NULL, path TEXT NOT NULL, task_id TEXT,
+            state TEXT NOT NULL CHECK(state IN ('planned','removing','removed','kept','refused','partial','failed','interrupted','restored')),
+            evidence TEXT NOT NULL, pre TEXT NOT NULL, result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, item_id));
+         CREATE TABLE IF NOT EXISTS cleanup_automatic_cursors(
+            project_id TEXT NOT NULL, machine TEXT NOT NULL, kind TEXT NOT NULL, last_key TEXT NOT NULL,
+            PRIMARY KEY(project_id, machine, kind));
+         CREATE TABLE IF NOT EXISTS cleanup_to_tidy(
+            project_id TEXT NOT NULL, machine TEXT NOT NULL, path TEXT NOT NULL, task_id TEXT,
+            reason TEXT NOT NULL, detail TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+            dev INTEGER, ino INTEGER, head TEXT, head_kind TEXT, state TEXT NOT NULL CHECK(state IN ('open','handled','reopened')),
+            PRIMARY KEY(project_id, machine, path));
+         CREATE INDEX IF NOT EXISTS cleanup_to_tidy_seen ON cleanup_to_tidy(project_id, machine, last_seen);",
     )?;
+    // What the first open found, kept once (design 3.3). Only a database with
+    // no user table at all is a new install; an existing or unknown one keeps
+    // every new switch off and leaves one notice for Settings.
+    let known: Option<i64> = db
+        .query_row("SELECT fresh FROM cleanup_initialization WHERE id=1", [], |r| r.get(0))
+        .optional()?;
+    if known.is_none() {
+        let is_fresh = fresh == Some(true);
+        let notice = (!is_fresh).then_some(
+            "This Workspace was opened before core.31: the rule layer and automatic worktree reclaim are off. YN-65's build output cleanup keeps the setting it had. Nothing new is removed until you turn it on in Settings.",
+        );
+        db.execute(
+            "INSERT INTO cleanup_initialization(id,fresh,initialized_at,notice) VALUES(1,?1,?2,?3)",
+            params![i64::from(is_fresh), now(), notice],
+        )?;
+        if is_fresh {
+            // A new install has the rule layer and worktree reclaim on; YN-65's
+            // own policy stays as it is (off unless the user turns it on).
+            let settings = Settings { rule_layer: true, worktree_reclaim: true, changed_at: Some(now()), ..Settings::default() };
+            db.execute(
+                "INSERT OR IGNORE INTO cleanup_settings(scope,data) VALUES('host',?1)",
+                [serde_json::to_string(&settings)?],
+            )?;
+        }
+    }
     Ok(())
+}
+
+/// A task that just closed: only Core's recorded paths go to the to-tidy
+/// list, with no file system or Git work here (design 4.3).
+pub(crate) fn note_task_closed(db: &Connection, task: &str) -> Result<()> {
+    automatic::note_task_closed(db, task)
+}
+
+/// A workspace-cleanup dispatch's materials read the Project's to-tidy list.
+pub(crate) fn tidy_snapshot_for(db: &Connection, project: &str, machine: &str, limit: usize) -> Result<Value> {
+    automatic::tidy_snapshot(db, project, machine, limit)
 }
 
 pub(crate) fn router() -> Router<Arc<Workspace>> {
@@ -172,7 +234,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/cleanup/plans/{plan}/items/{item}/restore", axum::routing::post(http_restore))
 }
 
-pub(crate) const TOOLS: [&str; 5] = ["cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_restore"];
+pub(crate) const TOOLS: [&str; 6] = ["cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_restore", "cleanup_tidy_get"];
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let request = json!({"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."});
@@ -201,6 +263,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "limit":{"type":"integer","minimum":1,"maximum":MAX_PAGE,"default":PAGE}}}}),
         apply::tool_definition(),
         worktrees::restore_definition(),
+        automatic::tidy_definition(),
     ]
 }
 
@@ -210,6 +273,7 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: S
         "cleanup_plan_submit" => submit(&ws, actor, input).await,
         "cleanup_apply" => apply::apply(&ws, actor, input).await,
         "cleanup_restore" => worktrees::restore(&ws, actor, input).await,
+        "cleanup_tidy_get" => automatic::tidy_get(&ws, actor, input).await,
         "cleanup_plan_get" => {
             let get: GetInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
             ws.stored(move |s| plan_get(s, actor.as_deref(), &get)).await
@@ -697,6 +761,10 @@ impl Workspace {
                     }
                     Err(error) => eprintln!("[cleanup] recovery failed: {error:#}"),
                 }
+                // A pass a stopped Core left running is interrupted, never retried.
+                if let Err(error) = ws.stored(automatic::recover).await {
+                    eprintln!("[cleanup] automatic recovery failed: {error:#}");
+                }
             }
             loop {
                 let Some(ws) = weak.upgrade() else { break };
@@ -708,6 +776,7 @@ impl Workspace {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         });
+        automatic::start(self);
     }
 }
 

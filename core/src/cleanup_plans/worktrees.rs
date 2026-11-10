@@ -332,16 +332,41 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RestoreInput {
     request_id: String,
-    plan_id: String,
+    /// A manual plan's id, or an automatic run's id: exactly one.
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
     item_id: String,
 }
 
 pub(super) fn restore_definition() -> Value {
     json!({"name":"cleanup_restore",
-        "description":"Put back an item a cleanup plan removed, wholly or in part, as a lead of its task's Project (or the user in Settings). A worktree comes back at its path with git worktree add, from its branch when that still points at the commit Core pinned (refs/yuzuno/reclaimed/...) and is checked out nowhere else, else detached at that ref; then its snapshot (untracked and ignored files no rule rebuilds) and its kept diff are put back. A scratch entry gets back only the evidence files its snapshot kept. Refused before anything is made when something is at the path, the snapshot's sha256 changed, or an entry's snapshot expired (snapshotDays, Settings; a worktree's ref never expires); if putting it back fails later, what came back is moved aside so it can be tried again. A retry with the same requestId answers with the same.",
-        "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","planId","itemId"],"properties":{
+        "description":"Put back an item a cleanup removed, wholly or in part, as a lead of its Project (or the user in Settings): a manual cleanup plan names planId, an automatic rule-layer run names runId, and itemId names the item either way. Nothing is put back unless it is a worktree or a scratch entry that was removed or partly removed. A worktree comes back at its path with git worktree add, from its branch when that still points at the commit Core pinned (refs/yuzuno/reclaimed/...) and is checked out nowhere else, else detached at that ref; then its snapshot (untracked and ignored files no rule rebuilds) and its kept diff are put back. A scratch entry gets back only the evidence files its snapshot kept. Refused before anything is made when something is at the path, the snapshot's sha256 changed, or an entry's snapshot expired (snapshotDays, Settings; a worktree's ref never expires); if putting it back fails later, what came back is moved aside so it can be tried again. A retry with the same requestId answers with the same.",
+        "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","itemId"],"properties":{
             "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."},
-            "planId":{"type":"string"},"itemId":{"type":"string"}}}})
+            "planId":{"type":"string","description":"The manual cleanup plan's id; give this or runId."},
+            "runId":{"type":"string","description":"The automatic rule-layer run's id; give this or planId."},
+            "itemId":{"type":"string"}}}})
+}
+
+type ItemRow = (String, String, String, Option<String>, Option<String>);
+
+enum Origin {
+    Plan(String),
+    Automatic { run: String, item: String },
+}
+
+/// One item a manual plan or an automatic run removed.
+struct Removed {
+    kind: String,
+    path: String,
+    state: String,
+    result: Value,
+    snapshot: Value,
+    dir: Option<String>,
+    task: Option<String>,
+    origin: Origin,
 }
 
 /// Unpacks a snapshot after checking it is the one recorded.
@@ -355,70 +380,96 @@ fn unpack(snapshot: &Value, into: &Path) -> Result<()> {
     Ok(())
 }
 
+fn parse(value: Option<String>) -> Value {
+    value.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null)
+}
+
 pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
     let input: RestoreInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
     ensure!((1..=128).contains(&input.request_id.len()), "invalid_input: requestId is 1 to 128 bytes");
-    let found = ws.stored({
-        let (actor, plan_id, item_id) = (actor.clone(), input.plan_id.clone(), input.item_id.clone());
-        move |s| {
+    ensure!(input.plan_id.is_some() != input.run_id.is_some(), "invalid_input: give planId for a manual plan, or runId for an automatic run, not both or neither");
+    let removed = ws.stored({
+        let (actor, plan_id, run_id, item_id) = (actor.clone(), input.plan_id.clone(), input.run_id.clone(), input.item_id.clone());
+        move |s| -> Result<Removed> {
             let db = s.db.read()?;
-            let plan = plan(&db, &plan_id)?.context("plan_not_found: no cleanup plan has this ID")?;
-            if let Some(actor) = actor.as_deref() {
-                let lead = match &plan.project {
-                    Some(project) => crate::agent_roles::leads(&db, actor, project)?,
-                    None => false,
-                };
-                ensure!(lead, "not_allowed: only a lead of the plan's task's Project or the user restores what a cleanup removed");
-            }
-            let row: Option<(String, String, String, Option<String>, Option<String>)> = db
-                .query_row("SELECT kind,path,state,result,snapshot FROM cleanup_items WHERE plan_id=?1 AND item_id=?2", params![plan_id, item_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
-                .optional()?;
-            let (kind, path, state, result, snapshot) = row.context("item_not_found: the plan has no such item")?;
-            let parse = |raw: Option<String>| raw.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
             let projects = crate::projects::all(&db)?;
-            let dir = projects.iter().find(|p| Some(&p.id) == plan.project.as_ref()).and_then(|p| p.default_dirs.get("local").cloned());
-            Ok((plan, kind, path, state, parse(result), parse(snapshot), dir))
+            match (plan_id, run_id) {
+                (Some(plan_id), None) => {
+                    let plan = plan(&db, &plan_id)?.context("plan_not_found: no cleanup plan has this ID")?;
+                    if let Some(actor) = actor.as_deref() {
+                        let lead = match &plan.project {
+                            Some(project) => crate::agent_roles::leads(&db, actor, project)?,
+                            None => false,
+                        };
+                        ensure!(lead, "not_allowed: only a lead of the plan's task's Project or the user restores what a cleanup removed");
+                    }
+                    let row: Option<ItemRow> = db
+                        .query_row("SELECT kind,path,state,result,snapshot FROM cleanup_items WHERE plan_id=?1 AND item_id=?2", params![plan_id, item_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                        .optional()?;
+                    let (kind, path, state, result, snapshot) = row.context("item_not_found: the plan has no such item")?;
+                    let dir = projects.iter().find(|p| Some(&p.id) == plan.project.as_ref()).and_then(|p| p.default_dirs.get("local").cloned());
+                    Ok(Removed { kind, path, state, result: parse(result), snapshot: parse(snapshot), dir,
+                        task: Some(plan.task.clone()), origin: Origin::Plan(plan.id) })
+                }
+                (None, Some(run_id)) => {
+                    let run = db.query_row("SELECT project_id,machine,task_id,state FROM cleanup_automatic_runs WHERE id=?1", [&run_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?)))
+                        .optional()?.context("run_not_found: no automatic run has this ID")?;
+                    if let Some(actor) = actor.as_deref() {
+                        ensure!(crate::agent_roles::leads(&db, actor, &run.0)?, "not_allowed: only a lead of the run's Project or the user restores what an automatic run removed");
+                    }
+                    ensure!(run.1 == "local", "remote: an automatic run on another machine cannot be restored here");
+                    let row: Option<ItemRow> = db
+                        .query_row("SELECT kind,path,state,result,snapshot FROM cleanup_automatic_items WHERE run_id=?1 AND item_id=?2", params![run_id, item_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                        .optional()?;
+                    let (kind, path, state, result, snapshot) = row.context("item_not_found: the run has no such item")?;
+                    let dir = projects.iter().find(|p| p.id == run.0).and_then(|p| p.default_dirs.get("local").cloned());
+                    Ok(Removed { kind, path, state, result: parse(result), snapshot: parse(snapshot), dir,
+                        task: run.2, origin: Origin::Automatic { run: run_id, item: item_id } })
+                }
+                _ => unreachable!("checked above"),
+            }
         }
     })
     .await?;
-    let (plan, kind, path, state, result, snapshot, dir) = found;
-    if state == "restored" {
-        ensure!(result["restored"]["requestId"] == input.request_id.as_str(), "item_restored: it was restored already");
-        return Ok(json!({"planId": plan.id, "item": input.item_id, "state": state, "restored": result["restored"]}));
+    if removed.state == "restored" {
+        ensure!(removed.result["restored"]["requestId"] == input.request_id.as_str(), "item_restored: it was restored already");
+        return Ok(json!({"item": input.item_id, "state": removed.state, "restored": removed.result["restored"]}));
     }
     // Removed, or partly: what went is in its snapshot either way.
-    ensure!(state == "removed" || state == "partial", "not_removed: only an item a cleanup removed is restored (it is {state})");
-    ensure!(kind == "worktree" || kind == "entry", "not_restorable: a {kind} item is rebuilt, not restored");
-    let target = PathBuf::from(&path);
-    ensure!(std::fs::symlink_metadata(&target).is_err(), "path_taken: something is at {path} now; move it away first");
+    ensure!(removed.state == "removed" || removed.state == "partial", "not_removed: only an item a cleanup removed is restored (it is {})", removed.state);
+    ensure!(removed.kind == "worktree" || removed.kind == "entry", "not_restorable: a {} item is rebuilt, not restored", removed.kind);
+    let target = PathBuf::from(&removed.path);
+    ensure!(std::fs::symlink_metadata(&target).is_err(), "path_taken: something is at {} now; move it away first", removed.path);
     // Everything that can be checked before anything is made (review daaf3749).
-    let expired = !snapshot["expiredAt"].is_null();
-    let usable = snapshot.is_object() && !expired;
-    ensure!(kind == "worktree" || usable, "snapshot_expired: its snapshot is gone, so nothing of it can come back");
+    let expired = !removed.snapshot["expiredAt"].is_null();
+    let usable = removed.snapshot.is_object() && !expired;
+    ensure!(removed.kind == "worktree" || usable, "snapshot_expired: its snapshot is gone, so nothing of it can come back");
     if usable {
-        for (file, sha) in [(&snapshot["path"], &snapshot["sha256"]), (&snapshot["diff"]["path"], &snapshot["diff"]["sha256"])] {
+        for (file, sha) in [(&removed.snapshot["path"], &removed.snapshot["sha256"]), (&removed.snapshot["diff"]["path"], &removed.snapshot["diff"]["sha256"])] {
             if let Some(file) = file.as_str() {
                 let actual = sha_of(Path::new(file)).map_err(|e| anyhow::anyhow!("snapshot_changed: its snapshot cannot be read: {e}"))?;
                 ensure!(Some(actual.as_str()) == sha.as_str(), "snapshot_changed: its snapshot is not the one Core kept");
             }
         }
     }
-    let project = dir.map(PathBuf::from);
+    let project = removed.dir.clone().map(PathBuf::from);
     let mut how = Vec::new();
-    if kind == "worktree" {
-        let project = project.clone().context("project_folder_missing: its task's Project has no folder on this host")?;
-        let pinned = result["ref"].as_str().context("no_ref: Core pinned no commit for it")?;
-        let head = result["head"].as_str().unwrap_or_default();
+    if removed.kind == "worktree" {
+        let project = project.clone().context("project_folder_missing: its Project has no folder on this host")?;
+        let pinned = removed.result["ref"].as_str().context("no_ref: Core pinned no commit for it")?;
+        let head = removed.result["head"].as_str().unwrap_or_default();
         // A record its reclaim could not drop would refuse the path: only
         // that one goes, never another worktree's.
         let common = git(&project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await?
             .map_err(|why| anyhow::anyhow!("project_not_git: {why}"))?;
         let common = PathBuf::from(common.trim());
         if let Err(why) = drop_record(&common, &target) {
-            bail!("restore_failed: Git still has a record of a worktree at {path}, which Core keeps: {why}");
+            bail!("restore_failed: Git still has a record of a worktree at {}, which Core keeps: {why}", removed.path);
         }
-        let branch = result["branch"].as_str().filter(|b| !b.is_empty());
+        let branch = removed.result["branch"].as_str().filter(|b| !b.is_empty());
         let tip = match branch {
             Some(b) => git(&project, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).await?.ok().map(|t| t.trim().to_owned()),
             None => None,
@@ -428,11 +479,11 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         let added = match (branch, tip.as_deref()) {
             (Some(b), Some(tip)) if tip == head && !checked_out(b) => {
                 how.push(format!("checked out its branch {b}"));
-                git(&project, &["worktree", "add", path.as_str(), b]).await?
+                git(&project, &["worktree", "add", removed.path.as_str(), b]).await?
             }
             _ => {
                 how.push(format!("detached at {pinned}"));
-                git(&project, &["worktree", "add", "--detach", path.as_str(), pinned]).await?
+                git(&project, &["worktree", "add", "--detach", removed.path.as_str(), pinned]).await?
             }
         };
         if let Err(why) = added {
@@ -441,13 +492,13 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
     }
     let put_back = async {
         if usable {
-            let into = if kind == "entry" { target.parent().map(Path::to_path_buf).context("an entry has a folder")? } else { target.clone() };
-            let snap = snapshot.clone();
+            let into = if removed.kind == "entry" { target.parent().map(Path::to_path_buf).context("an entry has a folder")? } else { target.clone() };
+            let snap = removed.snapshot.clone();
             tokio::task::spawn_blocking(move || unpack(&snap, &into)).await??;
-            if snapshot["path"].is_string() {
-                how.push(format!("{} file(s) of its snapshot put back", snapshot["files"]));
+            if removed.snapshot["path"].is_string() {
+                how.push(format!("{} file(s) of its snapshot put back", removed.snapshot["files"]));
             }
-            if let Some(diff) = snapshot["diff"]["path"].as_str() {
+            if let Some(diff) = removed.snapshot["diff"]["path"].as_str() {
                 match git(&target, &["apply", "--binary", diff]).await? {
                     Ok(_) => how.push("its tracked changes applied again".to_owned()),
                     Err(why) => how.push(format!("its tracked changes could not be applied: {why}")),
@@ -463,34 +514,61 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         // nothing is removed.
         let aside = target.with_file_name(format!(".yuzuno-restore-failed-{}", uuid::Uuid::new_v4()));
         let moved = std::fs::rename(&target, &aside).is_ok();
-        if let (true, Some(project)) = (moved && kind == "worktree", project.as_ref()) {
+        if let (true, Some(project)) = (moved && removed.kind == "worktree", project.as_ref()) {
             // The record of what came back names the path again: only it goes.
             if let Ok(Ok(common)) = git(project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
                 let _ = drop_record(Path::new(common.trim()), &target);
             }
         }
         let failed = json!({"at": now(), "why": format!("{error:#}"), "aside": moved.then(|| aside.clone())});
-        let (store, plan_id, item_id) = (ws.store.clone(), plan.id.clone(), input.item_id.clone());
+        let (store, origin, item_id) = (ws.store.clone(), match &removed.origin {
+            Origin::Plan(id) => Origin::Plan(id.clone()),
+            Origin::Automatic { run, item } => Origin::Automatic { run: run.clone(), item: item.clone() },
+        }, input.item_id.clone());
         let _ = crate::db::blocking(move || -> Result<()> {
-            store.db.write()?.execute("UPDATE cleanup_items SET result=json_set(COALESCE(result,'{}'),'$.restoreFailed',json(?3)),updated_at=?4
-                WHERE plan_id=?1 AND item_id=?2", params![plan_id, item_id, failed.to_string(), now()])?;
+            let db = store.db.write()?;
+            match origin {
+                Origin::Plan(plan) => {
+                    db.execute("UPDATE cleanup_items SET result=json_set(COALESCE(result,'{}'),'$.restoreFailed',json(?3)),updated_at=?4
+                        WHERE plan_id=?1 AND item_id=?2", params![plan, item_id, failed.to_string(), now()])?;
+                }
+                Origin::Automatic { run, item } => {
+                    db.execute("UPDATE cleanup_automatic_items SET result=json_set(COALESCE(result,'{}'),'$.restoreFailed',json(?3)),updated_at=?4
+                        WHERE run_id=?1 AND item_id=?2", params![run, item, failed.to_string(), now()])?;
+                }
+            }
             Ok(())
         })
         .await;
-        bail!("restore_failed: {error:#}; {}", if moved { format!("what came back was moved to {}, so restoring can be tried again", aside.display()) } else { format!("what came back is still at {path}") });
+        bail!("restore_failed: {error:#}; {}", if moved { format!("what came back was moved to {}, so restoring can be tried again", aside.display()) } else { format!("what came back is still at {}", removed.path) });
     }
     let by = actor.clone().map_or_else(|| "user".to_owned(), |a| format!("agent:{a}"));
     let restored = json!({"at": now(), "by": by, "how": how, "requestId": input.request_id});
-    let answer = json!({"planId": plan.id, "item": input.item_id, "state": "restored", "path": path, "restored": restored});
+    let answer = json!({"item": input.item_id, "state": "restored", "path": removed.path, "restored": restored});
     ws.stored(move |s| {
         let mut db = s.db.write()?;
         let tx = db.transaction()?;
-        tx.execute("UPDATE cleanup_items SET state='restored',result=json_set(COALESCE(result,'{}'),'$.restored',json(?3)),updated_at=?4
-            WHERE plan_id=?1 AND item_id=?2 AND state IN ('removed','partial')", params![plan.id, input.item_id, restored.to_string(), now()])?;
         let (author, source) = collaboration::actor_context(s, &tx, actor.as_deref())?;
-        collaboration::activity(&tx, &plan.task, "comment", &author, &json!({"cleanupPlan": {"planId": plan.id}, "agent": source}),
-            json!({"body": format!("Restored {path} (item {} of cleanup plan {}): {}.", input.item_id, plan.id,
-                restored["how"].as_array().map(|h| h.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default())}))?;
+        let body = format!("Restored {} (item {}): {}.", removed.path, input.item_id,
+            restored["how"].as_array().map(|h| h.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default());
+        match &removed.origin {
+            Origin::Plan(plan_id) => {
+                tx.execute("UPDATE cleanup_items SET state='restored',result=json_set(COALESCE(result,'{}'),'$.restored',json(?3)),updated_at=?4
+                    WHERE plan_id=?1 AND item_id=?2 AND state IN ('removed','partial')", params![plan_id, input.item_id, restored.to_string(), now()])?;
+                collaboration::activity(&tx, removed.task.as_deref().unwrap_or_default(), "comment", &author,
+                    &json!({"cleanupPlan": {"planId": plan_id}, "agent": source}), json!({"body": body}))?;
+            }
+            Origin::Automatic { run, item } => {
+                tx.execute("UPDATE cleanup_automatic_items SET state='restored',result=json_set(COALESCE(result,'{}'),'$.restored',json(?3)),updated_at=?4
+                    WHERE run_id=?1 AND item_id=?2 AND state IN ('removed','partial')", params![run, item, restored.to_string(), now()])?;
+                // No task, no activity: the automatic history keeps it.
+                if let Some(task) = removed.task.as_deref().filter(|task| tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM collaboration_tasks WHERE id=?1)", [task], |r| r.get::<_, bool>(0)).unwrap_or(false)) {
+                    collaboration::activity(&tx, task, "comment", &author,
+                        &json!({"cleanupAutomatic": {"runId": run}, "agent": source}), json!({"body": body}))?;
+                }
+            }
+        }
         tx.commit()?;
         Ok(())
     })
@@ -530,6 +608,35 @@ pub(super) fn expire_snapshots(store: &Store, data: &Path) -> Result<usize> {
         store.db.write()?.execute(
             "UPDATE cleanup_items SET snapshot=json_set(snapshot,'$.expiredAt',?3) WHERE plan_id=?1 AND item_id=?2",
             params![plan, item, now()],
+        )?;
+        expired += 1;
+    }
+    // An automatic run's snapshots expire the same way; its ref stays.
+    let auto: Vec<(String, String, String, String)> = {
+        let db = store.db.read()?;
+        let mut q = db.prepare("SELECT run_id,item_id,snapshot,updated_at FROM cleanup_automatic_items
+            WHERE snapshot IS NOT NULL AND json_extract(snapshot,'$.expiredAt') IS NULL")?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (run, item, raw, updated) in auto {
+        let Ok(snapshot) = serde_json::from_str::<Value>(&raw) else { continue };
+        let at = snapshot["at"].as_str().unwrap_or(&updated);
+        if !chrono::DateTime::parse_from_rfc3339(at).is_ok_and(|at| at < cutoff) {
+            continue;
+        }
+        for file in [snapshot["path"].as_str(), snapshot["diff"]["path"].as_str()].into_iter().flatten() {
+            let file = Path::new(file);
+            if file.starts_with(&folder) && file.parent().is_some_and(|p| p.parent() == Some(folder.as_path())) {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        if let Some(dir) = folder.join(&run).to_str() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        store.db.write()?.execute(
+            "UPDATE cleanup_automatic_items SET snapshot=json_set(snapshot,'$.expiredAt',?3) WHERE run_id=?1 AND item_id=?2",
+            params![run, item, now()],
         )?;
         expired += 1;
     }

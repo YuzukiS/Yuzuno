@@ -116,7 +116,8 @@ fn settings_change(lab: &Lab, edit: impl FnOnce(&mut Settings)) {
         protected_paths: s.protected_paths, scratch_roots: s.scratch_roots, max_items: s.max_items, plan_hours: s.plan_hours,
         summary_paths: s.summary_paths, fresh_days: s.fresh_days, evidence_days: s.evidence_days, snapshot_max_mib: s.snapshot_max_mib,
         evidence_file_mib: s.evidence_file_mib, evidence_suffixes: s.evidence_suffixes, snapshot_days: s.snapshot_days,
-        rules: Some(s.rules), project_rules: Some(s.project_rules), expected_version: s.version,
+        rules: Some(s.rules), project_rules: Some(s.project_rules), rule_layer: Some(s.rule_layer),
+        worktree_reclaim: Some(s.worktree_reclaim), worktree_keep_days: Some(s.worktree_keep_days), expected_version: s.version,
     })
     .unwrap();
 }
@@ -608,7 +609,8 @@ fn settings_are_checked_and_saved_against_the_version_read() {
     let change = |protected: Vec<&str>, version: i64, max_items: u32| settings::Change {
         protected_paths: protected.into_iter().map(str::to_owned).collect(), scratch_roots: vec![], max_items, plan_hours: 24,
         summary_paths: 10, fresh_days: 1, evidence_days: 7, snapshot_max_mib: 256, evidence_file_mib: 4,
-        evidence_suffixes: vec![".PNG".into(), "png".into()], snapshot_days: 30, rules: None, project_rules: None, expected_version: version,
+        evidence_suffixes: vec![".PNG".into(), "png".into()], snapshot_days: 30, rules: None, project_rules: None,
+        rule_layer: None, worktree_reclaim: None, worktree_keep_days: None, expected_version: version,
     };
     assert!(settings::change(&db, change(vec!["relative/path"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));
     assert!(settings::change(&db, change(vec!["/"], 0, 10)).unwrap_err().to_string().starts_with("invalid_input:"));
@@ -638,3 +640,320 @@ mod apply_tests;
 
 #[path = "inventory_tests.rs"]
 mod inventory_tests;
+
+// ---------------------------------------------------------------------------
+// ③b: the rule layer, its automatic records, the to-tidy list and migration.
+
+fn commit_in(dir: &Path, name: &str, text: &str) {
+    std::fs::write(dir.join(name), text).unwrap();
+    git(dir, &["add", name]);
+    git(dir, &["commit", "-q", "-m", name]);
+}
+
+fn exclude(lab: &Lab, pattern: &str) {
+    let common = git(&lab.project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let file = Path::new(&common).join("info/exclude");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+    text.push_str(&format!("{pattern}\n"));
+    std::fs::write(file, text).unwrap();
+}
+
+fn auto_settings(lab: &Lab, worktrees: bool, caches: bool, keep_days: u32) {
+    settings_change(lab, |c| {
+        c.worktree_reclaim = worktrees;
+        c.rule_layer = caches;
+        c.worktree_keep_days = keep_days;
+        c.fresh_days = 0;
+    });
+}
+
+async fn automatic(lab: &Lab) -> usize {
+    super::automatic::pass(&lab.ws).await.unwrap()
+}
+
+fn auto_states(lab: &Lab) -> Vec<(String, String, String)> {
+    let db = lab.ws.store.db.read().unwrap();
+    let mut q = db.prepare("SELECT r.state,i.path,i.state FROM cleanup_automatic_runs r
+        LEFT JOIN cleanup_automatic_items i ON i.run_id=r.id ORDER BY r.started_at,i.seq").unwrap();
+    q.query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, Option<String>>(2)?.unwrap_or_default())))
+        .unwrap().collect::<rusqlite::Result<_>>().unwrap()
+}
+
+fn auto_item(lab: &Lab, path: &Path) -> Option<Value> {
+    let db = lab.ws.store.db.read().unwrap();
+    let text = path.to_string_lossy().into_owned();
+    db.query_row("SELECT result,snapshot,ref,task_id FROM cleanup_automatic_items WHERE path=?1 ORDER BY seq DESC LIMIT 1", [text],
+        |r| Ok(json!({"result": r.get::<_, Option<String>>(0)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null),
+            "snapshot": r.get::<_, Option<String>>(1)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null),
+            "ref": r.get::<_, Option<String>>(2)?, "task": r.get::<_, Option<String>>(3)?}))).optional().unwrap()
+}
+
+#[tokio::test]
+async fn the_rule_layer_reclaims_an_ancestor_worktree_and_keeps_its_automatic_record() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/anc"), "feat/anc");
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    assert!(automatic(&lab).await >= 1);
+    assert!(!tree.exists(), "an ancestor with nothing else is reclaimed");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "removed", "{item:#}");
+    assert_eq!(item["task"], Value::Null, "no task is invented");
+    let pinned = item["ref"].as_str().unwrap();
+    assert_eq!(git(&lab.project, &["rev-parse", pinned]), head);
+    let runs = auto_states(&lab);
+    assert!(runs.iter().any(|(state, _, _)| state == "done" || state == "incomplete"), "{runs:?}");
+}
+
+#[tokio::test]
+async fn a_worktree_at_origin_s_same_named_tip_is_reclaimed_and_one_with_its_own_commits_is_not() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let pushed = worktree(&lab, &lab.home.join("work/wt/tip"), "feat/tip");
+    commit_in(&pushed, "tip.txt", "on origin\n");
+    git(&lab.project, &["push", "-q", "origin", "feat/tip"]);
+    let own = worktree(&lab, &lab.home.join("work/wt/own"), "feat/own");
+    commit_in(&own, "mine.txt", "only here\n");
+    assert!(automatic(&lab).await >= 1);
+    assert!(!pushed.exists(), "its HEAD is the same-named branch on origin");
+    assert!(own.exists(), "its own commit keeps it");
+    let item = auto_item(&lab, &own).unwrap();
+    assert_eq!(item["result"]["code"], "uniqueCommits", "{item:#}");
+    let db = lab.ws.store.db.read().unwrap();
+    let reason: String = db.query_row("SELECT reason FROM cleanup_to_tidy WHERE path=?1", [own.to_string_lossy().as_ref()], |r| r.get(0)).unwrap();
+    assert_eq!(reason, "uniqueCommits");
+}
+
+#[tokio::test]
+async fn a_merged_pull_request_s_head_is_reclaimed_even_with_a_commit_no_branch_has() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/pr"), "feat/pr");
+    commit_in(&tree, "pr.txt", "merged\n");
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    git(&lab.project, &["remote", "set-url", "origin", "/synthetic/demo.git"]);
+    let db = lab.ws.store.db.write().unwrap();
+    let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    db.execute("INSERT OR IGNORE INTO github_repositories(id,data) VALUES(7,'{\"fullName\":\"synthetic/demo\"}')", []).unwrap();
+    db.execute("INSERT OR IGNORE INTO github_project_repos(project_id,repo_id) VALUES(?1,7)", [&project]).unwrap();
+    db.execute("INSERT INTO github_objects(id,repo_id,kind,number,data) VALUES('7:pull:1',7,'pull',1,?1)", [json!({
+        "snapshot": {"state": "merged", "headSha": head, "observedAt": "2026-11-09T00:00:00+00:00"}}).to_string()]).unwrap();
+    drop(db);
+    assert!(automatic(&lab).await >= 1);
+    assert!(!tree.exists(), "a merged PR's head is proof enough");
+}
+
+#[tokio::test]
+async fn untracked_files_a_lock_and_an_unknown_git_answer_keep_a_worktree() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let dirty = worktree(&lab, &lab.home.join("work/wt/dirty"), "feat/dirty");
+    std::fs::write(dirty.join("draft.md"), "draft\n").unwrap();
+    let locked = worktree(&lab, &lab.home.join("work/wt/locked"), "feat/locked");
+    git(&lab.project, &["worktree", "lock", locked.to_str().unwrap()]);
+    let unknown = worktree(&lab, &lab.home.join("work/wt/unknown"), "feat/unknown");
+    // origin/main gone: the ancestor proof cannot answer, and the branch is on no origin.
+    // Another remote ref keeps its commit from counting as one of its own.
+    git(&lab.project, &["update-ref", "refs/remotes/origin/keep", "HEAD"]);
+    git(&lab.project, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    assert!(automatic(&lab).await >= 1);
+    assert!(dirty.exists() && locked.exists() && unknown.exists(), "nothing uncertain is removed");
+    let locked_item = auto_item(&lab, &locked).unwrap();
+    assert_eq!(locked_item["result"]["code"], "locked", "{locked_item:#}");
+    let unknown_item = auto_item(&lab, &unknown).unwrap();
+    assert!(matches!(unknown_item["result"]["code"].as_str(), Some("unknownGit") | Some("needsCherry")), "{unknown_item:#}");
+}
+
+#[tokio::test]
+async fn a_recent_job_in_a_worktree_keeps_it_after_an_old_release() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 7);
+    let tree = worktree(&lab, &lab.home.join("work/wt/used"), "feat/used");
+    let days = |n: i64| (chrono::Utc::now() - chrono::Duration::days(n)).to_rfc3339();
+    agent(&lab.ws, "old");
+    let db = lab.ws.store.db.write().unwrap();
+    let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+    db.execute("UPDATE agents SET data=json_set(data,'$.cwd',?1) WHERE id='old'", [tree.to_string_lossy().as_ref()]).unwrap();
+    db.execute("INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at,archived_at)
+        VALUES('old','executor','workspace-cleanup',?1,'agent:lead','released','now','now',?2)",
+        params![task, days(10)]).unwrap();
+    db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('reuse',?1,'old','succeeded',?2)",
+        params![task, json!({"cwd": tree, "status": "succeeded", "finishedAt": days(1), "target": {"kind": "local"}}).to_string()]).unwrap();
+    drop(db);
+    assert!(automatic(&lab).await >= 1);
+    assert!(tree.exists(), "a job there yesterday is newer than the old release");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "recent", "{item:#}");
+}
+
+#[tokio::test]
+async fn an_automatic_run_restores_a_taskless_worktree_and_a_restart_never_retries_it() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    exclude(&lab, "notes/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/auto"), "feat/auto");
+    std::fs::create_dir_all(tree.join("notes")).unwrap();
+    std::fs::write(tree.join("notes/n.txt"), "kept in the snapshot\n").unwrap();
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    assert!(automatic(&lab).await >= 1);
+    assert!(!tree.exists());
+    let run: String = lab.ws.store.db.read().unwrap()
+        .query_row("SELECT run_id FROM cleanup_automatic_items WHERE path=?1", [tree.to_string_lossy().as_ref()], |r| r.get(0)).unwrap();
+    // Only the lead of the Project (or the user) restores it, by runId.
+    let denied = lab.ws.collaboration_call(Some("ex"), "cleanup_restore", json!({"requestId":"r0","runId":run,"itemId":"1"})).await.unwrap_err().to_string();
+    assert!(denied.starts_with("not_allowed:"), "{denied}");
+    let back = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":"1"})).await.unwrap();
+    assert_eq!(back["state"], "restored");
+    assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "kept in the snapshot\n");
+    // A run and an item a stopped Core left mid-removal are interrupted, never retried.
+    let db = lab.ws.store.db.write().unwrap();
+    db.execute("INSERT INTO cleanup_automatic_runs(id,project_id,machine,task_id,policy_version,params,state,started_at,data)
+        VALUES('stale',(SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'),'local',NULL,0,'{}','running','now','{}')", []).unwrap();
+    db.execute("INSERT INTO cleanup_automatic_items(run_id,item_id,seq,kind,path,state,evidence,pre,updated_at)
+        VALUES('stale','1',1,'cache-dir','/synthetic/left','removing','{}','{}','now')", []).unwrap();
+    drop(db);
+    assert_eq!(lab.ws.stored(super::automatic::recover).await.unwrap(), 1);
+    let (state, item_state): (String, String) = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT r.state,i.state FROM cleanup_automatic_runs r JOIN cleanup_automatic_items i ON i.run_id=r.id WHERE r.id='stale'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((state.as_str(), item_state.as_str()), ("interrupted", "interrupted"));
+}
+
+#[tokio::test]
+async fn a_new_install_opens_the_rule_layer_and_an_upgrade_keeps_every_new_switch_off() {
+    let dir = tempfile::tempdir().unwrap();
+    // A Workspace opened by an earlier Core: a user table exists already, and
+    // YN-65's own policy row says it was on.
+    let old = dir.path().join("old.db");
+    {
+        let db = rusqlite::Connection::open(&old).unwrap();
+        db.execute_batch("CREATE TABLE build_cleanup_policy(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);").unwrap();
+        db.execute("INSERT INTO build_cleanup_policy(id,data) VALUES(1,?1)", [json!({"enabled":true,"keepDays":3,
+            "since":"2026-01-01T00:00:00+00:00","version":4,"changedAt":null}).to_string()]).unwrap();
+    }
+    let store = crate::store::Store::open(&old).unwrap();
+    {
+        let db = store.db.read().unwrap();
+        let settings = settings::read(&db).unwrap();
+        assert!(!settings.rule_layer && !settings.worktree_reclaim, "an upgrade keeps the new switches off");
+        assert_eq!(settings.worktree_keep_days, 7);
+        let init = settings::initialization(&db).unwrap();
+        assert_eq!(init["fresh"], false);
+        assert!(init["notice"].as_str().is_some(), "one notice is left for Settings");
+        let policy = crate::build_cleanup::policy(&db).unwrap();
+        assert!(policy.enabled && policy.keep_days == 3 && policy.version == 4, "YN-65 is untouched");
+        assert_eq!(policy.since.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+    }
+    let fresh = crate::store::Store::open(&dir.path().join("new.db")).unwrap();
+    let db = fresh.db.read().unwrap();
+    let settings = settings::read(&db).unwrap();
+    assert!(settings.rule_layer && settings.worktree_reclaim, "a new install has both on");
+    assert_eq!(settings::initialization(&db).unwrap()["fresh"], true);
+}
+
+#[tokio::test]
+async fn a_walk_over_its_bound_is_incomplete_and_skips_protected_paths() {
+    let lab = lab();
+    // Three rule folders, one under a protected path: a bound of two sees two.
+    for name in ["a", "b", "protected/c"] {
+        let dir = lab.project.join(name).join("node_modules");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(lab.project.join(name).join("package.json"), "{\"name\":\"x\"}").unwrap();
+        std::fs::write(lab.project.join(name).join("package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.join("x.js"), "x\n").unwrap();
+    }
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.max_items = 2;
+        c.protected_paths = vec![lab.project.join("protected").display().to_string()];
+        c.fresh_days = 0;
+    });
+    assert!(automatic(&lab).await >= 1);
+    let db = lab.ws.store.db.read().unwrap();
+    let states: Vec<(String, String)> = db.prepare("SELECT r.state,i.path FROM cleanup_automatic_runs r
+        JOIN cleanup_automatic_items i ON i.run_id=r.id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert!(states.iter().any(|(state, _)| state == "incomplete"), "{states:?}");
+    assert!(!states.iter().any(|(_, path)| path.contains("/protected/")), "a protected path is not walked: {states:?}");
+}
+
+#[tokio::test]
+async fn a_closed_task_leaves_its_recorded_folders_for_the_next_cleanup() {
+    let lab = lab();
+    let folder = lab.home.join("work/wt/recorded");
+    let db = lab.ws.store.db.write().unwrap();
+    let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+    db.execute("INSERT INTO task_workspaces(id,task_id,data) VALUES('w1',?1,?2)",
+        params![task, json!({"id":"w1","path":folder}).to_string()]).unwrap();
+    drop(db);
+    lab.ws.store.collaboration_call(None, "task_update", json!({"requestId":"close","taskId":"T-1","expectedVersion":1,
+        "patch":{"status":"done"}})).unwrap();
+    let db = lab.ws.store.db.read().unwrap();
+    let (reason, state): (String, String) = db.query_row("SELECT reason,state FROM cleanup_to_tidy WHERE path=?1",
+        [folder.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((reason.as_str(), state.as_str()), ("taskClosed", "open"));
+}
+
+#[tokio::test]
+async fn the_rule_layer_removes_only_cargo_s_own_subtrees_and_leaves_the_rest() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+        c.worktree_keep_days = 0;
+    });
+    let target = lab.project.join("target");
+    cargo_target(&target, &["debug", "release"]);
+    std::fs::write(target.join("mine.txt"), "not Cargo's\n").unwrap();
+    assert!(automatic(&lab).await >= 1);
+    assert!(!target.join("debug").exists() && !target.join("release").exists(), "Cargo's profiles go");
+    assert_eq!(std::fs::read_to_string(target.join("mine.txt")).unwrap(), "not Cargo's\n", "everything else stays");
+}
+
+#[tokio::test]
+async fn the_to_tidy_list_is_the_same_for_a_dispatch_and_paged_for_the_executor() {
+    let lab = lab();
+    let db = lab.ws.store.db.write().unwrap();
+    let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    for (i, reason) in ["uniqueCommits", "needsCherry", "snapshotTooLarge"].iter().enumerate() {
+        db.execute("INSERT INTO cleanup_to_tidy(project_id,machine,path,reason,first_seen,last_seen,state)
+            VALUES(?1,'local',?2,?3,'now','now','open')", params![project, format!("/synthetic/tidy/{i}"), reason]).unwrap();
+    }
+    let materials = super::automatic::tidy_snapshot(&db, &project, "local", 20).unwrap();
+    assert_eq!(materials["total"], 3);
+    assert_eq!(materials["returned"], 3);
+    assert!(materials["readWith"].as_str().unwrap().contains("cleanup_tidy_get"));
+    drop(db);
+    let page = lab.ws.collaboration_call(Some("ex"), "cleanup_tidy_get", json!({"taskId":"T-1","limit":2})).await.unwrap();
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["items"].as_array().unwrap().len(), 2);
+    assert_eq!(page["hasMore"], true);
+    let next = page["nextAfter"].as_str().unwrap().to_owned();
+    let rest = lab.ws.collaboration_call(Some("ex"), "cleanup_tidy_get", json!({"taskId":"T-1","after":next,"limit":2})).await.unwrap();
+    assert_eq!(rest["items"].as_array().unwrap().len(), 1);
+    assert_eq!(rest["hasMore"], false);
+    let denied = lab.ws.collaboration_call(Some("stranger"), "cleanup_tidy_get", json!({"taskId":"T-1"})).await.unwrap_err().to_string();
+    assert!(denied.starts_with("not_allowed:"), "{denied}");
+}
+
+#[tokio::test]
+async fn the_rule_layer_walks_a_registered_worktree_outside_the_project_folder() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.fresh_days = 0;
+    });
+    exclude(&lab, "node_modules/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/outside"), "feat/outside");
+    let modules = tree.join("node_modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(tree.join("package.json"), "{\"name\":\"x\"}").unwrap();
+    std::fs::write(tree.join("package-lock.json"), "{}").unwrap();
+    std::fs::write(modules.join("x.js"), "x\n").unwrap();
+    assert!(automatic(&lab).await >= 1);
+    assert!(!modules.exists(), "a rule folder in a registered worktree outside the Project goes");
+}

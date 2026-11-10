@@ -290,14 +290,28 @@ struct Planned {
 
 /// What became of one item: its state, and its result (code, why, bytes)
 /// and snapshot.
-struct Outcome {
-    state: &'static str,
-    result: Value,
-    snapshot: Option<Value>,
+pub(super) struct Outcome {
+    pub state: &'static str,
+    pub result: Value,
+    pub snapshot: Option<Value>,
 }
 
-fn outcome(state: &'static str, code: &str, why: impl Into<String>) -> Outcome {
+pub(super) fn outcome(state: &'static str, code: &str, why: impl Into<String>) -> Outcome {
     Outcome { state, result: json!({"code": code, "why": why.into()}), snapshot: None }
+}
+
+/// One removal, as either a manual plan's item or an automatic run's item
+/// says it: where its snapshot goes, which task (if any) it belongs to, and
+/// what its checks recorded. The checked execution path is the same for
+/// both: automatic.rs must not remove anything its own preflight skipped.
+pub(super) struct Removal<'a> {
+    pub data: &'a Path,
+    pub namespace: &'a str,
+    pub task: &'a str,
+    pub kind: &'a str,
+    pub id: &'a str,
+    pub path: &'a str,
+    pub pre: &'a Value,
 }
 
 /// What run needs from the records, read once.
@@ -402,18 +416,28 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
     if !plan.data["machine"].is_null() {
         return outcome("refused", "remote", "On another machine: Core removes only on its own host for now");
     }
-    let path = PathBuf::from(&item.path);
-    if !same(&path, &item.pre) {
-        return outcome("refused", "changed", "It changed since the plan was registered");
+    let task = plan.data["taskKey"].as_str().unwrap_or(&plan.task);
+    execute_checked(ws, ctx, &Removal { data: &ws.data_dir, namespace: &plan.id, task, kind: &item.kind, id: &item.id,
+        path: &item.path, pre: &item.pre }).await
+}
+
+/// The checked execution path both a manual plan's item and an automatic
+/// run's item go through: the same object as when it was planned, every
+/// check again (roots, kind, rule, freshness, snapshot), no process, Job or
+/// Agent using it, then its snapshot and its removal.
+pub(super) async fn execute_checked(ws: &Arc<Workspace>, ctx: &check::Context, item: &Removal<'_>) -> Outcome {
+    let path = PathBuf::from(item.path);
+    if !same(&path, item.pre) {
+        return outcome("refused", "changed", "It changed since it was checked");
     }
-    let given = check::Item { id: item.id.clone(), group: item.group.clone(), kind: item.kind.clone(), rule: item.pre["rule"].as_str().map(str::to_owned),
-        path: item.path.clone(), save_diff: item.pre["saveDiff"] == true };
+    let given = check::Item { id: item.id.to_owned(), group: "automatic".to_owned(), kind: item.kind.to_owned(),
+        rule: item.pre["rule"].as_str().map(str::to_owned), path: item.path.to_owned(), save_diff: item.pre["saveDiff"] == true };
     let now = check::preflight(ctx, &given).await;
     if let Some((code, why)) = now.refusal {
         return outcome("refused", code, why);
     }
     if now.pre["dev"] != item.pre["dev"] || now.pre["ino"] != item.pre["ino"] {
-        return outcome("refused", "changed", "It changed since the plan was registered");
+        return outcome("refused", "changed", "It changed since it was checked");
     }
     // Jobs and Agents are looked for in its working tree, or in its scratch entry.
     let users_root = match now.pre["tree"].as_str() {
@@ -427,8 +451,7 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
     }
     let bytes = now.pre["bytes"].clone();
     if item.kind == "worktree" {
-        let task = plan.data["taskKey"].as_str().unwrap_or(&plan.task).to_owned();
-        return match worktrees::reclaim(ctx, &ws.data_dir, &plan.id, &task, &item.id, &path, &item.pre, &now.pre).await {
+        return match worktrees::reclaim(ctx, item.data, item.namespace, item.task, item.id, &path, item.pre, &now.pre).await {
             Ok((record, snapshot)) => {
                 let mut result = json!({"code": "removed", "bytes": bytes});
                 for (key, value) in record.as_object().into_iter().flatten() {
@@ -453,7 +476,7 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
     }
     let mut snapshot = None;
     if item.kind == "entry" {
-        let out = ws.data_dir.join("cleanup-snapshots").join(&plan.id).join(format!("{}.tar.gz", item.id));
+        let out = item.data.join("cleanup-snapshots").join(item.namespace).join(format!("{}.tar.gz", item.id));
         let (suffixes, limit) = (ctx.settings.evidence_suffixes.clone(), u64::from(ctx.settings.evidence_file_mib) << 20);
         let source = path.clone();
         let made = tokio::task::spawn_blocking(move || keep_evidence(&source, &out, &suffixes, limit)).await;
@@ -463,7 +486,7 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
             Err(error) => return outcome("refused", "snapshot", format!("Its snapshot could not be made: {error}")),
         }
     }
-    let removal = match (item.kind.as_str(), item.pre["rule"].as_str()) {
+    let removal = match (item.kind, item.pre["rule"].as_str()) {
         ("cache-dir", Some("cargo")) => {
             // Only the profiles planned, each still the one planned.
             let planned: Vec<Value> = item.pre["profiles"].as_array().cloned().unwrap_or_default();
@@ -584,7 +607,7 @@ fn remove_profiles(target: &Path, planned: &[Value], current: &[Value]) -> std::
 fn keep_evidence(entry: &Path, out: &Path, suffixes: &[String], limit: u64) -> Result<Option<Value>> {
     let evidence = |path: &Path, meta: &std::fs::Metadata| {
         let suffix = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
-        meta.is_file() && meta.len() <= limit && suffix.is_some_and(|s| suffixes.iter().any(|k| *k == s))
+        meta.is_file() && meta.len() <= limit && suffix.is_some_and(|s| suffixes.contains(&s))
     };
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
     let top = std::fs::symlink_metadata(entry)?;

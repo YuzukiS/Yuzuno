@@ -65,8 +65,8 @@ pub(crate) const READ_ONLY: &str = "read-only";
 /// job_submit or any other Job, run, merge, PR, review, CI, delivery or
 /// service tool, not task_create, task_dispatch or task_claim, and not
 /// cleanup_restore (a lead's). A tool added later is outside it until named here.
-pub(crate) const READ_ONLY_TOOLS: [&str; 19] = [
-    "cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply",
+pub(crate) const READ_ONLY_TOOLS: [&str; 20] = [
+    "cleanup_inventory", "cleanup_plan_submit", "cleanup_plan_get", "cleanup_apply", "cleanup_tidy_get",
     "task_get", "task_list", "task_update", "task_comment", "task_submit_result", "task_result_get",
     "brief_get", "brief_update", "brief_guide",
     "peer_read", "peer_send", "peers_list",
@@ -175,9 +175,9 @@ const READ_ONLY_READS: &[(&str, &str)] = &[("*", "allow"), ("*.env", "deny"), ("
 const ALLOW: Rule = Rule::Effect("allow");
 /// Everything denied, then reading, searching, listing and READ_ONLY_TOOLS
 /// as OpenCode names Yuzuno's tools (`yuzuno_<tool>`, opencode_agent.rs).
-static OPENCODE_READ_ONLY: [(&str, Rule); 24] = [("*", Rule::Effect("deny")), ("read", Rule::Patterns(READ_ONLY_READS)),
+static OPENCODE_READ_ONLY: [(&str, Rule); 25] = [("*", Rule::Effect("deny")), ("read", Rule::Patterns(READ_ONLY_READS)),
     ("grep", ALLOW), ("glob", ALLOW), ("list", ALLOW),
-    ("yuzuno_cleanup_inventory", ALLOW), ("yuzuno_cleanup_plan_submit", ALLOW), ("yuzuno_cleanup_plan_get", ALLOW), ("yuzuno_cleanup_apply", ALLOW),
+    ("yuzuno_cleanup_inventory", ALLOW), ("yuzuno_cleanup_plan_submit", ALLOW), ("yuzuno_cleanup_plan_get", ALLOW), ("yuzuno_cleanup_apply", ALLOW), ("yuzuno_cleanup_tidy_get", ALLOW),
     ("yuzuno_task_get", ALLOW), ("yuzuno_task_list", ALLOW), ("yuzuno_task_update", ALLOW), ("yuzuno_task_comment", ALLOW),
     ("yuzuno_task_submit_result", ALLOW), ("yuzuno_task_result_get", ALLOW),
     ("yuzuno_brief_get", ALLOW), ("yuzuno_brief_update", ALLOW), ("yuzuno_brief_guide", ALLOW),

@@ -219,7 +219,7 @@ fn settings_switch_known_rules_only() {
     let change = |rules: BTreeMap<String, bool>, projects: BTreeMap<String, BTreeMap<String, bool>>, version: i64| settings::Change {
         protected_paths: vec![], scratch_roots: vec![], max_items: 10, plan_hours: 24, summary_paths: 10, fresh_days: 1, evidence_days: 7,
         snapshot_max_mib: 256, evidence_file_mib: 4, evidence_suffixes: vec![], snapshot_days: 30, rules: Some(rules),
-        project_rules: Some(projects), expected_version: version,
+        project_rules: Some(projects), rule_layer: None, worktree_reclaim: None, worktree_keep_days: None, expected_version: version,
     };
     let bogus = settings::change(&db, change(BTreeMap::from([("bogus".into(), true)]), BTreeMap::new(), 0)).unwrap_err().to_string();
     assert!(bogus.starts_with("invalid_input: rules names no rule \"bogus\""), "{bogus}");

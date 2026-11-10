@@ -1192,6 +1192,13 @@ impl Store {
         // An earlier Core's Workspace is refused before anything is written
         // to it (docs/adr/0002-session-store-new-data-directory.md).
         record_rows::check_store(&db)?;
+        // Before any table is made: whether this Workspace already had a user
+        // schema. Only a database with none is a new install here (YN-74
+        // ③b, design 3.3); an unknown answer is kept as an upgrade, off.
+        let fresh_install = db
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get::<_, i64>(0))
+            .ok()
+            .map(|tables| tables == 0);
         // FULL is SQLite's default; stated because the writer's unsynced
         // connection uses NORMAL and this one must never (see `db`).
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
@@ -1234,7 +1241,7 @@ impl Store {
         crate::brief_turns::migrate(&db)?;
         crate::task_workspaces::migrate(&db)?;
         crate::build_cleanup::migrate(&db)?;
-        crate::cleanup_plans::migrate(&db)?;
+        crate::cleanup_plans::migrate(&db, fresh_install)?;
         record_rows::migrate(&db)?;
         db.execute_batch(COMPLETION_INDEX)?;
         db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES('workspaceId',?1)",

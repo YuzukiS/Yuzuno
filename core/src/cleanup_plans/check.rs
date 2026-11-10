@@ -426,7 +426,7 @@ fn tree_of<'a>(ctx: &'a Context, path: &Path) -> Option<&'a Path> {
 /// A worktree's facts from Git: tracked changes and untracked files that
 /// are not ignored, commits found on no remote branch, merged into a remote's
 /// default branch.
-async fn worktree_facts(ctx: &Context, path: &Path) -> std::result::Result<Value, String> {
+pub(super) async fn worktree_facts(ctx: &Context, path: &Path) -> std::result::Result<Value, String> {
     let theirs = git(path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.map_err(|e| e.to_string())??;
     if theirs.trim() != ctx.common {
         return Err("It belongs to another repository".into());

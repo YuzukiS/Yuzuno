@@ -351,6 +351,15 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
         "source":dispatch.source,"latestTask":{"taskId":task_number(db, &task.id)?},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
+    // The workspace-cleanup executor gets that Project's Core-owned to-tidy
+    // list for its machine: information only, never an authorization. The
+    // rest is read with cleanup_tidy_get, which the materials name.
+    if cold.as_ref().is_some_and(|c| c.template["id"] == "workspace-cleanup") {
+        if let Some(project) = project["id"].as_str() {
+            let machine = input["executor"]["machineId"].as_str().filter(|m| *m != "auto").unwrap_or("local");
+            snapshot["cleanupToTidy"] = crate::cleanup_plans::tidy_snapshot_for(db, project, machine, 20)?;
+        }
+    }
     if let Some(cold) = cold {
         snapshot["template"] = cold.template;
         if let Some(handover) = cold.handover {

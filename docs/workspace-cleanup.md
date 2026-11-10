@@ -101,6 +101,29 @@ A folder that only a rule switched off would recognize is refused as `ruleOff`, 
 - A Job counts only when its record names it, its submission is the one recorded, and its command has one `--project`, this Project's folder.
 - Any other Job of the task is refused, whatever its name, command or output: one copying Core's command, or adding a second `--project`.
 
+
+## The rule layer (no Agent)
+
+Core itself runs the rule layer once every hour, the first pass a minute after it starts. It is off until the user turns it on in Settings; YN-65's own build-output cleanup stays a separate switch and behaves as before. The rule layer looks at each Project's folder on this Core's host and at the worktrees that Project's repository registers, with the inventory finder's bounds: depth 6, 2,000,000 entries, 20 seconds per Project and at most the `maxItems` setting. A run that meets a bound is recorded as incomplete, not as a complete look; the least recently run Projects go first, and a cursor per Project, machine and kind resumes where a pass stopped.
+
+**Rebuildable folders.** A folder a rule on for that Project recognizes goes once its newest write is older than `keepDays` (the YN-65 setting, default 1 day) and `freshDays` (default 1). Every check a plan's item gets still applies: Git ignores it and tracks nothing in it, no process, Job or Agent uses it, no path is fixed or protected, no mount or link is crossed, and no Job record names it. A folder holding `.git` is no rule's, and a recognized cache is not walked into.
+
+**Clean, merged worktrees.** A worktree is reclaimed only when all of these hold:
+- it is registered by this Project's repository, is not the main worktree and is not locked;
+- `git status --porcelain --untracked-files=normal --ignored=no` is empty;
+- its HEAD is proven kept elsewhere by at least one of: it is an ancestor of `refs/remotes/origin/main` (not another remote, and not the first remote HEAD); `git ls-remote --heads origin refs/heads/<branch>` returns that branch's full SHA equal to its HEAD now (8-second bound, no prompt; a failure is unknown); or a merged or closed pull request of the same repository in this Project's Core GitHub records has exactly that headSha and no refresh error;
+- no process, Job, Agent or open executor points at it;
+- its ignored content, minus the rule folders, fits its snapshot (256 MiB by default);
+- its last use is `worktreeKeepDays` old (default 7): the newest release of a related local executor, a Job that ran there after it (so an old release never hides a recent reuse), or, with no executor record, the newest of the worktree's `.git`, its checked gitdir's HEAD and its existing `index`, `logs/HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and operation-state files. A missing, unreadable or future time keeps it.
+
+Each proof is kept as true, false or unknown. Unknown never removes anything; no proof at all keeps the worktree and puts it on the to-tidy list. Before removal the HEAD, lock, status and the proof actually used are checked again. Removal goes through the same checked path as a plan's worktree: a snapshot, a pinned `refs/yuzuno/reclaimed/...` ref, the removal and only that worktree's own Git record; `cleanup_restore` with `runId` puts it back.
+
+**The to-tidy list.** What cannot be decided waits for a cleanup executor: a worktree with commits of its own, one only `git cherry` could settle, one whose snapshot is over the limit, an unknown Git answer, and the recorded folders of a task that closed (collected when the task is closed, with no file-system or Git work in that save). Entries are deduplicated by Project, machine and path, bounded, and are **information only**: no entry authorizes a removal. A cleanup dispatch's materials include that Project's list for its machine, with the total and how to read on (`cleanup_tidy_get`).
+
+Every automatic run and item is kept in Core's own `cleanup_automatic_*` records with its Project, machine, task if any, policy version and settings, evidence, path identity and HEAD, result, snapshot and ref. An item is written before it is touched. A Core that stops mid-removal leaves it interrupted or partial and never retries it; its snapshot and ref stay on record. No task is invented and no task activity is written for a taskless run.
+
+**Upgrade and defaults.** A Workspace with no user table at all before this version opens is a new install: the rule layer and worktree reclaim are on. Any existing or unknown Workspace keeps every new switch off and leaves one notice in Settings; YN-65's `enabled`, `keepDays`, `since`, version and history are untouched. Reading the notice consumes nothing; the Settings page that shows it comes in a later slice.
+
 ## The inventory needs python3
 
 The inventory runs on Python 3.6 or newer, with the standard library only, and Git 2.31 or newer. A `python3` on the PATH is not enough. A Mac without the Command Line Tools has Apple's stand-in at `/usr/bin/python3`, which runs nothing until the tools are installed. So Core first runs python3 there and reads its exit status and output. Without a usable one, nothing is submitted, and the answer is `inventory_unavailable` with the reason. Core never returns an empty inventory.

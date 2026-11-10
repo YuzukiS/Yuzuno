@@ -53,6 +53,16 @@ pub(crate) struct Settings {
     pub rules: BTreeMap<String, bool>,
     /// Each Project's own switches, by its id, over this host's.
     pub project_rules: BTreeMap<String, BTreeMap<String, bool>>,
+    /// The rule layer: Core itself removes rebuildable folders a rule
+    /// recognizes, hourly, `keepDays` after their last write (design 3.1).
+    /// Off on an upgrade from an earlier Core, on for a new install.
+    pub rule_layer: bool,
+    /// Clean, merged worktrees are reclaimed automatically (design 3.2).
+    /// Off on an upgrade, on for a new install.
+    pub worktree_reclaim: bool,
+    /// Days a worktree waits after its last use before it is reclaimed
+    /// (default 7, design 6.3).
+    pub worktree_keep_days: u32,
     pub version: i64,
     pub changed_at: Option<String>,
 }
@@ -73,6 +83,9 @@ impl Default for Settings {
             snapshot_days: 30,
             rules: BTreeMap::new(),
             project_rules: BTreeMap::new(),
+            rule_layer: false,
+            worktree_reclaim: false,
+            worktree_keep_days: 7,
             version: 0,
             changed_at: None,
         }
@@ -108,6 +121,13 @@ pub(crate) struct Change {
     pub rules: Option<BTreeMap<String, bool>>,
     #[serde(default)]
     pub project_rules: Option<BTreeMap<String, BTreeMap<String, bool>>>,
+    /// Absent, as they are: an older client keeps the switches it does not know.
+    #[serde(default)]
+    pub rule_layer: Option<bool>,
+    #[serde(default)]
+    pub worktree_reclaim: Option<bool>,
+    #[serde(default)]
+    pub worktree_keep_days: Option<u32>,
     pub expected_version: i64,
 }
 
@@ -153,6 +173,7 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
         ("snapshotMaxMib", change.snapshot_max_mib, 0, 4096),
         ("evidenceFileMib", change.evidence_file_mib, 0, 256),
         ("snapshotDays", change.snapshot_days, 1, 365),
+        ("worktreeKeepDays", change.worktree_keep_days.unwrap_or(current.worktree_keep_days), 0, 365),
     ];
     for (name, value, low, high) in ranges {
         ensure!((low..=high).contains(&value), "invalid_input: {name} is {low} to {high}");
@@ -191,6 +212,9 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
         snapshot_days: change.snapshot_days,
         rules,
         project_rules,
+        rule_layer: change.rule_layer.unwrap_or(current.rule_layer),
+        worktree_reclaim: change.worktree_reclaim.unwrap_or(current.worktree_reclaim),
+        worktree_keep_days: change.worktree_keep_days.unwrap_or(current.worktree_keep_days),
         version: current.version + 1,
         changed_at: Some(now()),
     };
@@ -204,7 +228,21 @@ pub(crate) fn change(db: &Connection, change: Change) -> Result<Settings> {
 /// What Settings shows: the settings, the defaults and what is fixed in Core.
 pub(crate) fn overview(db: &Connection) -> Result<Value> {
     Ok(json!({"settings": read(db)?, "defaults": Settings::default(), "maxItems": MAX_ITEMS,
-        "fixed": super::check::forbidden(), "rules": super::rules::overview(), "note": SETTINGS_NOTE}))
+        "fixed": super::check::forbidden(), "rules": super::rules::overview(), "initialization": initialization(db)?,
+        "note": SETTINGS_NOTE}))
+}
+
+/// What the first open of this Workspace found (design 3.3): a new install
+/// has the rule layer and worktree reclaim on; an upgrade from an earlier
+/// Core keeps YN-65 as it was, both off, with one notice Settings shows until
+/// the user has seen it. Reading it consumes nothing.
+pub(crate) fn initialization(db: &Connection) -> Result<Value> {
+    let row = db
+        .query_row("SELECT fresh, initialized_at, notice FROM cleanup_initialization WHERE id=1", [], |r| {
+            Ok(json!({"fresh": r.get::<_, i64>(0)? == 1, "at": r.get::<_, String>(1)?, "notice": r.get::<_, Option<String>>(2)?}))
+        })
+        .optional()?;
+    Ok(row.unwrap_or(Value::Null))
 }
 
 const SETTINGS_NOTE: &str = "Protected paths and scratch roots are empty until you add them: Core assumes no folder of one machine on another. What is fixed in Core is never removed whatever these say.";
