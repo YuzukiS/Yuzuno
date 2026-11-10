@@ -213,11 +213,39 @@ fn plan_item(store: &Store, run: &str, seq: i64, candidate: &Candidate, task: Op
          VALUES(?1,?2,?3,?4,?5,?6,'planned',?7,?8,?9)",
         params![run, id, seq, candidate.kind, candidate.path.to_string_lossy(), task, evidence.to_string(), pre.to_string(), now()],
     )?;
+    Ok(id)
+}
+
+/// A worktree's removal has its snapshot and pinned HEAD on record before the
+/// first destructive action; a Core that stops from here can still be
+/// restored, and never retries the path automatically.
+fn save_prepared(store: &Store, run: &str, item: &str, record: &Value, snapshot: &Value) -> Result<()> {
+    store.db.write()?.execute(
+        "UPDATE cleanup_automatic_items SET state='prepared',
+            result=json_set(COALESCE(result,'{}'),'$.code','prepared','$.ref',?4,'$.head',?5,'$.branch',?6),
+            snapshot=?3,ref=?4,updated_at=?7 WHERE run_id=?1 AND item_id=?2",
+        params![run, item, snapshot.to_string(), record["ref"].as_str(), record["head"].as_str(), record["branch"].as_str(), now()],
+    )?;
+    Ok(())
+}
+
+fn mark_removing(store: &Store, run: &str, item: &str) -> Result<()> {
     store.db.write()?.execute(
         "UPDATE cleanup_automatic_items SET state='removing',updated_at=?3 WHERE run_id=?1 AND item_id=?2",
-        params![run, id, now()],
+        params![run, item, now()],
     )?;
-    Ok(id)
+    Ok(())
+}
+
+/// A path Core once interrupted is never tried automatically again: the next
+/// pass finds it, keeps it, and says which earlier run stopped there.
+fn prior_attempt(store: &Store, path: &Path) -> Result<Option<(String, String)>> {
+    let db = store.db.read()?;
+    Ok(db.query_row(
+        "SELECT state,run_id FROM cleanup_automatic_items WHERE path=?1
+           AND state IN ('planned','prepared','removing','interrupted','partial','restored')
+         ORDER BY updated_at DESC LIMIT 1",
+        [path.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -253,9 +281,10 @@ pub(crate) fn recover(store: &Store) -> Result<usize> {
     for run in &runs {
         let why = "Core stopped while this automatic pass ran; what it had not finished is left as it was, and nothing is retried";
         tx.execute(
-            "UPDATE cleanup_automatic_items SET state=CASE state WHEN 'removing' THEN 'interrupted' ELSE 'interrupted' END,
-                result=?2,updated_at=?3 WHERE run_id=?1 AND state IN ('planned','removing')",
-            params![run, json!({"code":"interrupted","why":why}).to_string(), now()],
+            "UPDATE cleanup_automatic_items SET state='interrupted',
+                result=json_set(COALESCE(result,'{}'),'$.code','interrupted','$.why',?2),updated_at=?3
+              WHERE run_id=?1 AND state IN ('planned','prepared','removing')",
+            params![run, why, now()],
         )?;
         tx.execute("UPDATE cleanup_automatic_runs SET state='interrupted',finished_at=?2,data=json_set(data,'$.note',?3) WHERE id=?1",
             params![run, now(), why])?;
@@ -663,6 +692,14 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         worktrees.truncate(PER_PASS);
         for candidate in &worktrees {
             let Some(listed) = &candidate.listed else { continue };
+            if let Some((state, earlier)) = ws.stored({ let path = candidate.path.clone(); move |s| prior_attempt(s, &path) }).await? {
+                seq += 1;
+                ws.stored({ let run = run.clone(); let c = candidate.clone(); let state = state.clone(); let earlier = earlier.clone();
+                    move |s| keep_item(s, &run, seq, &c, None, &json!({"earlierRun": earlier, "state": state}), "kept",
+                        json!({"code": "interrupted", "why": "An earlier automatic attempt on this path was interrupted or restored; it is never tried automatically again"})) }).await?;
+                summary.kept += 1;
+                continue;
+            }
             let found = eligible(ws, &ctx, &project.id, listed, settings).await?;
             let evidence = found.evidence.clone();
             match found.verdict {
@@ -719,7 +756,48 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                     let path_text = candidate.path.to_string_lossy().into_owned();
                     let removal = Removal { data: &ws.data_dir, namespace: &run, task: &task, kind: "worktree",
                         id: &item_id, path: &path_text, pre: &pre.pre };
-                    let result = execute_checked(ws, &ctx, &removal).await;
+                    // The same checks a plan's item gets, then the snapshot and
+                    // pinned ref recorded before the first destructive action.
+                    let now_pre = match apply::checked_now(ws, &ctx, &removal).await {
+                        Ok((now_pre, _)) => now_pre,
+                        Err(result) => {
+                            ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
+                                move |s| finish_item(s, &run, &item, &result) }).await?;
+                            count(&mut summary, &result);
+                            continue;
+                        }
+                    };
+                    let prepared = match worktrees::prepare(&ctx, &ws.data_dir, &run, &task, &item_id, &candidate.path,
+                        &pre.pre, &now_pre).await {
+                        Ok(prepared) => prepared,
+                        Err((code, why, record, snapshot)) => {
+                            let result = prepared_outcome(code, why, record, snapshot);
+                            ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
+                                move |s| finish_item(s, &run, &item, &result) }).await?;
+                            count(&mut summary, &result);
+                            continue;
+                        }
+                    };
+                    // Snapshot and ref first; only then the removal. A stop in
+                    // between leaves the two on record and no retry.
+                    ws.stored({ let run = run.clone(); let item = item_id.clone(); let record = prepared.record.clone();
+                        let snapshot = prepared.snapshot.clone();
+                        move |s| save_prepared(s, &run, &item, &record, &snapshot) }).await?;
+                    ws.stored({ let run = run.clone(); let item = item_id.clone(); move |s| mark_removing(s, &run, &item) }).await?;
+                    #[cfg(test)]
+                    if ws.cleanup.stop_after_prepare.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        // The test's Core stops here: snapshot and ref are on
+                        // record and the removal has not started.
+                        return Ok(summary);
+                    }
+                    let result = match worktrees::remove_prepared(&ctx, &candidate.path, &pre.pre, prepared).await {
+                        Ok((record, snapshot)) => {
+                            let mut result = json!({"code": "removed", "bytes": now_pre["bytes"]});
+                            for (key, value) in record.as_object().into_iter().flatten() { result[key] = value.clone(); }
+                            Outcome { state: "removed", result, snapshot: Some(snapshot) }
+                        }
+                        Err((code, why, record, snapshot)) => prepared_outcome(code, why, record, snapshot),
+                    };
                     ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
                         move |s| finish_item(s, &run, &item, &result) }).await?;
                     count(&mut summary, &result);
@@ -741,8 +819,18 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // outside it (one inside it is covered by the folder's own walk). A
         // worktree whose folder is away for now is not a root.
         let mut roots = vec![ctx.project.clone()];
-        roots.extend(ctx.worktrees.iter().filter(|w| !w.main && !inside(&w.path, &ctx.project))
-            .map(|w| w.path.clone()).filter(|p| p.is_dir()));
+        for listed in ctx.worktrees.iter().filter(|w| !w.main && !inside(&w.path, &ctx.project)) {
+            if !listed.path.is_dir() {
+                continue;
+            }
+            // The path must still be this Project's repository's worktree: a
+            // folder replaced by another repository at the same path is no
+            // root of this rule layer (Lead, review of 3ca1d0c3).
+            match git(&listed.path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+                Ok(Ok(theirs)) if theirs.trim() == ctx.common => roots.push(listed.path.clone()),
+                _ => {}
+            }
+        }
         roots.sort();
         roots.dedup();
         let after = ws.stored({ let id = project.id.clone(); move |s| cursor(s, &id, "cache") }).await?;
@@ -763,6 +851,14 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         rotate(&mut cache, after.as_deref());
         cache.truncate(PER_PASS);
         for candidate in &cache {
+            if let Some((state, earlier)) = ws.stored({ let path = candidate.path.clone(); move |s| prior_attempt(s, &path) }).await? {
+                seq += 1;
+                ws.stored({ let run = run.clone(); let c = candidate.clone(); let state = state.clone(); let earlier = earlier.clone();
+                    move |s| keep_item(s, &run, seq, &c, None, &json!({"earlierRun": earlier, "state": state}), "kept",
+                        json!({"code": "interrupted", "why": "An earlier automatic attempt on this path was interrupted or restored; it is never tried automatically again"})) }).await?;
+                summary.kept += 1;
+                continue;
+            }
             let item = check::Item { id: "auto".into(), group: "automatic".into(), kind: "cache-dir".into(),
                 rule: candidate.rule.clone(), path: candidate.path.to_string_lossy().into_owned(), save_diff: false };
             let pre = check::preflight(&ctx, &item).await;
@@ -790,6 +886,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             let evidence = json!({"rule": candidate.rule, "basis": candidate.basis, "pre": pre.pre.clone()});
             let item_id = ws.stored({ let run = run.clone(); let c = candidate.clone(); let evidence = evidence.clone();
                 let pre = pre.pre.clone(); move |s| plan_item(s, &run, seq, &c, None, &evidence, &pre) }).await?;
+            ws.stored({ let run = run.clone(); let item = item_id.clone(); move |s| mark_removing(s, &run, &item) }).await?;
             let path_text = candidate.path.to_string_lossy().into_owned();
             let removal = Removal { data: &ws.data_dir, namespace: &run, task: AUTOMATIC, kind: "cache-dir",
                 id: &item_id, path: &path_text, pre: &pre.pre };
@@ -811,6 +908,19 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
 
 fn clone_outcome(outcome: &Outcome) -> Outcome {
     Outcome { state: outcome.state, result: outcome.result.clone(), snapshot: outcome.snapshot.clone() }
+}
+
+fn prepared_outcome(code: &'static str, why: String, record: Option<Value>, snapshot: Option<Value>) -> Outcome {
+    let state = match code {
+        "partial" => "partial",
+        "failed" => "failed",
+        _ => "refused",
+    };
+    let mut result = json!({"code": code, "why": why});
+    for (key, value) in record.as_ref().and_then(Value::as_object).into_iter().flatten() {
+        result[key] = value.clone();
+    }
+    Outcome { state, result, snapshot }
 }
 
 fn count(summary: &mut Summary, result: &Outcome) {

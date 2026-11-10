@@ -691,7 +691,7 @@ fn auto_states(lab: &Lab) -> Vec<(String, String, String)> {
 fn auto_item(lab: &Lab, path: &Path) -> Option<Value> {
     let db = lab.ws.store.db.read().unwrap();
     let text = path.to_string_lossy().into_owned();
-    db.query_row("SELECT result,snapshot,ref,task_id FROM cleanup_automatic_items WHERE path=?1 ORDER BY seq DESC LIMIT 1", [text],
+    db.query_row("SELECT result,snapshot,ref,task_id FROM cleanup_automatic_items WHERE path=?1 ORDER BY rowid DESC LIMIT 1", [text],
         |r| Ok(json!({"result": r.get::<_, Option<String>>(0)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null),
             "snapshot": r.get::<_, Option<String>>(1)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null),
             "ref": r.get::<_, Option<String>>(2)?, "task": r.get::<_, Option<String>>(3)?}))).optional().unwrap()
@@ -1009,4 +1009,104 @@ async fn cache_folders_wait_for_yn65_s_keep_days() {
     assert!(lab.project.join("target/debug").exists(), "YN-65 keepDays still protects a fresh profile");
     let item = auto_item(&lab, &lab.project.join("target")).unwrap();
     assert_eq!(item["result"]["code"], "keepDays", "{item:#}");
+}
+
+#[tokio::test]
+async fn an_interrupted_path_is_never_tried_automatically_again() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/stopped"), "feat/stopped");
+    let db = lab.ws.store.db.write().unwrap();
+    let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    db.execute("INSERT INTO cleanup_automatic_runs(id,project_id,machine,task_id,policy_version,params,state,started_at,finished_at,data)
+        VALUES('earlier',?1,'local',NULL,0,'{}','interrupted','now','now','{}')", [&project]).unwrap();
+    db.execute("INSERT INTO cleanup_automatic_items(run_id,item_id,seq,kind,path,state,evidence,pre,updated_at)
+        VALUES('earlier','1',1,'worktree',?1,'interrupted','{}','{}','now')", [tree.to_string_lossy().as_ref()]).unwrap();
+    drop(db);
+    assert!(automatic(&lab).await >= 1);
+    assert!(tree.exists(), "a path an earlier pass interrupted is left alone");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "interrupted", "{item:#}");
+}
+
+#[tokio::test]
+async fn an_interrupted_automatic_removal_with_its_snapshot_and_ref_can_be_restored() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    exclude(&lab, "notes/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/interrupted"), "feat/interrupted");
+    std::fs::create_dir_all(tree.join("notes")).unwrap();
+    std::fs::write(tree.join("notes/n.txt"), "in the snapshot\n").unwrap();
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    assert!(automatic(&lab).await >= 1);
+    let db = lab.ws.store.db.write().unwrap();
+    let (run, item): (String, String) = db.query_row("SELECT run_id,item_id FROM cleanup_automatic_items WHERE path=?1",
+        [tree.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    // A Core that stopped after the removal: its item is interrupted, but the
+    // snapshot and pinned ref were already on record.
+    db.execute("UPDATE cleanup_automatic_items SET state='interrupted' WHERE run_id=?1 AND item_id=?2", params![run, item]).unwrap();
+    drop(db);
+    let back = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
+    assert_eq!(back["state"], "restored");
+    assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "in the snapshot\n");
+}
+
+#[tokio::test]
+async fn a_folder_replaced_by_another_repository_is_not_this_project_s_cache() {
+    let lab = lab();
+    let tree = worktree(&lab, &lab.home.join("work/wt/identity"), "feat/identity");
+    let project: String = lab.ws.store.db.read().unwrap()
+        .query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    let settings = settings::read(&lab.ws.store.db.read().unwrap()).unwrap();
+    let ctx = check::context(lab.ws.cleanup.env(), lab.ws.cleanup.mounts(), &lab.ws.data_dir, &lab.project.display().to_string(),
+        Some(&project), &[], settings).await.unwrap();
+    // The same path now holds a different repository's checkout.
+    std::fs::rename(&tree, lab.home.join("work/wt/identity-away")).unwrap();
+    std::fs::create_dir_all(&tree).unwrap();
+    git(&tree, &["init", "-q"]);
+    std::fs::write(tree.join(".gitignore"), "node_modules/\n").unwrap();
+    git(&tree, &["add", ".gitignore"]);
+    git(&tree, &["commit", "-q", "-m", "other"]);
+    let modules = tree.join("node_modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::fs::write(tree.join("package.json"), "{\"name\":\"other\"}").unwrap();
+    std::fs::write(tree.join("package-lock.json"), "{}").unwrap();
+    std::fs::write(modules.join("x.js"), "other\n").unwrap();
+    let item = check::Item { id: "c".into(), group: "g".into(), kind: "cache-dir".into(), rule: None,
+        path: modules.display().to_string(), save_diff: false };
+    let checked = check::preflight(&ctx, &item).await;
+    assert_eq!(checked.refusal.map(|(code, _)| code), Some("otherTree"), "{:#}", checked.pre);
+    assert!(modules.exists(), "nothing in another repository is a candidate");
+}
+
+#[tokio::test]
+async fn a_stop_after_the_snapshot_and_ref_leaves_a_restorable_prepared_item() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    exclude(&lab, "notes/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/prepared"), "feat/prepared");
+    std::fs::create_dir_all(tree.join("notes")).unwrap();
+    std::fs::write(tree.join("notes/n.txt"), "snapshot before removal\n").unwrap();
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    lab.ws.cleanup.stop_after_prepare.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = automatic(&lab).await;
+    // Nothing destructive has happened, and both the snapshot and the pinned
+    // ref are already on record.
+    assert!(tree.exists());
+    let (run, item, state, snapshot, reference): (String, String, String, Option<String>, Option<String>) =
+        lab.ws.store.db.read().unwrap().query_row(
+            "SELECT run_id,item_id,state,snapshot,ref FROM cleanup_automatic_items WHERE path=?1 ORDER BY rowid DESC LIMIT 1",
+            [tree.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+    assert_eq!(state, "removing");
+    assert!(snapshot.is_some() && reference.is_some(), "snapshot {snapshot:?} ref {reference:?}");
+    // A Core that stopped is recovered as interrupted, never retried.
+    lab.ws.stored(super::automatic::recover).await.unwrap();
+    // The destructive step is simulated in the fixture; the snapshot and ref
+    // alone bring it back.
+    std::fs::remove_dir_all(&tree).unwrap();
+    let back = lab.ws.collaboration_call(Some("lead"), "cleanup_restore", json!({"requestId":"r1","runId":run,"itemId":item})).await.unwrap();
+    assert_eq!(back["state"], "restored");
+    assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(tree.join("notes/n.txt")).unwrap(), "snapshot before removal\n");
 }

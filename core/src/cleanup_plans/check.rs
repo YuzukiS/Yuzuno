@@ -538,6 +538,16 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
                 if !matches!(&top, Ok(Ok(t)) if real(Path::new(t.trim())) == tree) {
                     return Checked::refused("otherTree", "It is inside another Git working tree", pre);
                 }
+                // The worktree must still be this Project's repository's: a
+                // folder replaced by another repository at the same path is
+                // never this rule layer's (Lead, review of 3ca1d0c3).
+                match git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+                    Ok(Ok(theirs)) if theirs.trim() == ctx.common => {}
+                    Ok(Ok(_)) | Ok(Err(_)) => {
+                        return Checked::refused("otherTree", "It is no longer this Project's repository", pre);
+                    }
+                    Err(error) => return Checked::refused("git", format!("Git could not check its repository: {error}"), pre),
+                }
                 match git(tree, &["check-ignore", "-q", "--", &relative]).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(why)) if why.is_empty() => return Checked::refused("notIgnored", "Git does not ignore it", pre),

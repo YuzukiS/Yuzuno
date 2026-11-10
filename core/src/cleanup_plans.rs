@@ -94,6 +94,10 @@ pub(crate) struct State {
     pub ssh: std::sync::Mutex<Option<String>>,
     /// One automatic pass at a time, however many ticks fire.
     pub automatic: tokio::sync::Mutex<()>,
+    /// A test stops an automatic pass after a worktree's snapshot and ref are
+    /// on record, before the first destructive action.
+    #[cfg(test)]
+    pub stop_after_prepare: std::sync::atomic::AtomicBool,
 }
 
 impl State {
@@ -175,7 +179,7 @@ pub(crate) fn migrate(db: &Connection, fresh: Option<bool>) -> Result<()> {
          CREATE TABLE IF NOT EXISTS cleanup_automatic_items(
             run_id TEXT NOT NULL REFERENCES cleanup_automatic_runs(id) ON DELETE CASCADE, item_id TEXT NOT NULL, seq INTEGER NOT NULL,
             kind TEXT NOT NULL, path TEXT NOT NULL, task_id TEXT,
-            state TEXT NOT NULL CHECK(state IN ('planned','removing','removed','kept','refused','partial','failed','interrupted','restored')),
+            state TEXT NOT NULL CHECK(state IN ('planned','prepared','removing','removed','kept','refused','partial','failed','interrupted','restored')),
             evidence TEXT NOT NULL, pre TEXT NOT NULL, result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL,
             PRIMARY KEY(run_id, item_id));
          CREATE TABLE IF NOT EXISTS cleanup_automatic_cursors(

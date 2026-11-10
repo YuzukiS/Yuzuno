@@ -388,7 +388,7 @@ async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
 }
 
 /// The same file system object as when it was planned.
-fn same(path: &Path, pre: &Value) -> bool {
+pub(super) fn same(path: &Path, pre: &Value) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| {
         Some(m.dev()) == pre["dev"].as_u64() && Some(m.ino()) == pre["ino"].as_u64() && pre["mtimeNs"].as_str() == Some(&mtime_ns(&m).to_string())
     })
@@ -396,7 +396,7 @@ fn same(path: &Path, pre: &Value) -> bool {
 
 /// Why the item's folder is in use now: processes on this host (/proc),
 /// running Jobs and working Agents in `users_root`, Job records naming it.
-async fn in_use(ws: &Arc<Workspace>, users_root: &Path, path: &Path) -> Option<(&'static str, String)> {
+pub(super) async fn in_use(ws: &Arc<Workspace>, users_root: &Path, path: &Path) -> Option<(&'static str, String)> {
     let unavailable = ws.cleanup.processes_unavailable();
     let target = path.to_path_buf();
     let processes = tokio::task::spawn_blocking(move || if unavailable { Err("/proc cannot be read".to_owned()) } else { process_users(&target) })
@@ -421,23 +421,24 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
         path: &item.path, pre: &item.pre }).await
 }
 
-/// The checked execution path both a manual plan's item and an automatic
-/// run's item go through: the same object as when it was planned, every
-/// check again (roots, kind, rule, freshness, snapshot), no process, Job or
-/// Agent using it, then its snapshot and its removal.
-pub(super) async fn execute_checked(ws: &Arc<Workspace>, ctx: &check::Context, item: &Removal<'_>) -> Outcome {
+/// The checks every removal makes just before it: the same object as when it
+/// was checked, every registration check again, and no process, Job or Agent
+/// using it. Ok is the item's state now and the folder Jobs and Agents are
+/// looked for in; Err is what stops it.
+pub(super) async fn checked_now(ws: &Arc<Workspace>, ctx: &check::Context, item: &Removal<'_>)
+    -> std::result::Result<(Value, PathBuf), Outcome> {
     let path = PathBuf::from(item.path);
     if !same(&path, item.pre) {
-        return outcome("refused", "changed", "It changed since it was checked");
+        return Err(outcome("refused", "changed", "It changed since it was checked"));
     }
     let given = check::Item { id: item.id.to_owned(), group: "automatic".to_owned(), kind: item.kind.to_owned(),
         rule: item.pre["rule"].as_str().map(str::to_owned), path: item.path.to_owned(), save_diff: item.pre["saveDiff"] == true };
     let now = check::preflight(ctx, &given).await;
     if let Some((code, why)) = now.refusal {
-        return outcome("refused", code, why);
+        return Err(outcome("refused", code, why));
     }
     if now.pre["dev"] != item.pre["dev"] || now.pre["ino"] != item.pre["ino"] {
-        return outcome("refused", "changed", "It changed since it was checked");
+        return Err(outcome("refused", "changed", "It changed since it was checked"));
     }
     // Jobs and Agents are looked for in its working tree, or in its scratch entry.
     let users_root = match now.pre["tree"].as_str() {
@@ -447,9 +448,21 @@ pub(super) async fn execute_checked(ws: &Arc<Workspace>, ctx: &check::Context, i
         }).unwrap_or_else(|| path.clone()),
     };
     if let Some((code, why)) = in_use(ws, &users_root, &path).await {
-        return outcome("refused", code, why);
+        return Err(outcome("refused", code, why));
     }
-    let bytes = now.pre["bytes"].clone();
+    Ok((now.pre, users_root))
+}
+
+/// The checked execution path both a manual plan's item and an automatic
+/// run's cache item go through: its checks, then its snapshot and removal.
+pub(super) async fn execute_checked(ws: &Arc<Workspace>, ctx: &check::Context, item: &Removal<'_>) -> Outcome {
+    let path = PathBuf::from(item.path);
+    let now_pre = match checked_now(ws, ctx, item).await {
+        Ok((now_pre, _users)) => now_pre,
+        Err(outcome) => return outcome,
+    };
+    let bytes = now_pre["bytes"].clone();
+    let now = check::Checked { refusal: None, pre: now_pre.clone() };
     if item.kind == "worktree" {
         return match worktrees::reclaim(ctx, item.data, item.namespace, item.task, item.id, &path, item.pre, &now.pre).await {
             Ok((record, snapshot)) => {

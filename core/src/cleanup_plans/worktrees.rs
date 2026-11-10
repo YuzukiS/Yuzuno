@@ -272,11 +272,21 @@ fn before(code: &'static str, why: impl Into<String>) -> NotReclaimed {
     (code, why.into(), None, None)
 }
 
-/// Removes a worktree that passed every check: its HEAD pinned, its
-/// snapshot kept, moved aside, removed, its record pruned.
+/// What a worktree's removal has made before anything is moved: its HEAD
+/// pinned and its snapshot written. An automatic run records both before the
+/// first destructive action, so an interruption leaves a restorable item.
+#[derive(Clone, Debug)]
+pub(super) struct Prepared {
+    pub record: Value,
+    pub snapshot: Value,
+    pub pinned: String,
+}
+
+/// Everything before the first destructive action: the snapshot, its HEAD
+/// pinned under refs/yuzuno/reclaimed/..., and the record naming both.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value)
-    -> std::result::Result<(Value, Value), NotReclaimed> {
+pub(super) async fn prepare(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value)
+    -> std::result::Result<Prepared, NotReclaimed> {
     let facts = &now["worktree"];
     let save_diff = pre["saveDiff"] == true;
     let tracked = facts["trackedChanges"].as_u64().unwrap_or(0);
@@ -308,7 +318,15 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
         Ok(Err(why)) => return Err(("git", format!("Its HEAD could not be pinned: {why}"), None, Some(snapshot))),
         Err(error) => return Err(("git", format!("Its HEAD could not be pinned: {error}"), None, Some(snapshot))),
     }
-    let mut record = json!({"ref": pinned, "head": head, "branch": facts["branch"]});
+    let record = json!({"ref": pinned, "head": head, "branch": facts["branch"]});
+    Ok(Prepared { record, snapshot, pinned })
+}
+
+/// The first destructive action and what follows it: moved aside, checked to
+/// be the same object, removed, and its own Git record dropped.
+pub(super) async fn remove_prepared(ctx: &check::Context, path: &Path, pre: &Value, prepared: Prepared)
+    -> std::result::Result<(Value, Value), NotReclaimed> {
+    let Prepared { mut record, snapshot, pinned } = prepared;
     let (target, dev, ino) = (path.to_path_buf(), pre["dev"].as_u64(), pre["ino"].as_u64());
     let removed = tokio::task::spawn_blocking(move || super::apply::remove_aside(&target, dev, ino))
         .await
@@ -326,6 +344,15 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
         return Err((state, format!("{why}; its HEAD stays pinned at {pinned}"), Some(record), Some(snapshot)));
     }
     Ok((record, snapshot))
+}
+
+/// Removes a worktree that passed every check: prepared (its HEAD pinned and
+/// its snapshot kept), then moved aside and removed.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value)
+    -> std::result::Result<(Value, Value), NotReclaimed> {
+    let prepared = prepare(ctx, data, plan, task, item_id, path, pre, now).await?;
+    remove_prepared(ctx, path, pre, prepared).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -439,7 +466,8 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         return Ok(json!({"item": input.item_id, "state": removed.state, "restored": removed.result["restored"]}));
     }
     // Removed, or partly: what went is in its snapshot either way.
-    ensure!(removed.state == "removed" || removed.state == "partial", "not_removed: only an item a cleanup removed is restored (it is {})", removed.state);
+    ensure!(matches!(removed.state.as_str(), "removed" | "partial" | "interrupted" | "prepared"),
+        "not_removed: only an item a cleanup removed, or an automatic attempt it interrupted, is restored (it is {})", removed.state);
     ensure!(removed.kind == "worktree" || removed.kind == "entry", "not_restorable: a {} item is rebuilt, not restored", removed.kind);
     let target = PathBuf::from(&removed.path);
     ensure!(std::fs::symlink_metadata(&target).is_err(), "path_taken: something is at {} now; move it away first", removed.path);
@@ -560,7 +588,7 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
             }
             Origin::Automatic { run, item } => {
                 tx.execute("UPDATE cleanup_automatic_items SET state='restored',result=json_set(COALESCE(result,'{}'),'$.restored',json(?3)),updated_at=?4
-                    WHERE run_id=?1 AND item_id=?2 AND state IN ('removed','partial')", params![run, item, restored.to_string(), now()])?;
+                    WHERE run_id=?1 AND item_id=?2 AND state IN ('removed','partial','interrupted','prepared')", params![run, item, restored.to_string(), now()])?;
                 // No task, no activity: the automatic history keeps it.
                 if let Some(task) = removed.task.as_deref().filter(|task| tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM collaboration_tasks WHERE id=?1)", [task], |r| r.get::<_, bool>(0)).unwrap_or(false)) {
