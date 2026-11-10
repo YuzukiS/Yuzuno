@@ -43,20 +43,8 @@ export interface Policy {
 }
 export interface PolicyView { version: number; policy: Policy; updatedAt?: string; limits: { candidates: number } }
 
-/** The kinds of work an executor's tier names (YN-70): strong for designing, investigating, deciding and checking, fast for
- * building what was decided. */
-export type Tier = "strong" | "fast";
-export const TIERS: readonly Tier[] = ["strong", "fast"];
-/** The tiers a candidate serves: those it lists, or both when it lists none (as every candidate saved before YN-70). */
-export const tiersOf = (c: Candidate): Tier[] =>
-  Array.isArray(c.tiers) ? TIERS.filter((tier) => (c.tiers as unknown[]).includes(tier)) : [...TIERS];
-/** `c` serving `tiers`: both is no list at all, so a candidate the user leaves at both is saved as it was. */
-export function withTiers(c: Candidate, tiers: readonly Tier[]): Candidate {
-  const next = { ...c };
-  if (TIERS.every((tier) => tiers.includes(tier))) delete next.tiers;
-  else next.tiers = TIERS.filter((tier) => tiers.includes(tier));
-  return next;
-}
+/** The kinds of work a candidate takes (YN-70, YN-84 S1): its own module, re-exported here as the page had them. */
+export { TIERS, tiersOf, type Tier } from "./routing-tiers";
 
 export const isKnown = (c: AnyCondition): c is Condition => c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap";
 export const emptyPolicy = (): Policy => ({ enabled: false, candidates: [], whenNone: "wait" });

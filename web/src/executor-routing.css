@@ -234,8 +234,7 @@
 .routing-pool, .routing-unknown, .routing-tiers { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .routing-pool legend, .routing-unknown legend, .routing-tiers legend { float: left; width: 100%; padding: 0; margin-bottom: 2px; }
 .routing-pool label, .routing-unknown label, .routing-tiers label, .routing-pool-accounts label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
-/* YN-70: the last kind of work it takes stays ticked. */
-.routing-tiers label:has(input:disabled) { cursor: not-allowed; }
+/* YN-84 S1: the kinds of work are one choice, so nothing to hold and no "last one stays" note. */
 .routing-tiers .settings-row-meta { flex-basis: 100%; margin: 0; }
 .routing-pool-accounts { display: flex; flex-wrap: wrap; gap: 6px 16px; width: 100%; }
 .routing-conditions { display: grid; gap: 6px; }

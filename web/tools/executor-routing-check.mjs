@@ -226,7 +226,8 @@ const words = {
     opencodeGroups: ["DeepSeek · with this candidate's API key", "OpenCode · no login needed", "Anthropic · only with its own API key"], fromOpencode: /^From OpenCode 2\.2\.5 on this Core host/,
     needsFix: "Needs a fix", fixIt: "Needs a fix: edit Claude Code · sonnet · API", keyNeeded: "The key anthropic-old isn't added yet",
     addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key",
-    fastOnly: "Fast work only", strongOnly: "Strong work only", workAny: "Any", workFast: "Fast", notServed: "It doesn't serve the fast tier this executor wants" },
+    fastOnly: "Fast work only", strongOnly: "Strong work only", workAny: "Any", workFast: "Fast", notServed: "It doesn't serve the fast tier this executor wants",
+    tierStrong: "Strong work only · design, investigation, decisions, checks", tierFast: "Fast work only · building what was decided", tierBoth: "Both · as before" },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
@@ -236,7 +237,8 @@ const words = {
     opencodeGroups: ["DeepSeek · 用这个候选的 API key", "OpenCode · 免登录", "Anthropic · 只能用它自己的 API key"], fromOpencode: /^来自这台 Core 主机上的 OpenCode 2\.2\.5/,
     needsFix: "需要修改", fixIt: "需要修改：编辑 Claude Code · sonnet · API", keyNeeded: "还没有 key anthropic-old",
     addCandidate: "添加候选", account: "账号或 key", newAnthropic: "新的 Anthropic API key", saveKey: "保存 key",
-    fastOnly: "只接快活", strongOnly: "只接强活", workAny: "不限", workFast: "快", notServed: "它不接这个执行者要的「快」档" },
+    fastOnly: "只接快活", strongOnly: "只接强活", workAny: "不限", workFast: "快", notServed: "它不接这个执行者要的「快」档",
+    tierStrong: "只接强 · 设计、调查、决定、核查", tierFast: "只接快 · 照定下的做", tierBoth: "都接 · 和以前一样" },
 };
 
 async function run({ width, height, theme, lang }) {
@@ -372,10 +374,27 @@ async function run({ width, height, theme, lang }) {
     assert.equal((await order.locator('.routing-cand[data-cand="ds"] .routing-chip-tier').innerText()).trim(), w.fastOnly);
     assert.equal((await order.locator('.routing-cand[data-cand="cl"] .routing-chip-tier').innerText()).trim(), w.strongOnly);
     assert.equal(await order.locator('.routing-cand[data-cand="cx"] .routing-chip-tier').count(), 0, `${tag}: one taking both says nothing`);
+    // ---- YN-84 S1: the kinds of work are one choice. DeepSeek's editor (open now) shows fast only.
     const tiers = opencodeEditor.locator(".routing-tiers");
     await tiers.scrollIntoViewIfNeeded();
-    assert.deepEqual(await tiers.locator("input").evaluateAll((inputs) => inputs.map((i) => [i.checked, i.disabled])), [[false, false], [true, true]],
-      `${tag}: fast ticked, and held as the last one`);
+    const tierRadios = tiers.locator('input[type="radio"]');
+    assert.deepEqual(await tierRadios.evaluateAll((inputs) => inputs.map((i) => i.checked)), [false, true, false],
+      `${tag}: fast only is the one choice shown`);
+    assert.deepEqual(await tierRadios.evaluateAll((inputs) => inputs.map((i) => i.disabled)), [false, false, false],
+      `${tag}: nothing held`);
+    assert.deepEqual((await tiers.locator("label").allInnerTexts()).map((s) => s.trim()), [w.tierStrong, w.tierFast, w.tierBoth],
+      `${tag}: strong only, fast only, both`);
+    /** The card's chip says `text`, or both when it says nothing (null). */
+    const cardTier = (text) => page.waitForFunction((want) => (document.querySelector('.routing-cand[data-cand="ds"] .routing-chip-tier')?.textContent.trim() ?? null) === want, text);
+    await press(tiers.getByRole("radio", { name: w.tierStrong, exact: true }));
+    await cardTier(w.strongOnly);
+    assert.deepEqual(await tierRadios.evaluateAll((inputs) => inputs.map((i) => i.checked)), [true, false, false]);
+    await press(tiers.getByRole("radio", { name: w.tierFast, exact: true }));
+    await cardTier(w.fastOnly);
+    // Both: Core keeps it as no `tiers` field at all, which the save below checks in its PUT.
+    await press(tiers.getByRole("radio", { name: w.tierBoth, exact: true }));
+    await cardTier(null);
+    assert.deepEqual(await tierRadios.evaluateAll((inputs) => inputs.map((i) => i.checked)), [false, false, true]);
     await page.mouse.move(0, 0);
     assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the kinds of work`);
     await shot("tiers-editor");
@@ -421,6 +440,9 @@ async function run({ width, height, theme, lang }) {
       const put = report.writes.filter((x) => x.path === "/api/routing/policy").at(-1);
       assert.equal(put.body.expectedVersion, 3);
       assert.deepEqual(put.body.policy.candidates.map((c) => c.id), ["cl", "ds", "cx", "cla"]);
+      // YN-84 S1: both is no `tiers` field at all; a candidate taking one kind keeps its one.
+      assert.equal("tiers" in put.body.policy.candidates.find((c) => c.id === "ds"), false, `${tag}: both saved without tiers`);
+      assert.deepEqual(put.body.policy.candidates.find((c) => c.id === "cl").tiers, ["strong"], `${tag}: strong only kept`);
       await shot("order-saved");
       // The recent choices, one opened to its record; today's spend by the cap.
       const recent = order.locator(".routing-recent-row");
