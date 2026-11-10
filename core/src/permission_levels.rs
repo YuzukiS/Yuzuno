@@ -45,6 +45,10 @@ use anyhow::{bail, ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+/// The rules Core is to give an OpenCode executor once it answers its
+/// permission requests itself (YN-78 S3a): passive, used nowhere yet.
+mod opencode_policy;
+
 /// Each level, with what it is on Codex (its permission preset) and on Claude
 /// Code (its permission mode); None where that harness doesn't keep it.
 static LEVELS: [Level; 4] = [
