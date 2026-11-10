@@ -14,7 +14,8 @@
 //!
 //! `remote_job.py` is itself a helper and also holds two sources as strings:
 //! `COMMON`, executed by both helpers, and `SUPERVISOR`, executed by the
-//! supervisor. All four segments are checked.
+//! supervisor. The remote program's `boot.py` and `program.py` joined in PR2.
+//! All six segments are checked.
 
 use std::path::Path;
 use std::process::Command;
@@ -36,6 +37,8 @@ job_path = root / "core/src/jobs/remote_job.py"
 segments = [
     ("core/src/remote_helper.py", (root / "core/src/remote_helper.py").read_text(encoding="utf-8")),
     ("core/src/jobs/remote_job.py", job_path.read_text(encoding="utf-8")),
+    ("core/src/remote_service/boot.py", (root / "core/src/remote_service/boot.py").read_text(encoding="utf-8")),
+    ("core/src/remote_service/program.py", (root / "core/src/remote_service/program.py").read_text(encoding="utf-8")),
 ]
 job = segments[1][1]
 embedded = {}
@@ -99,7 +102,7 @@ fn helper_sources_are_python_36_compatible() {
         "the check did not use a real Python 3.6 grammar:\n{stdout}{stderr}"
     );
     assert!(
-        stdout.contains("0 Python 3.6 compatibility problem(s) in 4 source segment(s)"),
-        "the check did not cover all four helper sources:\n{stdout}{stderr}"
+        stdout.contains("0 Python 3.6 compatibility problem(s) in 6 source segment(s)"),
+        "the check did not cover all six helper sources:\n{stdout}{stderr}"
     );
 }
