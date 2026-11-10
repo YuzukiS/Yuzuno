@@ -645,7 +645,7 @@ fn identity_matches_the_jobs_helper_and_stays_null_without_machine_id() {
     let root = home.join("data");
     std::fs::create_dir(&root).unwrap();
     let script = r#"
-import importlib.util, json, sys
+import builtins, hashlib, importlib.util, io, json, os, platform, sys
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -653,11 +653,31 @@ def load(name, path):
     return module
 program = load("remote_program", sys.argv[1])
 jobs = load("remote_jobs", sys.argv[2])
+# No override: give both helpers the same synthetic machine and boot identity
+# through the paths they read by default, so this comparison does not depend on
+# the host running the test.
+synthetic = len(sys.argv) > 7 and sys.argv[7] == "synthetic"
+expected = None
+if synthetic:
+    jobs.DARWIN = False
+    platform.system = lambda: "Linux"
+    machine = "fedcba9876543210fedcba9876543210"
+    files = {"/etc/machine-id": machine + "\n",
+             "/proc/sys/kernel/random/boot_id": "synthetic-boot\n"}
+    real_open = builtins.open
+    def opened(path, *args, **kwargs):
+        name = path if isinstance(path, str) else os.fspath(path)
+        if name in files:
+            return io.StringIO(files[name])
+        return real_open(path, *args, **kwargs)
+    builtins.open = opened
+    expected = hashlib.sha256(("yuzuno-jobs-host-v1:" + machine).encode("utf-8")).hexdigest()[:32]
 host = program.host_id()
 print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     "programBoot": program.boot_id(), "jobsBoot": jobs.boot_id(),
     "account": program.account_key(host, sys.argv[5]),
-    "ioreg": program.parse_ioreg(sys.argv[6])}))
+    "ioreg": program.parse_ioreg(sys.argv[6]),
+    "expectedHost": expected}))
 "#;
     let ioreg = r#""IOPlatformUUID" = "01234567-89AB-CDEF-0123-456789ABCDEF""#;
     let run = |machine_id: &Path| {
@@ -686,13 +706,16 @@ print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     assert!(missing["jobsHost"].is_null());
     assert!(missing["account"].is_null());
 
-    // With no override both read the machine's own identity.
+    // With no override both read the machine's own identity. The no-override
+    // case is synthetic: the child's default paths are answered from fixed
+    // values, so the comparison does not depend on the host running the test.
     let inherited = Command::new(python())
         .args(["-I", "-c", script,
             source("src/remote_service/program.py").to_str().unwrap(),
             source("src/jobs/remote_job.py").to_str().unwrap(),
             machine.to_str().unwrap(), boot.to_str().unwrap(),
-            root.to_str().unwrap(), ioreg])
+            root.to_str().unwrap(), ioreg, "synthetic"])
+        .env("HOME", &home)
         .env_remove("YUZUNO_JOBS_MACHINE_ID_FILE")
         .env_remove("YUZUNO_JOBS_BOOT_ID_FILE")
         .env_remove("YUZUNO_REMOTE_ROOT")
@@ -702,6 +725,10 @@ print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     let inherited: Value = serde_json::from_slice(&inherited.stdout).unwrap();
     assert_eq!(inherited["programHost"], inherited["jobsHost"]);
     assert_eq!(inherited["programBoot"], inherited["jobsBoot"]);
+    assert_eq!(inherited["programHost"], inherited["expectedHost"]);
+    assert_eq!(inherited["programHost"].as_str().unwrap().len(), 32);
+    assert_eq!(inherited["programBoot"], "synthetic-boot");
+    assert_eq!(inherited["account"].as_str().unwrap().len(), 32);
 }
 
 #[test]
