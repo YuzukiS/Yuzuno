@@ -1,6 +1,41 @@
 # Workspace cleanup
 
-A workspace cleanup frees disk space in a Project's folders without guessing. A task's executor takes an inventory, registers a plan, and asks the user to approve it group by group. Core then removes only what the user approved, after checking each item again. This page covers the parts in this version. Settings, triggers and the cleanup template come in later slices of YN-74.
+A workspace cleanup frees disk space in a Project's folders without guessing. It runs only when the user asks for one: a task's executor takes an inventory, registers a plan, and asks the user to approve it group by group. Core then removes only what the user approved, after checking each item again. No timer or disk level starts a workspace cleanup. The build output cleanup in Settings → Data & storage is a separate feature with its own switch ([executor model](executor-model.md)).
+
+## Where a task's files go
+
+Each stage works in its own worktree, and its executor starts there. It doesn't `cd` into the worktree from another folder. In the worktree, keep these kinds of files apart:
+
+| Kind | Where |
+|---|---|
+| Sources | the tracked files |
+| Build output and dependencies | where the tool puts them: `target/debug`, `target/release`, `node_modules` and the other folders a rule below recognizes |
+| Results to keep: reports, screenshots, Job outputs | `results/<task-or-stage>/` |
+| Temporary files the stage makes itself | `.tmp/<stage>/` |
+
+The repository ignores `/results/` and `/.tmp/` at its top, so neither is committed by mistake.
+
+- The layout is for new files. Older files stay where they are; nothing moves them in bulk.
+- `target/` as a whole is not rebuildable: earlier stages left Job reports, screenshots and evidence there. Only what Cargo makes in it goes, by the `cargo` rule.
+- Don't copy dependencies or a whole runtime into an evidence folder, and don't add temporary folders to the home folder.
+- If a tool needs a short Unix socket path, use the short folder the stage already gets. An OpenCode executor at ask, auto or full has its own `TMPDIR` under `<Core data>/t` (`core/src/executor_temp.rs`). There is no other fallback folder.
+- Hand results over by reference: a Task result, a Home report or a Job artifact. A Job artifact records a path, a size and a sha256, not a copy. Before a whole worktree is reclaimed, make sure each result in it has a lasting copy, or a reference that still works.
+- A folder's name never allows removing it, `results/` and `.tmp/` included. Results are kept by default.
+
+## A cleanup on demand
+
+1. The user asks for a cleanup and names its scope: the Project, the machine and the folders.
+2. The executor takes a read-only inventory of those folders (`cleanup_inventory`, below).
+3. It registers one plan for the whole scope (`cleanup_plan_submit`): what goes, what stays and why, and what each group frees.
+4. The user approves groups on Home. `cleanup_apply` removes only those, and Core checks each item again first.
+5. The executor reports what was removed and what was kept, and how to put an item back (`cleanup_restore`).
+
+Before it registers the plan, the executor checks what is in use there:
+- Agents and Jobs at work, and running processes;
+- the code, its HEAD and uncommitted changes;
+- results still needed.
+
+Anything unclear goes in a keep or ask group. Core's own checks apply when the plan is registered and again before each removal. One of them: a folder a removal renamed aside (`.yuzuno-removing-…`), or anything inside one, is never an item (`removing`).
 
 ## The inventory
 
@@ -44,6 +79,7 @@ Where the file goes:
 
 A folder is rebuildable only when a rule recognizes it, never by its name alone. Common conditions apply to every rule:
 - Inside the Project's folder or a worktree of it, Git must ignore the folder and track nothing in it.
+- In a worktree, the folder must belong to this Project's repository now (`git rev-parse --git-common-dir`). If Git still lists the worktree but another repository is at its path, the folder is refused (`otherTree`).
 - Every other check of the plan applies.
 - A folder Git can't place is refused, not guessed.
 

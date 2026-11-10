@@ -420,6 +420,56 @@ async fn a_project_that_is_a_folder_of_a_larger_repository_has_its_cache_folders
 }
 
 #[tokio::test]
+async fn what_a_removal_renamed_aside_and_anything_inside_it_is_never_an_item() {
+    let lab = lab();
+    let aside = crate::build_output::REMOVING;
+    // A removal stopped after renaming its folder aside; a cache folder inside it.
+    let residue = lab.scratch.join(format!("{aside}left"));
+    let inside = residue.join(".pytest_cache");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::write(inside.join("CACHEDIR.TAG"), TAG_PYTEST).unwrap();
+    let tree = worktree(&lab, &lab.home.join(format!("work/{aside}root/wt")), "feat/removing-root");
+    let plain = lab.scratch.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let plan = submit(&lab, "removing", vec![group("d", "delete"), group("r", "rebuildable")], vec![
+        item("residue", "d", "entry", &residue),
+        item("inside", "r", "cache-dir", &inside),
+        item("tree", "d", "worktree", &tree),
+        item("plain", "d", "entry", &plain),
+    ]).await;
+    let states = item_states(&lab, &plan).await;
+    for id in ["residue", "inside", "tree"] {
+        assert_eq!(refused(&states, id), "removing", "{id}");
+    }
+    pending(&states, "plain");
+}
+
+#[tokio::test]
+async fn a_cache_folder_where_a_listed_worktree_now_holds_another_repository_is_refused() {
+    let lab = lab();
+    // A real worktree outside the Project's folder: its cache folder is checked.
+    let real = worktree(&lab, &lab.home.join("work/wt/real"), "feat/real");
+    cargo_target(&real.join("target"), &["debug"]);
+    // Git still lists this path, but another repository is there now.
+    let tree = worktree(&lab, &lab.home.join("work/wt/swapped"), "feat/swapped");
+    std::fs::rename(&tree, lab.home.join("work/wt/swapped-away")).unwrap();
+    std::fs::create_dir_all(&tree).unwrap();
+    git(&tree, &["init", "-q"]);
+    std::fs::write(tree.join(".gitignore"), "target/\n").unwrap();
+    git(&tree, &["add", ".gitignore"]);
+    git(&tree, &["commit", "-q", "-m", "other"]);
+    cargo_target(&tree.join("target"), &["debug"]);
+    assert!(git(&lab.project, &["worktree", "list", "--porcelain"]).contains(&format!("worktree {}\n", tree.display())));
+    let plan = submit(&lab, "swapped", vec![group("r", "rebuildable")], vec![
+        item("real", "r", "cache-dir", &real.join("target")),
+        item("swapped", "r", "cache-dir", &tree.join("target")),
+    ]).await;
+    let states = item_states(&lab, &plan).await;
+    pending(&states, "real");
+    assert_eq!(refused(&states, "swapped"), "otherTree");
+}
+
+#[tokio::test]
 async fn fresh_writes_and_the_evidence_window_keep_items_and_snapshots_have_a_limit() {
     let lab = lab();
     let job = lab.scratch.join("job-2");
