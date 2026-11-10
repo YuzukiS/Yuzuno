@@ -906,6 +906,31 @@ async fn what_a_login_script_prints_never_passes_for_a_reply() {
     assert_eq!((done["status"].as_str(), done["reason"].as_str()), (Some("succeeded"), Some("success")), "{done}");
 }
 
+/// YN-83: the unusable-python check moved into its own function for the
+/// remote session; Jobs keeps its order and every message as it was.
+#[test]
+fn unusable_python_keeps_the_jobs_order_and_messages() {
+    use remote::{parse_reply, unusable_python, Reply, UnusablePython};
+    assert_eq!(unusable_python(127, "xcrun: error: invalid active developer path"), Some(UnusablePython::Missing));
+    assert_eq!(unusable_python(126, ""), Some(UnusablePython::Missing));
+    assert_eq!(unusable_python(1, "SyntaxError: invalid syntax\nxcrun: error"), Some(UnusablePython::TooOld));
+    assert_eq!(unusable_python(2, "SyntaxError: invalid syntax"), None);
+    assert_eq!(unusable_python(2, "xcode-select: note: no developer tools were found"), Some(UnusablePython::StandIn));
+    assert_eq!(unusable_python(1, "Traceback: KeyError"), None);
+    let message = |code: i32, stderr: &str| match parse_reply(Some(code), b"", stderr, "n") {
+        Reply::Unusable(message) => format!("unusable: {message}"),
+        Reply::Broken(message) => format!("broken: {message}"),
+        other => format!("{other:?}"),
+    };
+    assert_eq!(message(127, "sh: python3: not found"), "unusable: it has no usable python3 (sh: python3: not found)");
+    assert_eq!(message(1, "SyntaxError: x"), "unusable: its python3 is too old for the Jobs helper, which needs 3.6 or newer (SyntaxError: x)");
+    assert_eq!(
+        message(1, "xcrun: error: y"),
+        "unusable: its python3 is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install) (xcrun: error: y)"
+    );
+    assert_eq!(message(2, "SyntaxError: x"), "broken: the helper there exited 2: SyntaxError: x");
+}
+
 #[test]
 fn a_reply_is_one_complete_line_with_the_calls_nonce_and_a_matching_exit() {
     use remote::{parse_reply, Reply};

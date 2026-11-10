@@ -820,7 +820,7 @@ print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     let ioreg = r#""IOPlatformUUID" = "01234567-89AB-CDEF-0123-456789ABCDEF""#;
     let run = |machine_id: &Path| {
         let output = Command::new(python())
-            .args(["-I", "-c", script,
+            .args(["-I", "-B", "-c", script,
                 source("src/remote_service/program.py").to_str().unwrap(),
                 source("src/jobs/remote_job.py").to_str().unwrap(),
                 machine_id.to_str().unwrap(), boot.to_str().unwrap(),
@@ -848,7 +848,7 @@ print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     // case is synthetic: the child's default paths are answered from fixed
     // values, so the comparison does not depend on the host running the test.
     let inherited = Command::new(python())
-        .args(["-I", "-c", script,
+        .args(["-I", "-B", "-c", script,
             source("src/remote_service/program.py").to_str().unwrap(),
             source("src/jobs/remote_job.py").to_str().unwrap(),
             machine.to_str().unwrap(), boot.to_str().unwrap(),

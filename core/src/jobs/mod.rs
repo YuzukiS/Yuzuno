@@ -30,9 +30,10 @@ mod remote;
 mod ssh_mux;
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 #[path = "ssh_mux_tests.rs"]
-mod ssh_mux_tests;
+pub(crate) mod ssh_mux_tests;
 pub(crate) use remote::WINDOWS_LEGACY_ROOT;
 pub(crate) use remote::{python_there, PythonThere};
+pub(crate) use remote::{unusable_python, UnusablePython};
 /// Tests outside jobs drive remote Jobs themselves: no loop of Core's own
 /// runs them, and each tick checks every Job now with a stand-in OpenSSH.
 #[cfg(test)]

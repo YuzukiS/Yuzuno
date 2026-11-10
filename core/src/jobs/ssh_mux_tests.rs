@@ -11,10 +11,12 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-struct Sshd {
+pub(crate) struct Sshd {
     dir: tempfile::TempDir,
     child: std::process::Child,
-    wrapper: String,
+    /// An `ssh` with this sshd's own client configuration: `box-a` and
+    /// `box-b` reach it, `box-down` a closed port.
+    pub(crate) wrapper: String,
     port: u16,
     closed: u16,
 }
@@ -32,7 +34,7 @@ fn run(program: &str, args: &[&str]) {
 }
 
 impl Sshd {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
         run("ssh-keygen", &["-q", "-t", "ed25519", "-N", "", "-f", &path("host")]);
@@ -42,7 +44,7 @@ impl Sshd {
         std::fs::write(path("sshd_config"), format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\n\
              UsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nLogLevel INFO\n\
-             MaxSessions 1\n",
+             MaxSessions 1\nPermitUserRC no\n",
             path("host"), path("sshd.pid"), path("authorized_keys"))).unwrap();
         let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd"].into_iter().find(|p| Path::new(p).exists())
             .expect("these tests need OpenSSH's sshd");
@@ -81,7 +83,7 @@ impl Sshd {
     }
 
     /// Connections sshd has accepted so far.
-    fn connections(&self) -> usize {
+    pub(crate) fn connections(&self) -> usize {
         self.logged("Accepted publickey")
     }
 

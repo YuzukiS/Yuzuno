@@ -214,20 +214,40 @@ pub(super) fn parse_reply(code: Option<i32>, out: &[u8], stderr: &str, nonce: &s
         None => return Reply::NoAnswer("SSH ended by a signal".into()),
         Some(code) => code,
     };
-    framed(code, out, stderr, nonce).unwrap_or_else(|code| match code {
-        // The shell's own: python3 not found, or not executable.
-        126 | 127 => Reply::Unusable(format!("it has no usable python3 ({stderr})")),
-        // The helper's source does not parse: a python3 older than 3.6.
-        1 if stderr.contains("SyntaxError") => {
+    framed(code, out, stderr, nonce).unwrap_or_else(|code| match unusable_python(code, stderr) {
+        Some(UnusablePython::Missing) => Reply::Unusable(format!("it has no usable python3 ({stderr})")),
+        Some(UnusablePython::TooOld) => {
             Reply::Unusable(format!("its python3 is too old for the Jobs helper, which needs 3.6 or newer ({stderr})"))
         }
+        Some(UnusablePython::StandIn) => Reply::Unusable(format!(
+            "its python3 is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install) ({stderr})")),
+        None => Reply::Broken(format!("the helper there exited {code}: {stderr}")),
+    })
+}
+
+/// Why a machine's python3 cannot run a helper at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnusablePython {
+    Missing,
+    TooOld,
+    StandIn,
+}
+
+/// An exit that says python3 there cannot run the helper, in this order. Jobs
+/// asks only for an exit with no reply (not 0 or 3); so does the remote
+/// session (remote_service::protocol::classify).
+pub(crate) fn unusable_python(code: i32, stderr: &str) -> Option<UnusablePython> {
+    match code {
+        // The shell's own: python3 not found, or not executable.
+        126 | 127 => Some(UnusablePython::Missing),
+        // The helper's source does not parse: a python3 older than 3.6.
+        1 if stderr.contains("SyntaxError") => Some(UnusablePython::TooOld),
         // A Mac's /usr/bin/python3 without the Command Line Tools is Apple's
         // stand-in, which only asks for them (T-186; from Apple's xcode-select
         // and xcrun messages, not measured on a Mac without the tools).
-        _ if stderr.contains("xcode-select") || stderr.contains("xcrun: error") => Reply::Unusable(format!(
-            "its python3 is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install) ({stderr})")),
-        _ => Reply::Broken(format!("the helper there exited {code}: {stderr}")),
-    })
+        _ if stderr.contains("xcode-select") || stderr.contains("xcrun: error") => Some(UnusablePython::StandIn),
+        _ => None,
+    }
 }
 
 /// The same for a call to Windows through WSL interop. There is no SSH:
