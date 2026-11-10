@@ -78,7 +78,6 @@ impl Lab {
 
 impl Setup {
     fn decide_within(&self, action: &str, resources: &[String], tool: Tool, input: Value, budget: &Budget, clock: &dyn Clock) -> Decision {
-        let path = |text: &String| Path::new(text.as_str());
         let dirs: Vec<&Path> = self.dirs.iter().map(path).collect();
         let files: Vec<&Path> = self.files.iter().map(path).collect();
         let rules = Rules {
@@ -101,6 +100,11 @@ impl Setup {
     fn answer(&self, action: &str, resources: &[String], tool: Tool, input: Value) -> Answer {
         self.decide(action, resources, tool, input).answer
     }
+}
+
+/// A trusted path, as `Rules` takes it.
+fn path(text: &String) -> &Path {
+    Path::new(text.as_str())
 }
 
 fn asked(action: &str, resources: &[String]) -> Asked {
@@ -296,7 +300,6 @@ async fn an_action_nobody_approves_is_refused_before_any_read() {
     let reader = Reader::default();
     let children: Vec<String> = Vec::new();
     let on = Connection { generation: 7, session: "ses_main", children: &children };
-    let path = |text: &String| Path::new(text.as_str());
     let rules = Rules { directory: path(&s.directory), worktree: None, home: path(&s.home), data_dir: path(&s.data),
         outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: s.temp.as_ref().map(path), protected_dirs: &[], protected_files: &[] };
     for action in ["edit", "shell", "doom_loop", "webfetch", "task"] {
@@ -528,7 +531,6 @@ fn a_request_naming_other_paths_than_its_call_is_refused() {
     assert_eq!(s.answer("external_directory", &[], Tool::Write, json!({"path": format!("{t}/x.txt"), "content": "x"})), resources);
     let mut none = asked("read", &[]);
     none.resources = None;
-    let path = |text: &String| Path::new(text.as_str());
     let rules = Rules { directory: path(&s.directory), worktree: None, home: path(&s.home), data_dir: path(&s.data),
         outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: None, protected_dirs: &[], protected_files: &[] };
     assert_eq!(decide(&none, &call(Tool::Read, json!({"path": a})), &rules, &BUDGET, &Wall).answer, resources);

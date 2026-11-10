@@ -53,7 +53,7 @@
 //! held across the read or the file system. Nothing here logs; a decision
 //! carries its reason's code and the paths it checked, never a message's or
 //! a file's content.
-#![cfg_attr(not(test), allow(dead_code))]
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 mod paths;
 mod shell;
@@ -449,7 +449,9 @@ impl Checked {
         let real_directory = real(&directory).filter(|real| real != "/")?;
         let real_worktree = worktree.as_deref().and_then(real).filter(|real| real != "/");
         // Each as given and, when it exists, as its real path.
-        let both = |paths: &[String]| paths.iter().flat_map(|path| [Some(path.clone()), real(path)]).flatten().collect::<Vec<_>>();
+        fn both(paths: &[String]) -> Vec<String> {
+            paths.iter().flat_map(|path| [Some(path.clone()), real(path)]).flatten().collect()
+        }
         let ids = dirs.iter().chain(&files).chain([&data])
             .filter_map(|path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))).collect();
         let real_temp = temp.as_deref().and_then(real);
@@ -630,7 +632,9 @@ impl Seen {
     /// Takes in a later report of the same call. Two names, two inputs or a
     /// state going back can't be one call.
     fn merge(&mut self, later: Seen) {
-        let differ = |a: &Option<_>, b: &Option<_>| a.is_some() && b.is_some() && a != b;
+        fn differ<T: PartialEq>(a: &Option<T>, b: &Option<T>) -> bool {
+            a.is_some() && b.is_some() && a != b
+        }
         if later.ambiguous || differ(&self.name, &later.name) || differ(&self.input, &later.input) || later.status < self.status {
             self.ambiguous = true;
             return;
