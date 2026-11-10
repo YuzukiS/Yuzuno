@@ -310,7 +310,8 @@ async fn an_agents_opencode_keeps_its_data_and_state_its_own_and_fetches_nothing
         "XDG_DATA_HOME": path(own.join("data")), "XDG_STATE_HOME": path(own.join("state")),
         "XDG_CACHE_HOME": path(opencode.join("cache")), "XDG_CONFIG_HOME": std::env::var("XDG_CONFIG_HOME").ok(),
         "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
-    }), "its folders and switches as Core started it");
+        "TMPDIR": null, "TMP": null, "TEMP": null,
+    }), "its folders and switches as Core started it; a standing Agent has no temp dir");
     use std::os::unix::fs::PermissionsExt;
     for folder in [opencode.join(ID), opencode.join("cache")] {
         assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700, "{} is Core's alone", folder.display());

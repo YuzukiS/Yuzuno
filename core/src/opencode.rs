@@ -134,6 +134,9 @@ pub struct Launch {
     /// level as OpenCode's rules (permission_levels.rs, YN-56 S3). None leaves
     /// Core's own environment as it is.
     pub config: Option<String>,
+    /// The executor's own temporary directory (YN-78 S2a), given to this
+    /// server as TMPDIR, TMP and TEMP. None leaves Core's own as they are.
+    pub temp_dir: Option<PathBuf>,
 }
 
 impl Launch {
@@ -142,19 +145,25 @@ impl Launch {
     pub fn new(program: PathBuf, directory: PathBuf, folder: &Path, cache: PathBuf) -> Self {
         let own = folder.join("xdg");
         Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new(),
-            config: None }
+            config: None, temp_dir: None }
     }
 
     /// What OpenCode gets besides Core's own environment: the database and
-    /// folders above, and no update check or models.dev fetch of its own.
+    /// folders above, no update check or models.dev fetch of its own, and an
+    /// executor's temporary directory as TMPDIR, TMP and TEMP (YN-78 S2a).
     /// 2.2.5's `serve` never updates itself anyway (only its TUI does,
     /// cli/src/commands/handlers/default.ts); without the fetch, its models
     /// are its release's own catalog and the user's config
     /// (cli/src/server-process.ts, core/src/models-dev.ts).
-    pub fn environment(&self) -> [(&'static str, &OsStr); 6] {
-        [("OPENCODE_DB", self.database.as_os_str()), ("XDG_DATA_HOME", self.data.as_os_str()),
-            ("XDG_STATE_HOME", self.state.as_os_str()), ("XDG_CACHE_HOME", self.cache.as_os_str()),
-            ("OPENCODE_DISABLE_AUTOUPDATE", OsStr::new("1")), ("OPENCODE_DISABLE_MODELS_FETCH", OsStr::new("1"))]
+    pub fn environment(&self) -> Vec<(&'static str, &OsStr)> {
+        let mut environment: Vec<(&'static str, &OsStr)> = vec![("OPENCODE_DB", self.database.as_os_str()),
+            ("XDG_DATA_HOME", self.data.as_os_str()), ("XDG_STATE_HOME", self.state.as_os_str()),
+            ("XDG_CACHE_HOME", self.cache.as_os_str()), ("OPENCODE_DISABLE_AUTOUPDATE", OsStr::new("1")),
+            ("OPENCODE_DISABLE_MODELS_FETCH", OsStr::new("1"))];
+        if let Some(temp) = &self.temp_dir {
+            environment.extend([("TMPDIR", temp.as_os_str()), ("TMP", temp.as_os_str()), ("TEMP", temp.as_os_str())]);
+        }
+        environment
     }
 }
 

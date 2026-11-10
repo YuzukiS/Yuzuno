@@ -871,6 +871,13 @@ impl Workspace {
         // So does its permission level, as OpenCode's rules (YN-56 S3).
         let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
         launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
+        // Its own temporary directory, when it is an executor whose level
+        // lets it work alone (YN-78 S2a). Only then do TMPDIR, TMP and TEMP
+        // name it; a refusal leaves today's environment and keeps its reason.
+        {
+            let (data, agent) = (self.data_dir.clone(), id.to_owned());
+            launch.temp_dir = self.stored(move |store| crate::executor_temp::ensure_at_start(store, &data, &agent)).await?;
+        }
         let server = Arc::new(Server::start(&launch).await?);
         // Its agents must keep the level: a configuration OpenCode reads after Yuzuno's
         // can override it. A server that doesn't is dropped, which ends it.
