@@ -101,10 +101,14 @@ pub(crate) struct State {
     /// A test's automatic-stage admission budget (None: check::PLAN_TIME).
     #[cfg(test)]
     pub stage_budget: std::sync::Mutex<Option<Duration>>,
-    /// A test's delay before one automatic worktree candidate's checks, so a
-    /// slow one can use up its stage without a long sleep.
+    /// A test admits at most this many candidates per automatic stage (0: no
+    /// limit), so truncation is deterministic without a wall clock.
     #[cfg(test)]
-    pub worktree_delay: std::sync::atomic::AtomicU64,
+    pub stage_limit: std::sync::atomic::AtomicUsize,
+    /// A test makes the next automatic worktree candidate's Context already
+    /// expired, exercising the real timeout path without sleeping.
+    #[cfg(test)]
+    pub timeout_first_candidate: std::sync::atomic::AtomicBool,
 }
 
 impl State {
@@ -158,12 +162,23 @@ impl State {
         check::PLAN_TIME
     }
 
-    /// A test-only delay before one automatic worktree candidate's checks.
-    pub(crate) fn worktree_delay(&self) -> Duration {
+    /// A test's per-stage candidate limit (None: no limit).
+    pub(crate) fn stage_limit(&self) -> Option<usize> {
         #[cfg(test)]
-        return Duration::from_millis(self.worktree_delay.load(std::sync::atomic::Ordering::SeqCst));
-        #[cfg(not(test))]
-        Duration::ZERO
+        {
+            let limit = self.stage_limit.load(std::sync::atomic::Ordering::SeqCst);
+            if limit > 0 {
+                return Some(limit);
+            }
+        }
+        None
+    }
+
+    /// The next automatic worktree candidate's Context is already expired
+    /// (a test, so the timeout path needs no sleep).
+    #[cfg(test)]
+    pub(crate) fn timeout_first_candidate(&self) -> bool {
+        self.timeout_first_candidate.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     fn kind_check(&self) -> bool {

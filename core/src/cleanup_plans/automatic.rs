@@ -702,10 +702,11 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
     // (check::PLAN_TIME); each candidate starts with a fresh Context deadline
     // of the same length, so a later item never inherits a used-up one.
     let budget = ws.cleanup.automatic_budget();
-    let delay = ws.cleanup.worktree_delay();
     let mut worktrees = Vec::new();
     if settings.worktree_reclaim {
         let stage_end = Instant::now() + budget;
+        let limit = ws.cleanup.stage_limit();
+        let mut started = 0usize;
         let mut last_attempted: Option<String> = None;
         for listed in ctx.worktrees.iter().filter(|w| !w.main) {
             worktrees.push(Candidate { kind: "worktree", path: listed.path.clone(), rule: None, basis: None,
@@ -720,14 +721,23 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         worktrees.truncate(want);
         for candidate in &worktrees {
             let Some(listed) = &candidate.listed else { continue };
-            if Instant::now() > stage_end {
+            if Instant::now() > stage_end || limit.is_some_and(|limit| started >= limit) {
                 summary.incomplete = true;
                 break;
             }
-            let ctx = Arc::new(ctx.renewed_with(budget));
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
+            let fresh = ctx.renewed_with(budget);
+            // A test expires the first candidate's Context directly: the real
+            // timeout, record and cursor paths still run, with no sleep.
+            #[cfg(test)]
+            let fresh = if ws.cleanup.timeout_first_candidate() {
+                let mut expired = fresh;
+                expired.deadline = Instant::now() - Duration::from_secs(1);
+                expired
+            } else {
+                fresh
+            };
+            let ctx = Arc::new(fresh);
+            started += 1;
             last_attempted = Some(key(candidate));
             if let Some((state, earlier)) = ws.stored({ let path = candidate.path.clone(); move |s| prior_attempt(s, &path) }).await? {
                 seq += 1;
@@ -899,9 +909,10 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // The cache stage gets its own admission window after the walk, so a
         // worktree stage that used its budget cannot starve it.
         let cache_end = Instant::now() + budget;
+        let limit = ws.cleanup.stage_limit();
         let mut last_attempted: Option<String> = None;
-        for candidate in &cache {
-            if Instant::now() > cache_end {
+        for (started, candidate) in cache.iter().enumerate() {
+            if Instant::now() > cache_end || limit.is_some_and(|limit| started >= limit) {
                 summary.incomplete = true;
                 break;
             }

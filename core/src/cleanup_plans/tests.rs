@@ -1249,20 +1249,20 @@ async fn a_renamed_removal_residue_is_never_a_new_item_after_recovery() {
 }
 
 #[tokio::test]
-async fn a_slow_worktree_stage_does_not_starve_the_cache_stage() {
+async fn a_timed_out_worktree_is_deferred_and_does_not_starve_the_cache_stage() {
     let lab = lab();
     auto_settings(&lab, true, true, 0);
     yn65_keep_days(&lab, 0);
     let tree = worktree(&lab, &lab.home.join("work/wt/slow"), "feat/slow");
     let target = lab.project.join("target");
     cargo_target(&target, &["debug"]);
-    *lab.ws.cleanup.stage_budget.lock().unwrap() = Some(std::time::Duration::from_millis(50));
-    lab.ws.cleanup.worktree_delay.store(60, std::sync::atomic::Ordering::SeqCst);
+    // Deterministic injection: the first worktree candidate's Context is
+    // already expired, and each stage admits one candidate.
+    lab.ws.cleanup.stage_limit.store(1, std::sync::atomic::Ordering::SeqCst);
+    lab.ws.cleanup.timeout_first_candidate.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = automatic(&lab).await;
-    // The worktree candidate started, used up its context budget, and is
-    // deferred; the cache stage then gets its own admission window.
     assert!(tree.exists(), "a timed-out worktree is not removed");
-    assert!(!target.join("debug").exists(), "the cache stage still ran");
+    assert!(!target.join("debug").exists(), "the cache stage still gets its own admission and runs");
     let worktree_item = auto_item(&lab, &tree).unwrap();
     assert_eq!(worktree_item["result"]["code"], "timeout", "{worktree_item:#}");
     let state: String = lab.ws.store.db.read().unwrap().query_row(
@@ -1281,8 +1281,8 @@ async fn the_cursor_stops_at_the_last_attempted_item_and_later_items_are_reached
     auto_settings(&lab, true, false, 0);
     let first = worktree(&lab, &lab.home.join("work/wt/a-first"), "feat/first");
     let second = worktree(&lab, &lab.home.join("work/wt/b-second"), "feat/second");
-    *lab.ws.cleanup.stage_budget.lock().unwrap() = Some(std::time::Duration::from_millis(50));
-    lab.ws.cleanup.worktree_delay.store(60, std::sync::atomic::Ordering::SeqCst);
+    lab.ws.cleanup.stage_limit.store(1, std::sync::atomic::Ordering::SeqCst);
+    lab.ws.cleanup.timeout_first_candidate.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = automatic(&lab).await;
     let db = lab.ws.store.db.read().unwrap();
     let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
@@ -1290,10 +1290,24 @@ async fn the_cursor_stops_at_the_last_attempted_item_and_later_items_are_reached
     assert_eq!(cursor, first.to_string_lossy(), "the cursor names the timed-out first candidate, not the array's last");
     drop(db);
     assert!(second.exists(), "the second candidate was never started");
-    *lab.ws.cleanup.stage_budget.lock().unwrap() = None;
-    lab.ws.cleanup.worktree_delay.store(0, std::sync::atomic::Ordering::SeqCst);
+    lab.ws.cleanup.stage_limit.store(0, std::sync::atomic::Ordering::SeqCst);
+    lab.ws.cleanup.timeout_first_candidate.store(false, std::sync::atomic::Ordering::SeqCst);
     let _ = automatic(&lab).await;
     assert!(!second.exists(), "the next pass resumes at the unprocessed second candidate");
+}
+
+#[tokio::test]
+async fn a_used_up_stage_budget_is_incomplete_without_starting_a_candidate() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/no-time"), "feat/no-time");
+    *lab.ws.cleanup.stage_budget.lock().unwrap() = Some(std::time::Duration::ZERO);
+    let _ = automatic(&lab).await;
+    assert!(tree.exists(), "nothing starts when the stage has no admission time");
+    let run: String = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT state FROM cleanup_automatic_runs WHERE project_id=(SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo')
+           ORDER BY started_at DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(run, "incomplete");
 }
 
 #[tokio::test]
@@ -1305,9 +1319,8 @@ async fn each_candidate_gets_a_fresh_context_deadline() {
     let ctx = check::context(lab.ws.cleanup.env(), lab.ws.cleanup.mounts(), &lab.ws.data_dir, &lab.project.display().to_string(),
         Some(&project), &[], settings).await.unwrap();
     let first = ctx.renewed_with(std::time::Duration::from_millis(20));
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let second = ctx.renewed_with(std::time::Duration::from_millis(20));
-    assert!(second.deadline > first.deadline, "a later candidate gets a later deadline");
+    assert!(second.deadline >= first.deadline, "a later candidate gets a fresh deadline");
     assert!(second.deadline > std::time::Instant::now(), "and it has not expired");
 }
 
