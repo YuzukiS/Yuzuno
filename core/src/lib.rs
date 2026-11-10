@@ -91,6 +91,7 @@ pub mod reading_handoff;
 pub mod record_rows;
 pub mod remote;
 pub mod remote_access;
+pub mod remote_service;
 pub mod services;
 pub mod previews;
 /// The test binary's allocator, watched (project_brief, previews).
