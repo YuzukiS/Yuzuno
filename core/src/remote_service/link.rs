@@ -173,7 +173,8 @@ pub(crate) struct Terminal {
     pub ended: Ended,
     pub exit: Exit,
     pub bye: Option<Bye>,
-    /// The boot step asked for the program and this session uploaded it.
+    /// The boot step asked for the program and Core queued it for writing
+    /// (the write itself may still have failed).
     pub uploaded: bool,
     pub reap: ReapGate,
 }
@@ -347,6 +348,7 @@ impl Link {
             eof: false,
             detected: None,
             ended: None,
+            drain_by: None,
             last_frame: Instant::now(),
             next_id: 0,
         };
@@ -421,6 +423,9 @@ struct Driver {
     eof: bool,
     detected: Option<Code>,
     ended: Option<Ended>,
+    /// Set once a write failed: nothing more is sent, and what is left is
+    /// read, by the same rules, until stdout ends or this passes.
+    drain_by: Option<Instant>,
     last_frame: Instant,
     next_id: u64,
 }
@@ -461,7 +466,7 @@ impl Driver {
 
     /// The boot and the session, until its output is done with.
     async fn talk(&mut self, first: Vec<u8>) -> Then {
-        let deadline = Instant::now() + self.limits.handshake;
+        let mut deadline = Instant::now() + self.limits.handshake;
         self.send(first);
         let mut needed = false;
         let mut ready = false;
@@ -491,8 +496,7 @@ impl Driver {
                             }
                             BootLine::Need if !needed => {
                                 needed = true;
-                                self.uploaded = true;
-                                self.send(upload());
+                                self.uploaded = self.send(upload());
                             }
                             BootLine::Ready => ready = true,
                             BootLine::Refused(code) => self.refused = Some(code),
@@ -508,8 +512,7 @@ impl Driver {
                     if matches!(end, Ok(WriteEnd::Stalled)) {
                         return self.end(Ended::WriteStalled, Then::Kill);
                     }
-                    let until = deadline.min(Instant::now() + self.limits.exit_wait);
-                    return self.drain(until, false).await;
+                    deadline = deadline.min(self.cannot_write());
                 }
                 _ = &mut self.closing, if !self.close_asked => {
                     self.close_asked = true;
@@ -519,8 +522,9 @@ impl Driver {
         };
         self.last_frame = at;
         let hello = Arc::new(Stamped { value: hello, received: at });
+        let phase = if self.drain_by.is_some() { Phase::Closing } else { Phase::Online };
         self.state.send_modify(|now| {
-            now.phase = Phase::Online;
+            now.phase = phase;
             now.hello = Some(hello);
             now.last_frame = Some(at);
         });
@@ -532,7 +536,9 @@ impl Driver {
         let start = Instant::now() + self.limits.ping;
         let mut ping = tokio::time::interval_at(start.into(), self.limits.ping);
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut close_by: Option<Instant> = None;
+        // Once set (asked to close, or a write failed) no ping goes out and the
+        // session must end by then.
+        let mut close_by: Option<Instant> = self.drain_by;
         loop {
             let silent_at = self.last_frame + self.limits.silence;
             tokio::select! {
@@ -571,15 +577,18 @@ impl Driver {
                     if matches!(end, Ok(WriteEnd::Stalled)) {
                         return self.end(Ended::WriteStalled, Then::Kill);
                     }
-                    let until = Instant::now() + self.limits.exit_wait;
-                    return self.drain(close_by.map_or(until, |by| by.min(until)), true).await;
+                    let until = self.cannot_write();
+                    close_by = Some(close_by.map_or(until, |by| by.min(until)));
                 }
                 _ = &mut self.closing, if !self.close_asked => {
                     self.close_asked = true;
-                    close_by = Some(Instant::now() + self.limits.close);
-                    self.state.send_modify(|now| now.phase = Phase::Closing);
-                    let id = self.id();
-                    self.send(line(&json!({"id": id, "op": "close"})));
+                    // Already ending after a failed write: nothing to send.
+                    if close_by.is_none() {
+                        close_by = Some(Instant::now() + self.limits.close);
+                        self.state.send_modify(|now| now.phase = Phase::Closing);
+                        let id = self.id();
+                        self.send(line(&json!({"id": id, "op": "close"})));
+                    }
                 }
                 _ = sleep_until(close_by.unwrap_or(silent_at).into()), if close_by.is_some() => {
                     return self.end(Ended::CloseTimeout, Then::Kill);
@@ -588,36 +597,25 @@ impl Driver {
         }
     }
 
-    /// A write failed: nothing more can be sent, so read what is left until
-    /// stdout ends or `until`, keeping only a refusal or a bye.
-    async fn drain(&mut self, until: Instant, online: bool) -> Then {
+    /// A write failed (EPIPE or another error): nothing more can be sent.
+    /// Reading goes on with the same checks for at most the exit wait, so a
+    /// refusal or a bye still counts. Returns when it must have ended.
+    fn cannot_write(&mut self) -> Instant {
         self.ended.get_or_insert(Ended::WriteFailed);
         self.frames = None;
         self.state.send_modify(|now| now.phase = Phase::Closing);
-        loop {
-            tokio::select! {
-                read = self.lines.recv() => match read {
-                    Some(Read::Line(line, _)) => {
-                        self.stdout_seen = true;
-                        if online {
-                            if let Ok(Frame::Bye(bye)) = protocol::frame(&line) {
-                                self.bye.get_or_insert(bye);
-                            }
-                        } else if let BootLine::Refused(code) = protocol::boot_line(&line, &self.nonce) {
-                            self.refused.get_or_insert(code);
-                        }
-                    }
-                    other => return self.stdout_ended(other),
-                },
-                _ = sleep_until(until.into()) => return Then::Kill,
-            }
-        }
+        let until = Instant::now() + self.limits.exit_wait;
+        *self.drain_by.get_or_insert(until)
     }
 
     fn stdout_ended(&mut self, read: Option<Read>) -> Then {
         match read {
             Some(Read::Eof { partial }) => {
                 self.stdout_seen |= partial;
+                if partial && self.bye.is_some() {
+                    // bye is the last frame: not even the start of another may follow.
+                    return self.invalid(Code::Protocol);
+                }
                 self.eof = true;
                 let ended = if self.close_asked { Ended::Closed } else { Ended::RemoteEnded };
                 self.end(ended, Then::Wait)
@@ -646,12 +644,11 @@ impl Driver {
         self.next_id
     }
 
-    fn send(&mut self, frame: Vec<u8>) {
-        if let Some(frames) = &self.frames {
-            // Full only while a write is stuck, which ends the session soon;
-            // a frame left out is whole, so the stream stays intact.
-            let _ = frames.try_send(frame);
-        }
+    /// Queues a frame for the writer; false once writing has failed. The
+    /// queue is full only while a write is stuck, which ends the session
+    /// soon; a frame left out is whole, so the stream stays intact.
+    fn send(&mut self, frame: Vec<u8>) -> bool {
+        self.frames.as_ref().is_some_and(|frames| frames.try_send(frame).is_ok())
     }
 }
 
