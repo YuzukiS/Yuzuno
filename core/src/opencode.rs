@@ -90,7 +90,9 @@ const BODY_LIMIT: usize = 2048;
 /// session's pending list, each small, read whole or refused, never a dump.
 const PERMISSION_BODY_LIMIT: usize = 256 << 10;
 const LINE_LIMIT: u64 = 64 << 10;
-const EVENT_BUFFER_LIMIT: usize = 16 << 20;
+/// The most of one event Core reads, and (YN-78 S4a) of one stored message
+/// it reads to bind a permission request to its tool call.
+pub(crate) const EVENT_BUFFER_LIMIT: usize = 16 << 20;
 /// What a start that failed tells of why (T-32): the first STDERR_KEPT bytes
 /// OpenCode wrote on stderr (the rest is drained), waited for at most
 /// STDERR_WAIT once it has gone; of them, at most STDERR_LINES lines and
@@ -1538,6 +1540,23 @@ impl Wire<'_> {
         Ok(data.as_array().with_context(|| format!("OpenCode's answer to {path} is not a list"))?.clone())
     }
 
+    /// `GET /api/session/:sessionID/message/:messageID` (YN-78 S4a, design
+    /// v4 2.3.1): the one stored message a permission request's tool call is
+    /// in, read as `{data: message}` within EVENT_BUFFER_LIMIT, `None` for
+    /// 404; anything else is an error. Unlike `Server::message` it reads no
+    /// inbox: only a stored answer holds a tool call. Nothing calls it but
+    /// the tests yet.
+    async fn session_message(&self, session: &str, message: &str, limit: Duration) -> Result<Option<Value>> {
+        let path = format!("/api/session/{}/message/{}", segment(session)?, segment(message)?);
+        let response = self.request(Method::GET, &path).timeout(limit).send().await
+            .with_context(|| format!("OpenCode did not answer {path}"))?;
+        match response.status().as_u16() {
+            200 => Ok(Some(data_within(response, &path, EVENT_BUFFER_LIMIT).await?)),
+            404 => Ok(None),
+            code => Err(refusal(&path, code, response).await),
+        }
+    }
+
     /// `POST …/permission/:requestID/reply`: the answer, classified as
     /// `PermissionDelivery` says. Only 204 is delivered: any other success,
     /// an unexpected status, a timeout or a lost connection is unknown.
@@ -1561,14 +1580,27 @@ impl Wire<'_> {
     }
 }
 
+/// The read a permission request's binding makes (YN-78 S4a): one GET on
+/// this server, at most REQUEST_LIMIT.
+impl crate::opencode_permissions::MessageReader for Wire<'_> {
+    async fn message(&self, session: &str, message: &str) -> Result<Option<Value>> {
+        self.session_message(session, message, REQUEST_LIMIT).await
+    }
+}
+
 /// A 200 answer's `data` (`{data, …}`), read as JSON within
 /// PERMISSION_BODY_LIMIT.
 async fn data_of(response: Response, path: &str) -> Result<Value> {
+    data_within(response, path, PERMISSION_BODY_LIMIT).await
+}
+
+/// A 200 answer's `data`, read as JSON within `limit` bytes.
+async fn data_within(response: Response, path: &str, limit: usize) -> Result<Value> {
     let kind = content_type(&response);
     ensure!(kind.eq_ignore_ascii_case("application/json"),
         "OpenCode answered {path} with {}, not JSON: not an answer of the OpenCode {MAJOR}.x API", shown(kind));
-    let (body, cut) = bounded_body(response, PERMISSION_BODY_LIMIT).await;
-    ensure!(!cut, "OpenCode's answer to {path} is longer than {PERMISSION_BODY_LIMIT} bytes");
+    let (body, cut) = bounded_body(response, limit).await;
+    ensure!(!cut, "OpenCode's answer to {path} is longer than {limit} bytes");
     let mut answered: Value = serde_json::from_slice(&body).with_context(|| format!("OpenCode's answer to {path} is not JSON"))?;
     let data = answered.get_mut("data").with_context(|| format!("OpenCode's answer to {path} has no data"))?;
     Ok(data.take())
@@ -2505,5 +2537,93 @@ mod tests {
         let lost = Wire { base: &format!("http://127.0.0.1:{port}"), password: "fixture-password", http: &client };
         let unknown = lost.answer_permission("ses_a", "per_1", Reply::Once, None, Duration::from_millis(500)).await.unwrap();
         assert!(matches!(unknown, PermissionDelivery::Unknown(_)), "a lost connection is unknown: {unknown:?}");
+    }
+
+    /// The read a binding makes (YN-78 S4a): one GET of the stored message,
+    /// by its session and ID as path segments, with Basic authentication; a
+    /// 200 is read only as bounded JSON with `data`, 404 is none, and any
+    /// other answer is an error.
+    #[tokio::test]
+    async fn a_stored_message_is_read_once_within_its_bound() {
+        let protocol = Protocol::start(|asked: &Asked| match asked.path.as_str() {
+            "/api/session/ses_a/message/msg_1" => json_answer(200, json!({"data": {"id": "msg_1", "type": "assistant", "content": []}})),
+            "/api/session/ses_a/message/msg_html" => Answered { status: 200, content_type: "text/html", body: "<p>".into(), delay: Duration::ZERO },
+            "/api/session/ses_a/message/msg_shape" => json_answer(200, json!({"rows": []})),
+            "/api/session/ses_a/message/msg_huge" => json_answer(200, json!({"data": {"id": "x".repeat(EVENT_BUFFER_LIMIT)}})),
+            "/api/session/ses_a/message/msg_500" => json_answer(500, json!({"_tag": "UnknownError"})),
+            _ => empty_answer(404),
+        }).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+
+        assert_eq!(wire.session_message("ses_a", "msg_1", REQUEST_LIMIT).await.unwrap(),
+            Some(json!({"id": "msg_1", "type": "assistant", "content": []})));
+        assert_eq!(wire.session_message("ses_a", "msg_gone", REQUEST_LIMIT).await.unwrap(), None, "404 is no message");
+        assert!(wire.session_message("ses_a", "msg_html", REQUEST_LIMIT).await.unwrap_err().to_string().contains("not JSON"));
+        assert!(wire.session_message("ses_a", "msg_shape", REQUEST_LIMIT).await.unwrap_err().to_string().contains("has no data"));
+        assert!(wire.session_message("ses_a", "msg_huge", REQUEST_LIMIT).await.unwrap_err().to_string().contains("longer than"));
+        assert!(wire.session_message("ses_a", "msg_500", REQUEST_LIMIT).await.unwrap_err().to_string().contains("HTTP 500"));
+        assert!(wire.session_message("ses_a", "../msg_1", REQUEST_LIMIT).await.is_err());
+        assert!(wire.session_message("ses/a", "msg_1", REQUEST_LIMIT).await.is_err());
+
+        use base64::Engine as _;
+        let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("opencode:fixture-password"));
+        let asked = protocol.asked();
+        assert_eq!(asked.len(), 6, "nothing is sent for an ID that is not a path segment");
+        assert!(asked.iter().all(|asked| asked.method == "GET" && asked.authorization.as_deref() == Some(basic.as_str())));
+        assert_eq!(asked[0].path, "/api/session/ses_a/message/msg_1");
+    }
+
+    /// A request binds to a call OpenCode reported on the connection with no
+    /// read; one of a sub-agent's session, or of a call not seen, with one
+    /// read of its message, after which the call is known (YN-78 S4a,
+    /// design v4 2.3.1). Nothing is answered.
+    #[tokio::test]
+    async fn a_request_binds_with_at_most_one_read_of_its_message() {
+        use crate::opencode_permissions as permissions;
+        let tool = |id: &str, input: Value| json!({"type": "tool", "id": id, "name": "read", "state": {"status": "running", "input": input, "metadata": {}}});
+        let protocol = Protocol::start(move |asked: &Asked| match asked.path.as_str() {
+            "/api/session/ses_child/message/msg_c" =>
+                json_answer(200, json!({"data": {"id": "msg_c", "type": "assistant", "content": [tool("call_c", json!({"path": "/x"}))]}})),
+            "/api/session/ses_main/message/msg_m" =>
+                json_answer(200, json!({"data": {"id": "msg_m", "type": "assistant", "content": [tool("call_2", json!({"path": "/y"}))]}})),
+            _ => empty_answer(404),
+        }).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+        let calls = permissions::Calls::default();
+        let children = vec!["ses_child".to_owned()];
+        let on = permissions::Connection { generation: 7, session: "ses_main", children: &children };
+        let current = || true;
+        let asked = |session: &str, message: &str, call: &str| permissions::Asked::read(&json!({"id": "per_1", "sessionID": session,
+            "action": "external_directory", "resources": ["/*"], "source": {"type": "tool", "messageID": message, "id": call}})).unwrap();
+        let event = |kind: &str, data: Value| {
+            let mut data = data;
+            data.as_object_mut().unwrap().extend([("sessionID".to_owned(), json!("ses_main")),
+                ("assistantMessageID".to_owned(), json!("msg_m")), ("id".to_owned(), json!("call_1"))]);
+            json!({"type": kind, "data": data})
+        };
+        calls.ingest_event(7, &event("session.tool.input.started", json!({"name": "read"})));
+        calls.ingest_event(7, &event("session.tool.called", json!({"input": {"path": "/z"}})));
+
+        let main = permissions::bind(&asked("ses_main", "msg_m", "call_1"), &on, &calls, &wire, &current).await.unwrap();
+        assert_eq!((main.tool, &main.input, main.read), (permissions::Tool::Read, &json!({"path": "/z"}), false));
+        assert!(protocol.asked().is_empty(), "a call seen on the connection takes no read");
+
+        let child = permissions::bind(&asked("ses_child", "msg_c", "call_c"), &on, &calls, &wire, &current).await.unwrap();
+        assert_eq!((&child.session, &child.input, child.read), (&"ses_child".to_owned(), &json!({"path": "/x"}), true));
+        assert_eq!(protocol.asked().len(), 1, "a sub-agent's call takes one read");
+        let again = permissions::bind(&asked("ses_child", "msg_c", "call_c"), &on, &calls, &wire, &current).await.unwrap();
+        assert!(!again.read, "the read is kept as that generation's evidence");
+
+        let unseen = permissions::bind(&asked("ses_main", "msg_m", "call_2"), &on, &calls, &wire, &current).await.unwrap();
+        assert_eq!((&unseen.input, unseen.read), (&json!({"path": "/y"}), true));
+        let gone = permissions::bind(&asked("ses_main", "msg_other", "call_3"), &on, &calls, &wire, &current).await;
+        assert_eq!(gone, Err(permissions::Unbound::Gone));
+        let asked = protocol.asked();
+        assert_eq!(asked.iter().map(|asked| asked.path.as_str()).collect::<Vec<_>>(),
+            ["/api/session/ses_child/message/msg_c", "/api/session/ses_main/message/msg_m", "/api/session/ses_main/message/msg_other"],
+            "one read for each call not seen, and no other request: nothing is answered");
+        assert!(asked.iter().all(|asked| asked.method == "GET"));
     }
 }
