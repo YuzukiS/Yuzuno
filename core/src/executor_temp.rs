@@ -510,7 +510,10 @@ mod tests {
         let path = ensure_at_start(&store, &data(&dir), "auto").unwrap().unwrap();
         let record = store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap();
         // The same name, a different directory: the record does not follow it.
-        std::fs::remove_dir(&path).unwrap();
+        // The old directory is renamed aside first, so its inode cannot be
+        // handed to the new one (a file system may reuse a freed inode).
+        let aside = path.with_file_name("auto-old");
+        std::fs::rename(&path, &aside).unwrap();
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(ensure_at_start(&store, &data(&dir), "auto").unwrap(), None);
@@ -521,6 +524,7 @@ mod tests {
         std::os::unix::fs::symlink(data(&dir).join("elsewhere"), &path).unwrap();
         assert_eq!(ensure_at_start(&store, &data(&dir), "auto").unwrap(), None);
         assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap().unwrap(), record);
+        std::fs::remove_dir(&aside).unwrap();
     }
 
     #[test]
