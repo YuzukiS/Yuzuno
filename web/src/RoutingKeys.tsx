@@ -14,9 +14,9 @@ const providerName: Record<KeyProvider, string> = { deepseek: "DeepSeek", anthro
 const harnessOf: Record<KeyProvider, string> = { deepseek: "OpenCode", anthropic: "Claude Code", openai: "Codex" };
 
 const text = strings({
-  title: "Accounts and keys",
+  title: "Accounts & keys",
   intro: "The accounts and API keys executor routing may start an executor with. Each key chooses its source: this host's key store, where you enter it here and it is never shown again, or 1Password, where Core keeps only an op:// reference and reads the key when an executor starts. A key goes only to the one executor started with it.",
-  boundary: "Accounts and keys are read and changed from Yuzuno's page on the computer that runs Core or on the phone. Any device signed in to the allowed Tailscale login can change them; an Agent's token cannot.",
+  boundary: "Accounts & keys are read and changed from Yuzuno's page on the computer that runs Core or on the phone. Any device signed in to the allowed Tailscale login can change them; an Agent's token cannot.",
   reading: "Reading…",
   cswapTitle: "Claude subscription accounts (claude-swap)",
   cswapFound: (n: number) => (n === 1 ? "1 account found" : `${n} accounts found`),
@@ -81,9 +81,9 @@ const text = strings({
   storeTitle: "Where this host keeps keys",
   storeHelp: "In secrets/routing-keys.json in the Workspace folder, which only you can read (0600). Backups, restores and moves leave it out: enter keys again after one. It protects keys from this computer's other users, not from programs running as you, the Agents' own tools included.",
 }, {
-  title: "账号和密钥",
+  title: "账号与密钥",
   intro: "执行者路由可以用来启动执行者的账号和 API key。每把 key 自己选来源：本机密钥库（在这里填，填完不再显示），或 1Password（Core 只记 op:// 引用，启动执行者时才取 key）。key 只交给用它启动的那一个执行者。",
-  boundary: "账号和密钥在运行 Core 的电脑上或手机上，通过 Yuzuno 的页面读取和更改。登录了允许的 Tailscale 账号的设备都能更改；Agent 的令牌不能。",
+  boundary: "账号与密钥在运行 Core 的电脑上或手机上，通过 Yuzuno 的页面读取和更改。登录了允许的 Tailscale 账号的设备都能更改；Agent 的令牌不能。",
   reading: "正在读取…",
   cswapTitle: "Claude 订阅账号（claude-swap）",
   cswapFound: (n) => `找到 ${n} 个账号`,

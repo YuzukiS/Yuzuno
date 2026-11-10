@@ -26,7 +26,7 @@ import {createRoot} from 'react-dom/client';
 import {ExecutorRouting} from ${src("ExecutorRouting.tsx")};
 import {SaveBarScope} from ${src("SettingsSaveBar.tsx")};
 const root=createRoot(document.getElementById('root'));
-window.renderRouting=(active=true)=>root.render(<SaveBarScope><ExecutorRouting active={active}/></SaveBarScope>);`);
+window.renderRouting=(active=true)=>root.render(<SaveBarScope><ExecutorRouting active={active} onManageKeys={() => { window.manageKeys = (window.manageKeys || 0) + 1; }}/></SaveBarScope>);`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -92,9 +92,10 @@ const CATALOGS = {
 };
 
 /** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
- * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default. */
-function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
-  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: keys && clone(keys) };
+ * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default.
+ * `keys` null and `accounts` null answer 403, as off Core's own address; `*FailAt` makes that read number fail. */
+function core({ view = savedView(), put, lists, keys = KEYS, accounts = true, homes = [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }], keysFailAt = 0, accountsFailAt = 0 } = {}) {
+  const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: keys && clone(keys), keyReads: 0, accountReads: 0 };
   return { state, route(url, method, body) {
     const u = new URL(url, "http://isolated.test");
     const p = u.pathname;
@@ -111,8 +112,9 @@ function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
       state.view = { ...state.view, version: state.view.version + 1, policy: body.policy, updatedAt: "2026-11-08T05:00:00Z" };
       return [200, state.view];
     }
-    // Keys that can't be read here (null): as Core refuses them off its own address.
-    if (p === "/api/routing/keys") return state.keys ? [200, { keys: state.keys, onePasswordToken: { set: true } }] : [403, { error: "Only from Core's own address" }];
+    // Keys that can't be read here (null): as Core refuses them off its own address. A read that is asked for
+    // again and fails leaves the last list for the page to keep (YN-84 S2).
+    if (p === "/api/routing/keys") return (state.keyReads++, !state.keys || (keysFailAt && state.keyReads >= keysFailAt)) ? [403, { error: "Only from Core's own address" }] : [200, { keys: state.keys, onePasswordToken: { set: true } }];
     // A key kept (S1's write, YN-57 S3): the answer says only that it is set.
     const key = p.match(/^\/api\/routing\/keys\/([^/]+)$/);
     if (key && method === "PUT") {
@@ -121,11 +123,11 @@ function core({ view = savedView(), put, lists, keys = KEYS } = {}) {
       state.keys = [...state.keys.filter((k) => k.id !== kept.id), kept];
       return [200, kept];
     }
-    if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
+    if (p === "/api/routing/accounts") return (state.accountReads++, !accounts || (accountsFailAt && state.accountReads >= accountsFailAt)) ? [403, { error: "Only from Core's own address" }] : [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
       { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAIL },
       { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
       { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "other@example.test" },
-    ] }, codexHomes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }] }];
+    ] }, codexHomes: clone(homes) }];
     return [404, { error: `not answered: ${method} ${p}` }];
   } };
 }
@@ -357,7 +359,7 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
   assert.equal(button(page, "保存", bar(page)).disabled, true, "held while a key is missing");
   button(page, `编辑 Codex · gpt-6.1-sol · API`).click();
   await until(() => cards(page)[4].querySelector(".routing-edit"), "its editor");
-  assert.match(cards(page)[4].querySelector(".routing-edit").textContent, /还没有 key openai：在下面的「账号和密钥」里添加，或换一个。/);
+  assert.match(cards(page)[4].querySelector(".routing-edit").textContent, /还没有 key openai：在「账号与密钥」里添加，或换一个。/);
   button(page, "删除这一项", cards(page)[4]).click();
   await tick();
   await save(page, "保存");
@@ -499,10 +501,10 @@ test("a key added from a candidate is written once, never shown or kept, and bec
   const readsBefore = keyReads();
   await set(page, editorField(page, id, "Account or key"), "new:anthropic");
   const form = card(page, id).querySelector('.routing-key-inline form[aria-label="New Anthropic API key"]');
-  assert.ok(form, "Accounts and keys' own form, in place");
+  assert.ok(form, "Accounts & keys' own form, in place");
   assert.equal(form.querySelector("select"), null, "its provider is the one chosen, not asked again");
   assert.equal(form.querySelector(".routing-new-key-grid input").value, "anthropic", "the first id free for it");
-  assert.match(form.textContent, /Saved under Accounts and keys as soon as you save it here, and never shown again\./);
+  assert.match(form.textContent, /Saved under Accounts & keys as soon as you save it here, and never shown again\./);
   const value = byLabel(page, "New Anthropic API key: value");
   assert.equal(value.type, "password");
   await set(page, value, KEY_VALUE);
@@ -665,4 +667,85 @@ test("changing the tool drops a daily spend cap with the key it can't use (R1 75
   await until(() => puts(page).length === 1, "the save");
   const sent = puts(page)[0].body.policy.candidates.find((c) => c.id === "ca");
   assert.deepEqual([sent.harness, sent.credential, sent.conditions.map((c) => c.kind)], ["codex", { kind: "login" }, ["timeWindow"]]);
+});
+
+// YN-84 S2: the keys and accounts live on their own page; this page says when it couldn't read them, checks
+// by what it has, and never calls a credential missing from a list it didn't read.
+const codexCandidate = { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "codexHome", id: "work" }, unknown: "skip", conditions: [] };
+const withCodex = () => { const view = savedView(); view.policy.candidates.push(clone(codexCandidate)); return view; };
+const note = (page, words) => [...page.document.querySelectorAll(".routing-credential-note")].find((p) => p.textContent.includes(words));
+
+test("keys unread here: the page says so, checks no key, and calls the saved one pending, not missing (YN-84 S2)", async () => {
+  const page = mount(core({ keys: null }));
+  await opened(page);
+  const said = await until(() => note(page, "Couldn't read the keys in Accounts & keys"), "the keys note");
+  assert.match(said.textContent, /^Couldn't read the keys in Accounts & keys \(Only from Core's own address\): until they can be read, keys aren't checked here and can't be added here\./);
+  assert.ok(button(page, "Manage accounts & keys", said), "with the way to the page that manages them");
+  assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key deepseek-main", "pending, not 'not added yet'");
+  assert.equal(card(page, "ds").querySelector(".routing-fix"), null, "nothing to fix from a list that wasn't read");
+  button(page, "Edit OpenCode · deepseek-flash · API").click();
+  await until(() => card(page, "ds").querySelector(".routing-edit"), "its editor");
+  const saved = [...editorField(page, "ds", "Account or key").options].find((option) => option.value === "key:deepseek-main");
+  assert.equal(saved.textContent, "API key deepseek-main", "the saved key, pending");
+  assert.doesNotMatch(saved.textContent, /not added yet/);
+  button(page, "Manage accounts & keys", card(page, "ds")).click();
+  await tick();
+  assert.equal(page.window.manageKeys, 1, "the editor's link opens Accounts & keys");
+  assert.deepEqual(page.errors, []);
+});
+
+test("keys read once and a later refresh refused: the list is kept and the page says it checks what was read (YN-84 S2)", async () => {
+  const page = mount(core({ keysFailAt: 2 }));
+  await opened(page);
+  assert.equal(note(page, "keys"), null, "nothing said while the read holds");
+  page.window.dispatchEvent(new page.window.Event("yuzuno:routing-credentials-changed"));
+  const said = await until(() => note(page, "Couldn't refresh the keys in Accounts & keys"), "the stale note");
+  assert.match(said.textContent, /\(Only from Core's own address\): this page checks them as last read\./);
+  assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key: DeepSeek · this host", "still checked by the list read before");
+  assert.equal(card(page, "ds").querySelector(".routing-fix"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("accounts unread here: said so, no account check, the saved Codex account pending and the pool unread (YN-84 S2)", async () => {
+  const page = mount(core({ view: withCodex(), accounts: null }));
+  await opened(page);
+  const said = await until(() => note(page, "Couldn't read claude-swap and Codex accounts"), "the accounts note");
+  assert.match(said.textContent, /^Couldn't read claude-swap and Codex accounts \(Only from Core's own address\): until they can be read, accounts aren't checked here\./);
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account cx · not checked yet");
+  assert.equal(card(page, "cx").querySelector(".routing-fix"), null);
+  card(page, "cx").querySelector('.routing-cand-title button[aria-label^="Edit"]').click();
+  await until(() => card(page, "cx").querySelector(".routing-edit"), "its editor");
+  const home = [...editorField(page, "cx", "Account or key").options].find((option) => option.value === "home:work");
+  assert.equal(home.textContent, "Codex account work · not checked yet", "pending, not 'not in the list'");
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => card(page, "cl").querySelector(".routing-pool"), "the pool");
+  [...card(page, "cl").querySelectorAll(".routing-pool label")].find((label) => label.textContent.includes("Only these")).querySelector("input").click();
+  await tick();
+  assert.match(card(page, "cl").querySelector(".routing-pool .settings-row-meta").textContent, /Couldn't read claude-swap's accounts/, "unread, not an empty list");
+  assert.deepEqual(page.errors, []);
+});
+
+test("accounts read once and a later refresh refused: the home is still known; only a read that says so calls it missing (YN-84 S2)", async () => {
+  const page = mount(core({ view: withCodex(), accountsFailAt: 2 }));
+  await opened(page);
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account: Work");
+  page.window.dispatchEvent(new page.window.Event("yuzuno:routing-credentials-changed"));
+  const said = await until(() => note(page, "Couldn't refresh claude-swap and Codex accounts"), "the stale note");
+  assert.match(said.textContent, /\(Only from Core's own address\): this page checks them as last read\./);
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account: Work", "still what the earlier read said");
+  assert.equal(card(page, "cx").querySelector(".routing-fix"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a Codex account the read lists without is called missing, with what to fix (YN-84 S2)", async () => {
+  const page = mount(core({ view: withCodex(), homes: [] }));
+  await opened(page);
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account cx · not in the list");
+  const pill = card(page, "cx").querySelector(".routing-fix");
+  assert.equal(pill.textContent, "Needs a fix");
+  assert.equal(pill.getAttribute("aria-label"), "Needs a fix: edit Codex · gpt-6.1-sol");
+  pill.click();
+  await tick();
+  assert.match(card(page, "cx").querySelector(".routing-edit").textContent, /The Codex account cx isn't listed: add it under Accounts & keys, or choose another\./);
+  assert.deepEqual(page.errors, []);
 });

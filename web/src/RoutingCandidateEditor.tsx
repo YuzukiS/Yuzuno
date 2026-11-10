@@ -30,11 +30,13 @@ function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRe
     if (keyFits(harness, provider)) keyChoices.push({ value: `new:${provider}`, disabled: !keysRead,
       label: keysRead ? t.credAddKey(providerName[provider]) : t.credAddKeyNotHere(providerName[provider]) });
   }
-  // The saved one, even if it's no longer offered: it stays chosen, marked.
+  // The saved one, even if it's no longer offered: it stays chosen, marked. Unread keys or accounts name it as
+  // pending, not as one that is gone (YN-84 S2).
   const value = credentialValue(current);
   if (![...accountChoices, ...keyChoices].some((c) => c.value === value)) {
     (current.kind === "apiKey" ? keyChoices : accountChoices).unshift({ value,
-      label: current.kind === "apiKey" ? t.keyMissing(current.keyId) : current.kind === "codexHome" ? t.codexHomeMissing(current.id) : value });
+      label: current.kind === "apiKey" ? (keysRead ? t.keyMissing(current.keyId) : t.keyPending(current.keyId))
+        : current.kind === "codexHome" ? (accounts ? t.codexHomeMissing(current.id) : t.codexHomePending(current.id)) : value });
   }
   return { accounts: accountChoices, keys: keyChoices };
 }
@@ -44,11 +46,13 @@ const credentialOf = (value: string): Credential =>
     : value.startsWith("key:") ? { kind: "apiKey", keyId: value.slice(4) }
       : value.startsWith("home:") ? { kind: "codexHome", id: value.slice(5) } : { kind: "login" };
 
-export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refusedCondition, onEdit, onRemove, onClose }: {
+export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refusedCondition, onManageKeys, onEdit, onRemove, onClose }: {
   c: Candidate; t: Text; keys: RoutingKey[];
   /** Whether the Workspace's keys were read here: a key is added from a candidate only then (YN-57 S3). */
   keysRead: boolean;
   accounts: AccountsView | null; issues: { at: string; text: string }[]; refusedCondition?: number;
+  /** Opens Accounts & keys, where these are managed (YN-84 S2). */
+  onManageKeys?: () => void;
   onEdit: (change: (c: Candidate) => Candidate) => void; onRemove: () => void; onClose: () => void;
 }) {
   const keysT = keysText(useLanguage());
@@ -140,7 +144,9 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
             </optgroup>
           </select>
         </label>
-        {/* A key added in place (YN-57 S3): Accounts and keys' own write-only form, its provider the one chosen. */}
+        {/* YN-84 S2: the accounts and keys themselves are on their own page. */}
+        <button type="button" className="quiet-button routing-manage-keys" onClick={() => onManageKeys?.()}>{t.manageKeys}</button>
+        {/* A key added in place (YN-57 S3): Accounts & keys' own write-only form, its provider the one chosen. */}
         {adding && (
           <div className="routing-field-wide routing-key-inline">
             <NewKeyForm key={adding} t={keysT} busy={busy} taken={shownKeys.map((k) => k.id)} fixed={adding} saveLabel={keysT.saveKey}
@@ -168,7 +174,7 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
                 );
               })}
             </div>
-          ) : <p className="settings-row-meta">{t.noAccounts}</p>)}
+          ) : <p className="settings-row-meta">{accounts ? t.noAccounts : t.poolUnread}</p>)}
         </fieldset>
       )}
       <div className="routing-field routing-conditions">

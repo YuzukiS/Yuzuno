@@ -20,7 +20,7 @@ const chipIcon = (c: AnyCondition) => (c.kind === "timeWindow" ? Clock : c.kind 
 
 /** Settings → Executor routing: the ordered candidates (YN-49 S4a), saved
  * whole against the version read, through the page's save bar. */
-export function ExecutorRouting({ active }: { active: boolean }) {
+export function ExecutorRouting({ active, onManageKeys }: { active: boolean; onManageKeys?: () => void }) {
   const language = useLanguage();
   const t = text(language);
   const time = useTimeDisplay();
@@ -30,6 +30,9 @@ export function ExecutorRouting({ active }: { active: boolean }) {
   // null until read: a key a candidate names is called missing only from a list that was read.
   const [keys, setKeys] = useState<RoutingKey[] | null>(null);
   const [accounts, setAccounts] = useState<AccountsView | null>(null);
+  // Why the last read failed, if it did: null means unread, else the list read before is kept (YN-84 S2).
+  const [keysError, setKeysError] = useState("");
+  const [accountsError, setAccountsError] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PolicyView | null>(null);
   const [refused, setRefused] = useState<{ text: string; path?: string } | null>(null);
@@ -57,6 +60,8 @@ export function ExecutorRouting({ active }: { active: boolean }) {
     const controller = new AbortController();
     const signal = controller.signal;
     setReadError("");
+    setKeysError("");
+    setAccountsError("");
     readPolicy(signal).then((next) => {
       if (signal.aborted) return;
       // Coming back to the page keeps what is being edited (R1 75964dfb): a
@@ -65,10 +70,13 @@ export function ExecutorRouting({ active }: { active: boolean }) {
       if (!editing.current.changed) adopt(next);
       else if (next.version !== editing.current.version) setConflict(next);
     }).catch((e) => { if (!signal.aborted) setReadError(errorText(e)); });
-    // Keys and accounts as Accounts and keys below shows them; that block says why when they can't be read.
+    // Keys and accounts, read here for the checks: seen on the Accounts & keys page, and their failure said here
+    // rather than swallowed (YN-84 S2). A read that fails after one succeeded keeps that list, and says it is old.
     const credentials = () => {
-      readKeys(signal).then((next) => { if (!signal.aborted) setKeys(next.keys); }).catch(() => {});
-      readAccountsShared().then((next) => { if (!signal.aborted) setAccounts(next); }).catch(() => {});
+      readKeys(signal).then((next) => { if (!signal.aborted) { setKeys(next.keys); setKeysError(""); } })
+        .catch((e) => { if (!signal.aborted) setKeysError(errorText(e)); });
+      readAccountsShared().then((next) => { if (!signal.aborted) { setAccounts(next); setAccountsError(""); } })
+        .catch((e) => { if (!signal.aborted) setAccountsError(errorText(e)); });
     };
     credentials();
     window.addEventListener(ROUTING_CREDENTIALS_CHANGED, credentials);
@@ -180,8 +188,17 @@ export function ExecutorRouting({ active }: { active: boolean }) {
           <h4 className="settings-group-title">{t.orderTitle} <span className="settings-current">{t.version(view.version)}</span></h4>
           <p className="settings-block-help">{t.orderHelp}</p>
         </div>
+        {/* A read that failed in the page it belongs to (YN-84 S2): said here, not swallowed. Unread means the
+            check is skipped and nothing can be added; a stale list is still used and named as old. */}
+        {keysError && <p className="settings-block-help routing-credential-note" role="status">
+          {(keys ? t.keysStale : t.keysUnread)(keysError)}
+          <button type="button" className="quiet-button" onClick={() => onManageKeys?.()}>{t.manageKeys}</button>
+        </p>}
+        {accountsError && <p className="settings-block-help routing-credential-note" role="status">
+          {(accounts ? t.accountsStale : t.accountsUnread)(accountsError)}
+        </p>}
         <CandidateList policy={policy} t={t} keys={keys} accounts={accounts} live={policy.enabled ? evaluation.record : null} open={open} problems={problems} refusedId={refusedId}
-          refusedCondition={refusedPlace.condition} colourOf={colourOf} onOpen={setOpen} onMove={move}
+          refusedCondition={refusedPlace.condition} colourOf={colourOf} onOpen={setOpen} onMove={move} onManageKeys={onManageKeys}
           onEdit={editCandidate} onRemove={(id) => { edit((p) => ({ ...p, candidates: p.candidates.filter((c) => c.id !== id) })); setOpen(null); }} />
         <p className="sr-only" role="status" aria-live="polite">{live}</p>
         <div className="routing-list-foot">
@@ -243,11 +260,11 @@ export function ExecutorRouting({ active }: { active: boolean }) {
 }
 
 /** The candidates as cards, reordered by a handle's drag, its arrow keys, or the arrows beside each card. */
-function CandidateList({ policy, t, keys, accounts, live, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove }: {
+function CandidateList({ policy, t, keys, accounts, live, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove, onManageKeys }: {
   policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; live: RouteRecord | null; open: string | null;
   problems: Map<string, { at: string; text: string }[]>; refusedId?: string; refusedCondition?: number;
   colourOf: (id: string) => number; onOpen: (id: string | null) => void; onMove: (from: number, to: number, focus?: boolean) => void;
-  onEdit: (id: string, change: (c: Candidate) => Candidate) => void; onRemove: (id: string) => void;
+  onEdit: (id: string, change: (c: Candidate) => Candidate) => void; onRemove: (id: string) => void; onManageKeys?: () => void;
 }) {
   const list = useRef<HTMLOListElement>(null);
   const [drag, setDrag] = useState<{ from: number; to: number; dy: number; y0: number; line: number } | null>(null);
@@ -359,6 +376,7 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
               <CandidateLive live={now} />
               {expanded && (
                 <CandidateEditor c={c} t={t} keys={keys ?? []} keysRead={keys !== null} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
+                  onManageKeys={onManageKeys}
                   onEdit={(change) => onEdit(c.id, change)} onRemove={() => onRemove(c.id)} onClose={() => onOpen(null)} />
               )}
             </div>

@@ -16,6 +16,8 @@
 // YN-70: a candidate that takes one kind of work says so on its card, its
 // editor ticks the kinds it takes (the last one held), and the week is asked
 // for a kind of work, a candidate that doesn't take it passed over with why.
+// YN-84 S1: that is one radio choice; YN-84 S2: accounts and keys have their
+// own page right after routing, opened by its tab, and this page links there.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -217,7 +219,7 @@ async function route(r) {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const words = {
-  en: { settings: "Settings and updates", tab: "Executor routing", title: "Accounts and keys", account1: "Account #1", addKey: "Add a key", save: "Save",
+  en: { settings: "Settings and updates", tab: "Executor routing", accountsTab: "Accounts & keys", title: "Accounts & keys", account1: "Account #1", addKey: "Add a key", save: "Save",
     value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
     replaceToken: "Replace token", token: "Service account token",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
@@ -228,7 +230,7 @@ const words = {
     addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key",
     fastOnly: "Fast work only", strongOnly: "Strong work only", workAny: "Any", workFast: "Fast", notServed: "It doesn't serve the fast tier this executor wants",
     tierStrong: "Strong work only · design, investigation, decisions, checks", tierFast: "Fast work only · building what was decided", tierBoth: "Both · as before" },
-  zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
+  zh: { settings: "Settings and updates", tab: "执行者路由", accountsTab: "账号与密钥", title: "账号与密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
@@ -287,18 +289,26 @@ async function run({ width, height, theme, lang }) {
       assert.ok(!consoleLines.some((line) => line.includes(secret)), `${tag} ${when}: the console holds ${secret}`);
     }
   };
-  /** Settings, opened at Executor routing, its accounts read. */
+  /** Settings, opened at Executor routing (YN-84 S2: accounts are their own page next to it). */
   const openRouting = async () => {
     await page.locator(".workspace-settings").waitFor({ timeout: 15_000 });
     await press(page.locator(".workspace-settings"));
     await dialog.locator(".settings-center").waitFor({ timeout: 10_000 });
     await press(dialog.locator("#settings-tab-routing"));
-    await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
+    await page.locator(".executor-routing .routing-cand").first().waitFor({ timeout: 15_000 });
   };
   try {
     await page.goto(`https://${HOST}/`);
     await openRouting();
     assert.equal((await dialog.locator("#settings-tab-routing .settings-nav-label").innerText()).trim(), w.tab);
+    // The accounts and keys are their own page, the one after routing; a tab opens it.
+    const routingTab = dialog.locator("#settings-tab-routing");
+    const accountsTab = dialog.locator("#settings-tab-accounts");
+    assert.equal(await accountsTab.evaluate((el) => el.previousElementSibling === document.getElementById("settings-tab-routing")), true,
+      `${tag}: Accounts & keys comes right after Executor routing`);
+    await press(accountsTab);
+    await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
+    assert.equal((await accountsTab.locator(".settings-nav-label").innerText()).trim(), w.accountsTab);
     assert.equal((await section.locator("#routing-keys-title").innerText()).trim(), w.title);
     await page.mouse.move(0, 0);
     assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box`);
@@ -310,11 +320,12 @@ async function run({ width, height, theme, lang }) {
         .map((c) => ({ name: c.getAttribute("aria-label") || c.textContent.trim(), h: Math.round(c.getBoundingClientRect().height) })).filter((c) => c.h < 40));
       assert.deepEqual(short, [], `${tag}: targets under 40 px`);
     }
-    // ---- The candidate order: reordered, edited, saved against the version read.
+    // Back to the routing itself: the candidate order.
+    await press(routingTab);
     const order = page.locator(".executor-routing");
     const titles = () => order.locator(".routing-cand .routing-cand-title > span:first-child").allInnerTexts();
-    assert.deepEqual((await titles()).slice(0, 2), [w.first, w.second]);
     await order.locator(".routing-now").waitFor({ timeout: 10_000 });
+    assert.deepEqual((await titles()).slice(0, 2), [w.first, w.second]);
     assert.match(await order.locator(".routing-now-title").innerText(), lang === "zh" ? /现在会选 Claude Code · opus — 账号 #2/ : /Now it would choose Claude Code · opus — Account #2/);
     assert.equal(await order.locator(".routing-cand.is-chosen").count(), 1, `${tag}: one card would be chosen`);
     await page.mouse.move(0, 0);
@@ -473,7 +484,10 @@ async function run({ width, height, theme, lang }) {
       await shot("templates");
       assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }
-    // The keys, scrolled to: a 1Password key whose reference isn't there.
+    // The keys and accounts are their own page (YN-84 S2): switch to it, scrolled to a 1Password key whose
+    // reference isn't there.
+    await press(accountsTab);
+    await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
     const openai = section.locator('.routing-key[data-key="openai"]');
     await openai.scrollIntoViewIfNeeded();
     await press(openai.getByRole("button", { name: w.check }));

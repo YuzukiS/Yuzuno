@@ -1068,7 +1068,7 @@ export function WorkspaceUpdates({
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "executor-templates" && <ExecutorTemplates active={open} />}
-          {tab === "executor-routing" && <ExecutorRouting active={open && visible} />}
+          {tab === "executor-routing" && <ExecutorRouting active={open && visible} onManageKeys={() => openEditor("routing-keys")} />}
           {tab === "routing-keys" && <RoutingKeys active={open && visible} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
