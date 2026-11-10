@@ -1403,3 +1403,40 @@ async fn cache_cursor_covers_multiple_roots_and_punctuation_over_repeated_rounds
     seen_sorted.sort();
     assert_eq!(seen_sorted, expected_sorted, "every root and punctuation case is reached over rounds");
 }
+
+#[tokio::test]
+async fn a_minimal_two_root_tag_cache_case_is_covered_by_the_sorted_cursor() {
+    let lab = lab();
+    settings_change(&lab, |c| {
+        c.worktree_reclaim = false;
+        c.rule_layer = true;
+        c.max_items = 1;
+        c.fresh_days = 30; // kept every round, so the cursor has to advance past it
+    });
+    exclude(&lab, "cache/");
+    let tagged = |dir: &Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("CACHEDIR.TAG"), TAG_PYTEST).unwrap();
+        std::fs::write(dir.join("state"), "cache\n").unwrap();
+        std::fs::canonicalize(dir).unwrap()
+    };
+    let mut expected = vec![
+        tagged(&lab.project.join("a/cache")),
+        tagged(&lab.project.join("a-/cache")),
+    ];
+    for name in ["a-root", "z-root"] {
+        let tree = worktree(&lab, &lab.home.join("work/wt").join(name), &format!("feat/{name}"));
+        expected.push(tagged(&tree.join("cache")));
+    }
+    for _ in 0..expected.len() {
+        let _ = automatic(&lab).await;
+    }
+    let mut seen: Vec<PathBuf> = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut q = db.prepare("SELECT DISTINCT path FROM cleanup_automatic_items WHERE kind='cache-dir'").unwrap();
+        q.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|p| PathBuf::from(p.unwrap())).collect()
+    };
+    expected.sort();
+    seen.sort();
+    assert_eq!(seen, expected, "a-root/z-root and a/ vs a-/ are both reached over rounds");
+}
