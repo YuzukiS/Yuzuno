@@ -826,7 +826,7 @@ button.home-machine-job-line:focus-visible {
   padding: 7px 0;
   border-top: 1px dashed var(--line);
 }
-.home-remote-row:first-of-type {
+.home-remote-head + .home-remote-row {
   border-top: 0;
 }
 .home-remote-name {
