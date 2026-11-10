@@ -28,6 +28,7 @@ struct Setup {
     temp: Option<String>,
     dirs: Vec<String>,
     files: Vec<String>,
+    internal: Vec<String>,
 }
 
 impl Lab {
@@ -63,6 +64,7 @@ impl Lab {
             temp: Some(at("home/data/t/a1b2")),
             dirs: vec![at("home/.ssh"), at("home/.aws")],
             files: vec![at("home/.netrc")],
+            internal: vec![at("home/proj")],
         };
         Self { _dir: dir, root, setup }
     }
@@ -80,9 +82,11 @@ impl Setup {
     fn decide_within(&self, action: &str, resources: &[String], tool: Tool, input: Value, budget: &Budget, clock: &dyn Clock) -> Decision {
         let dirs: Vec<&Path> = self.dirs.iter().map(path).collect();
         let files: Vec<&Path> = self.files.iter().map(path).collect();
+        let internal: Vec<&Path> = self.internal.iter().map(path).collect();
         let rules = Rules {
             directory: path(&self.directory),
             worktree: self.worktree.as_ref().map(path),
+            internal: &internal,
             home: path(&self.home),
             data_dir: path(&self.data),
             outputs: [path(&self.outputs[0]), path(&self.outputs[1])],
@@ -152,13 +156,17 @@ struct Reader {
 }
 
 impl MessageReader for Reader {
-    async fn message(&self, _session: &str, message: &str) -> anyhow::Result<Option<Value>> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        if let Some(current) = &self.ends {
-            current.store(false, Ordering::SeqCst);
-        }
-        anyhow::ensure!(!self.failing, "the read failed");
-        Ok(self.messages.get(message).cloned())
+    fn message<'a>(&'a self, _session: &'a str, message: &'a str)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Value>>> + Send + 'a>> {
+        let message = message.to_owned();
+        Box::pin(async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if let Some(current) = &self.ends {
+                current.store(false, Ordering::SeqCst);
+            }
+            anyhow::ensure!(!self.failing, "the read failed");
+            Ok(self.messages.get(&message).cloned())
+        })
     }
 }
 
@@ -300,7 +308,7 @@ async fn an_action_nobody_approves_is_refused_before_any_read() {
     let reader = Reader::default();
     let children: Vec<String> = Vec::new();
     let on = Connection { generation: 7, session: "ses_main", children: &children };
-    let rules = Rules { directory: path(&s.directory), worktree: None, home: path(&s.home), data_dir: path(&s.data),
+    let rules = Rules { directory: path(&s.directory), worktree: None, internal: &[], home: path(&s.home), data_dir: path(&s.data),
         outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: s.temp.as_ref().map(path), protected_dirs: &[], protected_files: &[] };
     for action in ["edit", "shell", "doom_loop", "webfetch", "task"] {
         let decision = answer(&request("ses_main", action, "msg_1", "call_1"), &on, &Calls::default(), &reader, &|| true, &rules, &BUDGET, &Wall).await;
@@ -310,6 +318,32 @@ async fn an_action_nobody_approves_is_refused_before_any_read() {
     let unbound = answer(&request("ses_main", "read", "msg_1", "call_1"), &on, &Calls::default(), &reader, &|| true, &rules, &BUDGET, &Wall).await;
     assert_eq!(unbound.answer, reject(Reason::Unbound(Unbound::Gone)));
     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+}
+
+/// A stable alias of the project is the native folder OpenCode resolves and
+/// names resources by; what is really inside is the fixed canonical root,
+/// which is never re-derived from that alias. Repointed at D, the alias
+/// grants nothing.
+#[test]
+fn a_native_alias_is_lexical_and_fixed_roots_decide_inside() {
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let alias = lab.at("alias");
+    symlink(&s.directory, &alias).unwrap();
+    let aliased = Setup { directory: alias.clone(), internal: vec![s.directory.clone()], ..s.clone() };
+    assert_eq!(aliased.answer("read", &one("src/main.rs"), Tool::Read, json!({"path": "src/main.rs"})), Answer::Once,
+        "a relative read resolves against the native alias");
+    assert_eq!(aliased.answer("read", &one("src/main.rs"), Tool::Read, json!({"path": format!("{alias}/src/main.rs")})), Answer::Once,
+        "an absolute read through the alias is named relative to it, and is really inside the fixed root");
+    assert_eq!(aliased.answer("read", &one("src/main.rs"), Tool::Read, json!({"path": "src/main.rs"})), Answer::Once);
+    // The alias now names Core's data directory: the literal path is still
+    // inside the native folder, and the real target is not in the fixed root.
+    std::fs::remove_file(&alias).unwrap();
+    symlink(&s.data, &alias).unwrap();
+    assert_eq!(aliased.answer("read", &one("secret.db"), Tool::Read, json!({"path": "secret.db"})), reject(Reason::CoreData),
+        "a relative read through an alias repointed at D");
+    assert_eq!(aliased.answer("read", &one("secret.db"), Tool::Read, json!({"path": format!("{alias}/secret.db")})), reject(Reason::CoreData),
+        "an absolute read through the same alias");
 }
 
 /// Rule 6: a real target in the project keeps the internal policy. Only a
@@ -728,7 +762,7 @@ fn a_request_naming_other_paths_than_its_call_is_refused() {
     assert_eq!(s.answer("external_directory", &[], Tool::Write, json!({"path": format!("{t}/x.txt"), "content": "x"})), resources);
     let mut none = asked("read", &[]);
     none.resources = None;
-    let rules = Rules { directory: path(&s.directory), worktree: None, home: path(&s.home), data_dir: path(&s.data),
+    let rules = Rules { directory: path(&s.directory), worktree: None, internal: &[], home: path(&s.home), data_dir: path(&s.data),
         outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: None, protected_dirs: &[], protected_files: &[] };
     assert_eq!(decide(&none, &call(Tool::Read, json!({"path": a})), &rules, &BUDGET, &Wall).answer, resources);
 }
@@ -757,7 +791,7 @@ fn rules_that_are_not_absolute_and_normal_answer_nothing_once() {
 fn each_refusal_has_a_code_and_a_sentence() {
     let reasons = [Reason::Action("edit".into()), Reason::Unbound(Unbound::Gone), Reason::WriteOutside, Reason::PatchUnchecked,
         Reason::ShellOutside, Reason::ShellUnchecked, Reason::EnvFile, Reason::Protected, Reason::CoreData, Reason::Unchecked,
-        Reason::SearchRoot, Reason::SearchScan, Reason::RulesInvalid];
+        Reason::SearchRoot, Reason::SearchScan, Reason::RulesInvalid, Reason::PreparationTimeout];
     let codes: std::collections::HashSet<&str> = reasons.iter().map(Reason::code).collect();
     assert_eq!(codes.len(), reasons.len());
     for reason in &reasons {

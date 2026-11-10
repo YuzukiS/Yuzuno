@@ -65,7 +65,7 @@ pub const LOGIN_MIN: &str = "2.0.20";
 /// 2.x's Basic user, which it does not let be changed (server/src/process.ts).
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
-const REQUEST_LIMIT: Duration = Duration::from_secs(15);
+pub(crate) const REQUEST_LIMIT: Duration = Duration::from_secs(15);
 /// How long OpenCode may take to connect an MCP server Core adds and to list
 /// its tools, each (`timeout.startup`, `timeout.catalog`; 2.x's own are 30 s).
 pub const MCP_STARTUP: Duration = Duration::from_secs(10);
@@ -726,6 +726,15 @@ impl Server {
         self.group.signal(false);
     }
 
+    /// Sends SIGKILL to this process's group, without waiting or reaping
+    /// (YN-78 S4b's last stage, after SIGTERM and TEARDOWN did not end it).
+    /// The group is signalled only while its process is not yet reaped, as
+    /// `Group` says; sending it is not the kernel having ended it.
+    pub(crate) fn kill(&self) {
+        #[cfg(unix)]
+        self.group.signal(true);
+    }
+
     /// Waits at most `limit` for OpenCode to exit, without reaping it, and
     /// says whether it did. Unix only; elsewhere it does not wait.
     pub async fn ended_within(&self, limit: Duration) -> bool {
@@ -778,6 +787,27 @@ impl Server {
         let Some(pid) = self.group.0.and_then(|pid| Pid::from_raw(pid as i32)) else { return true };
         let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
         !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
+    }
+
+    /// A Server over an arbitrary test process, with the same process-group
+    /// ownership a real one has, for the S4b teardown tests. Test-only.
+    #[cfg(all(test, unix))]
+    pub(crate) fn synthetic(command: &mut Command) -> Self {
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .kill_on_drop(true).process_group(0);
+        let child = command.spawn().expect("a synthetic runtime");
+        Self {
+            group: Group(child.id()),
+            child,
+            base: String::new(),
+            password: String::new(),
+            directory: String::new(),
+            version: String::new(),
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            submitted: Mutex::default(),
+            ticks: std::sync::atomic::AtomicU64::new(0),
+            id: "synthetic-runtime".into(),
+        }
     }
 
     /// A new session; OpenCode's record of it (its `id` names it).
@@ -1201,6 +1231,18 @@ impl Server {
         self.wire().pending_permissions(session, REQUEST_LIMIT).await
     }
 
+    /// As `pending_permission`, with an explicit bound for the whole read,
+    /// body included (YN-78 S4b: what is left of an absolute deadline).
+    pub(crate) async fn pending_permission_within(&self, session: &str, request: &str, limit: Duration) -> Result<Option<Value>> {
+        self.wire().pending_permission(session, request, limit).await
+    }
+
+    /// As `pending_permissions`, with an explicit bound for the whole read,
+    /// body included (YN-78 S4b).
+    pub(crate) async fn pending_permissions_within(&self, session: &str, limit: Duration) -> Result<Vec<Value>> {
+        self.wire().pending_permissions(session, limit).await
+    }
+
     /// Answers a permission request and reports what became of it (YN-78
     /// S1, design 2.4): 204 delivered, 404 gone, 400 refused, and unknown
     /// for no answer, a timeout, a lost connection or another status.
@@ -1211,6 +1253,13 @@ impl Server {
     /// reject carries no reason and ends the step.
     pub async fn answer_permission(&self, session: &str, request: &str, reply: Reply, message: Option<&str>) -> Result<PermissionDelivery> {
         self.wire().answer_permission(session, request, reply, message, REQUEST_LIMIT).await
+    }
+
+    /// As `answer_permission`, with an explicit bound for the whole request,
+    /// body included (YN-78 S4b: min(REQUEST_LIMIT, what a deadline leaves)).
+    pub(crate) async fn answer_permission_within(&self, session: &str, request: &str, reply: Reply, message: Option<&str>,
+        limit: Duration) -> Result<PermissionDelivery> {
+        self.wire().answer_permission(session, request, reply, message, limit).await
     }
 
     /// This server's HTTP side, for the calls of YN-78 S1.
@@ -1261,6 +1310,14 @@ impl Server {
     /// snapshot.
     pub async fn abort(&self, session: &str) -> Result<()> {
         self.json(Method::POST, &format!("/api/session/{}/interrupt", segment(session)?), None).await?;
+        Ok(())
+    }
+
+    /// As `abort`, with an explicit bound (YN-78 S4b's interrupt stage).
+    pub(crate) async fn abort_within(&self, session: &str, limit: Duration) -> Result<()> {
+        let path = format!("/api/session/{}/interrupt", segment(session)?);
+        timeout(limit, self.json(Method::POST, &path, None)).await
+            .map_err(|_| anyhow!("OpenCode did not answer {path} within {limit:?}"))??;
         Ok(())
     }
 
@@ -1514,68 +1571,83 @@ impl Wire<'_> {
 
     /// `GET /api/session/:sessionID/permission/:requestID`: the request while
     /// it waits, `None` for 404. A 200 is read as `{data: request}` within
-    /// PERMISSION_BODY_LIMIT; any other status is an error.
+    /// PERMISSION_BODY_LIMIT; any other status is an error. The whole read,
+    /// body included, is within `limit` (S4b: both the delivery check and the
+    /// preparation read share one absolute deadline).
     async fn pending_permission(&self, session: &str, request: &str, limit: Duration) -> Result<Option<Value>> {
         let path = format!("/api/session/{}/permission/{}", segment(session)?, segment(request)?);
-        let response = self.request(Method::GET, &path).timeout(limit).send().await
-            .with_context(|| format!("OpenCode did not answer {path}"))?;
-        match response.status().as_u16() {
-            200 => Ok(Some(data_of(response, &path).await?)),
-            404 => Ok(None),
-            code => Err(refusal(&path, code, response).await),
-        }
+        timeout(limit, async {
+            let response = self.request(Method::GET, &path).send().await
+                .with_context(|| format!("OpenCode did not answer {path}"))?;
+            match response.status().as_u16() {
+                200 => Ok(Some(data_of(response, &path).await?)),
+                404 => Ok(None),
+                code => Err(refusal(&path, code, response).await),
+            }
+        }).await.map_err(|_| anyhow!("OpenCode did not answer {path} within {limit:?}"))?
     }
 
     /// `GET /api/session/:sessionID/permission`: every pending request, read
-    /// as `{data: [request, …]}` within PERMISSION_BODY_LIMIT.
+    /// as `{data: [request, …]}` within PERMISSION_BODY_LIMIT, body included
+    /// within `limit`.
     async fn pending_permissions(&self, session: &str, limit: Duration) -> Result<Vec<Value>> {
         let path = format!("/api/session/{}/permission", segment(session)?);
-        let response = self.request(Method::GET, &path).timeout(limit).send().await
-            .with_context(|| format!("OpenCode did not answer {path}"))?;
-        let code = response.status().as_u16();
-        if code != 200 {
-            return Err(refusal(&path, code, response).await);
-        }
-        let data = data_of(response, &path).await?;
-        Ok(data.as_array().with_context(|| format!("OpenCode's answer to {path} is not a list"))?.clone())
+        timeout(limit, async {
+            let response = self.request(Method::GET, &path).send().await
+                .with_context(|| format!("OpenCode did not answer {path}"))?;
+            let code = response.status().as_u16();
+            if code != 200 {
+                return Err(refusal(&path, code, response).await);
+            }
+            let data = data_of(response, &path).await?;
+            Ok(data.as_array().with_context(|| format!("OpenCode's answer to {path} is not a list"))?.clone())
+        }).await.map_err(|_| anyhow!("OpenCode did not answer {path} within {limit:?}"))?
     }
 
     /// `GET /api/session/:sessionID/message/:messageID` (YN-78 S4a, design
     /// v4 2.3.1): the one stored message a permission request's tool call is
     /// in, read as `{data: message}` within EVENT_BUFFER_LIMIT, `None` for
-    /// 404; anything else is an error. Unlike `Server::message` it reads no
-    /// inbox: only a stored answer holds a tool call. Nothing calls it but
-    /// the tests yet.
+    /// 404; anything else is an error. The whole read, body included, is
+    /// within `limit` (S4b's preparation deadline). Unlike `Server::message`
+    /// it reads no inbox: only a stored answer holds a tool call. Nothing
+    /// calls it but the tests yet.
     async fn session_message(&self, session: &str, message: &str, limit: Duration) -> Result<Option<Value>> {
         let path = format!("/api/session/{}/message/{}", segment(session)?, segment(message)?);
-        let response = self.request(Method::GET, &path).timeout(limit).send().await
-            .with_context(|| format!("OpenCode did not answer {path}"))?;
-        match response.status().as_u16() {
-            200 => Ok(Some(data_within(response, &path, EVENT_BUFFER_LIMIT).await?)),
-            404 => Ok(None),
-            code => Err(refusal(&path, code, response).await),
-        }
+        timeout(limit, async {
+            let response = self.request(Method::GET, &path).send().await
+                .with_context(|| format!("OpenCode did not answer {path}"))?;
+            match response.status().as_u16() {
+                200 => Ok(Some(data_within(response, &path, EVENT_BUFFER_LIMIT).await?)),
+                404 => Ok(None),
+                code => Err(refusal(&path, code, response).await),
+            }
+        }).await.map_err(|_| anyhow!("OpenCode did not answer {path} within {limit:?}"))?
     }
 
     /// `POST …/permission/:requestID/reply`: the answer, classified as
     /// `PermissionDelivery` says. Only 204 is delivered: any other success,
-    /// an unexpected status, a timeout or a lost connection is unknown.
+    /// an unexpected status, a timeout or a lost connection is unknown. The
+    /// whole request, body included, is within `limit`.
     async fn answer_permission(&self, session: &str, request: &str, reply: Reply, message: Option<&str>, limit: Duration) -> Result<PermissionDelivery> {
+        let path = format!("/api/session/{}/permission/{}/reply", segment(session)?, segment(request)?);
         let mut body = json!({"decision": match reply { Reply::Once => "once", Reply::Reject => "reject" }});
         if let Some(message) = message {
             body["message"] = message.into();
         }
-        let path = format!("/api/session/{}/permission/{}/reply", segment(session)?, segment(request)?);
-        let response = match self.request(Method::POST, &path).timeout(limit).json(&body).send().await {
-            Ok(response) => response,
-            Err(error) => return Ok(PermissionDelivery::Unknown(format!("OpenCode did not answer {path} ({})", error.without_url()))),
-        };
-        let code = response.status().as_u16();
-        Ok(match code {
-            204 => PermissionDelivery::Delivered,
-            404 => PermissionDelivery::Gone { code, kind: bounded_kind(response).await },
-            400 => PermissionDelivery::Invalid { message: bounded_message(response).await },
-            _ => PermissionDelivery::Unknown(format!("OpenCode answered {path} with HTTP {code}")),
+        let answered = timeout(limit, async {
+            let response = self.request(Method::POST, &path).json(&body).send().await?;
+            let code = response.status().as_u16();
+            Ok::<_, reqwest::Error>(match code {
+                204 => PermissionDelivery::Delivered,
+                404 => PermissionDelivery::Gone { code, kind: bounded_kind(response).await },
+                400 => PermissionDelivery::Invalid { message: bounded_message(response).await },
+                _ => PermissionDelivery::Unknown(format!("OpenCode answered {path} with HTTP {code}")),
+            })
+        }).await;
+        Ok(match answered {
+            Ok(Ok(delivery)) => delivery,
+            Ok(Err(error)) => PermissionDelivery::Unknown(format!("OpenCode did not answer {path} ({})", error.without_url())),
+            Err(_) => PermissionDelivery::Unknown(format!("OpenCode did not answer {path} within {limit:?}")),
         })
     }
 }
@@ -1583,8 +1655,28 @@ impl Wire<'_> {
 /// The read a permission request's binding makes (YN-78 S4a): one GET on
 /// this server, at most REQUEST_LIMIT.
 impl crate::opencode_permissions::MessageReader for Wire<'_> {
-    async fn message(&self, session: &str, message: &str) -> Result<Option<Value>> {
-        self.session_message(session, message, REQUEST_LIMIT).await
+    fn message<'a>(&'a self, session: &'a str, message: &'a str)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
+        Box::pin(async move { self.session_message(session, message, REQUEST_LIMIT).await })
+    }
+
+    fn message_within<'a>(&'a self, session: &'a str, message: &'a str, limit: Duration)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
+        Box::pin(async move { self.session_message(session, message, limit).await })
+    }
+}
+
+/// The same one read on the server itself (S4b's responder binds through a
+/// `Server`, never through a connection it looks up again).
+impl crate::opencode_permissions::MessageReader for Server {
+    fn message<'a>(&'a self, session: &'a str, message: &'a str)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
+        Box::pin(async move { self.wire().session_message(session, message, REQUEST_LIMIT).await })
+    }
+
+    fn message_within<'a>(&'a self, session: &'a str, message: &'a str, limit: Duration)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Value>>> + Send + 'a>> {
+        Box::pin(async move { self.wire().session_message(session, message, limit).await })
     }
 }
 
@@ -2453,6 +2545,22 @@ mod tests {
         assert_eq!(protocol.asked().len(), 3, "nothing is sent for an ID that is not a path segment");
     }
 
+    /// S4b's explicit deadlines: a POST whose answer is late is unknown, and
+    /// a check read that is late is an error, both within the given bound.
+    #[tokio::test(start_paused = true)]
+    async fn permission_calls_use_the_explicit_deadline() {
+        let protocol = Protocol::start(|_| Answered { status: 204, content_type: "text/plain", body: String::new(),
+            delay: Duration::from_secs(20) }).await;
+        let client = client();
+        let wire = protocol.wire(&client);
+        let delivery = wire.answer_permission("ses_a", "per_1", Reply::Once, None, Duration::from_secs(1)).await.unwrap();
+        assert!(matches!(delivery, PermissionDelivery::Unknown(reason) if reason.contains("within")), "the POST is bounded");
+        let read = wire.pending_permission("ses_a", "per_1", Duration::from_secs(1)).await;
+        assert!(read.unwrap_err().to_string().contains("within"), "the check read is bounded too");
+        let message = wire.session_message("ses_a", "msg_1", Duration::from_secs(1)).await;
+        assert!(message.unwrap_err().to_string().contains("within"), "the message read is bounded too");
+    }
+
     /// The reads name the session and return 2.x's `data`, the single one
     /// `None` for 404; a 200 is read only as bounded JSON of its own shape
     /// (YN-78 S1).
@@ -2625,5 +2733,28 @@ mod tests {
             ["/api/session/ses_child/message/msg_c", "/api/session/ses_main/message/msg_m", "/api/session/ses_main/message/msg_other"],
             "one read for each call not seen, and no other request: nothing is answered");
         assert!(asked.iter().all(|asked| asked.method == "GET"));
+    }
+
+    /// S4b's teardown of a captured runtime: with another Arc still held, a
+    /// process that ignores SIGTERM is KILLed by its own process group, and
+    /// no last-drop is needed. Run by a managed Job (`--ignored`), never in
+    /// CI: it starts a synthetic process of its own and signals only it.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "a real process test, run by a managed Job"]
+    async fn a_shared_synthetic_runtime_is_killed_without_being_dropped() {
+        let mut command = Command::new("/usr/bin/python3");
+        command.args(["-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"]);
+        let server = Arc::new(Server::synthetic(&mut command));
+        let held = server.clone();
+        // Let the synthetic process install its SIGTERM handler.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        server.terminate();
+        assert!(!server.ended_within(Duration::from_millis(250)).await, "it ignores SIGTERM");
+        server.kill();
+        assert!(server.ended_within(Duration::from_secs(2)).await, "SIGKILL ends its own group");
+        assert_eq!(Arc::strong_count(&server), 2, "still shared; no drop did this");
+        drop(held);
+        drop(server);
     }
 }

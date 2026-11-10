@@ -47,13 +47,21 @@
 //! **Inputs.** D, O, T and the protected locations are given by a trusted
 //! caller (`Rules`), as absolute normal paths; nothing here adds a default
 //! list, derives T or reads a setting. A missing protected location still
-//! counts as given; one that exists counts also as its real path.
+//! counts as given; one that exists counts also as its real path. The
+//! Agent's folder and Git top OpenCode resolves against (`Rules::directory`
+//! and `Rules::worktree`) are the *native lexical* ones: they decide what
+//! OpenCode itself calls inside and which resource it names. What Core
+//! treats as really inside is a separate, fixed input (`Rules::internal`),
+//! the canonical project roots fixed when the executor was set up. No path
+//! is made real again to widen them, and changing the native folder (a
+//! stable alias now pointing elsewhere) changes only the literal paths, not
+//! the roots that grant the internal policy.
 //!
-//! **Exception roots.** O, T, the Agent's folder and its worktree widen what
-//! is allowed (O and T are read though in D; T is written in; the folder
-//! and worktree keep the internal policy). Each counts only as given, and
-//! only while it is still a folder whose real path is that path itself; O
-//! and T also must not hold D. A root that has gone, become a file, or been
+//! **Exception roots.** O, T and the fixed internal roots widen what is
+//! allowed (O and T are read though in D; T is written in; the internal
+//! roots keep the internal policy). Each counts only as given, and only
+//! while it is still a folder whose real path is that path itself; O and T
+//! also must not hold D. A root that has gone, become a file, or been
 //! replaced by a link, itself or one of its folders (O → D, T → another
 //! Agent's folder in D), grants nothing, and nothing takes its place: targets
 //! are made real, roots are not. So a caller gives each root as the real
@@ -83,7 +91,9 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// A permission request as OpenCode 2.2.5 sends it (`permission.asked`'s
 /// data, or an item of `GET /api/session/:s/permission`).
@@ -118,6 +128,15 @@ impl Asked {
             _ => None,
         };
         Some(Self { id: text("id")?, session: text("sessionID")?, action: text("action")?, resources, source })
+    }
+
+    /// The bytes this request's own record takes, for the queue's bound
+    /// (S4b): its strings as they are, never an answer or a message's body.
+    pub(crate) fn size(&self) -> usize {
+        let strings = std::iter::once(self.id.len() + self.session.len() + self.action.len())
+            .chain(self.resources.iter().flatten().map(String::len))
+            .chain(self.source.iter().flat_map(|source| [source.message.len(), source.call.len()]));
+        strings.fold(0usize, usize::saturating_add)
     }
 }
 
@@ -260,6 +279,8 @@ pub(crate) enum Reason {
     SearchScan,
     /// The trusted inputs aren't usable: nothing is answered once.
     RulesInvalid,
+    /// Preparing this answer took longer than the prep deadline (S4b).
+    PreparationTimeout,
 }
 
 impl Reason {
@@ -278,6 +299,7 @@ impl Reason {
             Self::SearchRoot => "search_root",
             Self::SearchScan => "search_scan",
             Self::RulesInvalid => "rules_invalid",
+            Self::PreparationTimeout => "preparation_timeout",
         }
     }
 
@@ -296,6 +318,7 @@ impl Reason {
             Self::SearchRoot => "a search there reaches a protected location; search a narrower folder",
             Self::SearchScan => "the folder is too large to check or holds a .env file; search a narrower folder, or find files with glob and read them",
             Self::RulesInvalid => "its rules for this executor are incomplete",
+            Self::PreparationTimeout => "preparing an answer took too long; do that another way, or retry when the executor is less busy",
         };
         format!("Yuzuno Core refused this: {why}.")
     }
@@ -325,14 +348,21 @@ pub(crate) struct Decision {
 
 /// What an executor's decisions are checked against, from a trusted caller:
 /// every path absolute and normal, else every request is refused. The
-/// folder, worktree, O and T are the real paths fixed when the executor's
-/// rules were set up (T: when it was assigned), never made real again per
-/// request: each widens a decision only while it still is that real folder.
+/// native folder and Git top are the literal ones OpenCode resolves and
+/// names resources by; the internal roots are the canonical project roots
+/// fixed when the executor was set up, and decide what is really inside.
+/// O and T are also the real paths fixed then; none is made real again per
+/// request.
 pub(crate) struct Rules<'a> {
-    /// The Agent's folder (OpenCode's `location.directory`).
+    /// The Agent's folder as OpenCode has it (`location.directory`), which
+    /// may be a stable alias: used for literal resolution and resources only.
     pub directory: &'a Path,
-    /// Its Git worktree's top (`location.project.directory`); `/` or None for none.
+    /// Its literal Git worktree top (`location.project.directory`); `/` or
+    /// None for none.
     pub worktree: Option<&'a Path>,
+    /// The fixed canonical project roots: what Core treats as really inside.
+    /// Each is only used while it is still that real folder.
+    pub internal: &'a [&'a Path],
     /// The home OpenCode expands `~` to.
     pub home: &'a Path,
     /// D, O and T, as for the static rules (permission_levels::opencode_policy).
@@ -343,9 +373,18 @@ pub(crate) struct Rules<'a> {
     pub protected_files: &'a [&'a Path],
 }
 
-/// Reads one stored message: `None` when OpenCode has none (404).
-pub(crate) trait MessageReader {
-    fn message(&self, session: &str, message: &str) -> impl Future<Output = anyhow::Result<Option<Value>>> + Send;
+/// Reads one stored message: `None` when OpenCode has none (404). `limit` is
+/// the most this read may take, body included (S4b's preparation deadline).
+pub(crate) trait MessageReader: Send + Sync {
+    fn message<'a>(&'a self, session: &'a str, message: &'a str)
+        -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Value>>> + Send + 'a>>;
+
+    /// As `message`, within `limit`. A reader that can't bound its read any
+    /// tighter than the caller's own timeout uses the same read.
+    fn message_within<'a>(&'a self, session: &'a str, message: &'a str, _limit: Duration)
+        -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Value>>> + Send + 'a>> {
+        self.message(session, message)
+    }
 }
 
 /// Rule 1: the actions nobody but Core's read-only checks can approve.
@@ -372,6 +411,12 @@ pub(crate) async fn answer<R: MessageReader>(asked: &Asked, on: &Connection<'_>,
 /// connection's.
 pub(crate) async fn bind<R: MessageReader>(asked: &Asked, on: &Connection<'_>, calls: &Calls, reader: &R,
     current: &(dyn Fn() -> bool + Sync)) -> Result<Call, Unbound> {
+    bind_within(asked, on, calls, reader, current, Duration::from_secs(15)).await
+}
+
+/// As `bind`, with its one message read bounded by `limit` (body included).
+pub(crate) async fn bind_within<R: MessageReader>(asked: &Asked, on: &Connection<'_>, calls: &Calls, reader: &R,
+    current: &(dyn Fn() -> bool + Sync), limit: Duration) -> Result<Call, Unbound> {
     let source = asked.source.as_ref().ok_or(Unbound::NotATool)?;
     if !on.owns(&asked.session) {
         return Err(Unbound::NotThisConnection);
@@ -386,7 +431,7 @@ pub(crate) async fn bind<R: MessageReader>(asked: &Asked, on: &Connection<'_>, c
         Some(seen) if seen.status == Status::Running && seen.name.is_some() && seen.input.is_some() => (seen, false),
         // Not seen, or seen only as its input started: one read.
         _ => {
-            let message = reader.message(&asked.session, &source.message).await;
+            let message = reader.message_within(&asked.session, &source.message, limit).await;
             if !current() {
                 return Err(Unbound::Stale);
             }
@@ -440,11 +485,13 @@ pub(crate) fn decide(asked: &Asked, call: &Call, rules: &Rules<'_>, budget: &Bud
 
 /// `Rules` checked and made real for one decision.
 struct Checked {
+    /// The native lexical folder OpenCode resolves against.
     directory: String,
+    /// The native lexical Git top, when not `/`.
     worktree: Option<String>,
     home: String,
-    /// The folder and the worktree as roots of the internal policy: each
-    /// only when it is its own real path (the worktree also not `/`).
+    /// The fixed canonical project roots of the internal policy: each only
+    /// while it is its own real path.
     inside_roots: Vec<String>,
     /// T as a root writes may land in: only when it is its own real path
     /// and doesn't hold D.
@@ -465,10 +512,12 @@ impl Checked {
         let data = text(rules.data_dir)?;
         let outputs = rules.outputs.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let temp = given(rules.temp)?;
+        let internal = rules.internal.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let dirs = rules.protected_dirs.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let files = rules.protected_files.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
 
-        // The folder must exist and not be `/`.
+        // The native folder must exist and must not be `/`; it need not be its
+        // own real path: a stable alias stays the literal folder OpenCode uses.
         real(&directory).filter(|real| real != "/")?;
         // Each as given and, when it exists, as its real path.
         fn both(paths: &[String]) -> Vec<String> {
@@ -480,7 +529,9 @@ impl Checked {
         // An exception root counts only as given, and only when that is its real path.
         let exact = |root: &String| real(root).as_ref() == Some(root) && std::fs::metadata(root).is_ok_and(|m| m.is_dir());
         let without_data = |root: &String| exact(root) && !data.iter().any(|d| within(d, root));
-        let inside_roots = [Some(&directory), worktree.as_ref()].into_iter().flatten().filter(|&root| exact(root)).cloned().collect();
+        // The internal roots are fixed by the caller and only checked here:
+        // one that has drifted grants nothing, and nothing replaces it.
+        let inside_roots = internal.iter().filter(|&root| exact(root)).cloned().collect();
         let temp = temp.filter(|root| without_data(root));
         let kept = outputs.iter().filter(|&root| without_data(root)).cloned().chain(temp.clone()).collect();
         let places = Places { dirs: both(&dirs), files: both(&files), data, kept, ids };
