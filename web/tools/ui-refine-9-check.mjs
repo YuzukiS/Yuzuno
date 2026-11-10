@@ -220,13 +220,11 @@ async function open({ theme = "dark", width = 1440, height = 900, motion = "redu
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
     // An open conversation's reads, answered as Core answers an Agent with none, counted apart from this
-    // check's writes: its reading place (reading-handoff-api.ts), its inputs (useConversationInputs.ts) and,
-    // for a connected Codex Agent, its MCP services as Codex last reported them (CodexMcpStatus.tsx).
-    const own = path.match(/^\/api\/agents\/([\w-]+)\/(reading|conversation\/inputs|codex\/mcp)$/);
+    // check's writes: its inputs (useConversationInputs.ts) and, for a connected Codex Agent, its MCP
+    // services as Codex last reported them (CodexMcpStatus.tsx).
+    const own = path.match(/^\/api\/agents\/([\w-]+)\/(conversation\/inputs|codex\/mcp)$/);
     if (own && agents.some((a) => a.id === own[1])) {
       report.agentReads.push(`${method} ${path}`);
-      if (own[2] === "reading" && (method === "GET" || method === "PUT"))
-        return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: 1, accepted: true } : { handoff: null, sourceSeq: 0 } });
       if (own[2] === "conversation/inputs" && method === "GET") return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
       if (own[2] === "codex/mcp" && method === "GET") return route.fulfill({ json: { state: "observed", reason: "", generation: 1, servers: [], more: 0 } });
     }

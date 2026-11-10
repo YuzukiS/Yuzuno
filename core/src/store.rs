@@ -1433,7 +1433,6 @@ impl Store {
             tx.execute("DELETE FROM agents WHERE id=?1", [id])?;
             crate::results::delete_agent(&tx, id)?;
             crate::project_brief::delete_agent(&tx, id)?;
-            crate::reading_handoff::delete_agent(&tx, id)?;
             crate::codex_sessions::release_forks(&tx, id)?;
             tx.commit()?;
         }

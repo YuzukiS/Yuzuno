@@ -384,7 +384,6 @@ const browser = await chromium.launch({
   executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium",
 });
 const writes = report.writes;
-let readingSeq = 0;
 const writesTo = (pattern) => writes.filter((w) => pattern.test(w.path));
 async function serve(route) {
   const request = route.request();
@@ -395,13 +394,8 @@ async function serve(route) {
   }
   const path = url.pathname;
   const method = request.method();
-  // An open conversation's reading place (reading-handoff-api.ts) and its inputs (useConversationInputs.ts),
-  // answered as Core answers an Agent with none; counted apart from Home's writes.
-  const reading = /^\/api\/agents\/([^/]+)\/reading$/.exec(path);
-  if (reading && agents.some((a) => a.id === reading[1]) && (method === "GET" || method === "PUT")) {
-    report.agentReads.push(`${method} ${path}`);
-    return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: ++readingSeq, accepted: true } : { handoff: null, sourceSeq: readingSeq } });
-  }
+  // An open conversation's inputs (useConversationInputs.ts), answered as Core
+  // answers an Agent with none; counted apart from Home's writes.
   const inputs = /^\/api\/agents\/([^/]+)\/conversation\/inputs$/.exec(path);
   if (inputs && agents.some((a) => a.id === inputs[1]) && method === "GET") {
     report.agentReads.push(path);

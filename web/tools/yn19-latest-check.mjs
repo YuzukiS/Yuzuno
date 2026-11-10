@@ -116,9 +116,6 @@ async function open(viewport, lang, theme, fixture) {
     const request = route.request();
     const url = new URL(request.url());
     assert.equal(url.hostname, "localhost");
-    // Where this browser left the conversation (T-170): the app's own
-    // publish, answered here; no Core sees it.
-    if (request.method() === "PUT" && url.pathname === "/api/agents/a/reading") { report.writes.push(`PUT ${url.pathname}`); return route.fulfill({ json: { sourceSeq: 0 } }); }
     if (request.method() !== "GET") { report.unexpected.push(`${request.method()} ${url.pathname}`); return route.fulfill({ json: { ok: true } }); }
     if (url.pathname === "/api/agents/a") {
       const query = url.searchParams;
@@ -144,7 +141,6 @@ async function open(viewport, lang, theme, fixture) {
       "/api/ci": noCiRuns,
       "/api/ci/live": noLiveCi,
       "/api/home": emptyHome,
-      "/api/agents/a/reading": { handoff: null, sourceSeq: 0 },
       "/api/agents/a/conversation/inputs": noConversationInputs,
       "/api/reviews": noReviews,
       "/api/catchup": { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } },

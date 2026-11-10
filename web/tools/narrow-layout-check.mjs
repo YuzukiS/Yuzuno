@@ -95,12 +95,6 @@ async function open(viewport) {
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
     if (method === "POST" && /^\/api\/agents\/[abc]\/review$/.test(path)) return route.fulfill({ json: {} });
-    // Where this browser left an Agent (T-170, #65): written on leaving, by design.
-    if (/^\/api\/agents\/[abc]\/reading$/.test(path)) {
-      if (method === "GET") return route.fulfill({ json: { handoff: null } });
-      (report.readingWrites ??= []).push({ viewport: viewport.name, method, path });
-      return route.fulfill({ json: { accepted: true, sourceSeq: JSON.parse(request.postData() || "{}").clientSeq ?? 0 } });
-    }
     if (method !== "GET") {
       report.mutations.push({ viewport: viewport.name, method, path });
       return route.fulfill({ status: 400, json: { error: `Unexpected ${method} ${path} in this check` } });

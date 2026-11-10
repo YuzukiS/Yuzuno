@@ -2,9 +2,9 @@ import { Children, isValidElement, useLayoutEffect, useRef, type ReactNode } fro
 import "./conversation-strips.css";
 
 /**
- * The strips over the conversation's top: another browser's place offered,
- * and the source being read with its way back (T-19 SH:C08, CV:CW-11). They
- * float over the conversation instead of standing above it, so one that
+ * The strips over the conversation's top: the source being read with its way
+ * back (T-19 SH:C08, CV:CW-11). They float over the conversation instead of
+ * standing above it, so one that
  * appears while someone reads moves no text; each fades in over small
  * (conversation-strips.css). Their height is the conversation's
  * `--strips-height`: the request pin sits below them, the conversation's
@@ -24,7 +24,7 @@ import "./conversation-strips.css";
 export function ConversationStrips({ children }: { children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const written = useRef<number | null>(null);
-  // Which strips show, by their place among the children (App's reading offer, then its source strip).
+  // Which strips show, by their place among the children (App's source strip).
   const shows = Children.toArray(children).map((child) => (isValidElement(child) ? String(child.key) : "")).join(" ");
   const measure = () => {
     const element = box.current;

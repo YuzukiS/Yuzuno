@@ -23,7 +23,7 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/home-pins");
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-pins.test";
-const report = { checks: [], failures: [], errors: [], readingHandoff: [], unexpected: [], writes: [] };
+const report = { checks: [], failures: [], errors: [], unexpected: [], writes: [] };
 let page;
 async function step(name, run) {
   try {
@@ -109,12 +109,6 @@ const serve = (workspaceId) => async (route) => {
     return route.abort();
   }
   const path = url.pathname;
-  // The app's reading handoff for the conversation it shows (T-170, reading-handoff-api.ts): a read
-  // apart from Home, answered and counted by its exact path; a PUT would still count as a write.
-  if (request.method() === "GET" && path === "/api/agents/sora/reading") {
-    report.readingHandoff.push(path);
-    return route.fulfill({ json: { handoff: null } });
-  }
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     report.writes.push(`${request.method()} ${path}`);
