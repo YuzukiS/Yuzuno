@@ -75,7 +75,7 @@ device signed in to that account can write them; that is the user's choice of
 request carrying any `Authorization` header (an Agent's credential) is
 refused with 403, on either entry.
 
-Settings → Executor routing → Accounts and keys writes them through these
+Settings → Accounts & keys writes them through these
 routes: a key's value or the token is typed into a password field, sent once
 and never shown again, and claude-swap's accounts are shown by number and
 fingerprint only.

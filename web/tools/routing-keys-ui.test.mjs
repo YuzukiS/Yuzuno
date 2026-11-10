@@ -1,4 +1,4 @@
-// YN-49 S4a: Settings → Executor routing → Accounts and keys, on S1's routes
+// YN-49 S4a: Settings → Accounts & keys, on S1's routes
 // (docs/executor-routing.md). A key's value is write-only: it is sent in one
 // request body and never appears in the page, before or after it is kept; an
 // account is named by its number and fingerprint, never its label or email.

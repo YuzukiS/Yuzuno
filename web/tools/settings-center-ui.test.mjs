@@ -19,7 +19,9 @@ import {SettingsCenter} from ${JSON.stringify(path.join(root, "src/SettingsCente
 import {HomePresentationSettings} from ${JSON.stringify(path.join(root, "src/HomePresentationSettings.tsx"))};
 import {AgentSettings} from ${JSON.stringify(path.join(root, "src/AgentSettings.tsx"))};
 const root = createRoot(document.getElementById('root'));
-window.renderSettings = props => root.render(<SettingsCenter {...props} renderEditor={(id, visible, open, request) => id === 'home' ? <HomePresentationSettings active/> : <div>Existing {id} editor{request?.sub ? ' at ' + request.sub : ''}</div>}/>);
+window.renderSettings = props => root.render(<SettingsCenter {...props} renderEditor={(id, visible, open, request) => id === 'home' ? <HomePresentationSettings active/> : id === 'executor-routing' || id === 'routing-keys' ? <DraftEditor name={id}/> : <div>Existing {id} editor{request?.sub ? ' at ' + request.sub : ''}</div>}/>);
+// YN-84 S2: an editor with a draft of its own, to see it survive a page change.
+function DraftEditor({ name }) { const [value, setValue] = React.useState(""); return <label>{name}<input aria-label={name + ' draft'} value={value} onChange={event => setValue(event.target.value)}/></label>; }
 window.renderAgent = props => root.render(<AgentSettings {...props}/>);`);
   const built = await build({ root, configFile: false, logLevel: "silent", plugins: [react()], define: { "process.env.NODE_ENV": JSON.stringify("production") }, build: { write: false, lib: { entry, name: "SettingsTest", formats: ["iife"] } } });
   bundle = (Array.isArray(built) ? built[0] : built).output.find((item) => item.type === "chunk").code;
@@ -70,10 +72,10 @@ function mount({ phone = false, languages } = {}) {
   return { w, doc, calls, destinations, errors, props, button, type, tab, shown, close: () => w.close() };
 }
 
-test("nineteen pages in four groups and bilingual search expose real scope, without fake controls", async (t) => {
+test("twenty pages in four groups and bilingual search expose real scope, without fake controls", async (t) => {
   const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
   await until(() => p.doc.querySelector('[type="search"]'));
-  assert.equal(p.doc.querySelectorAll('[role="tab"]').length, 19);
+  assert.equal(p.doc.querySelectorAll('[role="tab"]').length, 20);
   const query = p.doc.querySelector('[type="search"]');
   for (const [term, title, scope] of [
     ["预算", "Core host Job budget", "Core execution machine"],
@@ -222,7 +224,7 @@ test("a page shows its editors directly, and each group names whose settings it 
   assert.deepEqual(groups.map((list) => p.doc.getElementById(list.getAttribute("aria-labelledby")).textContent), ["This device", "Workspace", "Data", "About"]);
   assert.deepEqual(groups.map((list) => [...list.querySelectorAll('[role="tab"]')].map((item) => item.id.replace("settings-tab-", ""))), [
     ["appearance", "typing", "language", "shortcuts", "notifications", "transfer"],
-    ["projects", "machines", "agents", "executors", "routing", "home", "phone"],
+    ["projects", "machines", "agents", "executors", "routing", "accounts", "home", "phone"],
     ["storage", "backup", "diagnostics"],
     ["updates", "runtime", "about"],
   ]);
@@ -274,6 +276,33 @@ test("a request opens its page, and an older caller's editor opens the page it i
   await until(() => p.doc.getElementById("settings-editor-projects").textContent === "Existing projects editor at p1");
   assert.equal(p.calls.length, 0, "opening a page reads or writes nothing by itself");
   assert.equal(p.destinations.length, 0);
+  assert.deepEqual(p.errors, []);
+});
+
+// YN-84 S2: Accounts & keys is its own page right after Executor routing; the routing-keys editor opens there,
+// and an editor's unfinished state survives leaving its page and coming back.
+test("accounts is the page after routing, routing-keys opens there, and a draft survives leaving the page", async (t) => {
+  const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
+  const { tab, shown } = p;
+  await until(() => tab("routing"));
+  const ids = [...p.doc.querySelectorAll('[role="tab"]')].map((el) => el.id.replace("settings-tab-", ""));
+  assert.equal(ids[ids.indexOf("routing") + 1], "accounts", "right after Executor routing");
+  assert.equal(tab("accounts").querySelector(".settings-nav-label").textContent, "Accounts & keys");
+  tab("routing").click();
+  await until(() => shown().join() === "settings-editor-executor-routing");
+  p.type(p.doc.querySelector('[aria-label="executor-routing draft"]'), "unsaved");
+  tab("accounts").click();
+  await until(() => shown().join() === "settings-editor-routing-keys");
+  assert.equal(p.doc.querySelector('[aria-label="executor-routing draft"]').value, "unsaved", "routing's draft is kept while away");
+  tab("routing").click();
+  await until(() => shown().join() === "settings-editor-executor-routing");
+  assert.equal(p.doc.querySelector('[aria-label="executor-routing draft"]').value, "unsaved", "and on coming back");
+  // An older caller naming the editor lands on the page it is now on, and focuses it.
+  p.w.renderSettings({ ...p.props, openAt: { editor: "routing-keys", nonce: 9 } });
+  await until(() => tab("accounts").getAttribute("aria-selected") === "true");
+  await until(() => shown().join() === "settings-editor-routing-keys");
+  await until(() => p.doc.activeElement?.id === "settings-editor-routing-keys");
+  assert.equal(p.calls.length, 0, "opening a page reads or writes nothing by itself");
   assert.deepEqual(p.errors, []);
 });
 

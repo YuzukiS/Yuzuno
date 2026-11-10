@@ -8,7 +8,7 @@ import type { SettingEntry, SettingsDestination, SettingsEditor } from "./settin
 export type SettingsGroup = "device" | "workspace" | "data" | "about";
 export type SettingsPage =
   | "appearance" | "typing" | "language" | "shortcuts" | "notifications" | "transfer"
-  | "projects" | "machines" | "agents" | "executors" | "routing" | "home" | "phone"
+  | "projects" | "machines" | "agents" | "executors" | "routing" | "accounts" | "home" | "phone"
   | "storage" | "backup" | "diagnostics"
   | "updates" | "runtime" | "about";
 /** An editor of a page; `projects` and `machines` are the Project and
@@ -34,8 +34,10 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "machines", group: "workspace", label: { en: "Machines", zh: "机器" }, editors: ["machines"] },
   { id: "agents", group: "workspace", label: { en: "Agent defaults", zh: "Agent 默认" }, editors: ["agent-defaults", "auto-continue", "review"] },
   { id: "executors", group: "workspace", label: { en: "Executors", zh: "执行者" }, editors: ["executor-templates"] },
-  // Executor routing (YN-49): the candidate order, then the accounts and keys it may start an executor with.
-  { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["executor-routing", "routing-keys"] },
+  // Executor routing (YN-49): only the routing itself, the candidate order and its conditions (YN-84 S2).
+  { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["executor-routing"] },
+  // The accounts and keys routing may start an executor with (YN-84 S2), on their own page.
+  { id: "accounts", group: "workspace", label: { en: "Accounts & keys", zh: "账号与密钥" }, editors: ["routing-keys"] },
   { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home"] },
   { id: "phone", group: "workspace", label: { en: "Phone access", zh: "手机访问" }, editors: ["remote"] },
   { id: "storage", group: "data", label: { en: "Storage", zh: "存储" }, editors: ["storage", "drafts", "history"] },

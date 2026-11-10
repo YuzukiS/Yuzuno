@@ -1,7 +1,7 @@
 // YN-79: the settings a phone may now change, at a phone's size in isolated
 // Chromium. Every request is answered by synthetic fixtures; no Core, no real
 // storage. What the jsdom tests cannot see: that Settings → Phone access is
-// editable there with its actions on screen, and that Accounts and keys lays
+// editable there with its actions on screen, and that Accounts & keys lays
 // out on a 390 px screen without sideways overflow. Screenshots go to
 // YUZUNO_BROWSER_OUTPUT.
 import assert from "node:assert/strict";
@@ -122,8 +122,8 @@ async function noOverflow(page, label) {
   for (const part of parts) assert.ok(part.scroll <= part.client + 1, `${label}: ${part.name} overflows sideways (${part.scroll} > ${part.client})`);
 }
 const words = {
-  en: { phone: "Phone access", routing: "Executor routing", off: "Turn off", check: "Check", apply: "Save and apply", keys: "Accounts and keys" },
-  "zh-Hans": { phone: "手机访问", routing: "执行者路由", off: "关闭", check: "检查", apply: "保存并应用", keys: "账号和密钥" },
+  en: { phone: "Phone access", routing: "Executor routing", accounts: "Accounts & keys", off: "Turn off", check: "Check", apply: "Save and apply", keys: "Accounts & keys" },
+  "zh-Hans": { phone: "手机访问", routing: "执行者路由", accounts: "账号与密钥", off: "关闭", check: "检查", apply: "保存并应用", keys: "账号与密钥" },
 };
 
 try {
@@ -144,8 +144,8 @@ try {
       await noOverflow(page, `${label} phone access`);
       await page.screenshot({ path: resolve(output, `phone-access-${language}-${theme}.png`) });
       await dialog(page).locator(".settings-back").click();
-      // Accounts and keys: the rows a phone now reads and changes.
-      await dialog(page).locator("#settings-tab-routing").click();
+      // Accounts & keys: its own page after routing (YN-84 S2), read and changed on a phone.
+      await dialog(page).locator("#settings-tab-accounts").click();
       const routing = dialog(page).locator("#settings-editor-routing-keys:not([hidden])");
       await routing.waitFor();
       await page.waitForTimeout(200);
