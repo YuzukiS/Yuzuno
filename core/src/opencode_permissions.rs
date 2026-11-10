@@ -52,11 +52,15 @@
 //! **Exception roots.** O, T, the Agent's folder and its worktree widen what
 //! is allowed (O and T are read though in D; T is written in; the folder
 //! and worktree keep the internal policy). Each counts only as given, and
-//! only when its real path is that path itself; O and T also must not hold
-//! D. A root a link has replaced since the caller checked it (O → D, T →
-//! another Agent's folder in D), or one given through a linked folder,
-//! grants nothing: targets are made real, roots are not. So the caller gives
-//! each root as its real path.
+//! only while it is still a folder whose real path is that path itself; O
+//! and T also must not hold D. A root that has gone, become a file, or been
+//! replaced by a link, itself or one of its folders (O → D, T → another
+//! Agent's folder in D), grants nothing, and nothing takes its place: targets
+//! are made real, roots are not. So a caller gives each root as the real
+//! path it fixed when the executor's rules were set up (T: when it was
+//! assigned), and never makes it real again for a request, which would hand
+//! the drift back. A tool may still reach a root through an alias of one of
+//! its folders: its target is made real, and lands in the root.
 //!
 //! Every check reads the file system as it is when it runs: a shell running
 //! in the same executor can change it before OpenCode reads (design v4 7).
@@ -320,7 +324,10 @@ pub(crate) struct Decision {
 }
 
 /// What an executor's decisions are checked against, from a trusted caller:
-/// every path absolute and normal, else every request is refused.
+/// every path absolute and normal, else every request is refused. The
+/// folder, worktree, O and T are the real paths fixed when the executor's
+/// rules were set up (T: when it was assigned), never made real again per
+/// request: each widens a decision only while it still is that real folder.
 pub(crate) struct Rules<'a> {
     /// The Agent's folder (OpenCode's `location.directory`).
     pub directory: &'a Path,
@@ -471,7 +478,7 @@ impl Checked {
             .filter_map(|path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))).collect();
         let data = both(&[data]);
         // An exception root counts only as given, and only when that is its real path.
-        let exact = |root: &String| real(root).as_ref() == Some(root);
+        let exact = |root: &String| real(root).as_ref() == Some(root) && std::fs::metadata(root).is_ok_and(|m| m.is_dir());
         let without_data = |root: &String| exact(root) && !data.iter().any(|d| within(d, root));
         let inside_roots = [Some(&directory), worktree.as_ref()].into_iter().flatten().filter(|&root| exact(root)).cloned().collect();
         let temp = temp.filter(|root| without_data(root));

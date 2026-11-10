@@ -482,6 +482,31 @@ fn an_output_folder_replaced_by_a_link_grants_nothing() {
     assert_eq!(three(&linked, &lab.at("home/olink/tool-output/out.txt")), core_data, "O given through a link");
     let wide = Setup { outputs: [s.outputs[0].clone(), s.home.clone()], ..s.clone() };
     assert_eq!(three(&wide, &lab.at("home/data/secret.db")), core_data, "O holding D");
+    // An alias of a root's folder, made after the root was fixed as real, still reaches it.
+    assert_eq!(three(s, &lab.at("home/olink/tool-output/out.txt")), once, "a stable alias of O's folder");
+
+    // O's own folder replaced by a link: the same drift one level up.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let other = lab.at("home/data/agents/zz99/opencode");
+    std::fs::create_dir_all(format!("{other}/tool-output")).unwrap();
+    std::fs::write(format!("{other}/tool-output/key.txt"), "synthetic\n").unwrap();
+    relink(paths::parent(&s.outputs[1]), &other);
+    assert_eq!(three(s, &format!("{}/key.txt", s.outputs[1])), core_data, "O's folder → another Agent's folder in D");
+
+    // O replaced by a file is no folder to read in.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    std::fs::remove_dir_all(&s.outputs[1]).unwrap();
+    std::fs::write(&s.outputs[1], "synthetic\n").unwrap();
+    assert_eq!(three(s, &s.outputs[1]), core_data, "O replaced by a file");
+
+    // A missing O takes nothing else away.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    std::fs::remove_dir_all(&s.outputs[0]).unwrap();
+    assert_eq!(three(s, &lab.at("home/notes/a.txt")), once, "an unrelated read without O");
+    assert_eq!(three(s, &format!("{}/out.txt", s.outputs[1])), once, "the other O without the first");
 }
 
 /// T counts only as given too: replaced by a link into D, or into another
@@ -498,6 +523,8 @@ fn a_temporary_directory_replaced_by_a_link_grants_nothing() {
     assert_eq!(s.answer("external_directory", &star(&t), Tool::Shell, json!({"command": "ls", "workdir": t})), reject(Reason::ShellOutside));
     assert_eq!(s.answer("external_directory", &star(&t), Tool::Patch,
         json!({"patchText": format!("*** Begin Patch\n*** Add File: {t}/p.txt\n+p\n*** End Patch")})), reject(Reason::WriteOutside));
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Edit, json!({"path": format!("{t}/secret.db"), "oldString": "a", "newString": "b"})),
+        reject(Reason::WriteOutside));
 
     let lab = Lab::new();
     let s = &lab.setup;
@@ -510,6 +537,29 @@ fn a_temporary_directory_replaced_by_a_link_grants_nothing() {
         reject(Reason::CoreData), "T → another Agent's folder in D");
     assert_eq!(s.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/key.txt"), "content": "x"})),
         reject(Reason::WriteOutside));
+
+    // T's own folder replaced by a link to another Agent's folder holding the same name.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let t = lab.temp();
+    let other = lab.at("home/data/agents/zz99/t");
+    std::fs::create_dir_all(format!("{other}/a1b2")).unwrap();
+    std::fs::write(format!("{other}/a1b2/x.txt"), "synthetic\n").unwrap();
+    relink(paths::parent(&t), &other);
+    assert_eq!(s.answer("read", &one(&format!("{t}/x.txt")), Tool::Read, json!({"path": format!("{t}/x.txt")})),
+        reject(Reason::CoreData), "T's folder → another Agent's folder in D");
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/x.txt"), "content": "x"})),
+        reject(Reason::WriteOutside));
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Shell, json!({"command": "ls", "workdir": t})), reject(Reason::ShellOutside));
+
+    // A missing T is no T, and takes nothing else away.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let t = lab.temp();
+    std::fs::remove_dir_all(&t).unwrap();
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/x.txt"), "content": "x"})),
+        reject(Reason::WriteOutside));
+    assert_eq!(three(s, &lab.at("home/notes/a.txt")), [Answer::Once, Answer::Once, Answer::Once], "an unrelated read without T");
 }
 
 /// The project's roots count only as given: a folder or worktree replaced by
