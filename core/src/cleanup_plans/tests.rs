@@ -1606,3 +1606,27 @@ async fn a_registered_worktree_under_the_removal_namespace_is_never_discovered()
         "SELECT COUNT(*) FROM cleanup_automatic_items WHERE path LIKE '%/.yuzuno-removing-%'", [], |r| r.get(0)).unwrap();
     assert_eq!(items, 0, "not even a refused automatic item is created there");
 }
+
+#[tokio::test]
+async fn a_99_backlog_stops_after_one_project_and_never_passes_the_cap() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    {
+        let mut repairs = lab.ws.cleanup.repairs.lock().unwrap();
+        for i in 0..99 {
+            repairs.push(super::automatic::AutomaticRepair::Finished {
+                run: format!("missing-{i}"), state: "done".into(), data: json!({}) });
+        }
+    }
+    // Demo's body fails and its failure write fails: one repair (99 -> 100).
+    // The old one-check-per-pass would then let Other add a second (101).
+    inject_fault(&lab, "repair", 20); // keep the 99-repair backlog intact at this entry
+    inject_fault(&lab, "read", 1);
+    inject_fault(&lab, "fail_run", 2);
+    let _ = automatic(&lab).await;
+    assert_eq!(lab.ws.cleanup.repairs.lock().unwrap().len(), 100);
+    let db = lab.ws.store.db.read().unwrap();
+    let demo: i64 = db.query_row("SELECT COUNT(*) FROM cleanup_automatic_runs WHERE project_id=(SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo')", [], |r| r.get(0)).unwrap();
+    let other: i64 = db.query_row("SELECT COUNT(*) FROM cleanup_automatic_runs WHERE project_id=(SELECT id FROM projects WHERE json_extract(data,'$.name')='Other')", [], |r| r.get(0)).unwrap();
+    assert_eq!((demo, other), (1, 0), "the remaining Project does not start once the cap is reached");
+}

@@ -1183,6 +1183,11 @@ pub(crate) async fn pass(ws: &Arc<Workspace>) -> Result<usize> {
     order.truncate(PROJECTS_PER_PASS);
     let mut handled = 0;
     for (_, project) in order {
+        // One Project may add at most one ledger repair; check again before
+        // each, so a 99 backlog plus four Projects can never pass 100.
+        if ws.cleanup.repairs.lock().unwrap().len() >= MAX_REPAIRS {
+            break;
+        }
         let Ok(_permit) = ws.admission.enter_work() else { break };
         match project_pass(ws, &settings, &project).await {
             Ok(summary) => handled += summary.removed + summary.kept + summary.tidy,
