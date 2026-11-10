@@ -78,7 +78,10 @@ refused with 403, on either entry.
 Settings → Accounts & keys writes them through these
 routes: a key's value or the token is typed into a password field, sent once
 and never shown again, and claude-swap's accounts are shown by number and
-fingerprint only.
+fingerprint only. The page draws a card per provider, its logins then its API
+keys, and says which Workspace settings reference each (routing candidates,
+the new Agent defaults and review). That is a setting naming it, not an
+executor running with it; projects' own settings are left out.
 
 | Route | What it does |
 | --- | --- |
