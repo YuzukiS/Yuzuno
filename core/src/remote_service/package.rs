@@ -40,7 +40,13 @@ pub(crate) fn size() -> usize {
 /// The one SSH command that starts a session on `machine`: fixed code only,
 /// never a value from the machine in the remote command.
 pub(crate) fn boot_command(machine: &RemoteMachine) -> Command {
-    let mut command = ssh_with_control("ssh", Control::Off);
+    boot_command_with("ssh", machine)
+}
+
+/// The same through another program with ssh's argument conventions (a
+/// test's stand-in, or a wrapper with its own configuration).
+pub(super) fn boot_command_with(program: &str, machine: &RemoteMachine) -> Command {
+    let mut command = ssh_with_control(program, Control::Off);
     command
         .args(["-o", "ClearAllForwardings=yes"])
         .arg(&machine.target)
