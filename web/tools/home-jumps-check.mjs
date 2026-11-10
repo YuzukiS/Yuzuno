@@ -232,7 +232,8 @@ try {
       assert.equal(await jump(page, kind).getAttribute("aria-disabled"), "true", kind);
       assert.ok((await jump(page, kind).getAttribute("aria-description")).startsWith(why), kind);
       const before = await page.evaluate(() => document.querySelector(".home-view").scrollTop);
-      await jump(page, kind).click();
+      // Playwright waits for an aria-disabled control to be enabled: the press is forced, as a user's would land.
+      await jump(page, kind).click({ force: true });
       assert.equal(await page.evaluate(() => document.querySelector(".home-view").scrollTop), before, `${kind} goes nowhere`);
     }
     await shot(page, "phone-empty-bar.png");
