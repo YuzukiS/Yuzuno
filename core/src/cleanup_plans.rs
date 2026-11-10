@@ -98,6 +98,13 @@ pub(crate) struct State {
     /// on record, before the first destructive action.
     #[cfg(test)]
     pub stop_after_prepare: std::sync::atomic::AtomicBool,
+    /// A test's automatic-stage admission budget (None: check::PLAN_TIME).
+    #[cfg(test)]
+    pub stage_budget: std::sync::Mutex<Option<Duration>>,
+    /// A test's delay before one automatic worktree candidate's checks, so a
+    /// slow one can use up its stage without a long sleep.
+    #[cfg(test)]
+    pub worktree_delay: std::sync::atomic::AtomicU64,
 }
 
 impl State {
@@ -141,6 +148,24 @@ impl State {
         crate::jobs::SSH_PROGRAM.to_owned()
     }
 
+    /// How long one automatic stage admits new candidates, and how long each
+    /// candidate's own Context may run: the manual plan's check budget.
+    pub(crate) fn automatic_budget(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(budget) = *self.stage_budget.lock().unwrap() {
+            return budget;
+        }
+        check::PLAN_TIME
+    }
+
+    /// A test-only delay before one automatic worktree candidate's checks.
+    pub(crate) fn worktree_delay(&self) -> Duration {
+        #[cfg(test)]
+        return Duration::from_millis(self.worktree_delay.load(std::sync::atomic::Ordering::SeqCst));
+        #[cfg(not(test))]
+        Duration::ZERO
+    }
+
     fn kind_check(&self) -> bool {
         #[cfg(test)]
         if self.skip_kind_check.load(std::sync::atomic::Ordering::SeqCst) {
@@ -179,7 +204,7 @@ pub(crate) fn migrate(db: &Connection, fresh: Option<bool>) -> Result<()> {
          CREATE TABLE IF NOT EXISTS cleanup_automatic_items(
             run_id TEXT NOT NULL REFERENCES cleanup_automatic_runs(id) ON DELETE CASCADE, item_id TEXT NOT NULL, seq INTEGER NOT NULL,
             kind TEXT NOT NULL, path TEXT NOT NULL, task_id TEXT,
-            state TEXT NOT NULL CHECK(state IN ('planned','prepared','removing','removed','kept','refused','partial','failed','interrupted','restored')),
+            state TEXT NOT NULL CHECK(state IN ('planned','prepared','removing','removed','kept','deferred','refused','partial','failed','interrupted','restored')),
             evidence TEXT NOT NULL, pre TEXT NOT NULL, result TEXT, snapshot TEXT, ref TEXT, updated_at TEXT NOT NULL,
             PRIMARY KEY(run_id, item_id));
          CREATE TABLE IF NOT EXISTS cleanup_automatic_cursors(

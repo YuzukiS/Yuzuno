@@ -1247,3 +1247,90 @@ async fn a_renamed_removal_residue_is_never_a_new_item_after_recovery() {
     let checked = check::preflight(&ctx, &item).await;
     assert_eq!(checked.refusal.map(|(code, _)| code), Some("removing"), "{:#}", checked.pre);
 }
+
+#[tokio::test]
+async fn a_slow_worktree_stage_does_not_starve_the_cache_stage() {
+    let lab = lab();
+    auto_settings(&lab, true, true, 0);
+    yn65_keep_days(&lab, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/slow"), "feat/slow");
+    let target = lab.project.join("target");
+    cargo_target(&target, &["debug"]);
+    *lab.ws.cleanup.stage_budget.lock().unwrap() = Some(std::time::Duration::from_millis(50));
+    lab.ws.cleanup.worktree_delay.store(60, std::sync::atomic::Ordering::SeqCst);
+    let _ = automatic(&lab).await;
+    // The worktree candidate started, used up its context budget, and is
+    // deferred; the cache stage then gets its own admission window.
+    assert!(tree.exists(), "a timed-out worktree is not removed");
+    assert!(!target.join("debug").exists(), "the cache stage still ran");
+    let worktree_item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(worktree_item["result"]["code"], "timeout", "{worktree_item:#}");
+    let state: String = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT i.state FROM cleanup_automatic_items i WHERE i.path=?1 ORDER BY i.rowid DESC LIMIT 1",
+        [tree.to_string_lossy().as_ref()], |r| r.get(0)).unwrap();
+    assert_eq!(state, "deferred");
+    let run: String = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT state FROM cleanup_automatic_runs WHERE id=(SELECT run_id FROM cleanup_automatic_items WHERE path=?1 ORDER BY rowid DESC LIMIT 1)",
+        [tree.to_string_lossy().as_ref()], |r| r.get(0)).unwrap();
+    assert_eq!(run, "incomplete");
+}
+
+#[tokio::test]
+async fn the_cursor_stops_at_the_last_attempted_item_and_later_items_are_reached() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let first = worktree(&lab, &lab.home.join("work/wt/a-first"), "feat/first");
+    let second = worktree(&lab, &lab.home.join("work/wt/b-second"), "feat/second");
+    *lab.ws.cleanup.stage_budget.lock().unwrap() = Some(std::time::Duration::from_millis(50));
+    lab.ws.cleanup.worktree_delay.store(60, std::sync::atomic::Ordering::SeqCst);
+    let _ = automatic(&lab).await;
+    let db = lab.ws.store.db.read().unwrap();
+    let project: String = db.query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    let cursor: String = db.query_row("SELECT last_key FROM cleanup_automatic_cursors WHERE project_id=?1 AND kind='worktree'", [&project], |r| r.get(0)).unwrap();
+    assert_eq!(cursor, first.to_string_lossy(), "the cursor names the timed-out first candidate, not the array's last");
+    drop(db);
+    assert!(second.exists(), "the second candidate was never started");
+    *lab.ws.cleanup.stage_budget.lock().unwrap() = None;
+    lab.ws.cleanup.worktree_delay.store(0, std::sync::atomic::Ordering::SeqCst);
+    let _ = automatic(&lab).await;
+    assert!(!second.exists(), "the next pass resumes at the unprocessed second candidate");
+}
+
+#[tokio::test]
+async fn each_candidate_gets_a_fresh_context_deadline() {
+    let lab = lab();
+    let project: String = lab.ws.store.db.read().unwrap()
+        .query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    let settings = settings::read(&lab.ws.store.db.read().unwrap()).unwrap();
+    let ctx = check::context(lab.ws.cleanup.env(), lab.ws.cleanup.mounts(), &lab.ws.data_dir, &lab.project.display().to_string(),
+        Some(&project), &[], settings).await.unwrap();
+    let first = ctx.renewed_with(std::time::Duration::from_millis(20));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let second = ctx.renewed_with(std::time::Duration::from_millis(20));
+    assert!(second.deadline > first.deadline, "a later candidate gets a later deadline");
+    assert!(second.deadline > std::time::Instant::now(), "and it has not expired");
+}
+
+#[tokio::test]
+async fn recent_git_activity_keeps_a_worktree_after_an_old_release_and_the_check_does_not_touch_the_index_clock() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 7);
+    let tree = worktree(&lab, &lab.home.join("work/wt/manual-edit"), "feat/manual-edit");
+    agent(&lab.ws, "old");
+    let days = |n: i64| (chrono::Utc::now() - chrono::Duration::days(n)).to_rfc3339();
+    let db = lab.ws.store.db.write().unwrap();
+    let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
+    db.execute("UPDATE agents SET data=json_set(data,'$.cwd',?1) WHERE id='old'", [tree.to_string_lossy().as_ref()]).unwrap();
+    db.execute("INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at,archived_at)
+        VALUES('old','executor','workspace-cleanup',?1,'agent:lead','released','now','now',?2)",
+        params![task, days(10)]).unwrap();
+    drop(db);
+    let index = PathBuf::from(git(&tree, &["rev-parse", "--path-format=absolute", "--git-path", "index"]));
+    let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+    assert!(automatic(&lab).await >= 1);
+    assert!(tree.exists(), "recent Git activity is newer than the old release");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "recent", "{item:#}");
+    let after = std::fs::metadata(&index).unwrap().modified().unwrap();
+    assert_eq!(before, after, "checking the age does not refresh the index clock");
+}

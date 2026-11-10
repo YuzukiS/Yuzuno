@@ -356,33 +356,42 @@ fn records_age(store: &Store, path: &Path, settings: &Settings, common: &str) ->
     }
     let released = rows.iter().filter_map(|(_, _, at, _)| at.as_deref().and_then(parse_time)).max();
     let job_at = jobs.iter().filter_map(|(_, started, finished, _)| finished.as_deref().or(started.as_deref()).and_then(parse_time)).max();
-    let newest = match (released, job_at) {
+    let core_at = match (released, job_at) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     };
-    if let Some(newest) = newest {
-        let age = days_since(newest);
-        let keep = f64::from(settings.worktree_keep_days);
-        let task = rows.iter().find_map(|(_, task, at, _)| at.as_deref().and_then(parse_time).map(|t| (t, task.clone())))
-            .filter(|(t, _)| Some(*t) == released).and_then(|(_, task)| task);
-        let evidence = json!({"basis": "executor release", "releaseAt": released.map(|t| t.to_rfc3339()),
-            "newestUseAt": newest.to_rfc3339(), "ageDays": age, "keepDays": settings.worktree_keep_days, "taskId": task,
-            "eligible": age >= keep});
-        return Ok(Age { evidence,
-            refusal: (age < keep).then(|| ("recent", format!("Used within the last {keep} days (Settings)"))) });
-    }
-    let at = git_activity(path, common)?;
-    let age = days_since(at);
+    let task = rows.iter().find_map(|(_, task, at, _)| at.as_deref().and_then(parse_time).map(|t| (t, task.clone())))
+        .filter(|(t, _)| Some(*t) == released).and_then(|(_, task)| task);
+    // A worktree's own Git activity is checked even when Core has a release
+    // record: a newer manual edit/git operation must not be hidden by an old
+    // release. Unknown Git time keeps it (Lead, full R3 348c5624).
+    let git_at = match git_activity(path, common) {
+        Ok(at) => at,
+        Err(why) => {
+            let why = format!("{why:#}");
+            return Ok(Age {
+                evidence: json!({"basis": "Core release/Job and Git activity", "releaseAt": released.map(|t| t.to_rfc3339()),
+                    "jobAt": job_at.map(|t| t.to_rfc3339()), "gitError": why, "taskId": task, "eligible": false}),
+                refusal: Some(("unknownGit", format!("Its Git activity cannot be read: {why}; nothing is removed on an unknown"))),
+            })
+        }
+    };
+    let newest = core_at.map_or(git_at, |core| core.max(git_at));
+    let age = days_since(newest);
     let keep = f64::from(settings.worktree_keep_days);
-    Ok(Age { evidence: json!({"basis": "Git activity", "at": at.to_rfc3339(),
-        "ageDays": age, "keepDays": settings.worktree_keep_days, "taskId": null, "eligible": age >= keep}),
-        refusal: (age < keep).then(|| ("recent", format!("Last Git activity within {keep} days (Settings)"))) })
+    Ok(Age { evidence: json!({"basis": "newest of Core release/Job and this worktree's Git activity",
+        "releaseAt": released.map(|t| t.to_rfc3339()), "jobAt": job_at.map(|t| t.to_rfc3339()),
+        "gitAt": git_at.to_rfc3339(), "newestUseAt": newest.to_rfc3339(), "ageDays": age,
+        "keepDays": settings.worktree_keep_days, "taskId": task, "eligible": age >= keep}),
+        refusal: (age < keep).then(|| ("recent", format!("Used within the last {keep} days (Settings)"))) })
 }
 
 /// A linked worktree's own Git metadata: `.git`, the gitdir it names (checked
-/// to be this repository's record), HEAD, and the existing index, logs,
-/// operation state. A missing, unreadable, foreign or future entry means the
-/// age is not known, and an unknown age never removes.
+/// to be this repository's record), the gitdir directory itself, HEAD, and the
+/// existing index, logs, operation state. It only reads file times: no Git
+/// command runs here, so checking the age cannot refresh the clock it reads.
+/// A missing, unreadable, foreign or future entry means the age is not known,
+/// and an unknown age never removes.
 fn git_activity(path: &Path, common: &str) -> Result<chrono::DateTime<chrono::Utc>> {
     let git = path.join(".git");
     let meta = std::fs::symlink_metadata(&git).map_err(|e| anyhow::anyhow!("Its .git cannot be read: {e}"))?;
@@ -689,17 +698,37 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
     }).await?;
     let mut summary = Summary { removed: 0, kept: 0, tidy: 0, failed: 0, incomplete: false };
     let mut seq = 0i64;
+    // Each stage admits new candidates for the manual plan's check budget
+    // (check::PLAN_TIME); each candidate starts with a fresh Context deadline
+    // of the same length, so a later item never inherits a used-up one.
+    let budget = ws.cleanup.automatic_budget();
+    let delay = ws.cleanup.worktree_delay();
     let mut worktrees = Vec::new();
     if settings.worktree_reclaim {
+        let stage_end = Instant::now() + budget;
+        let mut last_attempted: Option<String> = None;
         for listed in ctx.worktrees.iter().filter(|w| !w.main) {
             worktrees.push(Candidate { kind: "worktree", path: listed.path.clone(), rule: None, basis: None,
                 listed: Some(listed.clone()) });
         }
         let after = ws.stored({ let id = project.id.clone(); move |s| cursor(s, &id, "worktree") }).await?;
         rotate(&mut worktrees, after.as_deref());
-        worktrees.truncate(PER_PASS);
+        let want = (settings.max_items as usize).min(PER_PASS);
+        if worktrees.len() > want {
+            summary.incomplete = true;
+        }
+        worktrees.truncate(want);
         for candidate in &worktrees {
             let Some(listed) = &candidate.listed else { continue };
+            if Instant::now() > stage_end {
+                summary.incomplete = true;
+                break;
+            }
+            let ctx = Arc::new(ctx.renewed_with(budget));
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            last_attempted = Some(key(candidate));
             if let Some((state, earlier)) = ws.stored({ let path = candidate.path.clone(); move |s| prior_attempt(s, &path) }).await? {
                 seq += 1;
                 ws.stored({ let run = run.clone(); let c = candidate.clone(); let state = state.clone(); let earlier = earlier.clone();
@@ -737,15 +766,18 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                     if let Some((code, why)) = pre.refusal {
                         seq += 1;
                         let tidy = code == "snapshotTooLarge" || code == "tooLarge";
+                        let deferred = code == "timeout";
+                        let state = if deferred { "deferred" } else { "kept" };
                         ws.stored({ let run = run.clone(); let c = candidate.clone(); let task = found.task.clone();
                             let evidence = evidence.clone(); let code = code.to_owned(); let why = why.clone();
                             let project = project.id.clone();
                             move |s| {
-                                keep_item(s, &run, seq, &c, task.as_deref(), &evidence, "kept", json!({"code": code, "why": why}))?;
+                                keep_item(s, &run, seq, &c, task.as_deref(), &evidence, state, json!({"code": code, "why": why}))?;
                                 if tidy { tidy_row(s, &project, "local", &c.path, task.as_deref(), &code, &why, &evidence)?; }
                                 Ok(())
                             } }).await?;
-                        if tidy { summary.tidy += 1; } else { summary.kept += 1; }
+                        if deferred { summary.incomplete = true; }
+                        else if tidy { summary.tidy += 1; } else { summary.kept += 1; }
                         continue;
                     }
                     if let Err((code, why)) = recheck(ws, &ctx, &project.id, listed, &evidence).await {
@@ -769,6 +801,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                     let now_pre = match apply::checked_now(ws, &ctx, &removal).await {
                         Ok((now_pre, _)) => now_pre,
                         Err(result) => {
+                            let result = defer_timeout(result);
                             ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
                                 move |s| finish_item(s, &run, &item, &result) }).await?;
                             count(&mut summary, &result);
@@ -812,8 +845,8 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                 }
             }
         }
-        if let Some(last) = worktrees.last() {
-            ws.stored({ let id = project.id.clone(); let last = key(last); move |s| set_cursor(s, &id, "worktree", &last) }).await?;
+        if let Some(last) = last_attempted {
+            ws.stored({ let id = project.id.clone(); move |s| set_cursor(s, &id, "worktree", &last) }).await?;
         }
     }
     if settings.rule_layer {
@@ -859,8 +892,21 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         summary.incomplete |= found.incomplete;
         let mut cache = found.items;
         rotate(&mut cache, after.as_deref());
-        cache.truncate(PER_PASS);
+        if cache.len() > want {
+            summary.incomplete = true;
+        }
+        cache.truncate(want);
+        // The cache stage gets its own admission window after the walk, so a
+        // worktree stage that used its budget cannot starve it.
+        let cache_end = Instant::now() + budget;
+        let mut last_attempted: Option<String> = None;
         for candidate in &cache {
+            if Instant::now() > cache_end {
+                summary.incomplete = true;
+                break;
+            }
+            let ctx = Arc::new(ctx.renewed_with(budget));
+            last_attempted = Some(key(candidate));
             if let Some((state, earlier)) = ws.stored({ let path = candidate.path.clone(); move |s| prior_attempt(s, &path) }).await? {
                 seq += 1;
                 ws.stored({ let run = run.clone(); let c = candidate.clone(); let state = state.clone(); let earlier = earlier.clone();
@@ -874,11 +920,13 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             let pre = check::preflight(&ctx, &item).await;
             if let Some((code, why)) = pre.refusal {
                 seq += 1;
+                let deferred = code == "timeout";
+                let state = if deferred { "deferred" } else { "kept" };
                 let evidence = json!({"rule": candidate.rule, "basis": candidate.basis});
                 ws.stored({ let run = run.clone(); let c = candidate.clone(); let evidence = evidence.clone();
                     let code = code.to_owned(); let why = why.clone();
-                    move |s| keep_item(s, &run, seq, &c, None, &evidence, "kept", json!({"code": code, "why": why})) }).await?;
-                summary.kept += 1;
+                    move |s| keep_item(s, &run, seq, &c, None, &evidence, state, json!({"code": code, "why": why})) }).await?;
+                if deferred { summary.incomplete = true; } else { summary.kept += 1; }
                 continue;
             }
             // Cache folders wait for YN-65's keepDays as well as freshDays.
@@ -900,13 +948,13 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             let path_text = candidate.path.to_string_lossy().into_owned();
             let removal = Removal { data: &ws.data_dir, namespace: &run, task: AUTOMATIC, kind: "cache-dir",
                 id: &item_id, path: &path_text, pre: &pre.pre };
-            let result = execute_checked(ws, &ctx, &removal).await;
+            let result = defer_timeout(execute_checked(ws, &ctx, &removal).await);
             ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
                 move |s| finish_item(s, &run, &item, &result) }).await?;
             count(&mut summary, &result);
         }
-        if let Some(last) = cache.last() {
-            ws.stored({ let id = project.id.clone(); let last = key(last); move |s| set_cursor(s, &id, "cache", &last) }).await?;
+        if let Some(last) = last_attempted {
+            ws.stored({ let id = project.id.clone(); move |s| set_cursor(s, &id, "cache", &last) }).await?;
         }
     }
     let data = json!({"removed": summary.removed, "kept": summary.kept, "tidy": summary.tidy, "failed": summary.failed,
@@ -933,10 +981,20 @@ fn prepared_outcome(code: &'static str, why: String, record: Option<Value>, snap
     Outcome { state, result, snapshot }
 }
 
+/// A timeout is not a success: it defers the item and leaves the run
+/// incomplete, so the cursor may pass it and a later pass can try it.
+fn defer_timeout(mut outcome: Outcome) -> Outcome {
+    if outcome.result["code"] == "timeout" {
+        outcome.state = "deferred";
+    }
+    outcome
+}
+
 fn count(summary: &mut Summary, result: &Outcome) {
     match result.state {
         "removed" => summary.removed += 1,
         "partial" | "failed" => summary.failed += 1,
+        "deferred" => summary.incomplete = true,
         _ => summary.kept += 1,
     }
 }

@@ -94,6 +94,7 @@ pub(crate) fn parse_worktrees(text: &str) -> Vec<Listed> {
 }
 
 /// Everything one plan's checks compare against, read once.
+#[derive(Clone)]
 pub(crate) struct Context {
     pub env: HostEnv,
     pub data: PathBuf,
@@ -113,6 +114,17 @@ pub(crate) struct Context {
     /// The rules on for this Project (rules.rs `enabled`).
     pub on: BTreeSet<&'static str>,
     pub deadline: Instant,
+}
+
+impl Context {
+    /// The same Context with a fresh check deadline. Automatic passes give
+    /// each candidate its own, so a later item never inherits a budget an
+    /// earlier one used up.
+    pub(crate) fn renewed_with(&self, budget: Duration) -> Context {
+        let mut fresh = self.clone();
+        fresh.deadline = Instant::now() + budget;
+        fresh
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
