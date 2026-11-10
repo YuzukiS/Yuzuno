@@ -478,15 +478,18 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     let native = FakeNative::new();
     let runtime = FakeRuntime::live();
     let started = Arc::new(AtomicBool::new(false));
+    let active = Arc::new(AtomicUsize::new(0));
     let release = Arc::new((StdMutex::new(false), Condvar::new()));
-    let (running, held) = (started.clone(), release.clone());
+    let (running, held, in_flight) = (started.clone(), release.clone(), active.clone());
     let judge = TestJudge(Arc::new(move |_, _| {
         running.store(true, Ordering::SeqCst);
+        in_flight.fetch_add(1, Ordering::SeqCst);
         let (lock, cond) = &*held;
         let mut done = lock.lock().unwrap();
         while !*done {
             done = cond.wait(done).unwrap();
         }
+        in_flight.fetch_sub(1, Ordering::SeqCst);
         once()
     }));
     let engine = engine(native.clone(), runtime, judge);
@@ -508,6 +511,13 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     let (lock, cond) = &*release;
     *lock.lock().unwrap() = true;
     cond.notify_all();
+    for _ in 0..1000 {
+        if active.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert_eq!(active.load(Ordering::SeqCst), 0, "the blocking judge finished");
     assert_eq!(report.outcome, Outcome::Delivered);
     assert_eq!(report.answer, Some(Answer::Reject(Reason::PreparationTimeout)));
     assert!(report.notice.as_deref().unwrap_or_default().contains("preparing"));
@@ -760,16 +770,20 @@ async fn the_queue_bound_closes_the_connection_once() {
 #[tokio::test(start_paused = true)]
 async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     let started = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
     let counted = started.clone();
+    let in_flight = active.clone();
     let released = Arc::new((StdMutex::new(false), Condvar::new()));
     let release = released.clone();
     let judge = TestJudge(Arc::new(move |_, _| {
         counted.fetch_add(1, Ordering::SeqCst);
+        in_flight.fetch_add(1, Ordering::SeqCst);
         let (lock, cond) = &*release;
         let mut done = lock.lock().unwrap();
         while !*done {
             done = cond.wait(done).unwrap();
         }
+        in_flight.fetch_sub(1, Ordering::SeqCst);
         once()
     }));
     let global = Arc::new(Semaphore::new(FS_GLOBAL));
@@ -812,6 +826,13 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     for receiver in receivers {
         outcomes.push(report(receiver).await.outcome);
     }
+    for _ in 0..1000 {
+        if active.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert_eq!(active.load(Ordering::SeqCst), 0, "every blocking decision finished");
     assert!(outcomes.iter().any(|outcome| *outcome == Outcome::Delivered));
 }
 
