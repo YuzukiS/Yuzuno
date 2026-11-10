@@ -496,6 +496,19 @@ hold over an `opencode.json` that allows more.
 - **A Core before core.29** keeps no OpenCode level: it starts an OpenCode
   executor with OpenCode's own configuration, whose default allows everything
   but reading a `.env` file (see [With an older Core](#with-an-older-core)).
+- **Rules for Core's own answers, not in use yet (YN-78).** Core also has
+  the rules it is to give an OpenCode executor once Core itself answers that
+  executor's permission requests.
+  - At Auto-approve, no rule allows a folder outside its own, a read, a
+    search or a listing: each is handed to Core or denied. Core's data
+    directory, the protected locations Core is given and `.env` files are
+    denied. Writing outside its folder is denied, except in its own
+    temporary directory.
+  - At Ask you first, reading, searching and listing ask too.
+  - Nothing uses these rules yet. Every level starts with the rules in the
+    table above, its start is checked as above, and no request is answered
+    for you, so OpenCode asks you as often as before. They take effect only
+    together with Core's answers.
 
 #### Read only (YN-74)
 
