@@ -522,10 +522,21 @@ fn session_exits_when_no_frames_arrive() {
     let lines = Lines::new(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
     assert_eq!(lines.value(WAIT)["ev"], "hello");
-    send_raw(&mut stdin, b"x");
+    // One byte at a time, never a newline: an unfinished frame must not refresh
+    // the silence deadline, however steadily the bytes arrive.
+    let trickle = std::thread::spawn(move || {
+        for _ in 0..30 {
+            if stdin.write_all(b"x").is_err() {
+                return;
+            }
+            let _ = stdin.flush();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
     let bye = lines.value(Duration::from_secs(3));
     assert_eq!(bye["data"]["code"], 6, "{bye}");
     assert_eq!(finish(child, WAIT).0.code(), Some(6));
+    trickle.join().unwrap();
 }
 
 #[test]
@@ -674,6 +685,23 @@ print(json.dumps({"programHost": host, "jobsHost": jobs.host_id(),
     assert!(missing["programHost"].is_null());
     assert!(missing["jobsHost"].is_null());
     assert!(missing["account"].is_null());
+
+    // With no override both read the machine's own identity.
+    let inherited = Command::new(python())
+        .args(["-I", "-c", script,
+            source("src/remote_service/program.py").to_str().unwrap(),
+            source("src/jobs/remote_job.py").to_str().unwrap(),
+            machine.to_str().unwrap(), boot.to_str().unwrap(),
+            root.to_str().unwrap(), ioreg])
+        .env_remove("YUZUNO_JOBS_MACHINE_ID_FILE")
+        .env_remove("YUZUNO_JOBS_BOOT_ID_FILE")
+        .env_remove("YUZUNO_REMOTE_ROOT")
+        .output()
+        .unwrap();
+    assert!(inherited.status.success(), "{}", String::from_utf8_lossy(&inherited.stderr));
+    let inherited: Value = serde_json::from_slice(&inherited.stdout).unwrap();
+    assert_eq!(inherited["programHost"], inherited["jobsHost"]);
+    assert_eq!(inherited["programBoot"], inherited["jobsBoot"]);
 }
 
 #[test]
