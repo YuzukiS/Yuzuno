@@ -32,6 +32,8 @@ struct FakeNative {
     gate: StdMutex<Option<Arc<Notify>>>,
     /// When set with a gate, only this session's deliveries wait.
     gate_for: StdMutex<Option<String>>,
+    /// Runs after a delivery is recorded, before its result is returned.
+    after_deliver: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     aborts: AtomicUsize,
 }
 
@@ -46,6 +48,7 @@ impl FakeNative {
             list: StdMutex::default(),
             gate: StdMutex::default(),
             gate_for: StdMutex::default(),
+            after_deliver: StdMutex::default(),
             aborts: AtomicUsize::default(),
         })
     }
@@ -80,6 +83,11 @@ impl FakeNative {
         self.clone()
     }
 
+    fn after_deliver(self: &Arc<Self>, hook: Arc<dyn Fn() + Send + Sync>) -> Arc<Self> {
+        *self.after_deliver.lock().unwrap() = Some(hook);
+        self.clone()
+    }
+
     fn sent(&self) -> Vec<Sent> {
         self.sent.lock().unwrap().clone()
     }
@@ -101,6 +109,10 @@ impl Native for FakeNative {
             self.sent.lock().unwrap().push(Sent {
                 session: session.to_owned(), request: request.to_owned(), answer: answer.clone(), limit, at: Instant::now(),
             });
+            let hook = { self.after_deliver.lock().unwrap().clone() };
+            if let Some(hook) = hook {
+                hook();
+            }
             self.results.lock().unwrap().pop_front().unwrap_or(Delivery::Delivered)
         })
     }
@@ -135,6 +147,9 @@ struct FakeRuntime {
     terminated: AtomicUsize,
     killed: AtomicUsize,
     ends: AtomicBool,
+    /// Set current=false while `ended_within` waits, as a generation change
+    /// during the TERM window.
+    flip_on_wait: AtomicBool,
 }
 
 impl FakeRuntime {
@@ -157,6 +172,9 @@ impl Runtime for FakeRuntime {
     fn ended_within<'a>(&'a self, limit: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(async move {
             tokio::time::sleep(limit).await;
+            if self.flip_on_wait.load(Ordering::SeqCst) {
+                self.current.store(false, Ordering::SeqCst);
+            }
             self.ends.load(Ordering::SeqCst)
         })
     }
@@ -357,12 +375,61 @@ async fn finished_history_is_evicted_before_a_new_request_is_overload() {
 fn a_report_counts_its_collateral_flag() {
     let report = Report {
         generation: 7, session: "ses_main".into(), request: "per_1".into(), answer: Some(Answer::Once),
-        outcome: Outcome::Delivered, rounds: 1, collateral: false, notice: None,
+        outcome: Outcome::Delivered, rounds: 1, collateral: false, own_reject: false, notice: None,
     };
     let plain = report.size();
     let mut marked = report.clone();
     marked.collateral = true;
     assert_eq!(marked.size(), plain + 4);
+}
+
+/// A preflight POST that fails hands the target's one t0, cumulative
+/// attempts and absolute deadline to its own real worker; the worker does not
+/// restart the delivery.
+#[tokio::test(start_paused = true)]
+async fn a_preflight_failure_hands_off_the_same_delivery_ledger() {
+    let gate = Arc::new(Notify::new());
+    let native = FakeNative::new().delays([Duration::from_secs(15)]).pending([true])
+        .results([Delivery::Unknown, Delivery::Delivered, Delivery::Unknown, Delivery::Delivered])
+        .list(vec![json!({"id": "per_once"})]);
+    let runtime = FakeRuntime::live();
+    let judge = TestJudge(Arc::new(|asked, _| if asked.id == "per_reject" { reject() } else { once() }));
+    let live = runtime.clone();
+    let engine = Arc::new(Engine::new(GENERATION, "ses_main".into(), Vec::new(), calls(), Arc::new(NoReader),
+        Arc::new(judge), native.clone(), Arc::new(move || live.current()), runtime)
+        .with_preflight_gate("per_reject", gate.clone()));
+    let reject = match engine.submit(&asked("per_reject", "ses_main")) {
+        Submission::Accepted(receiver) => receiver,
+        other => panic!("reject not accepted: {other:?}"),
+    };
+    let once = match engine.submit(&asked("per_once", "ses_main")) {
+        Submission::Accepted(receiver) => receiver,
+        other => panic!("once not accepted: {other:?}"),
+    };
+    let key = Key { generation: GENERATION, session: "ses_main".into(), request: "per_once".into() };
+    for _ in 0..100 {
+        let prepared = {
+            let state = engine.state.lock().unwrap();
+            state.active.get(&key).is_some_and(|entry| entry.decision.lock().unwrap().is_some())
+        };
+        if prepared {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    gate.notify_one();
+    let reject = report(reject).await;
+    let target = report(once).await;
+    assert_eq!(reject.outcome, Outcome::Delivered);
+    assert!(reject.own_reject);
+    assert_eq!(target.outcome, Outcome::Delivered);
+    assert_eq!(target.answer, Some(Answer::Once));
+    assert_eq!(target.rounds, 3, "the preflight POST counts toward the target's three");
+    let sent = native.sent();
+    let target_sent: Vec<&Sent> = sent.iter().filter(|sent| sent.request == "per_once").collect();
+    assert_eq!(target_sent.len(), 3, "one preflight POST and two more from its worker");
+    assert!(target_sent[2].at - target_sent[0].at < DELIVERY_LIMIT, "all three share t0 + 30 s");
+    assert!(target_sent[0].limit <= REQUEST_LIMIT);
 }
 
 /// Three rounds at most, each POST within 15 s, with a check and a backoff
@@ -537,6 +604,7 @@ async fn a_reject_answers_a_held_once_request_first() {
         preflight: AtomicBool::new(false),
         reject_started: AtomicBool::new(false),
         collateral: AtomicBool::new(false),
+        delivery_start: StdMutex::new(None),
         rounds: std::sync::atomic::AtomicU8::new(0),
         finished: AtomicBool::new(false),
         report: send,
@@ -557,6 +625,106 @@ async fn a_reject_answers_a_held_once_request_first() {
         "the Once request is answered before the reject");
     assert_eq!(sent[0].answer, Answer::Once);
     assert_eq!(report(receiver).await.outcome, Outcome::Delivered);
+}
+
+/// Core's own reject delivered with 204 keeps its ownership when its SSE
+/// reject arrives late: it is not collateral and the known report is stable.
+#[tokio::test(start_paused = true)]
+async fn our_own_late_reject_event_is_not_collateral() {
+    let native = FakeNative::new();
+    let runtime = FakeRuntime::live();
+    let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| reject())));
+    let asked = asked("per_1", "ses_main");
+    let report = match engine.submit(&asked) {
+        Submission::Accepted(receiver) => report(receiver).await,
+        other => panic!("not accepted: {other:?}"),
+    };
+    assert_eq!(report.outcome, Outcome::Delivered);
+    assert!(report.own_reject);
+    assert!(!report.collateral);
+    engine.replied("ses_main", "per_1", "reject");
+    let known = match engine.submit(&asked) {
+        Submission::Known(known) => known,
+        other => panic!("not known after completion: {other:?}"),
+    };
+    assert_eq!(known, report, "our own late SSE reject changed the report");
+    assert!(!known.collateral);
+}
+
+/// An external reject after a Once request finished is recorded as
+/// collateral, and its size follows Report::size.
+#[tokio::test(start_paused = true)]
+async fn an_external_late_reject_marks_a_done_once_request() {
+    let native = FakeNative::new();
+    let runtime = FakeRuntime::live();
+    let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| once())));
+    let asked = asked("per_1", "ses_main");
+    let report = match engine.submit(&asked) {
+        Submission::Accepted(receiver) => report(receiver).await,
+        other => panic!("not accepted: {other:?}"),
+    };
+    assert_eq!(report.outcome, Outcome::Delivered);
+    assert!(!report.own_reject);
+    engine.replied("ses_main", "per_1", "reject");
+    let known = match engine.submit(&asked) {
+        Submission::Known(known) => known,
+        other => panic!("not known after completion: {other:?}"),
+    };
+    assert!(known.collateral);
+}
+
+/// A successful HTTP answer that arrives after its generation changed is
+/// discarded at publication, with no notice.
+#[tokio::test(start_paused = true)]
+async fn a_late_success_from_an_old_generation_is_discarded() {
+    let runtime = FakeRuntime::live();
+    let changed = runtime.clone();
+    let native = FakeNative::new().after_deliver(Arc::new(move || changed.current.store(false, Ordering::SeqCst)));
+    let engine = engine(native, runtime.clone(), TestJudge(Arc::new(|_, _| once())));
+    let report = match engine.submit(&asked("per_1", "ses_main")) {
+        Submission::Accepted(receiver) => report(receiver).await,
+        other => panic!("not accepted: {other:?}"),
+    };
+    assert_eq!(report.outcome, Outcome::Discarded);
+    assert_eq!(report.answer, None);
+    assert_eq!(report.notice, None);
+    assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
+}
+
+/// A generation change while SIGTERM is awaited is discarded: no KILL is
+/// sent and the result is not `Killed`.
+#[tokio::test(start_paused = true)]
+async fn a_generation_change_during_teardown_sends_no_kill() {
+    let native = FakeNative::new().always_pending(true).results([Delivery::Unknown, Delivery::Unknown, Delivery::Unknown]);
+    let runtime = FakeRuntime::live();
+    runtime.flip_on_wait.store(true, Ordering::SeqCst);
+    let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
+    let report = match engine.submit(&asked("per_1", "ses_main")) {
+        Submission::Accepted(receiver) => report(receiver).await,
+        other => panic!("not accepted: {other:?}"),
+    };
+    assert_eq!(report.outcome, Outcome::Discarded);
+    assert_eq!(report.notice, None);
+    assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.killed.load(Ordering::SeqCst), 0);
+}
+
+/// A queue-bound fault on an already changed generation sends no abort or
+/// signal to the new runtime.
+#[tokio::test(start_paused = true)]
+async fn a_fault_after_a_generation_change_sends_nothing() {
+    let runtime = FakeRuntime::live();
+    let native = FakeNative::new();
+    *native.gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
+    for index in 0..REQUESTS {
+        let _ = engine.submit(&asked(&format!("per_{index}"), &format!("ses_{index}")));
+    }
+    assert!(matches!(engine.submit(&asked("per_more", "ses_more")), Submission::Full));
+    runtime.current.store(false, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(native.aborts.load(Ordering::SeqCst), 0, "no abort on a stale generation");
+    assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
 }
 
 /// The queue bound closes the connection once, with structured reports and

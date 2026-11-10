@@ -218,6 +218,8 @@ pub(crate) struct Report {
     pub outcome: Outcome,
     pub rounds: u8,
     pub collateral: bool,
+    /// Core itself started the reject for this request.
+    pub own_reject: bool,
     pub notice: Option<String>,
 }
 
@@ -263,6 +265,9 @@ struct Entry {
     reject_started: AtomicBool,
     /// A reject event Core did not start was seen.
     collateral: AtomicBool,
+    /// The absolute first-POST t0 of this request's delivery, shared by its
+    /// worker and any preflight that answers it first.
+    delivery_start: Mutex<Option<Instant>>,
     rounds: AtomicU8,
     finished: AtomicBool,
     report: watch::Sender<Option<Report>>,
@@ -271,6 +276,13 @@ struct Entry {
 impl Entry {
     fn finished(&self) -> bool {
         self.finished.load(Ordering::SeqCst)
+    }
+
+    /// This request's one first-POST time, set by whichever path sends its
+    /// first real POST (its own worker or a preflight for another reject).
+    fn start_delivery(&self) -> Instant {
+        let mut start = self.delivery_start.lock().unwrap();
+        *start.get_or_insert_with(Instant::now)
     }
 }
 
@@ -301,6 +313,10 @@ pub(crate) struct Engine<R: MessageReader + 'static, J: Judge + 'static, N: Nati
     fs_global: Arc<Semaphore>,
     /// The bound on recorded request data: active work plus retained reports.
     bytes_limit: usize,
+    /// A test-only pause before a reject's preflight, so a Once request can
+    /// be prepared and its worker queued on the same session first.
+    #[cfg(test)]
+    preflight_gate: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
     state: Mutex<State>,
     sessions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -316,6 +332,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             fs_connection: Arc::new(Semaphore::new(FS_CONNECTION)),
             fs_global: global_fs(),
             bytes_limit: BYTES,
+            #[cfg(test)]
+            preflight_gate: Mutex::new(None),
             state: Mutex::default(),
             sessions: Mutex::default(),
         }
@@ -337,6 +355,24 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     fn with_bytes(mut self, limit: usize) -> Self {
         self.bytes_limit = limit;
         self
+    }
+
+    /// Pause this request's reject just before its preflight list.
+    #[cfg(test)]
+    fn with_preflight_gate(self, request: &str, gate: Arc<tokio::sync::Notify>) -> Self {
+        *self.preflight_gate.lock().unwrap() = Some((request.to_owned(), gate));
+        self
+    }
+
+    #[cfg(test)]
+    async fn await_preflight_gate(&self, request: &str) {
+        let gate = {
+            let held = self.preflight_gate.lock().unwrap();
+            held.as_ref().filter(|(only, _)| only == request).map(|(_, gate)| gate.clone())
+        };
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
     }
 
     /// Takes in a request. It returns at once: the work runs on its own task,
@@ -377,6 +413,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             preflight: AtomicBool::new(false),
             reject_started: AtomicBool::new(false),
             collateral: AtomicBool::new(false),
+            delivery_start: Mutex::new(None),
             rounds: AtomicU8::new(0),
             finished: AtomicBool::new(false),
             report,
@@ -409,7 +446,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
                 }
             }
         } else if let Some(report) = state.done.get_mut(&key) {
-            if !report.collateral {
+            if !report.collateral && !report.own_reject {
                 report.collateral = true;
                 state.bytes = state.bytes.saturating_add(4);
             }
@@ -449,8 +486,10 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             self.finish(&entry, None, Outcome::Overloaded).await;
         }
         let abort_until = Instant::now() + INTERRUPT_LIMIT;
-        if let Some(limit) = remaining(abort_until) {
-            let _ = self.native.abort(&self.session, limit).await;
+        if (self.current)() {
+            if let Some(limit) = remaining(abort_until) {
+                let _ = self.native.abort(&self.session, limit).await;
+            }
         }
         let wait_until = Instant::now() + SETTLE_LIMIT;
         sleep_until(wait_until).await;
@@ -512,6 +551,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         if entry.finished() {
             return;
         }
+        #[cfg(test)]
+        self.await_preflight_gate(&asked.id).await;
         if matches!(answer, Answer::Reject(_)) {
             self.preflight(&entry, &asked).await;
         }
@@ -567,11 +608,17 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         if entry.preflight.swap(true, Ordering::SeqCst) {
             return;
         }
+        if !(self.current)() {
+            return;
+        }
         let Some(limit) = remaining(entry.prepare_deadline) else { return };
         let pending = match self.native.pending_all(&asked.session, min(REQUEST_LIMIT, limit)).await {
             Ok(items) => items,
             Err(_) => return,
         };
+        if !(self.current)() {
+            return;
+        }
         for item in pending {
             let Some(id) = item["id"].as_str() else { continue };
             if id == asked.id {
@@ -583,27 +630,51 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             if target.finished() || !matches!(*target.decision.lock().unwrap(), Some(Answer::Once)) {
                 continue;
             }
-            // One bounded POST, without a second list or a new task. If it
-            // isn't delivered, its own worker still owns it.
-            if !(self.current)() {
-                return;
-            }
-            target.reject_started.store(false, Ordering::SeqCst);
-            let answer = Answer::Once;
-            let Some(limit) = remaining(entry.prepare_deadline) else { return };
-            if self.native.deliver(&asked.session, id, &answer, min(REQUEST_LIMIT, limit)).await == Delivery::Delivered {
-                self.finish(&target, Some(answer), Outcome::Delivered).await;
-            }
+            // One real POST, sharing the target's one first-POST t0, absolute
+            // deadline and attempt count with its own worker. A failure here
+            // is handed to that worker without resetting any of them.
+            let Some(caller_left) = remaining(entry.prepare_deadline) else { return };
+            let _ = self.post_once(&target, &asked.session, id, Answer::Once, caller_left).await;
         }
+    }
+
+    /// One bounded POST for a request another reject is answering first. It
+    /// records the target's first-POST t0 and cumulative attempt; a failure
+    /// leaves the target active for its own worker to continue.
+    async fn post_once(&self, target: &Entry, session: &str, request: &str, answer: Answer, caller_left: Duration) -> Option<Delivery> {
+        if target.finished() || caller_left.is_zero() {
+            return None;
+        }
+        let rounds = target.rounds.load(Ordering::SeqCst);
+        if rounds >= ROUNDS {
+            return None;
+        }
+        let t0 = target.start_delivery();
+        let until = t0 + DELIVERY_LIMIT;
+        let Some(target_left) = remaining(until) else { return None };
+        let limit = min(REQUEST_LIMIT, min(caller_left, target_left));
+        if limit.is_zero() || !(self.current)() {
+            return None;
+        }
+        let result = self.native.deliver(session, request, &answer, limit).await;
+        target.rounds.store(rounds + 1, Ordering::SeqCst);
+        match result {
+            Delivery::Delivered => self.finish(target, Some(answer), Outcome::Delivered).await,
+            Delivery::Gone => self.finish(target, Some(answer), Outcome::Gone).await,
+            Delivery::Invalid | Delivery::Unknown => {}
+        }
+        Some(result)
     }
 
     async fn deliver(&self, entry: &Entry, asked: &Asked, answer: Answer) -> Outcome {
         if entry.finished() {
             return Outcome::Overloaded;
         }
-        let t0 = Instant::now();
+        // Its first POST, wherever it was sent (this worker or a preflight),
+        // fixes one t0; every later POST shares its absolute deadline.
+        let t0 = entry.start_delivery();
         let until = t0 + DELIVERY_LIMIT;
-        let mut rounds = 0u8;
+        let mut rounds = entry.rounds.load(Ordering::SeqCst);
         loop {
             if entry.finished() {
                 return Outcome::Overloaded;
@@ -673,11 +744,12 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         let until = wait_until + crate::opencode::TEARDOWN;
         let limit = remaining(until).unwrap_or_default();
         if self.runtime.ended_within(limit).await {
-            return Outcome::Closed;
+            return if self.runtime.current() { Outcome::Closed } else { Outcome::Discarded };
         }
-        if self.runtime.current() {
-            self.runtime.kill();
+        if !self.runtime.current() {
+            return Outcome::Discarded;
         }
+        self.runtime.kill();
         Outcome::Killed
     }
 
@@ -685,10 +757,19 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         if entry.finished.swap(true, Ordering::SeqCst) {
             return;
         }
+        // The result is published only for the generation that is still the
+        // live one; an older generation's delivery is discarded without a
+        // notice, even if its last HTTP answer arrived.
+        let (answer, outcome) = if !(self.current)() && !matches!(outcome, Outcome::Discarded | Outcome::Overloaded) {
+            (None, Outcome::Discarded)
+        } else {
+            (answer, outcome)
+        };
         let collateral = entry.collateral.load(Ordering::SeqCst);
+        let own_reject = entry.reject_started.load(Ordering::SeqCst);
         // A request another reject took before Core had sent its own answer
         // is recorded as collateral, not as Core's delivery or a plain 404.
-        let outcome = if collateral && !entry.reject_started.load(Ordering::SeqCst) && outcome == Outcome::Gone {
+        let outcome = if collateral && !own_reject && outcome == Outcome::Gone {
             Outcome::Collateral
         } else {
             outcome
@@ -705,6 +786,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             outcome,
             rounds: entry.rounds.load(Ordering::SeqCst),
             collateral,
+            own_reject,
             notice,
         };
         {
