@@ -1102,7 +1102,7 @@ async fn a_stop_after_the_snapshot_and_ref_leaves_a_restorable_prepared_item() {
         lab.ws.store.db.read().unwrap().query_row(
             "SELECT run_id,item_id,state,snapshot,ref FROM cleanup_automatic_items WHERE path=?1 ORDER BY rowid DESC LIMIT 1",
             [tree.to_string_lossy().as_ref()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
-    assert_eq!(state, "removing");
+    assert_eq!(state, "interrupted", "the injected stop is closed as an uncertain removal");
     assert!(snapshot.is_some() && reference.is_some(), "snapshot {snapshot:?} ref {reference:?}");
     // A Core that stopped is recovered as interrupted, never retried.
     lab.ws.stored(super::automatic::recover).await.unwrap();
@@ -1439,4 +1439,122 @@ async fn a_minimal_two_root_tag_cache_case_is_covered_by_the_sorted_cursor() {
     expected.sort();
     seen.sort();
     assert_eq!(seen, expected, "a-root/z-root and a/ vs a-/ are both reached over rounds");
+}
+
+fn inject_fault(lab: &Lab, point: &str, times: usize) {
+    lab.ws.cleanup.faults.lock().unwrap().insert(point.to_owned(), times);
+}
+
+fn demo_run(lab: &Lab) -> (String, String) {
+    let id = demo_run_id(lab);
+    lab.ws.store.db.read().unwrap().query_row(
+        "SELECT state,COALESCE(data,'{}') FROM cleanup_automatic_runs WHERE id=?1", [&id],
+        |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+}
+
+fn demo_run_id(lab: &Lab) -> String {
+    lab.ws.store.db.read().unwrap().query_row(
+        "SELECT id FROM cleanup_automatic_runs
+          WHERE project_id=(SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo')
+          ORDER BY rowid DESC LIMIT 1", [], |r| r.get(0)).unwrap()
+}
+
+fn run_state(lab: &Lab, id: &str) -> String {
+    lab.ws.store.db.read().unwrap().query_row("SELECT state FROM cleanup_automatic_runs WHERE id=?1", [id], |r| r.get(0)).unwrap()
+}
+
+#[tokio::test]
+async fn a_read_error_after_begin_run_closes_the_ledger_as_failed() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    inject_fault(&lab, "read", 1);
+    let _ = automatic(&lab).await;
+    let (state, data) = demo_run(&lab);
+    assert_eq!(state, "failed", "{data}");
+    assert!(data.contains("injected fault: read") && data.contains("setup"), "{data}");
+}
+
+#[tokio::test]
+async fn a_plan_write_error_interrupts_the_item_and_never_retries_it() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/plan-error"), "feat/plan-error");
+    inject_fault(&lab, "plan", 1);
+    let _ = automatic(&lab).await;
+    assert!(tree.exists(), "nothing was removed");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "interrupted", "{item:#}");
+    assert_eq!(demo_run(&lab).0, "failed");
+    // The next pass keeps the interrupted path and never deletes it again.
+    let _ = automatic(&lab).await;
+    assert!(tree.exists());
+    let again = auto_item(&lab, &tree).unwrap();
+    assert_eq!(again["result"]["code"], "interrupted", "{again:#}");
+}
+
+#[tokio::test]
+async fn a_prepared_write_error_keeps_the_snapshot_and_ref_and_blocks_retry() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    exclude(&lab, "notes/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/prepared-error"), "feat/prepared-error");
+    std::fs::create_dir_all(tree.join("notes")).unwrap();
+    std::fs::write(tree.join("notes/n.txt"), "kept\n").unwrap();
+    inject_fault(&lab, "prepared", 1);
+    let _ = automatic(&lab).await;
+    assert!(tree.exists(), "a failed prepared write never removes");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "interrupted", "{item:#}");
+    assert!(item["snapshot"].is_object() && item["ref"].is_string(), "{item:#}");
+    let _ = automatic(&lab).await;
+    assert!(tree.exists());
+}
+
+#[tokio::test]
+async fn a_finish_record_error_after_removal_keeps_the_interrupted_evidence() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    exclude(&lab, "notes/");
+    let tree = worktree(&lab, &lab.home.join("work/wt/finish-error"), "feat/finish-error");
+    std::fs::create_dir_all(tree.join("notes")).unwrap();
+    std::fs::write(tree.join("notes/n.txt"), "kept\n").unwrap();
+    inject_fault(&lab, "finish_item", 1);
+    let _ = automatic(&lab).await;
+    assert!(!tree.exists(), "the removal had already happened");
+    let item = auto_item(&lab, &tree).unwrap();
+    assert_eq!(item["result"]["code"], "interrupted", "{item:#}");
+    assert!(item["snapshot"].is_object() && item["ref"].is_string(), "{item:#}");
+    let failed_run = demo_run_id(&lab);
+    // A later pass must not redo an uncertain removal.
+    let _ = automatic(&lab).await;
+    assert!(!tree.exists());
+    assert_eq!(run_state(&lab, &failed_run), "failed");
+}
+
+#[tokio::test]
+async fn a_failed_finish_write_is_repaired_from_the_ledger_next_entry() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    let tree = worktree(&lab, &lab.home.join("work/wt/finish-ledger"), "feat/finish-ledger");
+    inject_fault(&lab, "finish_run", 1);
+    let _ = automatic(&lab).await;
+    assert!(!tree.exists());
+    let (state, _) = demo_run(&lab);
+    assert_eq!(state, "running", "the body finished but its ledger did not");
+    let _ = automatic(&lab).await;
+    let (state, _) = demo_run(&lab);
+    assert_eq!(state, "done", "the next entry repairs only the ledger");
+}
+
+#[tokio::test]
+async fn a_failed_failure_write_is_repaired_next_entry_without_running_forever() {
+    let lab = lab();
+    auto_settings(&lab, true, false, 0);
+    inject_fault(&lab, "read", 1);
+    inject_fault(&lab, "fail_run", 1);
+    let _ = automatic(&lab).await;
+    let failed_run = demo_run_id(&lab);
+    assert_eq!(run_state(&lab, &failed_run), "running", "the failure could not be recorded yet");
+    let _ = automatic(&lab).await;
+    assert_eq!(run_state(&lab, &failed_run), "failed", "the next entry repairs the ledger only");
 }

@@ -105,6 +105,12 @@ pub(crate) struct State {
     /// limit), so truncation is deterministic without a wall clock.
     #[cfg(test)]
     pub stage_limit: std::sync::atomic::AtomicUsize,
+    /// A test's injected failures, by point, consumed once each.
+    #[cfg(test)]
+    pub faults: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+    /// Ledger-only repairs when a run's final write failed; retried at the
+    /// next automatic entry within this same process, never a second removal.
+    pub repairs: std::sync::Mutex<Vec<automatic::AutomaticRepair>>,
     /// A test makes the next automatic worktree candidate's Context already
     /// expired, exercising the real timeout path without sleeping.
     #[cfg(test)]
@@ -179,6 +185,19 @@ impl State {
     #[cfg(test)]
     pub(crate) fn timeout_first_candidate(&self) -> bool {
         self.timeout_first_candidate.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a test's injected failure at `point` fires now.
+    #[cfg(test)]
+    pub(crate) fn take_fault(&self, point: &str) -> bool {
+        let mut faults = self.faults.lock().unwrap();
+        match faults.get_mut(point) {
+            Some(left) if *left > 0 => {
+                *left -= 1;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn kind_check(&self) -> bool {

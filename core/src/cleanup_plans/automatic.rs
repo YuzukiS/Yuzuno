@@ -53,6 +53,17 @@ const FUTURE_MINUTES: i64 = 5;
 /// The ref namespace for a worktree no task owns.
 pub(crate) const AUTOMATIC: &str = "automatic";
 
+/// A run whose final ledger write failed, or whose failure could not be
+/// recorded. Retried at the next automatic entry in this process; only the
+/// ledger is touched, never a removal.
+#[derive(Clone, Debug)]
+pub(crate) enum AutomaticRepair {
+    /// The pass finished; its intended run state and data.
+    Finished { run: String, state: String, data: Value },
+    /// The pass failed; mark its open items interrupted and the run failed.
+    Failed { run: String, error: String, stage: String },
+}
+
 /// A candidate the walk found, or a worktree the repository registers.
 #[derive(Clone, Debug)]
 struct Candidate {
@@ -675,14 +686,11 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             // A Project with no folder or no Git checkout is passed over.
             if settings.rule_layer || settings.worktree_reclaim {
                 let settings = settings.clone();
-                ws.stored({
+                let run = ws.stored({
                     let id = project.id.clone();
-                    let error = format!("{error:#}");
-                    move |s| {
-                        let run = begin_run(s, &id, &settings)?;
-                        finish_run(s, &run, "failed", json!({"note": error}))
-                    }
+                    move |s| begin_run(s, &id, &settings)
                 }).await?;
+                fail_run_now(ws, &run, &format!("{error:#}"), "setup").await;
             }
             return Ok(Summary { removed: 0, kept: 0, tidy: 0, failed: 1, incomplete: false });
         }
@@ -692,6 +700,132 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         let settings = settings.clone();
         move |s| begin_run(s, &id, &settings)
     }).await?;
+    let stage = std::sync::Mutex::new("setup");
+    match project_body(ws, settings, project, ctx.clone(), &run, &stage).await {
+        Ok(summary) => {
+            let state = summary.state().to_owned();
+            let data = json!({"removed": summary.removed, "kept": summary.kept, "tidy": summary.tidy,
+                "failed": summary.failed, "incomplete": summary.incomplete});
+            let mut written = Ok(());
+            #[cfg(test)]
+            if ws.cleanup.take_fault("finish_run") {
+                written = Err(anyhow::anyhow!("injected fault: finish_run"));
+            }
+            if written.is_ok() {
+                let (run_id, run_state, run_data) = (run.clone(), state.clone(), data.clone());
+                written = ws.stored(move |s| finish_run(s, &run_id, &run_state, run_data)).await;
+            }
+            if let Err(error) = written {
+                // The ledger is the only thing left; retry it at the next
+                // automatic entry, never the removals.
+                queue_repair(ws, AutomaticRepair::Finished { run: run.clone(), state, data });
+                eprintln!("[cleanup] automatic run {run} could not record its finish: {error:#}; it will be repaired from the ledger next pass");
+            }
+            Ok(summary)
+        }
+        Err(error) => {
+            let stage = stage.lock().unwrap().to_string();
+            let message = format!("{error:#}");
+            fail_run_now(ws, &run, &message, &stage).await;
+            eprintln!("[cleanup] automatic run {run} stopped in {stage}: {message}");
+            Ok(Summary { removed: 0, kept: 0, tidy: 0, failed: 1, incomplete: false })
+        }
+    }
+}
+
+/// The ledger-only failure of a run: its open items were never confirmed
+/// finished, so they become interrupted (snapshot/ref/result kept) and are
+/// not tried automatically again; a finished item's state is left alone.
+fn fail_run(store: &Store, run: &str, error: &str, stage: &str) -> Result<()> {
+    let mut db = store.db.write()?;
+    let tx = db.transaction()?;
+    let running: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_automatic_runs WHERE id=?1 AND state='running')",
+        [run], |r| r.get(0))?;
+    if !running {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE cleanup_automatic_items SET state='interrupted',
+            result=json_set(COALESCE(result,'{}'),'$.code','interrupted','$.why',?2,'$.stage',?3)
+          WHERE run_id=?1 AND state IN ('planned','prepared','removing')",
+        params![run, error, stage],
+    )?;
+    tx.execute(
+        "UPDATE cleanup_automatic_runs SET state='failed',finished_at=?2,
+            data=json_set(COALESCE(data,'{}'),'$.error',?3,'$.stage',?4)
+          WHERE id=?1 AND state='running'",
+        params![run, now(), error, stage],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+async fn fail_run_now(ws: &Arc<Workspace>, run: &str, error: &str, stage: &str) {
+    let mut written = Ok(());
+    #[cfg(test)]
+    if ws.cleanup.take_fault("fail_run") {
+        written = Err(anyhow::anyhow!("injected fault: fail_run"));
+    }
+    if written.is_ok() {
+        let (run_id, error, stage) = (run.to_owned(), error.to_owned(), stage.to_owned());
+        written = ws.stored(move |s| fail_run(s, &run_id, &error, &stage)).await;
+    }
+    if let Err(again) = written {
+        queue_repair(ws, AutomaticRepair::Failed { run: run.to_owned(), error: error.to_owned(), stage: stage.to_owned() });
+        eprintln!("[cleanup] automatic run {run} could not record its failure: {again:#}; it will be repaired from the ledger next pass");
+    }
+}
+
+fn queue_repair(ws: &Workspace, repair: AutomaticRepair) {
+    let mut repairs = ws.cleanup.repairs.lock().unwrap();
+    if repairs.len() < 100 {
+        repairs.push(repair);
+    }
+}
+
+/// Retry at most this many failed ledger writes at one entry.
+const REPAIRS_PER_ENTRY: usize = 20;
+
+async fn repair_pending(ws: &Arc<Workspace>) {
+    let pending: Vec<AutomaticRepair> = {
+        let mut repairs = ws.cleanup.repairs.lock().unwrap();
+        let take = repairs.len().min(REPAIRS_PER_ENTRY);
+        repairs.drain(..take).collect()
+    };
+    for repair in pending {
+        let result = ws.stored({
+            let repair = repair.clone();
+            move |s| match &repair {
+                AutomaticRepair::Finished { run, state, data } => {
+                    s.db.write()?.execute(
+                        "UPDATE cleanup_automatic_runs SET state=?2,finished_at=?3,data=?4 WHERE id=?1 AND state='running'",
+                        params![run, state, now(), data.to_string()],
+                    )?;
+                    Ok(())
+                }
+                AutomaticRepair::Failed { run, error, stage } => fail_run(s, run, error, stage),
+            }
+        }).await;
+        if let Err(error) = result {
+            queue_repair(ws, repair);
+            eprintln!("[cleanup] automatic ledger repair failed: {error:#}");
+        }
+    }
+}
+
+fn fault(_ws: &Workspace, _point: &str) -> Result<()> {
+    #[cfg(test)]
+    if _ws.cleanup.take_fault(_point) {
+        anyhow::bail!("injected fault: {_point}");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn project_body(ws: &Arc<Workspace>, settings: &Settings, project: &crate::projects::Project, ctx: Arc<check::Context>,
+    run: &str, stage: &std::sync::Mutex<&'static str>) -> Result<Summary> {
+    let run = run.to_owned();
+    fault(ws, "read")?;
     let mut summary = Summary { removed: 0, kept: 0, tidy: 0, failed: 0, incomplete: false };
     let mut seq = 0i64;
     // Each stage admits new candidates for the manual plan's check budget
@@ -700,6 +834,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
     let budget = ws.cleanup.automatic_budget();
     let mut worktrees = Vec::new();
     if settings.worktree_reclaim {
+        *stage.lock().unwrap() = "worktree";
         let stage_end = Instant::now() + budget;
         let limit = ws.cleanup.stage_limit();
         let mut started = 0usize;
@@ -799,6 +934,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                     let item_id = ws.stored({ let run = run.clone(); let c = candidate.clone(); let task = found.task.clone();
                         let evidence = evidence.clone(); let pre = pre.pre.clone();
                         move |s| plan_item(s, &run, seq, &c, task.as_deref(), &evidence, &pre) }).await?;
+                    fault(ws, "plan")?;
                     let path_text = candidate.path.to_string_lossy().into_owned();
                     let removal = Removal { data: &ws.data_dir, namespace: &run, task: &task, kind: "worktree",
                         id: &item_id, path: &path_text, pre: &pre.pre };
@@ -830,12 +966,14 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                     ws.stored({ let run = run.clone(); let item = item_id.clone(); let record = prepared.record.clone();
                         let snapshot = prepared.snapshot.clone();
                         move |s| save_prepared(s, &run, &item, &record, &snapshot) }).await?;
+                    fault(ws, "prepared")?;
                     ws.stored({ let run = run.clone(); let item = item_id.clone(); move |s| mark_removing(s, &run, &item) }).await?;
                     #[cfg(test)]
                     if ws.cleanup.stop_after_prepare.swap(false, std::sync::atomic::Ordering::SeqCst) {
                         // The test's Core stops here: snapshot and ref are on
-                        // record and the removal has not started.
-                        return Ok(summary);
+                        // record and the removal has not started. The error
+                        // path must close the ledger as interrupted.
+                        anyhow::bail!("stopped after prepare");
                     }
                     let result = match worktrees::remove_prepared(&ctx, &candidate.path, &pre.pre, prepared).await {
                         Ok((record, snapshot)) => {
@@ -845,6 +983,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
                         }
                         Err((code, why, record, snapshot)) => prepared_outcome(code, why, record, snapshot),
                     };
+                    fault(ws, "finish_item")?;
                     ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
                         move |s| finish_item(s, &run, &item, &result) }).await?;
                     count(&mut summary, &result);
@@ -856,6 +995,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         }
     }
     if settings.rule_layer {
+        *stage.lock().unwrap() = "cache";
         // YN-65's keepDays is the rule layer's too (design 3.1/3.3): it never
         // shortens what a plan's own freshness already protects.
         let keep_days = ws.stored(|s| {
@@ -867,14 +1007,9 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
         // worktree whose folder is away for now is not a root.
         let mut roots = vec![ctx.project.clone()];
         for listed in ctx.worktrees.iter().filter(|w| !w.main) {
-            if !listed.path.is_dir()
-                || listed.path.components().any(|c| c.as_os_str().to_string_lossy().starts_with(crate::build_output::REMOVING))
-            {
+            if !listed.path.is_dir() {
                 continue;
             }
-            // The path must still be this Project's repository's worktree: a
-            // folder replaced by another repository at the same path is no
-            // root of this rule layer (Lead, review of 3ca1d0c3).
             match git(&listed.path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
                 Ok(Ok(theirs)) if theirs.trim() == ctx.common => roots.push(listed.path.clone()),
                 _ => {}
@@ -946,11 +1081,13 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             let evidence = json!({"rule": candidate.rule, "basis": candidate.basis, "pre": pre.pre.clone()});
             let item_id = ws.stored({ let run = run.clone(); let c = candidate.clone(); let evidence = evidence.clone();
                 let pre = pre.pre.clone(); move |s| plan_item(s, &run, seq, &c, None, &evidence, &pre) }).await?;
+            fault(ws, "plan")?;
             ws.stored({ let run = run.clone(); let item = item_id.clone(); move |s| mark_removing(s, &run, &item) }).await?;
             let path_text = candidate.path.to_string_lossy().into_owned();
             let removal = Removal { data: &ws.data_dir, namespace: &run, task: AUTOMATIC, kind: "cache-dir",
                 id: &item_id, path: &path_text, pre: &pre.pre };
             let result = defer_timeout(execute_checked(ws, &ctx, &removal).await);
+            fault(ws, "finish_item")?;
             ws.stored({ let run = run.clone(); let item = item_id.clone(); let result = clone_outcome(&result);
                 move |s| finish_item(s, &run, &item, &result) }).await?;
             count(&mut summary, &result);
@@ -959,10 +1096,7 @@ async fn project_pass(ws: &Arc<Workspace>, settings: &Settings, project: &crate:
             ws.stored({ let id = project.id.clone(); move |s| set_cursor(s, &id, "cache", &last) }).await?;
         }
     }
-    let data = json!({"removed": summary.removed, "kept": summary.kept, "tidy": summary.tidy, "failed": summary.failed,
-        "incomplete": summary.incomplete});
-    ws.stored({ let run = run.clone(); let state = summary.state().to_owned();
-        move |s| finish_run(s, &run, &state, data) }).await?;
+    *stage.lock().unwrap() = "finish";
     Ok(summary)
 }
 
@@ -1005,6 +1139,9 @@ fn count(summary: &mut Summary, result: &Outcome) {
 /// runs beside another. Off while both switches are off.
 pub(crate) async fn pass(ws: &Arc<Workspace>) -> Result<usize> {
     let Ok(_busy) = ws.cleanup.automatic.try_lock() else { return Ok(0) };
+    // A previous run's final ledger write may have failed; repair only the
+    // ledger here, never a removal, and never pretend it was done.
+    repair_pending(ws).await;
     let (settings, projects) = ws.stored(|s| {
         let db = s.db.read()?;
         Ok((settings::read(&db)?, crate::projects::all(&db)?))
