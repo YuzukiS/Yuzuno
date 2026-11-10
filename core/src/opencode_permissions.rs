@@ -47,9 +47,19 @@
 //! **Inputs.** D, O, T and the protected locations are given by a trusted
 //! caller (`Rules`), as absolute normal paths; nothing here adds a default
 //! list, derives T or reads a setting. A missing protected location still
-//! counts as given; one that exists counts also as its real path. Every
-//! check reads the file system as it is when it runs: a shell running in
-//! the same executor can change it before OpenCode reads (design v4 7).
+//! counts as given; one that exists counts also as its real path.
+//!
+//! **Exception roots.** O, T, the Agent's folder and its worktree widen what
+//! is allowed (O and T are read though in D; T is written in; the folder
+//! and worktree keep the internal policy). Each counts only as given, and
+//! only when its real path is that path itself; O and T also must not hold
+//! D. A root a link has replaced since the caller checked it (O → D, T →
+//! another Agent's folder in D), or one given through a linked folder,
+//! grants nothing: targets are made real, roots are not. So the caller gives
+//! each root as its real path.
+//!
+//! Every check reads the file system as it is when it runs: a shell running
+//! in the same executor can change it before OpenCode reads (design v4 7).
 //!
 //! **Locks and logs.** `Calls` is locked only to copy an entry; no lock is
 //! held across the read or the file system. Nothing here logs; a decision
@@ -426,9 +436,11 @@ struct Checked {
     directory: String,
     worktree: Option<String>,
     home: String,
-    /// The folder and worktree's real paths (a worktree only when neither is `/`).
-    real_directory: String,
-    real_worktree: Option<String>,
+    /// The folder and the worktree as roots of the internal policy: each
+    /// only when it is its own real path (the worktree also not `/`).
+    inside_roots: Vec<String>,
+    /// T as a root writes may land in: only when it is its own real path
+    /// and doesn't hold D.
     temp: Option<String>,
     places: Places,
 }
@@ -449,18 +461,23 @@ impl Checked {
         let dirs = rules.protected_dirs.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let files = rules.protected_files.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
 
-        let real_directory = real(&directory).filter(|real| real != "/")?;
-        let real_worktree = worktree.as_deref().and_then(real).filter(|real| real != "/");
+        // The folder must exist and not be `/`.
+        real(&directory).filter(|real| real != "/")?;
         // Each as given and, when it exists, as its real path.
         fn both(paths: &[String]) -> Vec<String> {
             paths.iter().flat_map(|path| [Some(path.clone()), real(path)]).flatten().collect()
         }
         let ids = dirs.iter().chain(&files).chain([&data])
             .filter_map(|path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))).collect();
-        let real_temp = temp.as_deref().and_then(real);
-        let kept = outputs.iter().filter_map(|path| real(path)).chain(real_temp.clone()).collect();
-        let places = Places { dirs: both(&dirs), files: both(&files), data: both(&[data]), kept, ids };
-        Some(Self { directory, worktree, home, real_directory, real_worktree, temp: real_temp, places })
+        let data = both(&[data]);
+        // An exception root counts only as given, and only when that is its real path.
+        let exact = |root: &String| real(root).as_ref() == Some(root);
+        let without_data = |root: &String| exact(root) && !data.iter().any(|d| within(d, root));
+        let inside_roots = [Some(&directory), worktree.as_ref()].into_iter().flatten().filter(|&root| exact(root)).cloned().collect();
+        let temp = temp.filter(|root| without_data(root));
+        let kept = outputs.iter().filter(|&root| without_data(root)).cloned().chain(temp.clone()).collect();
+        let places = Places { dirs: both(&dirs), files: both(&files), data, kept, ids };
+        Some(Self { directory, worktree, home, inside_roots, temp, places })
     }
 
     /// Whether OpenCode calls normal `path` inside (file-access.ts `resolve`).
@@ -470,7 +487,7 @@ impl Checked {
 
     /// Whether real path `c` is really in the project.
     fn really_inside(&self, c: &str) -> bool {
-        within(c, &self.real_directory) || self.real_worktree.as_deref().is_some_and(|top| within(c, top))
+        self.inside_roots.iter().any(|root| within(c, root))
     }
 
     /// Whether real path `c` may be written or worked in at Auto-approve:

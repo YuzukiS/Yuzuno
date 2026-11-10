@@ -435,6 +435,100 @@ fn outside_a_search_must_prove_it_reaches_nothing_protected() {
     assert_eq!(s.decide_within("grep", &resources, Tool::Grep, input, &enough, &Wall).answer, Answer::Once);
 }
 
+/// What a folder question, a read and a grep of file `path` outside the
+/// project are answered.
+fn three(s: &Setup, path: &str) -> [Answer; 3] {
+    [s.answer("external_directory", &star(paths::parent(path)), Tool::Read, json!({"path": path})),
+        s.answer("read", &one(path), Tool::Read, json!({"path": path})),
+        s.answer("grep", &one("key"), Tool::Grep, json!({"pattern": "key", "path": path}))]
+}
+
+/// Replaces folder `path` with a link to `target`, as a shell in the
+/// executor could before a request.
+fn relink(path: &str, target: &str) {
+    std::fs::remove_dir_all(path).unwrap();
+    symlink(target, path).unwrap();
+}
+
+/// An output folder counts only as given: replaced by a link into D or into
+/// another Agent's folder there, given through a linked folder, or holding
+/// D, it grants nothing; a target is made real, a root is not. One that is
+/// its own real path still does.
+#[test]
+fn an_output_folder_replaced_by_a_link_grants_nothing() {
+    let once = [Answer::Once, Answer::Once, Answer::Once];
+    let core_data = [reject(Reason::CoreData), reject(Reason::CoreData), reject(Reason::CoreData)];
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let [o1, o2] = s.outputs.clone();
+    assert_eq!(three(s, &format!("{o2}/out.txt")), once, "O as given");
+    relink(&o2, &s.data);
+    assert_eq!(three(s, &format!("{o2}/secret.db")), core_data, "O → D");
+    assert_eq!(three(s, &format!("{o1}/s.txt")), once, "the other O as given");
+
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let other = lab.at("home/data/agents/zz99/private");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(format!("{other}/key.txt"), "synthetic\n").unwrap();
+    relink(&s.outputs[1], &other);
+    assert_eq!(three(s, &format!("{}/key.txt", s.outputs[1])), core_data, "O → another Agent's folder in D");
+
+    // Given through a linked folder, or holding D: no exception either.
+    let lab = Lab::new();
+    let s = &lab.setup;
+    symlink(paths::parent(&s.outputs[1]), lab.at("home/olink")).unwrap();
+    let linked = Setup { outputs: [s.outputs[0].clone(), lab.at("home/olink/tool-output")], ..s.clone() };
+    assert_eq!(three(&linked, &lab.at("home/olink/tool-output/out.txt")), core_data, "O given through a link");
+    let wide = Setup { outputs: [s.outputs[0].clone(), s.home.clone()], ..s.clone() };
+    assert_eq!(three(&wide, &lab.at("home/data/secret.db")), core_data, "O holding D");
+}
+
+/// T counts only as given too: replaced by a link into D, or into another
+/// Agent's folder there, nothing may be read, written or run in it.
+#[test]
+fn a_temporary_directory_replaced_by_a_link_grants_nothing() {
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let t = lab.temp();
+    relink(&t, &s.data);
+    assert_eq!(three(s, &format!("{t}/secret.db")), [reject(Reason::CoreData), reject(Reason::CoreData), reject(Reason::CoreData)], "T → D");
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/new.txt"), "content": "x"})),
+        reject(Reason::WriteOutside));
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Shell, json!({"command": "ls", "workdir": t})), reject(Reason::ShellOutside));
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Patch,
+        json!({"patchText": format!("*** Begin Patch\n*** Add File: {t}/p.txt\n+p\n*** End Patch")})), reject(Reason::WriteOutside));
+
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let t = lab.temp();
+    let other = lab.at("home/data/agents/zz99/private");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(format!("{other}/key.txt"), "synthetic\n").unwrap();
+    relink(&t, &other);
+    assert_eq!(s.answer("read", &one(&format!("{t}/key.txt")), Tool::Read, json!({"path": format!("{t}/key.txt")})),
+        reject(Reason::CoreData), "T → another Agent's folder in D");
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/key.txt"), "content": "x"})),
+        reject(Reason::WriteOutside));
+}
+
+/// The project's roots count only as given: a folder or worktree replaced by
+/// a link into D doesn't make D inside.
+#[test]
+fn a_project_root_replaced_by_a_link_is_not_inside() {
+    let lab = Lab::new();
+    let s = &lab.setup;
+    symlink(&s.data, lab.at("home/proj2")).unwrap();
+    let folder = Setup { directory: lab.at("home/proj2"), ..s.clone() };
+    assert_eq!(folder.answer("read", &one("secret.db"), Tool::Read, json!({"path": "secret.db"})), reject(Reason::CoreData), "folder → D");
+    assert_eq!(folder.answer("grep", &one("key"), Tool::Grep, json!({"pattern": "key"})), reject(Reason::CoreData));
+    symlink(&s.data, lab.at("home/wt")).unwrap();
+    let worktree = Setup { worktree: Some(lab.at("home/wt")), ..s.clone() };
+    assert_eq!(worktree.answer("read", &one("../wt/secret.db"), Tool::Read, json!({"path": "../wt/secret.db"})), reject(Reason::CoreData),
+        "worktree → D");
+    assert_eq!(s.answer("read", &one("src/main.rs"), Tool::Read, json!({"path": "src/main.rs"})), Answer::Once, "the folder as given");
+}
+
 /// Rules 3 and 4: a write outside the folder is allowed only when its real
 /// target is in T and not protected, a link followed; a patch's targets
 /// aren't parsed, so it is refused.
