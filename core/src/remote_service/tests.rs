@@ -1,4 +1,5 @@
-//! Behaviour of the packaged program and its boot step (YN-83 PR2).
+//! Behaviour of the packaged program and its boot step (YN-83 PR2), and the
+//! driver for program_tests.py, the sampling tests (PR3).
 #![cfg(unix)]
 
 use super::package;
@@ -652,9 +653,12 @@ fn session_exits_when_stdout_is_closed_or_stdin_ends() {
     assert_eq!(finish(child, WAIT).0.code(), Some(0));
 }
 
+/// The real Linux sampling path (YN-83 PR3): after watch the session reads
+/// /proc and statvfs only, so while it samples it still has no socket and no
+/// child process, and its load names no path.
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_session_has_no_socket_or_child_process() {
+fn linux_session_samples_with_no_socket_or_child_process() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     std::fs::create_dir(&home).unwrap();
@@ -662,10 +666,50 @@ fn linux_session_has_no_socket_or_child_process() {
     std::fs::write(home.join("boot-id"), b"boot").unwrap();
     let root = home.join("data");
     install(&root);
-    let mut child = session(&root, package::digest(), &home);
+    let mut command = Command::new(python());
+    command.args(["-I", root.join("remote/bin").join(format!("{}.py", package::digest())).to_str().unwrap(), "session"]);
+    base_env(&mut command, &home);
+    command.env("YUZUNO_REMOTE_ROOT", &root);
+    command.env("YUZUNO_REMOTE_DIGEST", package::digest());
+    command.env("YUZUNO_REMOTE_SILENCE", "30");
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
     let lines = Lines::new(child.stdout.take().unwrap());
-    let stdin = child.stdin.take().unwrap();
-    assert_eq!(lines.value(WAIT)["ev"], "hello");
+    let mut stdin = child.stdin.take().unwrap();
+    let hello = lines.value(WAIT);
+    assert_eq!(hello["ev"], "hello");
+    assert_eq!(
+        hello["data"]["load"],
+        json!({"cpu":"proc-stat","memory":"meminfo","disk":"statvfs","gpu":null,"why":["gpu:not_enabled"]})
+    );
+    send(&mut stdin, &json!({"id":1,"op":"watch","args":{"paths":[{"role":"root","path":root}]}}));
+    assert_eq!(lines.value(WAIT), json!({"re":1,"ok":{}}));
+    // A CPU share needs two samples 2 s apart; loads go out every 2 s.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let (line, load) = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = lines.line(left).expect("a full load before the deadline");
+        let value: Value = serde_json::from_str(line.trim()).unwrap();
+        let data = &value["data"];
+        if value["ev"] == "load" && data["cpu"].is_object() && data["memory"].is_object() && data["disks"][0]["totalMiB"].is_number() {
+            break (line, value);
+        }
+    };
+    assert!(!line.contains(root.to_str().unwrap()), "a load names the data root: {line}");
+    let data = &load["data"];
+    let pct = data["cpu"]["pct"].as_f64().unwrap();
+    assert!((0.0..=100.0).contains(&pct), "{data}");
+    assert!(data["cpu"]["cores"].as_u64().unwrap() >= 1, "{data}");
+    assert!(data["cpu"]["windowMs"].as_u64().unwrap() > 0, "{data}");
+    assert!(data["cpu"]["ageMs"].as_u64().unwrap() <= 3000, "{data}");
+    assert_eq!(data["memory"]["measure"], "meminfo");
+    let total = data["memory"]["totalMiB"].as_f64().unwrap();
+    assert!(total > 0.0 && data["memory"]["availableMiB"].as_f64().unwrap() <= total, "{data}");
+    let disk = &data["disks"][0];
+    assert_eq!(disk["roles"], json!(["root"]));
+    assert!(disk["availableMiB"].as_f64().unwrap() <= disk["totalMiB"].as_f64().unwrap(), "{data}");
+    assert!(data["gpu"].is_null());
+    assert!(data["why"].as_array().unwrap().contains(&json!("gpu:not_enabled")), "{data}");
     let pid = child.id();
     for entry in std::fs::read_dir(format!("/proc/{pid}/fd")).unwrap() {
         let link = std::fs::read_link(entry.unwrap().path()).unwrap_or_default();
@@ -685,7 +729,45 @@ fn linux_session_has_no_socket_or_child_process() {
         }
     }
     drop(stdin);
+    let bye = loop {
+        let value = lines.value(WAIT);
+        if value["ev"] == "bye" {
+            break value;
+        }
+    };
+    assert_eq!(bye["data"]["clean"], true, "{bye}");
+    assert!(lines.line(WAIT).is_none(), "a frame after the bye");
     assert_eq!(finish(child, WAIT).0.code(), Some(0));
+}
+
+/// program_tests.py: the sampling formulas, Reads, run_bounded and the exit
+/// gate, on synthetic inputs and stand-in children (YN-83 PR3).
+#[test]
+fn program_sampling_tests_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let output = Command::new(python())
+        .args([
+            "-I",
+            "-B",
+            source("src/remote_service/program_tests.py").to_str().unwrap(),
+            source("src/remote_service/program.py").to_str().unwrap(),
+            source("src/machine_load.rs").to_str().unwrap(),
+        ])
+        .env("HOME", &home)
+        .env("TMPDIR", temp.path())
+        .output()
+        .expect("program_tests.py runs with python");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "program_tests.py failed:\n{stderr}");
+    let ran = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Ran ")?.split_whitespace().next()?.parse::<usize>().ok())
+        .unwrap_or(0);
+    assert!(ran >= 28, "program_tests.py ran {ran} tests:\n{stderr}");
+    assert!(!stderr.contains("skipped") || cfg!(target_os = "macos"), "a test was skipped:\n{stderr}");
+    println!("{stderr}");
 }
 
 #[test]
@@ -715,6 +797,7 @@ synthetic = len(sys.argv) > 7 and sys.argv[7] == "synthetic"
 expected = None
 if synthetic:
     jobs.DARWIN = False
+    program.SYSTEM = "Linux"
     platform.system = lambda: "Linux"
     machine = "fedcba9876543210fedcba9876543210"
     files = {"/etc/machine-id": machine + "\n",
