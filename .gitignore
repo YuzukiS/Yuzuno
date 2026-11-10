@@ -12,6 +12,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# A worktree's results and its stage's own temporary files
+# (docs/workspace-cleanup.md, "Where a task's files go").
+/results/
+/.tmp/
+
 # Local credentials and Harness/runtime configuration.
 /.aws/
 /.codex/

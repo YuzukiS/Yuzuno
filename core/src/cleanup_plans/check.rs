@@ -471,6 +471,11 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
     let Some(path) = plain(&item.path) else {
         return Checked::refused("path", "Not an absolute path without . or .. on this host", pre);
     };
+    // What a removal renamed aside (build_output REMOVING) is never an item
+    // again, nor anything inside it: a stopped removal leaves it to be read.
+    if path.components().any(|c| c.as_os_str().to_string_lossy().starts_with(REMOVING)) {
+        return Checked::refused("removing", "A removal renamed it aside, or it is inside such a folder: it is never an item", pre);
+    }
     let Ok(meta) = std::fs::symlink_metadata(&path) else {
         return Checked::refused("missing", "It does not exist", pre);
     };
@@ -537,6 +542,13 @@ pub(crate) async fn preflight(ctx: &Context, item: &Item) -> Checked {
                 let top = git(&path, &["rev-parse", "--show-toplevel"]).await;
                 if !matches!(&top, Ok(Ok(t)) if real(Path::new(t.trim())) == tree) {
                     return Checked::refused("otherTree", "It is inside another Git working tree", pre);
+                }
+                // `git worktree list` can still name a path that now holds
+                // another repository: only this Project's repository counts,
+                // and a Git that cannot say is never taken as yes.
+                match git(&path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await {
+                    Ok(Ok(theirs)) if theirs.trim() == ctx.common => {}
+                    _ => return Checked::refused("otherTree", "Its working tree is not this Project's repository now, or Git could not say", pre),
                 }
                 match git(tree, &["check-ignore", "-q", "--", &relative]).await {
                     Ok(Ok(_)) => {}

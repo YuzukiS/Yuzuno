@@ -8,4 +8,6 @@ Read [Contributing](CONTRIBUTING.md) for setup and checks. Agents connected to a
 
 Use focused checks for the change and reuse relevant evidence for unchanged code. Public CI runs only on GitHub-hosted runners; local background work in a connected Workspace uses managed Jobs.
 
+In a worktree, put new results in `results/<task-or-stage>/` and the stage's own temporary files in `.tmp/<stage>/` ([Workspace cleanup](docs/workspace-cleanup.md#where-a-tasks-files-go)). A workspace cleanup runs only when the user asks for one.
+
 Use synthetic examples for machine names, user paths and research data. Keep local acceptance outputs and credentials out of commits. Source publication does not authorize uploading private release packages or SDK bundles; releases follow [the release guide](docs/core-release.md).
