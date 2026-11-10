@@ -1,4 +1,4 @@
-import { Component, useContext, useEffect, useMemo, type ComponentType, type ReactNode } from "react";
+import { Component, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, type ComponentType, type ReactNode } from "react";
 import {
   ActionProvider,
   Renderer,
@@ -57,6 +57,30 @@ class PartBoundary extends Component<{ children: ReactNode }, { failed: boolean 
     return this.state.failed ? <Unreadable /> : this.props.children;
   }
 }
+/**
+ * What a body showed once drawn (YN-86): real content in at least one of its
+ * blocks ("drawn"); nothing but the note of each block it could not draw, an
+ * unknown component's or a failed one's ("fallback"); or nothing at all, the
+ * whole section refused ("failed").
+ */
+export type BodyDrawn = "drawn" | "fallback" | "failed";
+/** Blocks that only lay others out: drawing them shows none of the body's content. */
+const LAYOUT_PARTS = new Set(["BriefBody", "Group", "Columns"]);
+/** How many of one body's content blocks are drawn and still shown: each counts itself while it stands. */
+type Tally = { shown: number };
+const DrawTally = createContext<Tally | null>(null);
+/** Stands beside a content block inside its boundary: there only while the block drew. */
+function Drew() {
+  const tally = useContext(DrawTally);
+  useLayoutEffect(() => {
+    if (!tally) return;
+    tally.shown += 1;
+    return () => {
+      tally.shown -= 1;
+    };
+  }, [tally]);
+  return null;
+}
 function Unreadable() {
   const t = useStrings(briefText);
   return (
@@ -75,7 +99,7 @@ function SectionUnreadable() {
     </div>
   );
 }
-type Drawn = { section: Section; changes?: BlockChanges | null; onDrawn?: (drawn: boolean) => void; children: ReactNode };
+type Drawn = { section: Section; changes?: BlockChanges | null; onDrawn?: (drawn: BodyDrawn) => void; children: ReactNode };
 /**
  * A section that can't be drawn at all, outside any one block (its result
  * provider refusing the body, say), says so in its place: the rest of Home
@@ -88,7 +112,7 @@ class SectionBoundary extends Component<Drawn, { failed: boolean }> {
   }
   componentDidCatch(error: unknown) {
     recordError("section", error);
-    this.props.onDrawn?.(false);
+    this.props.onDrawn?.("failed");
   }
   componentDidUpdate(previous: Drawn) {
     if (this.state.failed && (previous.section !== this.props.section || previous.changes !== this.props.changes))
@@ -103,9 +127,11 @@ const CHANGE = "yuzunoChange";
 function part<P extends object>(Part: ComponentType<P>): ComponentType<ComponentRenderProps> {
   return function Guarded({ element, children }: ComponentRenderProps) {
     const { [CHANGE]: change, ...props } = element.props as Record<string, unknown>;
+    // A content block that drew counts itself (YN-86); one that fails shows only its note, and does not.
     const shown = (
       <PartBoundary>
         <Part {...(props as P)}>{children}</Part>
+        {!LAYOUT_PARTS.has(element.type) && <Drew />}
       </PartBoundary>
     );
     if (change !== "new" && change !== "updated") return shown;
@@ -248,13 +274,14 @@ type BodyProps = {
    * and its parts): the same elements and renderers as the whole body. */
   only?: readonly string[];
   /**
-   * Told once the body has drawn (true), or that it could not be drawn at
-   * all (false: a body Home can't read, or a failure outside any one
-   * block), again for each new section or marks (YN-86). One block that
-   * fails shows its note and the body still counts as drawn; files and
-   * chart data still on their way are not waited for.
+   * Told what the body showed once drawn (BodyDrawn), again for each new
+   * section or marks (YN-86): "drawn" while at least one content block drew
+   * (others may show their notes); "fallback" when every content block is
+   * an unknown component's or a failed one's note; "failed" when it could
+   * not be drawn at all. Files and chart data still on their way are not
+   * waited for.
    */
-  onDrawn?: (drawn: boolean) => void;
+  onDrawn?: (drawn: BodyDrawn) => void;
 };
 
 /**
@@ -335,12 +362,14 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
     () => ({ projectId, section, onOpenAgent, onOpenMachine }),
     [projectId, section, onOpenAgent, onOpenMachine],
   );
-  // After this body and every block in it committed: a failure that reached
-  // SectionBoundary commits none of it, and says so there instead.
+  // After this body and every block in it committed, their counts made in
+  // the layout phase before: a failure that reached SectionBoundary commits
+  // none of it, and says so there instead.
+  const tally = useRef<Tally>({ shown: 0 }).current;
   const drawable = !!spec && !!shim;
   useEffect(() => {
-    onDrawn?.(drawable);
-  }, [onDrawn, drawable, section, changes]);
+    onDrawn?.(!drawable ? "failed" : tally.shown > 0 ? "drawn" : "fallback");
+  }, [onDrawn, drawable, section, changes, tally]);
   if (!spec || !shim)
     return (
       <div className="brief-body">
@@ -362,7 +391,9 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
           <StateProvider store={store}>
             <VisibilityProvider>
               <ActionProvider handlers={noActions}>
-                <Renderer spec={spec} registry={registry} fallback={Unreadable} />
+                <DrawTally.Provider value={tally}>
+                  <Renderer spec={spec} registry={registry} fallback={Unreadable} />
+                </DrawTally.Provider>
               </ActionProvider>
             </VisibilityProvider>
           </StateProvider>

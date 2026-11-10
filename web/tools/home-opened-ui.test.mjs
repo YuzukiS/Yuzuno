@@ -263,6 +263,35 @@ test("nothing is recorded for a version not drawn whole and live: History, unkno
   }
 });
 
+test("a body that shows nothing but unreadable notes is not recorded; a readable block beside one is (PR 883, Lead's P2)", async (t) => {
+  const link = { report: { link: { workspaceId: "ws-1", projectId: "p1", key: "eval", version: 3, sectionId: 7 }, back: null, fromAddress: false, n: 1 } };
+  const bodyOf = (children, elements) => ({ root: "body", elements: { body: { type: "BriefBody", props: {}, children }, ...elements } });
+  const unknown = { type: "Code", props: { text: "print('synthetic')" } };
+  // A Checklist without items throws inside its part: its boundary shows the note in its place.
+  const broken = { type: "Checklist", props: { title: "Steps", items: null } };
+  const notes = (page) => [...page.querySelectorAll(".result-part-error")].map((p) => p.textContent);
+  for (const [what, body, count] of [
+    ["the only block an unknown component", bodyOf(["x"], { x: unknown }), 1],
+    ["every block failing in its part", bodyOf(["a", "b"], { a: broken, b: broken }), 2],
+  ]) {
+    const p = await openHome(one([report("eval", 7, 3, { body })]), undefined, link);
+    t.after(p.close);
+    await until(() => p.page()?.querySelector(".report-head h1") && notes(p.page()).length === count, `${what}: its notes`);
+    assert.deepEqual(notes(p.page()), Array(count).fill("This part of the section couldn't be displayed."), what);
+    await tick(150);
+    assert.equal(p.receipts().length, 0, `${what}: nothing recorded`);
+    assert.equal(mark(p.page().querySelector(".report-head")), "New", `${what}: still New`);
+  }
+  // One readable block beside an unknown one: the page shows the report, the note in its place, and records it.
+  const p = await openHome(one([report("eval", 7, 3, { body: bodyOf(["lead", "x"], { lead: { type: "Markdown", props: { text: "The synthetic result holds." } }, x: unknown }) })]),
+    undefined, link);
+  t.after(p.close);
+  await until(() => p.page()?.querySelector(".report-head h1") && notes(p.page()).length === 1, "the readable report with one note");
+  await until(() => p.receipts().length === 1, "recorded");
+  assert.deepEqual(p.receipts()[0].body, { workspaceId: "ws-1", sectionId: 7, key: "eval", version: 3 });
+  assert.deepEqual(p.errors, []);
+});
+
 test("a receipt Core refuses is said on the page, never sent again from it, and tried again the next time the report is opened", async (t) => {
   const state = one([report("eval", 7, 3)]);
   let refusals = 1;

@@ -16,6 +16,7 @@ import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
+import type { BodyDrawn } from "../brief/BriefSectionBody";
 import { BriefStateScope } from "../brief/brief-state";
 import { SectionTime } from "../SectionCard";
 import type { HomeData, Section, SectionAttachment } from "../types";
@@ -110,8 +111,10 @@ export function ReportPage({
     heldChanges.current = { id: shown.id, key: shown.key, version: shown.version, changes: found };
     return found;
   }, [shown, live, workspaceId, link.projectId]);
-  // Whether this version's body drew whole on the page (YN-86): every block it shows told so, none that it could
-  // not be drawn at all. Only then, for the live version on this Workspace's Home, is it recorded as opened.
+  // Whether this version's body drew on the page (YN-86): every block it shows has told what it showed, none that
+  // the section could not be drawn at all, and at least one drew real content; a block that shows only its unreadable
+  // note is tolerated beside them, never counted as the body. Only then, for the live version on this Workspace's
+  // Home, is it recorded as opened.
   const blockIds = useMemo(
     () => (parts ? [parts.summary?.lead, parts.summary?.visual, parts.summary?.conditions, ...parts.flow, ...parts.sources, ...parts.attachments]
       .filter((id): id is string => typeof id === "string") : []),
@@ -119,19 +122,20 @@ export function ReportPage({
   );
   const expected = useRef(blockIds);
   expected.current = blockIds;
-  const drawing = useRef<{ of: Section | null; ok: Set<string>; failed: boolean }>({ of: null, ok: new Set(), failed: false });
+  const drawing = useRef<{ of: Section | null; told: Map<string, BodyDrawn> }>({ of: null, told: new Map() });
   const [drawn, setDrawn] = useState<Section | null>(null);
   const drawnBlock = useMemo(() => {
-    const told = new Map<string, (ok: boolean) => void>();
+    const tellers = new Map<string, (drawn: BodyDrawn) => void>();
     return (id: string) => {
-      let tell = told.get(id);
+      let tell = tellers.get(id);
       if (!tell)
-        told.set(id, (tell = (ok: boolean) => {
-          if (drawing.current.of !== shown) drawing.current = { of: shown, ok: new Set(), failed: false };
-          const state = drawing.current;
-          if (ok) state.ok.add(id);
-          else state.failed = true;
-          const whole = !state.failed && expected.current.length > 0 && expected.current.every((block) => state.ok.has(block));
+        tellers.set(id, (tell = (what: BodyDrawn) => {
+          if (drawing.current.of !== shown) drawing.current = { of: shown, told: new Map() };
+          const { told } = drawing.current;
+          told.set(id, what);
+          const blocks = expected.current;
+          const whole = blocks.length > 0 && blocks.every((block) => told.has(block))
+            && blocks.every((block) => told.get(block) !== "failed") && blocks.some((block) => told.get(block) === "drawn");
           setDrawn((was) => (whole ? shown : was === shown ? null : was));
         }));
       return tell;

@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { BriefSectionBody } from "./brief/BriefSectionBody";
 import type { BlockChanges } from "./brief/block-changes";
+import type { BodyDrawn } from "./brief/BriefSectionBody";
 import { useHomeNavigation } from "./home-navigation";
 import type { Section } from "./types";
 
@@ -17,8 +18,8 @@ export function SectionBody({
   changes?: BlockChanges | null;
   /** Only these top-level blocks (T-18), as BriefSectionBody says. */
   only?: readonly string[];
-  /** Whether the body drew, as BriefSectionBody says (YN-86). */
-  onDrawn?: (drawn: boolean) => void;
+  /** What the body showed once drawn, as BriefSectionBody says (YN-86). */
+  onDrawn?: (drawn: BodyDrawn) => void;
 }) {
   const navigate = useHomeNavigation();
   const openAgent = useCallback((agentId: string) => navigate({ kind: "agent", agentId }), [navigate]);
