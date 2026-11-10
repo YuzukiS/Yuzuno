@@ -381,6 +381,16 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS project_brief_writes(
         project_id TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(project_id,key));",
     )?;
+    // The newest version of each report the user's browser showed whole while
+    // it was live (YN-86), by the section's identity on Home, which is never
+    // given to another section: a receipt of reading, apart from the Seen
+    // mark (project_brief_seen), which puts a report into history. Older
+    // Cores ignore it.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_brief_opened(
+        project_id TEXT NOT NULL, section_id INTEGER NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
+        at TEXT NOT NULL, PRIMARY KEY(project_id,section_id));",
+    )?;
     Ok(())
 }
 

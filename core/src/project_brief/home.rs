@@ -245,6 +245,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let team: Vec<_> = live.iter().filter(|row| !visible.iter().any(|shown| shown.key == row.key)).cloned().collect();
         let history = sections::history(&db, id)?;
         let seen = sections::seen(&db, id)?;
+        let opened = sections::opened(&db, id)?;
         let owner = |row: &sections::Row| {
             let agent = by_id.get(&row.owner_id).map(|a| sections::OwnerAgent {
                 closed: a.closed_at.is_some(), name: a.name.as_str(), project: a.project_id.as_deref() });
@@ -274,6 +275,11 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
                 section["id"] = json!(row.identity);
+                // The newest version the user's browser showed whole (YN-86):
+                // apart from `seen`, which a report's Seen mark sets.
+                if row.live {
+                    section["opened"] = opened.get(&row.identity).map(|(version, at)| json!({"version":version,"at":at})).into();
+                }
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
                     section["currentSource"] = json!(current(row));
@@ -289,7 +295,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             "jobs":jobs.iter().filter(|job| job.project.as_deref() == Some(id)).map(|job| job.shown.clone()).collect::<Vec<_>>(),
             "contentEditors":policy,
             "brief":{"version":sections::brief_version(&db, id)?,"sections":shown(&visible),"teamSections":shown(&team),"history":shown(&history)},
-            "unseen":sections::unseen(&visible, &seen),
+            "unseen":sections::unseen(&visible, &seen, &opened),
             "missing":missing(store, &db, id, &by_id)?,
         }));
     }

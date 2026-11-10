@@ -1,7 +1,8 @@
 import type { Section } from "../types";
+import { readVersion } from "../brief-layout";
 import { isBriefSpec, type BriefElement } from "./brief-catalog";
 
-/** How a block differs from the version the user marked seen. */
+/** How a block differs from the version the user last read (marked seen, or a report opened whole: YN-86). */
 export type BlockChange = "new" | "updated";
 export type BlockChanges = ReadonlyMap<string, BlockChange>;
 
@@ -81,16 +82,18 @@ function readBaseline(key: string): Baseline | null {
 }
 
 /**
- * Keeps what the section shows now as the user's seen version: when they
- * mark it seen here (seenVersion), and whenever the version shown is the
- * one they marked seen. Core keeps only a section's live version, so the
- * comparison is made from what this device showed.
+ * Keeps what the section shows now as the user's read version: when they
+ * mark it seen here or Core recorded the report opened whole (seenVersion),
+ * and whenever the version shown is the one they last read (readVersion).
+ * Only that very version is kept, never a newer one. Core keeps only a
+ * section's live version, so the comparison is made from what this device
+ * showed.
  */
 export function rememberSeenBlocks(
   workspaceId: string,
   projectId: string,
   section: Section,
-  seenVersion = section.seen?.version,
+  seenVersion = readVersion(section),
 ) {
   if (!workspaceId || seenVersion !== section.version) return;
   const key = blockMemoryKey(workspaceId, projectId, section);
@@ -106,13 +109,13 @@ export function rememberSeenBlocks(
 
 /**
  * The blocks a newer version added or changed, compared with what this
- * device showed of the version the user marked seen. Null when that is not
- * known here (never seen, or seen elsewhere at a version not shown here):
- * then only the card says it changed. A block under a new one is not
- * marked again.
+ * device showed of the version the user last read (readVersion). Null when
+ * that is not known here (never read, or read elsewhere at a version not
+ * shown here): then only the card says it changed. A block under a new one
+ * is not marked again.
  */
 export function changedBlocks(workspaceId: string, projectId: string, section: Section): BlockChanges | null {
-  const seen = section.seen?.version;
+  const seen = readVersion(section);
   if (!workspaceId || seen === undefined || seen >= section.version || !isBriefSpec(section.body)) return null;
   const baseline = readBaseline(blockMemoryKey(workspaceId, projectId, section));
   if (!baseline || baseline.version !== seen) return null;

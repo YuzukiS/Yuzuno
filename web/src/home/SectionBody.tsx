@@ -10,12 +10,15 @@ export function SectionBody({
   projectId,
   changes,
   only,
+  onDrawn,
 }: {
   section: Section;
   projectId: string;
   changes?: BlockChanges | null;
   /** Only these top-level blocks (T-18), as BriefSectionBody says. */
   only?: readonly string[];
+  /** Whether the body drew, as BriefSectionBody says (YN-86). */
+  onDrawn?: (drawn: boolean) => void;
 }) {
   const navigate = useHomeNavigation();
   const openAgent = useCallback((agentId: string) => navigate({ kind: "agent", agentId }), [navigate]);
@@ -29,6 +32,7 @@ export function SectionBody({
       projectId={projectId}
       changes={changes}
       only={only}
+      onDrawn={onDrawn}
       onOpenAgent={openAgent}
       onOpenMachine={openMachine}
     />

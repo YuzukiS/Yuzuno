@@ -21,7 +21,7 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
-import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName, type TopicGroup } from "./brief-layout";
+import { changedSinceSeen, groupSections, projectDomId, readVersion, requestDomId, topicName, unreadChange, type TopicGroup } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
 import { deckPlace, orderDeck, type DeckPlace } from "./deck-order";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
@@ -297,12 +297,13 @@ export function HomePanel({
   const [seeingAll, setSeeingAll] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => setChoice(readPanelChoice(workspaceId, id)), [workspaceId, id]);
-  // Core's count of what changed since the user marked it seen, less the Asks
-  // the user answered that their owner has not changed since: those are not
-  // new to the user (changedSinceSeen, YN-3).
-  const answered = panel.brief.sections.filter((s) => s.ask?.state === "replied" && (!s.seen || s.seen.version < s.version) && !changedSinceSeen(s)).length;
+  // Core's count of what changed since the user last read it (marked seen, or a report opened whole: YN-86), less
+  // the Asks the user answered that their owner has not changed since: those are not new to the user (YN-3).
+  const answered = panel.brief.sections.filter((s) => s.ask?.state === "replied" && (readVersion(s) ?? 0) < s.version && !unreadChange(s)).length;
   const unseen = Math.max(0, panel.unseen - answered);
-  const quiet = unseen === 0 && needsYou.length === 0 && panel.pending.length === 0;
+  // Whether a panel starts folded is decided as before, by what the user has not marked seen: a report opened
+  // elsewhere, or here from a link or a widget, never folds its project (YN-86).
+  const quiet = panel.brief.sections.filter(changedSinceSeen).length === 0 && needsYou.length === 0 && panel.pending.length === 0;
   const session = JSON.stringify([workspaceId, id]);
   // Decided when the panel first shows in this page session, then follows
   // later reads only while the user has not acted in this panel.

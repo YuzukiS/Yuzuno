@@ -1941,6 +1941,8 @@ mod executor_gate_tests;
 mod recently_left_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
+#[path = "opened_tests.rs"]
+mod opened_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {

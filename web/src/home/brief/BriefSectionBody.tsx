@@ -1,4 +1,4 @@
-import { Component, useContext, useMemo, type ComponentType, type ReactNode } from "react";
+import { Component, useContext, useEffect, useMemo, type ComponentType, type ReactNode } from "react";
 import {
   ActionProvider,
   Renderer,
@@ -75,7 +75,7 @@ function SectionUnreadable() {
     </div>
   );
 }
-type Drawn = { section: Section; changes?: BlockChanges | null; children: ReactNode };
+type Drawn = { section: Section; changes?: BlockChanges | null; onDrawn?: (drawn: boolean) => void; children: ReactNode };
 /**
  * A section that can't be drawn at all, outside any one block (its result
  * provider refusing the body, say), says so in its place: the rest of Home
@@ -88,6 +88,7 @@ class SectionBoundary extends Component<Drawn, { failed: boolean }> {
   }
   componentDidCatch(error: unknown) {
     recordError("section", error);
+    this.props.onDrawn?.(false);
   }
   componentDidUpdate(previous: Drawn) {
     if (this.state.failed && (previous.section !== this.props.section || previous.changes !== this.props.changes))
@@ -246,6 +247,14 @@ type BodyProps = {
   /** Only these top-level blocks, in this order (T-18: a report's summary
    * and its parts): the same elements and renderers as the whole body. */
   only?: readonly string[];
+  /**
+   * Told once the body has drawn (true), or that it could not be drawn at
+   * all (false: a body Home can't read, or a failure outside any one
+   * block), again for each new section or marks (YN-86). One block that
+   * fails shows its note and the body still counts as drawn; files and
+   * chart data still on their way are not waited for.
+   */
+  onDrawn?: (drawn: boolean) => void;
 };
 
 /**
@@ -255,13 +264,13 @@ type BodyProps = {
  */
 export function BriefSectionBody(props: BodyProps) {
   return (
-    <SectionBoundary section={props.section} changes={props.changes}>
+    <SectionBoundary section={props.section} changes={props.changes} onDrawn={props.onDrawn}>
       <SectionBodyParts {...props} />
     </SectionBoundary>
   );
 }
 
-function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMachine, only }: BodyProps) {
+function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMachine, only, onDrawn }: BodyProps) {
   // Home's own Workspace, from the context its cards already read, so no
   // call site has to pass it (T-195).
   const workspaceId = useContext(CardFoldWorkspace);
@@ -326,6 +335,12 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
     () => ({ projectId, section, onOpenAgent, onOpenMachine }),
     [projectId, section, onOpenAgent, onOpenMachine],
   );
+  // After this body and every block in it committed: a failure that reached
+  // SectionBoundary commits none of it, and says so there instead.
+  const drawable = !!spec && !!shim;
+  useEffect(() => {
+    onDrawn?.(drawable);
+  }, [onDrawn, drawable, section, changes]);
   if (!spec || !shim)
     return (
       <div className="brief-body">

@@ -35,13 +35,39 @@ export function repliedThenUpdated(section: Section) {
 }
 
 /**
- * Changed since the user last marked it seen (never inferred from reading).
- * An Ask the user answered counts as seen at the version answered (YN-3):
- * only its owner's change after the reply is new to them.
+ * Changed since the user last marked it seen: what Seen (and Seen all) is
+ * offered for, as before (YN-86 keeps it). An Ask the user answered counts
+ * as seen at the version answered (YN-3): only its owner's change after the
+ * reply is new to them.
  */
 export const changedSinceSeen = (section: Section) =>
   (!section.seen || section.seen.version < section.version) &&
   (section.ask?.state !== "replied" || repliedThenUpdated(section));
+
+/**
+ * The newest version the user has read (YN-86): the one marked seen, or a
+ * report's version their browser showed whole on its page (`opened`),
+ * whichever is later. Undefined when they have read none.
+ */
+export function readVersion(section: Section): number | undefined {
+  const seen = section.seen?.version;
+  const opened = section.opened?.version;
+  return seen === undefined ? opened : opened === undefined ? seen : Math.max(seen, opened);
+}
+
+/** Whether the user has read some earlier version: its mark then says Updated, not New. */
+export const readBefore = (section: Section) => readVersion(section) !== undefined;
+
+/**
+ * Changed since the user last read it (readVersion): what New and Updated
+ * mark and Home counts, as Core counts a project's `unseen`. An answered Ask
+ * as changedSinceSeen says. Never what decides Seen, folding or order.
+ */
+export const unreadChange = (section: Section) => {
+  const read = readVersion(section);
+  return (read === undefined || read < section.version) &&
+    (section.ask?.state !== "replied" || repliedThenUpdated(section));
+};
 
 /**
  * The next read with every section that did not change kept as the same
@@ -78,3 +104,5 @@ export const sectionDomId = (projectId: string, key: string) =>
   `home-section-${projectId}-${key}`;
 export const requestDomId = (requestId: string) => `home-request-${requestId}`;
 export const projectDomId = (projectId: string) => `home-project-${projectId}`;
+/** My widgets, as Home's jumps go to it (YN-86). */
+export const widgetsDomId = "home-widgets";

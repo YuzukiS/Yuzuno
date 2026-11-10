@@ -108,6 +108,10 @@ export type Section = {
   refs: Record<string, LiveRefState>;
   /** The version the user explicitly marked seen, never inferred. */
   seen: { version: number; at: string } | null;
+  /** A live report: the newest version the user's browser showed whole on its
+   * page (YN-86), by the section's id. A receipt of reading, apart from
+   * `seen`: it never puts the report into History. Absent from older Cores. */
+  opened?: { version: number; at: string } | null;
   /** A seen report kept for 30 days, or a removed section. */
   history: boolean;
   /** What Core changed to accept this version (YN-14), in Core's words;
@@ -153,7 +157,8 @@ export type ProjectPanel = {
   pending: (PendingRequest & { agentName: string })[];
   jobs: HomeJob[];
   brief: { version: number; sections: Section[]; teamSections?: Section[]; history: Section[] };
-  /** Live sections changed since the user last marked them seen. */
+  /** Live sections changed since the user last read them: marked seen, or a
+   * report opened whole (YN-86). */
   unseen: number;
   /** Recent turns that ended without an accepted Brief update. */
   missing: {

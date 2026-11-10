@@ -25,7 +25,9 @@
   /* Scroll anchoring keeps what is being read in place when content above
      it changes size (the browser default; stated here on purpose). */
   overflow-anchor: auto;
-  padding: 28px 40px 40px;
+  /* Its top padding, which the jumps bar sticks above (YN-86). */
+  --home-pad-top: 28px;
+  padding: var(--home-pad-top) 40px 40px;
   width: 100%;
   color: var(--ink);
   /* The whole pane; the layout below follows its width, not the window's. */
@@ -350,6 +352,74 @@
 .home-header-tools .is-active {
   color: var(--home-new);
   background: var(--home-soft);
+}
+/* Home's own jumps (YN-86): at the top of Home's scroller wherever it is
+   scrolled, never over the app's toolbar; it goes with Home when a report
+   covers it. Home keeps its measured height (HomeJumps.tsx) clear above a
+   jump's target. Opaque, so what scrolls under it is not read through it. */
+.home-view {
+  scroll-padding-top: calc(var(--home-jumps-height, 0px) + 8px);
+}
+.home-jumps {
+  position: sticky;
+  /* A sticky box keeps clear of its scroller's padding: this puts it at the
+     scroller's very top edge instead, so nothing shows above it. */
+  top: calc(-1 * var(--home-pad-top));
+  z-index: 4;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  margin: -4px 0 12px;
+  padding: 6px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.home-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  transition: background-color var(--motion-micro) var(--ease-standard);
+}
+.home-jump > svg {
+  flex: none;
+  color: var(--home-ink-2);
+}
+.home-jump-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-jump-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.home-jump:not([aria-disabled="true"]):hover {
+  background: var(--home-soft);
+}
+.home-jump[data-jump="asks"]:not([aria-disabled="true"]) .home-jump-count {
+  background: color-mix(in srgb, var(--home-attention) 22%, transparent);
+  color: var(--home-attention-ink);
+}
+/* Nothing to go to: it says why in its tip and stays focusable for it. */
+.home-jump[aria-disabled="true"] {
+  color: var(--home-ink-2);
+  border-style: dashed;
+  cursor: default;
 }
 .home-note {
   margin: 4px 0;
@@ -1680,13 +1750,24 @@ ul.home-widget {
 
 @media (max-width: 720px) {
   .home-view {
-    padding: 20px 20px 32px;
+    --home-pad-top: 20px;
+    padding: var(--home-pad-top) 20px 32px;
   }
 }
 /* Narrow: one column, compact headers. */
 @media (max-width: 520px) {
   .home-view {
-    padding: 14px 10px 28px;
+    --home-pad-top: 14px;
+    padding: var(--home-pad-top) 10px 28px;
+  }
+  /* Three jumps across a phone, each shortened before any runs past the edge. */
+  .home-jumps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .home-jump {
+    justify-content: center;
+    padding: 4px 8px;
   }
   .home-header {
     margin-bottom: 10px;

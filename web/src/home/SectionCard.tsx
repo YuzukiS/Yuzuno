@@ -10,7 +10,7 @@ import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
-import { changedSinceSeen, repliedThenUpdated, sectionDomId } from "./brief-layout";
+import { changedSinceSeen, readBefore, repliedThenUpdated, sectionDomId, unreadChange } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
 import { packDeckOf } from "./deck-packing";
 import { FoldButton, useCardFold } from "./card-fold";
@@ -236,7 +236,10 @@ export const SectionCard = memo(function SectionCard({
   // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
   const [replyOpened, setReplyOpened] = useState(false);
   const replyButton = useRef<HTMLButtonElement>(null);
-  const changed = changedSinceSeen(section);
+  // New or Updated since the user last read it (YN-86: marked seen, or a report opened whole); Seen is still offered
+  // until they mark this version seen, which is what puts a report into History.
+  const changed = unreadChange(section);
+  const seenable = changedSinceSeen(section);
   // Which blocks changed is marked on them; the card itself only says that it did.
   const blocks = useMemo(() => changedBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
   useEffect(() => rememberSeenBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
@@ -293,7 +296,7 @@ export const SectionCard = memo(function SectionCard({
       {changed && (
         <Tip content={<TipText body={t.changedTitle} />}>
           <span className="home-changed">
-            {section.seen || replied ? t.updated : t.new}
+            {readBefore(section) || replied ? t.updated : t.new}
           </span>
         </Tip>
       )}
@@ -313,7 +316,7 @@ export const SectionCard = memo(function SectionCard({
       )}
     </>
   );
-  const seenButton = changed && !readOnly && (
+  const seenButton = seenable && !readOnly && (
     <button
       type="button"
       className="quiet-button home-seen"

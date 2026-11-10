@@ -21,6 +21,8 @@ import type { HomeTarget } from "./home-navigation";
 import {
   currentOverviewSection,
   returnOverview,
+  withoutOpened,
+  type OpenedMark,
   type OverviewSection,
   type ReplyReceipt,
 } from "./return-overview";
@@ -29,18 +31,25 @@ import type { HomeData } from "./types";
 import "./return-overview.css";
 import { Tip, TipText } from "../Tip";
 
+const NONE_OPENED: readonly OpenedMark[] = [];
+
 /** A held reading, with explicit refresh. Needs you and failures are always
  * live alongside it. Mount with a Workspace key; no visit timestamp or
- * automatic Seen mark is stored on this device or sent to Core. */
+ * automatic Seen mark is stored on this device or sent to Core. A report the
+ * user opens here (`opened`, YN-86) leaves its changes at once, up to the
+ * version opened; nothing else of the reading changes with it. */
 export function HomeReturnOverview({
   data,
   readFailed,
+  opened = NONE_OPENED,
   onSection,
   onNeedsYou,
   onNavigate,
 }: {
   data: HomeData;
   readFailed: boolean;
+  /** The report versions the user opened whole here, in this Workspace. */
+  opened?: readonly OpenedMark[];
   onSection: (projectId: string, key: string) => void;
   onNeedsYou: () => void;
   onNavigate: (target: HomeTarget) => void;
@@ -49,8 +58,12 @@ export function HomeReturnOverview({
   const language = useLanguage();
   const time = useTimeDisplay();
   const density = useBriefDensity();
-  const latest = useMemo(() => returnOverview(data), [data]);
-  const [reading, setReading] = useState(latest);
+  const fresh = useMemo(() => returnOverview(data), [data]);
+  const [held, setReading] = useState(fresh);
+  // What the user opened here is read in the held reading and in the next one alike, so it alone never offers a
+  // new reading, whether or not Core's next read has it yet.
+  const reading = useMemo(() => withoutOpened(held, opened), [held, opened]);
+  const latest = useMemo(() => withoutOpened(fresh, opened), [fresh, opened]);
   const [dialog, setDialog] = useState<"changes" | "replies" | "errors" | null>(
     null,
   );
