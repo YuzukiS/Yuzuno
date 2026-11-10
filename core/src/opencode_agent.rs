@@ -2181,6 +2181,52 @@ impl Workspace {
     }
 }
 
+/// What a permission answer's runtime tail captured (YN-78 S4b-1): this
+/// same Agent, connection generation and `Server`, never one looked up
+/// again. If the connection has moved on, it is not this runtime and no
+/// signal is sent; the new one is never touched. Nothing calls it yet.
+pub(crate) struct CapturedRuntime {
+    workspace: Weak<Workspace>,
+    agent: String,
+    generation: u64,
+    server: Arc<Server>,
+    server_id: String,
+}
+
+impl CapturedRuntime {
+    pub(crate) fn of(workspace: &Arc<Workspace>, agent: &str, connection: &Connection) -> Self {
+        Self {
+            workspace: Arc::downgrade(workspace),
+            agent: agent.to_owned(),
+            generation: connection.generation,
+            server: connection.server.clone(),
+            server_id: connection.server.id().to_owned(),
+        }
+    }
+}
+
+impl crate::opencode_responder::Runtime for CapturedRuntime {
+    fn current(&self) -> bool {
+        self.server.id() == self.server_id && self.workspace.upgrade().is_some_and(|workspace| {
+            workspace.opencode_current(&self.agent, self.generation)
+                .is_some_and(|current| Arc::ptr_eq(&current.server, &self.server))
+        })
+    }
+
+    fn terminate(&self) {
+        self.server.terminate();
+    }
+
+    fn ended_within<'a>(&'a self, limit: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        let server = self.server.clone();
+        Box::pin(async move { server.ended_within(limit).await })
+    }
+
+    fn kill(&self) {
+        self.server.kill();
+    }
+}
+
 /// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it. Else
 /// it is signalled to end, and this stop holds it until it has exited,
 /// within TEARDOWN as `shutdown` waits: 2.x closes its event stream early in
