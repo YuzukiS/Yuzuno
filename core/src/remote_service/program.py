@@ -282,9 +282,13 @@ def writer():
                 data = pending
             elif CONTROL:
                 data = CONTROL.pop(0)
+                # Keep it until it is fully written: the next select or write
+                # may fail, and a frame taken off the queue must not vanish.
+                pending = data
             elif LOAD[0] is not None:
                 data = LOAD[0]
                 LOAD[0] = None
+                pending = data
             else:
                 data = None
             finishing = FINISHING
@@ -326,9 +330,15 @@ def writer():
 def shutdown(code):
     global STOPPING, FINISHING
     with SHUTDOWN_LOCK:
-        if STOPPING:
-            return
-        STOPPING = True
+        owner = not STOPPING
+        if owner:
+            STOPPING = True
+    if not owner:
+        # Another thread already owns the exit with its own code. Wait for its
+        # os._exit; returning would let the caller exit 0 and hide a write
+        # failure (or lose the bye it is still trying to write).
+        while True:
+            time.sleep(1.0)
     clean_children = CHILDREN.stop_all()
     clean_reads = READS.wait(READ_WAIT)
     clean = clean_children and clean_reads and not SAMPLE_BUSY[0]

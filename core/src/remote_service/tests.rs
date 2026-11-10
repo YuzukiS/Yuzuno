@@ -570,6 +570,61 @@ fn session_exits_when_the_peer_does_not_read_or_stdin_closes() {
 }
 
 #[test]
+fn session_keeps_a_frame_the_peer_cannot_take_yet() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("machine-id"), b"0123456789abcdef0123456789abcdef").unwrap();
+    std::fs::write(home.join("boot-id"), b"boot").unwrap();
+    let root = home.join("data");
+    install(&root);
+
+    // A full socket is a peer that is not reading yet. The session's first
+    // frame cannot be written now; it must be kept and written once the peer
+    // drains the filler, not dropped on the failed attempt.
+    let (reader, mut writer) = UnixStream::pair().unwrap();
+    writer.set_nonblocking(true).unwrap();
+    let mut filler = [0u8; 4096];
+    let mut filled = 0usize;
+    while let Ok(wrote) = writer.write(&mut filler) {
+        if wrote == 0 {
+            break;
+        }
+        filled += wrote;
+    }
+    assert!(filled > 0, "the socket took no filler");
+    reader.set_read_timeout(Some(WAIT)).unwrap();
+
+    let mut command = Command::new(python());
+    command.args(["-I", root.join("remote/bin").join(format!("{}.py", package::digest())).to_str().unwrap(), "session"]);
+    base_env(&mut command, &home);
+    command.env("YUZUNO_REMOTE_ROOT", &root);
+    command.env("YUZUNO_REMOTE_DIGEST", package::digest());
+    command.env("YUZUNO_REMOTE_SILENCE", "10");
+    command.env("YUZUNO_JOBS_MACHINE_ID_FILE", home.join("machine-id"));
+    command.env("YUZUNO_JOBS_BOOT_ID_FILE", home.join("boot-id"));
+    command.stdin(Stdio::piped()).stderr(Stdio::piped());
+    command.stdout(Stdio::from(std::fs::File::from(OwnedFd::from(writer))));
+    let mut child = command.spawn().unwrap();
+    let stdin = child.stdin.take().unwrap();
+
+    std::thread::sleep(Duration::from_millis(1200));
+    let mut drain = vec![0u8; filled];
+    let mut source = &reader;
+    source.read_exact(&mut drain).unwrap();
+    let mut lines = BufReader::new(&reader);
+    let mut line = String::new();
+    let read = lines.read_line(&mut line).expect("a readable line after the drain");
+    assert!(read > 0, "the session dropped its first frame instead of waiting for the peer");
+    let hello: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(hello["ev"], "hello");
+
+    drop(stdin);
+    let (status, stderr) = finish(child, WAIT);
+    assert_eq!(status.code(), Some(0), "stderr: {stderr}");
+}
+
+#[test]
 fn session_exits_when_stdout_is_closed_or_stdin_ends() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
