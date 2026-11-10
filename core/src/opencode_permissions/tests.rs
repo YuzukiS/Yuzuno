@@ -452,7 +452,6 @@ fn a_write_outside_is_allowed_only_really_in_temp() {
     assert_eq!(write("/tmp/opencode/yn77/x", "/tmp/opencode/yn77"), reject(Reason::WriteOutside));
     assert_eq!(s.answer("external_directory", &star(&t), Tool::Edit, json!({"path": format!("{t}/x.txt"), "oldString": "a", "newString": "b"})),
         Answer::Once);
-    assert_eq!(s.answer("external_directory", &star(&t), Tool::Patch, json!({"patchText": "*** Begin Patch"})), reject(Reason::PatchUnchecked));
     assert_eq!(s.answer("external_directory", &star(&t), Tool::ImageGenerate, json!({})), reject(Reason::WriteOutside));
     let none = Setup { temp: None, ..s.clone() };
     assert_eq!(none.answer("external_directory", &star(&t), Tool::Write, json!({"path": format!("{t}/x.txt"), "content": "x"})),
@@ -460,6 +459,60 @@ fn a_write_outside_is_allowed_only_really_in_temp() {
     let inner = Setup { dirs: vec![format!("{t}/sub")], ..s.clone() };
     assert_eq!(inner.answer("external_directory", &star(&format!("{t}/sub")), Tool::Write, json!({"path": format!("{t}/sub/y.txt"), "content": "x"})),
         reject(Reason::WriteOutside), "a protected location in T");
+}
+
+/// Rules 3 and 4 for a patch: every file it names as OpenCode's parser reads
+/// it, and both sides of a move, must really be in T; each of the patch's
+/// folder requests is judged by all of them.
+#[test]
+fn a_patch_outside_is_allowed_only_with_every_file_in_temp() {
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let t = lab.temp();
+    let sub = format!("{t}/sub");
+    let patch = |body: &str| json!({"patchText": format!("*** Begin Patch\n{body}\n*** End Patch")});
+    let ask = |folder: &str, body: &str| s.answer("external_directory", &star(folder), Tool::Patch, patch(body));
+    let all_in_t = format!("*** Add File: {t}/new.txt\n+new\n*** Update File: {t}/x.txt\n@@\n-synthetic\n+changed\n\
+        *** Delete File: {sub}/y.txt\n*** Update File: {t}/x.txt\n*** Move to: {sub}/z.txt\n@@\n-changed\n+moved");
+    assert_eq!(ask(&t, &all_in_t), Answer::Once);
+    assert_eq!(ask(&sub, &all_in_t), Answer::Once, "each folder request of the call");
+    let decision = s.decide("external_directory", &star(&t), Tool::Patch, patch(&all_in_t));
+    assert_eq!(decision.targets.iter().map(|target| target.literal.as_str()).collect::<Vec<_>>(),
+        [format!("{t}/new.txt"), format!("{t}/x.txt"), format!("{sub}/y.txt"), format!("{t}/x.txt"), format!("{sub}/z.txt")]);
+    // As OpenCode reads it: a heredoc wrapper, CRLF lines, an environment line.
+    let wrapped = format!("cat <<'EOF'\r\n*** Begin Patch\r\n*** Environment ID: lab\r\n*** Add File: {t}/w.txt\r\n+w\r\n*** End Patch\r\nEOF");
+    assert_eq!(s.answer("external_directory", &star(&t), Tool::Patch, json!({"patchText": wrapped})), Answer::Once);
+    // An indented header in an update's body is its context, not a file it names.
+    let context = format!("*** Update File: {t}/x.txt\n@@\n-synthetic\n *** Update File: /etc/passwd\n+changed");
+    assert_eq!(ask(&t, &context), Answer::Once);
+    assert_eq!(ask("/etc", &context), reject(Reason::Unbound(Unbound::Resources)), "/etc is no file of this patch");
+
+    let notes = lab.at("home/notes");
+    let refused = [
+        (t.clone(), format!("*** Add File: {t}/a.txt\n+a\n*** Add File: {notes}/b.txt\n+b")),
+        (t.clone(), format!("*** Add File: {t}/a.txt\n+a\n*** Add File: src/new.rs\n+b")),
+        (t.clone(), format!("*** Update File: {t}/k\n@@\n-synthetic\n+x")),
+        (t.clone(), format!("*** Delete File: {t}/k")),
+        (format!("{t}/aws"), format!("*** Add File: {t}/aws/new\n+x")),
+        (t.clone(), format!("*** Update File: {t}/x.txt\n*** Move to: {notes}/x.txt\n@@\n-synthetic\n+x")),
+        (notes.clone(), format!("*** Update File: {notes}/a.txt\n*** Move to: {t}/a.txt\n@@\n-synthetic\n+x")),
+        ("/tmp/opencode/yn77".to_owned(), "*** Add File: /tmp/opencode/yn77/x\n+x".to_owned()),
+    ];
+    for (folder, body) in &refused {
+        assert_eq!(ask(folder, body), reject(Reason::WriteOutside), "{body}");
+    }
+    let inner = Setup { dirs: vec![sub.clone()], ..s.clone() };
+    assert_eq!(inner.answer("external_directory", &star(&sub), Tool::Patch, patch(&format!("*** Add File: {sub}/n.txt\n+n"))),
+        reject(Reason::WriteOutside), "a protected location in T");
+    let none = Setup { temp: None, ..s.clone() };
+    assert_eq!(none.answer("external_directory", &star(&t), Tool::Patch, patch(&format!("*** Add File: {t}/n.txt\n+n"))),
+        reject(Reason::WriteOutside));
+    for unreadable in ["*** Begin Patch".to_owned(), "*** Begin Patch\n*** End Patch".to_owned(),
+        format!("*** Begin Patch\n*** Add File: {t}/n.txt\nnot a + line\n*** End Patch"),
+        format!("*** Begin Patch\n*** Update File: {t}/x.txt\n*** Move to: \n@@\n-a\n+b\n*** End Patch")] {
+        assert_eq!(s.answer("external_directory", &star(&t), Tool::Patch, json!({"patchText": unreadable})), reject(Reason::PatchUnchecked),
+            "{unreadable}");
+    }
 }
 
 /// Rules 3 and 5: a shell call outside the folder is allowed only when its

@@ -28,10 +28,12 @@
 //! applies:
 //! - An action other than `external_directory`, read, grep, glob or list is
 //!   refused (rule 1, before any read).
-//! - A write (edit, write) or a shell outside the folder is allowed only
-//!   when every real target is in the executor's own temporary directory T
-//!   and not protected; a patch's targets are not parsed here, so it is
-//!   refused, as is image_generate (rules 3 to 5).
+//! - A write (edit, write, patch) or a shell outside the folder is allowed
+//!   only when every real target is in the executor's own temporary
+//!   directory T and not protected: for a patch, every file each of its
+//!   hunks names as OpenCode's own parser reads it (both sides of a move),
+//!   and a patch it can't read is refused; image_generate is refused (rules
+//!   3 to 5).
 //! - A read, grep or glob whose real target is in the project (the Agent's
 //!   folder, or its Git worktree when that isn't `/`) keeps the internal
 //!   policy: a `.env` file's read is refused, the rest allowed; a search is
@@ -55,6 +57,7 @@
 //! a file's content.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
+mod patch;
 mod paths;
 mod shell;
 
@@ -269,7 +272,7 @@ impl Reason {
             Self::Action(action) => return format!("Yuzuno Core refused this: nobody can approve `{action}` at Auto-approve. Do it another way."),
             Self::Unbound(_) => "it couldn't tell which tool call asked",
             Self::WriteOutside => "files outside the project folder may be written only in $TMPDIR",
-            Self::PatchUnchecked => "a patch outside the project folder isn't checked; use write or edit in $TMPDIR",
+            Self::PatchUnchecked => "the patch can't be read as OpenCode reads it; check its markers, or use write or edit",
             Self::ShellOutside => "commands outside the project folder run only in $TMPDIR, as the working directory, with any cd to an absolute path there",
             Self::ShellUnchecked => "the command's directory changes can't be checked ($, `, \\, parentheses, braces, #, <, or a cd that isn't a command of its own); set workdir instead",
             Self::EnvFile => "reading a .env file is refused (a *.env.example file may be read)",
@@ -483,7 +486,7 @@ impl Checked {
         let path = |key: &str| input[key].as_str();
         match call.tool {
             // Only the folder question reaches here for these (Tool::asks).
-            Tool::Patch => reject(Reason::PatchUnchecked),
+            Tool::Patch => self.patch(path("patchText").unwrap_or_default(), resources, spend, targets),
             Tool::ImageGenerate => reject(Reason::WriteOutside),
             Tool::Edit | Tool::Write => {
                 let Some(literal) = resolve(&self.directory, path("path").unwrap_or_default(), &self.home) else {
@@ -500,6 +503,37 @@ impl Checked {
             Tool::Shell => self.shell(path("command").unwrap_or_default(), path("workdir").unwrap_or("."), resources, spend, targets),
             Tool::Read | Tool::Grep | Tool::Glob => self.look(asked, call, resources, spend, targets),
         }
+    }
+
+    /// Rules 3 and 4 for a patch: each file its hunks name, and both sides
+    /// of a move, must really be in T. OpenCode asks for one file's folder
+    /// at a time (patch.ts `resolveTarget`); each request is judged by them all.
+    fn patch(&self, text: &str, resources: &[String], spend: &mut Spend<'_>, targets: &mut Vec<Target>) -> Answer {
+        let reject = Answer::Reject;
+        let Some(hunks) = patch::hunks(text) else { return reject(Reason::PatchUnchecked) };
+        let named: Vec<&str> = hunks.iter().flat_map(|hunk| std::iter::once(hunk.path.as_str()).chain(hunk.moved.as_deref())).collect();
+        if named.is_empty() {
+            return reject(Reason::PatchUnchecked);
+        }
+        let mut literal = Vec::new();
+        for path in named {
+            let Some(resolved) = resolve(&self.directory, path, &self.home) else { return reject(Reason::Unchecked) };
+            literal.push(resolved);
+        }
+        let asked: Vec<String> = literal.iter().filter(|path| !self.inside(path)).map(|path| star(parent(path))).collect();
+        if resources.len() != 1 || !asked.contains(&resources[0]) {
+            return reject(Reason::Unbound(Unbound::Resources));
+        }
+        let mut allowed = true;
+        for path in literal {
+            if !spend.take() {
+                return reject(Reason::WriteOutside);
+            }
+            let real = real_for_write(&path);
+            allowed &= real.as_deref().is_some_and(|c| self.in_temp(c));
+            targets.push(Target { literal: path, real });
+        }
+        if allowed { Answer::Once } else { reject(Reason::WriteOutside) }
     }
 
     /// Rules 3 and 5 for a shell call: its working folder and each directory
