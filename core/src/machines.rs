@@ -103,14 +103,18 @@ impl Store {
 
     /// An SSH machine's check, kept only while the machine is still the one
     /// it reached: an edit or removal during a check (which can take many
-    /// seconds) leaves it describing nothing stored, so it is refused.
+    /// seconds) leaves it describing nothing stored, so it is refused. What
+    /// the probe was given counts, data root and `contained` included: the
+    /// same fields whose change drops the last check (Store::update_machine).
     pub fn record_ssh_machine_check(&self, check: &MachineCheck, started_ms: i64, probed: &RemoteMachine) -> Result<MachineCheck> {
         let db = self.db.write()?;
         let raw: Option<String> = db.query_row(
             "SELECT data FROM machines WHERE id=?1", [&probed.id], |r| r.get(0)).optional()?;
         let Some(raw) = raw else { bail!("This machine was removed while it was being tested") };
         let stored: RemoteMachine = serde_json::from_str(&raw)?;
-        if (&stored.target, &stored.codex, &stored.default_cwd) != (&probed.target, &probed.codex, &probed.default_cwd) {
+        if (&stored.target, &stored.codex, &stored.default_cwd, stored.root(), stored.contained)
+            != (&probed.target, &probed.codex, &probed.default_cwd, probed.root(), probed.contained)
+        {
             bail!("This machine was changed while it was being tested; test it again");
         }
         upsert_check(&db, check, started_ms)
@@ -354,6 +358,8 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
     };
     // The SSH machine as this check found it stored; see record_ssh_machine_check.
     let mut probed = None;
+    // When it started, for the remote session's stop (remote_service::registry).
+    let mut ticket = None;
     if machine_id == "local" {
         let (host, harnesses, folder) = check_local(ws).await;
         result.reachable = true;
@@ -364,6 +370,7 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
         let id = machine_id.to_owned();
         let machine = ws.stored(move |store| store.machine(&id)).await.context("Machine is not registered in this Workspace")?;
         probed = Some(machine.clone());
+        ticket = Some(ws.machine_live.check_started(&machine));
         // Unknown until the machine answers.
         let unsupported = HarnessCheck { harness: "claude".into(), supported: true, ..Default::default() };
         match remote::probe(&machine).await {
@@ -382,9 +389,45 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
     }
     result.checked_at = stamp(chrono::Utc::now());
     result.duration_ms = clock.elapsed().as_millis() as u64;
-    match probed {
-        Some(machine) => ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await,
-        None => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,
+    match (probed, ticket) {
+        (Some(machine), Some(ticket)) => {
+            let made = result.clone();
+            // Under the remote sessions' gate, taken only now the probe is
+            // done: from the check against the record as stored, through
+            // its write, to its effect on a stop, no edit of the machine and
+            // no other check's write comes between (server.rs takes the same
+            // gate around its machine writes).
+            let held = ws.machine_live.hold().await;
+            let stored = ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await?;
+            #[cfg(test)]
+            after_record(&made.machine_id).await;
+            // Only a check that reached the machine and is the one kept
+            // (the latest started) may end a stop there.
+            if stored.reachable && stored == made {
+                ws.machine_live.check_reached(&held, &ticket);
+            }
+            drop(held);
+            Ok(stored)
+        }
+        _ => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,
+    }
+}
+
+/// Tests: the next check of a machine listed here stops once its result is
+/// stored, says so, and goes on when let (YN-83 PR4b).
+#[cfg(test)]
+pub(crate) type Pause = (String, std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Semaphore>);
+#[cfg(test)]
+pub(crate) static AFTER_RECORD: std::sync::Mutex<Vec<Pause>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+async fn after_record(id: &str) {
+    let pause = {
+        let mut pauses = AFTER_RECORD.lock().unwrap();
+        pauses.iter().position(|(machine, ..)| machine == id).map(|at| pauses.remove(at))
+    };
+    if let Some((_, stopped, go)) = pause {
+        stopped.notify_one();
+        let _ = go.acquire().await;
     }
 }
 
@@ -484,6 +527,40 @@ mod tests {
         }
         // Codex there has no sign-in of its own in a machine check.
         assert!(ssh_harnesses(&probed(serde_json::json!({"claudeLoggedIn": true}))).iter().all(|h| h.harness != "codex" || h.sign_in.is_none()));
+    }
+
+    /// A check reports on the machine as it was probed. Its data root and
+    /// `contained` go to the probe too, and an edit of either drops the last
+    /// check, so a check still running when either changes describes nothing
+    /// stored and must not be written back (YN-83 S1 PR4b).
+    #[test]
+    fn a_check_of_an_older_root_or_containment_is_not_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let probed = RemoteMachine {
+            id: "m1".into(), name: "Lab box".into(), target: "box-a".into(), codex: "codex".into(),
+            default_cwd: "/srv/synthetic/work".into(), data_root: Some("/srv/synthetic/root-a".into()), ..Default::default()
+        };
+        store.add_machine(&probed).unwrap();
+        let check = |started: &str| MachineCheck {
+            machine_id: "m1".into(), started_at: started.into(), checked_at: started.into(), duration_ms: 1,
+            reachable: true, error: None, host: None, harnesses: vec![], default_folder: None,
+        };
+        // The data root changes while the check runs: its result is refused.
+        let moved = RemoteMachine { data_root: Some("/srv/synthetic/root-b".into()), ..probed.clone() };
+        store.update_machine(&moved).unwrap();
+        assert!(store.record_ssh_machine_check(&check("2026-11-10T00:00:01.000Z"), 1, &probed).is_err());
+        assert!(!store.machine_checks().unwrap().contains_key("m1"));
+        // So is one that ran before the machine was contained.
+        let boxed = RemoteMachine { contained: true, ..moved.clone() };
+        store.update_machine(&boxed).unwrap();
+        assert!(store.record_ssh_machine_check(&check("2026-11-10T00:00:02.000Z"), 2, &moved).is_err());
+        assert!(!store.machine_checks().unwrap().contains_key("m1"));
+        // A check of the machine as it is stays, and the latest started one still wins.
+        let current = check("2026-11-10T00:00:04.000Z");
+        assert_eq!(store.record_ssh_machine_check(&current, 4, &boxed).unwrap(), current);
+        assert_eq!(store.record_ssh_machine_check(&check("2026-11-10T00:00:03.000Z"), 3, &boxed).unwrap(), current);
+        assert_eq!(store.machine_checks().unwrap()["m1"], current);
     }
 
     #[test]

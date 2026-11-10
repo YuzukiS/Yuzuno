@@ -279,6 +279,14 @@ impl Workspace {
             let _held = gate.lock().await;
             self.detach_idle_claude(&id, &connection).await?;
         }
+        // Each SSH machine's remote session closes too, within 14 s for all
+        // (YN-83 S1). Sealed admission starts none again; one not reaped by
+        // then stays with its reaper and holds nothing of the update.
+        let registry = &self.machine_live;
+        let closed = registry.close_all(crate::remote_service::Closing::Detach, registry.closing()).await;
+        if closed.unreaped > 0 {
+            eprintln!("Update detach: {} remote session(s) not yet reaped", closed.unreaped);
+        }
         // All native producers have stopped and each consumer acknowledged its
         // final marker. Only now is a cache flush/checkpoint a durable barrier.
         self.flush_for_update().await

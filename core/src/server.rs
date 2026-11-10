@@ -174,6 +174,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::codex_usage::router())
         .merge(crate::project_brief::router())
         .merge(crate::machine_load::router())
+        .merge(crate::remote_service::router())
         .merge(crate::storage_overview::router())
         .merge(crate::claude_sdk::router())
         .merge(crate::github::router())
@@ -1066,7 +1067,12 @@ async fn add_machine(State(ws): State<Arc<Workspace>>, Json(mut p): Json<NewMach
     remote::validate_machine(&machine)?;
     let _work = older_cores_work(&ws, &machine)?;
     let added = machine.clone();
+    // Under the remote sessions' gate, with what it changes there (see
+    // remote_service::registry); so for the edit and the removal below.
+    let held = ws.machine_live.hold().await;
     ws.stored(move |store| store.add_machine(&added)).await?;
+    ws.machine_live.saved(&held, &machine);
+    drop(held);
     let _ = ws.changes.send(json!({"machines":true}));
     let mut result = serde_json::to_value(machine)?;
     result["kind"] = "ssh".into();
@@ -1094,7 +1100,10 @@ async fn update_machine(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
     remote::validate_machine(&machine)?;
     let _work = older_cores_work(&ws, &machine)?;
     let saved = machine.clone();
+    let held = ws.machine_live.hold().await;
     ws.stored(move |store| store.update_machine(&saved)).await?;
+    ws.machine_live.saved(&held, &machine);
+    drop(held);
     let _ = ws.changes.send(json!({"machines":true}));
     let mut result = serde_json::to_value(machine)?;
     result["kind"] = "ssh".into();
@@ -1106,7 +1115,10 @@ async fn update_machine(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
 async fn remove_machine(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     ssh_machine_id(&id)?;
     let machine = id.clone();
+    let held = ws.machine_live.hold().await;
     ws.stored(move |store| store.remove_machine(&machine)).await?;
+    ws.machine_live.removed(&held, &id);
+    drop(held);
     let _ = ws.changes.send(json!({"machines":true}));
     Ok(Json(json!({"removed":id})))
 }

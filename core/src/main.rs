@@ -181,6 +181,10 @@ async fn run(
         Arc::new(WorkspaceRuntime(ws.clone())),
         ws.admission.clone(),
     )?;
+    // From the moment Core's shutdown is sent (Ctrl+C, SIGTERM or an
+    // update's Stop), no SSH machine's remote session starts again and each
+    // is asked to close (YN-83 S1); the close below only waits.
+    ws.follow_core_shutdown(updates.shutdown.subscribe());
     if updates.layout.is_some() {
         updates::control::listen(updates.clone())?;
         updates.monitor();
@@ -268,6 +272,13 @@ async fn run(
     // What OpenCode's tools run outlives its process group: each OpenCode is
     // asked to end it before the Workspace goes (opencode.rs).
     opencode.opencode_stop_all().await;
+    // Each SSH machine's remote session, asked to close when the shutdown
+    // was sent, gets 14 s with all the others (YN-83 S1); a child not
+    // reaped by then stays with its reaper.
+    let unreaped = opencode.close_remote_sessions().await;
+    if unreaped > 0 {
+        eprintln!("Core shutdown: {unreaped} remote session(s) not yet reaped");
+    }
     drop(opencode);
     yuzuno_workspace::db::blocking(move || { store.settle_older_cores(); Ok(()) }).await?;
     Ok(())
