@@ -64,6 +64,15 @@ impl Lab {
         self.dir.path().join(name)
     }
 
+    /// An OpenSSH that records the call and cannot connect (a backoff).
+    fn unreachable_ssh(&self) -> String {
+        let path = self.path("ssh-down");
+        let calls = self.path("calls");
+        std::fs::write(&path, format!("#!/bin/sh\necho call >> '{}'\necho 'ssh: connect to host box-a port 22: Connection refused' >&2\nexit 255\n", calls.display())).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
     /// An OpenSSH that records the call and refuses the login.
     fn refusing_ssh(&self) -> String {
         let path = self.path("ssh");
@@ -95,6 +104,17 @@ async fn call(app: &Router, method: &str, uri: &str, phone: bool, client: &[&str
         builder = builder.header("x-yuzuno-client", *value);
     }
     let response = app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A change from the page: `body` as JSON.
+async fn send(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, String) {
+    let request = Request::builder().method(method).uri(uri).header("host", "127.0.0.1:4317")
+        .header("x-yuzuno-client", "desktop").header("content-type", "application/json")
+        .body(Body::from(body.to_string())).unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
     (status, String::from_utf8_lossy(&bytes).into_owned())
@@ -211,6 +231,127 @@ async fn a_manual_check_that_reaches_the_machine_ends_its_stop_and_a_failed_one_
     let again = state().await.0;
     assert!(matches!(again.as_str(), "connecting" | "unavailable"), "{again}");
     eventually("a second call", Duration::from_secs(10), || lab.calls() == 2).await;
+    crate::remote::STAND_INS.lock().unwrap().retain(|(id, _)| id != ID);
+}
+
+/// Core's shutdown watch says true (as Ctrl+C, SIGTERM or an update's Stop
+/// sends it) while its other steps have not run: neither a GET nor the end
+/// of a backoff starts OpenSSH again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn once_core_shuts_down_neither_a_get_nor_a_backoff_starts_ssh() {
+    let lab = Lab::new("box-a");
+    lab.ws.machine_live.configure(&lab.unreachable_ssh(), Timing::PRODUCTION);
+    let (shutdown, watched) = tokio::sync::watch::channel(false);
+    lab.ws.follow_core_shutdown(watched);
+    let app = server::router(lab.ws.clone(), lab.ws.data_dir.join("assets"));
+    let (status, answer) = call(&app, "GET", "/api/machine-live", false, &["desktop"]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    eventually("one call", Duration::from_secs(10), || lab.calls() == 1).await;
+    let peek = || lab.ws.machine_live.peek()["machines"][0].clone();
+    eventually("a backoff", Duration::from_secs(10), || peek()["code"] == "ssh_unreachable").await;
+    shutdown.send_replace(true);
+    let (status, answer) = call(&app, "GET", "/api/machine-live", false, &["desktop"]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    // The backoff (1 s) ends well within the interest: nothing starts.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(lab.calls(), 1);
+}
+
+/// The probe answers for this test's own machine id: true or false, in
+/// turn, from `reaches` (remote::STAND_INS).
+fn probe_answers(id: &str, reaches: Vec<bool>) {
+    let answers = std::sync::Mutex::new(reaches.into_iter());
+    crate::remote::STAND_INS.lock().unwrap().push((id.into(), crate::remote::StandIn {
+        answer: Arc::new(move |request: &Value| {
+            anyhow::ensure!(request["action"] == "probe", "only a probe is expected: {request}");
+            let reaches = answers.lock().unwrap().next().unwrap_or(false);
+            anyhow::ensure!(reaches, "ssh: connect to host box-a port 22: Connection refused");
+            Ok(serde_json::json!({"hostname": "box-a", "platform": "Linux", "home": "/home/tester"}))
+        }),
+        program: String::new(),
+    }));
+}
+
+/// A machine `id` whose session stopped (the stand-in refuses the login),
+/// through the page's router.
+async fn stopped(id: &str) -> (Lab, Router) {
+    let lab = Lab::with_id(id, "box-a");
+    lab.ws.machine_live.configure(&lab.refusing_ssh(), Timing::PRODUCTION);
+    let app = server::router(lab.ws.clone(), lab.ws.data_dir.join("assets"));
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, answer) = call(&app, "GET", "/api/machine-live", false, &["desktop"]).await;
+        if first(&answer)["state"] == "unavailable" {
+            return (lab, app);
+        }
+        assert!(Instant::now() < until, "{answer}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The next check of `id` stops right after its result is stored.
+fn pause_after_record(id: &str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Semaphore>) {
+    let (stopped, go) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)));
+    crate::machines::AFTER_RECORD.lock().unwrap().push((id.into(), stopped.clone(), go.clone()));
+    (stopped, go)
+}
+
+/// From a check's stored result to what it does here (ending a stop), no
+/// edit of the machine comes between: an edit of `contained` sent then
+/// commits only after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_never_commits_between_a_checks_stored_result_and_its_effect() {
+    const ID: &str = "yn83-pr4b-edit-box";
+    let (lab, app) = stopped(ID).await;
+    probe_answers(ID, vec![true]);
+    let (paused, go) = pause_after_record(ID);
+    let check = tokio::spawn({ let ws = lab.ws.clone(); async move { crate::machines::check(&ws, ID).await } });
+    tokio::time::timeout(Duration::from_secs(10), paused.notified()).await.expect("the check stored its result");
+    let edit = tokio::spawn({
+        let app = app.clone();
+        async move {
+            send(&app, "PUT", &format!("/api/machines/{ID}"), serde_json::json!({
+                "name": "Lab box", "target": "box-a", "codex": "codex", "defaultCwd": "/srv/synthetic/work", "contained": true,
+            })).await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let early = edit.is_finished();
+    go.add_permits(1);
+    let checked = check.await.unwrap().unwrap();
+    let (status, answer) = edit.await.unwrap();
+    assert!(!early, "the edit committed between the check's stored result and its effect");
+    assert!(checked.reachable && status == StatusCode::OK, "{checked:?} {answer}");
+    // The check ended the stop while it described the machine; the edit
+    // then dropped it as the record changed.
+    let checks = lab.ws.store.machine_checks().unwrap();
+    assert!(!checks.contains_key(ID), "{checks:?}");
+    let (_, answer) = call(&app, "GET", "/api/machine-live", false, &["desktop"]).await;
+    eventually("started again", Duration::from_secs(10), || lab.calls() == 2).await;
+    assert!(matches!(first(&answer)["state"].as_str(), Some("connecting" | "unavailable")), "{answer}");
+    crate::remote::STAND_INS.lock().unwrap().retain(|(id, _)| id != ID);
+}
+
+/// Nor does a check that started later: it is stored only after the first
+/// check's effect, so what the first one acts on is what is stored then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_later_check_is_never_stored_between_a_checks_stored_result_and_its_effect() {
+    const ID: &str = "yn83-pr4b-newer-box";
+    let (lab, _app) = stopped(ID).await;
+    probe_answers(ID, vec![true, false]);
+    let (paused, go) = pause_after_record(ID);
+    let first_check = tokio::spawn({ let ws = lab.ws.clone(); async move { crate::machines::check(&ws, ID).await } });
+    tokio::time::timeout(Duration::from_secs(10), paused.notified()).await.expect("the check stored its result");
+    let later = tokio::spawn({ let ws = lab.ws.clone(); async move { crate::machines::check(&ws, ID).await } });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let early = later.is_finished();
+    go.add_permits(1);
+    let reached = first_check.await.unwrap().unwrap();
+    let failed = later.await.unwrap().unwrap();
+    assert!(!early, "a later check was stored between a check's stored result and its effect");
+    assert!(reached.reachable && !failed.reachable, "{reached:?} {failed:?}");
+    // The later one is what is stored now, as the latest started.
+    assert_eq!(lab.ws.store.machine_checks().unwrap()[ID], failed);
     crate::remote::STAND_INS.lock().unwrap().retain(|(id, _)| id != ID);
 }
 

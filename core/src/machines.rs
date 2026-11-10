@@ -393,6 +393,8 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
         (Some(machine), Some(ticket)) => {
             let made = result.clone();
             let stored = ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await?;
+            #[cfg(test)]
+            after_record(&made.machine_id).await;
             // Only a check that reached the machine and is the one kept
             // (the latest started) may end a stop there.
             if stored.reachable && stored == made {
@@ -401,6 +403,24 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
             Ok(stored)
         }
         _ => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,
+    }
+}
+
+/// Tests: the next check of a machine listed here stops once its result is
+/// stored, says so, and goes on when let (YN-83 PR4b).
+#[cfg(test)]
+pub(crate) type Pause = (String, std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Semaphore>);
+#[cfg(test)]
+pub(crate) static AFTER_RECORD: std::sync::Mutex<Vec<Pause>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+async fn after_record(id: &str) {
+    let pause = {
+        let mut pauses = AFTER_RECORD.lock().unwrap();
+        pauses.iter().position(|(machine, ..)| machine == id).map(|at| pauses.remove(at))
+    };
+    if let Some((_, stopped, go)) = pause {
+        stopped.notify_one();
+        let _ = go.acquire().await;
     }
 }
 

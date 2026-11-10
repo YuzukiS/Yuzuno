@@ -146,6 +146,8 @@ struct Inner {
     /// Steps the managing task took (tests).
     #[cfg(test)]
     steps: std::sync::atomic::AtomicU64,
+    /// Core's shutdown watch, once `follow_shutdown` was given it.
+    shutdown: std::sync::OnceLock<watch::Receiver<bool>>,
 }
 
 impl Drop for Inner {
@@ -397,6 +399,7 @@ impl Registry {
                 wake: Arc::new(Notify::new()),
                 #[cfg(test)]
                 steps: Default::default(),
+                shutdown: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -421,6 +424,11 @@ impl Registry {
 
     pub(crate) fn closing(&self) -> Duration {
         self.state().timing.closing()
+    }
+
+    /// Core's shutdown watch (main.rs).
+    pub(crate) fn follow_shutdown(&self, shutdown: watch::Receiver<bool>) {
+        let _ = self.inner.shutdown.set(shutdown);
     }
 
     pub(crate) async fn hold(&self) -> Held<'_> {

@@ -14,7 +14,7 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 
 const SECOND: Duration = Duration::from_secs(1);
 
@@ -543,6 +543,63 @@ async fn the_admissions_other_changes_never_wake_the_registry_and_a_drain_does()
     assert!(!closed(&sessions, "m1", 0));
     host.admission.begin_drain("update").unwrap();
     eventually("closed by the drain", || closed(&sessions, "m1", 0)).await;
+}
+
+/// Core's shutdown (Ctrl+C, SIGTERM or an update's Stop) sends true on its
+/// watch, then runs its other steps first: the HTTP server's graceful end,
+/// OpenCode's stop. None of them is run here, as if they hung. From the
+/// moment the watch says so, nothing starts here again and every session is
+/// asked to close; `close_all` only waits for them later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_core_shuts_down_nothing_starts_here_and_every_session_is_asked_to_close() {
+    let (host, clock, sessions) =
+        lab(vec![machine("m1", "box-a", "/srv/a"), machine("m2", "box-b", "/srv/b"), machine("m3", "box-c", "/srv/c")]);
+    let (shutdown, watched) = watch::channel(false);
+    host.registry.follow_shutdown(watched);
+    get(&host).await;
+    hello(&sessions, &clock, "m1", 0);
+    end(&sessions, "m2", 0, After::Backoff, Some(Code::SshUnreachable), true);
+    end(&sessions, "m3", 0, After::Clean, None, true);
+    settle().await;
+    let interest = host.registry.interest();
+    shutdown.send_replace(true);
+    // At once: a GET starts nothing (m3 is idle) and records nothing.
+    let rows = get(&host).await;
+    assert_eq!(starts(&sessions, "m3"), 1, "{rows:?}");
+    assert_eq!(host.registry.interest(), interest);
+    // The online session is asked to close, with no close_all.
+    eventually("m1 asked to close", || closed(&sessions, "m1", 0)).await;
+    // m2's backoff ends within the interest: still nothing starts.
+    clock.advance(2 * SECOND);
+    eventually("m2 idle", || state(&host.registry.peek()["machines"].as_array().unwrap().clone(), "m2").0 == "idle").await;
+    get(&host).await;
+    assert_eq!((starts(&sessions, "m1"), starts(&sessions, "m2"), starts(&sessions, "m3")), (1, 1, 1));
+}
+
+/// A start already under way when Core's shutdown is sent: its session is
+/// closed as soon as it is registered, its gate stays closed until a real
+/// wait, and no start after it is tried.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_under_way_as_core_shuts_down_is_closed_at_once_and_its_gate_stays_closed() {
+    let (host, _clock, sessions) = lab(vec![machine("m1", "box-a", "/srv/a"), machine("m2", "box-b", "/srv/b")]);
+    let (shutdown, watched) = watch::channel(false);
+    host.registry.follow_shutdown(watched);
+    *host.on_start.lock().unwrap() = Some(Box::new(move || {
+        shutdown.send_replace(true);
+    }));
+    get(&host).await;
+    assert_eq!((starts(&sessions, "m1"), starts(&sessions, "m2")), (1, 0));
+    assert!(closed(&sessions, "m1", 0));
+    assert!(!with(&sessions, "m1", 0, |fake| fake.reap.is_reaped()));
+    // Its end is still waited for, and nothing is taken for reaped.
+    let closing = tokio::spawn({ let host = host.clone(); async move { host.registry.close_all(Closing::Shutdown, Duration::MAX).await } });
+    settle().await;
+    end(&sessions, "m1", 0, After::Stop, Some(Code::UncleanExit), false);
+    settle().await;
+    assert!(!closing.is_finished());
+    with(&sessions, "m1", 0, |fake| fake.reaped.send_replace(true));
+    let done = tokio::time::timeout(Duration::from_secs(5), closing).await.expect("ended once reaped").unwrap();
+    assert_eq!(done, Closed { waited: 1, unreaped: 0 });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

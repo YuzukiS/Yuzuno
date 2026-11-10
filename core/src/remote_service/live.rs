@@ -286,6 +286,12 @@ async fn refused() -> Response {
 }
 
 impl Workspace {
+    /// Core's shutdown watch, which every way Core stops sends true on
+    /// (main.rs, the update's Stop).
+    pub fn follow_core_shutdown(&self, shutdown: tokio::sync::watch::Receiver<bool>) {
+        self.machine_live.follow_shutdown(shutdown);
+    }
+
     /// Core ends: every machine's remote session is asked to close, and they
     /// get 14 s together. Returns how many children were still unreaped.
     pub async fn close_remote_sessions(&self) -> usize {
