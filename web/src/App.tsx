@@ -110,8 +110,6 @@ import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
 import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
-import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
-import { publishReading, readHandoff } from "./reading-handoff-api";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
 import { ConversationSearch } from "./ConversationSearch";
 import { hasAgentContent, isCompacting } from "./conversation-blocks";
@@ -723,9 +721,8 @@ export function App() {
   const [readBy, setReadBy] = useState<ReadBy>("inputs");
   const [readingTurn, setReadingTurn] = useState<string>();
   // A message link (T-166) or a saved reading position opens like a source.
-  // `progress`: a place shared from another browser (T-170), restored by how
-  // far into the message it was; `thread`: the native session it was read in.
-  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number; progress?: number; thread?: string; where?: "desktop" | "browser" }) | null>(null);
+  // `thread`: the native session it was read in.
+  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number; thread?: string }) | null>(null);
   const [sourceJump, setSourceJump] = useState(false);
   // An executor's session has two tabs (T-43 S3): its Overview, the one it
   // opens on, and its Conversation. Each executor keeps the one last chosen.
@@ -2050,34 +2047,6 @@ export function App() {
       openReportLink(link, undefined, fromAddress);
     } else openAppLink(incomingLink);
   }, [incomingLink, workspace]);
-  // Another browser's place in the open conversation (T-170): offered, never
-  // applied by itself. Read when it opens or the page shows again; an answer
-  // for another Agent or Workspace, or an older ask, is dropped.
-  const published = useRef(new Map<string, string>());
-  const [readingOffer, setReadingOffer] = useState<{ agentId: string; workspaceId: string; handoff: Handoff } | null>(null);
-  const offerAsk = useRef("");
-  useEffect(() => {
-    setReadingOffer(null);
-    if (!workspaceId || previewMode || !selected || homeOpen || listShown) return;
-    const agentId = selected, ws = workspaceId;
-    let asks = 0;
-    const ask = () => {
-      if (document.visibilityState === "hidden") return;
-      const token = `${ws}\n${agentId}\n${++asks}`;
-      offerAsk.current = token;
-      void readHandoff(ws, agentId).then((handoff) => {
-        if (offerAsk.current !== token) return;
-        setReadingOffer(offerable(ws, agentId, handoff, readingPositions?.get(agentId) ?? null) ? { agentId, workspaceId: ws, handoff } : null);
-      });
-    };
-    ask();
-    const visible = () => { if (document.visibilityState === "visible") ask(); };
-    document.addEventListener("visibilitychange", visible);
-    return () => {
-      offerAsk.current = "";
-      document.removeEventListener("visibilitychange", visible);
-    };
-  }, [workspaceId, selected, homeOpen, listShown, readingPositions]);
   // After a reload, the shown conversation opens where it was left.
   useEffect(() => {
     if (initialReading.current || !workspace || !selected || homeOpen || incomingLink) return;
@@ -2093,13 +2062,6 @@ export function App() {
       if (!reading.current) return;
       const { agentId, position } = reading.current;
       readingPositions?.set(agentId, position);
-      // The same place for the user's other browsers (T-170), once per change.
-      const shared = position.mode === "latest" ? "latest" : JSON.stringify([position.turnId, position.itemId, position.threadId, position.progress]);
-      const key = `${workspaceId}\n${agentId}`;
-      if (workspaceId && !previewMode && published.current.get(key) !== shared) {
-        published.current.set(key, shared);
-        publishReading(workspaceId, agentId, position, isNative ? "desktop" : "browser");
-      }
     };
     const hidden = () => { if (document.visibilityState === "hidden") save(); };
     window.addEventListener("pagehide", save);
@@ -2264,11 +2226,7 @@ export function App() {
         // Where the user left it, not just its start. Measured, since
         // scrollIntoView keeps the pane's scroll padding above the target.
         if (catchupSource.restore !== undefined && scroll.current) {
-          // Another screen's place: as far into the message, still in view.
-          const offset = catchupSource.progress !== undefined
-            ? restoredOffset(catchupSource.progress, target.getBoundingClientRect().height, scroll.current.clientHeight)
-            : catchupSource.restore;
-          scroll.current.scrollTop += target.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - offset;
+          scroll.current.scrollTop += target.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - catchupSource.restore;
         }
         target.focus({ preventScroll: true });
         // Landed on the mark already there (the same message again): its ring plays again.
@@ -2530,7 +2488,7 @@ export function App() {
     item: CatchupItem,
     origin: "home" | "rail" = "home",
     openDetails = false,
-    extra: { link?: MessageLink; restore?: number; progress?: number; thread?: string; where?: "desktop" | "browser" } = {},
+    extra: { link?: MessageLink; restore?: number; thread?: string } = {},
   ) {
     setPhoneList(false);
     revealAgent(workspace?.agents.find((a) => a.id === item.agentId));
@@ -2575,27 +2533,6 @@ export function App() {
       );
     else
       openCatchupSource({ ...source, id: target.requestId, kind: "pending", title: "Pending request" });
-  }
-  /** Continue: opens another browser's place through the usual restore. It
-   * marks nothing read and keeps this browser's own saved place until the
-   * user leaves from the new one. */
-  function continueReading() {
-    const offer = readingOffer;
-    if (!offer || offer.agentId !== selected) return;
-    markOfferHandled(offer.workspaceId, offer.agentId, offer.handoff.version);
-    setReadingOffer(null);
-    const owner = workspace?.agents.find((a) => a.id === offer.agentId);
-    if (!owner || !offer.handoff.turnId) return;
-    openCatchupSource(
-      { id: `handoff:${owner.id}`, agentId: owner.id, agentName: owner.name, kind: "progress",
-        title: offer.handoff.label === "desktop" ? "Where you were reading in the desktop app" : "Where you were reading in another browser",
-        body: "", turnId: offer.handoff.turnId, itemId: offer.handoff.itemId, seq: owner.lastSeq },
-      "rail", false, { restore: 0, progress: offer.handoff.progress ?? 0, thread: offer.handoff.threadId, where: offer.handoff.label },
-    );
-  }
-  function dismissReading() {
-    if (readingOffer) markOfferHandled(readingOffer.workspaceId, readingOffer.agentId, readingOffer.handoff.version);
-    setReadingOffer(null);
   }
   /** Opens a saved reading position like a source, without highlighting it. */
   function restoreReading(agentId: string, saved: Extract<ReadingPosition, { mode: "anchor" }>) {
@@ -4097,16 +4034,6 @@ export function App() {
             >
               {/* Over the conversation's top, not above it: one that appears moves no text (T-19 SH:C08, CV:CW-11). */}
               <ConversationStrips>
-                {/* Over this browser's own place too, not over a link or a source being read. */}
-                {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
-                  <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
-                    <span>
-                      {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
-                    </span>
-                    <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
-                    <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
-                  </div>
-                )}
                 {/* One reading bar, and one way back to the latest in it:
                     a source being read, or the place left off. The floating
                     button stands in only when no bar is showing, so two never
@@ -4133,8 +4060,7 @@ export function App() {
                       </button>
                     )}
                     <span role="status">
-                      {source && (sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
-                        : source.restore !== undefined ? shell.leftOff
+                      {source && (sourceNotice?.(shell) || (source.restore !== undefined ? shell.leftOff
                         : source.link ? shell.linked : shell.original))}
                     </span>
                   </div>

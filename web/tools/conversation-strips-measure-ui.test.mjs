@@ -19,11 +19,11 @@ const fixture = await mkdtemp(path.join(web, "node_modules/.cache/conversation-s
 let bundle;
 try {
   const entry = path.join(fixture, "entry.tsx");
-  // As App passes them: the reading offer, then the source strip, each there or not.
+  // As App passes them: a source strip, there or not.
   await writeFile(entry, `import React from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';
 import {ConversationStrips} from ${JSON.stringify(path.join(web, "src/ConversationStrips.tsx"))};
 const root=createRoot(document.getElementById('root'));
-window.renderStrips=(n,offer,source)=>flushSync(()=>root.render(<div className="conversation-body"><ConversationStrips>{offer && <div className="source-navigation reading-offer">Offer</div>}{source && <div className="source-navigation">Linked message</div>}</ConversationStrips><p className="rendered">{n}</p></div>));`);
+window.renderStrips=(n,left,right)=>flushSync(()=>root.render(<div className="conversation-body"><ConversationStrips>{left && <div className="source-navigation">Left message</div>}{right && <div className="source-navigation">Linked message</div>}</ConversationStrips><p className="rendered">{n}</p></div>));`);
   const result = await build({ root: web, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: { write: false, lib: { entry, name: "StripsMeasure", formats: ["iife"] } } });
@@ -61,15 +61,15 @@ test("re-rendered with the strips unchanged, they read and write nothing; a stri
     for (let n = 1; n <= 3; n++) p.w.renderStrips(n, false, false);
     assert.deepEqual(p.counts(), start, "re-rendered with the strips unchanged, they measure nothing and write nothing");
     p.w.renderStrips(4, true, false);
-    const offer = p.counts();
-    assert.deepEqual(offer.writes, ["0px", "36px"], "the offer shown: written once");
+    const left = p.counts();
+    assert.deepEqual(left.writes, ["0px", "36px"], "a strip shown: written once");
     for (let n = 5; n <= 7; n++) p.w.renderStrips(n, true, false);
-    assert.deepEqual(p.counts(), offer, "and re-rendered with it unchanged, nothing again");
-    // The offer goes as the source strip comes: what shows changed, their height did not.
+    assert.deepEqual(p.counts(), left, "and re-rendered with it unchanged, nothing again");
+    // One strip goes as another comes: what shows changed, their height did not.
     p.w.renderStrips(8, false, true);
     const swapped = p.counts();
-    assert.equal(swapped.reads, offer.reads + 1, "what they show changed: measured");
-    assert.deepEqual(swapped.writes, offer.writes, "writes nothing when its height has not changed");
+    assert.equal(swapped.reads, left.reads + 1, "what they show changed: measured");
+    assert.deepEqual(swapped.writes, left.writes, "writes nothing when its height has not changed");
     p.w.renderStrips(9, true, true);
     assert.deepEqual(p.counts().writes, ["0px", "36px", "72px"], "both shown: written once");
     p.w.renderStrips(10, false, false);

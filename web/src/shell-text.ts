@@ -72,10 +72,6 @@ export const shellText = strings({
   // The conversation's own controls (T-189 slice 18): its header strip and
   // the composer's chrome. Messages, names and file names stay as written.
   conversationTools: "Conversation tools",
-  continueReading: (where: "desktop" | "browser", age: string) =>
-    `Continue where you were reading ${where === "desktop" ? "in the desktop app" : "in another browser"} · ${age}`,
-  continue: "Continue",
-  notNow: "Not now",
   backHome: "Back to Home",
   backLatest: "Back to latest",
   leftOff: "Where you left off",
@@ -86,8 +82,6 @@ export const shellText = strings({
   tryAgain: "Try again",
   linked: "Linked message",
   original: "Original source",
-  readingIn: (where: "desktop" | "browser"): string =>
-    where === "desktop" ? "Where you were reading in the desktop app" : "Where you were reading in another browser",
   earlierSession: (name: string, latest: boolean) =>
     `This message was in an earlier native session of ${name}, not the current one. Showing ${latest ? "the latest messages" : "the conversation"}.`,
   leftOffGone: "Where you left off is no longer in this conversation. Showing the latest messages.",
@@ -257,9 +251,6 @@ export const shellText = strings({
   disconnected: (name) => `${name} 已断开连接。在你重新连接之前，没有任何东西会再次启动它。`,
   endedMissing: "已作为中断结束，结果未知。重新连接即可在同一会话中继续。",
   conversationTools: "会话工具",
-  continueReading: (where, age) => `在${where === "desktop" ? "桌面应用" : "另一个浏览器"}中继续阅读上次的位置 · ${age}`,
-  continue: "继续",
-  notNow: "以后再说",
   backHome: "返回 Home",
   backLatest: "返回最新",
   leftOff: "上次读到的位置",
@@ -269,7 +260,6 @@ export const shellText = strings({
   tryAgain: "重试",
   linked: "链接的消息",
   original: "原始来源",
-  readingIn: (where) => (where === "desktop" ? "你在桌面应用中读到的位置" : "你在另一个浏览器中读到的位置"),
   earlierSession: (name, latest) =>
     `这条消息位于 ${name} 较早的原生会话中，而不是当前会话。正在显示${latest ? "最新的消息" : "此会话"}。`,
   leftOffGone: "上次读到的位置已不在此会话中。正在显示最新的消息。",

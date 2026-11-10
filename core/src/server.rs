@@ -152,7 +152,6 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::codex_terminals::router())
         .merge(crate::codex_plan::router())
         .merge(crate::claude_sessions::router())
-        .merge(crate::reading_handoff::router())
         .merge(crate::claude_checkpoints::router())
         .merge(crate::rewind::router())
         .merge(crate::opencode_agent::fork_router())

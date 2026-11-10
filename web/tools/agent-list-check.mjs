@@ -12,8 +12,7 @@
 //   the search and create buttons; the pill drops under the title only in a
 //   rail too narrow for all three. A phone's list is the whole width: one line.
 // Production bundle in an isolated browser with an explicit API fixture; no
-// Core, daily window or writes, other than the reading handoff (T-170),
-// answered and counted apart.
+// Core, daily window or writes.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
@@ -25,7 +24,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/agent-list");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], unexpected: [], readingWrites: [], screenshots: [] };
+const report = { checks: [], errors: [], unexpected: [], screenshots: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -121,12 +120,6 @@ try {
     const request = route.request();
     const url = new URL(request.url());
     assert.equal(url.hostname, "yuzuno-agent-list.test");
-    // Where this browser left an Agent (T-170): written on leaving, by design;
-    // answered and counted apart. Nothing else is written.
-    if (url.pathname === "/api/agents/a/reading") {
-      if (request.method() !== "GET") report.readingWrites.push(`${request.method()} ${url.pathname}`);
-      return route.fulfill({ json: request.method() === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
-    }
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     const json = {
       "/api/workspace": { agents, runtime: { connected: true }, defaultCwd: "/fixture" },

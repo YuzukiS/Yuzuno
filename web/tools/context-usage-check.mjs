@@ -48,9 +48,6 @@ const report = {
   dist,
   checks: [],
   browserErrors: errors,
-  // The app's own saves of where an Agent was read, once it knows its Workspace (T-170): answered, and
-  // counted apart from the mutations this check refuses.
-  readingSaves: 0,
 };
 const baseAgent = {
   cwd: "/fixture",
@@ -72,13 +69,6 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://127.0.0.1");
     if (url.pathname.startsWith("/api/")) {
-      if (request.method === "PUT" && /^\/api\/agents\/[ab]\/reading$/.test(url.pathname)) {
-        for await (const _ of request);
-        report.readingSaves++;
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ accepted: true }));
-        return;
-      }
       requests.push({ method: request.method, path: url.pathname });
       assert.equal(request.method, "GET", "UI must not send mutations");
       if (url.pathname === "/api/events") {
