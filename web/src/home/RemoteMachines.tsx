@@ -68,8 +68,11 @@ function useMachineLive(): View {
         const data = await readMachineLive(controller.signal);
         // Aborted or unmounted: this answer is not this view's to show.
         if (stopped || controller.signal.aborted) return;
+        // An older Core or a test fixture may answer without a list: it is
+        // no machines, not a crash.
+        const machines = Array.isArray(data?.machines) ? data.machines : [];
         last = performance.now();
-        setView({ phase: "live", data, at: data.machines[0]?.observedAt ?? "", reason: "" });
+        setView({ phase: "live", data: { machines }, at: machines[0]?.observedAt ?? "", reason: "" });
       } catch (error) {
         // Our own deadline (or the unmount) is not Core's failure: the
         // watchdog turns six seconds without an answer into unknown.
@@ -142,17 +145,26 @@ const DISK_BUSY = new Set(["busy", "pending", "timeout", "unanswered"]);
 
 /** One reading: its label, its value, and a small tag where one applies. An
  * unknown is never written as 0, and reading is not the same as unknown. */
-function Fact({ name, label, value, tag, tagTitle }: { name: string; label: string; value: string; tag?: string; tagTitle?: string }) {
+function Fact({
+  name,
+  label,
+  value,
+  tag,
+  tagTip,
+}: {
+  name: string;
+  label: string;
+  value: string;
+  tag?: string;
+  tagTip?: ReactNode;
+}) {
   const t = useStrings(homeText);
   const state = value === UNKNOWN ? " is-unknown" : value === t.remoteReading ? " is-reading" : "";
+  const badge = tag ? <span className="home-remote-tag">{tag}</span> : null;
   return (
     <span className={`home-fact${state}`} data-remote-fact={name}>
       {label} <strong>{value === UNKNOWN ? t.unknown : value}</strong>
-      {tag && (
-        <span className="home-remote-tag" title={tagTitle}>
-          {tag}
-        </span>
-      )}
+      {badge && tagTip ? <Tip content={tagTip}>{badge}</Tip> : badge}
     </span>
   );
 }
@@ -217,12 +229,14 @@ function Row({
   } else if (sameAs) why = sameAs;
   return (
     <div className={`home-remote-row is-${state}`} data-machine-id={machine.id}>
-      <div className="home-remote-name" title={machine.name}>
-        {machine.name}
-        <span className="home-remote-platform">
-          {machine.platform ? t.remotePlatform[machine.platform] : t.unknown}
-        </span>
-      </div>
+      <Tip content={<TipText title={machine.name} />} cut>
+        <div className="home-remote-name">
+          {machine.name}
+          <span className="home-remote-platform">
+            {machine.platform ? t.remotePlatform[machine.platform] : t.unknown}
+          </span>
+        </div>
+      </Tip>
       <div className="home-remote-chip">
         <span className="home-remote-dot" aria-hidden />
         {t.remoteState[state]}
@@ -240,7 +254,7 @@ function Row({
               label={t.remoteMemory}
               value={value(memory ? overTotal(mebibytes(memory.usedMiB), mebibytes(memory.totalMiB)) : UNKNOWN)}
               tag={memory?.estimate ? t.remoteEstimate : undefined}
-              tagTitle={memory?.estimate ? t.remoteEstimateTitle : undefined}
+              tagTip={memory?.estimate ? <TipText body={t.remoteEstimateTitle} /> : undefined}
             />
             <Fact
               name="Disk"
@@ -294,7 +308,7 @@ function RemoteMachinesView({
         <h3>{t.otherMachines}</h3>
         {status && (
           <Tip content={<TipText body={status} />} cut>
-            <span className="home-remote-status" role="alert">
+            <span className="home-remote-status" role="status">
               {status}
             </span>
           </Tip>

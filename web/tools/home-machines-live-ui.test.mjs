@@ -222,7 +222,7 @@ test("each live state and reading is drawn from /api/machine-live: platform, CPU
     assert.equal(row("m1").querySelector(".home-remote-name .home-remote-platform").textContent, "Linux");
     assert.equal(row("m2").querySelector(".home-remote-name .home-remote-platform").textContent, "macOS");
     assert.equal(row("m2").querySelector(".home-remote-tag").textContent, "estimated");
-    assert.match(row("m2").querySelector(".home-remote-tag").getAttribute("title"), /macOS has no MemAvailable/);
+    assert.equal(row("m2").querySelector(".home-remote-tag").getAttribute("title"), null, "the explanation is a Tip, not a native title");
     assert.match(row("m2").querySelector(".home-remote-why").textContent, /build-box.*does not share this connection/);
     assert.match(row("m4").querySelector(".home-remote-why").textContent, /Automatic retry at/);
     const unclean = row("m5").querySelector(".home-remote-why").textContent;

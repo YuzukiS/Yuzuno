@@ -1164,7 +1164,7 @@ try {
     assert.doesNotMatch(remoteText, /\bJobs?\b|\bAgents?\b/, "no Jobs or Agents claim in the machine card");
     assert.doesNotMatch(remoteText, /\bPR\s*\d|\bS[1-6]\b/, "no stage or PR name");
     const long = row("build-box").locator(".home-remote-name");
-    assert.equal(await long.getAttribute("title"), longMachineName, "the whole name is in its tip");
+    assert.match(((await tipText(page, long)) ?? "").replace(/\n/g, " "), new RegExp(longMachineName), "the whole name is in its tip");
     const overflow = async () =>
       page.evaluate(() => {
         const card = document.querySelector(".home-machines");
