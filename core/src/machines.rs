@@ -103,14 +103,18 @@ impl Store {
 
     /// An SSH machine's check, kept only while the machine is still the one
     /// it reached: an edit or removal during a check (which can take many
-    /// seconds) leaves it describing nothing stored, so it is refused.
+    /// seconds) leaves it describing nothing stored, so it is refused. What
+    /// the probe was given counts, data root and `contained` included: the
+    /// same fields whose change drops the last check (Store::update_machine).
     pub fn record_ssh_machine_check(&self, check: &MachineCheck, started_ms: i64, probed: &RemoteMachine) -> Result<MachineCheck> {
         let db = self.db.write()?;
         let raw: Option<String> = db.query_row(
             "SELECT data FROM machines WHERE id=?1", [&probed.id], |r| r.get(0)).optional()?;
         let Some(raw) = raw else { bail!("This machine was removed while it was being tested") };
         let stored: RemoteMachine = serde_json::from_str(&raw)?;
-        if (&stored.target, &stored.codex, &stored.default_cwd) != (&probed.target, &probed.codex, &probed.default_cwd) {
+        if (&stored.target, &stored.codex, &stored.default_cwd, stored.root(), stored.contained)
+            != (&probed.target, &probed.codex, &probed.default_cwd, probed.root(), probed.contained)
+        {
             bail!("This machine was changed while it was being tested; test it again");
         }
         upsert_check(&db, check, started_ms)
@@ -354,6 +358,8 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
     };
     // The SSH machine as this check found it stored; see record_ssh_machine_check.
     let mut probed = None;
+    // When it started, for the remote session's stop (remote_service::registry).
+    let mut ticket = None;
     if machine_id == "local" {
         let (host, harnesses, folder) = check_local(ws).await;
         result.reachable = true;
@@ -364,6 +370,7 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
         let id = machine_id.to_owned();
         let machine = ws.stored(move |store| store.machine(&id)).await.context("Machine is not registered in this Workspace")?;
         probed = Some(machine.clone());
+        ticket = Some(ws.machine_live.check_started(&machine));
         // Unknown until the machine answers.
         let unsupported = HarnessCheck { harness: "claude".into(), supported: true, ..Default::default() };
         match remote::probe(&machine).await {
@@ -382,9 +389,18 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
     }
     result.checked_at = stamp(chrono::Utc::now());
     result.duration_ms = clock.elapsed().as_millis() as u64;
-    match probed {
-        Some(machine) => ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await,
-        None => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,
+    match (probed, ticket) {
+        (Some(machine), Some(ticket)) => {
+            let made = result.clone();
+            let stored = ws.stored(move |store| store.record_ssh_machine_check(&result, millis(started), &machine)).await?;
+            // Only a check that reached the machine and is the one kept
+            // (the latest started) may end a stop there.
+            if stored.reachable && stored == made {
+                ws.machine_live.check_reached(&ticket);
+            }
+            Ok(stored)
+        }
+        _ => ws.stored(move |store| store.record_machine_check(&result, millis(started))).await,
     }
 }
 

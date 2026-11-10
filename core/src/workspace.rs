@@ -134,6 +134,9 @@ pub struct Workspace {
     pub(crate) brief_turns: crate::brief_turns::State,
     /// The previous Machine Load sample (see `machine_load`).
     pub(crate) machine_load: crate::machine_load::State,
+    /// Each SSH machine's remote session, for `/api/machine-live` (YN-83 S1;
+    /// see `remote_service::registry`).
+    pub(crate) machine_live: crate::remote_service::Registry,
     /// The host's GPUs, read in one place for the whole process (T-58).
     pub gpus: crate::gpu_sampler::GpuSampler,
     /// Project services opened in this Core (T-151); see `services`.
@@ -220,6 +223,7 @@ impl Workspace {
             results: Arc::new(crate::results::Validator::from_env()),
             brief_turns: Default::default(),
             machine_load: Default::default(),
+            machine_live: Default::default(),
             gpus: Default::default(),
             services: Default::default(),
             previews: Default::default(),

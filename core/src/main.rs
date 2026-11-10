@@ -268,6 +268,13 @@ async fn run(
     // What OpenCode's tools run outlives its process group: each OpenCode is
     // asked to end it before the Workspace goes (opencode.rs).
     opencode.opencode_stop_all().await;
+    // Each SSH machine's remote session is asked to close, all of them
+    // together within 14 s (YN-83 S1); a child not reaped by then stays
+    // with its reaper.
+    let unreaped = opencode.close_remote_sessions().await;
+    if unreaped > 0 {
+        eprintln!("Core shutdown: {unreaped} remote session(s) not yet reaped");
+    }
     drop(opencode);
     yuzuno_workspace::db::blocking(move || { store.settle_older_cores(); Ok(()) }).await?;
     Ok(())

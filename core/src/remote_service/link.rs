@@ -1,9 +1,7 @@
 //! One SSH connection to one remote session (YN-83 S1 PR4a).
 //!
-//! Nothing in Core starts a Link yet. The Workspace's registry of links,
-//! `/api/machine-live` and the Home machine card are later slices; until
-//! then this module has no production caller, and it never retries or
-//! reconnects by itself.
+//! The Workspace's registry (registry.rs) starts each Link, for
+//! `/api/machine-live`; this module never retries or reconnects by itself.
 //!
 //! [`Link::start`] spawns exactly one session, when its caller asks, from an
 //! immutable machine snapshot (target and root, validated again here), the
@@ -380,6 +378,25 @@ impl Link {
         }
     }
 
+    /// A Link with no session behind it, whose state, close and gate a test
+    /// drives (registry_tests.rs).
+    #[cfg(test)]
+    pub(crate) fn fake(generation: u64) -> (Link, FakeLink) {
+        let (reaped, gate) = watch::channel(false);
+        let (state, receiver) = watch::channel(Snapshot {
+            generation,
+            phase: Phase::Connecting,
+            hello: None,
+            load: None,
+            last_frame: None,
+            terminal: None,
+        });
+        let (close, closing) = oneshot::channel();
+        let reap = ReapGate(gate);
+        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone() };
+        (link, FakeLink { state, closing, reaped, reap })
+    }
+
     pub(crate) async fn ended(&mut self) -> Arc<Terminal> {
         if let Ok(now) = self.state.wait_for(|now| now.terminal.is_some()).await {
             if let Some(terminal) = &now.terminal {
@@ -388,6 +405,16 @@ impl Link {
         }
         std::future::pending().await
     }
+}
+
+/// What a test holds of a fake Link: its state, the close it was asked for
+/// (or the Link dropped) and the sender that opens its gate.
+#[cfg(test)]
+pub(crate) struct FakeLink {
+    pub state: watch::Sender<Snapshot>,
+    pub closing: oneshot::Receiver<()>,
+    pub reaped: watch::Sender<bool>,
+    pub reap: ReapGate,
 }
 
 /// After the session's output is done with: wait for the exit (stdout
