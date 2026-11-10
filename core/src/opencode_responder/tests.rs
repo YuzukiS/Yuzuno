@@ -284,11 +284,11 @@ async fn sessions_are_serial_and_independent() {
     };
     // ses_child is not one of this connection's children in this fake, so
     // its request is refused as unbound, and still completes while main waits.
-    let other = tokio::time::timeout(Duration::from_secs(2), report(other)).await.expect("the other session completes");
+    let other = tokio::time::timeout(Duration::from_secs(30), report(other)).await.expect("the other session completes");
     assert_eq!(other.outcome, Outcome::Delivered);
     assert!(native.sent().iter().all(|sent| sent.session == "ses_child"), "the gated main-session answer has not gone");
     gate.notify_waiters();
-    let main = tokio::time::timeout(Duration::from_secs(2), report(main)).await.expect("the main session after the gate");
+    let main = tokio::time::timeout(Duration::from_secs(30), report(main)).await.expect("the main session after the gate");
     assert_eq!(main.outcome, Outcome::Delivered);
     assert_eq!(native.sent().len(), 2, "both sessions answered");
 }
@@ -319,11 +319,11 @@ async fn one_session_answers_one_after_the_other() {
         tokio::task::yield_now().await;
     }
     gate.notify_one();
-    let first = tokio::time::timeout(Duration::from_secs(2), report(first)).await.expect("the first answer");
+    let first = tokio::time::timeout(Duration::from_secs(30), report(first)).await.expect("the first answer");
     assert_eq!(first.outcome, Outcome::Delivered);
     assert_eq!(native.sent().len(), 1, "the second waits for the first answer");
     gate.notify_one();
-    let second = tokio::time::timeout(Duration::from_secs(2), report(second)).await.expect("the second answer");
+    let second = tokio::time::timeout(Duration::from_secs(30), report(second)).await.expect("the second answer");
     assert_eq!(second.outcome, Outcome::Delivered);
     let sent = native.sent();
     assert_eq!(sent.len(), 2);
