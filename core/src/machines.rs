@@ -486,6 +486,40 @@ mod tests {
         assert!(ssh_harnesses(&probed(serde_json::json!({"claudeLoggedIn": true}))).iter().all(|h| h.harness != "codex" || h.sign_in.is_none()));
     }
 
+    /// A check reports on the machine as it was probed. Its data root and
+    /// `contained` go to the probe too, and an edit of either drops the last
+    /// check, so a check still running when either changes describes nothing
+    /// stored and must not be written back (YN-83 S1 PR4b).
+    #[test]
+    fn a_check_of_an_older_root_or_containment_is_not_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let probed = RemoteMachine {
+            id: "m1".into(), name: "Lab box".into(), target: "box-a".into(), codex: "codex".into(),
+            default_cwd: "/srv/synthetic/work".into(), data_root: Some("/srv/synthetic/root-a".into()), ..Default::default()
+        };
+        store.add_machine(&probed).unwrap();
+        let check = |started: &str| MachineCheck {
+            machine_id: "m1".into(), started_at: started.into(), checked_at: started.into(), duration_ms: 1,
+            reachable: true, error: None, host: None, harnesses: vec![], default_folder: None,
+        };
+        // The data root changes while the check runs: its result is refused.
+        let moved = RemoteMachine { data_root: Some("/srv/synthetic/root-b".into()), ..probed.clone() };
+        store.update_machine(&moved).unwrap();
+        assert!(store.record_ssh_machine_check(&check("2026-11-10T00:00:01.000Z"), 1, &probed).is_err());
+        assert!(!store.machine_checks().unwrap().contains_key("m1"));
+        // So is one that ran before the machine was contained.
+        let boxed = RemoteMachine { contained: true, ..moved.clone() };
+        store.update_machine(&boxed).unwrap();
+        assert!(store.record_ssh_machine_check(&check("2026-11-10T00:00:02.000Z"), 2, &moved).is_err());
+        assert!(!store.machine_checks().unwrap().contains_key("m1"));
+        // A check of the machine as it is stays, and the latest started one still wins.
+        let current = check("2026-11-10T00:00:04.000Z");
+        assert_eq!(store.record_ssh_machine_check(&current, 4, &boxed).unwrap(), current);
+        assert_eq!(store.record_ssh_machine_check(&check("2026-11-10T00:00:03.000Z"), 3, &boxed).unwrap(), current);
+        assert_eq!(store.machine_checks().unwrap()["m1"], current);
+    }
+
     #[test]
     fn the_sign_in_hint_names_the_host_the_folder_and_the_command() {
         let dir = "/home/u/jobs-lab/run/claude config";
