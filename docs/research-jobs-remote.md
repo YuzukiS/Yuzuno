@@ -4,6 +4,12 @@ A job can run on a registered SSH machine instead of this Core's host: `job_subm
 
 Windows on the PC this Core's WSL runs on is a built-in machine of the same kind, reached through WSL interop instead of SSH: see [Windows on this PC](#windows-on-this-pc). A Mac is an SSH machine too, in the limited mode only: see [A Mac over SSH](#a-mac-over-ssh).
 
+Home's machine card reads each registered machine too, through a separate
+status-only program: see [the remote program](remote-program.md). That session
+starts no Job and reads no Job state. A machine can answer the card while its
+Jobs path refuses, and the other way round: each path decides by its own check.
+This page is about the Jobs path only, and the card does not change it.
+
 ## How it works
 
 - **Identity.** Core reaches the machine as the Machines feature does: OpenSSH with that machine's own configuration and keys, in batch mode and with strict host keys. It sends a fixed helper (`core/src/jobs/remote_job.py`) as `python3 -c`, and passes the request as JSON on stdin. Core never reads or copies credentials, and installs nothing resident on the machine.

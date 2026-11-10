@@ -42,6 +42,20 @@ export function absolute(iso: string | null | undefined, time: TimeDisplay) {
   return Number.isFinite(at.getTime()) ? absoluteTime(time).format(at) : "";
 }
 
+const clockSeconds = timeFormatter({ hour: "2-digit", minute: "2-digit", second: "2-digit" });
+/** "14:31:40": a time of day with seconds, in this device's clock format. */
+export function clockTime(iso: string | null | undefined, time: TimeDisplay) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  return Number.isFinite(at.getTime()) ? clockSeconds(time).format(at) : "";
+}
+
+/** A used amount over its total, the unit once when both share it: "11.7 / 39.2 GiB". */
+export function overTotal(used: string, total: string) {
+  const unit = (value: string) => value.match(/ (\S+)$/)?.[1];
+  return unit(used) && unit(used) === unit(total) ? `${used.slice(0, -unit(used)!.length - 1)} / ${total}` : `${used} / ${total}`;
+}
+
 export function duration(seconds: number, language: Language = "en") {
   const [minutes, hours, days] = language === "zh-Hans" ? [" 分钟", " 小时", " 天"] : [" min", " h", " d"];
   if (seconds < 3600) return `${Math.round(seconds / 60)}${minutes}`;

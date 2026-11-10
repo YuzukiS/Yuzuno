@@ -1,10 +1,29 @@
 import { strings } from "../i18n";
-import type { Section } from "./types";
+import type { LiveMachine, Section } from "./types";
 
 type Kind = Section["kind"];
 /** An author who no longer keeps a section, by why. */
 type Away = "closed" | "deleted" | "moved";
 type Counted = "working" | "idle" | "waiting" | "error" | "offline";
+type MachineState = LiveMachine["state"] | "unknown";
+type RemoteReason =
+  | "sshUnreachable"
+  | "silent"
+  | "uncleanExit"
+  | "sshAuth"
+  | "sshHostKey"
+  | "sshFailed"
+  | "noPython"
+  | "pythonTooOld"
+  | "pythonStandIn"
+  | "platform"
+  | "rootUnsafe"
+  | "upload"
+  | "boot"
+  | "version"
+  | "protocol"
+  | "machineInvalid"
+  | "unknown";
 
 /**
  * Home's own words in the interface language (T-189): its header, Needs you,
@@ -267,6 +286,70 @@ export const homeText = strings({
   jobsRunning: (count: number) => `${count} running`,
   jobsLineLabel: (count: number, first: string) =>
     count === 1 ? `1 Job running on this machine, ${first}: open in Jobs` : `${count} Jobs running on this machine, first ${first}: open in Jobs`,
+  // The other machines (YN-83 S1): their remote sessions, below this host's own load.
+  otherMachines: "Other machines",
+  remoteState: {
+    idle: "Not connected",
+    connecting: "Connecting…",
+    online: "Online",
+    offline: "Offline",
+    unavailable: "Unavailable",
+    unknown: "Unknown",
+  } as Record<MachineState, string>,
+  remotePlatform: { Linux: "Linux", Darwin: "macOS" } as Record<"Linux" | "Darwin", string>,
+  remoteCpu: "CPU",
+  remoteMemory: "Memory",
+  remoteDisk: "Data folder free",
+  remoteReading: "Reading…",
+  remoteLiveUnavailable: "Live status is unavailable",
+  remoteGpu: "GPU",
+  remoteGpuOff: "Not enabled",
+  remoteEstimate: "estimated",
+  remoteEstimateTitle:
+    "macOS has no MemAvailable: free, speculative and inactive pages are estimated; this differs from Linux’s figure",
+  remoteReadingNote: "Reading the other machines…",
+  remoteNone: "No other machines are registered. Add one on the Machines page.",
+  remoteReadFailed: (reason: string) => `Other machines could not be read: ${reason}`,
+  remoteExpired: "No answer for 6 seconds",
+  remoteLastRead: (at: string) => `last answer ${at}`,
+  remoteLastAt: (at: string) => `last ${at}`,
+  remoteCheck: "Live status is unavailable: check the connection on the Machines page",
+  remoteRetryAt: (at: string) => `Automatic retry at ${at}`,
+  remoteMore: (count: number) => (count === 1 ? "1 more" : `${count} more`),
+  remoteMorePage: "Show them on the Machines page",
+  remoteSameLocal:
+    "The same machine as this Core host, with the same account and data folder. It does not share this connection.",
+  remoteSameAs: (name: string) =>
+    `The same machine as ${name}, with the same account and data folder. It does not share this connection.`,
+  remoteSameUnknown:
+    "The same machine as another one above, with the same account and data folder. It does not share this connection.",
+  remoteConnectingNote:
+    "The first time this Core connects, it uploads the remote program (a few tens of KB) to this machine’s data folder.",
+  remoteIdleNote: "No session is open on this machine now.",
+  remoteDiskBusy: "disk not responding",
+  remoteDiskError: "could not be read",
+  remoteReason: {
+    sshUnreachable: "SSH cannot connect right now.",
+    silent: "The remote program has not answered for 30 seconds.",
+    uncleanExit:
+      "The connection dropped, so Core cannot confirm the remote program has exited. It does not reconnect automatically, so that it is not started twice.",
+    sshAuth:
+      "SSH authentication failed. Core does not retry automatically, so that the server is not blocked by repeated attempts.",
+    sshHostKey: "SSH host key verification failed. Core does not retry automatically.",
+    sshFailed: "SSH failed for a reason Core does not recognise. Core does not retry automatically.",
+    noPython: "No usable python3 on the remote. Core does not retry automatically.",
+    pythonTooOld: "The remote python3 is too old. Core does not retry automatically.",
+    pythonStandIn:
+      "The remote has no real python3, only a system stand-in. Core does not retry automatically.",
+    platform: "The remote platform is not supported (Linux and macOS only). Core does not retry automatically.",
+    rootUnsafe: "The remote data folder is not a private folder of this account. Core does not retry automatically.",
+    upload: "The remote program was not installed correctly. Core does not retry automatically.",
+    boot: "The remote program did not start. Core does not retry automatically.",
+    version: "The remote program does not match this Core version. Core does not retry automatically.",
+    protocol: "The remote program’s answer did not follow the protocol. Core does not retry automatically.",
+    machineInvalid: "This machine’s record is not valid, so nothing can start here until it is changed.",
+    unknown: "The reason is not recognised. Core does not retry automatically.",
+  } as Record<RemoteReason, string>,
   // Repository activity.
   checks: { success: "Checks passed", failure: "Checks failed", pending: "Checks running" } as Record<"success" | "failure" | "pending", string>,
   run: {
@@ -533,6 +616,62 @@ export const homeText = strings({
   noJobs: "没有正在运行的 Job",
   jobsRunning: (count) => `${count} 个运行中`,
   jobsLineLabel: (count, first) => `此机器上有 ${count} 个 Job 在运行，第一个是 ${first}：在 Job 中打开`,
+  // 其他机器（YN-83 S1）：它们与 Core 的远端会话，显示在本机负载下面。
+  otherMachines: "其他机器",
+  remoteState: {
+    idle: "未连接",
+    connecting: "连接中…",
+    online: "在线",
+    offline: "离线",
+    unavailable: "不可用",
+    unknown: "未知",
+  },
+  remotePlatform: { Linux: "Linux", Darwin: "macOS" },
+  remoteCpu: "CPU",
+  remoteMemory: "内存",
+  remoteDisk: "数据目录可用",
+  remoteReading: "读取中",
+  remoteLiveUnavailable: "实时状态不可用",
+  remoteGpu: "GPU",
+  remoteGpuOff: "未启用",
+  remoteEstimate: "估算",
+  remoteEstimateTitle: "macOS 没有 MemAvailable：按空闲、推测和非活跃页估算，和 Linux 的算法不同",
+  remoteReadingNote: "正在读取其他机器…",
+  remoteNone: "没有登记其他机器。可在“机器”页添加。",
+  remoteReadFailed: (reason) => `读取其他机器失败：${reason}`,
+  remoteExpired: "6 秒没有成功的回答",
+  remoteLastRead: (at) => `上次成功回答 ${at}`,
+  remoteLastAt: (at) => `上次 ${at}`,
+  remoteCheck: "实时状态不可用，请到“机器”页检查连接",
+  remoteRetryAt: (at) => `${at} 自动重试`,
+  remoteMore: (count) => `还有 ${count} 台`,
+  remoteMorePage: "在“机器”页查看",
+  remoteSameLocal: "与 Core 主机是同一台机器，同一个账号和数据目录；不共用连接。",
+  remoteSameAs: (name) => `与 ${name} 是同一台机器的同一个账号和数据目录；不共用连接。`,
+  remoteSameUnknown: "与上面另一台机器是同一台机器的同一个账号和数据目录；不共用连接。",
+  remoteConnectingNote: "这个 Core 版本第一次连接时，会把一个几十 KB 的远端程序上传到这台机器的数据目录。",
+  remoteIdleNote: "这台机器现在没有活动的连接。",
+  remoteDiskBusy: "磁盘无响应",
+  remoteDiskError: "读取失败",
+  remoteReason: {
+    sshUnreachable: "SSH 暂时连不上。",
+    silent: "30 秒没有收到远端程序的回答。",
+    uncleanExit: "连接中断，无法确认远端程序已经退出；为避免重复启动，不会自动重连。",
+    sshAuth: "SSH 认证失败。为避免被服务器封禁，不会自动重试。",
+    sshHostKey: "SSH 主机密钥校验失败。不会自动重试。",
+    sshFailed: "SSH 连接失败，原因无法识别。为安全起见不会自动重试。",
+    noPython: "远端没有可用的 python3。不会自动重试。",
+    pythonTooOld: "远端的 python3 版本太旧。不会自动重试。",
+    pythonStandIn: "远端没有真正的 python3（可能是系统的占位命令）。不会自动重试。",
+    platform: "远端平台不受支持（只支持 Linux 和 macOS）。不会自动重试。",
+    rootUnsafe: "远端数据目录不是这个账号独占的私有目录。不会自动重试。",
+    upload: "远端程序没有正确安装。不会自动重试。",
+    boot: "远端程序没有启动。不会自动重试。",
+    version: "远端程序与这个 Core 版本不一致。不会自动重试。",
+    protocol: "远端程序的回答不符合约定的协议。不会自动重试。",
+    machineInvalid: "这台机器的记录无效；修改之前不会在这里启动。",
+    unknown: "原因无法识别。为安全起见不会自动重试。",
+  },
   checks: { success: "检查通过", failure: "检查失败", pending: "检查运行中" },
   run: {
     running: "运行中",

@@ -164,6 +164,8 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     }
     if (url.endsWith("/api/home")) return respond(state.home);
     if (url.endsWith("/api/machine-load")) return respond(load());
+    // Home's other machines (YN-83 S1): none registered here, so the card only says so.
+    if (url.endsWith("/api/machine-live")) return respond({ machines: [] });
     if (url.endsWith("/api/home/order")) {
       state.home.order = request.body.projectIds;
       return respond({ order: request.body.projectIds });

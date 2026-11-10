@@ -580,6 +580,7 @@
   gap: 6px;
   font-size: calc(11px + var(--font-adjust, 3px));
   font-weight: 600;
+  white-space: nowrap;
 }
 .home-machines-manage {
   margin-right: auto;
@@ -788,6 +789,153 @@ button.home-machine-job-line:focus-visible {
   overflow: hidden;
   color: var(--home-ink-2);
   text-overflow: ellipsis;
+}
+
+/* Other machines (YN-83 S1): one row per registered SSH machine, below this
+   host's own load. The local area above keeps its own layout and reading. */
+.home-remote-machines {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.home-remote-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.home-remote-head h3 {
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-remote-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-error-ink);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-remote-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 150px) 88px minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+  padding: 7px 0;
+  border-top: 1px dashed var(--line);
+}
+.home-remote-row:first-of-type {
+  border-top: 0;
+}
+.home-remote-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-remote-platform {
+  display: block;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+.home-remote-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.home-remote-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--home-ink-2);
+}
+.home-remote-row.is-online .home-remote-dot {
+  background: var(--state-working, var(--green));
+}
+.home-remote-row.is-offline .home-remote-dot {
+  background: var(--state-waiting, var(--yellow));
+}
+.home-remote-row.is-unavailable .home-remote-dot {
+  background: var(--home-error-ink, var(--bad));
+}
+.home-remote-row.is-connecting .home-remote-dot {
+  animation: home-remote-pulse 1.2s infinite;
+}
+@keyframes home-remote-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-remote-row.is-connecting .home-remote-dot {
+    animation: none;
+  }
+}
+.home-remote-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.home-remote-tag {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+  color: var(--home-ink-2);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-style: normal;
+  white-space: nowrap;
+}
+.home-remote-why {
+  grid-column: 2 / 4;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* A check entry and the "more" entry read as links; they only navigate. */
+.home-remote-check {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.home-remote-check {
+  cursor: pointer;
+}
+.home-remote-check:hover,
+.home-remote-check:focus-visible {
+  color: var(--ink);
+}
+.home-remote-more {
+  margin: 6px 0 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+@container machines (max-width: 540px) {
+  .home-remote-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .home-remote-facts,
+  .home-remote-why {
+    grid-column: 1 / 3;
+  }
 }
 
 /* Project panels */

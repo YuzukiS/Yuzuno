@@ -237,3 +237,47 @@ export type MachineLoad = {
     memMiB: number | null;
   }[];
 };
+
+/**
+ * GET /api/machine-live (YN-83 S1): each registered SSH machine's remote
+ * session as Core has it now. Reading it records the user's interest and may
+ * start a session, so Home reads it only while the machine card is expanded
+ * and the page is visible. Unknown is null, never 0.
+ */
+export type MachineLiveState = "idle" | "connecting" | "online" | "offline" | "unavailable";
+
+export type LiveMachine = {
+  id: string;
+  name: string;
+  state: MachineLiveState;
+  /** Offline: ssh_unreachable or silent. Unavailable: a transport code. */
+  code: string | null;
+  since: string;
+  /** Only during an offline backoff: when a session may start again. */
+  retryAt: string | null;
+  /** When Core made this answer. */
+  observedAt: string;
+  /** Linux or Darwin, from the hello of a session online now. */
+  platform: "Linux" | "Darwin" | null;
+  /** Display only: `local` for this Core host, else the first machine above
+   * with the same account key. Never a shared connection. */
+  sameAs: string | null;
+  /** Null unless online. Each reading is null once it is no longer fresh. */
+  load: {
+    cpu: { pct: number; cores: number; observedAt: string } | null;
+    memory: { totalMiB: number; usedMiB: number; availableMiB: number; estimate: boolean; observedAt: string } | null;
+    disks:
+      | {
+          roles: string[];
+          totalMiB: number | null;
+          availableMiB: number | null;
+          observedAt: string | null;
+          error: string | null;
+          permanent: boolean | null;
+        }[]
+      | null;
+    gpu: { state: "off"; code: "not_enabled" };
+  } | null;
+};
+
+export type MachineLive = { machines: LiveMachine[] };
