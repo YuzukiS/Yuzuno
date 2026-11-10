@@ -17,7 +17,8 @@
 // editor ticks the kinds it takes (the last one held), and the week is asked
 // for a kind of work, a candidate that doesn't take it passed over with why.
 // YN-84 S1: that is one radio choice; YN-84 S2: accounts and keys have their
-// own page right after routing, opened by its tab, and this page links there.
+// own page right after routing, opened by its tab, and this page links there;
+// YN-84 S3: a key is added from its provider's card there.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -209,6 +210,10 @@ async function route(r) {
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+    // YN-84 S3: what Accounts & keys lists as referencing a login: the new Agent defaults and review.
+    "/api/agent-defaults": { saved: {}, builtIn: { harness: "codex", codexPermissionPreset: null, claudePermissionMode: "default" },
+      effective: { harness: { value: "codex", source: "workspace" }, codexPermissionPreset: { value: null, source: "builtin" }, claudePermissionMode: { value: "default", source: "builtin" } } },
+    "/api/pr-reviews/settings": { harness: "claude", model: "opus", source: "workspace" },
   }[path];
   if (fixed) return json(fixed);
   if (path.startsWith("/api/")) return json({});
@@ -219,8 +224,8 @@ async function route(r) {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const words = {
-  en: { settings: "Settings and updates", tab: "Executor routing", accountsTab: "Accounts & keys", title: "Accounts & keys", account1: "Account #1", addKey: "Add a key", save: "Save",
-    value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
+  en: { settings: "Settings and updates", tab: "Executor routing", accountsTab: "Accounts & keys", title: "Accounts & keys", account1: "Account #1", addKey: "Add a DeepSeek key", save: "Save",
+    value: "New DeepSeek API key: value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
     replaceToken: "Replace token", token: "Service account token",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
     saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model",
@@ -230,8 +235,8 @@ const words = {
     addCandidate: "Add a candidate", account: "Account or key", newAnthropic: "New Anthropic API key", saveKey: "Save key",
     fastOnly: "Fast work only", strongOnly: "Strong work only", workAny: "Any", workFast: "Fast", notServed: "It doesn't serve the fast tier this executor wants",
     tierStrong: "Strong work only · design, investigation, decisions, checks", tierFast: "Fast work only · building what was decided", tierBoth: "Both · as before" },
-  zh: { settings: "Settings and updates", tab: "执行者路由", accountsTab: "账号与密钥", title: "账号与密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
-    value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
+  zh: { settings: "Settings and updates", tab: "执行者路由", accountsTab: "账号与密钥", title: "账号与密钥", account1: "账号 #1", addKey: "添加 DeepSeek 的 key", save: "保存",
+    value: "新的 DeepSeek API key：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
     first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
     saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型",
@@ -501,8 +506,8 @@ async function run({ width, height, theme, lang }) {
     await press(openai.getByRole("button", { name: w.check }));
     await openai.getByText(w.notFound).waitFor({ timeout: 10_000 });
     await shot("keys");
-    // A new local key, typed (masked) and kept: never in the page.
-    await press(section.getByRole("button", { name: w.addKey }));
+    // A new local key, typed (masked) and kept: never in the page. YN-84 S3: from DeepSeek's own card.
+    await press(section.locator('.routing-add-key[data-provider="deepseek"]').getByRole("button", { name: w.addKey }));
     const value = section.getByLabel(w.value, { exact: true });
     await value.waitFor({ timeout: 10_000 });
     await value.fill(SECRET);
