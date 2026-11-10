@@ -22,14 +22,16 @@ how Jobs, Claude, Codex or MCP reach a machine, and it starts no work there.
 There is no port, no daemon and no service left behind. The session is a child
 of Core's SSH process: OpenSSH in batch mode with the machine's own
 configuration and keys, with all forwarding disabled. Its only channel is
-stdin/stdout, one JSON object per line. Nothing listens on the machine, and
-nothing survives the connection except the program file below.
+stdin/stdout, one JSON object per line. Nothing listens on the machine, and on
+a normal exit nothing survives the connection except the program file below.
+A filesystem call that does not return can leave the program blocked; see
+Limits.
 
 ## The program file
 
-- The first time a Core version connects to a machine, it uploads the program
-  to `<data root>/remote/bin/<digest>.py`, where `<data root>` is the machine's
-  data root (`~/.yuzuno` unless the machine entry names another).
+- The program is uploaded only when `<data root>/remote/bin/<digest>.py` is
+  missing or does not match its digest. An existing matching file is left in
+  place; every connection verifies it before starting the program.
 - `<digest>` is the SHA-256 of the file exactly as installed. The file is the
   fixed header `# yuzuno-remote protocol 1` plus the session source; on this
   Core it is 31,065 bytes (measured from the current source, not an estimate).

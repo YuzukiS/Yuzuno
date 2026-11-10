@@ -310,6 +310,7 @@ export const homeText = strings({
   remoteReadingNote: "Reading the other machines…",
   remoteNone: "No other machines are registered. Add one on the Machines page.",
   remoteReadFailed: (reason: string) => `Other machines could not be read: ${reason}`,
+  remoteBadAnswer: "The remote status answer could not be understood.",
   remoteExpired: "No answer for 6 seconds",
   remoteLastRead: (at: string) => `last answer ${at}`,
   remoteLastAt: (at: string) => `last ${at}`,
@@ -317,8 +318,7 @@ export const homeText = strings({
   remoteRetryAt: (at: string) => `Automatic retry at ${at}`,
   remoteMore: (count: number) => (count === 1 ? "1 more" : `${count} more`),
   remoteMorePage: "Show them on the Machines page",
-  remoteSameLocal:
-    "The same machine as this Core host, with the same account and data folder. It does not share this connection.",
+  remoteSameLocal: "The same host as this Core host. The account and data folder are not compared; it does not share this connection.",
   remoteSameAs: (name: string) =>
     `The same machine as ${name}, with the same account and data folder. It does not share this connection.`,
   remoteSameUnknown:
@@ -639,6 +639,7 @@ export const homeText = strings({
   remoteReadingNote: "正在读取其他机器…",
   remoteNone: "没有登记其他机器。可在“机器”页添加。",
   remoteReadFailed: (reason) => `读取其他机器失败：${reason}`,
+  remoteBadAnswer: "无法识别远端状态的回答。",
   remoteExpired: "6 秒没有成功的回答",
   remoteLastRead: (at) => `上次成功回答 ${at}`,
   remoteLastAt: (at) => `上次 ${at}`,
@@ -646,7 +647,7 @@ export const homeText = strings({
   remoteRetryAt: (at) => `${at} 自动重试`,
   remoteMore: (count) => `还有 ${count} 台`,
   remoteMorePage: "在“机器”页查看",
-  remoteSameLocal: "与 Core 主机是同一台机器，同一个账号和数据目录；不共用连接。",
+  remoteSameLocal: "与 Core 主机是同一台主机。账号和数据目录未作比较；不共用连接。",
   remoteSameAs: (name) => `与 ${name} 是同一台机器的同一个账号和数据目录；不共用连接。`,
   remoteSameUnknown: "与上面另一台机器是同一台机器的同一个账号和数据目录；不共用连接。",
   remoteConnectingNote: "这个 Core 版本第一次连接时，会把一个几十 KB 的远端程序上传到这台机器的数据目录。",

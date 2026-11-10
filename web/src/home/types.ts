@@ -264,7 +264,7 @@ export type LiveMachine = {
   sameAs: string | null;
   /** Null unless online. Each reading is null once it is no longer fresh. */
   load: {
-    cpu: { pct: number; cores: number; observedAt: string } | null;
+    cpu: { pct: number; cores: number | null; observedAt: string } | null;
     memory: { totalMiB: number; usedMiB: number; availableMiB: number; estimate: boolean; observedAt: string } | null;
     disks:
       | {

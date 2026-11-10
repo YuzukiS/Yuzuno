@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { errorText } from "../api";
@@ -36,12 +36,17 @@ const START: View = { phase: "reading", data: null, at: "", reason: "" };
  * online values after 6 s even if a request hangs. A late answer from an
  * earlier mount cannot reach this view, which starts as reading.
  */
-function useMachineLive(): View {
+function useMachineLive(invalidReason: string): View {
   const [view, setView] = useState<View>(START);
+  // The current language's words for an untrusted answer, without restarting
+  // the read when the language changes.
+  const reason = useRef(invalidReason);
+  reason.current = invalidReason;
   useEffect(() => {
     let stopped = false;
-    /** performance.now() of the last successful answer; null once stale. */
-    let last: number | null = null;
+    /** performance.now() of the last successful answer, or of this round's
+     * start until the first one: a first read that hangs still expires. */
+    let last: number | null = performance.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let inflight: AbortController | null = null;
     const expire = (reason: string) => {
@@ -68,11 +73,14 @@ function useMachineLive(): View {
         const data = await readMachineLive(controller.signal);
         // Aborted or unmounted: this answer is not this view's to show.
         if (stopped || controller.signal.aborted) return;
-        // An older Core or a test fixture may answer without a list: it is
-        // no machines, not a crash.
-        const machines = Array.isArray(data?.machines) ? data.machines : [];
+        // Only {machines: []} means no machines. Any other shape is an answer
+        // this page cannot trust: a failure, keeping the last valid rows.
+        if (!data || !Array.isArray(data.machines)) {
+          expire(reason.current);
+          return;
+        }
         last = performance.now();
-        setView({ phase: "live", data: { machines }, at: machines[0]?.observedAt ?? "", reason: "" });
+        setView({ phase: "live", data, at: data.machines[0]?.observedAt ?? "", reason: "" });
       } catch (error) {
         // Our own deadline (or the unmount) is not Core's failure: the
         // watchdog turns six seconds without an answer into unknown.
@@ -248,7 +256,11 @@ function Row({
           <span className="home-fact is-unknown">{t.remoteLiveUnavailable}</span>
         ) : online ? (
           <>
-            <Fact name="CPU" label={t.remoteCpu} value={value(cpu ? `${percent(cpu.pct)}${t.ofCores(cpu.cores)}` : UNKNOWN)} />
+            <Fact
+              name="CPU"
+              label={t.remoteCpu}
+              value={value(cpu ? `${percent(cpu.pct)}${cpu.cores == null ? "" : t.ofCores(cpu.cores)}` : UNKNOWN)}
+            />
             <Fact
               name="Memory"
               label={t.remoteMemory}
@@ -347,7 +359,8 @@ function RemoteMachinesView({
 }
 
 function RemoteMachinesLive() {
-  const view = useMachineLive();
+  const t = useStrings(homeText);
+  const view = useMachineLive(t.remoteBadAnswer);
   if (view.phase === "reading") {
     return <RemoteMachinesView rows={[]} at="" stale={false} reason="" readOnly={false} reading />;
   }

@@ -81,13 +81,13 @@ const home = () => ({
   ],
 });
 
-async function mount({ preview = false, rows = [], loadMode = "ok" } = {}) {
+async function mount({ preview = false, rows = [], loadMode = "ok", mode = "ok" } = {}) {
   const calls = [];
   const errors = [];
   const logged = [];
   const pending = [];
   let aborts = 0;
-  const state = { mode: "ok", rows, loadMode };
+  const state = { mode, rows, loadMode };
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
   vc.on("error", (...args) => logged.push(args.map(String).join(" ")));
@@ -142,6 +142,7 @@ async function mount({ preview = false, rows = [], loadMode = "ok" } = {}) {
     }
     if (url.endsWith("/api/machine-live")) {
       if (state.mode === "fail") return respond({ error: "connection lost" }, 503);
+      if (state.mode === "invalid") return respond({});
       if (state.mode === "hold") return hold(init, true);
       if (state.mode === "hold-ignore-abort") return hold(init, false);
       return respond({ machines: state.rows });
@@ -276,7 +277,7 @@ test("more than six machines: six rows, then how many more; a null reading is un
     await waitFor(() => p.doc.querySelector('[data-machine-id="here"]'), "the row with the same account as this host");
     assert.match(
       p.doc.querySelector('[data-machine-id="here"] .home-remote-why').textContent,
-      /same machine as this Core host.*does not share this connection/,
+      /same host as this Core host.*does not share this connection/,
     );
     p.state.rows = [machine({ id: "auth", name: "auth", state: "unavailable", code: "ssh_auth", platform: null })];
     await waitFor(() => p.doc.querySelector('[data-machine-id="auth"]'), "the auth failure");
@@ -305,6 +306,83 @@ test("no successful answer for 6 s hides online and its values even while a requ
     await waitFor(() => p.rows()[0]?.querySelector(".home-remote-chip")?.textContent === "Online", "a later answer restores online", 5);
     assert.equal(p.doc.querySelector(".home-remote-status"), null, "the failure line goes away");
     assert.match(p.remote().textContent, /23%/, "the values are back");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a first read that never answers becomes Unknown after 6 s, not Reading, and recovers; further timeouts keep it Unknown", async () => {
+  const p = await mount({ rows: [machine({ id: "m1", name: "build-box", load: load() })], mode: "hold" });
+  try {
+    await waitFor(() => p.pending.length > 0, "the first request held");
+    assert.match(p.remote().textContent, /Reading the other machines/);
+    await pause(140); // 7 s of the page's clock: the first read never answered
+    const status = p.doc.querySelector(".home-remote-status");
+    assert.ok(status, "a first hung read is not Reading for ever");
+    assert.match(status.textContent, /No answer for 6 seconds/);
+    assert.doesNotMatch(p.remote().textContent, /Reading the other machines/);
+    assert.equal(p.rows().length, 0, "no machine names are known yet");
+    // A consecutive timeout leaves it Unknown; it does not go back to Reading.
+    p.state.mode = "hold";
+    await waitFor(() => p.pending.length > 1, "the next request held", 5);
+    await pause(140);
+    assert.ok(p.doc.querySelector(".home-remote-status"), "still no answer, still said");
+    assert.doesNotMatch(p.remote().textContent, /Reading the other machines/);
+    p.state.mode = "ok";
+    await waitFor(() => p.rows()[0]?.querySelector(".home-remote-chip")?.textContent === "Online", "a later answer restores online", 5);
+    assert.equal(p.doc.querySelector(".home-remote-status"), null);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an answer that is not {machines: []} is a failure, not no machines; existing rows stay unknown", async () => {
+  const p = await mount({ rows: [machine({ id: "m1", name: "build-box", load: load() })], mode: "invalid" });
+  try {
+    await waitFor(() => p.doc.querySelector(".home-remote-status"), "the first invalid answer is a failure");
+    assert.match(p.doc.querySelector(".home-remote-status").textContent, /could not be understood/);
+    assert.doesNotMatch(p.remote().textContent, /No other machines/);
+    assert.equal(p.rows().length, 0);
+    // A valid answer, then an invalid one: the rows stay, as unknown.
+    p.state.mode = "ok";
+    await waitFor(() => p.rows()[0]?.querySelector(".home-remote-chip")?.textContent === "Online", "a valid answer", 5);
+    p.state.mode = "invalid";
+    await waitFor(() => p.doc.querySelector(".home-remote-status"), "the invalid answer after rows", 5);
+    assert.equal(p.rows().length, 1, "the last valid rows are kept");
+    assert.equal(p.rows()[0].querySelector(".home-remote-chip").textContent, "Unknown");
+    assert.match(p.rows()[0].querySelector(".home-fact").textContent, /last /);
+    p.state.mode = "ok";
+    await waitFor(() => p.rows()[0]?.querySelector(".home-remote-chip")?.textContent === "Online", "a later valid answer", 5);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a null core count has no cores suffix and never reads null", async () => {
+  const p = await mount({
+    rows: [machine({ id: "m1", name: "build-box", load: load({ cpu: { pct: 23, cores: null, observedAt: at(0) } }) })],
+  });
+  try {
+    await waitFor(() => p.rows().length === 1, "the reading");
+    const cpu = p.doc.querySelector('[data-remote-fact="CPU"]').textContent.trim();
+    assert.equal(cpu, "CPU 23%", "a null core count leaves the suffix out");
+    assert.doesNotMatch(cpu, /null|cores|核/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("sameAs local says only the same host, never that the account or data folder is the same", async () => {
+  const p = await mount({ rows: [machine({ id: "here", name: "also-here", sameAs: "local", load: load() })] });
+  try {
+    await waitFor(() => p.doc.querySelector('[data-machine-id="here"] .home-remote-why'), "the local note");
+    const why = p.doc.querySelector('[data-machine-id="here"] .home-remote-why').textContent;
+    assert.match(why, /same host as this Core host/);
+    assert.doesNotMatch(why, /same account|same data folder/, "local sameAs is only the host id");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

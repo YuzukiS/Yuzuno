@@ -140,6 +140,7 @@ async function mount({ copies = null } = {}) {
       return respond({ workspace: { id: "ws-lan" }, projects, agents, runtime: { connected: true }, defaultCwd: "/w" });
     if (path === "/api/home") return respond(home);
     if (path === "/api/machine-load") return respond({ at: at(0), cpu: null, memory: null, gpus: null, jobs: [] });
+    if (path === "/api/machine-live") return respond({ machines: [] });
     if (/^\/api\/projects\/[^/]+\/brief\/seen$/.test(path)) return respond({ ok: true });
     if (/^\/api\/projects\/[^/]+\/brief\/reply$/.test(path))
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t10", error: null });

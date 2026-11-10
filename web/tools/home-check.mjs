@@ -1204,6 +1204,17 @@ try {
     await sleep(250);
     assert.deepEqual(await overflow(), [], "nothing spills out at 360");
     await shot("machine-remote-zh-dark-360.png", card);
+    // The card is taller than the 360 viewport: its bottom and the "2 more"
+    // entry must still be reachable, with a screenshot that shows them.
+    await scrollHomeTo(".home-remote-more");
+    await sleep(250);
+    const moreEntry = remote.locator(".home-remote-more button");
+    assert.ok(await row("data-host").isVisible(), "the sixth row is reachable at 360");
+    assert.ok(await moreEntry.isVisible(), "the rest is reachable at 360");
+    assert.ok(await moreEntry.isEnabled(), "the rest can be opened at 360");
+    const moreBox = await moreEntry.boundingBox();
+    assert.ok(moreBox && moreBox.y >= 0 && moreBox.y + moreBox.height <= 900, "the rest is in the 360 viewport");
+    await shot("machine-remote-zh-dark-360-bottom.png");
     // No answer for more than six seconds: unknown rows with the last
     // successful answer, and no old online values.
     await setTheme("light");
