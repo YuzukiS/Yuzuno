@@ -109,7 +109,8 @@ def private_dir(path):
 def process_identity(pid):
     # Match both birth time and command/socket before trusting a persisted PID.
     result = subprocess.run(["ps", "-p", str(pid), "-o", "stat=", "-o", "lstart=", "-o", "args="],
-                            capture_output=True, text=True, timeout=5)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True, timeout=5)
     fields = result.stdout.strip().split(None, 1)
     if result.returncode != 0 or len(fields) != 2 or fields[0].startswith("Z"):
         return None
@@ -452,7 +453,8 @@ def main():
                     "home": str(Path.home())}
         try:
             codex = executable(request["codex"])
-            version = subprocess.run([codex, "--version"], capture_output=True, text=True,
+            version = subprocess.run([codex, "--version"], stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, universal_newlines=True,
                                      timeout=10, check=True).stdout.strip()
             response.update({"codex": codex, "codexVersion": version})
         except Exception as error:
@@ -490,7 +492,8 @@ def main():
                 response[key + "Error"] = "找不到 " + name
                 continue
             try:
-                version = subprocess.run([found, "--version"], capture_output=True, text=True,
+                version = subprocess.run([found, "--version"], stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, universal_newlines=True,
                                          timeout=10, check=True, env=env).stdout.strip()
                 response.update({key: found, key + "Version": version[:200]})
             except Exception as error:
@@ -500,8 +503,9 @@ def main():
                 # Whether this session can use the CLI's own login. No model
                 # call; only these two fields are kept, never account details.
                 try:
-                    status = json.loads(subprocess.run([found, "auth", "status", "--json"], capture_output=True,
-                                                       text=True, timeout=15, env=env).stdout or "null")
+                    status = json.loads(subprocess.run([found, "auth", "status", "--json"],
+                                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                       universal_newlines=True, timeout=15, env=env).stdout or "null")
                     if isinstance(status, dict) and isinstance(status.get("loggedIn"), bool):
                         response["claudeLoggedIn"] = status["loggedIn"]
                         method = status.get("authMethod")

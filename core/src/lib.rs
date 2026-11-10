@@ -98,6 +98,9 @@ mod test_alloc;
 /// Free loopback ports every test module shares (YN-20).
 #[cfg(test)]
 mod test_ports;
+/// Python 3.6 compatibility of the Jobs helpers (YN-83).
+#[cfg(test)]
+mod python_compat_tests;
 mod service_jobs;
 mod remote_images;
 pub mod results;
