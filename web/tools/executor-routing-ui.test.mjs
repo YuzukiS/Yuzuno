@@ -716,7 +716,7 @@ test("accounts unread here: said so, no account check, the saved Codex account p
   assert.match(said.textContent, /^Couldn't read claude-swap and Codex accounts \(Only from Core's own address\): until they can be read, accounts aren't checked here\./);
   assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account work · not checked yet");
   assert.equal(card(page, "cx").querySelector(".routing-fix"), null);
-  card(page, "cx").querySelector('.routing-cand-title button[aria-label^="Edit"]').click();
+  button(page, "Edit Codex · gpt-6.1-sol").click();
   await until(() => card(page, "cx").querySelector(".routing-edit"), "its editor");
   const home = [...editorField(page, "cx", "Account or key").options].find((option) => option.value === "home:work");
   assert.equal(home.textContent, "Codex account work · not checked yet", "pending, not 'not in the list'");
