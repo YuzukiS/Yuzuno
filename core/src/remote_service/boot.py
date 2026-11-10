@@ -227,9 +227,6 @@ def install(path, digest, payload):
 
 def main():
     global NONCE
-    if sys.version_info < (3, 6):
-        report("python_too_old", "python 3.6 or newer is needed")
-        return 3
     if hasattr(os, "set_blocking"):
         os.set_blocking(1, False)
     try:
@@ -248,6 +245,11 @@ def main():
         if not isinstance(digest, str) or not HEX64.fullmatch(digest):
             raise Refused("bad_request", "the digest is invalid")
         root = root_path(request.get("root"))
+        # The version refusal carries the request's nonce: Core only accepts an
+        # error line marked with the nonce it sent, so this must come after the
+        # first line is read and validated.
+        if sys.version_info < (3, 6):
+            raise Refused("python_too_old", "python 3.6 or newer is needed")
         if platform.system() not in ("Linux", "Darwin"):
             raise Refused("unsupported_platform", "only Linux and macOS are supported")
         for step in ("", "remote", os.path.join("remote", "bin")):
