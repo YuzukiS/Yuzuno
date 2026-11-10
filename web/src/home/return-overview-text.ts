@@ -3,7 +3,7 @@ import { strings } from "../i18n";
 export const returnOverviewText = strings(
   {
     title: "This visit at a glance",
-    basis: "Compared with each card’s Seen version",
+    basis: "Compared with the version of each card you last read",
     observed: (at: string) => `As of ${at}`,
     newReading: "The overview has changes",
     update: "Update overview",
@@ -13,7 +13,7 @@ export const returnOverviewText = strings(
       "Home could not refresh. This overview is from the last successful reading.",
     changes: "Cards with changes",
     changeCount: (n: number) => `${n} ${n === 1 ? "card" : "cards"}`,
-    changesNone: "No unseen card changes",
+    changesNone: "No card changes you have not read",
     replies: "Your replies",
     replyCount: (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`,
     replyProgress: (waiting: number, resolved: number) =>
@@ -24,7 +24,7 @@ export const returnOverviewText = strings(
     needsNone: "No reply or approval needed",
     needsLive: "Current requests below",
     changesHelp:
-      "Each report or status is compared with the version you explicitly marked Seen. Opening this overview marks nothing Seen.",
+      "Each report or status is compared with the version you last marked Seen or opened whole on its report page. Opening this overview marks nothing Seen.",
     repliesHelp:
       "Sent is not the same as read or acted on. These are the question’s recorded states, not task completion.",
     waiting: "Replied · awaiting handling",
@@ -56,7 +56,7 @@ export const returnOverviewText = strings(
   },
   {
     title: "本次概览",
-    basis: "按卡片的已看记录比较",
+    basis: "按你上次读过的版本比较",
     observed: (at: string) => `截至 ${at}`,
     newReading: "概览有新变化",
     update: "更新概览",
@@ -75,7 +75,7 @@ export const returnOverviewText = strings(
     needsNone: "暂无需要回复或审批的事项",
     needsLive: "下方保留当前待处理事项",
     changesHelp:
-      "每张报告或状态卡分别与您明确标记已看的版本比较。打开概览不会把卡片标记为已看。",
+      "每张报告或状态卡分别与您上次标记已看、或在报告页完整打开的版本比较。打开概览不会把卡片标记为已看。",
     repliesHelp:
       "送达不等于已读或已执行。这里显示问题卡的记录状态，不代表整个任务完成。",
     waiting: "已回复，等待处理",

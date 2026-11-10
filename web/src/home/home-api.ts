@@ -83,7 +83,7 @@ export type OpenedRecord = { projectId: string; sectionId: number; key: string; 
 export const markOpened = (projectId: string, receipt: OpenedReceipt) =>
   post<OpenedRecord>(`${project(projectId)}/opened`, receipt);
 
-export const deferSection =(projectId: string, key: string, until: string) =>
+export const deferSection = (projectId: string, key: string, until: string) =>
   post<unknown>(`${project(projectId)}/defer`, { key, until });
 
 export const postReply = (projectId: string, input: HomeReplyInput) =>
