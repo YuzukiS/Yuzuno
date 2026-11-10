@@ -118,6 +118,8 @@ async function open(state, viewport, { label, widgetsHidden = false } = {}) {
       "/api/home": path === "/api/home" ? homeRead(state) : null, "/api/machine-load": machineLoad,
       "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
       "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+      // The Agent list's waits (YN-51): none here.
+      "/api/waits/live": { agents: {} },
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
