@@ -678,7 +678,8 @@ const note = (page, words) => [...page.document.querySelectorAll(".routing-crede
 test("keys unread here: the page says so, checks no key, and calls the saved one pending, not missing (YN-84 S2)", async () => {
   const page = mount(core({ keys: null }));
   await opened(page);
-  const said = await until(() => note(page, "Couldn't read the keys in Accounts & keys"), "the keys note");
+  await until(() => note(page, "Couldn't read the keys in Accounts & keys"), "the keys note");
+  const said = note(page, "Couldn't read the keys in Accounts & keys");
   assert.match(said.textContent, /^Couldn't read the keys in Accounts & keys \(Only from Core's own address\): until they can be read, keys aren't checked here and can't be added here\./);
   assert.ok(button(page, "Manage accounts & keys", said), "with the way to the page that manages them");
   assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key deepseek-main", "pending, not 'not added yet'");
@@ -697,9 +698,10 @@ test("keys unread here: the page says so, checks no key, and calls the saved one
 test("keys read once and a later refresh refused: the list is kept and the page says it checks what was read (YN-84 S2)", async () => {
   const page = mount(core({ keysFailAt: 2 }));
   await opened(page);
-  assert.equal(note(page, "keys"), null, "nothing said while the read holds");
+  assert.equal(note(page, "keys") ?? null, null, "nothing said while the read holds");
   page.window.dispatchEvent(new page.window.Event("yuzuno:routing-credentials-changed"));
-  const said = await until(() => note(page, "Couldn't refresh the keys in Accounts & keys"), "the stale note");
+  await until(() => note(page, "Couldn't refresh the keys in Accounts & keys"), "the stale note");
+  const said = note(page, "Couldn't refresh the keys in Accounts & keys");
   assert.match(said.textContent, /\(Only from Core's own address\): this page checks them as last read\./);
   assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key: DeepSeek · this host", "still checked by the list read before");
   assert.equal(card(page, "ds").querySelector(".routing-fix"), null);
@@ -709,9 +711,10 @@ test("keys read once and a later refresh refused: the list is kept and the page 
 test("accounts unread here: said so, no account check, the saved Codex account pending and the pool unread (YN-84 S2)", async () => {
   const page = mount(core({ view: withCodex(), accounts: null }));
   await opened(page);
-  const said = await until(() => note(page, "Couldn't read claude-swap and Codex accounts"), "the accounts note");
+  await until(() => note(page, "Couldn't read claude-swap and Codex accounts"), "the accounts note");
+  const said = note(page, "Couldn't read claude-swap and Codex accounts");
   assert.match(said.textContent, /^Couldn't read claude-swap and Codex accounts \(Only from Core's own address\): until they can be read, accounts aren't checked here\./);
-  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account cx · not checked yet");
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account work · not checked yet");
   assert.equal(card(page, "cx").querySelector(".routing-fix"), null);
   card(page, "cx").querySelector('.routing-cand-title button[aria-label^="Edit"]').click();
   await until(() => card(page, "cx").querySelector(".routing-edit"), "its editor");
@@ -730,7 +733,8 @@ test("accounts read once and a later refresh refused: the home is still known; o
   await opened(page);
   assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account: Work");
   page.window.dispatchEvent(new page.window.Event("yuzuno:routing-credentials-changed"));
-  const said = await until(() => note(page, "Couldn't refresh claude-swap and Codex accounts"), "the stale note");
+  await until(() => note(page, "Couldn't refresh claude-swap and Codex accounts"), "the stale note");
+  const said = note(page, "Couldn't refresh claude-swap and Codex accounts");
   assert.match(said.textContent, /\(Only from Core's own address\): this page checks them as last read\./);
   assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account: Work", "still what the earlier read said");
   assert.equal(card(page, "cx").querySelector(".routing-fix"), null);
@@ -740,12 +744,12 @@ test("accounts read once and a later refresh refused: the home is still known; o
 test("a Codex account the read lists without is called missing, with what to fix (YN-84 S2)", async () => {
   const page = mount(core({ view: withCodex(), homes: [] }));
   await opened(page);
-  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account cx · not in the list");
+  assert.equal(card(page, "cx").querySelector(".routing-cand-sub").textContent.trim(), "Codex account work · not in the list");
   const pill = card(page, "cx").querySelector(".routing-fix");
   assert.equal(pill.textContent, "Needs a fix");
   assert.equal(pill.getAttribute("aria-label"), "Needs a fix: edit Codex · gpt-6.1-sol");
   pill.click();
   await tick();
-  assert.match(card(page, "cx").querySelector(".routing-edit").textContent, /The Codex account cx isn't listed: add it under Accounts & keys, or choose another\./);
+  assert.match(card(page, "cx").querySelector(".routing-edit").textContent, /The Codex account work isn't listed: add it under Accounts & keys, or choose another\./);
   assert.deepEqual(page.errors, []);
 });
