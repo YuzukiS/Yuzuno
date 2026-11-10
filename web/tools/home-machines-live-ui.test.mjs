@@ -272,6 +272,12 @@ test("more than six machines: six rows, then how many more; a null reading is un
       ["unknown", "unknown", "unknown"],
       "an online reading that is null is unknown, never 0",
     );
+    p.state.rows = [machine({ id: "here", name: "also-here", sameAs: "local", load: load() })];
+    await waitFor(() => p.doc.querySelector('[data-machine-id="here"]'), "the row with the same account as this host");
+    assert.match(
+      p.doc.querySelector('[data-machine-id="here"] .home-remote-why').textContent,
+      /same machine as this Core host.*does not share this connection/,
+    );
     p.state.rows = [machine({ id: "auth", name: "auth", state: "unavailable", code: "ssh_auth", platform: null })];
     await waitFor(() => p.doc.querySelector('[data-machine-id="auth"]'), "the auth failure");
     assert.match(p.doc.querySelector('[data-machine-id="auth"] .home-remote-why').textContent, /SSH authentication failed.*not retry automatically/);
