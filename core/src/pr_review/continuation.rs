@@ -26,8 +26,9 @@ pub(super) const MAX_MILLISECONDS: u64 = 900_000;
 /// Less than this left of the parent's time can't fetch the snapshot and
 /// read anything; such a continuation is refused before it exists.
 const MIN_MILLISECONDS: u64 = 60_000;
-/// Started review rounds of one PR, a continuation included, across tasks.
-pub(super) const MAX_STARTED_ROUNDS: i64 = 2;
+/// Started review rounds of one PR, any kind and a continuation included,
+/// across tasks.
+pub(crate) const MAX_STARTED_ROUNDS: i64 = 2;
 
 pub(super) fn ledger(run: &Value) -> bool {
     run["ledger"]["version"] == LEDGER_VERSION
