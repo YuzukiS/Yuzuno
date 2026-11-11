@@ -671,6 +671,7 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     let submitted = Instant::now();
     let receiver = accepted(engine.submit(&asked("per_1", "ses_main")));
     started.reach(1).await;
+    assert!(receiver.borrow().is_none(), "the preparation still waits for the blocked judge");
     tokio::time::advance(PREPARE_LIMIT + Duration::from_secs(1)).await;
     let report = report(receiver).await;
     let (lock, cond) = &*release;
@@ -1218,6 +1219,7 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     // has no global permit.
     started.reach(FS_GLOBAL).await;
     assert_eq!(global.available_permits(), 0);
+    assert!(receivers.iter().all(|receiver| receiver.borrow().is_none()), "every preparation still waits");
     // Move past the preparation deadline: every one times out, and no
     // further worker is started for any of them.
     tokio::time::advance(PREPARE_LIMIT + Duration::from_secs(1)).await;
