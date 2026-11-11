@@ -3277,10 +3277,14 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
 #[path = "opencode_auto.rs"]
 mod auto;
 
-/// Why an executor at Auto-approve did not start: Core's own answers to its
-/// requests could not be made ready, so it was not started with weaker ones.
+/// Why an executor at Auto-approve has no working connection: Core's own
+/// answers to its requests could not be made ready, and it is not run with
+/// weaker rules. One message, the cause in its own text, so every place that
+/// shows only an error's top line (the API, `opencode/connectFailed`, the
+/// Agent's error) says why.
 fn refused_auto(error: anyhow::Error) -> anyhow::Error {
-    error.context("Core could not make its Auto-approve answers ready for this OpenCode executor, so it was not started with weaker rules")
+    anyhow!("Core did not enable its Auto-approve answers for this OpenCode executor, so it has no working connection and was not run with \
+        weaker rules: {error:#}")
 }
 
 #[path = "opencode_revert.rs"]

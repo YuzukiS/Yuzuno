@@ -503,18 +503,28 @@ hold over an `opencode.json` that allows more.
 
 #### Core answers an OpenCode executor at Auto-approve (YN-78)
 
-A local OpenCode executor at Auto-approve on Unix, served by OpenCode 2.2.5,
-starts with Core's own answers to its permission requests. None of its
-requests reaches you. Every other Agent and level starts as the table says.
+A local OpenCode executor at Auto-approve on Unix starts with Core's own
+answers to its permission requests. None of its requests reaches you.
+Every other Agent and level starts as the table says.
 
+- **Only on OpenCode 2.2.5.** Core's answers were checked against that
+  release's own source, so they are its alone. This is kept apart from the
+  release Core is otherwise verified with: verifying a newer OpenCode for
+  the rest of Core does not widen it. On any other release, an executor at
+  Auto-approve gets no working connection, and its error says which release
+  it found and that only 2.2.5 is supported. Ask you first, Full access,
+  Read only and an Agent that is not an executor are not affected.
 - **One start, all or nothing.** Before its OpenCode starts, Core works out
   the protected locations below and makes its rules and an instructions file,
   `yuzuno-rules.md` in the executor's own folder, which OpenCode loads. Once
-  OpenCode runs, Core checks its version, reads every agent's rules back
-  against each part of them, and asks OpenCode which folder and Git top it
-  works in, whose real paths are then fixed as the project's. If any part
-  fails, the executor does not start, and says why. It is never started with
-  the older, wider Auto-approve rules.
+  OpenCode's server runs, Core checks its release, reads every agent's rules
+  back against each part of them, and asks OpenCode which folder and Git top
+  it works in, whose real paths are then fixed as the project's. If any part
+  fails, the executor has no working connection, and its error says why in
+  its own text. A failure before the start leaves at most the instructions
+  file; one after it stops the server Core started, before any session or
+  Turn on it. The executor never runs with the older, wider Auto-approve
+  rules.
 - **What the rules say.** Nothing statically allows a read, a search, a
   listing or a folder outside the project: each is handed to Core, or
   denied. Core's data directory, the protected locations and `.env` files are

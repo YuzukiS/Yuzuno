@@ -438,19 +438,30 @@ async fn an_auto_executor_that_cannot_get_cores_answers_is_not_started() {
     let folder = data.join("opencode/oc");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("permission-after"), r#"[{"action":"external_directory","resource":"*","effect":"allow"}]"#).unwrap();
-    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
-    assert!(refused.contains("not started with weaker rules") && refused.contains("doesn't keep the permission level auto"), "{refused}");
+    // Each refusal says why in its own top line, as the API, the journal and
+    // the Agent's error show it (`to_string`, never `{:#}`).
+    let refused = ws.reconnect("oc").await.unwrap_err().to_string();
+    assert!(refused.contains("did not enable its Auto-approve answers") && refused.contains("not run with weaker rules")
+        && refused.contains("doesn't keep the permission level auto"), "{refused}");
     assert!(ws.opencodes.lock().unwrap().get("oc").is_none());
     std::fs::remove_file(folder.join("permission-after")).unwrap();
     std::fs::write(folder.join("version"), "2.2.6").unwrap();
-    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
-    assert!(refused.contains("OpenCode 2.2.6 is not 2.2.5"), "{refused}");
+    let refused = ws.reconnect("oc").await.unwrap_err().to_string();
+    let says = |text: &str| text.contains("did not enable its Auto-approve answers") && text.contains("this OpenCode is 2.2.6")
+        && text.contains(&format!("support OpenCode {} only", auto::SUPPORTED));
+    assert!(says(&refused), "the API's error: {refused}");
+    let error = ws.store.detail("oc").unwrap().agent.error.unwrap_or_default();
+    assert!(says(&error), "the Agent's error: {error}");
+    let failed: Value = serde_json::from_str(&ws.store.db.read().unwrap().query_row(
+        "SELECT data FROM journal WHERE agent_id='oc' AND kind='opencode/connectFailed' ORDER BY seq DESC LIMIT 1", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+    assert!(says(failed["error"].as_str().unwrap_or_default()), "opencode/connectFailed: {failed}");
+    assert!(ws.opencodes.lock().unwrap().get("oc").is_none(), "no working connection");
     std::fs::remove_file(folder.join("version")).unwrap();
     auto::TEST_ENVS.lock().unwrap().push((data.clone(), crate::opencode_protection::PathEnv {
         vars: [("HOME", std::ffi::OsString::from(""))].into_iter().collect(), ..Default::default() }));
     std::fs::remove_file(folder.join("start.json")).unwrap();
-    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
-    assert!(refused.contains("HOME is set but empty"), "{refused}");
+    let refused = ws.reconnect("oc").await.unwrap_err().to_string();
+    assert!(refused.contains("did not enable its Auto-approve answers") && refused.contains("HOME is set but empty"), "{refused}");
     assert!(!folder.join("start.json").exists(), "no server was started");
     assert!(ws.opencodes.lock().unwrap().get("oc").is_none());
 }
@@ -503,6 +514,44 @@ async fn lab_record(ws: &Arc<Workspace>, turn: &str, started: Duration) -> Value
     let d = ws.store.detail("oc").unwrap();
     json!({"turn": status, "startSeconds": started.as_secs_f64(), "tools": lab_tools(&messages), "autoAnswers": answers,
         "userRequestsJournaled": asked.len(), "pending": d.pending.len(), "agentStatus": d.agent.status, "agentError": d.agent.error})
+}
+
+/// YN-78 S4b-2: the release limit is Auto-approve's own. On another OpenCode
+/// release Core otherwise supports (2.2.6 here), only a local executor at
+/// Auto-approve is refused; an executor at ask, full or read-only, and a
+/// standing Agent at auto, start as before.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_another_opencode_release_only_an_auto_executor_is_refused() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    assert_ne!(auto::SUPPORTED, "2.2.6");
+    for (id, level, executes) in [("oc-auto", "auto", true), ("oc-ask", "ask", true), ("oc-full", "full", true),
+        ("oc-ro", crate::permission_levels::READ_ONLY, true), ("oc-standing", "auto", false)] {
+        let mut detail = agent(&dir.path().to_string_lossy());
+        detail.agent.id = id.into();
+        ws.store.insert(&detail).unwrap();
+        if executes {
+            executor(&ws, id);
+        }
+        ws.store.set_permission_level(id, Some(level)).unwrap();
+        let folder = data.join("opencode").join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("version"), "2.2.6").unwrap();
+        let started = ws.reconnect(id).await;
+        if id == "oc-auto" {
+            let refused = started.unwrap_err().to_string();
+            assert!(refused.contains("this OpenCode is 2.2.6") && refused.contains("did not enable its Auto-approve answers"), "{refused}");
+            assert!(ws.opencodes.lock().unwrap().get(id).is_none());
+        } else {
+            started.unwrap_or_else(|error| panic!("{id} at {level} starts on 2.2.6: {error:#}"));
+            let c = ws.opencodes.lock().unwrap().get(id).cloned().unwrap();
+            assert!(c.auto.is_none(), "{id}: no Core answers");
+            ws.close_agent(id).await.unwrap();
+        }
+    }
 }
 
 /// YN-78 S4b-2 lab: run only by its lab Job, never in CI (ignored). The real

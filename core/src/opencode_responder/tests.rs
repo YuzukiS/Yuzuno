@@ -159,19 +159,21 @@ impl Native for FakeNative {
             if let Some(entered) = entered {
                 entered.notify_one();
             }
-            let delay = {
-                let own = self.delays_for.lock().unwrap().get_mut(request).and_then(VecDeque::pop_front);
-                own.or_else(|| self.delays.lock().unwrap().pop_front())
-            };
-            if let Some(delay) = delay {
-                tokio::time::sleep(delay).await;
-            }
+            // The gate first, then the POST's own delay: a held POST's delay
+            // starts when the test lets it go.
             let gate = { self.gate.lock().unwrap().clone() };
             let matches_session = self.gate_for.lock().unwrap().as_deref().is_none_or(|only| only == session);
             if let Some(gate) = gate.filter(|_| matches_session) {
                 if let Ok(permit) = gate.acquire().await {
                     permit.forget();
                 }
+            }
+            let delay = {
+                let own = self.delays_for.lock().unwrap().get_mut(request).and_then(VecDeque::pop_front);
+                own.or_else(|| self.delays.lock().unwrap().pop_front())
+            };
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
             }
             let hook = { self.after_deliver.lock().unwrap().clone() };
             if let Some(hook) = hook {
@@ -445,23 +447,28 @@ async fn a_duplicate_request_joins_one_answer() {
 /// run at once.
 #[tokio::test]
 async fn sessions_are_serial_and_independent() {
-    let native = FakeNative::new();
+    let entered = Arc::new(Notify::new());
+    let native = FakeNative::new().gate_session("ses_main").on_entered(entered.clone());
     let gate = native.hold();
     let _open = OpenGate(gate.clone());
-    native.gate_session("ses_main");
     let engine = engine(native.clone(), FakeRuntime::live(), TestJudge(Arc::new(|_, _| once())));
     let main = accepted(engine.submit(&asked("per_1", "ses_main")));
+    // Main's POST is in flight, held at its gate, before the other session's request exists.
+    tokio::time::timeout(Duration::from_secs(30), entered.notified()).await.expect("main's POST entered its gate");
     let other = accepted(engine.submit(&asked("per_1", "ses_child")));
     // ses_child is not one of this connection's children in this fake, so
-    // its request is refused as unbound, and still completes while main waits.
+    // its request is refused as unbound, and is answered while main's POST
+    // is still held: the two sessions' sends are independent.
     let other = tokio::time::timeout(Duration::from_secs(30), report(other)).await.expect("the other session completes");
     assert_eq!(other.outcome, Outcome::Delivered);
     assert_eq!(other.answer, Some(Answer::Reject(Reason::Unbound(Unbound::NotThisConnection))));
-    // A permit is kept even if main's POST has not reached the gate yet.
+    assert!(main.borrow().is_none(), "main's answer is still in flight");
+    assert_eq!(native.sent().iter().map(|sent| (sent.session.as_str(), sent.request.as_str())).collect::<Vec<_>>(),
+        [("ses_main", "per_1"), ("ses_child", "per_1")], "both POSTs entered, main's first");
     gate.add_permits(1);
     let main = tokio::time::timeout(Duration::from_secs(30), report(main)).await.expect("the main session after the gate");
     assert_eq!(main.outcome, Outcome::Delivered);
-    assert_eq!(native.sent().len(), 2, "both sessions answered");
+    assert_eq!(native.sent().len(), 2, "both sessions answered once");
 }
 
 /// Two requests of one session answer one after the other, not at once.
@@ -707,9 +714,12 @@ async fn a_19s_preparation_then_a_slow_post_is_delivered() {
     let (x, a) = (report(x).await, report(a).await);
     assert_eq!((x.outcome, x.rounds), (Outcome::Delivered, 2));
     assert_eq!((a.outcome, a.rounds), (Outcome::Delivered, 1));
-    let a_post = native.sent_for("per_a")[0].at - start;
-    assert!(a_post >= Duration::from_secs(30), "a waited for x's second POST: {a_post:?}");
-    assert!(a_post < Duration::from_secs(19) + FIRST_POST_LIMIT);
+    // Anchored on the POSTs themselves: a's turn is the instant x's second
+    // POST (15 s) ends, past a's own 20 s preparation bound, within its
+    // first-POST bound.
+    let (x_sent, a_sent) = (native.sent_for("per_x"), native.sent_for("per_a"));
+    assert_eq!(a_sent[0].at, x_sent[1].at + Duration::from_secs(15), "a waited for x's second POST");
+    assert!(a_sent[0].at - start >= PREPARE_LIMIT && a_sent[0].at - start < Duration::from_secs(19) + FIRST_POST_LIMIT);
     assert_eq!(native.aborts.load(Ordering::SeqCst), 0, "no fault");
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
 }
@@ -735,21 +745,25 @@ async fn b_sends_while_a_checks_and_backs_off() {
 /// POSTs that started are counted.
 #[tokio::test(start_paused = true)]
 async fn a_first_post_that_cannot_start_in_30s_faults_the_connection() {
-    let native = FakeNative::new();
-    for request in ["per_x1", "per_x2", "per_x3"] {
-        native.delays_for(request, [Duration::from_secs(14)]);
-    }
+    // x1's POST holds the session's turn until all four are ready, so every
+    // deadline below is reached from that one release, whatever the setup's
+    // real-time waits took: x3's first POST at +15 s is well within its 30 s,
+    // b's turn would come at +45 s, past its own.
+    let native = FakeNative::new().delays_for("per_x1", [Duration::from_secs(14)]).delays_for("per_x2", [Duration::from_secs(1)])
+        .delays_for("per_x3", [Duration::from_secs(30)]);
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let runtime = FakeRuntime::live();
     runtime.ends.store(true, Ordering::SeqCst);
     let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
-    let start = Instant::now();
     let reports = in_order(&engine, &["per_x1", "per_x2", "per_x3", "per_b"]).await;
+    eventually("x1's POST holds the turn and the rest wait", || native.entered_count() == 1 && waiting(&engine) == 3).await;
+    let released = Instant::now();
+    gate.add_permits(3);
     let mut done = Vec::new();
     for receiver in reports {
         done.push(report(receiver).await);
     }
-    // x1 at 0 s and x2 at 14 s are delivered; x3 starts at 28 s; b's turn
-    // would come at 42 s, past its 30 s.
     assert_eq!((done[0].outcome, done[1].outcome), (Outcome::Delivered, Outcome::Delivered));
     assert_eq!((done[2].outcome, done[2].rounds), (Outcome::Faulted(Fault::SendExpired), 1), "x3's POST was in flight");
     assert_eq!((done[3].outcome, done[3].rounds, done[3].notice.clone()), (Outcome::Faulted(Fault::SendExpired), 0, None));
@@ -758,8 +772,10 @@ async fn a_first_post_that_cannot_start_in_30s_faults_the_connection() {
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 1);
-    let term = runtime.terminated_at.lock().unwrap().unwrap() - start;
-    assert!(term <= FIRST_POST_LIMIT + INTERRUPT_LIMIT + SETTLE_LIMIT, "{term:?}");
+    // b was ready before the release, so its expiry, and the TERM after the
+    // interrupt and settle, come within these of it.
+    let term = runtime.terminated_at.lock().unwrap().unwrap();
+    assert!(term <= released + FIRST_POST_LIMIT + INTERRUPT_LIMIT + SETTLE_LIMIT, "{:?}", term - released);
 }
 
 /// Before a reject, a Once request already waiting for the session's turn
@@ -784,22 +800,23 @@ async fn a_reject_lets_a_waiting_once_request_go_first() {
 }
 
 /// The priority window is bounded: after it, the reject goes in its own
-/// place, before promoted requests still waiting, and its first POST stays
-/// within its own deadline. Without the window it would have waited for all
-/// three (25 + 4 + 2 s, past its 30 s) and faulted.
+/// place, before promoted requests still waiting. x's POST holds the turn
+/// until r has promoted the three, so the window is measured from r's
+/// preflight and every turn below from the one release.
 #[tokio::test(start_paused = true)]
 async fn promotion_waits_only_within_its_window() {
-    let gate = Arc::new(Notify::new());
-    let native = FakeNative::new().delays_for("per_x", [Duration::from_secs(10)])
+    let preflight = Arc::new(Notify::new());
+    let native = FakeNative::new().delays_for("per_x", [Duration::from_secs(1)])
         .delays_for("per_o1", [Duration::from_secs(15)]).delays_for("per_o2", [Duration::from_secs(4)])
         .delays_for("per_o3", [Duration::from_secs(2)])
         .list(vec![json!({"id": "per_o1"}), json!({"id": "per_o2"}), json!({"id": "per_o3"})]);
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let runtime = FakeRuntime::live();
     let judge = TestJudge(Arc::new(|asked, _| if asked.id == "per_r" { reject() } else { once() }));
-    let engine = Arc::new(make(native.clone(), runtime.clone(), judge).with_preflight_gate("per_r", gate.clone()));
-    let start = Instant::now();
+    let engine = Arc::new(make(native.clone(), runtime.clone(), judge).with_preflight_gate("per_r", preflight.clone()));
     let x = accepted(engine.submit(&asked("per_x", "ses_main")));
-    eventually("x's POST", || native.entered_count() == 1).await;
+    eventually("x's POST holds the turn", || native.entered_count() == 1).await;
     let r = accepted(engine.submit(&asked("per_r", "ses_main")));
     eventually("r waits for its preflight", || waiting(&engine) == 1).await;
     // Ready one after the other, so their places are in this order.
@@ -808,7 +825,12 @@ async fn promotion_waits_only_within_its_window() {
         os.push(accepted(engine.submit(&asked(id, "ses_main"))));
         eventually("each is ready in turn", || decided(&engine, id) && waiting(&engine) == n + 2).await;
     }
-    gate.notify_one();
+    preflight.notify_one();
+    let promoted = || engine.lane("ses_main").state.lock().unwrap().waiting.values()
+        .any(|waiting| waiting.request == "per_r" && waiting.eligible && waiting.behind.is_some());
+    eventually("r has promoted the three", promoted).await;
+    let released = Instant::now();
+    gate.add_permits(5);
     let r = report(r).await;
     assert_eq!(r.outcome, Outcome::Delivered);
     for receiver in os {
@@ -817,10 +839,13 @@ async fn promotion_waits_only_within_its_window() {
     assert_eq!(report(x).await.outcome, Outcome::Delivered);
     let order: Vec<String> = native.sent().iter().map(|sent| sent.request.clone()).collect();
     assert_eq!(order, ["per_x", "per_o1", "per_r", "per_o2", "per_o3"]);
-    let r_post = native.sent_for("per_r")[0].at - start;
-    // The setup's real-time waits (`real`) add a few milliseconds before o1's turn.
-    assert!(r_post >= Duration::from_secs(25) && r_post < Duration::from_secs(25) + Duration::from_millis(100),
-        "after o1, which took its turn inside the window: {r_post:?}");
+    // Anchored on the release and the POSTs: o1 took the turn when x's 1 s
+    // POST ended, inside the window; r took it the instant o1's 15 s POST
+    // ended, the window (at most 15 s from r's preflight) over, though o2 and
+    // o3 had been promoted too.
+    let (o1_at, r_at) = (native.sent_for("per_o1")[0].at, native.sent_for("per_r")[0].at);
+    assert_eq!(o1_at, released + Duration::from_secs(1), "o1 first, promoted, when x's POST ended");
+    assert_eq!(r_at, o1_at + Duration::from_secs(15), "r right after o1, before the still-promoted o2 and o3");
     assert_eq!(native.aborts.load(Ordering::SeqCst), 0, "no fault");
 }
 

@@ -3,10 +3,10 @@
 //! activities 8121 and 8632). Part of `opencode_agent`.
 //!
 //! **Who.** A local OpenCode executor (agent_roles) whose level is `auto`, on
-//! Unix, served by the OpenCode release the binding was checked against
-//! (VERIFIED). Every other Agent and level starts exactly as before:
-//! ask, full, read-only, a standing Agent, another platform, another
-//! harness, a remote machine.
+//! Unix, served by OpenCode SUPPORTED, the release the binding was checked
+//! against. Every other Agent and level starts exactly as before: ask,
+//! full, read-only, a standing Agent, another platform, another harness, a
+//! remote machine, on any release Core otherwise supports.
 //!
 //! **One activation.** Before its server starts: the protected locations
 //! (opencode_protection), the static rules and the instructions file they
@@ -15,8 +15,11 @@
 //! top it actually works in (`GET /api/location`), whose real paths are fixed
 //! then as the project's roots. Only then is the connection given its engine,
 //! from its first event and its first snapshot on. Any part that fails fails
-//! the start, with its reason; nothing starts with the old wider Auto-approve
-//! rules, and no request of it ever reaches the user's queue meanwhile.
+//! the start, with its reason in the error's own text: before OpenCode starts
+//! (the instructions file may already be written), or after its server
+//! started for the checks, which Core then stops, before any session or
+//! Turn on it. Nothing gets a working connection with the old wider
+//! Auto-approve rules, and no request of it reaches the user's queue.
 //!
 //! **Routing.** Each `permission.asked` event of the Agent's session or a
 //! known sub-agent's, and each request a snapshot of the connection finds
@@ -32,7 +35,7 @@
 //! generation is still the current one. OpenCode's own tools still tell the
 //! model only `Unable to …`: the instructions file says why (design 2.5).
 use super::{CapturedRuntime, Connection};
-use crate::opencode::{Launch, Server, VERIFIED};
+use crate::opencode::{Launch, Server};
 use crate::opencode_permissions::{decide, Answer, Asked, Call, Calls, Decision, Rules, Wall, BUDGET};
 use crate::opencode_protection::{self, PathEnv, Planned, Protection};
 use crate::opencode_responder::{bounded_fs, Engine, Judge, Outcome, Report, Submission, PREPARE_LIMIT};
@@ -46,6 +49,12 @@ use tokio::time::Instant;
 
 /// The level whose requests Core answers here.
 pub(crate) const LEVEL: &str = "auto";
+/// The OpenCode release Core's answers were checked against: the binding's
+/// tool states and the decisions' paths follow its pinned source (revision
+/// 9bbb8ce18c80f099e0e448775f59d965ead40a21). Kept apart from
+/// `opencode::VERIFIED` on purpose: verifying a newer OpenCode for the rest
+/// of Core must not widen what these answers are trusted on.
+pub(crate) const SUPPORTED: &str = "2.2.5";
 /// The instructions file in the Agent's folder (design 2.5).
 const INSTRUCTIONS: &str = "yuzuno-rules.md";
 
@@ -162,8 +171,8 @@ fn write_instructions(path: &Path, text: &str) -> Result<()> {
 /// folder it works in for `cwd`: its version, its agents' rules, its
 /// location and the real paths of its project roots.
 pub(crate) async fn started(prepared: Prepared, server: &Server, cwd: &str) -> Result<Context> {
-    ensure!(server.version() == VERIFIED,
-        "OpenCode {} is not {VERIFIED}, the release Core's answers to its permission requests were checked against", server.version());
+    ensure!(server.version() == SUPPORTED,
+        "this OpenCode is {}; Core's Auto-approve answers support OpenCode {SUPPORTED} only", server.version());
     let managed = crate::permission_levels::OPENCODE_MANAGED;
     let managed = Path::new(managed).exists().then_some(managed);
     opencode_policy::check(&prepared.policy, LEVEL, &server.agent_rules(cwd).await?, managed)?;
