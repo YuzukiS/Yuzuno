@@ -1,4 +1,4 @@
-import type { HomeData, MachineLoad } from "./types";
+import type { HomeData, MachineLive, MachineLoad } from "./types";
 
 /** Design preview only: a small, read-only Home with no runtime behind it. */
 const markdown = (text: string) => ({
@@ -19,6 +19,88 @@ export const previewMachineLoad: MachineLoad = {
   gpus: [{ name: "Sample GPU", utilPct: 22, memUsedMiB: 3072, memTotalMiB: 16384, attribution: "unknown" }],
   jobs: [
     { id: "preview-job", name: "npm run build", agentId: "mori", agentName: "Mori", projectId: "p-app", cpuPct: 12, memMiB: 3072 },
+  ],
+};
+
+/** Design specimen only: synthetic other machines, never requested from a Core. */
+export const previewMachineLive: MachineLive = {
+  machines: [
+    {
+      id: "preview-build",
+      name: "build-box",
+      state: "online",
+      code: null,
+      since: "2026-10-16T08:58:00Z",
+      retryAt: null,
+      observedAt: "2026-10-16T09:00:00Z",
+      platform: "Linux",
+      sameAs: null,
+      load: {
+        cpu: { pct: 23, cores: 32, observedAt: "2026-10-16T09:00:00Z" },
+        memory: { totalMiB: 64307, usedMiB: 12698, availableMiB: 50176, estimate: false, observedAt: "2026-10-16T09:00:00Z" },
+        disks: [
+          {
+            roles: ["root"],
+            totalMiB: 953674,
+            availableMiB: 421888,
+            observedAt: "2026-10-16T08:59:58Z",
+            error: null,
+            permanent: null,
+          },
+        ],
+        gpu: { state: "off", code: "not_enabled" },
+      },
+    },
+    {
+      id: "preview-mac",
+      name: "lab-mac",
+      state: "online",
+      code: null,
+      since: "2026-10-16T08:57:00Z",
+      retryAt: null,
+      observedAt: "2026-10-16T09:00:00Z",
+      platform: "Darwin",
+      sameAs: "preview-build",
+      load: {
+        cpu: { pct: 8, cores: 10, observedAt: "2026-10-16T09:00:00Z" },
+        memory: { totalMiB: 32768, usedMiB: 9318, availableMiB: 15237, estimate: true, observedAt: "2026-10-16T08:59:59Z" },
+        disks: [
+          {
+            roles: ["root"],
+            totalMiB: 476837,
+            availableMiB: 225280,
+            observedAt: "2026-10-16T08:59:57Z",
+            error: null,
+            permanent: null,
+          },
+        ],
+        gpu: { state: "off", code: "not_enabled" },
+      },
+    },
+    {
+      id: "preview-laptop",
+      name: "laptop",
+      state: "connecting",
+      code: null,
+      since: "2026-10-16T08:59:10Z",
+      retryAt: null,
+      observedAt: "2026-10-16T09:00:00Z",
+      platform: null,
+      sameAs: null,
+      load: null,
+    },
+    {
+      id: "preview-old",
+      name: "old-server",
+      state: "unavailable",
+      code: "unclean_exit",
+      since: "2026-10-16T08:55:00Z",
+      retryAt: null,
+      observedAt: "2026-10-16T09:00:00Z",
+      platform: null,
+      sameAs: null,
+      load: null,
+    },
   ],
 };
 

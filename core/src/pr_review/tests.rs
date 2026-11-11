@@ -123,6 +123,7 @@ fn input(task: &str, key: &str) -> Start {
         head_sha: None,
         acknowledge_unreviewable: None,
         previous_review_id: None,
+        beyond_round_limit: None,
     }
 }
 
@@ -1154,4 +1155,261 @@ fn an_agents_dock_lists_reviews_it_asked_for_was_sent_or_has_on_its_tasks() {
     assert_eq!(row["number"], 2);
     assert_eq!(row["requestedBy"]["id"], "lead");
     assert!(row.get("findings").is_none() && row.get("notificationRecipient").is_none());
+}
+
+/// A synthetic Agent for round-limit tests.
+fn agent(s: &Store, id: &str, name: &str) {
+    let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":name,"cwd":"/workspace","model":"test",
+        "color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[],"pending":[],"artifacts":[]})).unwrap();
+    s.insert(&detail).unwrap();
+}
+
+/// The setup task's PR link, for a second task that names the same PR.
+fn link_same_pr(s: &Store, task: &str) {
+    s.github_link_object(
+        task,
+        &Repository { id: 7, full_name: "owner/repo".into() },
+        "pull",
+        1,
+        json!({"baseSha":"a".repeat(40),"headSha":"b".repeat(40)}),
+    )
+    .unwrap();
+}
+
+/// A task in a project, dispatched by Lead to Dev, with PR #1 linked.
+fn dispatched_task() -> (tempfile::TempDir, Store, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    let project = s.create_project("Review limit", Default::default()).unwrap();
+    s.github_link_repo(&project.id, &Repository { id: 7, full_name: "owner/repo".into() }).unwrap();
+    for (id, name) in [("lead", "Lead"), ("lead2", "Lead 2"), ("dev", "Dev")] {
+        agent(&s, id, name);
+    }
+    s.set_agent_project("lead", Some(&project.id)).unwrap();
+    s.set_agent_project("lead2", Some(&project.id)).unwrap();
+    crate::agent_roles::save(&s, &project.id, 0, vec!["lead".into(), "lead2".into()]).unwrap();
+    let task = s
+        .collaboration_call(None, "task_create", json!({"requestId":"dispatch-task","title":"Review rounds","projectId":project.id,"assigneeAgentId":"dev"}))
+        .unwrap()["task"]
+        .clone();
+    let id = task["id"].as_str().unwrap().to_owned();
+    s.collaboration_call(Some("lead"), "task_dispatch", json!({"requestId":"dispatch","taskId":id,"expectedVersion":task["version"],"toAgentId":"dev"}))
+        .unwrap();
+    link_same_pr(&s, &id);
+    (dir, s, id)
+}
+
+/// A full round that completed, which always counts.
+fn completed_full_round(s: &Store, task: &str, key: &str) -> Value {
+    let (mut run, _) = s.create_pr_review(None, &input(task, key), key).unwrap();
+    run["status"] = json!("completed");
+    run["conclusion"] = json!("no_findings");
+    s.save_pr_review(&run, None).unwrap();
+    run
+}
+
+/// A failed round whose record shows it reached no verdict, or one that
+/// never started: as round_limit.rs reads them (`read_source` false means it
+/// read only the change manifest).
+fn failed_round(s: &Store, task: &str, key: &str, native: bool, read_source: bool) -> Value {
+    let (mut run, _) = s.create_pr_review(None, &input(task, key), key).unwrap();
+    run["status"] = json!("failed");
+    run["reasonCodes"] = json!(["execution_failed"]);
+    run["conclusion"] = json!("unknown");
+    if native {
+        run["nativeStartedAt"] = json!("2026-11-09T00:25:15Z");
+        run["contextReads"] = if read_source {
+            json!([{"number":1,"tool":"review_changes"},{"number":2,"tool":"source_read"}])
+        } else {
+            json!([{"number":1,"tool":"review_changes"}])
+        };
+    }
+    s.save_pr_review(&run, None).unwrap();
+    run
+}
+
+fn table_counts(s: &Store) -> (i64, i64, i64) {
+    let db = s.db.read().unwrap();
+    let one = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    (
+        one("SELECT COUNT(*) FROM pr_reviews"),
+        one("SELECT COUNT(*) FROM collaboration_requests WHERE operation='review_start'"),
+        one("SELECT COUNT(*) FROM collaboration_task_activity"),
+    )
+}
+
+#[test]
+fn a_full_round_counts_toward_the_prs_two_started_rounds_across_tasks() {
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "r1");
+    completed_full_round(&s, &task, "r2");
+    let before = table_counts(&s);
+    let refused = s.create_pr_review(Some("dev"), &input(&task, "r3"), "r3").unwrap_err().to_string();
+    assert!(refused.starts_with("round_limit:"), "{refused}");
+    assert!(refused.contains("a full round would be one more than the 2 it may use"), "{refused}");
+    assert!(refused.contains("active dispatcher (beyondRoundLimit: true) or the user can start one more"), "{refused}");
+    assert!(refused.ends_with("No review was started."), "{refused}");
+    assert_eq!(table_counts(&s), before, "a refused round writes no record, receipt or activity");
+    // Idempotency comes first: an accepted request still returns its round.
+    let (again, created) = s.create_pr_review(None, &input(&task, "r2"), "ignored").unwrap();
+    assert!(!created);
+    assert_eq!(again["id"], "r2");
+    // The count is per PR across tasks, wherever the earlier rounds were made.
+    let other = s
+        .collaboration_call(None, "task_create", json!({"requestId":"same-pr","title":"Same PR"}))
+        .unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    link_same_pr(&s, &other);
+    let refused = s.create_pr_review(Some("dev"), &input(&other, "r4"), "r4").unwrap_err().to_string();
+    assert!(refused.contains("already has 2 review rounds"), "{refused}");
+}
+
+#[test]
+fn only_a_round_that_reached_no_verdict_leaves_the_full_round_limit() {
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    // Never started twice, plus one harness failure after reading only the
+    // manifest: none counts, and the note names the one without a report.
+    failed_round(&s, &task, "early1", false, false);
+    failed_round(&s, &task, "early2", false, false);
+    failed_round(&s, &task, "manifest", true, false);
+    completed_full_round(&s, &task, "r4");
+    completed_full_round(&s, &task, "r5");
+    let refused = s.create_pr_review(Some("dev"), &input(&task, "r6"), "r6").unwrap_err().to_string();
+    assert!(refused.starts_with("round_limit:"), "{refused}");
+    assert!(refused.contains("1 more ended without a report and doesn't count"), "{refused}");
+    // A source-reading harness failure is free only for the PR's first one.
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "done");
+    failed_round(&s, &task, "read1", true, true);
+    let stamp = s.pr_review_report(&task, "read1").unwrap()["roundLimit"].clone();
+    assert_eq!(stamp["counts"], false, "{stamp}");
+    failed_round(&s, &task, "read2", true, true);
+    assert_eq!(s.pr_review_report(&task, "read2").unwrap()["roundLimit"]["counts"], true);
+    let refused = s.create_pr_review(Some("dev"), &input(&task, "next"), "next").unwrap_err().to_string();
+    assert!(refused.contains("already has 2 review rounds"), "{refused}");
+    // A restart turns an unfinished round unknown, which counts.
+    let (dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "done2");
+    let (mut running, _) = s.create_pr_review(None, &input(&task, "interrupted"), "interrupted").unwrap();
+    running["status"] = json!("running");
+    s.save_pr_review(&running, None).unwrap();
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    s.recover_pr_reviews().unwrap();
+    assert_eq!(s.pr_review_report(&task, "interrupted").unwrap()["status"], "unknown");
+    let refused = s.create_pr_review(Some("dev"), &input(&task, "again"), "again").unwrap_err().to_string();
+    assert!(refused.contains("already has 2 review rounds"), "{refused}");
+}
+
+#[test]
+fn only_the_active_dispatcher_or_the_user_can_start_a_round_beyond_the_limit() {
+    let (_dir, s, task) = dispatched_task();
+    completed_full_round(&s, &task, "r1");
+    completed_full_round(&s, &task, "r2");
+    // The dispatcher must say so explicitly.
+    let refused = s.create_pr_review(Some("lead"), &input(&task, "r3"), "r3").unwrap_err().to_string();
+    assert!(refused.starts_with("round_limit:"), "{refused}");
+    // An inactive dispatcher's flag is refused too.
+    let version = s
+        .collaboration_call(Some("lead"), "task_get", json!({"taskId":task}))
+        .unwrap()["task"]["version"]
+        .clone();
+    s.collaboration_call(Some("lead2"), "task_dispatch", json!({"requestId":"dispatch-2","taskId":task,"expectedVersion":version,"toAgentId":"dev"}))
+        .unwrap();
+    let mut by_old = input(&task, "old-dispatch");
+    by_old.beyond_round_limit = Some(true);
+    let refused = s.create_pr_review(Some("lead"), &by_old, "old-dispatch").unwrap_err().to_string();
+    assert!(refused.contains("beyondRoundLimit is only for the agent that dispatched this task's active dispatch"), "{refused}");
+}
+
+#[test]
+fn beyond_the_limit_records_who_started_it_and_the_user_stays_unlimited() {
+    let (_dir, s, task) = dispatched_task();
+    completed_full_round(&s, &task, "r1");
+    completed_full_round(&s, &task, "r2");
+    let mut asked = input(&task, "r3");
+    asked.beyond_round_limit = Some(true);
+    let (run, created) = s.create_pr_review(Some("lead"), &asked, "r3").unwrap();
+    assert!(created);
+    assert_eq!(run["beyondRoundLimit"]["startedBefore"], 2);
+    assert_eq!(run["beyondRoundLimit"]["by"]["id"], "lead");
+    assert_eq!(run["beyondRoundLimit"]["by"]["kind"], "agent");
+    let mut done = run.clone();
+    done["status"] = json!("completed");
+    done["conclusion"] = json!("no_findings");
+    s.save_pr_review(&done, None).unwrap();
+    let page = s
+        .collaboration_call(None, "task_get", json!({"taskId":task,"view":"activity","limit":200}))
+        .unwrap();
+    assert!(
+        page["activities"].as_array().unwrap().iter().filter_map(|a| a["body"].as_str())
+            .any(|b| b.contains("It is beyond this PR's 2 started rounds, started by Lead.")),
+        "{page}"
+    );
+    // The user's own round over the limit opens and is marked as the user's.
+    let (user, created) = s.create_pr_review(None, &input(&task, "user-over"), "user-over").unwrap();
+    assert!(created);
+    assert_eq!(user["beyondRoundLimit"]["startedBefore"], 3);
+    assert_eq!(user["beyondRoundLimit"]["by"]["kind"], "user");
+    let mut done = user.clone();
+    done["status"] = json!("completed");
+    done["conclusion"] = json!("no_findings");
+    s.save_pr_review(&done, None).unwrap();
+    // The flag never applies to an incremental round.
+    let mut incremental = input(&task, "incremental-flag");
+    incremental.previous_review_id = Some("r1".into());
+    incremental.beyond_round_limit = Some(true);
+    let refused = s.create_pr_review(Some("lead"), &incremental, "incremental-flag").unwrap_err().to_string();
+    assert!(refused.contains("beyondRoundLimit applies only to a full round"), "{refused}");
+}
+
+#[test]
+fn an_invalid_beyond_flag_is_refused_before_the_limit_too() {
+    let (_dir, s, task) = dispatched_task();
+    // The executor isn't the dispatcher, with no round used yet.
+    let mut by_executor = input(&task, "executor-flag");
+    by_executor.beyond_round_limit = Some(true);
+    let refused = s.create_pr_review(Some("dev"), &by_executor, "executor-flag").unwrap_err().to_string();
+    assert!(refused.contains("beyondRoundLimit is only for the agent that dispatched this task's active dispatch"), "{refused}");
+    // A stale dispatch's requester is refused after the task is reassigned.
+    let version = s
+        .collaboration_call(Some("lead"), "task_get", json!({"taskId":task}))
+        .unwrap()["task"]["version"]
+        .clone();
+    s.collaboration_call(Some("lead2"), "task_dispatch", json!({"requestId":"reassign","taskId":task,"expectedVersion":version,"toAgentId":"dev"}))
+        .unwrap();
+    let mut by_inactive = input(&task, "inactive-flag");
+    by_inactive.beyond_round_limit = Some(true);
+    let refused = s.create_pr_review(Some("lead"), &by_inactive, "inactive-flag").unwrap_err().to_string();
+    assert!(refused.contains("beyondRoundLimit is only for the agent that dispatched this task's active dispatch"), "{refused}");
+}
+
+#[test]
+fn two_concurrent_full_rounds_past_the_limit_reserve_only_one() {
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "r1");
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| s.create_pr_review(Some("dev"), &input(&task, "race-a"), "race-a").is_ok());
+        let b = scope.spawn(|| s.create_pr_review(Some("dev"), &input(&task, "race-b"), "race-b").is_ok());
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_ne!(a, b, "only one round may pass the limit");
+    assert_eq!(s.list_pr_reviews(&task, None).unwrap()["reviews"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_start_without_the_new_flag_serializes_as_before() {
+    let (_dir, _s, task) = setup();
+    let plain = serde_json::to_value(input(&task, "plain")).unwrap();
+    assert!(plain.get("beyondRoundLimit").is_none(), "{plain}");
+    let parsed: Start = serde_json::from_value(json!({"requestId":"plain","taskId":task,"linkId":"7:pull:1"})).unwrap();
+    assert!(parsed.beyond_round_limit.is_none());
 }

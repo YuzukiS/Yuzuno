@@ -4,7 +4,8 @@ import { useTimeDisplay } from "../time-preferences";
 import { Cpu, Gpu, MemoryStick, Monitor } from "lucide-react";
 import { errorText } from "../api";
 import { openJobs } from "../Jobs";
-import { absolute, mebibytes, percent, UNKNOWN } from "./format";
+import { useDocumentVisible } from "../document-visible";
+import { absolute, mebibytes, overTotal, percent, UNKNOWN } from "./format";
 import { readMachineLoad } from "./home-api";
 import { useHomeNavigation } from "./home-navigation";
 import { previewMachineLoad } from "./preview-home";
@@ -12,18 +13,9 @@ import type { MachineLoad } from "./types";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
 import { Tip, TipLines, TipText } from "../Tip";
+import { RemoteMachines } from "./RemoteMachines";
 
 const POLL_MS = 2_000;
-
-function useDocumentVisible() {
-  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const change = () => setVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", change);
-    return () => document.removeEventListener("visibilitychange", change);
-  }, []);
-  return visible;
-}
 
 /** A share of the whole, as a bar segment; an unknown share draws nothing. */
 const width = (part: number | null | undefined, whole: number) =>
@@ -45,12 +37,6 @@ function Meter({
       )}
     </div>
   );
-}
-
-/** A used amount over its total, the unit once when both share it: "11.7 / 39.2 GiB". */
-function overTotal(used: string, total: string) {
-  const unit = (value: string) => value.match(/ (\S+)$/)?.[1];
-  return unit(used) && unit(used) === unit(total) ? `${used.slice(0, -unit(used)!.length - 1)} / ${total}` : `${used} / ${total}`;
 }
 
 /** Shown until the first reading arrives; not a value and not unknown. */
@@ -293,6 +279,8 @@ export function MachineWidget({
           )}
         </div>
       </div>
+      {/* Other machines: its own read, its own errors; the local load above is untouched. */}
+      <RemoteMachines readOnly={readOnly} active={visible && !collapsed} />
       </div>
     </section>
   );

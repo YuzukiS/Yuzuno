@@ -4,7 +4,7 @@
  */
 import { api, errorText, HttpError, post } from "../api";
 import type { MessageReceipt } from "../types";
-import type { HomeData, MachineLoad, Section } from "./types";
+import type { HomeData, MachineLive, MachineLoad, Section } from "./types";
 import { randomId } from "../random-id";
 
 const project = (id: string) => `/projects/${encodeURIComponent(id)}/brief`;
@@ -91,6 +91,15 @@ export const postReply = (projectId: string, input: HomeReplyInput) =>
 
 export const readMachineLoad = (signal?: AbortSignal) =>
   api<MachineLoad>("/machine-load", { signal });
+
+/**
+ * The other machines' live sessions (YN-83 S1). The GET itself records this
+ * page's interest and may start SSH sessions: read it only while the machine
+ * card is expanded and the page is visible, and abort when either stops.
+ * `api()` carries the one `X-Yuzuno-Client: desktop` header it needs.
+ */
+export const readMachineLive = (signal?: AbortSignal) =>
+  api<MachineLive>("/machine-live", { signal });
 
 /** The repositories linked to a Project (a list read; it starts no GitHub sync). */
 export const readLinkedRepositories = (projectId: string, signal?: AbortSignal) =>

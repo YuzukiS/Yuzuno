@@ -13,6 +13,10 @@ struct Step {
     attempts: u8,
     next_try: i64,
     error: Option<String>,
+    /// A review start this round authorized was refused by the PR's started
+    /// round limit. It is not retried: a person decides what happens next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit_refused: Option<String>,
 }
 impl Step {
     fn new(id: &str, round: usize, kind: &str) -> Self {
@@ -22,6 +26,7 @@ impl Step {
             attempts: 0,
             next_try: 0,
             error: None,
+            limit_refused: None,
         }
     }
 }
@@ -394,6 +399,18 @@ pub(crate) fn call(
             "Another review is running or its outcome is unknown; reconcile that retained review before enabling delivery"
         );
     }
+    // A delivery round also uses one of the PR's started rounds (YN-12 S1).
+    // This is a precheck, never a reservation: the atomic check stays in
+    // create_pr_review, and a round that loses the race records limitRefused
+    // there rather than retrying.
+    if f.rounds.last().is_some_and(|r| r.review.id.is_none()) {
+        let (started, uncounted) = crate::pr_review::store::started_rounds(db, &linked)?;
+        ensure!(
+            started < crate::pr_review::store::MAX_STARTED_ROUNDS,
+            "{} No delivery round was authorized.",
+            crate::pr_review::store::round_limit_refusal(started, uncounted, "a delivery round")
+        );
+    }
     save(db, &f)?;
     collaboration::activity(
         db,
@@ -527,6 +544,9 @@ pub(crate) fn attach_review(
     );
     ensure!(r.review.id.is_none(), "Registered review already exists");
     r.review.id = Some(id.into());
+    // A decider's beyond-limit round may attach to a round whose start the
+    // limit refused; the review now exists, so that refusal no longer holds.
+    r.review.limit_refused = None;
     save(db, &f)
 }
 
@@ -659,6 +679,14 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
             "awaiting_result",
             "Submit a task result with this exact delivery candidate to start review and CI.",
         );
+    }
+    if r.review.id.is_none() {
+        if let Some(refused) = &r.review.limit_refused {
+            return state(
+                "needs_judgment",
+                &format!("This PR's two started review rounds were used before this delivery round could start ({refused}). No reviewer ran and it isn't retried; whoever decides can start a round beyond the limit or judge without one."),
+            );
+        }
     }
     for (name, step) in [("Review", &r.review), ("CI subscription", &r.ci)] {
         if step.id.is_none() && step.attempts >= 3 {
@@ -885,6 +913,13 @@ impl Store {
         } else {
             &mut r.ci
         };
+        // A round the started-round limit refused is never retried; a person
+        // decides, as the needs_judgment state says. A review a decider did
+        // start beyond the limit has an id, and its round goes on.
+        if step.id.is_none() && step.limit_refused.is_some() {
+            tx.commit()?;
+            return Ok(None);
+        }
         if step.id.is_some() || step.attempts >= 3 || step.next_try > stamp {
             tx.commit()?;
             return Ok(None);
@@ -925,8 +960,16 @@ impl Store {
             Ok(value) => {
                 step.id = Some(text(&value, "id")?.into());
                 step.error = None;
+                step.limit_refused = None;
             }
-            Err(error) => step.error = Some(error),
+            Err(error) => {
+                // The PR's started round limit refused the start: record it
+                // distinctly, so state() reports needs_judgment and no retry.
+                if error.starts_with("round_limit:") {
+                    step.limit_refused = Some(error.clone());
+                }
+                step.error = Some(error);
+            }
         }
         save(&tx, &f)?;
         crate::ci_monitor::lifecycle::reconcile(&tx, Some(task_id))?;

@@ -78,9 +78,14 @@ fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, exce
     .collect()
 }
 
+/// Started review rounds of one PR, any kind and a continuation included,
+/// across tasks. Re-exported for the delivery flow's precheck.
+pub(crate) use super::continuation::MAX_STARTED_ROUNDS;
+
 /// Started review rounds of one PR across tasks (round_limit.rs), and how
-/// many more ended without a report and don't count.
-fn started_rounds(tx: &Connection, linked: &Value) -> Result<(i64, usize)> {
+/// many more ended without a report and don't count. A full round, an
+/// incremental round, a continuation and a delivery round all count here.
+pub(crate) fn started_rounds(tx: &Connection, linked: &Value) -> Result<(i64, usize)> {
     let rounds = pr_rounds(tx, linked["repositoryId"].as_i64(), linked["number"].as_i64(), None)?;
     let counts = super::round_limit::counts(&rounds);
     let started = counts.iter().filter(|c| **c).count() as i64;
@@ -93,12 +98,23 @@ fn started_rounds(tx: &Connection, linked: &Value) -> Result<(i64, usize)> {
 }
 
 /// The refusal's note on rounds that ended without a report.
-fn uncounted_note(uncounted: usize) -> String {
+pub(crate) fn uncounted_note(uncounted: usize) -> String {
     match uncounted {
         0 => String::new(),
         1 => " 1 more ended without a report and doesn't count.".into(),
         n => format!(" {n} more ended without a report and don't count."),
     }
+}
+
+/// The one refusal every path that counts this PR's started rounds shares.
+/// The `round_limit:` prefix lets the delivery flow recognize it when a
+/// round it authorized loses the race at startup (delivery/store.rs).
+pub(crate) fn round_limit_refusal(started: i64, uncounted: usize, what: &str) -> String {
+    format!(
+        "round_limit: This PR already has {started} review rounds that started or may have started, across tasks; {what} would be one more than the {} it may use.{}",
+        super::continuation::MAX_STARTED_ROUNDS,
+        uncounted_note(uncounted)
+    )
 }
 
 impl Store {
@@ -192,10 +208,50 @@ impl Store {
         }
         // An incremental round relies on one completed full round of this PR
         // at another head, admitted from its stored record, and counts toward
-        // the PR's started rounds shared with continuations.
+        // the PR's started rounds shared with continuations. A full round is
+        // bounded by the same count (YN-12 S1): only the user or the task's
+        // current active dispatcher, explicitly, may start one beyond it.
+        let (started, uncounted) = started_rounds(&tx, &linked)?;
+        let mut beyond = None;
         let incremental = match input.previous_review_id.as_deref() {
-            None => None,
+            None => {
+                let flag = input.beyond_round_limit == Some(true);
+                // The option belongs to one full round, and only to the user
+                // or the agent that made the task's current active dispatch.
+                // It is validated even below the limit, so an executor or an
+                // inactive dispatcher is never silently accepted.
+                let allowed = if actor.is_none() {
+                    true
+                } else {
+                    crate::collaboration_store::load_task(&tx, &task)?
+                        .dispatch
+                        .is_some_and(|d| {
+                            d.active
+                                && d.requested_by.kind == "agent"
+                                && Some(d.requested_by.id.as_str()) == actor
+                        })
+                };
+                ensure!(
+                    !flag || allowed,
+                    "beyondRoundLimit is only for the agent that dispatched this task's active dispatch, or the user. No review was started."
+                );
+                if started >= super::continuation::MAX_STARTED_ROUNDS {
+                    if flag || actor.is_none() {
+                        beyond = Some(started);
+                    } else {
+                        anyhow::bail!(
+                            "{} Report the result to whoever decides: the active dispatcher (beyondRoundLimit: true) or the user can start one more. No review was started.",
+                            round_limit_refusal(started, uncounted, "a full round")
+                        );
+                    }
+                }
+                None
+            }
             Some(earlier) => {
+                ensure!(
+                    input.beyond_round_limit != Some(true),
+                    "beyondRoundLimit applies only to a full round. No review was started."
+                );
                 let stored: Option<String> = tx
                     .query_row("SELECT data FROM pr_reviews WHERE id=?1 AND task_id=?2 AND link_id=?3", params![earlier, task, link], |r| r.get(0))
                     .optional()?;
@@ -203,12 +259,10 @@ impl Store {
                 let head = input.head_sha.as_deref().or(linked["snapshot"]["headSha"].as_str());
                 let config = serde_json::to_value(super::settings::for_task(&tx, &task)?)?;
                 super::incremental::admit(&previous, head, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No review was started."))?;
-                let (started, uncounted) = started_rounds(&tx, &linked)?;
                 ensure!(
                     started < super::continuation::MAX_STARTED_ROUNDS,
-                    "This PR already has {started} review rounds that started or may have started, across tasks; an incremental round would be one more than the {} it may use.{} Report the result to whoever decides. No review was started.",
-                    super::continuation::MAX_STARTED_ROUNDS,
-                    uncounted_note(uncounted)
+                    "{} Report the result to whoever decides. No review was started.",
+                    round_limit_refusal(started, uncounted, "an incremental round")
                 );
                 Some(previous)
             }
@@ -242,6 +296,14 @@ impl Store {
             data["previousReviewId"] = previous["id"].clone();
             data["incremental"] = super::incremental::record(previous);
             body = format!("Requested code review round {round} · {id}: an incremental review of a new head after round {}, reading what changed since, with its own budget and cost.", previous["round"]);
+        }
+        if let Some(started_before) = beyond {
+            data["beyondRoundLimit"] = json!({"startedBefore":started_before,"by":author});
+            body.push_str(&format!(
+                " It is beyond this PR's {} started rounds, started by {}.",
+                super::continuation::MAX_STARTED_ROUNDS,
+                author.name.as_str()
+            ));
         }
         tx.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'preparing',?4)", params![id,task,link,data.to_string()])?;
         let mut payload = serde_json::to_value(input)?;
@@ -318,9 +380,8 @@ impl Store {
         let (started, uncounted) = started_rounds(&tx, &linked)?;
         ensure!(
             started < super::continuation::MAX_STARTED_ROUNDS,
-            "This PR already has {started} review rounds that started or may have started, across tasks; a continuation would be one more than the {} it may use.{} Report the result to whoever decides. No continuation was started.",
-            super::continuation::MAX_STARTED_ROUNDS,
-            uncounted_note(uncounted)
+            "{} Report the result to whoever decides. No continuation was started.",
+            round_limit_refusal(started, uncounted, "a continuation")
         );
         let count: i64 = tx.query_row("SELECT COUNT(*) FROM pr_reviews WHERE task_id=?1", [&task], |r| r.get(0))?;
         ensure!(count < 1000, "This task has reached its review history limit");
