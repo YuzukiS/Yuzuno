@@ -343,6 +343,15 @@ impl Started {
     }
 }
 
+/// Tokio's timer resolution: a sleep of `d` from an instant that is not on a
+/// millisecond fires at the first tick at or after it, so up to this late.
+const TICK: Duration = Duration::from_millis(1);
+
+/// `at` is `d` after `from`, as Tokio's timers can make it.
+fn right_after(at: Instant, from: Instant, d: Duration) -> bool {
+    at >= from + d && at <= from + d + TICK
+}
+
 const GENERATION: u64 = 7;
 
 fn calls() -> Arc<Calls> {
@@ -718,7 +727,7 @@ async fn a_19s_preparation_then_a_slow_post_is_delivered() {
     // POST (15 s) ends, past a's own 20 s preparation bound, within its
     // first-POST bound.
     let (x_sent, a_sent) = (native.sent_for("per_x"), native.sent_for("per_a"));
-    assert_eq!(a_sent[0].at, x_sent[1].at + Duration::from_secs(15), "a waited for x's second POST");
+    assert!(right_after(a_sent[0].at, x_sent[1].at, Duration::from_secs(15)), "a waited for x's second POST");
     assert!(a_sent[0].at - start >= PREPARE_LIMIT && a_sent[0].at - start < Duration::from_secs(19) + FIRST_POST_LIMIT);
     assert_eq!(native.aborts.load(Ordering::SeqCst), 0, "no fault");
     assert_eq!(runtime.terminated.load(Ordering::SeqCst), 0);
@@ -844,8 +853,8 @@ async fn promotion_waits_only_within_its_window() {
     // ended, the window (at most 15 s from r's preflight) over, though o2 and
     // o3 had been promoted too.
     let (o1_at, r_at) = (native.sent_for("per_o1")[0].at, native.sent_for("per_r")[0].at);
-    assert_eq!(o1_at, released + Duration::from_secs(1), "o1 first, promoted, when x's POST ended");
-    assert_eq!(r_at, o1_at + Duration::from_secs(15), "r right after o1, before the still-promoted o2 and o3");
+    assert!(right_after(o1_at, released, Duration::from_secs(1)), "o1 first, promoted, when x's POST ended");
+    assert!(right_after(r_at, o1_at, Duration::from_secs(15)), "r right after o1, before the still-promoted o2 and o3");
     assert_eq!(native.aborts.load(Ordering::SeqCst), 0, "no fault");
 }
 
