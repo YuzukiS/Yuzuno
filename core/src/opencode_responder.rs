@@ -1,78 +1,93 @@
-//! Answering an OpenCode permission request for real (YN-78 S4b-1; design v4
-//! 2.4, with the Dev Lead's activity 8489): a bounded queue, a bounded
-//! preparation, the delivery and check rounds, and the interrupt/teardown
-//! after an answer whose fate is unknown.
+//! Answering an OpenCode permission request for real (YN-78 S4b; design v4
+//! 2.4, with the Dev Lead's activities 8489 and 8632): a bounded queue, a
+//! bounded preparation, a bounded wait to send, the delivery and check
+//! rounds, and the interrupt/teardown after an answer whose fate is unknown.
 //!
-//! **Private and unwired.** Nothing here is called by an event, a snapshot,
-//! `ask()`, Core's user queue or the start-up rules yet. Only tests call it.
-//! S4b-2 will feed it; until then every permission level asks the user
-//! exactly as before, and no answer is sent by Core for a real request.
+//! **Who feeds it.** One `Engine` per connection generation of a local
+//! OpenCode executor at Auto-approve whose rules, instructions and this
+//! responder started together (opencode_agent.rs, `opencode_start`). Its
+//! live `permission.asked` events and its snapshot's pending requests come
+//! here instead of the user's queue; nothing else does.
 //!
 //! **One request, one answer.** A request is named by its connection
 //! generation, session and request ID. The first submission takes the queue
 //! slot and fixes its preparation deadline; a duplicate (another event, a
-//! snapshot read, a repeated call) joins the same work and never moves that
+//! snapshot read, a repeated call) joins the same work and never moves a
 //! deadline or sends a second first answer. A request already finished is
 //! reported with the same decision and outcome. The API returns structured
 //! reports; it never logs a message, a tool input or a request's content.
 //!
-//! **Preparation (20 s).** From the first submission, queueing, the one
-//! message read of binding (`min(15 s, what is left)`, body included), and
-//! the blocking file-system decision all share one absolute deadline. The
-//! filesystem runs in a bounded blocking worker: one per connection, four
-//! for Core, and a worker whose result is abandoned after the deadline keeps
-//! its permit until it really ends. A preparation that runs out becomes a
-//! stable Reject (`Reason::PreparationTimeout`) and goes through the same
-//! bounded delivery; one that cannot even be serialized with its session
-//! closes the connection instead, never the user's prompt.
+//! **Preparation (20 s).** From the first submission, the one message read
+//! of binding (`min(15 s, what is left)`, body included) and the blocking
+//! file-system decision share one absolute deadline. The file system runs
+//! in a bounded blocking worker: one per connection, four for Core, and a
+//! worker whose result is abandoned after the deadline keeps its permit
+//! until it really ends. A preparation that runs out becomes a stable Reject
+//! (`Reason::PreparationTimeout`). The moment the decision is formed is the
+//! request's `ready_at`, set once.
 //!
-//! **Queue bounds.** At most 64 active requests and EVENT_BUFFER_LIMIT bytes
-//! of recorded request data. A submission that cannot be admitted closes
-//! this one connection on its fault path, once (SIGTERM, TEARDOWN, KILL),
-//! and every request it held gets a structured `Overloaded` report; no
-//! request becomes a user prompt and no fake rejection is sent.
+//! **Sending (30 s to the first POST).** Each session sends one permission
+//! answer at a time, its POST and response body; nothing else holds that
+//! turn: not the file system, a check GET, a backoff or an interrupt. First
+//! answers go in the order they were ready; a retry goes to the end. Each
+//! request waits in at most one place. From `ready_at`, its first POST must
+//! start within FIRST_POST_LIMIT, the wait for its turn and a reject's
+//! preflight included; one that can't closes the connection on its fault
+//! path (`Fault::SendExpired`): no user prompt and no answer made up.
 //!
-//! **Delivery (30 s, then 15 + 10 + 12).** The first POST starts `t0`; the
-//! absolute delivery deadline is `t0 + 30 s`. Each POST and each check GET
-//! uses `min(15 s, what is left)`, body included. At most three rounds: 204
-//! is delivered, 404 is gone, 400 is checked and retried, and a timeout or a
-//! lost connection is unknown and checked. A 200 still waiting is retried
-//! after 0.1, 0.5 or 2 s. If it is still unknown at the deadline, the
-//! request's own session is interrupted (15 s), then its disappearance is
-//! awaited (10 s), then the captured runtime is ended: SIGTERM, TEARDOWN,
-//! and an explicit SIGKILL if it is still there. Sending SIGKILL is not the
-//! kernel having ended it. The whole bound from acceptance is therefore at
-//! most 20 + 67 = 87 s, plus the kernel's own exit time. Nothing is recorded
-//! as rejected or exited because an HTTP answer was unknown or a close was
+//! **Reject first, ask once.** Before a reject's first POST its session's
+//! pending list is read once. Of what it lists, the requests this
+//! controller already holds as Once and that wait for their turn now are let
+//! go first, for at most PRIORITY_WINDOW from the list and never past the
+//! reject's own first-POST deadline. A promoted request still sends with its
+//! own deadlines, attempts and checks; the reject keeps its place in the
+//! queue and only waits; the session is never locked for it, and a Once
+//! request that arrives later is not waited for. A `permission.replied`
+//! reject Core did not start is recorded as collateral, separately from
+//! Core's own reject.
+//!
+//! **Delivery (30 s, then 15 + 10 + 12).** The first POST starts `t0`; every
+//! later wait, check GET, backoff and POST spends `t0 + 30 s`. Each POST and
+//! each check GET uses `min(15 s, what is left)`, body included. At most
+//! three POSTs: 204 is delivered, 404 is gone, 400 is checked and retried,
+//! and a timeout or a lost connection is unknown and checked. A 200 still
+//! waiting is retried after 0.1, 0.5 or 2 s. If it is still unknown at the
+//! deadline, the request's own session is interrupted (15 s), then its
+//! disappearance is awaited (10 s), then the captured runtime is ended:
+//! SIGTERM, TEARDOWN, and an explicit SIGKILL if it is still there.
+//!
+//! **One teardown.** Every fault and every unknown tail of a connection ends
+//! the same captured runtime once. A later one joins the earliest SIGTERM
+//! and SIGKILL already planned, and may only move them sooner, never later.
+//! From acceptance to sending SIGKILL is therefore at most BOUND =
+//! 20 + 30 + 30 + 15 + 10 + 12 = 117 s, plus the kernel's own exit time.
+//! Sending SIGKILL is not the kernel having ended it. Nothing is recorded as
+//! rejected or exited because an HTTP answer was unknown or a close was
 //! only requested.
 //!
-//! **Reject first, ask once.** Before a reject, the session's pending list
-//! is read once; requests this controller already holds with a `Once`
-//! decision are answered first, through the same ledger. The list never
-//! creates a new task and never resets a deadline. A `permission.replied`
-//! reject Core did not start is recorded as collateral, separately from
-//! Core's own reject; concurrent new requests may still be rejected with it,
-//! which is recorded, not denied.
+//! **Queue bounds.** At most 64 active requests and EVENT_BUFFER_LIMIT bytes
+//! of recorded request data, retained reports included and evicted oldest
+//! first. A submission that cannot be admitted closes this one connection
+//! on its fault path (`Fault::Overload`), once; every request it held gets a
+//! structured `Faulted` report with the POSTs that really started.
 //!
 //! **Generations.** Every answer and every result checks that the captured
 //! generation is still current first. A result from an older generation is
 //! discarded, never sent, and the captured runtime is never re-looked-up: a
 //! new runtime is not this one, and is not ended by this code.
-#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
-use crate::opencode::{PermissionDelivery, Reply};
+use crate::opencode::{PermissionDelivery, Reply, REQUEST_LIMIT, TEARDOWN};
 use crate::opencode_permissions::{bind_within, Answer, Asked, Call, Calls, Connection, Decision, MessageReader, Reason, Unbound};
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 use tokio::time::{sleep_until, timeout_at, Instant};
-use crate::opencode::REQUEST_LIMIT;
 
 /// What Core makes of one bound call (S4a's `decide`, run on the bounded
 /// blocking worker). Tests may count, latch or block here.
@@ -87,16 +102,24 @@ impl<F> Judge for F where F: Fn(&Asked, &Call) -> Decision + Send + Sync {
 }
 
 /// From the first accepted request to its prepared decision (design v4 S4b,
-/// Dev Lead 8489): queueing, the one message read and the file-system
-/// decision together, never reset by a duplicate.
+/// Dev Lead 8489): the one message read and the file-system decision
+/// together, never reset by a duplicate.
 pub(crate) const PREPARE_LIMIT: Duration = Duration::from_secs(20);
+/// From a prepared decision (`ready_at`) to its first POST: the wait for the
+/// session's turn and a reject's preflight together (Dev Lead 8632).
+pub(crate) const FIRST_POST_LIMIT: Duration = Duration::from_secs(30);
 /// The first POST's `t0` to the end of delivery and checking.
 pub(crate) const DELIVERY_LIMIT: Duration = Duration::from_secs(30);
+/// A reject's preflight: its one list and the Once requests it lets go first.
+pub(crate) const PRIORITY_WINDOW: Duration = Duration::from_secs(15);
 /// The interrupt stage after an unknown delivery.
 pub(crate) const INTERRUPT_LIMIT: Duration = Duration::from_secs(15);
 /// Waiting for the request to disappear, or its turn to end, after the
 /// interrupt.
 pub(crate) const SETTLE_LIMIT: Duration = Duration::from_secs(10);
+/// From acceptance to sending SIGKILL, at most (Dev Lead 8632): the stages
+/// above and TEARDOWN, one after the other.
+pub(crate) const BOUND: Duration = Duration::from_secs(117);
 /// Between the delivery rounds, as opencode_agent's RESUBSCRIBE.
 pub(crate) const BACKOFF: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(500), Duration::from_secs(2)];
 /// Even a 400 or an unanswered POST gives up after this many POSTs.
@@ -111,6 +134,9 @@ pub(crate) const FS_CONNECTION: usize = 1;
 pub(crate) const FS_GLOBAL: usize = 4;
 /// How often the settle stage asks whether the request still waits.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+const _: () = assert!(PREPARE_LIMIT.as_secs() + FIRST_POST_LIMIT.as_secs() + DELIVERY_LIMIT.as_secs() + INTERRUPT_LIMIT.as_secs()
+    + SETTLE_LIMIT.as_secs() + TEARDOWN.as_secs() == BOUND.as_secs());
 
 /// What became of one answer's delivery (2.4's four classes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +207,25 @@ impl Native for crate::opencode::Server {
     }
 }
 
+/// Why a connection closed on its fault path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fault {
+    /// A submission over REQUESTS or BYTES.
+    Overload,
+    /// A prepared answer whose first POST could not start within
+    /// FIRST_POST_LIMIT of its `ready_at`.
+    SendExpired,
+}
+
+impl Fault {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Overload => "overload",
+            Self::SendExpired => "send_expired",
+        }
+    }
+}
+
 /// What a request ended as. A name is a fact; none is a log line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -202,13 +247,28 @@ pub(crate) enum Outcome {
     Killed,
     /// The generation changed before an answer was sent.
     Discarded,
-    /// The connection closed on its queue's bound; `rounds` is how many POSTs
+    /// The connection closed on its fault path; `rounds` is how many POSTs
     /// actually started. `rounds == 0` is the only "nothing was sent" case; a
     /// positive count leaves delivery unknown and is never a rejection.
-    Overloaded,
+    Faulted(Fault),
 }
 
-/// One structured answer, for a future UI and its checks. `notice` is the
+impl Outcome {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::Gone => "gone",
+            Self::Collateral => "collateral",
+            Self::Interrupted => "interrupted",
+            Self::Closed => "closed",
+            Self::Killed => "killed",
+            Self::Discarded => "discarded",
+            Self::Faulted(fault) => fault.code(),
+        }
+    }
+}
+
+/// One structured answer, for the record and its checks. `notice` is the
 /// reason sentence only when delivery or disappearance is a fact; never
 /// before.
 #[derive(Clone, Debug, PartialEq)]
@@ -247,7 +307,7 @@ struct Key {
 
 /// What `submit` did. A duplicate joins the first work's report; a finished
 /// request answers with its one report; `Full` means this connection is
-/// closing on its bound and nothing was queued.
+/// closing on its fault path and nothing was queued.
 #[derive(Debug)]
 pub(crate) enum Submission {
     Accepted(watch::Receiver<Option<Report>>),
@@ -263,17 +323,18 @@ struct Entry {
     prepare_deadline: Instant,
     size: usize,
     decision: Mutex<Option<Answer>>,
-    preflight: AtomicBool,
+    /// When its decision was first formed; never moved.
+    ready_at: Mutex<Option<Instant>>,
     /// A reject of this request was started by Core.
     reject_started: AtomicBool,
     /// A reject event Core did not start was seen.
     collateral: AtomicBool,
-    /// The absolute first-POST t0 of this request's delivery, shared by its
-    /// worker and any preflight that answers it first.
+    /// The absolute first-POST t0 of this request's delivery.
     delivery_start: Mutex<Option<Instant>>,
-    /// Attempts that have actually started, and the one terminal gate shared
-    /// with `finish`: a POST cannot start after the report is published.
+    /// The one terminal gate shared with `finish`: a POST cannot start after
+    /// the report is published.
     terminal: Mutex<bool>,
+    /// POSTs that have actually started.
     rounds: AtomicU8,
     finished: AtomicBool,
     report: watch::Sender<Option<Report>>,
@@ -282,6 +343,12 @@ struct Entry {
 impl Entry {
     fn finished(&self) -> bool {
         self.finished.load(Ordering::SeqCst)
+    }
+
+    /// Its decision, and the moment it was first formed.
+    fn ready(&self, answer: Answer) -> Instant {
+        *self.decision.lock().unwrap() = Some(answer);
+        *self.ready_at.lock().unwrap().get_or_insert_with(Instant::now)
     }
 
     /// Reserves one POST before its HTTP starts: its first t0, one more
@@ -308,7 +375,172 @@ struct State {
     done: HashMap<Key, Report>,
     order: VecDeque<Key>,
     bytes: usize,
-    closing: bool,
+    /// Set once, by the first fault: the connection is closing.
+    fault: Option<Fault>,
+}
+
+impl State {
+    /// Drops the oldest retained reports until the bound holds.
+    fn evict(&mut self, limit: usize) {
+        while self.bytes > limit {
+            let Some(oldest) = self.order.pop_front() else { break };
+            if let Some(gone) = self.done.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(gone.size());
+            }
+        }
+    }
+}
+
+/// One session's sending order: one POST at a time, first answers in the
+/// order they were ready, retries at the end.
+#[derive(Default)]
+struct Lane {
+    state: Mutex<LaneState>,
+    changed: Notify,
+}
+
+#[derive(Default)]
+struct LaneState {
+    /// A POST of this session is in flight.
+    busy: bool,
+    next: u64,
+    /// Each request waiting, by its place.
+    waiting: BTreeMap<u64, Waiting>,
+}
+
+struct Waiting {
+    request: String,
+    /// False while its reject's preflight lists.
+    eligible: bool,
+    /// Let go before the others until then.
+    promoted_until: Option<Instant>,
+    /// A reject's: it lets these go first while they wait, until then.
+    behind: Option<(Vec<String>, Instant)>,
+}
+
+impl LaneState {
+    /// Whose turn it is now: a promoted request first, else the first ready.
+    fn chosen(&self, now: Instant) -> Option<u64> {
+        if self.busy {
+            return None;
+        }
+        let queued = |id: &str| self.waiting.values().any(|waiting| waiting.request == id);
+        let ready = |waiting: &Waiting| waiting.eligible
+            && waiting.behind.as_ref().is_none_or(|(ids, until)| now >= *until || !ids.iter().any(|id| queued(id)));
+        self.waiting.iter().find(|(_, waiting)| waiting.promoted_until.is_some_and(|until| now < until) && ready(waiting))
+            .or_else(|| self.waiting.iter().find(|(_, waiting)| ready(waiting)))
+            .map(|(place, _)| *place)
+    }
+
+    /// The next moment the choice may change by time alone.
+    fn next_window(&self, now: Instant) -> Option<Instant> {
+        self.waiting.values()
+            .flat_map(|waiting| waiting.promoted_until.into_iter().chain(waiting.behind.as_ref().map(|(_, until)| *until)))
+            .filter(|until| *until > now).min()
+    }
+}
+
+/// A session's one send in flight; dropping it lets the next go.
+struct Turn<'a>(&'a Lane);
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().busy = false;
+        self.0.changed.notify_waiters();
+    }
+}
+
+impl Lane {
+    /// A place at the end, for `request`.
+    fn enqueue(&self, request: &str, eligible: bool) -> u64 {
+        let place = {
+            let mut state = self.state.lock().unwrap();
+            let place = state.next;
+            state.next += 1;
+            state.waiting.insert(place, Waiting { request: request.to_owned(), eligible, promoted_until: None, behind: None });
+            place
+        };
+        self.changed.notify_waiters();
+        place
+    }
+
+    /// Of `ids`, those waiting for their turn now are let go first until
+    /// `until`; they are returned.
+    fn promote(&self, ids: &HashSet<String>, until: Instant) -> Vec<String> {
+        let promoted = {
+            let mut state = self.state.lock().unwrap();
+            let mut promoted = Vec::new();
+            for waiting in state.waiting.values_mut().filter(|waiting| waiting.eligible && ids.contains(&waiting.request)) {
+                waiting.promoted_until = Some(waiting.promoted_until.map_or(until, |was| was.max(until)));
+                promoted.push(waiting.request.clone());
+            }
+            promoted
+        };
+        self.changed.notify_waiters();
+        promoted
+    }
+
+    /// A reject at `place` waits no more for its preflight: it keeps its
+    /// place, behind what it promoted until their window ends.
+    fn preflighted(&self, place: u64, behind: Option<(Vec<String>, Instant)>) {
+        if let Some(waiting) = self.state.lock().unwrap().waiting.get_mut(&place) {
+            waiting.eligible = true;
+            waiting.behind = behind;
+        }
+        self.changed.notify_waiters();
+    }
+
+    fn leave(&self, place: u64) {
+        self.state.lock().unwrap().waiting.remove(&place);
+        self.changed.notify_waiters();
+    }
+
+    /// Waits for `place`'s turn until `deadline`. None when the deadline came
+    /// first; its place is given up then.
+    async fn turn(&self, place: u64, deadline: Instant) -> Option<Turn<'_>> {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let wake = {
+                let mut state = self.state.lock().unwrap();
+                let now = Instant::now();
+                // At its deadline nothing more is sent, even if its turn
+                // came at that same instant.
+                if now >= deadline {
+                    state.waiting.remove(&place);
+                    drop(state);
+                    self.changed.notify_waiters();
+                    return None;
+                }
+                if state.chosen(now) == Some(place) {
+                    state.busy = true;
+                    state.waiting.remove(&place);
+                    return Some(Turn(self));
+                }
+                state.next_window(now).map_or(deadline, |until| until.min(deadline))
+            };
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = sleep_until(wake) => {}
+            }
+        }
+    }
+}
+
+/// How the connection's one teardown ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    Closed,
+    Killed,
+    Discarded,
+}
+
+/// The connection's one teardown: when SIGTERM and SIGKILL are due, moved
+/// only sooner, and how it ended.
+struct Closing {
+    plan: watch::Sender<(Instant, Instant)>,
+    ended: watch::Receiver<Option<Ended>>,
 }
 
 /// One connection's answer engine. Generic only so tests can drive the wire,
@@ -318,7 +550,8 @@ pub(crate) struct Engine<R: MessageReader + 'static, J: Judge + 'static, N: Nati
     pub(crate) generation: u64,
     /// The Agent's own session; a child session may be the request's.
     pub(crate) session: String,
-    pub(crate) children: Vec<String>,
+    /// The sub-agent sessions the connection knows now.
+    children: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     calls: Arc<Calls>,
     reader: Arc<R>,
     judge: Arc<J>,
@@ -330,19 +563,23 @@ pub(crate) struct Engine<R: MessageReader + 'static, J: Judge + 'static, N: Nati
     /// The bound on recorded request data: active work plus retained reports.
     bytes_limit: usize,
     /// A test-only pause before a reject's preflight, so a Once request can
-    /// be prepared and its worker queued on the same session first.
+    /// be prepared and queued on the same session first.
     #[cfg(test)]
-    preflight_gate: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
+    preflight_gate: Mutex<Option<(String, Arc<Notify>)>>,
     state: Mutex<State>,
-    sessions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    lanes: Mutex<HashMap<String, Arc<Lane>>>,
+    closing: Mutex<Option<Closing>>,
 }
 
 impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine<R, J, N> {
     /// A controller for one captured connection. `current` answers whether
     /// its generation is still the live one; it is asked before every answer
     /// and before every write of a result that could otherwise cross one.
-    pub(crate) fn new(generation: u64, session: String, children: Vec<String>, calls: Arc<Calls>, reader: Arc<R>,
-        judge: Arc<J>, native: Arc<N>, current: Arc<dyn Fn() -> bool + Send + Sync>, runtime: Arc<dyn Runtime>) -> Self {
+    /// `children` lists the sub-agent sessions the connection knows when a
+    /// request is bound, not when the engine was made.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(generation: u64, session: String, children: Arc<dyn Fn() -> Vec<String> + Send + Sync>, calls: Arc<Calls>,
+        reader: Arc<R>, judge: Arc<J>, native: Arc<N>, current: Arc<dyn Fn() -> bool + Send + Sync>, runtime: Arc<dyn Runtime>) -> Self {
         Self {
             generation, session, children, calls, reader, judge, native, current, runtime,
             fs_connection: Arc::new(Semaphore::new(FS_CONNECTION)),
@@ -351,8 +588,14 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             #[cfg(test)]
             preflight_gate: Mutex::new(None),
             state: Mutex::default(),
-            sessions: Mutex::default(),
+            lanes: Mutex::default(),
+            closing: Mutex::default(),
         }
+    }
+
+    /// The tool calls this connection's OpenCode reported, which binding reads.
+    pub(crate) fn calls(&self) -> &Calls {
+        &self.calls
     }
 
     /// Wires this controller's file-system permits to another set, so a test
@@ -375,7 +618,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
 
     /// Pause this request's reject just before its preflight list.
     #[cfg(test)]
-    fn with_preflight_gate(self, request: &str, gate: Arc<tokio::sync::Notify>) -> Self {
+    fn with_preflight_gate(self, request: &str, gate: Arc<Notify>) -> Self {
         *self.preflight_gate.lock().unwrap() = Some((request.to_owned(), gate));
         self
     }
@@ -392,7 +635,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     }
 
     /// Takes in a request. It returns at once: the work runs on its own task,
-    /// and the caller never waits for the whole preparation or delivery.
+    /// and the caller never waits for the preparation, a file system or HTTP.
     pub(crate) fn submit(self: &Arc<Self>, asked: &Asked) -> Submission {
         let key = Key { generation: self.generation, session: asked.session.clone(), request: asked.id.clone() };
         let size = asked.size();
@@ -403,30 +646,25 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         if let Some(report) = state.done.get(&key) {
             return Submission::Known(report.clone());
         }
-        if state.closing {
+        if state.fault.is_some() {
             return Submission::Full;
         }
         // Retained reports share the bound with active work, so old history
         // is dropped to make room before a submission is called overload.
-        while state.bytes.saturating_add(size) > self.bytes_limit {
-            let Some(oldest) = state.order.pop_front() else { break };
-            if let Some(gone) = state.done.remove(&oldest) {
-                state.bytes = state.bytes.saturating_sub(gone.size());
-            }
-        }
+        let limit = self.bytes_limit.saturating_sub(size);
+        state.evict(limit);
         if size > self.bytes_limit || state.active.len() >= REQUESTS || state.bytes.saturating_add(size) > self.bytes_limit {
             drop(state);
-            self.fault();
+            self.fault(Fault::Overload);
             return Submission::Full;
         }
-        let admitted = Instant::now();
         let (report, receiver) = watch::channel(None);
         let entry = Arc::new(Entry {
             key: key.clone(),
-            prepare_deadline: admitted + PREPARE_LIMIT,
+            prepare_deadline: Instant::now() + PREPARE_LIMIT,
             size,
             decision: Mutex::new(None),
-            preflight: AtomicBool::new(false),
+            ready_at: Mutex::new(None),
             reject_started: AtomicBool::new(false),
             collateral: AtomicBool::new(false),
             delivery_start: Mutex::new(None),
@@ -454,71 +692,64 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         let key = Key { generation: self.generation, session: session.to_owned(), request: request.to_owned() };
         let mut state = self.state.lock().unwrap();
         if let Some(entry) = state.active.get(&key) {
+            // Before Core's own answer, or another request's reject took it.
             if !entry.reject_started.load(Ordering::SeqCst) {
                 entry.collateral.store(true, Ordering::SeqCst);
-                if entry.decision.lock().unwrap().is_none() {
-                    // It was answered by another request's reject before Core
-                    // got to it; the work will see 404 and finish.
-                    entry.collateral.store(true, Ordering::SeqCst);
-                }
             }
-        } else if let Some(report) = state.done.get_mut(&key) {
-            if !report.collateral && !report.own_reject {
-                report.collateral = true;
-                state.bytes = state.bytes.saturating_add(4);
-            }
+            return;
+        }
+        let marked = state.done.get_mut(&key).filter(|report| !report.collateral && !report.own_reject).map(|report| {
+            report.collateral = true;
+        });
+        if marked.is_some() {
+            // The flag is retained history too: the bound holds at once.
+            state.bytes = state.bytes.saturating_add(4);
+            state.evict(self.bytes_limit);
         }
     }
 
-    fn session_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut sessions = self.sessions.lock().unwrap();
-        sessions.entry(session.to_owned()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+    fn lane(&self, session: &str) -> Arc<Lane> {
+        self.lanes.lock().unwrap().entry(session.to_owned()).or_default().clone()
     }
 
-    fn fault(self: &Arc<Self>) {
+    /// The connection's one fault: the first cause closes it, a later one
+    /// changes nothing.
+    fn fault(self: &Arc<Self>, cause: Fault) {
         let start = {
             let mut state = self.state.lock().unwrap();
-            if state.closing {
+            if state.fault.is_some() {
                 false
             } else {
-                state.closing = true;
+                state.fault = Some(cause);
                 true
             }
         };
         if start {
             let engine = self.clone();
-            tokio::spawn(async move { engine.close_connection().await; });
+            tokio::spawn(async move { engine.close_connection(cause).await; });
         }
     }
 
-    /// One close for the whole connection: every request it held gets an
-    /// `Overloaded` report and no answer; then the same bounded abort, wait
-    /// and teardown once.
-    async fn close_connection(self: Arc<Self>) {
+    /// One close for the whole connection: every request it held gets a
+    /// `Faulted` report and no answer; then the main session is interrupted,
+    /// and the connection's one teardown is joined.
+    async fn close_connection(self: Arc<Self>, cause: Fault) {
         let held: Vec<Arc<Entry>> = {
             let state = self.state.lock().unwrap();
             state.active.values().cloned().collect()
         };
         for entry in held {
             let answer = entry.decision.lock().unwrap().clone();
-            self.finish(&entry, answer, Outcome::Overloaded).await;
+            self.finish(&entry, answer, Outcome::Faulted(cause)).await;
         }
         let abort_until = Instant::now() + INTERRUPT_LIMIT;
         if (self.current)() {
             if let Some(limit) = remaining(abort_until) {
-                let _ = self.native.abort(&self.session, limit).await;
+                let _ = self.native.abort(&self.session, REQUEST_LIMIT.min(limit)).await;
             }
         }
-        let wait_until = Instant::now() + SETTLE_LIMIT;
-        sleep_until(wait_until).await;
-        if self.runtime.current() {
-            self.runtime.terminate();
-            let until = wait_until + crate::opencode::TEARDOWN;
-            let limit = remaining(until).unwrap_or_default();
-            if !self.runtime.ended_within(limit).await && self.runtime.current() {
-                self.runtime.kill();
-            }
-        }
+        let term_at = Instant::now().min(abort_until) + SETTLE_LIMIT;
+        let _ = self.teardown(term_at, term_at + TEARDOWN).await;
     }
 
     async fn work(self: Arc<Self>, entry: Arc<Entry>, asked: Asked) {
@@ -526,14 +757,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             self.finish(&entry, None, Outcome::Discarded).await;
             return;
         }
-        // Binding and the blocking decision need no session order; answers
-        // are serialized below, which lets a reject answer a prepared Once
-        // request of the same session first.
-        let answer = self.prepare(&entry, &asked).await;
-        if entry.finished() {
-            return;
-        }
-        let answer = match answer {
+        let answer = match self.prepare(&entry, &asked).await {
+            _ if entry.finished() => return,
             Prepared::Answer(answer) => answer,
             Prepared::Discarded => {
                 self.finish(&entry, None, Outcome::Discarded).await;
@@ -544,49 +769,29 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             self.finish(&entry, None, Outcome::Discarded).await;
             return;
         }
-        *entry.decision.lock().unwrap() = Some(answer.clone());
-        let lock = self.session_lock(&asked.session);
-        let held = match remaining(entry.prepare_deadline) {
-            Some(_) => match timeout_at(entry.prepare_deadline, lock.lock()).await {
-                Ok(held) => held,
-                Err(_) => {
-                    // Waiting to answer used the whole preparation: there is
-                    // no safe point to send an answer through.
-                    self.fault();
-                    return;
-                }
-            },
-            // The preparation bound is spent; the session's turn is free at
-            // this instant or this answer cannot be serialized at all.
-            None => match lock.try_lock() {
-                Ok(held) => held,
-                Err(_) => {
-                    self.fault();
-                    return;
-                }
-            },
-        };
-        if entry.finished() {
-            return;
+        let ready_at = entry.ready(answer.clone());
+        let first_post_until = ready_at + FIRST_POST_LIMIT;
+        let lane = self.lane(&asked.session);
+        let reject = matches!(answer, Answer::Reject(_));
+        // Its place in the session's order is taken now; a reject's waits
+        // until its preflight has listed the session.
+        let place = lane.enqueue(&asked.id, !reject);
+        if reject {
+            #[cfg(test)]
+            self.await_preflight_gate(&asked.id).await;
+            self.preflight(&asked, &lane, place, first_post_until).await;
         }
-        #[cfg(test)]
-        self.await_preflight_gate(&asked.id).await;
-        if matches!(answer, Answer::Reject(_)) {
-            self.preflight(&entry, &asked).await;
+        if let Some(outcome) = self.deliver(&entry, &asked, &answer, &lane, place, first_post_until).await {
+            self.finish(&entry, Some(answer), outcome).await;
         }
-        if entry.finished() {
-            return;
-        }
-        let outcome = self.deliver(&entry, &asked, answer.clone()).await;
-        self.finish(&entry, Some(answer), outcome).await;
-        drop(held);
     }
 
     async fn prepare(&self, entry: &Entry, asked: &Asked) -> Prepared {
         let deadline = entry.prepare_deadline;
         let Some(limit) = remaining(deadline) else { return Prepared::Answer(Answer::Reject(Reason::PreparationTimeout)) };
-        let on = Connection { generation: self.generation, session: &self.session, children: &self.children };
-        let bound = bind_within(asked, &on, &self.calls, &*self.reader, &*self.current, min(REQUEST_LIMIT, limit)).await;
+        let children = (self.children)();
+        let on = Connection { generation: self.generation, session: &self.session, children: &children };
+        let bound = bind_within(asked, &on, &self.calls, &*self.reader, &*self.current, REQUEST_LIMIT.min(limit)).await;
         let call = match bound {
             Ok(call) => call,
             Err(Unbound::Stale) => return Prepared::Discarded,
@@ -601,15 +806,11 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         };
         let global = match timeout_at(deadline, self.fs_global.clone().acquire_owned()).await {
             Ok(Ok(permit)) => permit,
-            _ => {
-                drop(connection);
-                return Prepared::Answer(Answer::Reject(Reason::PreparationTimeout));
-            }
+            _ => return Prepared::Answer(Answer::Reject(Reason::PreparationTimeout)),
         };
         let (asked, call, judge) = (asked.clone(), call.clone(), self.judge.clone());
         let handle = tokio::task::spawn_blocking(move || {
-            let _connection = connection;
-            let _global = global;
+            let _held = (connection, global);
             judge.decide(&asked, &call)
         });
         match timeout_at(deadline, handle).await {
@@ -619,118 +820,95 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         }
     }
 
-    /// Before a reject: one list of this session's pending requests, and the
-    /// requests this controller already holds with a Once decision are
-    /// answered first. The list creates nothing and resets no deadline.
-    async fn preflight(&self, entry: &Entry, asked: &Asked) {
-        if entry.preflight.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        if !(self.current)() {
-            return;
-        }
-        let Some(limit) = remaining(entry.prepare_deadline) else { return };
-        let pending = match self.native.pending_all(&asked.session, min(REQUEST_LIMIT, limit)).await {
-            Ok(items) => items,
-            Err(_) => return,
-        };
-        if !(self.current)() {
-            return;
-        }
-        for item in pending {
-            let Some(id) = item["id"].as_str() else { continue };
-            if id == asked.id {
-                continue;
+    /// Before a reject's first POST: one list of its session's pending
+    /// requests. Those this controller already holds as Once, and that wait
+    /// for their turn now, go first for at most PRIORITY_WINDOW, never past
+    /// the reject's own first-POST deadline. The list creates nothing and
+    /// moves no deadline; the reject keeps its place.
+    async fn preflight(&self, asked: &Asked, lane: &Lane, place: u64, first_post_until: Instant) {
+        let window = (Instant::now() + PRIORITY_WINDOW).min(first_post_until);
+        let mut behind = None;
+        if let (true, Some(limit)) = ((self.current)(), remaining(window)) {
+            if let Ok(listed) = self.native.pending_all(&asked.session, REQUEST_LIMIT.min(limit)).await {
+                if (self.current)() {
+                    let held: HashSet<String> = {
+                        let state = self.state.lock().unwrap();
+                        listed.iter().filter_map(|item| item["id"].as_str()).filter(|id| *id != asked.id).filter(|id| {
+                            let key = Key { generation: self.generation, session: asked.session.clone(), request: (*id).to_owned() };
+                            state.active.get(&key).is_some_and(|target| !target.finished()
+                                && matches!(*target.decision.lock().unwrap(), Some(Answer::Once)))
+                        }).map(str::to_owned).collect()
+                    };
+                    let promoted = lane.promote(&held, window);
+                    if !promoted.is_empty() {
+                        behind = Some((promoted, window));
+                    }
+                }
             }
-            let key = Key { generation: self.generation, session: asked.session.clone(), request: id.to_owned() };
-            let target = { self.state.lock().unwrap().active.get(&key).cloned() };
-            let Some(target) = target else { continue };
-            if target.finished() || !matches!(*target.decision.lock().unwrap(), Some(Answer::Once)) {
-                continue;
-            }
-            // One real POST, sharing the target's one first-POST t0, absolute
-            // deadline and attempt count with its own worker. A failure here
-            // is handed to that worker without resetting any of them.
-            let Some(caller_left) = remaining(entry.prepare_deadline) else { return };
-            let _ = self.post_once(&target, &asked.session, id, Answer::Once, caller_left).await;
         }
+        lane.preflighted(place, behind);
     }
 
-    /// One bounded POST for a request another reject is answering first. It
-    /// reserves the target's attempt and first-POST t0 before the HTTP starts,
-    /// so an overload close sees what really started; a failure leaves the
-    /// target active for its own worker to continue.
-    async fn post_once(&self, target: &Entry, session: &str, request: &str, answer: Answer, caller_left: Duration) -> Option<Delivery> {
-        if target.finished() || caller_left.is_zero() {
-            return None;
-        }
-        let t0 = *target.delivery_start.lock().unwrap();
-        let until = t0.map(|t0| t0 + DELIVERY_LIMIT).unwrap_or_else(|| Instant::now() + DELIVERY_LIMIT);
-        let Some(target_left) = remaining(until) else { return None };
-        let limit = min(REQUEST_LIMIT, min(caller_left, target_left));
-        if limit.is_zero() || !(self.current)() {
-            return None;
-        }
-        let Some(t0) = target.start_post() else { return None };
-        let Some(target_left) = remaining(t0 + DELIVERY_LIMIT) else { return None };
-        let limit = min(limit, target_left);
-        let result = self.native.deliver(session, request, &answer, limit).await;
-        match result {
-            Delivery::Delivered => self.finish(target, Some(answer), Outcome::Delivered).await,
-            Delivery::Gone => self.finish(target, Some(answer), Outcome::Gone).await,
-            Delivery::Invalid | Delivery::Unknown => {}
-        }
-        Some(result)
-    }
-
-    async fn deliver(&self, entry: &Entry, asked: &Asked, answer: Answer) -> Outcome {
-        if entry.finished() {
-            return Outcome::Overloaded;
-        }
-        // Its first POST, wherever it was sent (this worker or a preflight),
-        // fixes one t0; every later POST shares its absolute deadline.
-        let mut t0 = *entry.delivery_start.lock().unwrap();
+    /// The answer's POSTs, each in its session's turn, with the checks and
+    /// backoff between them outside it. None when the connection is closing
+    /// on its fault path, which publishes this request's report itself.
+    async fn deliver(self: &Arc<Self>, entry: &Entry, asked: &Asked, answer: &Answer, lane: &Lane, first: u64,
+        first_post_until: Instant) -> Option<Outcome> {
+        let mut queued = Some(first);
         loop {
-            if entry.finished() {
-                return Outcome::Overloaded;
+            if entry.finished() || !(self.current)() {
+                if let Some(place) = queued.take() {
+                    lane.leave(place);
+                }
+                return (!entry.finished()).then_some(Outcome::Discarded);
             }
-            if !(self.current)() {
-                return Outcome::Discarded;
-            }
-            let until = t0.map(|t0| t0 + DELIVERY_LIMIT).unwrap_or_else(|| Instant::now() + DELIVERY_LIMIT);
-            if remaining(until).is_none() {
-                break;
-            }
+            let t0 = *entry.delivery_start.lock().unwrap();
             if entry.rounds.load(Ordering::SeqCst) >= ROUNDS {
                 break;
             }
+            // Before its first POST: FIRST_POST_LIMIT from ready; after it,
+            // everything spends t0 + DELIVERY_LIMIT.
+            let until = t0.map_or(first_post_until, |t0| t0 + DELIVERY_LIMIT);
+            let place = queued.take().unwrap_or_else(|| lane.enqueue(&asked.id, true));
+            let Some(turn) = lane.turn(place, until).await else {
+                if t0.is_none() {
+                    // Its first answer could not even be sent in time: the
+                    // connection closes on its fault path, never the user's prompt.
+                    self.fault(Fault::SendExpired);
+                    return None;
+                }
+                break;
+            };
+            if entry.finished() {
+                return None;
+            }
+            if !(self.current)() {
+                return Some(Outcome::Discarded);
+            }
             // Reserve the attempt and its t0 before the HTTP starts: a close
             // that publishes while this response is in flight must see it.
-            let start = match entry.start_post() {
-                Some(start) => start,
-                None => {
-                    if entry.finished() {
-                        return Outcome::Overloaded;
-                    }
-                    break;
+            let Some(t0) = entry.start_post() else {
+                if entry.finished() {
+                    return None;
                 }
+                break;
             };
-            t0 = Some(start);
             if matches!(answer, Answer::Reject(_)) {
                 entry.reject_started.store(true, Ordering::SeqCst);
             }
-            let until = start + DELIVERY_LIMIT;
+            let until = t0 + DELIVERY_LIMIT;
             let Some(limit) = remaining(until) else { break };
-            let result = self.native.deliver(&asked.session, &asked.id, &answer, min(REQUEST_LIMIT, limit)).await;
+            let result = self.native.deliver(&asked.session, &asked.id, answer, REQUEST_LIMIT.min(limit)).await;
+            drop(turn);
             if entry.finished() {
-                return Outcome::Overloaded;
+                return None;
             }
             if !(self.current)() {
-                return Outcome::Discarded;
+                return Some(Outcome::Discarded);
             }
             match result {
-                Delivery::Delivered => return Outcome::Delivered,
-                Delivery::Gone => return Outcome::Gone,
+                Delivery::Delivered => return Some(Outcome::Delivered),
+                Delivery::Gone => return Some(Outcome::Gone),
                 Delivery::Invalid | Delivery::Unknown => {}
             }
             let attempts = entry.rounds.load(Ordering::SeqCst);
@@ -738,9 +916,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
                 break;
             }
             let Some(limit) = remaining(until) else { break };
-            match self.native.pending(&asked.session, &asked.id, min(REQUEST_LIMIT, limit)).await {
-                Ok(None) => return Outcome::Gone,
-                Ok(Some(_)) | Err(_) => {}
+            if let Ok(None) = self.native.pending(&asked.session, &asked.id, REQUEST_LIMIT.min(limit)).await {
+                return Some(Outcome::Gone);
             }
             let wait = BACKOFF[usize::from(attempts.saturating_sub(1)).min(BACKOFF.len() - 1)];
             let Some(left) = remaining(until) else { break };
@@ -749,8 +926,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             }
             sleep_until(Instant::now() + wait).await;
         }
-        let _ = entry;
-        self.unknown_tail(asked, t0.unwrap_or_else(Instant::now)).await
+        let t0 = (*entry.delivery_start.lock().unwrap()).unwrap_or_else(Instant::now);
+        Some(self.unknown_tail(asked, t0).await)
     }
 
     async fn unknown_tail(&self, asked: &Asked, t0: Instant) -> Outcome {
@@ -759,35 +936,60 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             return Outcome::Discarded;
         }
         if let Some(limit) = remaining(abort_until) {
-            let _ = self.native.abort(&asked.session, min(REQUEST_LIMIT, limit)).await;
+            let _ = self.native.abort(&asked.session, REQUEST_LIMIT.min(limit)).await;
         }
-        let wait_until = abort_until + SETTLE_LIMIT;
+        let term_at = abort_until + SETTLE_LIMIT;
         loop {
             if !(self.current)() {
                 return Outcome::Discarded;
             }
-            let Some(limit) = remaining(wait_until) else { break };
-            match self.native.pending(&asked.session, &asked.id, min(REQUEST_LIMIT, limit)).await {
+            let Some(limit) = remaining(term_at) else { break };
+            match self.native.pending(&asked.session, &asked.id, REQUEST_LIMIT.min(limit)).await {
                 Ok(None) => return Outcome::Interrupted,
                 Ok(Some(_)) | Err(_) => {}
             }
-            let Some(left) = remaining(wait_until) else { break };
+            let Some(left) = remaining(term_at) else { break };
             sleep_until(Instant::now() + SETTLE_POLL.min(left)).await;
         }
-        if !self.runtime.current() {
-            return Outcome::Discarded;
+        self.teardown(term_at, term_at + TEARDOWN).await
+    }
+
+    /// Joins the connection's one teardown of its captured runtime: SIGTERM
+    /// by `term_at`, SIGKILL by `kill_at`, or sooner when another fault
+    /// already planned them sooner. The answer is how that one teardown ended.
+    async fn teardown(&self, term_at: Instant, kill_at: Instant) -> Outcome {
+        let mut ended = {
+            let mut closing = self.closing.lock().unwrap();
+            match &*closing {
+                Some(planned) => {
+                    planned.plan.send_modify(|(term, kill)| {
+                        *term = (*term).min(term_at);
+                        *kill = (*kill).min(kill_at);
+                    });
+                    planned.ended.clone()
+                }
+                None => {
+                    let (plan, planned) = watch::channel((term_at, kill_at));
+                    let (done, ended) = watch::channel(None);
+                    tokio::spawn(run_teardown(self.runtime.clone(), planned, done));
+                    *closing = Some(Closing { plan, ended: ended.clone() });
+                    ended
+                }
+            }
+        };
+        let end = loop {
+            if let Some(end) = *ended.borrow_and_update() {
+                break end;
+            }
+            if ended.changed().await.is_err() {
+                break Ended::Discarded;
+            }
+        };
+        match end {
+            Ended::Closed => Outcome::Closed,
+            Ended::Killed => Outcome::Killed,
+            Ended::Discarded => Outcome::Discarded,
         }
-        self.runtime.terminate();
-        let until = wait_until + crate::opencode::TEARDOWN;
-        let limit = remaining(until).unwrap_or_default();
-        if self.runtime.ended_within(limit).await {
-            return if self.runtime.current() { Outcome::Closed } else { Outcome::Discarded };
-        }
-        if !self.runtime.current() {
-            return Outcome::Discarded;
-        }
-        self.runtime.kill();
-        Outcome::Killed
     }
 
     async fn finish(&self, entry: &Entry, answer: Option<Answer>, outcome: Outcome) {
@@ -801,7 +1003,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         // The result is published only for the generation that is still the
         // live one; an older generation's delivery is discarded without a
         // notice, even if its last HTTP answer arrived.
-        let (answer, outcome) = if !(self.current)() && !matches!(outcome, Outcome::Overloaded) {
+        let (answer, outcome) = if !(self.current)() && !matches!(outcome, Outcome::Faulted(_)) {
             (None, Outcome::Discarded)
         } else {
             (answer, outcome)
@@ -810,11 +1012,7 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         let own_reject = entry.reject_started.load(Ordering::SeqCst);
         // A request another reject took before Core had sent its own answer
         // is recorded as collateral, not as Core's delivery or a plain 404.
-        let outcome = if collateral && !own_reject && outcome == Outcome::Gone {
-            Outcome::Collateral
-        } else {
-            outcome
-        };
+        let outcome = if collateral && !own_reject && outcome == Outcome::Gone { Outcome::Collateral } else { outcome };
         let notice = match (&answer, outcome) {
             (Some(Answer::Reject(reason)), Outcome::Delivered | Outcome::Gone) => Some(reason.message()),
             _ => None,
@@ -833,20 +1031,56 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
         {
             let mut state = self.state.lock().unwrap();
             state.active.remove(&entry.key);
-            state.bytes = state.bytes.saturating_sub(entry.size);
-            let size = report.size();
-            state.bytes = state.bytes.saturating_add(size);
+            state.bytes = state.bytes.saturating_sub(entry.size).saturating_add(report.size());
             state.order.push_back(entry.key.clone());
             state.done.insert(entry.key.clone(), report.clone());
-            while state.bytes > self.bytes_limit {
-                let Some(oldest) = state.order.pop_front() else { break };
-                if let Some(gone) = state.done.remove(&oldest) {
-                    state.bytes = state.bytes.saturating_sub(gone.size());
-                }
-            }
+            state.evict(self.bytes_limit);
         }
         let _ = entry.report.send(Some(report));
     }
+}
+
+/// The connection's one teardown: SIGTERM at the planned moment, SIGKILL at
+/// the planned one if it has not ended; each only ever moved sooner. Signals
+/// go only to the captured runtime, and only while it is still current.
+async fn run_teardown(runtime: Arc<dyn Runtime>, mut plan: watch::Receiver<(Instant, Instant)>, done: watch::Sender<Option<Ended>>) {
+    let mut following = true;
+    loop {
+        let (term_at, _) = *plan.borrow_and_update();
+        if !following {
+            sleep_until(term_at).await;
+            break;
+        }
+        tokio::select! {
+            _ = sleep_until(term_at) => break,
+            changed = plan.changed() => following = changed.is_ok(),
+        }
+    }
+    if !runtime.current() {
+        done.send_replace(Some(Ended::Discarded));
+        return;
+    }
+    runtime.terminate();
+    let ended = loop {
+        let (_, kill_at) = *plan.borrow_and_update();
+        let limit = remaining(kill_at).unwrap_or_default();
+        if !following {
+            break runtime.ended_within(limit).await;
+        }
+        tokio::select! {
+            ended = runtime.ended_within(limit) => break ended,
+            changed = plan.changed() => following = changed.is_ok(),
+        }
+    };
+    let end = if ended {
+        if runtime.current() { Ended::Closed } else { Ended::Discarded }
+    } else if runtime.current() {
+        runtime.kill();
+        Ended::Killed
+    } else {
+        Ended::Discarded
+    };
+    done.send_replace(Some(end));
 }
 
 enum Prepared {
@@ -859,16 +1093,24 @@ fn remaining(until: Instant) -> Option<Duration> {
     (until > now).then(|| until - now)
 }
 
-fn min(a: Duration, b: Duration) -> Duration {
-    a.min(b)
-}
-
 /// Core's one bound on blocking file-system decisions, shared by every
 /// connection of every Agent.
 fn global_fs() -> Arc<Semaphore> {
     use std::sync::OnceLock;
     static GLOBAL: OnceLock<Arc<Semaphore>> = OnceLock::new();
     GLOBAL.get_or_init(|| Arc::new(Semaphore::new(FS_GLOBAL))).clone()
+}
+
+/// Runs blocking file-system `work` under one of Core's global permits, as a
+/// decision does, within `deadline`. None when the deadline came first; the
+/// work keeps its permit until it really ends, and no other is started for it.
+pub(crate) async fn bounded_fs<T: Send + 'static>(deadline: Instant, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let permit = timeout_at(deadline, global_fs().acquire_owned()).await.ok()?.ok()?;
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    });
+    timeout_at(deadline, handle).await.ok()?.ok()
 }
 
 #[cfg(test)]

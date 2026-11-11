@@ -2418,16 +2418,19 @@ class Handler(BaseHTTPRequestHandler):
     def permission_reply(self, session, request_id, body):
         """2.x's answer to a permission request (2.2.5 core/src/permission.ts): `decision` `once` or `reject`, 204. One
         not pending in this session (unknown, answered, another session's) is a 404 that answers nothing. A reject
-        rejects every other request pending in the session too, then the run ends as one shutting down (`shut_down`).
-        Core never sends `always` or a `message`: each is refused (400) here, answering nothing."""
+        rejects every other request pending in the session too, then the run ends as one shutting down (`shut_down`);
+        a reject with a `message` (Core's own answer at Auto-approve, YN-78 S4b-2) fails only that tool call, as
+        2.2.5's CorrectedError does, and the run goes on. Core never sends `always`, or a message with `once`: each is
+        refused (400) here, answering nothing."""
         body = body if isinstance(body, dict) else {}
         decision = body.get('decision')
         if decision == 'always':
             return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: always is not expected'})
         if decision not in ('once', 'reject'):
             return self.reply(400, {'_tag': 'InvalidRequestError', 'message': f'Invalid decision: {decision}'})
-        if 'message' in body:
-            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a message is not expected'})
+        corrected = 'message' in body
+        if corrected and (decision != 'reject' or not isinstance(body['message'], str)):
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a message only with a reject'})
         with lock:
             found = pending_in(permissions, session, request_id)
             gone = [found] if found else []
@@ -2450,7 +2453,7 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             return self.reply(lost, {'_tag': 'UnknownError', 'message': 'the answer was lost'})
         self.reply(204)
-        if decision == 'reject':
+        if decision == 'reject' and not corrected:
             shut_down(session)
         return None
 

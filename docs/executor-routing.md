@@ -460,7 +460,7 @@ to each harness's own setting, so it holds whichever harness routing chooses.
 | Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
 | --- | --- | --- | --- | --- |
 | `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
-| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
 | `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
 | `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below |
 
@@ -481,10 +481,12 @@ hold over an `opencode.json` that allows more.
   start is refused. A configuration OpenCode reads after Yuzuno's, such as a
   managed one, is what can make them differ. The refused start is a definite
   failure, so a routed executor's rebuild tries the next candidate.
-- **On OpenCode, nothing reviews an action.** Codex's Auto-approve has an
-  automatic reviewer and Claude Code's its classifier. OpenCode's has neither:
-  everything inside the project is allowed, and only a folder outside it or a
-  call that keeps failing asks you.
+- **On OpenCode, no model reviews an action.** Codex's Auto-approve has an
+  automatic reviewer and Claude Code's its classifier. OpenCode has neither.
+  For a local OpenCode executor at Auto-approve, Core answers by fixed rules
+  instead (below). For another OpenCode Agent at this level, everything inside
+  the project is allowed, and only a folder outside it or a call that keeps
+  failing asks you.
 - **No sandbox confines OpenCode's commands, at any level.** OpenCode 2.2.5
   scans each shell command for its working folder and the folders it names,
   and asks for those outside the project (`external_directory`). It refuses a
@@ -496,19 +498,81 @@ hold over an `opencode.json` that allows more.
 - **A Core before core.29** keeps no OpenCode level: it starts an OpenCode
   executor with OpenCode's own configuration, whose default allows everything
   but reading a `.env` file (see [With an older Core](#with-an-older-core)).
-- **Rules for Core's own answers, not in use yet (YN-78).** Core also has
-  the rules it is to give an OpenCode executor once Core itself answers that
-  executor's permission requests.
-  - At Auto-approve, no rule allows a folder outside its own, a read, a
-    search or a listing: each is handed to Core or denied. Core's data
-    directory, the protected locations Core is given and `.env` files are
-    denied. Writing outside its folder is denied, except in its own
-    temporary directory.
-  - At Ask you first, reading, searching and listing ask too.
-  - Nothing uses these rules yet. Every level starts with the rules in the
-    table above, its start is checked as above, and no request is answered
-    for you, so OpenCode asks you as often as before. They take effect only
-    together with Core's answers.
+- **Ask you first** keeps the rules in the table. Core's own answers for it,
+  and "always allow this folder", are not in this Core yet (YN-78 S5).
+
+#### Core answers an OpenCode executor at Auto-approve (YN-78)
+
+A local OpenCode executor at Auto-approve on Unix, served by OpenCode 2.2.5,
+starts with Core's own answers to its permission requests. None of its
+requests reaches you. Every other Agent and level starts as the table says.
+
+- **One start, all or nothing.** Before its OpenCode starts, Core works out
+  the protected locations below and makes its rules and an instructions file,
+  `yuzuno-rules.md` in the executor's own folder, which OpenCode loads. Once
+  OpenCode runs, Core checks its version, reads every agent's rules back
+  against each part of them, and asks OpenCode which folder and Git top it
+  works in, whose real paths are then fixed as the project's. If any part
+  fails, the executor does not start, and says why. It is never started with
+  the older, wider Auto-approve rules.
+- **What the rules say.** Nothing statically allows a read, a search, a
+  listing or a folder outside the project: each is handed to Core, or
+  denied. Core's data directory, the protected locations and `.env` files are
+  denied. Writing outside the project is denied, except in the executor's own
+  temporary directory (`$TMPDIR`).
+- **How Core answers.** Each request is tied to the tool call that made it.
+  For pinned 2.2.5 that is a running call with its whole input. Core then
+  decides by where the call really reaches, its links followed:
+  - inside the project, as before, except reading a `.env` file;
+  - outside it, a read, search or listing only, and not of a protected
+    location, Core's data directory (but OpenCode's own output folders and the
+    executor's temporary directory) or a `.env` file;
+  - a write or a command only in the executor's own temporary directory.
+
+  A refusal fails only that tool call, with a reason the instructions file
+  explains; the run goes on. OpenCode's own tools tell the model only
+  `Unable to …`, so the instructions file is how it learns why.
+- **Protected locations.** Under the home, whether or not they exist:
+  `.ssh`, `.gnupg`, `.aws`, `.config/gcloud`, `.azure`, `.kube`, `.docker`,
+  `.config/gh`, `.password-store` and `.local/share/opencode`, on Linux also
+  `.local/share/keyrings` and on macOS `Library/Keychains`; the files
+  `.netrc`, `.git-credentials`, `.config/git/credentials`, `.npmrc`,
+  `.pypirc`, `.cargo/credentials`, `.cargo/credentials.toml` and
+  `.codex/auth.json`, on Linux also `.claude/.credentials.json`.
+  - Where a variable moves one of them, both places are protected:
+    `GNUPGHOME`, `AZURE_CONFIG_DIR`, `GH_CONFIG_DIR`, `CLOUDSDK_CONFIG`,
+    `DOCKER_CONFIG` and `PASSWORD_STORE_DIR` whole; `auth.json` in
+    `CODEX_HOME`; the credentials files in `CARGO_HOME`; `gcloud`, `gh` and
+    `git/credentials` in `XDG_CONFIG_HOME`; `opencode` (and on Linux
+    `keyrings`) in your own `XDG_DATA_HOME`; the files `AWS_CONFIG_FILE`,
+    `AWS_SHARED_CREDENTIALS_FILE`, the npm config files, and each file
+    `KUBECONFIG` lists.
+  - Only those variables' values are read, never the whole environment or a
+    key. An empty value, other than an XDG variable's or `KUBECONFIG`'s, a
+    relative one, or one too long, stops the start rather than protecting
+    less. There is no setting for more locations yet.
+- **Bounded, and never your prompt.** From a request's arrival Core has 20 s
+  to prepare its answer, then 30 s to start sending it, each session sending
+  one answer at a time. From that first send, 30 s to deliver and check it,
+  at most three sends. If its fate is still unknown, the session is
+  interrupted (15 s), then the request's disappearance awaited (10 s), then
+  the executor's OpenCode is ended: SIGTERM and, 12 s later, SIGKILL. That
+  is at most 117 s to sending SIGKILL, plus the system's own exit time.
+  Several faults of one executor share one teardown, at the earliest time
+  planned. Too many requests at once (64, or 16 MiB of them), or an answer
+  that can't start sending in time, closes the executor's connection the
+  same way. You can reconnect it.
+- **What is recorded.** An allowed request is counted, never logged one by
+  one. Every other outcome (a refusal, a request gone, an unknown delivery,
+  a teardown) is journaled once, as `opencode/autoAnswer`, with its reason
+  only once its delivery is certain.
+- **What this does not do.**
+  - It is no sandbox. A command run in the project or in `$TMPDIR` can still
+    read or write anywhere, as today.
+  - A search inside the project is not checked for `.env` files.
+  - A hard link to a protected file can't always be recognized.
+  - A request another refusal rejects with it is recorded, and can't always
+    be avoided.
 
 #### Read only (YN-74)
 

@@ -346,3 +346,249 @@ async fn an_executor_gets_its_own_temp_dir_in_the_environment() {
     ws.close_agent("oc").await.unwrap();
     assert_eq!(ws.store.executor_temp_dir(&workspace, "oc").unwrap().unwrap().released_at, None);
 }
+
+/// An executor row for Agent `id`, as a dispatch makes one.
+#[cfg(target_os = "linux")]
+fn executor(ws: &Workspace, id: &str) {
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,state,created_at,updated_at)
+         VALUES(?1,'executor','template','lead','created','now','now')", [id]).unwrap();
+}
+
+/// The stand-in's requests, as it logged them.
+#[cfg(target_os = "linux")]
+fn stand_in_calls(data: &std::path::Path) -> Vec<Value> {
+    std::fs::read_to_string(data.join("opencode/oc/calls.jsonl")).unwrap_or_default().lines()
+        .filter_map(|line| serde_json::from_str(line).ok()).collect()
+}
+
+/// YN-78 S4b-2: a local OpenCode executor at Auto-approve starts with Core's
+/// own answers, its rules and their instructions together; a permission
+/// request it can't bind to a tool call is refused by Core with its reason
+/// (a reject that lets the run go on), and never becomes the user's.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_auto_executors_requests_are_answered_by_core_never_the_user() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let folder = std::fs::canonicalize(data.join("opencode/oc")).unwrap();
+    let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode/oc/start.json")).unwrap()).unwrap();
+    let config: Value = serde_json::from_str(seen["configContent"].as_str().unwrap()).unwrap();
+    assert_eq!(config["instructions"], json!([folder.join("yuzuno-rules.md")]));
+    assert_eq!((&config["permission"]["external_directory"]["*"], &config["permission"]["grep"]), (&json!("ask"), &json!("ask")));
+    assert!(config["permission"].get("doom_loop").is_none());
+    let home = std::fs::canonicalize(&data).unwrap().join("synthetic-home");
+    assert_eq!(config["permission"]["external_directory"][format!("{}/.ssh/*", home.display())], "deny", "a default protection, though missing");
+    let rules = std::fs::read_to_string(folder.join("yuzuno-rules.md")).unwrap();
+    assert!(rules.contains("Auto-approve") && rules.contains(&format!("{}/.ssh/", home.display())), "{rules}");
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    assert!(c.auto.is_some(), "the connection has its engine from its start");
+    let asked = control(&data, "ask", json!({"sessionID": c.session, "action": "external_directory", "resources": ["/elsewhere/*"]})).await;
+    let request = asked["id"].as_str().unwrap().to_owned();
+    let path = format!("/api/session/{}/permission/{request}/reply", c.session);
+    let mut reply = None;
+    for _ in 0..200 {
+        reply = stand_in_calls(&data).into_iter().find(|call| call["method"] == "POST" && call["path"] == path.as_str());
+        if reply.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let reply = reply.expect("Core answered the request");
+    assert_eq!(reply["body"]["decision"], "reject");
+    assert!(reply["body"]["message"].as_str().unwrap().contains("couldn't tell which tool call asked"), "{reply}");
+    let mut journaled = None;
+    for _ in 0..200 {
+        journaled = ws.store.db.read().unwrap().query_row("SELECT data FROM journal WHERE agent_id='oc' AND kind='opencode/autoAnswer'", [],
+            |r| r.get::<_, String>(0)).ok();
+        if journaled.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let journaled: Value = serde_json::from_str(&journaled.expect("the refusal is recorded once delivered")).unwrap();
+    assert_eq!((&journaled["decision"], &journaled["reason"], &journaled["outcome"]), (&json!("reject"), &json!("call_unidentified"), &json!("delivered")));
+    let d = ws.store.detail("oc").unwrap();
+    assert!(d.pending.is_empty(), "never the user's request");
+    assert!(!ws.store.db.read().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id='oc' AND kind='opencode/permission.asked')",
+        [], |r| r.get::<_, bool>(0)).unwrap(), "not journaled one by one");
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// YN-78 S4b-2: an executor at Auto-approve whose answers can't all be made
+/// ready is not started, never started with the old wider rules: its rules
+/// overridden after Yuzuno's, another OpenCode release, an environment its
+/// protections can't be resolved from.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_auto_executor_that_cannot_get_cores_answers_is_not_started() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    let folder = data.join("opencode/oc");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("permission-after"), r#"[{"action":"external_directory","resource":"*","effect":"allow"}]"#).unwrap();
+    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
+    assert!(refused.contains("not started with weaker rules") && refused.contains("doesn't keep the permission level auto"), "{refused}");
+    assert!(ws.opencodes.lock().unwrap().get("oc").is_none());
+    std::fs::remove_file(folder.join("permission-after")).unwrap();
+    std::fs::write(folder.join("version"), "2.2.6").unwrap();
+    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
+    assert!(refused.contains("OpenCode 2.2.6 is not 2.2.5"), "{refused}");
+    std::fs::remove_file(folder.join("version")).unwrap();
+    auto::TEST_ENVS.lock().unwrap().push((data.clone(), crate::opencode_protection::PathEnv {
+        vars: [("HOME", std::ffi::OsString::from(""))].into_iter().collect(), ..Default::default() }));
+    std::fs::remove_file(folder.join("start.json")).unwrap();
+    let refused = format!("{:#}", ws.reconnect("oc").await.unwrap_err());
+    assert!(refused.contains("HOME is set but empty"), "{refused}");
+    assert!(!folder.join("start.json").exists(), "no server was started");
+    assert!(ws.opencodes.lock().unwrap().get("oc").is_none());
+}
+
+/// The tool entries of OpenCode's stored messages, in order: name, input,
+/// status, and at most 120 characters of what each returned or failed with.
+#[cfg(target_os = "linux")]
+fn lab_tools(messages: &Value) -> Vec<Value> {
+    let mut tools = Vec::new();
+    for message in messages.as_array().into_iter().flatten() {
+        let entries = message["content"].as_array().or(message["parts"].as_array());
+        for entry in entries.into_iter().flatten().filter(|entry| entry["type"] == "tool") {
+            let state = &entry["state"];
+            let said = [&state["output"], &state["content"], &state["error"], &state["result"]].into_iter()
+                .find(|value| !value.is_null()).map(|value| value.to_string().chars().take(120).collect::<String>());
+            // 2.2.5 keeps a tool's times on its entry (`created`, `ran`, `completed`, ms).
+            let time = if entry["time"].is_null() { &state["time"] } else { &entry["time"] };
+            tools.push(json!({"name": entry["name"].as_str().or(entry["tool"].as_str()), "input": state["input"], "status": state["status"],
+                "said": said, "time": time}));
+        }
+    }
+    tools
+}
+
+/// What a lab Turn left: the Turn, OpenCode's tool entries, Core's recorded
+/// answers, and anything that reached the user's queue.
+#[cfg(target_os = "linux")]
+async fn lab_record(ws: &Arc<Workspace>, turn: &str, started: Duration) -> Value {
+    let mut status = Value::Null;
+    for _ in 0..1800 {
+        let d = ws.store.detail("oc").unwrap();
+        if let Some(t) = d.turns.iter().find(|t| t["id"] == turn && t["status"] != "inProgress") {
+            status = t["status"].clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned();
+    let messages = match &c {
+        Some(c) => c.server.messages(&c.session).await.unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let db = ws.store.db.read().unwrap();
+    let rows = |sql: &str| -> Vec<Value> {
+        let mut query = db.prepare(sql).unwrap();
+        query.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|row| row.ok()).filter_map(|text| serde_json::from_str(&text).ok()).collect()
+    };
+    let answers = rows("SELECT data FROM journal WHERE agent_id='oc' AND kind='opencode/autoAnswer' ORDER BY seq");
+    let asked = rows("SELECT data FROM journal WHERE agent_id='oc' AND kind='opencode/permission.asked' ORDER BY seq");
+    let d = ws.store.detail("oc").unwrap();
+    json!({"turn": status, "startSeconds": started.as_secs_f64(), "tools": lab_tools(&messages), "autoAnswers": answers,
+        "userRequestsJournaled": asked.len(), "pending": d.pending.len(), "agentStatus": d.agent.status, "agentError": d.agent.error})
+}
+
+/// YN-78 S4b-2 lab: run only by its lab Job, never in CI (ignored). The real
+/// production connection with native OpenCode 2.2.5 (YUZUNO_OPENCODE_BIN), a
+/// scripted model on loopback that the Job starts, a synthetic home and
+/// synthetic files under YUZUNO_LAB_DIR. One Turn's reads go through Core's
+/// answers: a file outside, a protected one, a project link to it, and a
+/// file in the executor's own temporary directory. No request waits for the
+/// user. Writes `lab-result.json` in the lab folder before it checks.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn lab_native_auto_approve() {
+    let lab = std::path::PathBuf::from(std::env::var_os("YUZUNO_LAB_DIR").expect("YUZUNO_LAB_DIR"));
+    let (home, project, data) = (lab.join("home"), lab.join("project"), lab.join("d"));
+    auto::TEST_ENVS.lock().unwrap().push((data.clone(), crate::opencode_protection::PathEnv {
+        vars: [("HOME", home.clone().into_os_string())].into_iter().collect(), ..Default::default() }));
+    let ws = Workspace::new(data.clone(), project.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&project.to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    let begun = std::time::Instant::now();
+    ws.reconnect("oc").await.unwrap();
+    let started = begun.elapsed();
+    let workspace = ws.store.workspace_id().unwrap();
+    let temp = ws.store.executor_temp_dir(&workspace, "oc").unwrap().expect("its temporary directory").path;
+    std::fs::write(format!("{temp}/scratch.txt"), "synthetic scratch\n").unwrap();
+    std::fs::write(lab.join("expect.json"), json!({"temp": temp}).to_string()).unwrap();
+    let input = serde_json::from_value::<crate::model::MessageInput>(json!({"clientMessageId": "lab-1", "text": "Run the lab's reads."})).unwrap();
+    let turn = ws.send_message("oc", input).await.unwrap().turn_id.unwrap();
+    let result = lab_record(&ws, &turn, started).await;
+    std::fs::write(lab.join("lab-result.json"), serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    ws.close_agent("oc").await.unwrap();
+    assert_eq!(result["turn"], "completed", "{result:#}");
+    assert_eq!((result["pending"].as_u64(), result["userRequestsJournaled"].as_u64()), (Some(0), Some(0)), "no request was the user's");
+    let tools = result["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 4, "{result:#}");
+    let said = |n: usize| tools[n]["said"].as_str().unwrap_or_default().to_owned();
+    assert!(tools[0]["status"] == "completed" && said(0).contains("synthetic outside note"), "an ordinary file outside: {:#}", tools[0]);
+    assert!(tools[1]["status"] != "completed" && !said(1).contains("synthetic-not-a-key"), "a protected file: {:#}", tools[1]);
+    assert!(tools[2]["status"] != "completed" && !said(2).contains("synthetic-not-a-key"), "a project link to it: {:#}", tools[2]);
+    assert!(tools[3]["status"] == "completed" && said(3).contains("synthetic scratch"), "its own temporary directory: {:#}", tools[3]);
+    assert!(result["autoAnswers"].as_array().unwrap().iter().any(|a| a["decision"] == "reject" && a["reason"] == "protected_location"
+        && a["outcome"] == "delivered"), "Core refused the link to a protected location: {result:#}");
+}
+
+/// YN-78 S4b-2's one paid trial: run only by its lab Job (ignored). The same
+/// production connection with a real DeepSeek model (YUZUNO_LAB_MODEL), its
+/// key read here from YUZUNO_LAB_DEEPSEEK_KEY_FILE into this process's own
+/// environment for OpenCode to inherit, never printed, written or passed in
+/// argv. One Turn, never retried; what the model did is recorded as it is.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn lab_deepseek_auto_approve_turn() {
+    let lab = std::path::PathBuf::from(std::env::var_os("YUZUNO_LAB_DIR").expect("YUZUNO_LAB_DIR"));
+    let model = std::env::var("YUZUNO_LAB_MODEL").expect("YUZUNO_LAB_MODEL");
+    let key = std::fs::read_to_string(std::env::var_os("YUZUNO_LAB_DEEPSEEK_KEY_FILE").expect("the key file")).unwrap();
+    std::env::set_var("DEEPSEEK_API_KEY", key.trim());
+    drop(key);
+    let (home, project, data) = (lab.join("home"), lab.join("project"), lab.join("d"));
+    auto::TEST_ENVS.lock().unwrap().push((data.clone(), crate::opencode_protection::PathEnv {
+        vars: [("HOME", home.clone().into_os_string())].into_iter().collect(), ..Default::default() }));
+    let ws = Workspace::new(data.clone(), project.to_string_lossy().into(), "unused".into()).unwrap();
+    let mut detail = agent(&project.to_string_lossy());
+    detail.agent.model = model.clone();
+    ws.store.insert(&detail).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    let begun = std::time::Instant::now();
+    ws.reconnect("oc").await.unwrap();
+    let started = begun.elapsed();
+    let workspace = ws.store.workspace_id().unwrap();
+    let temp = ws.store.executor_temp_dir(&workspace, "oc").unwrap().expect("its temporary directory").path;
+    std::fs::write(format!("{temp}/scratch.txt"), "synthetic scratch\n").unwrap();
+    let outside = lab.join("outside/notes.txt");
+    let protected = home.join(".ssh/id_synthetic");
+    let text = format!("This is a permission test with synthetic files. Use only the read tool, once for each path, in this order, \
+        and do not use any other tool: 1) {} 2) {} 3) secret-link/id_synthetic 4) {temp}/scratch.txt . Some reads will be refused; \
+        that is expected, do not retry them. Then reply with one line per path saying read or refused.", outside.display(), protected.display());
+    let input = serde_json::from_value::<crate::model::MessageInput>(json!({"clientMessageId": "lab-ds-1", "text": text})).unwrap();
+    let turn = ws.send_message("oc", input).await.unwrap().turn_id.unwrap();
+    let mut result = lab_record(&ws, &turn, started).await;
+    result["model"] = json!(model);
+    std::env::remove_var("DEEPSEEK_API_KEY");
+    std::fs::write(lab.join("lab-result.json"), serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    ws.close_agent("oc").await.unwrap();
+    assert_eq!((result["pending"].as_u64(), result["userRequestsJournaled"].as_u64()), (Some(0), Some(0)), "no request was the user's: {result:#}");
+}

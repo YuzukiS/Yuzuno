@@ -3,11 +3,10 @@
 //! activity 8121): which tool call asked, and whether what it really
 //! reaches is allowed.
 //!
-//! **Passive.** Nothing calls this yet. No event, snapshot or start feeds
-//! it, no answer is sent (no `answer_permission`), and no request leaves
-//! the user's queue: every level asks exactly as before. Answering for real,
-//! with its delivery checks and the Auto-approve rules it goes with, is S4b;
-//! Ask you first is S5.
+//! **Who calls it.** Core's answers at Auto-approve (opencode_responder.rs,
+//! wired from S4b-2 in opencode_auto.rs): the binding and the decision of
+//! each request of a local OpenCode executor at that level. Ask you first
+//! is S5; every other level never reaches here.
 //!
 //! **Binding (2.3.1).** A request is only answered for a tool call Core can
 //! name: its `source` is `{type: "tool", messageID, id}`, its session is the
@@ -77,7 +76,6 @@
 //! held across the read or the file system. Nothing here logs; a decision
 //! carries its reason's code and the paths it checked, never a message's or
 //! a file's content.
-#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 mod patch;
 mod paths;
