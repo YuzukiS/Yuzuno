@@ -715,6 +715,11 @@ A released executor takes no more mail or work:
   passed, a review that passed, a pull request made, a merge) is quiet: it
   is kept and read as usual, and comes with the dispatcher's next wake-up
   instead of starting a Turn (YN-68). A failure always wakes it.
+  Before its release, a review round it started itself is mailed to it, and
+  you get a copy when the round ends: quiet once it completed, ringing when
+  it failed, was cancelled or is unknown (YN-12). After it, the review's
+  mail comes to you once, not twice. A round its delivery flow registered
+  sends no copy: the flow's own mail tells you.
 - **Other mail is refused.** Mail to it, and a dispatch naming it, is refused
   with `executor_archived`, naming its task and its dispatcher. Write to the
   dispatcher instead, or dispatch the task again for new work.

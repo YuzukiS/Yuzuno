@@ -1244,3 +1244,33 @@ fn a_beyond_limit_round_attached_after_a_refusal_clears_the_judgment_and_gets_ci
     assert_eq!(get(&s, &t)["state"], "waiting_ci");
     assert!(s.delivery_claim(&key, "ci").unwrap().is_some(), "CI is claimed again");
 }
+/// YN-12 S2: a review the flow registered, started by its owner under an
+/// Agent's dispatch, sends that dispatcher no copy of its end: the flow's own
+/// mail tells it.
+#[test]
+fn a_registered_review_sends_the_dispatcher_no_copy_beside_the_flows_mail() {
+    let (_d, s, t) = setup();
+    s.insert(&serde_json::from_value(json!({"agent":{"id":"lead","name":"Lead","cwd":"/tmp","model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap()).unwrap();
+    let version = s.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap()["task"]["version"].clone();
+    s.collaboration_call(Some("lead"), "task_dispatch", json!({"requestId":"dispatch","taskId":t,"expectedVersion":version,"toAgentId":"owner"}))
+        .unwrap();
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "submit"))
+        .unwrap();
+    let run = start(&s, &t, "registered");
+    assert_eq!(run["requestedBy"]["id"], "owner", "the flow starts it as its owner, the executor");
+    finish(&s, run, "changes_requested");
+    s.delivery_reconcile(&internal(&s, &t)).unwrap();
+    let id = internal(&s, &t);
+    let db = s.db.read().unwrap();
+    assert!(crate::delivery::store::registers_review(&db, &id, "registered").unwrap());
+    assert!(!crate::delivery::store::registers_review(&db, &id, "another").unwrap());
+    drop(db);
+    assert!(s.pr_review_report(&t, "registered").unwrap().get("dispatcherCopy").is_none());
+    let read = |to: &str| s.collaboration_call(None, "peer_read", json!({"agentId":to,"limit":200})).unwrap()["messages"].as_array().unwrap().clone();
+    let kinds = |to: &str| read(to).iter().map(|m| m["metadata"]["kind"].as_str().unwrap_or("").to_owned()).collect::<Vec<_>>();
+    let lead = kinds("lead");
+    assert!(!lead.iter().any(|k| k == "review"), "no copy: {lead:?}");
+    assert!(lead.iter().any(|k| k == "delivery"), "the flow's own mail: {lead:?}");
+    assert_eq!(kinds("owner").iter().filter(|k| *k == "review").count(), 1, "the owner's own mail");
+}

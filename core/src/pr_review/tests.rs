@@ -1413,3 +1413,6 @@ fn a_start_without_the_new_flag_serializes_as_before() {
     let parsed: Start = serde_json::from_value(json!({"requestId":"plain","taskId":task,"linkId":"7:pull:1"})).unwrap();
     assert!(parsed.beyond_round_limit.is_none());
 }
+
+/// YN-12 S2: the dispatcher's copy of an executor's own round.
+mod copy;

@@ -29,6 +29,12 @@
 //!   run, a review that passed, a PR operation, a merge), once its task is
 //!   done, cancelled or archived. While the task is open it rings: nobody
 //!   else is waiting for it.
+//! - A dispatcher's copy of a review its executor started (YN-12 S2,
+//!   `pr_review/store.rs`), once the review completed, whatever its
+//!   conclusion, while that executor is at work on the open task: the
+//!   executor was told too and takes the next step. A copy of one that
+//!   failed, was cancelled or is unknown rings, and so does any copy once
+//!   the task is closed or the executor is not at work.
 //!
 //! A revert, a red, cancelled or unobserved main CI, a stop, a pause, a
 //! result, a refusal, a failure and an unknown outcome always ring.
@@ -62,6 +68,9 @@ pub(crate) fn classify(db: &Connection, message: &Value) -> (&'static str, Optio
 
 /// Why a notice that would be quiet rings: its recipient's preferences.
 pub(crate) const WANTED: &str = "a quiet notice your mail_preferences ask to be woken by";
+
+/// Why a dispatcher's copy of a completed review is quiet.
+pub(crate) const COPY: &str = "a copy of a review your executor started and was told of; it takes the next step";
 
 /// Whether the recipient's preferences make this quiet notice ring.
 fn wanted(db: &Connection, message: &Value) -> Result<bool> {
@@ -148,7 +157,12 @@ fn event(message: &Value) -> String {
         ("executorTemplates", "changed") => return "executor templates changed".into(),
         ("job", "succeeded") => "Job succeeded",
         ("ci", "passed") => "CI passed",
-        ("review", "completed") => "review passed",
+        // By the notice's status, a completed review's conclusion
+        // (mailbox_notice.rs): completed alone never means it passed.
+        ("review", status) => match message["notice"]["status"].as_str().filter(|s| !s.is_empty()).unwrap_or(status) {
+            "no_findings" | "approved_with_notes" => "review passed",
+            told => return format!("{name} review {told}").trim().to_owned(),
+        },
         ("pr", "completed") => "PR done",
         (_, status) => return format!("{name} {status}").trim().to_owned(),
     };
@@ -175,6 +189,13 @@ fn decide(db: &Connection, message: &Value) -> Result<Option<&'static str>> {
         Some(id) => load_task(db, id)?,
         None => return Ok(None),
     };
+    // The dispatcher's copy of a review its executor started (YN-12 S2): the
+    // executor was told too and takes the next step, while it is at work.
+    if kind == "review" && metadata["copyFor"] == "dispatcher" {
+        let requester = metadata["requester"].as_str().filter(|id| !id.is_empty());
+        let at_work = requester.is_some() && executor_at_work(db, &task)?.as_deref() == requester;
+        return Ok((status == "completed" && at_work).then_some(COPY));
+    }
     let revert = metadata["entryKind"] == "revert";
     let green = kind == "merge" && status == "done" && metadata["reason"].is_null() && metadata["mainCi"] == "success" && !revert;
     let merged = kind == "merge" && status == "merged" && !revert;

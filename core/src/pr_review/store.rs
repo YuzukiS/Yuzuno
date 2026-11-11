@@ -117,6 +117,42 @@ pub(crate) fn round_limit_refusal(started: i64, uncounted: usize, what: &str) ->
     )
 }
 
+/// Who gets a copy of the end of a round, `data`, besides its own recipient
+/// (YN-12 S2): the notification recipient of its task's active dispatch,
+/// when an Agent started it that is that dispatch's executor. Read once, as
+/// the round ends, so a dispatch made again to the same executor copies its
+/// own dispatcher, and one made to another executor copies no one. None when
+/// the copy would reach the same Agent as the original (both resolved as
+/// Core's mail is, `executor_archive::delivered_to`: a released executor's
+/// mail goes to its dispatcher), when the dispatcher started the round
+/// itself, and for a review the task's delivery flow registered: the flow's
+/// own mail tells its owner and recipient.
+fn dispatcher_copy(tx: &Connection, data: &Value) -> Result<Option<crate::collaboration_store::TaskActor>> {
+    let requester = &data["requestedBy"];
+    let (Some(requester), Some(original), Some(task), Some(review)) = (
+        requester["id"].as_str().filter(|_| requester["kind"] == "agent"),
+        data["notificationRecipient"]["id"].as_str(),
+        data["taskId"].as_str(),
+        data["id"].as_str(),
+    ) else {
+        return Ok(None);
+    };
+    let Some(dispatch) = crate::collaboration_store::load_task(tx, task)?
+        .dispatch
+        .filter(|d| d.active && d.executor.kind == "agent" && d.executor.id == requester)
+    else {
+        return Ok(None);
+    };
+    let Some(to) = dispatch.notification_recipient.filter(|to| to.kind == "agent" && to.id != requester) else {
+        return Ok(None);
+    };
+    use crate::executor_archive::delivered_to;
+    if delivered_to(tx, &to.id)? == delivered_to(tx, original)? || crate::delivery::store::registers_review(tx, task, review)? {
+        return Ok(None);
+    }
+    Ok(Some(to))
+}
+
 impl Store {
     pub(crate) fn recover_pr_reviews(&self) -> Result<()> {
         let pending = {
@@ -441,6 +477,17 @@ impl Store {
             }
         }
         let round_limit = stored_data["roundLimit"]["why"].as_str().map(|why| format!(" {why}")).unwrap_or_default();
+        // The dispatcher's copy of an executor's own round, named on the
+        // record before it is written (review_get shows it).
+        let copy = match notification_id {
+            Some(_) => dispatcher_copy(&tx, data)?.map(|to| (uuid::Uuid::new_v4().to_string(), to)),
+            None => None,
+        };
+        if let Some((copy_id, to)) = &copy {
+            stored_data["dispatcherCopy"] = json!({"messageId":copy_id,"recipient":to});
+        }
+        // Ending only a preparing or running round makes it end once, so
+        // there is one original and at most one copy.
         let n = tx.execute("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN ('preparing','running')",params![id,status,stored_data.to_string(),report])?;
         ensure!(n == 1, "Review has already ended");
         if !matches!(status, "preparing" | "running") {
@@ -472,11 +519,27 @@ impl Store {
                     .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
                     .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
                     .map(|n| format!("PR #{n}"));
+                let metadata = json!({"kind":"review","reviewId":id,"status":status,"conclusion":data["conclusion"],"policyVersion":data["policyVersion"],"reasonCodes":data["reasonCodes"],"name":pr});
                 crate::collaboration_store::insert_message(
                     &tx,
                     json!({"id":message_id,"seq":0,"sender":actor,"recipient":data["notificationRecipient"],"body":body,"taskId":task,"replyTo":null,"threadId":message_id,"createdAt":now(),"source":{"reviewId":id},"priority":"normal","reviewId":id,
-                        "metadata":{"kind":"review","reviewId":id,"status":status,"conclusion":data["conclusion"],"policyVersion":data["policyVersion"],"reasonCodes":data["reasonCodes"],"name":pr}}),
+                        "metadata":metadata}),
                 )?;
+                if let Some((copy_id, to)) = copy {
+                    let requester = &data["requestedBy"];
+                    let body = format!(
+                        "Copy for you as the dispatcher of {public_task}: {} started this round and was sent the result as well; the next step is its own, under your dispatch.\n\n{body}",
+                        requester["name"].as_str().or(requester["id"].as_str()).unwrap_or("its executor")
+                    );
+                    let mut metadata = metadata;
+                    metadata["copyFor"] = json!("dispatcher");
+                    metadata["requester"] = requester["id"].clone();
+                    crate::collaboration_store::insert_message(
+                        &tx,
+                        json!({"id":copy_id,"seq":0,"sender":actor,"recipient":to,"body":body,"taskId":task,"replyTo":null,"threadId":copy_id,"createdAt":now(),"source":{"reviewId":id},"priority":"normal","reviewId":id,
+                            "metadata":metadata}),
+                    )?;
+                }
             }
             crate::collaboration_store::activity(
                 &tx,
