@@ -85,7 +85,12 @@ function mount(answer) {
   w.eval(bundle);
   return { w, doc: w.document, errors, scrolls, close: () => w.close() };
 }
-const others = (url) => (url.includes("github_repositories") ? { repositories: [], links: [] } : {});
+const others = (url) =>
+  url.includes("github_repositories")
+    ? { repositories: [], links: [] }
+    : url.endsWith("/api/machine-live")
+      ? { machines: [] }
+      : {};
 const refresh = (p) => p.doc.querySelector('[aria-label="Refresh Home"]');
 
 test("Refresh says it is busy, its icon turning, while the read it asked for is on its way; Home's own reads say nothing (T-19 HM:H3)", async () => {

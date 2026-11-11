@@ -346,6 +346,66 @@ const machineLoad = () => ({
   gpus: [{ name: "NVIDIA GeForce RTX 5090", utilPct: 63, memUsedMiB: 12034, memTotalMiB: 32607, attribution: "unknown" }],
   jobs: [{ id: "job-1", name: "cargo test -j2", agentId: "mori", agentName: "Mori", projectId: "p1", cpuPct: null, memMiB: 2048 }],
 });
+// Home's other machines (YN-83 S1): synthetic registered SSH machines. None are
+// real, and nothing here starts SSH: the request is answered from this fixture.
+const remoteMachine = (extra) => ({
+  id: "m",
+  name: "m",
+  state: "online",
+  code: null,
+  since: iso(-2 * MIN),
+  retryAt: null,
+  observedAt: new Date().toISOString(),
+  platform: "Linux",
+  sameAs: null,
+  load: null,
+  ...extra,
+});
+const remoteLoad = (extra = {}) => ({
+  cpu: { pct: 23, cores: 32, observedAt: new Date().toISOString() },
+  memory: { totalMiB: 64307, usedMiB: 12698, availableMiB: 50176, estimate: false, observedAt: new Date().toISOString() },
+  disks: [{ roles: ["root"], totalMiB: 953674, availableMiB: 421888, observedAt: new Date().toISOString(), error: null, permanent: null }],
+  gpu: { state: "off", code: "not_enabled" },
+  ...extra,
+});
+const longMachineName = "build-box-with-a-very-long-machine-name";
+const machineLiveRows = () => [
+  remoteMachine({ id: "build-box", name: longMachineName, load: remoteLoad() }),
+  remoteMachine({
+    id: "lab-mac",
+    name: "lab-mac",
+    platform: "Darwin",
+    sameAs: "build-box",
+    load: remoteLoad({
+      cpu: { pct: 8, cores: 10, observedAt: new Date().toISOString() },
+      memory: { totalMiB: 32768, usedMiB: 9318, availableMiB: 15237, estimate: true, observedAt: new Date().toISOString() },
+    }),
+  }),
+  remoteMachine({ id: "laptop", name: "laptop", state: "connecting", platform: null }),
+  remoteMachine({
+    id: "gpu-node",
+    name: "gpu-node",
+    state: "offline",
+    code: "ssh_unreachable",
+    retryAt: iso(12_000),
+  }),
+  remoteMachine({ id: "old-server", name: "old-server", state: "unavailable", code: "unclean_exit", platform: null }),
+  remoteMachine({
+    id: "data-host",
+    name: "data-host",
+    load: remoteLoad({ cpu: null, memory: null, disks: null }),
+  }),
+  remoteMachine({ id: "nas", name: "nas", state: "unavailable", code: "ssh_auth", platform: null }),
+  remoteMachine({ id: "spare", name: "spare", state: "idle", platform: null }),
+];
+/** What /api/machine-live answers; the step replaces it. */
+let machineLive = () => ({ machines: [] });
+let machineLiveFailure = null;
+let machineLiveReads = 0;
+/** While set, /api/machine-live holds its answer: the card then shows unknown
+ * after six seconds without a successful answer, as a hung request does. */
+let machineLiveGate = null;
+let releaseMachineLive = () => {};
 const github = "https://github.com/example/yuzuno-next";
 const repoActivity = () => ({
   observedAt: iso(-2 * MIN),
@@ -453,6 +513,17 @@ async function serve(route) {
     await machineGate;
     return route.fulfill({ json: machineLoad() });
   }
+  if (path === "/api/machine-live") {
+    machineLiveReads++;
+    if (machineLiveFailure) return route.fulfill({ status: machineLiveFailure, json: { error: "connection lost" } });
+    if (machineLiveGate) await machineLiveGate;
+    try {
+      return await route.fulfill({ json: machineLive() });
+    } catch {
+      // The page aborted the request after its own deadline; nothing to answer.
+      return;
+    }
+  }
   const json = {
     "/api/workspace": () => ({ workspace: { id: "ws" }, projects, projectUsage: { p1: { agents: 2, tasks: 1 }, p2: { agents: 1, tasks: 0 } }, agents, runtime: { connected: true }, defaultCwd: "/fixture" }),
     "/api/home": home,
@@ -463,6 +534,7 @@ async function serve(route) {
     "/api/jobs/live": () => noLiveJobs,
     // The Agent list reads which Agents wait on CI (T-122); none here.
     "/api/ci/live": () => ({ agents: {} }),
+    "/api/waits/live": () => ({ agents: {} }),
     "/api/ci": () => noCiRuns,
     "/api/reviews": () => noReviews,
     "/api/backlog": () => ({ observedAt: new Date().toISOString(), agents: {} }),
@@ -569,6 +641,17 @@ const setTheme = async (theme) => {
     window.dispatchEvent(new StorageEvent("storage", { key: "yuzuno.appearance" }));
   }, theme);
   await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, theme);
+};
+/** The interface language, as this device keeps it (T-189). */
+const setLanguage = async (language) => {
+  await page.evaluate((language) => {
+    localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "yuzuno.language" }));
+  }, language);
+  await page.waitForFunction(
+    (language) => document.querySelector(".home-machines h2")?.textContent.includes(language === "zh-Hans" ? "机器" : "Machines"),
+    language,
+  );
 };
 const scrollHomeTo = (selector) =>
   page.evaluate((selector) => {
@@ -1025,6 +1108,140 @@ try {
     assert.ok(Object.keys(looks).length === 4, "measured in both themes and widths");
     assert.deepEqual(problems, []);
     return { cards: looks["light-1440"].sides.cards.length };
+  });
+
+  await step("11 Other machines: the card's own /api/machine-live reading shows online, connecting, offline, unavailable, unknown, macOS estimate, sameAs, a long name, six rows and the rest; no Jobs or Agents claim; at 1280/940/360 in English and Chinese, light and dark; unknown when no answer arrives; folded reads stop; no overflow or unreachable check", async () => {
+    machineLive = () => ({ machines: machineLiveRows() });
+    await setTheme("light");
+    await setLanguage("en");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await ensureHome();
+    const card = page.locator(".home-machines");
+    const foldButton = card.locator(".home-fold");
+    if ((await foldButton.getAttribute("aria-expanded")) === "false") await foldButton.click();
+    await scrollHomeTo(".home-machines");
+    await page.waitForFunction(() => document.querySelectorAll(".home-remote-row").length === 6);
+    await page.waitForFunction(() => !document.querySelector(".home-remote-status"));
+    const remote = page.locator(".home-remote-machines");
+    const chips = await remote.locator(".home-remote-row").evaluateAll((rows) =>
+      rows.map((row) => [row.dataset.machineId, row.querySelector(".home-remote-chip").textContent.trim()]),
+    );
+    assert.deepEqual(chips, [
+      ["build-box", "Online"],
+      ["lab-mac", "Online"],
+      ["laptop", "Connecting…"],
+      ["gpu-node", "Offline"],
+      ["old-server", "Unavailable"],
+      ["data-host", "Online"],
+    ]);
+    const row = (id) => remote.locator(`[data-machine-id="${id}"]`);
+    assert.match(await row("lab-mac").locator(".home-remote-tag").first().textContent(), /estimated/);
+    assert.match(await row("lab-mac").locator(".home-remote-why").textContent(), new RegExp(`${longMachineName}.*does not share this connection`));
+    assert.match(await row("gpu-node").locator(".home-remote-why").textContent(), /Automatic retry at/);
+    assert.match(await row("old-server").locator(".home-remote-why").textContent(), /cannot confirm the remote program has exited.*does not reconnect automatically/);
+    assert.match(await row("old-server").locator(".home-remote-why").textContent(), /Live status is unavailable: check the connection on the Machines page/);
+    assert.deepEqual(
+      await row("data-host").locator(".home-fact strong").evaluateAll((facts) => facts.map((f) => f.textContent)),
+      ["unknown", "unknown", "unknown"],
+      "an online reading that is null is unknown, never 0",
+    );
+    assert.match(await row("build-box").locator('[data-remote-fact="GPU"]').textContent(), /GPU\s*Not enabled/);
+    assert.equal(await row("build-box").locator(".home-remote-check").count(), 0, "an online row needs no check link");
+    for (const id of ["gpu-node", "old-server"]) {
+      const check = row(id).locator(".home-remote-check");
+      assert.equal(await check.textContent(), "Live status is unavailable: check the connection on the Machines page");
+      assert.ok(await check.isEnabled(), `${id}'s check entry is reachable`);
+    }
+    assert.equal(await remote.locator(".home-remote-more").textContent(), "2 more · Show them on the Machines page", "six rows, then the rest");
+    assert.equal(await remote.locator(".home-remote-row").count(), 6);
+    const remoteText = await remote.innerText();
+    assert.doesNotMatch(remoteText, /\bJobs?\b|\bAgents?\b/, "no Jobs or Agents claim in the machine card");
+    assert.doesNotMatch(remoteText, /\bPR\s*\d|\bS[1-6]\b/, "no stage or PR name");
+    const long = row("build-box").locator(".home-remote-name");
+    assert.match(((await tipText(page, long)) ?? "").replace(/\n/g, " "), new RegExp(longMachineName), "the whole name is in its tip");
+    const overflow = async () =>
+      page.evaluate(() => {
+        const card = document.querySelector(".home-machines");
+        const box = card.getBoundingClientRect();
+        const problems = [];
+        if (card.scrollWidth > card.clientWidth + 1) problems.push(`card scrollWidth ${card.scrollWidth} > ${card.clientWidth}`);
+        for (const row of card.querySelectorAll(".home-remote-row")) {
+          const r = row.getBoundingClientRect();
+          if (r.right > box.right + 1 || r.left < box.left - 1) problems.push(`${row.dataset.machineId} row outside the card`);
+          for (const fact of row.querySelectorAll(".home-fact")) {
+            if (fact.getBoundingClientRect().right > box.right + 1) problems.push(`${row.dataset.machineId} ${fact.dataset.remoteFact} outside the card`);
+          }
+        }
+        return problems;
+      });
+    assert.deepEqual(await overflow(), [], "nothing spills out at 1280");
+    await shot("machine-remote-en-light-1280.png", card);
+    await setTheme("dark");
+    await shot("machine-remote-en-dark-1280.png", card);
+    await setLanguage("zh-Hans");
+    await setTheme("light");
+    await page.setViewportSize({ width: 940, height: 900 });
+    await scrollHomeTo(".home-machines");
+    await sleep(250);
+    assert.equal(await remote.locator(".home-remote-head h3").textContent(), "其他机器");
+    assert.equal(
+      await row("gpu-node").locator(".home-remote-check").textContent(),
+      "实时状态不可用，请到“机器”页检查连接",
+      "the same check entry in Chinese",
+    );
+    assert.match(await row("lab-mac").locator(".home-remote-tag").first().textContent(), /估算/);
+    assert.deepEqual(await overflow(), [], "nothing spills out at 940");
+    await shot("machine-remote-zh-light-940.png", card);
+    await setTheme("dark");
+    await page.setViewportSize({ width: 360, height: 900 });
+    await scrollHomeTo(".home-machines");
+    await sleep(250);
+    assert.deepEqual(await overflow(), [], "nothing spills out at 360");
+    await shot("machine-remote-zh-dark-360.png", card);
+    // The card is taller than the 360 viewport: its last row and the "2 more"
+    // entry must both be reachable, in one screenshot at the card's bottom.
+    await scrollHomeTo('[data-machine-id="data-host"]');
+    await sleep(250);
+    const moreEntry = remote.locator(".home-remote-more button");
+    const lastBox = await row("data-host").boundingBox();
+    assert.ok(lastBox && lastBox.y >= 0 && lastBox.y + lastBox.height <= 900, "the sixth row is in the 360 viewport");
+    assert.ok(await moreEntry.isVisible(), "the rest is reachable at 360");
+    assert.ok(await moreEntry.isEnabled(), "the rest can be opened at 360");
+    const moreBox = await moreEntry.boundingBox();
+    assert.ok(moreBox && moreBox.y >= 0 && moreBox.y + moreBox.height <= 900, "the rest is in the 360 viewport");
+    await shot("machine-remote-zh-dark-360-bottom.png");
+    // No answer for more than six seconds: unknown rows with the last
+    // successful answer, and no old online values.
+    await setTheme("light");
+    await setLanguage("en");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    machineLiveGate = new Promise((done) => {
+      releaseMachineLive = () => {
+        machineLiveGate = null;
+        done();
+      };
+    });
+    await page.waitForFunction(() => document.querySelector(".home-remote-status"), null, { timeout: 15_000 });
+    const status = await page.locator(".home-remote-status").textContent();
+    assert.match(status, /No answer for 6 seconds/);
+    assert.match(status, /last answer \d/);
+    assert.equal(await page.locator(".home-remote-row.is-unknown").count(), 6);
+    assert.doesNotMatch(await remote.innerText(), /\d+%|\d+\.\d+ GiB/, "no stale online value after no answer");
+    assert.match(await remote.locator(".home-remote-row").first().locator(".home-fact").textContent(), /last \d/);
+    await shot("machine-remote-unknown-en-light-1280.png", card);
+    releaseMachineLive();
+    await page.waitForFunction(() => document.querySelector(".home-remote-row.is-online") && !document.querySelector(".home-remote-status"), null, { timeout: 15_000 });
+    // Folded, the card stops asking; expanded it asks again.
+    await foldButton.click();
+    await sleep(100);
+    const foldedReads = machineLiveReads;
+    await sleep(2_400);
+    assert.equal(machineLiveReads, foldedReads, "a folded machine card reads no other machine");
+    await foldButton.click();
+    await until("a read after expanding the machine card", () => machineLiveReads > foldedReads);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await ensureHome();
+    assert.deepEqual(report.errors, [], "no console or page errors while drawing the machine card");
   });
 
   await step("the needs-you row jumps to and focuses the ask; the panel order stays", async () => {
