@@ -74,6 +74,19 @@ fn fail_setup(s: &Store, t: &str, times: usize) {
     }
 }
 
+/// The round's CI setup tries, each ending without a subscription.
+fn fail_ci(s: &Store, t: &str, times: usize) {
+    let task = internal(s, t);
+    for _ in 0..times {
+        let plan = s.delivery_claim(&task, "ci").unwrap().unwrap();
+        s.delivery_finish(&task, &plan, Err("GitHub unavailable".into())).unwrap();
+        s.db.write()
+            .unwrap()
+            .execute("UPDATE delivery_flows SET data=json_set(data,'$.rounds[#-1].ci.nextTry',0) WHERE task_id=?1", [&task])
+            .unwrap();
+    }
+}
+
 fn raw(s: &Store, t: &str) -> Value {
     let task = internal(s, t);
     let raw: String = s.db.read().unwrap().query_row("SELECT data FROM delivery_flows WHERE task_id=?1", [&task], |r| r.get(0)).unwrap();
@@ -432,6 +445,61 @@ fn a_completed_review_without_an_explicit_conclusion_is_never_replaced() {
     run["conclusion"] = json!("unknown");
     not_started(&s, run);
     assert_eq!(cont(&s, &t, "a", "b", "retry").unwrap()["attempt"], 2);
+}
+
+/// R3 5e57e962 P2: a round's CI is set up once per round, never per attempt.
+/// When its setup used its three tries without a subscription, ended or not,
+/// and no receipt can recover one, another attempt at the head would pay for
+/// a review the round can't take to ready: it is refused, writing nothing,
+/// and no new paid review is ever claimed.
+#[test]
+fn another_attempt_waits_for_a_round_ci_whose_setup_is_spent() {
+    let continues = |s: &Store| count(s, "SELECT COUNT(*) FROM collaboration_requests WHERE operation='delivery_continue'");
+    for unconfirmed in [false, true] {
+        let (_d, s, t) = setup();
+        enable(&s, &t);
+        submit(&s, &t, "r1");
+        fail_setup(&s, &t, 3);
+        let task = internal(&s, &t);
+        if unconfirmed {
+            fail_ci(&s, &t, 2);
+            assert!(s.delivery_claim(&task, "ci").unwrap().is_some(), "its third try's end is never recorded");
+        } else {
+            fail_ci(&s, &t, 3);
+        }
+        let f = get(&s, &t);
+        assert_eq!((&f["rounds"][0]["ci"]["attempts"], &f["rounds"][0]["ci"]["id"]), (&json!(3), &Value::Null), "{f}");
+        let before = (written(&s), continues(&s));
+        let error = refused(&s, &t, "a", "b", "retry");
+        assert!(error.contains("CI subscription setup used its three tries without a subscription"), "unconfirmed {unconfirmed}: {error}");
+        assert!(error.ends_with("No attempt was authorized."), "{error}");
+        assert_eq!((written(&s), continues(&s)), before, "no attempt, review or receipt");
+        assert!(s.delivery_claim(&task, "review").unwrap().is_none(), "no paid review is claimed");
+        assert!(s.delivery_claim(&task, "ci").unwrap().is_none(), "and CI isn't set up again");
+    }
+}
+
+/// The recovery Core already has stays: a CI subscription that committed
+/// although its answer was lost is the round's once a claim reads its
+/// receipt, and the head may then be authorized again, with the same CI.
+#[test]
+fn a_round_ci_recovered_from_its_receipt_lets_the_head_be_authorized_again() {
+    let (_d, s, t) = setup();
+    enable(&s, &t);
+    submit(&s, &t, "r1");
+    let task = internal(&s, &t);
+    fail_ci(&s, &t, 2);
+    // The third try commits its subscription; its answer never reaches the flow.
+    let (plan, sub) = subscribe_plan(&s, &t);
+    let f = get(&s, &t);
+    assert_eq!((&f["rounds"][0]["ci"]["attempts"], &f["rounds"][0]["ci"]["id"]), (&json!(3), &Value::Null));
+    // The review's three tries fail; their claims read the CI receipt back.
+    fail_setup(&s, &t, 3);
+    let ci = get(&s, &t)["rounds"][0]["ci"].clone();
+    assert_eq!((&ci["id"], &ci["attempts"], &ci["requestId"]), (&sub["id"], &json!(3), &plan.input["requestId"]), "{ci}");
+    let f = cont(&s, &t, "a", "b", "retry").unwrap();
+    assert_eq!(f["attempt"], 2);
+    assert_eq!(f["rounds"][0]["ci"], ci, "the round's CI identity and count stay");
 }
 
 /// #9: a start the PR's started round limit refused is never retried here.
