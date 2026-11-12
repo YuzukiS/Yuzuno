@@ -472,6 +472,13 @@ fn review(db: &Connection, id: Option<&str>) -> Result<Option<Value>> {
         .optional()?;
     raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
 }
+/// Whether `review` is one of the reviews this task's delivery flow
+/// registered (a round's review, started by the flow or attached to it): the
+/// flow's own mail tells its owner and recipient, so a review's end sends no
+/// dispatcher copy for it (YN-12 S2, pr_review/store.rs). Read only.
+pub(crate) fn registers_review(db: &Connection, task: &str, review: &str) -> Result<bool> {
+    Ok(load(db, task)?.is_some_and(|f| f.rounds.iter().any(|r| r.review.id.as_deref() == Some(review))))
+}
 /// Both native manual requests and automation enter this same transaction.
 /// A registered candidate returns its original attempt even after restart.
 pub(crate) fn registered_review(

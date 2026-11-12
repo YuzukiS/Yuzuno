@@ -79,6 +79,9 @@ fn each_kind_of_mail_wakes_as_the_table_says() {
         v[key] = value;
         v
     };
+    let copy = |status: &str, conclusion: &str, requester: &str| {
+        json!({"kind":"review","status":status,"conclusion":conclusion,"copyFor":"dispatcher","requester":requester})
+    };
     // (case, written to, read by, task, priority, metadata, wake)
     let cases: Vec<(&str, &str, &str, Option<&str>, &str, Value, &str)> = vec![
         ("merged, executor at work, to the lead", "lead", "lead", Some(working), "normal", merged.clone(), "quiet"),
@@ -119,6 +122,16 @@ fn each_kind_of_mail_wakes_as_the_table_says() {
         ("passed on, closed task: review failed", "late", "lead", Some(closed), "normal", json!({"kind":"review","status":"failed"}), "ring"),
         ("passed on, closed task: PR failed", "late", "lead", Some(closed), "normal", json!({"kind":"pr","status":"failed"}), "ring"),
         ("passed on, closed task: Job unknown", "late", "lead", Some(closed), "normal", json!({"kind":"job","status":"unknown"}), "ring"),
+        // YN-12 S2: a dispatcher's copy of a review its executor started.
+        ("a copy, completed, its executor at work", "lead", "lead", Some(working), "normal", copy("completed", "changes_requested", "exec"), "quiet"),
+        ("a copy, failed", "lead", "lead", Some(working), "normal", copy("failed", "unknown", "exec"), "ring"),
+        ("a copy, cancelled", "lead", "lead", Some(working), "normal", copy("cancelled", "unknown", "exec"), "ring"),
+        ("a copy, unknown", "lead", "lead", Some(working), "normal", copy("unknown", "unknown", "exec"), "ring"),
+        ("a copy, another executor at work", "lead", "lead", Some(working), "normal", copy("completed", "no_findings", "peer"), "ring"),
+        ("a copy, its task closed", "lead", "lead", Some(closed), "normal", copy("completed", "no_findings", "late"), "ring"),
+        ("a copy, its executor released", "lead", "lead", Some(released), "normal", copy("completed", "no_findings", "gone"), "ring"),
+        ("a copy without its requester", "lead", "lead", Some(working), "normal",
+            json!({"kind":"review","status":"completed","conclusion":"no_findings","copyFor":"dispatcher"}), "ring"),
         ("a result", "lead", "lead", Some(working), "normal", json!({"kind":"task_result","status":"review","resultId":"r"}), "ring"),
         ("a Job awaiting analysis", "exec", "exec", Some(working), "normal", json!({"kind":"job","status":"waiting_analysis"}), "ring"),
         ("an executor blocked", "lead", "lead", Some(working), "normal", json!({"kind":"executor","status":"blocked"}), "ring"),
@@ -209,6 +222,23 @@ fn the_digest_says_what_quiet_notices_bring_a_line_a_task() {
     assert_eq!(lines.len(), 9, "{lines:#?}");
     assert!(lines[0].ends_with("PR #3 merged 02:00Z; 1 more"), "{}", lines[0]);
     assert_eq!(lines[8], "- and 2 more tasks in the mailbox");
+}
+
+/// YN-12 S2: a review is told in a digest by its notice's status, a
+/// completed one's conclusion: passed only for no_findings and
+/// approved_with_notes. A mail older than its notice by its own status, so
+/// that completed is never told as passed.
+#[test]
+fn a_review_is_told_by_its_conclusion_and_completed_never_as_passed() {
+    let told = |notice: Value, status: &str| event(&json!({"notice":notice,"metadata":{"kind":"review","status":status,"name":"PR #9"}}));
+    assert_eq!(told(json!({"status":"no_findings"}), "completed"), "PR #9 review passed");
+    assert_eq!(told(json!({"status":"approved_with_notes"}), "completed"), "PR #9 review passed");
+    assert_eq!(told(json!({"status":"changes_requested"}), "completed"), "PR #9 review changes_requested");
+    assert_eq!(told(json!({"status":"unknown"}), "completed"), "PR #9 review unknown");
+    for status in ["failed", "cancelled", "unknown"] {
+        assert_eq!(told(json!({"status":status}), status), format!("PR #9 review {status}"));
+    }
+    assert_eq!(told(Value::Null, "completed"), "PR #9 review completed");
 }
 
 mod delivery {
