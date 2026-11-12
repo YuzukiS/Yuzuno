@@ -1274,3 +1274,105 @@ fn a_registered_review_sends_the_dispatcher_no_copy_beside_the_flows_mail() {
     assert!(lead.iter().any(|k| k == "delivery"), "the flow's own mail: {lead:?}");
     assert_eq!(kinds("owner").iter().filter(|k| *k == "review").count(), 1, "the owner's own mail");
 }
+
+/// YN-12 S3: an assigned, open SSH Agent may own automatic delivery. Core
+/// starts the review, reads CI and sends the mail; the target a delivered
+/// command would have to use is synthetic ("-must-not-run-ssh"), so anything
+/// that tried to run on the owner's machine would fail loudly here.
+fn ssh_owner(closed: bool) -> (tempfile::TempDir, Store, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    let closed = closed.then(|| json!("now"));
+    s.insert(&serde_json::from_value(json!({"agent":{"id":"ssh","name":"SSH Owner","cwd":"/home/someone/work","model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0,"closedAt":closed,"remote":{"machine":{"id":"m1","name":"lab box","target":"-must-not-run-ssh","codex":"codex","defaultCwd":"/home/someone/work"},"runtime":null}},"turns":[],"pending":[],"artifacts":[]})).unwrap()).unwrap();
+    let task = s
+        .collaboration_call(
+            None,
+            "task_create",
+            json!({"requestId":"task","title":"SSH owner delivery","assigneeAgentId":"ssh"}),
+        )
+        .unwrap()["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    link(&s, &task, "b");
+    (dir, s, task)
+}
+
+#[test]
+fn an_open_ssh_owner_runs_delivery_with_core_doing_the_work() {
+    let (_d, s, t) = ssh_owner(false);
+    let f = enable(&s, &t);
+    assert_eq!(f["owner"]["id"], "ssh", "{f}");
+    assert_eq!(f["state"], "awaiting_result");
+    s.collaboration_call(
+        None,
+        "task_submit_result",
+        result(&s, &t, Some(f["candidate"].clone()), "result"),
+    )
+    .unwrap();
+    let key = internal(&s, &t);
+    let plan = s.delivery_claim(&key, "review").unwrap().unwrap();
+    assert_eq!(plan.owner, "ssh", "the flow's review is started as its SSH owner");
+    let input = serde_json::from_value::<crate::pr_review::Start>(plan.input.clone()).unwrap();
+    // A Store call, as Core does it: nothing is sent to the owner's machine.
+    let (run, created) = s.create_pr_review(Some("ssh"), &input, "ssh-round").unwrap();
+    assert!(created);
+    assert_eq!(run["requestedBy"]["id"], "ssh");
+    s.delivery_finish(&key, &plan, Ok(run.clone())).unwrap();
+    finish(&s, run, "no_findings");
+    let ci = s.delivery_claim(&key, "ci").unwrap().unwrap();
+    assert_eq!(ci.owner, "ssh");
+    assert_eq!(ci.input["expectedSha"], "b".repeat(40));
+    let sub = s
+        .ci_subscribe(
+            Some("ssh"),
+            serde_json::from_value(ci.input.clone()).unwrap(),
+            Repository {
+                id: 7,
+                full_name: "o/r".into(),
+            },
+            "pull",
+            1,
+        )
+        .unwrap();
+    s.delivery_finish(&key, &ci, Ok(sub.clone())).unwrap();
+    let observed = crate::ci_monitor::Observed {
+        runs: vec![
+            json!({"id":"github:7:123:1","workflowId":8,"event":"pull_request","repositoryId":7,"runId":"123","attempt":"1","headSha":"b".repeat(40),"name":"Checks","rawStatus":"completed","status":"success","conclusion":"success","url":"https://github.com/o/r/actions/runs/123"}),
+        ],
+        head: Some("b".repeat(40)),
+        pr: Some(json!({"baseSha":"a".repeat(40),"state":"open","merged":false})),
+        truncated: false,
+        checked: chrono::Utc::now().timestamp(),
+        wait: 0,
+        excluded: 0,
+    };
+    s.ci_observe(sub["watchId"].as_str().unwrap(), Ok(observed))
+        .unwrap();
+    assert_eq!(get(&s, &t)["state"], "ready_to_merge");
+    assert!(s.delivery_reconcile(&key).unwrap());
+    let mail = s
+        .collaboration_call(None, "peer_read", json!({"agentId":"ssh","limit":200}))
+        .unwrap();
+    let statuses = mail["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["metadata"]["kind"] == "delivery")
+        .map(|m| m["metadata"]["status"].as_str().unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, vec!["ready_to_merge".to_owned()], "{mail}");
+}
+
+#[test]
+fn a_closed_ssh_owner_is_still_refused() {
+    let (_d, s, t) = ssh_owner(true);
+    let error = s
+        .collaboration_call(None, "delivery_enable", input(&t))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Delivery needs an open task owner"),
+        "{error}"
+    );
+}

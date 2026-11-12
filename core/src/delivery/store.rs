@@ -266,8 +266,8 @@ pub(crate) fn call(
         .context("Task owner no longer exists")?
         .agent;
     ensure!(
-        agent.closed_at.is_none() && agent.remote.is_none(),
-        "Delivery needs an open local task owner"
+        agent.closed_at.is_none(),
+        "Delivery needs an open task owner"
     );
     let linked = crate::github::store::task_links(db, &id)?
         .into_iter()
