@@ -218,12 +218,14 @@ fn under_a_delivery_a_continuation_of_its_reviewed_head_is_refused() {
     assert!(refused.contains("a head gets one counted round"), "{refused}");
     assert!(refused.ends_with("No continuation was started."), "{refused}");
     assert_eq!(reviews(&store), 1, "nothing was created");
-    // The same head again isn't another attempt: its review counts.
+    // The same head again isn't authorized either: its review completed
+    // without an explicit conclusion, which a person judges first (one with
+    // a conclusion counts, and is refused as counted: delivery tests, #5).
     let refused = store
         .collaboration_call(None, "delivery_continue", delivery(&task, "continue", json!({"flowId":flow["id"],"expectedRound":1})))
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("already has a counted review of this PR (p1, completed)"), "{refused}");
+    assert!(refused.contains("review p1 completed without an explicit conclusion (unknown)"), "{refused}");
     let flow = store.collaboration_call(None, "delivery_get", json!({"taskId":task})).unwrap()["flow"].clone();
     assert_eq!(flow["rounds"].as_array().unwrap().len(), 1, "{flow}");
     assert!(flow["rounds"][0].get("earlier").is_none(), "{flow}");

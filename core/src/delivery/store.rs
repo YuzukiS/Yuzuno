@@ -527,6 +527,15 @@ fn continued(db: &Connection, f: &Flow, linked: &Value, head: &str) -> Result<Op
                 .filter(|v| !matches!(v["status"].as_str(), Some("preparing" | "running" | "unknown")))
                 .context("Reconcile the existing review first; an unfinished or unknown review cannot be replaced")?;
             let status = rv["status"].as_str().unwrap_or("unknown").to_owned();
+            // A completed review without an explicit conclusion is an unknown
+            // outcome too: a person judges it before any round or attempt
+            // replaces it (Lead 11659). A failed or cancelled one keeps its path.
+            ensure!(
+                status != "completed"
+                    || matches!(rv["conclusion"].as_str(), Some("no_findings" | "approved_with_notes" | "changes_requested")),
+                "Reconcile the existing review first: review {id} completed without an explicit conclusion ({}), and an unknown outcome cannot be replaced by another round or attempt. No attempt was authorized.",
+                rv["conclusion"].as_str().unwrap_or("none recorded")
+            );
             let uncounted = status == "failed" && !crate::pr_review::store::counts_toward_limit(db, id)?;
             (Some((id.to_owned(), status)), uncounted.then_some("uncounted_failure"))
         }
