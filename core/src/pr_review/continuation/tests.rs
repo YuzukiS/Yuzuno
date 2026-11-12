@@ -203,24 +203,32 @@ fn delivery(task: &str, key: &str, extra: Value) -> Value {
     v
 }
 
+/// YN-12 S4: under a delivery a head gets one counted round, so once the
+/// candidate has its review a continuation of it is refused, and the same
+/// head can't be authorized again to make room for one.
 #[test]
-fn under_a_delivery_a_continuation_is_one_of_its_authorized_attempts() {
+fn under_a_delivery_a_continuation_of_its_reviewed_head_is_refused() {
     let (_dir, store, task) = setup();
     let flow = store.collaboration_call(None, "delivery_enable", delivery(&task, "enable", json!({"maxRounds":2}))).unwrap()["flow"].clone();
     // The delivery's first attempt is the parent.
     let (run, _) = store.create_pr_review(Some("owner"), &start(&task, "r1"), "p1").unwrap();
     complete(&store, run);
+    let reviews = |store: &Store| store.list_pr_reviews(&task, None).unwrap()["reviews"].as_array().unwrap().len();
     let refused = store.create_pr_review_continuation(None, &on(&task, "p1", "c1"), "child").unwrap_err().to_string();
-    assert!(refused.contains("delivery_continue"), "{refused}");
-    assert_eq!(store.list_pr_reviews(&task, None).unwrap()["reviews"].as_array().unwrap().len(), 1, "nothing was created");
-    // Authorized as the delivery's second attempt, it takes that attempt.
-    store.collaboration_call(None, "delivery_continue", delivery(&task, "continue", json!({"flowId":flow["id"],"expectedRound":1}))).unwrap();
-    let (child, _, created) = store.create_pr_review_continuation(None, &on(&task, "p1", "c1"), "child").unwrap();
-    assert!(created);
+    assert!(refused.contains("a head gets one counted round"), "{refused}");
+    assert!(refused.ends_with("No continuation was started."), "{refused}");
+    assert_eq!(reviews(&store), 1, "nothing was created");
+    // The same head again isn't another attempt: its review counts.
+    let refused = store
+        .collaboration_call(None, "delivery_continue", delivery(&task, "continue", json!({"flowId":flow["id"],"expectedRound":1})))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("already has a counted review of this PR (p1, completed)"), "{refused}");
     let flow = store.collaboration_call(None, "delivery_get", json!({"taskId":task})).unwrap()["flow"].clone();
-    assert_eq!(flow["rounds"][1]["review"]["id"], child["id"]);
-    // The cap stays: no third attempt, continued or not.
-    assert!(store.collaboration_call(None, "delivery_continue", delivery(&task, "again", json!({"flowId":flow["id"],"expectedRound":2}))).is_err());
+    assert_eq!(flow["rounds"].as_array().unwrap().len(), 1, "{flow}");
+    assert!(flow["rounds"][0].get("earlier").is_none(), "{flow}");
+    assert!(store.create_pr_review_continuation(None, &on(&task, "p1", "c2"), "child2").is_err());
+    assert_eq!(reviews(&store), 1, "still nothing was created");
 }
 
 /// A child run whose union coverage is complete, with the fake reviewer's

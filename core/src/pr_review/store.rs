@@ -61,21 +61,62 @@ fn known_unreviewable(tx: &Connection, task: &str, link: &str, base: &str, head:
 /// `except`. Only a failed or unknown round's record can show that it
 /// reached no verdict (round_limit.rs); any other is read as its status.
 fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<Value>> {
+    Ok(pr_rounds_with_heads(tx, repository, number, except)?.into_iter().map(|(round, _)| round).collect())
+}
+
+/// `pr_rounds`, each with the head it reviewed: its resolved head, else the
+/// head it asked for. Read in the same query, so the two stay in step.
+fn pr_rounds_with_heads(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<(Value, Option<String>)>> {
     let mut q = tx.prepare(
-        "SELECT id,status,CASE WHEN status IN ('failed','unknown') THEN data END FROM pr_reviews
+        "SELECT id,status,CASE WHEN status IN ('failed','unknown') THEN data END,
+                COALESCE(json_extract(data,'$.headSha'),json_extract(data,'$.requestedHeadSha')) FROM pr_reviews
            WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2 AND id IS NOT ?3 ORDER BY rowid",
     )?;
     let rows = q.query_map(params![repository, number, except], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))
     })?;
     rows.map(|row| {
-        let (id, status, data) = row?;
-        Ok(match data {
+        let (id, status, data, head) = row?;
+        let round = match data {
             Some(data) => serde_json::from_str(&data)?,
             None => json!({"id":id,"status":status}),
-        })
+        };
+        Ok((round, head))
     })
     .collect()
+}
+
+/// Whether a stored review counts toward its PR's started rounds, judged
+/// with the PR's other rounds in the order they were created
+/// (round_limit.rs). An id it can't find counts (YN-12 S4).
+pub(crate) fn counts_toward_limit(tx: &Connection, review: &str) -> Result<bool> {
+    let pr: Option<(Option<i64>, Option<i64>)> = tx
+        .query_row(
+            "SELECT json_extract(data,'$.repositoryId'),json_extract(data,'$.number') FROM pr_reviews WHERE id=?1",
+            [review],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((repository, number)) = pr else {
+        return Ok(true);
+    };
+    let rounds = pr_rounds(tx, repository, number, None)?;
+    let counts = super::round_limit::counts(&rounds);
+    Ok(rounds.iter().zip(counts).find(|(round, _)| round["id"] == review).is_none_or(|(_, counts)| counts))
+}
+
+/// The first round of this PR, across tasks and however it was started, that
+/// counts toward its started rounds and reviewed `head`: its id and status
+/// (YN-12 S4). A round that never resolved or asked for a head isn't at any.
+pub(crate) fn counted_at_head(tx: &Connection, repository: Option<i64>, number: Option<i64>, head: &str) -> Result<Option<(String, String)>> {
+    let rows = pr_rounds_with_heads(tx, repository, number, None)?;
+    let rounds: Vec<Value> = rows.iter().map(|(round, _)| round.clone()).collect();
+    let counts = super::round_limit::counts(&rounds);
+    Ok(rows.iter().zip(counts).find_map(|((round, at), counts)| {
+        (counts && at.as_deref().is_some_and(|at| at.eq_ignore_ascii_case(head))).then(|| {
+            (round["id"].as_str().unwrap_or_default().to_owned(), round["status"].as_str().unwrap_or("unknown").to_owned())
+        })
+    }))
 }
 
 /// Started review rounds of one PR, any kind and a continuation included,
@@ -425,11 +466,11 @@ impl Store {
         let recipient = actor
             .map(|id| crate::collaboration_store::agent_actor(self, &tx, id))
             .transpose()?;
-        // A delivery of this exact candidate counts the continuation as one
-        // of its authorized attempts, never as an extra one.
+        // Under a delivery of this exact candidate the continuation can be
+        // only its current attempt's review, never an extra one.
         crate::delivery::store::attach_review(&tx, &task, &link, Some(&input.base_sha), Some(&input.head_sha), &config, &input.request_id, id).map_err(|error| {
             if error.to_string() == "Registered review already exists" {
-                anyhow::anyhow!("This candidate's delivery round already has its review. A continuation is another attempt: authorize it within the delivery's limit with delivery_continue first. No continuation was started.")
+                anyhow::anyhow!("This candidate's delivery round already has its review, and under a delivery a head gets one counted round: a continuation of it isn't one of the delivery's attempts, and delivery_continue won't authorize one. Report the result to whoever decides. No continuation was started.")
             } else {
                 error
             }
@@ -752,6 +793,9 @@ fn previous(
     expected["taskId"] = json!(task);
     let receipt: Option<(String,String)> = db.query_row("SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='review_start' AND request_id=?2",params![actor_key(actor),input.request_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((payload, response)) = receipt else {
+        // A delivery request that was replaced has no round to return and
+        // never gets one: refused before any candidate is matched (YN-12 S4).
+        crate::delivery::store::refuse_replaced_request(db, &task, &input.request_id)?;
         let registered = crate::delivery::store::registered_review(db,&task,&input.link_id,input.base_sha.as_deref(),input.head_sha.as_deref())?;
         if let Some(run) = &registered {
             db.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'review_start',?2,?3,?4)",params![actor_key(actor),input.request_id,expected.to_string(),json!({"reviewId":run["id"]}).to_string()])?;
