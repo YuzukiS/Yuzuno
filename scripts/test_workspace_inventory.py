@@ -178,22 +178,22 @@ class Inventory(unittest.TestCase):
         self.assertEqual([c for c in result["cacheDirs"] if c["path"].startswith(str(runtime))], [])
 
     def test_a_protected_scratch_root_is_never_listed_or_scanned(self):
-        # A spy makes any listdir/scandir of the protected root fail: not
-        # listing it and then dropping names, but never looking at it.
+        # One spy for all three inputs. If the script ever lists or scans the
+        # protected root (or anything below it), the spy raises and the test
+        # fails; an empty candidate list alone would not prove that.
         import argparse
         import importlib.util
         from unittest import mock
         parent = self.root / "parent"
         runtime = parent / "runtime"
-        (runtime / "abc").mkdir(parents=True)
+        inside = runtime / "agent-dir"
+        inside.mkdir(parents=True)
         safe = parent / "safe"
         safe.mkdir()
         (safe / "CACHEDIR.TAG").write_text(TAG.format("pytest"))
         spec = importlib.util.spec_from_file_location("workspace_inventory", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        args = argparse.Namespace(project=str(self.project), scratch=[str(parent)], protected=[], root=[str(runtime)],
-                                  rules=None, out=str(self.root / "unused.json"), max_entries=2000000, seconds=600)
         real_listdir, real_scandir = os.listdir, os.scandir
 
         def guarded(real):
@@ -204,14 +204,26 @@ class Inventory(unittest.TestCase):
                 return real(path, *a, **k)
             return call
 
-        with mock.patch.object(module.os, "listdir", side_effect=guarded(real_listdir)), \
-                mock.patch.object(module.os, "scandir", side_effect=guarded(real_scandir)):
-            result = module.inventory(args)
-        self.assertEqual([e["path"] for e in result["scratch"][0]["entries"]], [str(safe)],
-                         "an ancestor of a protected root still lists its safe sibling")
-        why = {s["path"]: s["why"] for s in result["skipped"]}
-        self.assertIn(str(runtime), why)
-        self.assertIn("protected", why[str(runtime)])
+        def take(scratch):
+            args = argparse.Namespace(project=str(self.project), scratch=[str(scratch)], protected=[], root=[str(runtime)],
+                                      rules=None, out=str(self.root / "unused.json"), max_entries=2000000, seconds=600)
+            with mock.patch.object(module.os, "listdir", side_effect=guarded(real_listdir)), \
+                    mock.patch.object(module.os, "scandir", side_effect=guarded(real_scandir)):
+                return module.inventory(args)
+
+        # The scratch root is the protected root itself.
+        same = take(runtime)
+        self.assertEqual(same["scratch"][0]["entries"], [])
+        self.assertIn("protected", {s["path"]: s["why"] for s in same["skipped"]}[str(runtime)])
+        # The scratch root is inside the protected root.
+        below = take(inside)
+        self.assertEqual(below["scratch"][0]["entries"], [])
+        self.assertIn("protected", {s["path"]: s["why"] for s in below["skipped"]}[str(inside)])
+        # An ancestor still lists its safe sibling, and the spy stays armed
+        # for the protected child.
+        ancestor = take(parent)
+        self.assertEqual([e["path"] for e in ancestor["scratch"][0]["entries"]], [str(safe)])
+        self.assertIn("protected", {s["path"]: s["why"] for s in ancestor["skipped"]}[str(runtime)])
 
     def test_protected_paths_and_links_are_left_out(self):
         keep = self.scratch / "keep"

@@ -320,8 +320,9 @@ async fn a_short_but_numerous_protection_set_is_refused_by_the_entry_limit() {
         let mut insert = db.prepare(
             "INSERT INTO executor_temp_roots(workspace_id,path,origin,registered_at) VALUES(?1,?2,'default','now')",
         ).unwrap();
-        // With the default root this makes 60 roots: 10 fixed entries plus 120
-        // `--root path` entries, over 128, and well under 16 KiB.
+        // With the default root this makes 60 roots; the lab's one scratch
+        // root adds two more entries, so the command is 10 + 2×60 + 2 = 132
+        // entries, over 128, and far under 16 KiB.
         for i in 0..59 {
             insert.execute(params![workspace, format!("/r{i}")]).unwrap();
         }

@@ -307,10 +307,11 @@ pub(super) fn command(python: &str, folder: &str, scratch: &[String], protected:
 /// long before they reach 16 KiB, and neither set is ever truncated.
 fn fits(argv: &[String]) -> Result<()> {
     let bytes: usize = argv.iter().map(String::len).sum();
-    ensure!(argv.len() <= ARGV_ITEMS, "inventory_unavailable: the inventory's command would have {} entries, over the {ARGV_ITEMS} a Job's argv may hold; \
-        fewer scratch roots, protected paths or temporary roots in Settings and history make it shorter", argv.len());
-    ensure!(bytes <= ARGV_BYTES, "inventory_unavailable: the inventory's command would be {bytes} bytes, over the {ARGV_BYTES} a Job's argv may hold; \
-        fewer scratch roots or protected paths in Settings make it shorter");
+    ensure!(argv.len() <= ARGV_ITEMS, "inventory_unavailable: the complete protected-root set needs {} command entries, over the {ARGV_ITEMS} a Job's argv may hold; \
+        this inventory was not submitted and every protection record is kept. Only optional Settings inputs (scratch roots or protected paths) can be reduced",
+        argv.len());
+    ensure!(bytes <= ARGV_BYTES, "inventory_unavailable: the complete protected-root set needs {bytes} command bytes, over the {ARGV_BYTES} a Job's argv may hold; \
+        this inventory was not submitted and every protection record is kept. Only optional Settings inputs (scratch roots or protected paths) can be reduced");
     Ok(())
 }
 
