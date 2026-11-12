@@ -53,7 +53,7 @@ impl HostEnv {
 }
 
 /// path as this host resolves it, or as given where it does not resolve.
-fn real(path: &Path) -> PathBuf {
+pub(super) fn real(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 

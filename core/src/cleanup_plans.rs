@@ -80,9 +80,9 @@ pub(crate) struct State {
     /// removes under (YN-78 S2b-1). Owned guards may be held past the caller
     /// that took them.
     pub(crate) root_gate: Arc<tokio::sync::Mutex<()>>,
-    /// Whether the protection registry finished at start; its failure keeps
-    /// cleanup and allocation from running, and says why.
-    roots: std::sync::OnceLock<std::result::Result<(), String>>,
+    /// Whether the protection backfill finished; only success is kept, so a
+    /// failure is retried next time instead of holding until restart.
+    roots: std::sync::OnceLock<()>,
     #[cfg(test)]
     pub env: std::sync::Mutex<Option<HostEnv>>,
     #[cfg(test)]
@@ -122,12 +122,18 @@ impl State {
     /// on the complete protected-root set runs. A failure is remembered and
     /// refused explicitly; unrelated Workspace functions keep working.
     pub(crate) fn ensure_roots(&self, store: &Store, data: &Path) -> Result<()> {
-        match self.roots.get_or_init(|| crate::executor_temp::bootstrap(store, data).map_err(|error| format!("{error:#}"))) {
-            Ok(()) => Ok(()),
-            Err(why) => bail!(
-                "roots_unavailable: Core could not register the temporary roots it protects, so it will not allocate, register or apply a cleanup: {why}"
-            ),
+        if self.roots.get().is_some() {
+            return Ok(());
         }
+        crate::executor_temp::bootstrap(store, data).map_err(|error| {
+            anyhow::anyhow!(
+                "roots_unavailable: Core could not register the temporary roots it protects, so it will not allocate, register or apply a cleanup: {error:#}"
+            )
+        })?;
+        // Only success is remembered: a passing database error is retried by
+        // the next call instead of disabling cleanup until Core restarts.
+        let _ = self.roots.set(());
+        Ok(())
     }
 
     /// The gate an allocation and a cleanup's file system work share, as an

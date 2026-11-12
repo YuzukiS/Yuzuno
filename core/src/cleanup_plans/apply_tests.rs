@@ -333,8 +333,12 @@ async fn protection_added_during_one_entry_is_seen_by_the_next_and_registration_
     assert!(lab.ws.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0, "the allocation waits for the gate");
     assert!(!waiter.is_finished());
     // Added while the first entry is being removed: the next entry's set is
-    // read again under the gate, and refuses it.
-    crate::executor_temp::register(&lab.ws.store, &lab.scratch).unwrap();
+    // read again under the gate, and refuses it. The root is reached through
+    // a link, as an old data directory can be: apply resolves it as submit
+    // does.
+    let linked = lab.root().join("scratch-link");
+    std::os::unix::fs::symlink(&lab.scratch, &linked).unwrap();
+    crate::executor_temp::register(&lab.ws.store, &linked).unwrap();
     release.send(()).unwrap();
     lab.ws.cleanup.apply_done.notified().await;
     let ran = waiter.await.unwrap();

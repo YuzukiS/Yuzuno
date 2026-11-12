@@ -727,6 +727,21 @@ async fn a_root_record_that_cannot_be_read_refuses_cleanup_and_inventory() {
     assert!(error.starts_with("roots_unavailable:"), "{error}");
 }
 
+/// A failed protection backfill fails the related paths explicitly, and is
+/// retried by the next call instead of being cached until restart.
+#[test]
+fn a_failed_root_backfill_is_retried_and_not_kept() {
+    let lab = lab();
+    let workspace = lab.ws.store.workspace_id().unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,'bad','relative/path',0,0,'now')",
+        [workspace],
+    ).unwrap();
+    assert!(lab.ws.cleanup.ensure_roots(&lab.ws.store, &lab.ws.data_dir).is_err());
+    lab.ws.store.db.write().unwrap().execute("DELETE FROM executor_temp_dirs WHERE agent_id='bad'", []).unwrap();
+    assert!(lab.ws.cleanup.ensure_roots(&lab.ws.store, &lab.ws.data_dir).is_ok());
+}
+
 #[path = "apply_tests.rs"]
 mod apply_tests;
 

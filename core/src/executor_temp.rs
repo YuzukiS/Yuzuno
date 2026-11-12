@@ -337,6 +337,26 @@ pub(crate) fn bootstrap(store: &Store, data: &Path) -> Result<()> {
 /// have one: created or reused, and recorded. None leaves today's behaviour
 /// (no TMPDIR from Core), with the reason kept for its detail when it is
 /// eligible and none could be used.
+/// Whether this Agent may get a temporary directory: an OpenCode executor
+/// at ask, auto or full. An ineligible Agent never touches the root registry,
+/// so its start cannot be stopped by one.
+fn eligible(store: &Store, agent: &str) -> Result<bool> {
+    #[cfg(not(unix))]
+    {
+        let _ = (store, agent);
+        Ok(false)
+    }
+    #[cfg(unix)]
+    {
+        let Some(level) = store.permission_level(agent)? else { return Ok(false) };
+        if !matches!(level.as_str(), "ask" | "auto" | "full") {
+            return Ok(false);
+        }
+        let db = store.db.read()?;
+        Ok(agent_roles::kind(&db, agent)? == agent_roles::EXECUTOR)
+    }
+}
+
 pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result<Option<PathBuf>> {
     #[cfg(not(unix))]
     {
@@ -345,17 +365,18 @@ pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result
     }
     #[cfg(unix)]
     {
-        let Some(level) = store.permission_level(agent)? else { return Ok(None) };
-        if !matches!(level.as_str(), "ask" | "auto" | "full") {
+        if !eligible(store, agent)? {
             return Ok(None);
         }
-        {
-            let db = store.db.read()?;
-            if agent_roles::kind(&db, agent)? != agent_roles::EXECUTOR {
-                return Ok(None);
-            }
-        }
         let workspace = store.workspace_id()?;
+        // Protect the roots before this start creates anything. A failure is
+        // this Agent's note and no environment, as any other allocation
+        // failure is: other Agents, and their starts, are not held up by it.
+        if let Err(error) = bootstrap(store, data) {
+            let reason = format!("Core could not register the temporary roots it protects, so none was given: {error:#}");
+            store.note_executor_temp(&workspace, agent, &reason)?;
+            return Ok(None);
+        }
         let outcome = allocate(store, data, &workspace, agent)
             .unwrap_or_else(|error| Outcome::Unavailable(format!("Core could not prepare a temporary directory: {error:#}")));
         match outcome {
@@ -376,9 +397,16 @@ pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result
 /// can be registered between a removal's last check and its file system
 /// work. The owned guard lives inside the blocking task, so a caller whose
 /// future is cancelled or times out cannot release it while creation is
-/// still under way.
+/// still under way. Only an eligible Agent takes the gate; every other start
+/// is untouched.
 pub(crate) async fn ensure_at_start_gated(ws: &crate::workspace::Workspace, agent: &str) -> Result<Option<PathBuf>> {
-    ws.cleanup.ensure_roots(&ws.store, &ws.data_dir)?;
+    let fits = {
+        let agent = agent.to_owned();
+        ws.stored(move |store| eligible(store, &agent)).await?
+    };
+    if !fits {
+        return Ok(None);
+    }
     let held = ws.cleanup.root_gate().await;
     let (store, data, agent) = (ws.store.clone(), ws.data_dir.clone(), agent.to_owned());
     tokio::task::spawn_blocking(move || {
@@ -939,6 +967,35 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_root_check_is_only_a_note_for_an_eligible_agent_and_never_touches_others() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        let workspace = workspace(&store);
+        for (id, level) in [("read-only", "read-only"), ("auto", "auto")] {
+            agent(&store, id);
+            executor(&store, id);
+            store.set_permission_level(id, Some(level)).unwrap();
+        }
+        store.db.write().unwrap().execute(
+            "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,'bad','relative/path',0,0,'now')",
+            [workspace.clone()],
+        ).unwrap();
+        // An ineligible Agent never reads the root records, so they cannot
+        // stop its start and it gets no note about them.
+        assert_eq!(ensure_at_start(&store, &data, "read-only").unwrap(), None);
+        assert_eq!(store.executor_temp_view("read-only").unwrap(), None);
+        assert!(!data.join("t").exists());
+        // An eligible one gets no directory and a reason, not an error; the
+        // next start after the record is fixed tries again.
+        assert_eq!(ensure_at_start(&store, &data, "auto").unwrap(), None);
+        let note = store.executor_temp_view("auto").unwrap().unwrap();
+        assert!(note["note"].as_str().unwrap().contains("temporary roots"), "{note}");
+        assert!(!data.join("t").exists(), "nothing is made before protection");
+        store.db.write().unwrap().execute("DELETE FROM executor_temp_dirs WHERE agent_id='bad'", []).unwrap();
+        assert!(ensure_at_start(&store, &data, "auto").unwrap().is_some(), "a failure is not cached");
+    }
+
+    #[test]
     fn a_failed_root_registration_makes_nothing() {
         let (dir, store) = lab();
         let data = data(&dir);
@@ -952,7 +1009,7 @@ mod tests {
         assert!(!data.join("t").exists(), "the root is not made when it cannot first be protected");
         assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap(), None);
         let note = store.executor_temp_view("auto").unwrap().unwrap();
-        assert!(note["note"].as_str().unwrap().contains("could not prepare a temporary directory"), "{note}");
+        assert!(note["note"].as_str().unwrap().contains("temporary roots"), "{note}");
     }
 
     #[test]

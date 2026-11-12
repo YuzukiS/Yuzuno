@@ -395,7 +395,9 @@ async fn run_item(ws: &Arc<Workspace>, base: &check::Context, plan: &Plan, item:
     match roots {
         Ok(roots) => {
             let mut ctx = base.clone();
-            ctx.runtime = roots;
+            // The same resolution submit does, so a root reached through a
+            // link is compared as the folder it really is.
+            ctx.runtime = roots.iter().map(|path| check::real(path)).collect();
             execute(ws, &ctx, plan, item, held).await
         }
         Err(error) => outcome("refused", "unchecked", format!("Core could not read the temporary roots it protects: {error:#}")),
