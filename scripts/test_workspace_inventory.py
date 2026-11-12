@@ -161,6 +161,22 @@ class Inventory(unittest.TestCase):
         for worktree in cut["worktrees"]:
             self.assertEqual(worktree["git"], by_path[worktree["path"]]["git"])
 
+    def test_runtime_roots_are_reported_and_never_candidates(self):
+        # A root Core keeps for executor temporary directories: its first-level
+        # entries are not scratch candidates even when Settings names it as a
+        # scratch root, and its rule folders are not cache candidates.
+        runtime = self.root / "runtime"
+        cache = runtime / "abc" / ".pytest_cache"
+        cache.mkdir(parents=True)
+        (cache / "CACHEDIR.TAG").write_text(TAG.format("pytest"))
+        result = self.run_script("--scratch", str(runtime), "--root", str(runtime))
+        self.assertEqual(result["runtimeRoots"],
+                         [{"path": str(runtime), "deletable": False, "why": "Core's executor temporary root: never removed"}])
+        self.assertEqual(result["scratch"][0]["entries"], [])
+        why = {s["path"]: s["why"] for s in result["skipped"]}
+        self.assertIn("protected", why[str(runtime / "abc")])
+        self.assertEqual([c for c in result["cacheDirs"] if c["path"].startswith(str(runtime))], [])
+
     def test_protected_paths_and_links_are_left_out(self):
         keep = self.scratch / "keep"
         keep.mkdir()

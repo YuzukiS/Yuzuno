@@ -68,6 +68,7 @@ fn refuse(code: &str, why: impl std::fmt::Display) -> anyhow::Error {
 }
 
 pub(super) async fn apply(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
+    ws.cleanup.ensure_roots(&ws.store, &ws.data_dir)?;
     let digest = sha256(&input.to_string());
     let input: ApplyInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
     ensure!((1..=128).contains(&input.request_id.len()), "invalid_input: requestId is 1 to 128 bytes");
@@ -340,16 +341,22 @@ fn save(store: &Store, plan: &str, item: &str, outcome: &Outcome) -> Result<()> 
 }
 
 /// Applies a plan whose approval was recorded: each pending item of the
-/// chosen groups, one after another; the rest are kept.
-async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
+/// chosen groups, one after another; the rest are kept. Each item's complete
+/// protected-root set is read again under the Workspace's one root gate, and
+/// the gate is held until that item's file system work ends (an owned guard
+/// inside the blocking worker keeps it after this future is cancelled). The
+/// gate is released between items, so a root registered after one item is
+/// seen by the next.
+pub(super) async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
     let run = ws.stored({
         let id = id.to_owned();
         move |s| load_run(s, &id)
     })
     .await?;
-    let ctx = match &run.project_dir {
+    let base = match &run.project_dir {
         Some(dir) if run.plan.data["machine"].is_null() => {
-            check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, dir, run.plan.project.as_deref(), &run.others, run.settings.clone()).await.map(|mut ctx| {
+            check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, dir, run.plan.project.as_deref(), &run.others,
+                Vec::new(), run.settings.clone()).await.map(|mut ctx| {
                 ctx.deadline = Instant::now() + APPLY_TIME;
                 ctx
             })
@@ -361,8 +368,8 @@ async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
         let outcome = if !run.groups.contains(&item.group) {
             outcome("kept", "notApproved", "Its group was not chosen")
         } else {
-            match &ctx {
-                Ok(ctx) => execute(ws, ctx, &run.plan, item).await,
+            match &base {
+                Ok(base) => run_item(ws, base, &run.plan, item).await,
                 Err(error) => outcome("refused", "unchecked", format!("{error:#}")),
             }
         };
@@ -370,7 +377,29 @@ async fn run(ws: &Arc<Workspace>, id: &str) -> Result<()> {
         crate::db::blocking(move || save(&store, &plan, &item_id, &outcome)).await?;
     }
     let plan = id.to_owned();
-    ws.stored(move |s| finish(s, &plan, None)).await
+    let done = ws.stored(move |s| finish(s, &plan, None)).await;
+    #[cfg(test)]
+    ws.cleanup.apply_done.notify_one();
+    done
+}
+
+/// One item under the gate: the protected-root set read again first, then
+/// every check and the removal. A failure to read it refuses the item, never
+/// removes on a shorter set.
+async fn run_item(ws: &Arc<Workspace>, base: &check::Context, plan: &Plan, item: &Planned) -> Outcome {
+    let held = ws.cleanup.root_gate().await;
+    let roots = {
+        let data = ws.data_dir.clone();
+        ws.stored(move |s| crate::executor_temp::protected_roots(&*s.db.read()?, &data)).await
+    };
+    match roots {
+        Ok(roots) => {
+            let mut ctx = base.clone();
+            ctx.runtime = roots;
+            execute(ws, &ctx, plan, item, held).await
+        }
+        Err(error) => outcome("refused", "unchecked", format!("Core could not read the temporary roots it protects: {error:#}")),
+    }
 }
 
 /// The same file system object as when it was planned.
@@ -397,8 +426,10 @@ async fn in_use(ws: &Arc<Workspace>, users_root: &Path, path: &Path) -> Option<(
     (!reasons.is_empty()).then(|| ("inUse", reasons.join("; ")))
 }
 
-/// One item: every check again, then its snapshot and its removal.
-async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &Planned) -> Outcome {
+/// One item: every check again, then its snapshot and its removal, with the
+/// root gate this item's protected set was read under.
+async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &Planned,
+    held: Arc<tokio::sync::OwnedMutexGuard<()>>) -> Outcome {
     if !plan.data["machine"].is_null() {
         return outcome("refused", "remote", "On another machine: Core removes only on its own host for now");
     }
@@ -428,7 +459,7 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
     let bytes = now.pre["bytes"].clone();
     if item.kind == "worktree" {
         let task = plan.data["taskKey"].as_str().unwrap_or(&plan.task).to_owned();
-        return match worktrees::reclaim(ctx, &ws.data_dir, &plan.id, &task, &item.id, &path, &item.pre, &now.pre).await {
+        return match worktrees::reclaim(ctx, &ws.data_dir, &plan.id, &task, &item.id, &path, &item.pre, &now.pre, &held).await {
             Ok((record, snapshot)) => {
                 let mut result = json!({"code": "removed", "bytes": bytes});
                 for (key, value) in record.as_object().into_iter().flatten() {
@@ -456,7 +487,18 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
         let out = ws.data_dir.join("cleanup-snapshots").join(&plan.id).join(format!("{}.tar.gz", item.id));
         let (suffixes, limit) = (ctx.settings.evidence_suffixes.clone(), u64::from(ctx.settings.evidence_file_mib) << 20);
         let source = path.clone();
-        let made = tokio::task::spawn_blocking(move || keep_evidence(&source, &out, &suffixes, limit)).await;
+        let held = held.clone();
+        #[cfg(test)]
+        let pause = ws.cleanup.apply_fs_pause.lock().unwrap().take();
+        let made = tokio::task::spawn_blocking(move || {
+            let _held = held;
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                let _ = pause.entered.blocking_send(());
+                let _ = pause.release.blocking_recv();
+            }
+            keep_evidence(&source, &out, &suffixes, limit)
+        }).await;
         match made {
             Ok(Ok(kept)) => snapshot = kept,
             Ok(Err(error)) => return outcome("refused", "snapshot", format!("Its snapshot could not be made: {error:#}")),
@@ -469,14 +511,36 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
             let planned: Vec<Value> = item.pre["profiles"].as_array().cloned().unwrap_or_default();
             let current: Vec<Value> = now.pre["profiles"].as_array().cloned().unwrap_or_default();
             let target = path.clone();
-            tokio::task::spawn_blocking(move || remove_profiles(&target, &planned, &current)).await.unwrap_or_else(|e| Err(("failed", e.to_string())))
+            let held = held.clone();
+            #[cfg(test)]
+            let pause = ws.cleanup.apply_fs_pause.lock().unwrap().take();
+            tokio::task::spawn_blocking(move || {
+                let _held = held;
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    let _ = pause.entered.blocking_send(());
+                    let _ = pause.release.blocking_recv();
+                }
+                remove_profiles(&target, &planned, &current)
+            }).await.unwrap_or_else(|e| Err(("failed", e.to_string())))
         }
         _ => {
             let (dev, ino) = (item.pre["dev"].as_u64(), item.pre["ino"].as_u64());
             let target = path.clone();
-            tokio::task::spawn_blocking(move || remove_aside(&target, dev, ino).map(|note| (note, true)))
-                .await
-                .unwrap_or_else(|e| Err(("failed", e.to_string())))
+            let held = held.clone();
+            #[cfg(test)]
+            let pause = ws.cleanup.apply_fs_pause.lock().unwrap().take();
+            tokio::task::spawn_blocking(move || {
+                let _held = held;
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    let _ = pause.entered.blocking_send(());
+                    let _ = pause.release.blocking_recv();
+                }
+                remove_aside(&target, dev, ino).map(|note| (note, true))
+            })
+            .await
+            .unwrap_or_else(|e| Err(("failed", e.to_string())))
         }
     };
     match removal {

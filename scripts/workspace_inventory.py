@@ -21,7 +21,9 @@ What it reports, language-agnostic:
   Project), inside the main checkout, each worktree and each scratch root,
   and whether Git ignores them;
 - the first-level entries of each scratch root, with size (whole) and newest
-  write.
+  write;
+- the executor temporary roots Core protects (--root), as information that is
+  never removed; they are left out of the candidate lists above.
 
 Facts and folders come first; sizes last, from what the bounds have left, so
 a workspace too large for them loses sizes before facts. Each file is walked
@@ -372,6 +374,14 @@ def inventory(args):
     if listed is None:
         raise SystemExit("inventory: git worktree list failed: {}".format(why))
     protected = [os.path.realpath(p) for p in args.protected]
+    # Core's executor temporary roots: reported as information that is never
+    # removed, and left out of every candidate list, like a protected path.
+    runtime = []
+    for p in args.root:
+        real = os.path.realpath(p)
+        if real not in runtime:
+            runtime.append(real)
+    protected = protected + runtime
     skipped = []
     worktrees, caches = [], []
     listed = parse_worktrees(listed)
@@ -444,6 +454,8 @@ def inventory(args):
         "rules": ["cachedir-tag"] * bool(table.get("cachedirTag")) + ["cargo"] * bool(table.get("cargo"))
         + [r["id"] for r in table.get("rules", [])],
         "worktrees": worktrees, "cacheDirs": caches, "scratch": scratch, "skipped": skipped,
+        "runtimeRoots": [{"path": p, "deletable": False, "why": "Core's executor temporary root: never removed"}
+                         for p in runtime],
         "complete": not budget.exhausted,
         "bounds": {"maxEntries": args.max_entries, "seconds": args.seconds, "walkDepth": WALK_DEPTH},
     }
@@ -454,6 +466,7 @@ def main(argv=None):
     parser.add_argument("--project", required=True)
     parser.add_argument("--scratch", action="append", default=[])
     parser.add_argument("--protected", action="append", default=[])
+    parser.add_argument("--root", action="append", default=[], help="Core's executor temporary root: reported, never a candidate")
     parser.add_argument("--rules", default=None, help="Core's rule table (cleanup_plans/rules.rs), the rules on, as JSON")
     parser.add_argument("--out", required=True)
     parser.add_argument("--max-entries", type=int, default=2000000)

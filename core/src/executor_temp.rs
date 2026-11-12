@@ -16,16 +16,34 @@
 //! this Agent's record is never taken over: the next longer prefix is tried,
 //! and when none is free the executor starts as before without a temporary
 //! directory, with the reason kept for its detail.
+//!
+//! YN-78 S2b-1: every root this Core may put an executor's directory under is
+//! registered in `executor_temp_roots` before it is used, and protected
+//! against removal for as long as this Workspace's records exist. The set is
+//! the current default root, the parent root of every retained record (old
+//! data directories and released or deleted Agents included) and the
+//! registry's own rows. A malformed or unreadable record makes the set an
+//! error, never a shorter list: cleanup and allocation then refuse rather
+//! than guess. Historical roots are protection only, not permission to reuse
+//! a record (S2a's checks still decide that).
 use crate::{agent_roles, store::Store};
-use anyhow::{ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
 /// The default root under Core's data directory: `<D>/t`.
 const ROOT_NAME: &str = "t";
+/// Where a protected root came from: this Core's current default root, or a
+/// retained directory record's parent (an old data directory).
+pub(crate) const ROOT_DEFAULT: &str = "default";
+pub(crate) const ROOT_RECORD: &str = "record";
+/// Rows one page of the protection records holds; pages continue, so a long
+/// history is read whole without one unbounded query.
+const ROOTS_PAGE: usize = 256;
 /// The prefixes of an executor's ID a directory name may use, in order; the
 /// full ID is tried last.
 const PREFIXES: [usize; 2] = [8, 12];
@@ -71,7 +89,13 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             agent_id TEXT NOT NULL,
             note TEXT NOT NULL,
             at TEXT NOT NULL,
-            PRIMARY KEY(workspace_id, agent_id));",
+            PRIMARY KEY(workspace_id, agent_id));
+        CREATE TABLE IF NOT EXISTS executor_temp_roots(
+            workspace_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            registered_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, path));",
     )?;
     Ok(())
 }
@@ -153,6 +177,162 @@ pub(crate) fn view(db: &Connection, agent: &str) -> Result<Option<Value>> {
     Ok(Some(view))
 }
 
+/// The current Workspace's ID, as the protection records are kept under it.
+fn workspace_of(db: &Connection) -> Result<String> {
+    Ok(db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?)
+}
+
+/// Core's data directory, canonical and checked to be a folder Core owns, as
+/// the default root and the protection registry are derived from it.
+fn canonical_data(data: &Path) -> Result<PathBuf> {
+    let data = std::fs::canonicalize(data).with_context(|| format!("Core's data directory {} cannot be read", data.display()))?;
+    let meta = std::fs::symlink_metadata(&data)?;
+    ensure!(meta.is_dir() && !meta.file_type().is_symlink(), "{} is not Core's data directory", data.display());
+    Ok(data)
+}
+
+/// An absolute path without `.` or `..`, as a temporary root record must be.
+/// `/` is no root Core would put an executor's directory under.
+fn plain_absolute(path: &Path) -> Result<PathBuf> {
+    ensure!(path.is_absolute(), "{} is not an absolute path", path.display());
+    let mut plain = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::RootDir | Component::Normal(_) => plain.push(part),
+            _ => bail!("{} is not a plain absolute path", path.display()),
+        }
+    }
+    ensure!(plain.parent().is_some(), "{} is /, not a temporary root", plain.display());
+    Ok(plain)
+}
+
+/// A path a record holds, as `plain_absolute` reads it; the record is an
+/// error rather than something skipped.
+fn plain_record(path: &str) -> Result<PathBuf> {
+    ensure!(!path.is_empty() && !path.contains('\0'), "a temporary-root record is empty or holds a NUL byte");
+    plain_absolute(Path::new(path)).with_context(|| format!("the temporary-root record {path:?}"))
+}
+
+/// `<D>/t` from Core's canonical data directory. It need not exist yet: the
+/// root is registered before it is made.
+fn default_root_path(data: &Path) -> Result<PathBuf> {
+    Ok(plain_absolute(&canonical_data(data)?.join(ROOT_NAME))?)
+}
+
+/// Registers one root, keeping the origin it was first registered with.
+fn register_root(db: &Connection, workspace: &str, path: &Path, origin: &str) -> Result<()> {
+    let path = plain_absolute(path)?;
+    db.execute(
+        "INSERT INTO executor_temp_roots(workspace_id,path,origin,registered_at) VALUES(?1,?2,?3,?4)
+         ON CONFLICT(workspace_id,path) DO NOTHING",
+        params![workspace, path.to_string_lossy(), origin, crate::model::now()],
+    )?;
+    Ok(())
+}
+
+/// Registers `path` as a root this Workspace protects, before anything is
+/// made under it. An error means nothing was created.
+pub(crate) fn register(store: &Store, path: &Path) -> Result<()> {
+    let workspace = store.workspace_id()?;
+    register_root(&*store.db.write()?, &workspace, path, ROOT_DEFAULT)
+}
+
+/// The complete set of temporary roots this Workspace protects: the current
+/// default root, the parent root of every retained directory record, and
+/// every root already registered. Records of released and deleted Agents,
+/// and of other data directories, are included; nothing is filtered through
+/// the Agents that are live now. A malformed or unreadable record is an
+/// error, never a shorter set.
+pub(crate) fn protected_roots(db: &Connection, data: &Path) -> Result<Vec<PathBuf>> {
+    let workspace = workspace_of(db)?;
+    let mut roots = BTreeSet::new();
+    roots.insert(default_root_path(data)?);
+
+    let mut offset = 0usize;
+    loop {
+        let rows: Vec<(String, String)> = {
+            let mut q = db.prepare(
+                "SELECT agent_id,path FROM executor_temp_dirs WHERE workspace_id=?1 ORDER BY agent_id LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = q.query_map(params![workspace, ROOTS_PAGE as i64, offset as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            break;
+        }
+        for (agent, path) in &rows {
+            let path = plain_record(path).with_context(|| format!("Agent {agent}'s recorded temporary directory"))?;
+            let parent = path.parent().ok_or_else(|| anyhow!("Agent {agent}'s recorded temporary directory has no parent"))?;
+            roots.insert(parent.to_path_buf());
+        }
+        offset += rows.len();
+        if rows.len() < ROOTS_PAGE {
+            break;
+        }
+    }
+
+    let mut offset = 0usize;
+    loop {
+        let rows: Vec<String> = {
+            let mut q = db.prepare(
+                "SELECT path FROM executor_temp_roots WHERE workspace_id=?1 ORDER BY path LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = q.query_map(params![workspace, ROOTS_PAGE as i64, offset as i64], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            break;
+        }
+        for path in &rows {
+            roots.insert(plain_record(path)?);
+        }
+        offset += rows.len();
+        if rows.len() < ROOTS_PAGE {
+            break;
+        }
+    }
+    Ok(roots.into_iter().collect())
+}
+
+/// Registers the current root and every retained record's parent, once at
+/// start (and safe to run again). One transaction: if any record is malformed
+/// or the write fails, nothing is registered and the caller must refuse the
+/// paths that depend on this set.
+pub(crate) fn bootstrap(store: &Store, data: &Path) -> Result<()> {
+    let root = default_root_path(data)?;
+    let mut db = store.db.write()?;
+    let tx = db.transaction()?;
+    let workspace = workspace_of(&tx)?;
+    register_root(&tx, &workspace, &root, ROOT_DEFAULT)?;
+    let mut offset = 0usize;
+    loop {
+        let rows: Vec<(String, String)> = {
+            let mut q = tx.prepare(
+                "SELECT agent_id,path FROM executor_temp_dirs WHERE workspace_id=?1 ORDER BY agent_id LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = q.query_map(params![workspace, ROOTS_PAGE as i64, offset as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            break;
+        }
+        for (agent, path) in &rows {
+            let path = plain_record(path).with_context(|| format!("Agent {agent}'s recorded temporary directory"))?;
+            let parent = path.parent().ok_or_else(|| anyhow!("Agent {agent}'s recorded temporary directory has no parent"))?;
+            register_root(&tx, &workspace, parent, ROOT_RECORD)?;
+        }
+        offset += rows.len();
+        if rows.len() < ROOTS_PAGE {
+            break;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// This Agent's temporary directory for the start now under way, if it may
 /// have one: created or reused, and recorded. None leaves today's behaviour
 /// (no TMPDIR from Core), with the reason kept for its detail when it is
@@ -191,6 +371,23 @@ pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result
     }
 }
 
+/// The start's allocation under the Workspace's one temporary-root gate: an
+/// executor starting and a cleanup removing something share it, so no root
+/// can be registered between a removal's last check and its file system
+/// work. The owned guard lives inside the blocking task, so a caller whose
+/// future is cancelled or times out cannot release it while creation is
+/// still under way.
+pub(crate) async fn ensure_at_start_gated(ws: &crate::workspace::Workspace, agent: &str) -> Result<Option<PathBuf>> {
+    ws.cleanup.ensure_roots(&ws.store, &ws.data_dir)?;
+    let held = ws.cleanup.root_gate().await;
+    let (store, data, agent) = (ws.store.clone(), ws.data_dir.clone(), agent.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let _held = held;
+        ensure_at_start(&store, &data, &agent)
+    })
+    .await?
+}
+
 /// Records the first release of this Agent's temporary directory; a later
 /// call keeps the time it already has. Nothing is deleted.
 pub(crate) fn release_for_close(db: &Connection, agent: &str, at: &str) -> Result<()> {
@@ -210,7 +407,13 @@ enum Outcome {
 
 #[cfg(unix)]
 fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<Outcome> {
-    let root = default_root(data)?;
+    // Before anything is made under it, `<D>/t` is durably protected: a root
+    // a cleanup could remove is never used, and a failed registration makes
+    // nothing at all.
+    let data = canonical_data(data)?;
+    let root = plain_absolute(&data.join(ROOT_NAME))?;
+    register(store, &root)?;
+    let root = prepare_root(&root, &data)?;
     let prefixes = prefixes(agent)?;
     if let Some(record) = store.executor_temp_dir(workspace, agent)? {
         if record.released_at.is_some() {
@@ -269,7 +472,13 @@ fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<
         if let Err(why) = verify(&canonical, dev, ino).and_then(|()| within_root(&canonical, &root, &prefixes)) {
             return Ok(Outcome::Unavailable(format!("{} can't be used: {why}. It was left in place.", canonical.display())));
         }
-        store.save_executor_temp_dir(workspace, agent, &canonical.to_string_lossy(), dev, ino)?;
+        if let Err(error) = store.save_executor_temp_dir(workspace, agent, &canonical.to_string_lossy(), dev, ino) {
+            // The directory stays, and its root stays protected; nothing is
+            // handed to a server and a retry never takes the directory over.
+            eprintln!("[executor-temp] {} could not be recorded for Agent {agent}: {error:#}; it is left in place and not used",
+                canonical.display());
+            return Ok(Outcome::Unavailable(format!("{} could not be recorded for this Agent. It was left in place.", canonical.display())));
+        }
         return Ok(match store.executor_temp_dir(workspace, agent)? {
             Some(record) if record.path == canonical.to_string_lossy() => Outcome::Ready(canonical),
             _ => Outcome::Unavailable(format!("{} could not be recorded for this Agent. It was left in place.", canonical.display())),
@@ -282,15 +491,14 @@ fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<
     )))
 }
 
-/// Core's default temporary root, made 0700 under its data directory, after
-/// checking it is Core's own directory and on the same file system.
+/// Core's default temporary root, made 0700 under its validated data
+/// directory, after checking it is Core's own directory and on the same file
+/// system. Protection for it was registered before this is called.
 #[cfg(unix)]
-fn default_root(data: &Path) -> Result<PathBuf> {
-    let data = std::fs::canonicalize(data)?;
-    let data_meta = std::fs::symlink_metadata(&data)?;
+fn prepare_root(root: &Path, data: &Path) -> Result<PathBuf> {
+    let data_meta = std::fs::symlink_metadata(data)?;
     ensure!(data_meta.is_dir() && !data_meta.file_type().is_symlink(), "{} is not Core's data directory", data.display());
-    let root = data.join(ROOT_NAME);
-    match std::fs::symlink_metadata(&root) {
+    match std::fs::symlink_metadata(root) {
         Ok(meta) => {
             ensure!(meta.is_dir() && !meta.file_type().is_symlink(), "{} is not a directory", root.display());
             #[cfg(unix)]
@@ -300,15 +508,15 @@ fn default_root(data: &Path) -> Result<PathBuf> {
             }
             ensure!(meta.dev() == data_meta.dev(), "{} is on another file system", root.display());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&root)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(root)?,
         Err(error) => return Err(error.into()),
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     }
-    Ok(root)
+    Ok(root.to_path_buf())
 }
 
 /// The names to try for `agent`, shortest first; its full ID when the short
@@ -683,5 +891,93 @@ mod tests {
         store.delete_closed_agent("deleted").unwrap();
         assert!(deleted.is_dir(), "the directory is never deleted");
         assert!(store.executor_temp_dir(&workspace, "deleted").unwrap().unwrap().released_at.is_some());
+    }
+
+    #[test]
+    fn protection_covers_the_current_and_historical_roots_and_survives_release() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        agent(&store, "auto");
+        executor(&store, "auto");
+        store.set_permission_level("auto", Some("auto")).unwrap();
+        let path = ensure_at_start(&store, &data, "auto").unwrap().unwrap();
+
+        // A retained record from another data directory, of an Agent that is
+        // gone: its root stays protected, though the record is never reused.
+        let old = dir.path().join("old-data").join("t").join("gone-1111");
+        std::fs::create_dir_all(&old).unwrap();
+        let meta = std::fs::symlink_metadata(&old).unwrap();
+        store.save_executor_temp_dir(&workspace(&store), "gone-1111", &old.to_string_lossy(), meta.dev() as i64, meta.ino() as i64).unwrap();
+
+        let roots = protected_roots(&*store.db.read().unwrap(), &data).unwrap();
+        assert!(roots.contains(&data.join("t")), "the current root: {roots:?}");
+        assert!(roots.contains(&dir.path().join("old-data").join("t")), "the old data root: {roots:?}");
+
+        // Release and delete the Agent: the record and its protection stay.
+        store.update("auto", "agent/closed", &json!({"reason": "closed"}), |d| d.agent.closed_at = Some("closed-at".into())).unwrap();
+        store.delete_closed_agent("auto").unwrap();
+        assert!(path.is_dir(), "the directory is never deleted");
+        drop(store);
+        // A restart reads the same set.
+        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let roots = protected_roots(&*store.db.read().unwrap(), &data).unwrap();
+        assert!(roots.contains(&data.join("t")));
+        assert!(roots.contains(&dir.path().join("old-data").join("t")));
+    }
+
+    #[test]
+    fn a_malformed_record_is_an_error_never_a_shorter_set() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        let workspace = workspace(&store);
+        store.db.write().unwrap().execute(
+            "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,'bad','relative/path',0,0,'now')",
+            [workspace],
+        ).unwrap();
+        assert!(protected_roots(&*store.db.read().unwrap(), &data).is_err(), "a relative record is an error");
+        assert!(bootstrap(&store, &data).is_err(), "and the backfill refuses rather than register part of a set");
+    }
+
+    #[test]
+    fn a_failed_root_registration_makes_nothing() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        agent(&store, "auto");
+        executor(&store, "auto");
+        store.set_permission_level("auto", Some("auto")).unwrap();
+        store.db.write().unwrap().execute_batch(
+            "CREATE TRIGGER no_roots BEFORE INSERT ON executor_temp_roots BEGIN SELECT RAISE(ABORT,'protected roots cannot be written'); END;",
+        ).unwrap();
+        assert_eq!(ensure_at_start(&store, &data, "auto").unwrap(), None);
+        assert!(!data.join("t").exists(), "the root is not made when it cannot first be protected");
+        assert_eq!(store.executor_temp_dir(&workspace(&store), "auto").unwrap(), None);
+        let note = store.executor_temp_view("auto").unwrap().unwrap();
+        assert!(note["note"].as_str().unwrap().contains("could not prepare a temporary directory"), "{note}");
+    }
+
+    #[test]
+    fn a_save_failure_keeps_the_directory_and_protection_and_a_retry_never_adopts_it() {
+        let (dir, store) = lab();
+        let data = data(&dir);
+        let id = "abcdefgh-1111";
+        agent(&store, id);
+        executor(&store, id);
+        store.set_permission_level(id, Some("auto")).unwrap();
+        store.db.write().unwrap().execute_batch(
+            "CREATE TRIGGER no_dirs BEFORE INSERT ON executor_temp_dirs BEGIN SELECT RAISE(ABORT,'records cannot be written'); END;",
+        ).unwrap();
+        assert_eq!(ensure_at_start(&store, &data, id).unwrap(), None);
+        // The directory made before the failed save stays, and its root stays
+        // protected; nothing is recorded, so no environment is passed.
+        let orphan = data.join("t").join("abcdefgh");
+        assert!(orphan.is_dir(), "the directory is left in place");
+        assert_eq!(store.executor_temp_dir(&workspace(&store), id).unwrap(), None);
+        assert!(protected_roots(&*store.db.read().unwrap(), &data).unwrap().contains(&data.join("t")));
+        // The save works again: the next name is used, never the orphan.
+        store.db.write().unwrap().execute_batch("DROP TRIGGER no_dirs;").unwrap();
+        let found = ensure_at_start(&store, &data, id).unwrap().unwrap();
+        assert_eq!(found, data.join("t").join("abcdefgh-111"));
+        assert!(orphan.is_dir(), "the orphan is untouched");
+        assert_eq!(store.executor_temp_dir(&workspace(&store), id).unwrap().unwrap().path, found.to_string_lossy());
     }
 }

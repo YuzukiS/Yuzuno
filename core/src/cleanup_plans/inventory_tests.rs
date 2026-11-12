@@ -91,7 +91,8 @@ async fn the_command_is_core_s_and_runs_here_to_an_inventory_of_its_schema() {
     let out = submit["artifacts"][0]["path"].as_str().unwrap().to_owned();
     assert!(out.ends_with(".json") && !out.contains('/'), "{out}");
     let rules = super::rules::table(&super::rules::enabled(&Settings::default(), None));
-    let expected = inventory::command(&python.executable, &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[], &rules, &out);
+    let roots = vec![lab.ws.data_dir.join("t").display().to_string()];
+    let expected = inventory::command(&python.executable, &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[], &roots, &rules, &out);
     assert_eq!(strings(&submit["argv"]), expected);
     assert_eq!(strings(&submit["argv"])[1..4], ["-I".to_owned(), "-c".to_owned(), inventory::loader().to_owned()]);
     assert_eq!(submit["cwd"], json!(lab.ws.data_dir.join(FOLDER)));
@@ -192,7 +193,7 @@ async fn on_an_ssh_machine_it_runs_there_with_the_python3_that_answered() {
     assert!(argv[0].starts_with('/'), "the python3 that answered, by its path: {argv:?}");
     // Settings' scratch roots and protected paths are this host's: none are sent.
     let rules = super::rules::table(&super::rules::enabled(&Settings::default(), None));
-    assert_eq!(argv, inventory::command(&argv[0], &lab.project.display().to_string(), &[], &[], &rules, &out));
+    assert_eq!(argv, inventory::command(&argv[0], &lab.project.display().to_string(), &[], &[], &[], &rules, &out));
     assert_eq!(queued["cwd"], json!(there.join(".yuzuno")), "the data root its hello named");
     let dir = Path::new(&argv[0]).parent().unwrap().display().to_string();
     assert_eq!(queued["env"]["PATH"], json!(format!("{dir}:/usr/local/bin:/usr/bin:/bin")));
@@ -284,6 +285,28 @@ async fn a_read_only_executor_reads_only_its_own_task_s_jobs() {
     assert!(lab.ws.collaboration_call(Some("lead"), "job_get", json!({"jobId": other})).await.is_ok());
 }
 
+/// YN-78 S2b-1: the complete protected-root set travels in the job's command.
+/// When it cannot fit, the inventory is refused, never shortened.
+#[tokio::test]
+async fn a_protection_set_too_large_for_a_job_command_is_refused() {
+    let lab = lab();
+    let workspace = lab.ws.store.workspace_id().unwrap();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        let mut insert = db.prepare(
+            "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,?2,?3,0,0,'now')",
+        ).unwrap();
+        for i in 0..500 {
+            let agent = format!("agent-{i:04}");
+            let root = format!("/synthetic/roots/{i}/{}", "x".repeat(80));
+            insert.execute(params![workspace, agent, format!("{root}/t/agent")]).unwrap();
+        }
+    }
+    let error = take(&lab, Some("ex"), json!({"requestId": "big", "taskId": "T-1"})).await.unwrap_err().to_string();
+    assert!(error.starts_with("inventory_unavailable:") && error.contains("16384"), "{error}");
+    assert_eq!(inventory_jobs(&lab), 0, "nothing submitted");
+}
+
 /// ③a: the script travels packed (a Job's argv holds 16 KiB); the loader
 /// unpacks exactly the repository's file, and a long command still fits.
 #[test]
@@ -298,7 +321,7 @@ fn the_loader_unpacks_exactly_the_script_and_the_command_fits_a_job() {
     assert_eq!(unpacked, inventory::SOURCE);
     let all: BTreeSet<&'static str> = super::rules::ids().into_iter().map(|(id, _)| id).collect();
     let roots: Vec<String> = (0..5).map(|i| format!("/synthetic/scratch/root-number-{i}/with/a/longer/path")).collect();
-    let argv = inventory::command("/opt/homebrew/opt/python@3.12/bin/python3.12", "/synthetic/home/someone/work/a-project-folder", &roots, &roots,
+    let argv = inventory::command("/opt/homebrew/opt/python@3.12/bin/python3.12", "/synthetic/home/someone/work/a-project-folder", &roots, &roots, &roots,
         &super::rules::table(&all), "cleanup-inventories/0123456789abcdef0123456789abcdef.json");
     let bytes: usize = argv.iter().map(String::len).sum();
     assert!(bytes + 2048 <= 16384, "every rule on, five scratch roots and protected paths: {bytes} bytes, with 2 KiB to spare");

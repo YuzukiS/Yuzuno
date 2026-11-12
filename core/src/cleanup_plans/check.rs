@@ -94,6 +94,7 @@ pub(crate) fn parse_worktrees(text: &str) -> Vec<Listed> {
 }
 
 /// Everything one plan's checks compare against, read once.
+#[derive(Clone)]
 pub(crate) struct Context {
     pub env: HostEnv,
     pub data: PathBuf,
@@ -104,6 +105,9 @@ pub(crate) struct Context {
     pub common: String,
     pub others: Vec<PathBuf>,
     pub protected: Vec<PathBuf>,
+    /// Every root Core keeps for its executors' temporary directories: each
+    /// is never removed, nor anything above or below it (YN-78 S2b-1).
+    pub runtime: Vec<PathBuf>,
     pub scratch: Vec<PathBuf>,
     pub worktrees: Vec<Listed>,
     /// A remote's default branch (`refs/remotes/<remote>/HEAD`), for "merged".
@@ -117,7 +121,7 @@ pub(crate) struct Context {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &Path, project: &str, project_id: Option<&str>, others: &[String],
-    settings: Settings) -> Result<Context> {
+    runtime: Vec<PathBuf>, settings: Settings) -> Result<Context> {
     let project = std::fs::canonicalize(project)
         .map_err(|e| anyhow::anyhow!("project_folder_missing: its task's Project folder {project} cannot be read on this host: {e}"))?;
     let common = match git(&project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await? {
@@ -148,6 +152,7 @@ pub(crate) async fn context(env: HostEnv, mounts: Option<Vec<PathBuf>>, data: &P
         data: real(data),
         others: canonical(others).into_iter().filter(|p| p != &project).collect(),
         protected: canonical(&settings.protected_paths),
+        runtime: runtime.iter().map(|p| real(p)).collect(),
         scratch: canonical(&settings.scratch_roots).into_iter().filter(|p| is_dir(p)).collect(),
         project,
         top,
@@ -205,11 +210,16 @@ fn plain(path: &str) -> Option<PathBuf> {
 
 /// Why `path` is never removed whatever the settings say, or is protected
 /// by them: it is, is inside or holds one of those folders.
-fn fixed(ctx: &Context, path: &Path) -> Option<(&'static str, String)> {
+pub(super) fn fixed(ctx: &Context, path: &Path) -> Option<(&'static str, String)> {
     let within = |root: &Path| inside(path, root);
     let holds = |root: &Path| inside(root, path);
     if within(&ctx.data) || holds(&ctx.data) {
         return Some(("forbidden", "Core's data folder: never removed".into()));
+    }
+    if let Some(root) = ctx.runtime.iter().find(|root| within(root) || holds(root)) {
+        return Some(("forbidden", format!(
+            "A temporary root Core keeps for its executors ({}): itself, anything below it and anything holding it are never removed",
+            root.display())));
     }
     let Some(home) = &ctx.env.home else {
         return Some(("forbidden", "HOME is not set, so Core cannot tell the home folder: nothing is removed".into()));

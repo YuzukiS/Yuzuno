@@ -76,6 +76,13 @@ const MAX_PAGE: usize = 100;
 /// be read), and the decision/kind check (design 7).
 #[derive(Default)]
 pub(crate) struct State {
+    /// The one gate an executor's temporary root is created or a cleanup
+    /// removes under (YN-78 S2b-1). Owned guards may be held past the caller
+    /// that took them.
+    pub(crate) root_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Whether the protection registry finished at start; its failure keeps
+    /// cleanup and allocation from running, and says why.
+    roots: std::sync::OnceLock<std::result::Result<(), String>>,
     #[cfg(test)]
     pub env: std::sync::Mutex<Option<HostEnv>>,
     #[cfg(test)]
@@ -91,9 +98,50 @@ pub(crate) struct State {
     /// The OpenSSH program a remote inventory's probe calls (a stand-in).
     #[cfg(test)]
     pub ssh: std::sync::Mutex<Option<String>>,
+    /// A barrier an apply's file system removal waits on first (a test only).
+    #[cfg(test)]
+    pub apply_fs_pause: std::sync::Mutex<Option<FsPause>>,
+    /// The apply that last finished, for a test to wait on without timers.
+    #[cfg(test)]
+    pub apply_done: Arc<tokio::sync::Notify>,
+    /// How many callers wait for the root gate now (a test only).
+    #[cfg(test)]
+    pub gate_waiting: std::sync::atomic::AtomicUsize,
+}
+
+/// A test's hold on an apply's file system step: it says it arrived, then
+/// waits for the test to let it go.
+#[cfg(test)]
+pub(crate) struct FsPause {
+    pub entered: tokio::sync::mpsc::Sender<()>,
+    pub release: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl State {
+    /// Finishes the protection backfill once, before anything that depends
+    /// on the complete protected-root set runs. A failure is remembered and
+    /// refused explicitly; unrelated Workspace functions keep working.
+    pub(crate) fn ensure_roots(&self, store: &Store, data: &Path) -> Result<()> {
+        match self.roots.get_or_init(|| crate::executor_temp::bootstrap(store, data).map_err(|error| format!("{error:#}"))) {
+            Ok(()) => Ok(()),
+            Err(why) => bail!(
+                "roots_unavailable: Core could not register the temporary roots it protects, so it will not allocate, register or apply a cleanup: {why}"
+            ),
+        }
+    }
+
+    /// The gate an allocation and a cleanup's file system work share, as an
+    /// owned guard: keeping a clone of it keeps it held, even after the
+    /// future that took it is cancelled.
+    pub(crate) async fn root_gate(&self) -> Arc<tokio::sync::OwnedMutexGuard<()>> {
+        #[cfg(test)]
+        self.gate_waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let held = Arc::new(self.root_gate.clone().lock_owned().await);
+        #[cfg(test)]
+        self.gate_waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        held
+    }
+
     fn env(&self) -> HostEnv {
         #[cfg(test)]
         if let Some(env) = self.env.lock().unwrap().clone() {
@@ -327,6 +375,8 @@ struct Prepared {
     project: String,
     project_dir: Option<String>,
     others: Vec<String>,
+    /// Every temporary root Core protects now, read with the plan.
+    runtime: Vec<PathBuf>,
     settings: Settings,
     author: TaskActor,
     source: Value,
@@ -351,7 +401,7 @@ fn earlier(db: &Connection, author: &str, request: &str, digest: &str) -> Result
     Ok(Some(submit_answer(db, &id)?))
 }
 
-fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str) -> Result<Earlier> {
+fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str, data: &Path) -> Result<Earlier> {
     let db = store.db.read()?;
     let (task, _) = collaboration::task_key(&db, &input.task_id)?;
     let own: Option<Option<String>> = db
@@ -390,10 +440,13 @@ fn prepare(store: &Store, actor: &str, input: &SubmitInput, digest: &str) -> Res
     inventory::ours(recorded.as_ref(), &job, &folder).map_err(|why| anyhow::anyhow!("invalid_input: inventory: {why}"))?;
     let remote = (target != "local").then(|| inventory["machineName"].as_str().unwrap_or("another machine").to_owned());
     let (author, source) = collaboration::actor_context(store, &db, Some(actor))?;
-    Ok(Earlier::New(Box::new(Prepared { task, project, project_dir, others, settings, author, source, inventory: reference, remote })))
+    let runtime = crate::executor_temp::protected_roots(&db, data).context(
+        "roots_unavailable: Core could not read the temporary roots it protects, so no cleanup plan is registered")?;
+    Ok(Earlier::New(Box::new(Prepared { task, project, project_dir, others, runtime, settings, author, source, inventory: reference, remote })))
 }
 
 async fn submit(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Result<Value> {
+    ws.cleanup.ensure_roots(&ws.store, &ws.data_dir)?;
     let digest = sha256(&input.to_string());
     let parsed: SubmitInput = serde_json::from_value(input).map_err(|e| anyhow::anyhow!("invalid_input: {e}"))?;
     validate(&parsed, ws.cleanup.kind_check())?;
@@ -401,7 +454,8 @@ async fn submit(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Res
     let parsed = Arc::new(parsed);
     let prepared = ws.stored({
         let (actor, parsed, digest) = (actor.clone(), parsed.clone(), digest.clone());
-        move |s| prepare(s, &actor, &parsed, &digest)
+        let data = ws.data_dir.clone();
+        move |s| prepare(s, &actor, &parsed, &digest, &data)
     })
     .await?;
     let prepared = match prepared {
@@ -425,7 +479,7 @@ async fn submit(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Res
         None => {
             let dir = prepared.project_dir.clone().context("project_folder_missing: its task's Project has no folder on this host")?;
             let ctx = Arc::new(check::context(ws.cleanup.env(), ws.cleanup.mounts(), &ws.data_dir, &dir, Some(&prepared.project), &prepared.others,
-                prepared.settings.clone()).await?);
+                prepared.runtime.clone(), prepared.settings.clone()).await?);
             let checks = items.iter().cloned().map(|item| {
                 let ctx = ctx.clone();
                 async move { check::preflight(&ctx, &item).await }

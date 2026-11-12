@@ -337,7 +337,7 @@ async fn only_core_s_own_inventory_is_an_inventory() {
             "result": {"attempt": ATTEMPT, "artifacts": [{"path": "out/inventory.json", "sha256": "c".repeat(64), "ok": true, "bytes": 2}]}});
         db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('forged',?1,'ex','succeeded',?2)", params![task, forged.to_string()]).unwrap();
         // Core's own command, but of another folder.
-        let elsewhere = inventory::command("/usr/bin/python3", "/synthetic/elsewhere", &[], &[], &json!({}), "out/inventory.json");
+        let elsewhere = inventory::command("/usr/bin/python3", "/synthetic/elsewhere", &[], &[], &[], &json!({}), "out/inventory.json");
         let other = json!({"id": "other-folder", "taskId": task, "agentId": "ex", "attempt": ATTEMPT, "status": "succeeded", "target": {"kind": "local"},
             "name": inventory::JOB_NAME, "argv": elsewhere,
             "result": {"attempt": ATTEMPT, "artifacts": [{"path": "out/inventory.json", "sha256": "d".repeat(64), "ok": true, "bytes": 2}]}});
@@ -376,7 +376,7 @@ fn core_and_the_script_recognize_the_same_folders() {
     touch(&lab.scratch.join("job-9/repo/CACHEDIR.TAG"), TAG_PYTEST);
     std::fs::create_dir_all(lab.scratch.join("job-9/repo/.git")).unwrap();
     let on: BTreeSet<&'static str> = rules::ids().into_iter().map(|(id, _)| id).collect();
-    let argv = inventory::command("python3", &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[],
+    let argv = inventory::command("python3", &lab.project.display().to_string(), &[lab.scratch.display().to_string()], &[], &[],
         &rules::table(&on), "out.json");
     let out = lab.root().join("out.json");
     let done = std::process::Command::new("python3").args(&argv[1..]).current_dir(lab.root()).output().unwrap();
@@ -477,7 +477,7 @@ async fn a_job_with_core_s_command_that_core_did_not_start_is_no_inventory() {
     {
         let db = lab.ws.store.db.write().unwrap();
         let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
-        let exact = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
+        let exact = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &[], &json!({}), "out/inventory.json");
         let mut twice = exact.clone();
         let at = twice.len() - 2;
         twice.splice(at..at, ["--project".to_owned(), "/synthetic/other".to_owned()]);
@@ -505,7 +505,7 @@ async fn core_s_record_binds_one_folder_and_a_lost_answer_is_named_on_retry() {
     {
         let db = lab.ws.store.db.write().unwrap();
         let (task, _) = collaboration::task_key(&db, "T-1").unwrap();
-        let mut twice = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
+        let mut twice = inventory::command("/usr/bin/python3", &lab.project.display().to_string(), &[], &[], &[], &json!({}), "out/inventory.json");
         let at = twice.len() - 2;
         twice.splice(at..at, ["--project".to_owned(), "/synthetic/other".to_owned()]);
         let data = json!({"id": "twice", "taskId": task, "agentId": "ex", "attempt": ATTEMPT, "status": "succeeded", "target": {"kind": "local"},

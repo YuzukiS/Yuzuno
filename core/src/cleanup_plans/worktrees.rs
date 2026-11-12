@@ -275,8 +275,8 @@ fn before(code: &'static str, why: impl Into<String>) -> NotReclaimed {
 /// Removes a worktree that passed every check: its HEAD pinned, its
 /// snapshot kept, moved aside, removed, its record pruned.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value)
-    -> std::result::Result<(Value, Value), NotReclaimed> {
+pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value,
+    held: &Arc<tokio::sync::OwnedMutexGuard<()>>) -> std::result::Result<(Value, Value), NotReclaimed> {
     let facts = &now["worktree"];
     let save_diff = pre["saveDiff"] == true;
     let tracked = facts["trackedChanges"].as_u64().unwrap_or(0);
@@ -297,7 +297,11 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
     let out = data.join("cleanup-snapshots").join(plan).join(format!("{item_id}.tar.gz"));
     let snapshot = {
         let (root, files, out) = (path.to_path_buf(), keep.files.clone(), out.clone());
-        tokio::task::spawn_blocking(move || write_snapshot(&root, &files, diff.as_deref(), &out))
+        let held = held.clone();
+        tokio::task::spawn_blocking(move || {
+            let _held = held;
+            write_snapshot(&root, &files, diff.as_deref(), &out)
+        })
             .await
             .map_err(|e| before("snapshot", e.to_string()))?
             .map_err(|e| before("snapshot", format!("Its snapshot could not be made: {e:#}")))?
@@ -310,7 +314,11 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
     }
     let mut record = json!({"ref": pinned, "head": head, "branch": facts["branch"]});
     let (target, dev, ino) = (path.to_path_buf(), pre["dev"].as_u64(), pre["ino"].as_u64());
-    let removed = tokio::task::spawn_blocking(move || super::apply::remove_aside(&target, dev, ino))
+    let held = held.clone();
+    let removed = tokio::task::spawn_blocking(move || {
+        let _held = held;
+        super::apply::remove_aside(&target, dev, ino)
+    })
         .await
         .unwrap_or_else(|e| Err(("failed", e.to_string())));
     // Moved aside, wholly or partly removed: Git's record of it goes
