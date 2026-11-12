@@ -483,18 +483,30 @@ fn an_exhausted_setup_is_retried_and_its_request_never_starts_a_review() {
     assert!(error.contains("hasn't been confirmed to have ended"), "{error}");
 }
 
-/// #8: a setup try still in flight, or a step an older Core wrote, doesn't
-/// prove its setup failed.
+/// #8: a setup try whose end isn't recorded (still in flight, or lost to a
+/// restart) doesn't prove its setup failed. Its three tries are reported
+/// used, and mailed once, as before S4 (PR #901 R1 P2), but the attempt isn't
+/// replaced; a step an older Core wrote has no count of ended tries either.
 #[test]
 fn a_setup_in_flight_or_unrecorded_is_not_replaced() {
-    let (_d, s, t) = setup();
+    let (dir, s, t) = setup();
     enable(&s, &t);
     submit(&s, &t, "r1");
     fail_setup(&s, &t, 2);
     assert!(s.delivery_claim(&internal(&s, &t), "review").unwrap().is_some(), "the third try is in flight");
+    // Core restarts before that try's answer is recorded.
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    let task = internal(&s, &t);
     let f = get(&s, &t);
     assert_eq!((&f["rounds"][0]["review"]["attempts"], &f["rounds"][0]["review"]["finished"]), (&json!(3), &json!(2)));
-    assert_eq!(f["state"], "waiting_review", "{f}");
+    assert_eq!(f["state"], "infrastructure_error", "{f}");
+    assert!(f["reason"].as_str().unwrap().contains("the end of the last one isn't recorded"), "{f}");
+    assert!(s.delivery_claim(&task, "review").unwrap().is_none(), "never tried again");
+    assert!(s.delivery_reconcile(&task).unwrap());
+    assert!(!s.delivery_reconcile(&task).unwrap());
+    let mail: Vec<_> = delivery_mail(&s, "owner").into_iter().filter(|m| m["metadata"]["status"] == "infrastructure_error").collect();
+    assert_eq!(mail.len(), 1, "whoever decides is told once: {mail:?}");
     let error = refused(&s, &t, "a", "b", "retry");
     assert_eq!(error, "Round 1 attempt 1 hasn't been confirmed to have ended: its setup is in flight or wasn't recorded as finished. Reconcile it first. No attempt was authorized.");
     // An older step has no count of ended tries: exhausted as before, unproven.
@@ -507,7 +519,9 @@ fn a_setup_in_flight_or_unrecorded_is_not_replaced() {
         .unwrap()
         .execute("UPDATE delivery_flows SET data=json_remove(data,'$.rounds[0].review.finished','$.rounds[0].ci.finished') WHERE task_id=?1", [&task])
         .unwrap();
-    assert_eq!(get(&s, &t)["state"], "infrastructure_error");
+    let f = get(&s, &t);
+    assert_eq!(f["state"], "infrastructure_error");
+    assert!(f["reason"].as_str().unwrap().starts_with("Review setup failed after three attempts"), "{f}");
     let error = refused(&s, &t, "a", "b", "retry");
     assert!(error.contains("hasn't been confirmed to have ended"), "{error}");
 }

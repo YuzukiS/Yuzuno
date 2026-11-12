@@ -879,18 +879,28 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
         }
     }
     for (name, step) in [("Review", &r.review), ("CI subscription", &r.ci)] {
-        // A step this Core wrote failed its setup only once all three tries
-        // ended; until then one is in flight. An older step reads as before.
-        let ended = step.finished.is_none_or(|done| done >= step.attempts);
-        if step.id.is_none() && step.attempts >= 3 && ended {
+        if step.id.is_none() && step.attempts >= 3 {
+            // Its three tries are used either way, and nothing tries again:
+            // whoever decides is told. Only a step whose every try recorded
+            // its end proves its setup failed, so delivery_continue may retry
+            // it (YN-12 S4); the end of a try a restart interrupted, or whose
+            // answer couldn't be recorded, never is.
+            let unrecorded = step.finished.is_some_and(|done| done < step.attempts);
             return Ok((
                 "infrastructure_error",
-                format!(
-                    "{name} setup failed after three attempts with the same request ID. Reconcile the retained operation; no replacement review is started. {}",
-                    step.error
-                        .as_deref()
-                        .unwrap_or("Completion was not confirmed.")
-                ),
+                if unrecorded {
+                    format!(
+                        "{name} setup used its three attempts with the same request ID, and the end of the last one isn't recorded: it may still be in flight, or Core restarted during it. It isn't retried, and the same head can't be authorized again as another attempt. Reconcile the retained operation; no replacement review is started. {}",
+                        step.error.as_deref().unwrap_or("Completion was not confirmed.")
+                    )
+                } else {
+                    format!(
+                        "{name} setup failed after three attempts with the same request ID. Reconcile the retained operation; no replacement review is started. {}",
+                        step.error
+                            .as_deref()
+                            .unwrap_or("Completion was not confirmed.")
+                    )
+                },
             ));
         }
     }
