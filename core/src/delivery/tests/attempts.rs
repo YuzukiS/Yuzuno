@@ -501,14 +501,16 @@ fn a_setup_in_flight_or_unrecorded_is_not_replaced() {
     let f = get(&s, &t);
     assert_eq!((&f["rounds"][0]["review"]["attempts"], &f["rounds"][0]["review"]["finished"]), (&json!(3), &json!(2)));
     assert_eq!(f["state"], "infrastructure_error", "{f}");
-    assert!(f["reason"].as_str().unwrap().contains("the end of the last one isn't recorded"), "{f}");
+    assert!(f["reason"].as_str().unwrap().contains("the end of one or more of them isn't recorded"), "{f}");
     assert!(s.delivery_claim(&task, "review").unwrap().is_none(), "never tried again");
     assert!(s.delivery_reconcile(&task).unwrap());
     assert!(!s.delivery_reconcile(&task).unwrap());
     let mail: Vec<_> = delivery_mail(&s, "owner").into_iter().filter(|m| m["metadata"]["status"] == "infrastructure_error").collect();
     assert_eq!(mail.len(), 1, "whoever decides is told once: {mail:?}");
+    let before = written(&s);
     let error = refused(&s, &t, "a", "b", "retry");
     assert_eq!(error, "Round 1 attempt 1 hasn't been confirmed to have ended: its setup is in flight or wasn't recorded as finished. Reconcile it first. No attempt was authorized.");
+    assert_eq!(written(&s), before, "no review and no receipt");
     // An older step has no count of ended tries: exhausted as before, unproven.
     let (_d, s, t) = setup();
     enable(&s, &t);
@@ -524,6 +526,49 @@ fn a_setup_in_flight_or_unrecorded_is_not_replaced() {
     assert!(f["reason"].as_str().unwrap().starts_with("Review setup failed after three attempts"), "{f}");
     let error = refused(&s, &t, "a", "b", "retry");
     assert!(error.contains("hasn't been confirmed to have ended"), "{error}");
+}
+
+/// A try whose end was missing is judged by its real record once there is
+/// one: a late failing answer proves the setup failed, so the head may be
+/// authorized again; a review the lost answer had started is the round's, and
+/// nothing starts a replacement for it.
+#[test]
+fn an_unrecorded_try_recovers_from_its_real_record() {
+    let (_d, s, t) = setup();
+    enable(&s, &t);
+    submit(&s, &t, "r1");
+    fail_setup(&s, &t, 2);
+    let task = internal(&s, &t);
+    let late = s.delivery_claim(&task, "review").unwrap().unwrap();
+    assert!(get(&s, &t)["reason"].as_str().unwrap().contains("isn't recorded"));
+    assert!(refused(&s, &t, "a", "b", "early").contains("hasn't been confirmed to have ended"));
+    s.delivery_finish(&task, &late, Err("Reviewer admission unavailable".into())).unwrap();
+    let f = get(&s, &t);
+    assert_eq!(f["rounds"][0]["review"]["finished"], 3);
+    assert!(f["reason"].as_str().unwrap().starts_with("Review setup failed after three attempts"), "{f}");
+    let f = cont(&s, &t, "a", "b", "retry").unwrap();
+    assert_eq!(f["rounds"][0]["earlier"][0]["replaced"], "setup_exhausted");
+    // The third try did start its review before its answer was lost.
+    let (dir, s, t) = setup();
+    enable(&s, &t);
+    submit(&s, &t, "r1");
+    fail_setup(&s, &t, 2);
+    let task = internal(&s, &t);
+    let plan = s.delivery_claim(&task, "review").unwrap().unwrap();
+    let input: crate::pr_review::Start = serde_json::from_value(plan.input.clone()).unwrap();
+    let (_, created) = s.create_pr_review(Some("owner"), &input, "started").unwrap();
+    assert!(created);
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    s.recover_pr_reviews().unwrap();
+    let f = get(&s, &t);
+    assert_eq!(f["rounds"][0]["review"]["id"], "started", "the review is the round's: {f}");
+    assert!(f["reason"].as_str().unwrap().starts_with("Review unknown"), "judged by its review: {f}");
+    assert!(s.delivery_claim(&task, "review").unwrap().is_none());
+    let (again, created) = s.create_pr_review(Some("owner"), &input, "ignored").unwrap();
+    assert!(!created && again["id"] == "started", "its request returns it");
+    assert_eq!(written(&s), (1, 1), "one review, one receipt");
+    assert!(refused(&s, &t, "a", "b", "retry").contains("Reconcile the existing review first"));
 }
 
 /// A manual review of the candidate takes the current attempt, within the

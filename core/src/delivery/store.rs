@@ -881,16 +881,16 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
     for (name, step) in [("Review", &r.review), ("CI subscription", &r.ci)] {
         if step.id.is_none() && step.attempts >= 3 {
             // Its three tries are used either way, and nothing tries again:
-            // whoever decides is told. Only a step whose every try recorded
-            // its end proves its setup failed, so delivery_continue may retry
-            // it (YN-12 S4); the end of a try a restart interrupted, or whose
-            // answer couldn't be recorded, never is.
+            // whoever decides is told (PR #901 R1). Only a step whose every
+            // try recorded its end proves its setup failed, so
+            // delivery_continue may retry it (YN-12 S4). `finished` is a
+            // total, so the try whose end is missing may be any of them.
             let unrecorded = step.finished.is_some_and(|done| done < step.attempts);
             return Ok((
                 "infrastructure_error",
                 if unrecorded {
                     format!(
-                        "{name} setup used its three attempts with the same request ID, and the end of the last one isn't recorded: it may still be in flight, or Core restarted during it. It isn't retried, and the same head can't be authorized again as another attempt. Reconcile the retained operation; no replacement review is started. {}",
+                        "{name} setup used its three attempts with the same request ID, and the end of one or more of them isn't recorded: they may still be in flight, or were interrupted (a restart). It isn't retried, and the same head can't be authorized again as another attempt. Reconcile the retained operation; no replacement review is started. {}",
                         step.error.as_deref().unwrap_or("Completion was not confirmed.")
                     )
                 } else {
