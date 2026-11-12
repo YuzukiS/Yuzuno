@@ -231,6 +231,69 @@ fn under_a_delivery_a_continuation_of_its_reviewed_head_is_refused() {
     assert_eq!(reviews(&store), 1, "still nothing was created");
 }
 
+/// YN-12 S4 (Lead 11638/11639): a round an older Core authorized at the
+/// same head before the upgrade, still without a review, takes a
+/// continuation as it did, within what its parent left; the same request
+/// returns it, another payload under it conflicts, and it ends and mails
+/// like any round. Only new same-head authorizations are refused.
+#[test]
+fn a_same_head_round_authorized_before_the_upgrade_still_takes_its_continuation() {
+    let (_dir, store, task) = setup();
+    let (run, _) = store.create_pr_review(Some("owner"), &start(&task, "r1"), "p1").unwrap();
+    complete(&store, run);
+    // The flow as an older Core left it after continuing the same head.
+    let id = crate::collaboration_store::task_key(&store.db.read().unwrap(), &task).unwrap().0;
+    let (reference, url) = {
+        let db = store.db.read().unwrap();
+        let url = crate::github::store::task_links(&db, &id).unwrap()[0]["url"].as_str().unwrap().to_owned();
+        (crate::collaboration_store::task_number(&db, &id).unwrap(), url)
+    };
+    let text = include_str!("../../delivery/fixtures/flow-c6e51671.json")
+        .replace("{FLOW}", "F")
+        .replace("{TASK}", &id)
+        .replace("{REF}", &reference)
+        .replace("{URL}", &url);
+    let mut flow: Value = serde_json::from_str(&text).unwrap();
+    let mut second = flow["rounds"][0].clone();
+    flow["rounds"][0]["review"] = json!({"requestId":"delivery:F:1:review","id":"p1","attempts":0,"nextTry":0,"error":null});
+    second["number"] = json!(2);
+    second["review"] = json!({"requestId":"delivery:F:2:review","id":null,"attempts":0,"nextTry":0,"error":null});
+    second["ci"]["requestId"] = json!("delivery:F:2:ci");
+    flow["rounds"].as_array_mut().unwrap().push(second);
+    flow["lastState"] = json!("awaiting_result");
+    flow["notified"] = json!(["1:waiting_fix"]);
+    store.db.write().unwrap().execute("INSERT INTO delivery_flows(task_id,data) VALUES(?1,?2)", rusqlite::params![id, flow.to_string()]).unwrap();
+    let (child, _, created) = store.create_pr_review_continuation(Some("owner"), &on(&task, "p1", "c1"), "child").unwrap();
+    assert!(created);
+    let read = store.collaboration_call(None, "delivery_get", json!({"taskId":task})).unwrap()["flow"].clone();
+    assert_eq!(read["rounds"][1]["review"]["id"], "child", "{read}");
+    assert!(read.get("attempt").is_none(), "an older round reads as it did: {read}");
+    // The same request is the same child; another payload under it conflicts.
+    let count = |store: &Store| store.list_pr_reviews(&task, None).unwrap()["reviews"].as_array().unwrap().len();
+    let (again, _, created) = store.create_pr_review_continuation(Some("owner"), &on(&task, "p1", "c1"), "ignored").unwrap();
+    assert!(!created && again["id"] == "child");
+    let mut other = on(&task, "p1", "c1");
+    other.base_sha = C.into();
+    let conflict = store.create_pr_review_continuation(Some("owner"), &other, "ignored").unwrap_err().to_string();
+    assert!(conflict.starts_with("idempotency_conflict:"), "{conflict}");
+    assert_eq!(count(&store), 2, "nothing new was written");
+    // It runs and ends like any round: never cancelled or run again, and mailed.
+    let mut child = child;
+    child["nativeStartedAt"] = json!("2026-11-12T00:00:00Z");
+    child["status"] = json!("running");
+    store.save_pr_review(&child, None).unwrap();
+    child["status"] = json!("completed");
+    child["conclusion"] = json!("no_findings");
+    store.save_pr_review(&child, Some("child report")).unwrap();
+    assert_eq!(store.pr_review_report(&task, "child").unwrap()["status"], "completed");
+    let mail = store.collaboration_call(None, "peer_read", json!({"agentId":"owner","limit":200})).unwrap();
+    assert_eq!(
+        mail["messages"].as_array().unwrap().iter().filter(|m| m["metadata"]["kind"] == "review" && m["metadata"]["reviewId"] == "child").count(),
+        1,
+        "{mail}"
+    );
+}
+
 /// A child run whose union coverage is complete, with the fake reviewer's
 /// report on its targets.
 fn child(parent: &Value) -> Value {
