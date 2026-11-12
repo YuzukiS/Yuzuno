@@ -7,7 +7,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 #[derive(Clone, Debug)]
 struct Sent {
@@ -28,8 +28,9 @@ struct FakeNative {
     pending_always: StdMutex<Option<bool>>,
     pending: StdMutex<VecDeque<bool>>,
     list: StdMutex<Vec<Value>>,
-    /// When set, each delivery waits for one notification.
-    gate: StdMutex<Option<Arc<Notify>>>,
+    /// Each delivery consumes one permit. Closing the gate releases current
+    /// and future waiters, so cleanup cannot lose a wake-up.
+    gate: StdMutex<Option<Arc<Semaphore>>>,
     /// When set with a gate, only this session's deliveries wait.
     gate_for: StdMutex<Option<String>>,
     /// Runs after a delivery is recorded, before its result is returned.
@@ -88,6 +89,12 @@ impl FakeNative {
         self.clone()
     }
 
+    fn hold(&self) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        *self.gate.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
     fn after_deliver(self: &Arc<Self>, hook: Arc<dyn Fn() + Send + Sync>) -> Arc<Self> {
         *self.after_deliver.lock().unwrap() = Some(hook);
         self.clone()
@@ -124,7 +131,9 @@ impl Native for FakeNative {
             let gate = { self.gate.lock().unwrap().clone() };
             let matches_session = self.gate_for.lock().unwrap().as_deref().is_none_or(|only| only == session);
             if let Some(gate) = gate.filter(|_| matches_session) {
-                gate.notified().await;
+                if let Ok(permit) = gate.acquire().await {
+                    permit.forget();
+                }
             }
             self.sent.lock().unwrap().push(Sent {
                 session: session.to_owned(), request: request.to_owned(), answer: answer.clone(), limit, at,
@@ -228,6 +237,15 @@ impl Judge for TestJudge {
 /// assertion cannot leave a `spawn_blocking` worker holding Tokio's exit.
 struct Unblock(Arc<(StdMutex<bool>, Condvar)>);
 
+/// Also opens for a POST that reaches the gate after cleanup began.
+struct OpenGate(Arc<Semaphore>);
+
+impl Drop for OpenGate {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 impl Drop for Unblock {
     fn drop(&mut self) {
         let (lock, cond) = &*self.0;
@@ -304,15 +322,18 @@ async fn a_duplicate_request_joins_one_answer() {
 #[tokio::test]
 async fn sessions_are_serial_and_independent() {
     let native = FakeNative::new();
-    *native.gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     native.gate_session("ses_main");
-    let gate = native.gate.lock().unwrap().clone().unwrap();
+    let entered = Arc::new(Notify::new());
+    native.on_entered(entered.clone());
     let runtime = FakeRuntime::live();
     let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| once())));
     let main = match engine.submit(&asked("per_1", "ses_main")) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
     };
+    tokio::time::timeout(Duration::from_secs(30), entered.notified()).await.expect("the main POST entered its gate");
     let other = match engine.submit(&asked("per_1", "ses_child")) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
@@ -322,7 +343,7 @@ async fn sessions_are_serial_and_independent() {
     let other = tokio::time::timeout(Duration::from_secs(30), report(other)).await.expect("the other session completes");
     assert_eq!(other.outcome, Outcome::Delivered);
     assert!(native.sent().iter().all(|sent| sent.session == "ses_child"), "the gated main-session answer has not gone");
-    gate.notify_waiters();
+    gate.close();
     let main = tokio::time::timeout(Duration::from_secs(30), report(main)).await.expect("the main session after the gate");
     assert_eq!(main.outcome, Outcome::Delivered);
     assert_eq!(native.sent().len(), 2, "both sessions answered");
@@ -332,32 +353,31 @@ async fn sessions_are_serial_and_independent() {
 #[tokio::test]
 async fn one_session_answers_one_after_the_other() {
     let native = FakeNative::new();
-    let gate = Arc::new(Notify::new());
-    *native.gate.lock().unwrap() = Some(gate.clone());
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     *native.gate_for.lock().unwrap() = Some("ses_main".to_owned());
+    let entered = Arc::new(Notify::new());
+    native.on_entered(entered.clone());
     let runtime = FakeRuntime::live();
     let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| once())));
     let first = match engine.submit(&asked("per_1", "ses_main")) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
     };
+    tokio::time::timeout(Duration::from_secs(30), entered.notified()).await.expect("the first POST entered its gate");
     let second = match engine.submit(&asked("per_2", "ses_main")) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
     };
-    for _ in 0..100 {
-        if !native.sent().is_empty() {
-            break;
-        }
-        // The delivery is recorded after the gate, so wait for the worker to
-        // be at the gate by letting the tasks run.
-        tokio::task::yield_now().await;
-    }
-    gate.notify_one();
+    let key = Key { generation: GENERATION, session: "ses_main".into(), request: "per_2".into() };
+    let waiting = engine.state.lock().unwrap().active[&key].clone();
+    tokio::time::timeout(Duration::from_secs(30), waiting.prepared.notified()).await.expect("the second request prepared");
+    assert_eq!(native.entered_count(), 1, "the prepared second request cannot enter while the first holds the session");
+    gate.add_permits(1);
     let first = tokio::time::timeout(Duration::from_secs(30), report(first)).await.expect("the first answer");
     assert_eq!(first.outcome, Outcome::Delivered);
     assert_eq!(native.sent().len(), 1, "the second waits for the first answer");
-    gate.notify_one();
+    gate.add_permits(1);
     let second = tokio::time::timeout(Duration::from_secs(30), report(second)).await.expect("the second answer");
     assert_eq!(second.outcome, Outcome::Delivered);
     let sent = native.sent();
@@ -424,6 +444,7 @@ fn a_report_counts_its_collateral_flag() {
 #[tokio::test(start_paused = true)]
 async fn a_preflight_failure_hands_off_the_same_delivery_ledger() {
     let gate = Arc::new(Notify::new());
+    let entered = Arc::new(Notify::new());
     let native = FakeNative::new().delays([Duration::from_secs(15)]).pending([true])
         .results([Delivery::Unknown, Delivery::Delivered, Delivery::Unknown, Delivery::Delivered])
         .list(vec![json!({"id": "per_once"})]);
@@ -432,26 +453,28 @@ async fn a_preflight_failure_hands_off_the_same_delivery_ledger() {
     let live = runtime.clone();
     let engine = Arc::new(Engine::new(GENERATION, "ses_main".into(), Vec::new(), calls(), Arc::new(NoReader),
         Arc::new(judge), native.clone(), Arc::new(move || live.current()), runtime)
-        .with_preflight_gate("per_reject", gate.clone()));
-    let reject = match engine.submit(&asked("per_reject", "ses_main")) {
-        Submission::Accepted(receiver) => receiver,
-        other => panic!("reject not accepted: {other:?}"),
-    };
-    let once = match engine.submit(&asked("per_once", "ses_main")) {
-        Submission::Accepted(receiver) => receiver,
-        other => panic!("once not accepted: {other:?}"),
-    };
-    let key = Key { generation: GENERATION, session: "ses_main".into(), request: "per_once".into() };
-    for _ in 0..100 {
-        let prepared = {
-            let state = engine.state.lock().unwrap();
-            state.active.get(&key).is_some_and(|entry| entry.decision.lock().unwrap().is_some())
+        .with_preflight_gate("per_reject", entered.clone(), gate.clone()));
+    // OS blocking workers must really start before paused Tokio time may
+    // advance. Pin the intended interleaving, not which submit wins the CPU.
+    tokio::time::resume();
+    let (reject, once) = tokio::time::timeout(Duration::from_secs(5), async {
+        let reject = match engine.submit(&asked("per_reject", "ses_main")) {
+            Submission::Accepted(receiver) => receiver,
+            other => panic!("reject not accepted: {other:?}"),
         };
-        if prepared {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+        entered.notified().await; // reject owns the session and is at preflight
+        let once = match engine.submit(&asked("per_once", "ses_main")) {
+            Submission::Accepted(receiver) => receiver,
+            other => panic!("once not accepted: {other:?}"),
+        };
+        let key = Key { generation: GENERATION, session: "ses_main".into(), request: "per_once".into() };
+        let waiting = engine.state.lock().unwrap().active[&key].clone();
+        waiting.prepared.notified().await;
+        assert_eq!(*waiting.decision.lock().unwrap(), Some(Answer::Once));
+        assert!(native.sent().is_empty(), "the Once worker waits behind the reject's preflight");
+        (reject, once)
+    }).await.expect("both workers reached the handoff barriers before the preparation deadline");
+    tokio::time::pause();
     gate.notify_one();
     let reject = report(reject).await;
     let target = report(once).await;
@@ -512,13 +535,13 @@ async fn a_first_post_using_its_limit_leaves_the_check_its_own() {
 async fn a_preparation_timeout_is_a_delivered_reject() {
     let native = FakeNative::new();
     let runtime = FakeRuntime::live();
-    let started = Arc::new(AtomicBool::new(false));
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
     let release = Arc::new((StdMutex::new(false), Condvar::new()));
     let _unblock = Unblock(release.clone());
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (running, held, finished_tx) = (started.clone(), release.clone(), done_tx);
+    let (held, finished_tx) = (release.clone(), done_tx);
     let judge = TestJudge(Arc::new(move |_, _| {
-        running.store(true, Ordering::SeqCst);
+        started_tx.send(()).expect("the test waits for the worker to start");
         let (lock, cond) = &*held;
         let mut released = lock.lock().unwrap();
         while !*released {
@@ -529,18 +552,16 @@ async fn a_preparation_timeout_is_a_delivered_reject() {
     }));
     let engine = engine(native.clone(), runtime, judge);
     let asked = asked("per_1", "ses_main");
+    tokio::time::resume();
     let submitted = Instant::now();
     let receiver = match engine.submit(&asked) {
         Submission::Accepted(receiver) => receiver,
         other => panic!("not accepted: {other:?}"),
     };
-    for _ in 0..100 {
-        if started.load(Ordering::SeqCst) {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(started.load(Ordering::SeqCst));
+    tokio::time::timeout(PREPARE_LIMIT / 2, started_rx.recv()).await
+        .expect("the blocking judge started before the preparation deadline").expect("the start sender");
+    assert!(receiver.borrow().is_none(), "preparation is still waiting for the blocked judge");
+    tokio::time::pause();
     tokio::time::advance(PREPARE_LIMIT + Duration::from_secs(1)).await;
     let report = report(receiver).await;
     let (lock, cond) = &*release;
@@ -644,6 +665,7 @@ async fn a_reject_answers_a_held_once_request_first() {
         prepare_deadline: Instant::now() + PREPARE_LIMIT,
         size: 8,
         decision: StdMutex::new(Some(Answer::Once)),
+        prepared: Notify::new(),
         preflight: AtomicBool::new(false),
         reject_started: AtomicBool::new(false),
         collateral: AtomicBool::new(false),
@@ -759,7 +781,8 @@ async fn a_generation_change_during_teardown_sends_no_kill() {
 async fn a_fault_after_a_generation_change_sends_nothing() {
     let runtime = FakeRuntime::live();
     let native = FakeNative::new();
-    *native.gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
     for index in 0..REQUESTS {
         let _ = engine.submit(&asked(&format!("per_{index}"), &format!("ses_{index}")));
@@ -777,8 +800,8 @@ async fn a_fault_after_a_generation_change_sends_nothing() {
 #[tokio::test(start_paused = true)]
 async fn an_in_flight_post_is_counted_when_overload_closes() {
     let native = FakeNative::new();
-    let gate = Arc::new(Notify::new());
-    *native.gate.lock().unwrap() = Some(gate.clone());
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let entered = Arc::new(Notify::new());
     native.on_entered(entered.clone());
     let runtime = FakeRuntime::live();
@@ -810,7 +833,7 @@ async fn an_in_flight_post_is_counted_when_overload_closes() {
     assert!(matches!(engine.submit(&asked("per_more", "ses_more")), Submission::Full));
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(native.aborts.load(Ordering::SeqCst), 1);
-    gate.notify_waiters();
+    gate.close();
 }
 
 /// The queue bound closes the connection once, with structured reports and
@@ -818,7 +841,8 @@ async fn an_in_flight_post_is_counted_when_overload_closes() {
 #[tokio::test(start_paused = true)]
 async fn the_queue_bound_closes_the_connection_once() {
     let native = FakeNative::new();
-    *native.gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let runtime = FakeRuntime::live();
     let engine = engine(native.clone(), runtime.clone(), TestJudge(Arc::new(|_, _| once())));
     let mut receivers = Vec::new();
@@ -847,12 +871,14 @@ async fn the_queue_bound_closes_the_connection_once() {
 async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
     let started = Arc::new(AtomicUsize::new(0));
     let counted = started.clone();
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
     let released = Arc::new((StdMutex::new(false), Condvar::new()));
     let _unblock = Unblock(released.clone());
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
     let release = released.clone();
     let judge = TestJudge(Arc::new(move |_, _| {
         counted.fetch_add(1, Ordering::SeqCst);
+        started_tx.send(()).expect("the test waits for every worker to start");
         let (lock, cond) = &*release;
         let mut released = lock.lock().unwrap();
         while !*released {
@@ -872,35 +898,37 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
             .with_fs(Arc::new(Semaphore::new(FS_CONNECTION)), global.clone()));
         engines.push((engine, index));
     }
+    // Keep real time while waiting on OS threads; paused Tokio time must
+    // not exhaust their preparation deadlines before they have started.
+    tokio::time::resume();
     let mut receivers = Vec::new();
     for (engine, index) in &engines {
         if let Submission::Accepted(receiver) = engine.submit(&asked(&format!("per_{index}"), "ses_main")) {
             receivers.push(receiver);
         }
     }
-    // Four blocking decisions are running; the fifth has no global permit.
-    for _ in 0..100 {
-        if started.load(Ordering::SeqCst) >= FS_GLOBAL {
-            break;
+    tokio::time::timeout(PREPARE_LIMIT / 2, async {
+        for _ in 0..FS_GLOBAL {
+            started_rx.recv().await.expect("each blocking judge's start sender");
         }
-        tokio::task::yield_now().await;
-    }
+    }).await.expect("all four workers started before the preparation deadline");
     assert_eq!(started.load(Ordering::SeqCst), FS_GLOBAL);
-    // Move past the preparation deadline: the fifth becomes a timeout, and
-    // no further worker is started for it.
+    assert!(receivers.iter().all(|receiver| receiver.borrow().is_none()), "preparation is still pending");
+    tokio::time::pause();
+    // Every request times out while the four OS workers remain blocked.
+    // Await those reports, not a fixed number of scheduler yields.
     tokio::time::advance(PREPARE_LIMIT + Duration::from_secs(1)).await;
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
+    let mut outcomes = Vec::new();
+    for receiver in receivers {
+        let report = report(receiver).await;
+        assert_eq!(report.answer, Some(Answer::Reject(Reason::PreparationTimeout)));
+        outcomes.push(report.outcome);
     }
     assert_eq!(started.load(Ordering::SeqCst), FS_GLOBAL, "no worker is spawned on a timeout");
+    assert_eq!(global.available_permits(), 0, "timed-out workers still own all four permits");
     let (lock, cond) = &*released;
     *lock.lock().unwrap() = true;
     cond.notify_all();
-    // Every engine finishes; the timed-out one delivered a preparation reject.
-    let mut outcomes = Vec::new();
-    for receiver in receivers {
-        outcomes.push(report(receiver).await.outcome);
-    }
     for _ in 0..FS_GLOBAL {
         done_rx.recv().await.expect("every blocking decision finished");
     }
@@ -911,8 +939,8 @@ async fn fs_workers_are_bounded_and_timeouts_hold_their_permits() {
 #[tokio::test(start_paused = true)]
 async fn a_duplicate_event_does_not_refresh_the_deadline() {
     let native = FakeNative::new();
-    let gate = Arc::new(Notify::new());
-    *native.gate.lock().unwrap() = Some(gate.clone());
+    let gate = native.hold();
+    let _open = OpenGate(gate.clone());
     let runtime = FakeRuntime::live();
     let engine = engine(native.clone(), runtime, TestJudge(Arc::new(|_, _| once())));
     let asked = asked("per_1", "ses_main");
@@ -932,7 +960,7 @@ async fn a_duplicate_event_does_not_refresh_the_deadline() {
         state.active.get(&key).expect("the request is still active").prepare_deadline
     };
     assert_eq!(first, second, "the duplicate did not move the preparation deadline");
-    gate.notify_one();
+    gate.add_permits(1);
     let report = report(receiver).await;
     assert_eq!(report.outcome, Outcome::Delivered);
 }
