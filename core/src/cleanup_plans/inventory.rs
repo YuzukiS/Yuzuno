@@ -20,6 +20,9 @@ use super::*;
 pub(super) const SOURCE: &str = include_str!("../../../scripts/workspace_inventory.py");
 /// A Job's whole argv may hold this many bytes (jobs::Submit::validate_command).
 const ARGV_BYTES: usize = 16384;
+/// A Job's whole argv may hold this many entries (jobs::Submit::validate_command);
+/// each root adds two (`--root`, path).
+const ARGV_ITEMS: usize = 128;
 
 /// What the Job runs with `-c`: the script compressed (zlib, then base64)
 /// in a one-line loader that unpacks and runs it. The script is more than a
@@ -299,9 +302,13 @@ pub(super) fn command(python: &str, folder: &str, scratch: &[String], protected:
     argv
 }
 
-/// Refuses a command over what a Job's argv may hold, saying what makes it long.
+/// Refuses a command over what a Job's argv may hold, saying what makes it
+/// long. Both limits are checked: many short roots exceed the entry count
+/// long before they reach 16 KiB, and neither set is ever truncated.
 fn fits(argv: &[String]) -> Result<()> {
     let bytes: usize = argv.iter().map(String::len).sum();
+    ensure!(argv.len() <= ARGV_ITEMS, "inventory_unavailable: the inventory's command would have {} entries, over the {ARGV_ITEMS} a Job's argv may hold; \
+        fewer scratch roots, protected paths or temporary roots in Settings and history make it shorter", argv.len());
     ensure!(bytes <= ARGV_BYTES, "inventory_unavailable: the inventory's command would be {bytes} bytes, over the {ARGV_BYTES} a Job's argv may hold; \
         fewer scratch roots or protected paths in Settings make it shorter");
     Ok(())

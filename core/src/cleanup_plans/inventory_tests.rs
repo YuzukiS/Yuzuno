@@ -296,14 +296,38 @@ async fn a_protection_set_too_large_for_a_job_command_is_refused() {
         let mut insert = db.prepare(
             "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,?2,?3,0,0,'now')",
         ).unwrap();
-        for i in 0..500 {
+        for i in 0..40 {
             let agent = format!("agent-{i:04}");
-            let root = format!("/synthetic/roots/{i}/{}", "x".repeat(80));
+            // Few enough entries to reach the byte limit first, with paths
+            // long enough to pass 16 KiB.
+            let root = format!("/synthetic/roots/{i}/{}", "x".repeat(600));
             insert.execute(params![workspace, agent, format!("{root}/t/agent")]).unwrap();
         }
     }
     let error = take(&lab, Some("ex"), json!({"requestId": "big", "taskId": "T-1"})).await.unwrap_err().to_string();
     assert!(error.starts_with("inventory_unavailable:") && error.contains("16384"), "{error}");
+    assert_eq!(inventory_jobs(&lab), 0, "nothing submitted");
+}
+
+/// YN-78 S2b-1: a Job's argv also holds at most 128 entries. Many short roots
+/// exceed that long before 16 KiB, and are refused, never truncated.
+#[tokio::test]
+async fn a_short_but_numerous_protection_set_is_refused_by_the_entry_limit() {
+    let lab = lab();
+    let workspace = lab.ws.store.workspace_id().unwrap();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        let mut insert = db.prepare(
+            "INSERT INTO executor_temp_roots(workspace_id,path,origin,registered_at) VALUES(?1,?2,'default','now')",
+        ).unwrap();
+        // With the default root this makes 60 roots: 10 fixed entries plus 120
+        // `--root path` entries, over 128, and well under 16 KiB.
+        for i in 0..59 {
+            insert.execute(params![workspace, format!("/r{i}")]).unwrap();
+        }
+    }
+    let error = take(&lab, Some("ex"), json!({"requestId": "many-short", "taskId": "T-1"})).await.unwrap_err().to_string();
+    assert!(error.starts_with("inventory_unavailable:") && error.contains("entries") && error.contains("128"), "{error}");
     assert_eq!(inventory_jobs(&lab), 0, "nothing submitted");
 }
 
@@ -324,5 +348,6 @@ fn the_loader_unpacks_exactly_the_script_and_the_command_fits_a_job() {
     let argv = inventory::command("/opt/homebrew/opt/python@3.12/bin/python3.12", "/synthetic/home/someone/work/a-project-folder", &roots, &roots, &roots,
         &super::rules::table(&all), "cleanup-inventories/0123456789abcdef0123456789abcdef.json");
     let bytes: usize = argv.iter().map(String::len).sum();
-    assert!(bytes + 2048 <= 16384, "every rule on, five scratch roots and protected paths: {bytes} bytes, with 2 KiB to spare");
+    assert!(argv.len() <= 128, "every rule on, five scratch roots, protected paths and temporary roots: {} entries", argv.len());
+    assert!(bytes <= 16384, "every rule on, five scratch roots, protected paths and temporary roots: {bytes} bytes");
 }

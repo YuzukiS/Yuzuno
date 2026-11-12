@@ -414,6 +414,13 @@ def inventory(args):
         if not os.path.isdir(root):
             skipped.append({"path": root, "why": "the scratch root is not a folder here"})
             continue
+        # A scratch root that is a protected root, or inside one, is never
+        # listed: not one of its names is read or reported. An ancestor of a
+        # protected root is still listed, skipping only that child below.
+        if any(inside(root, p) for p in protected):
+            skipped.append({"path": root, "why": "a protected path, or inside one"})
+            scratch.append({"root": root, "entries": []})
+            continue
         entries = []
         try:
             names = sorted(os.listdir(root))
