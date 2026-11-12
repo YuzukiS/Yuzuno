@@ -382,6 +382,58 @@ fn an_unfinished_or_unknown_attempt_is_never_replaced() {
     }
 }
 
+/// #6 (Lead 11659): a review that completed without an explicit conclusion
+/// (`unknown`, or none recorded) is an unknown outcome a person judges first:
+/// no new round for a new head nobody reviewed, within the cap, and no other
+/// attempt at its own head. Nothing is written, not even the continue's
+/// receipt. A failure that doesn't count is still retried.
+#[test]
+fn a_completed_review_without_an_explicit_conclusion_is_never_replaced() {
+    let continues = |s: &Store| count(s, "SELECT COUNT(*) FROM collaboration_requests WHERE operation='delivery_continue'");
+    for conclusion in [Some("unknown"), None] {
+        let (_d, s, t) = setup();
+        enable(&s, &t);
+        submit(&s, &t, "r1");
+        let mut run = start(&s, &t, "one");
+        // As a real round records it: its fixed revision and actual reviewer.
+        run["status"] = json!("completed");
+        run["baseSha"] = run["requestedBaseSha"].clone();
+        run["headSha"] = run["requestedHeadSha"].clone();
+        run["actualHarness"] = run["requestedHarness"].clone();
+        run["actualModel"] = run["requestedModel"].clone();
+        match conclusion {
+            Some(c) => run["conclusion"] = json!(c),
+            None => {
+                run.as_object_mut().unwrap().remove("conclusion");
+            }
+        }
+        s.save_pr_review(&run, None).unwrap();
+        let f = get(&s, &t);
+        assert_eq!(f["state"], "needs_judgment");
+        assert!(f["reason"].as_str().unwrap().contains("did not produce an explicit passing conclusion"), "{f}");
+        let before = (written(&s), continues(&s));
+        // A new head nobody reviewed, with one of the two rounds left.
+        refresh(&s, "a", "c");
+        let error = refused(&s, &t, "a", "c", "new-head");
+        assert!(error.contains("completed without an explicit conclusion"), "{conclusion:?}: {error}");
+        assert!(error.ends_with("No attempt was authorized."), "{error}");
+        // The same head again, at its own base.
+        refresh(&s, "a", "b");
+        let error = refused(&s, &t, "a", "b", "same-head");
+        assert!(error.contains("completed without an explicit conclusion"), "{conclusion:?}: {error}");
+        assert_eq!((written(&s), continues(&s)), before, "no round, attempt, review or receipt");
+        assert_eq!(get(&s, &t)["rounds"].as_array().unwrap().len(), 1);
+    }
+    // A failure that doesn't count is still another attempt.
+    let (_d, s, t) = setup();
+    enable(&s, &t);
+    submit(&s, &t, "r1");
+    let mut run = start(&s, &t, "one");
+    run["conclusion"] = json!("unknown");
+    not_started(&s, run);
+    assert_eq!(cont(&s, &t, "a", "b", "retry").unwrap()["attempt"], 2);
+}
+
 /// #9: a start the PR's started round limit refused is never retried here.
 #[test]
 fn a_start_the_limit_refused_is_not_continued() {
