@@ -886,12 +886,10 @@ impl Workspace {
         };
         launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
         // Its own temporary directory, when it is an executor whose level
-        // lets it work alone (YN-78 S2a). Only then do TMPDIR, TMP and TEMP
-        // name it; a refusal leaves today's environment and keeps its reason.
-        {
-            let (data, agent) = (self.data_dir.clone(), id.to_owned());
-            launch.temp_dir = self.stored(move |store| crate::executor_temp::ensure_at_start(store, &data, &agent)).await?;
-        }
+        // lets it work alone (YN-78 S2a), created under the Workspace's root
+        // gate (S2b-1). Only then do TMPDIR, TMP and TEMP name it; a refusal
+        // leaves today's environment and keeps its reason.
+        launch.temp_dir = crate::executor_temp::ensure_at_start_gated(self, id).await?;
         // A local executor at Auto-approve starts with Core's own answers, its
         // rules and their instructions together, or not at all (YN-78 S4b-2).
         let prepared = if auto::eligible(level.as_deref(), kind) {

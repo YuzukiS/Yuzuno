@@ -283,6 +283,114 @@ async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
     assert_eq!(mails, 1);
 }
 
+/// An executor at auto that may get a temporary directory.
+fn auto_agent(lab: &Lab, id: &str) {
+    agent(&lab.ws, id);
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,state,created_at,updated_at)
+         VALUES(?1,'executor','template','lead','created','now','now')", [id]).unwrap();
+    lab.ws.store.set_permission_level(id, Some("auto")).unwrap();
+}
+
+/// A hold on the next apply's file system step, and both ends of its two
+/// signals.
+fn pause() -> (crate::cleanup_plans::FsPause, tokio::sync::oneshot::Sender<()>, tokio::sync::mpsc::Receiver<()>) {
+    let (entered_tx, entered_rx) = tokio::sync::mpsc::channel(1);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    (crate::cleanup_plans::FsPause { entered: entered_tx, release: release_rx }, release_tx, entered_rx)
+}
+
+/// YN-78 S2b-1: the gate is taken per entry, so a root added while one entry
+/// is being removed is seen by the next; and an allocation started then waits
+/// for the gate instead of racing the removal.
+#[tokio::test]
+async fn protection_added_during_one_entry_is_seen_by_the_next_and_registration_waits() {
+    let lab = lab();
+    gated(&lab);
+    let first = old_entry(&lab, "first");
+    let second = old_entry(&lab, "second");
+    auto_agent(&lab, "late");
+    let plan = submit(&lab, "barrier", vec![group("d", "delete")],
+        vec![item("first", "d", "entry", &first), item("second", "d", "entry", &second)]).await;
+    ask(&lab, "gate-b", "ex", 4, &naming(&plan), &["d"]);
+    reply(&lab, "gate-b", &["d"], None);
+
+    let (hold, release, mut entered) = pause();
+    *lab.ws.cleanup.apply_fs_pause.lock().unwrap() = Some(hold);
+    apply_as(&lab, "ex", "go-b", &plan, "gate-b", &[]).await.unwrap();
+    entered.recv().await.unwrap();
+    assert!(lab.ws.cleanup.root_gate.try_lock().is_err(), "the apply holds the gate");
+    let waiter = {
+        let ws = lab.ws.clone();
+        tokio::spawn(async move { crate::executor_temp::ensure_at_start_gated(&ws, "late").await })
+    };
+    for _ in 0..1000 {
+        if lab.ws.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(lab.ws.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0, "the allocation waits for the gate");
+    assert!(!waiter.is_finished());
+    // Added while the first entry is being removed: the next entry's set is
+    // read again under the gate, and refuses it. The root is reached through
+    // a link, as an old data directory can be: apply resolves it as submit
+    // does.
+    let linked = lab.root().join("scratch-link");
+    std::os::unix::fs::symlink(&lab.scratch, &linked).unwrap();
+    crate::executor_temp::register(&lab.ws.store, &linked).unwrap();
+    release.send(()).unwrap();
+    lab.ws.cleanup.apply_done.notified().await;
+    let ran = waiter.await.unwrap();
+    assert!(ran.is_ok(), "the allocation ran once the gate was free: {ran:?}");
+    let states = item_states(&lab, &plan).await;
+    assert_eq!(states["first"].0, "removed");
+    assert_eq!(refused(&states, "second"), "forbidden");
+    assert!(!first.exists() && second.exists());
+}
+
+/// YN-78 S2b-1: a caller cancelled while its blocking removal runs releases
+/// no guard; the gate stays held until the worker itself ends.
+#[tokio::test]
+async fn a_cancelled_caller_leaves_the_gate_held_until_the_blocking_removal_ends() {
+    let lab = lab();
+    let entry = old_entry(&lab, "cancel");
+    let plan = submit(&lab, "cancel", vec![group("d", "delete")], vec![item("e", "d", "entry", &entry)]).await;
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE cleanup_plans SET state='applying', approval=json_object('groups',json_array('d'),'boot','test') WHERE id=?1",
+        [plan["planId"].as_str()],
+    ).unwrap();
+    let (hold, release, mut entered) = pause();
+    *lab.ws.cleanup.apply_fs_pause.lock().unwrap() = Some(hold);
+    let runner = {
+        let (ws, id) = (lab.ws.clone(), plan["planId"].as_str().unwrap().to_owned());
+        tokio::spawn(async move { super::super::apply::run(&ws, &id).await })
+    };
+    entered.recv().await.unwrap();
+    assert!(lab.ws.cleanup.root_gate.try_lock().is_err());
+    runner.abort();
+    let _ = runner.await;
+    // The future is gone; the blocking worker still holds the owned guard.
+    assert!(lab.ws.cleanup.root_gate.try_lock().is_err(), "the guard lives in the blocking worker");
+    assert!(entry.exists(), "the removal has not run yet");
+    release.send(()).unwrap();
+    // The guard lives in the blocking worker, which is a thread of its own:
+    // let that thread finish, then the gate is free.
+    let gate = lab.ws.cleanup.root_gate.clone();
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        loop {
+            if gate.try_lock().is_ok() {
+                return;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "the gate is free once the worker ends");
+            std::thread::yield_now();
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[path = "worktree_tests.rs"]
 mod worktree_tests;
 

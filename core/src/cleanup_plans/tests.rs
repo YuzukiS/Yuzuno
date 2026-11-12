@@ -95,7 +95,7 @@ fn lab() -> Lab {
 
 /// A finished inventory Job of the task, its command Core's own on `folder` (inventory.rs `core_inventory`).
 fn inventory_job(db: &Connection, task: &str, id: &str, target: Value, folder: &Path) {
-    let argv = inventory::command("/usr/bin/python3", &folder.display().to_string(), &[], &[], &json!({}), "out/inventory.json");
+    let argv = inventory::command("/usr/bin/python3", &folder.display().to_string(), &[], &[], &[], &json!({}), "out/inventory.json");
     let data = json!({"id":id,"taskId":task,"agentId":"ex","attempt":ATTEMPT,"status":"succeeded","target":target,
         "name": inventory::JOB_NAME, "argv": argv,
         "machine":{"name":"Synthetic host"},
@@ -685,6 +685,61 @@ fn git_worktree_list_is_read_with_its_main_worktree_first() {
     assert_eq!(listed[1].branch.as_deref(), Some("feat/x"));
     assert!(listed[1].locked && !listed[0].locked);
     assert!(listed[2].prunable && listed[2].branch.is_none());
+}
+
+/// YN-78 S2b-1: a temporary root Core protects is never a cleanup item,
+/// nor is anything below it or anything that holds it; a sibling stays one.
+#[tokio::test]
+async fn a_temporary_root_its_children_and_their_ancestors_are_never_cleanup_items() {
+    let lab = lab();
+    let old = lab.root().join("old-data").join("t");
+    std::fs::create_dir_all(old.join("abcdefgh")).unwrap();
+    let sibling = lab.root().join("old-data").join("sibling");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let project: String = lab.ws.store.db.read().unwrap()
+        .query_row("SELECT id FROM projects WHERE json_extract(data,'$.name')='Demo'", [], |r| r.get(0)).unwrap();
+    let ctx = check::context(lab.ws.cleanup.env(), Some(Vec::new()), &lab.ws.data_dir, &lab.project.display().to_string(),
+        Some(&project), &[], vec![old.clone()], Settings::default()).await.unwrap();
+    for path in [old.clone(), old.join("abcdefgh"), lab.root().join("old-data")] {
+        assert!(check::fixed(&ctx, &path).is_some(), "{path:?} is protected");
+    }
+    assert!(check::fixed(&ctx, &sibling).is_none(), "a sibling is not protected");
+    // The current default root is inside Core's data folder already.
+    assert!(check::fixed(&ctx, &lab.ws.data_dir.join("t")).is_some());
+    assert!(check::fixed(&ctx, &lab.ws.data_dir.join("t/abcdefgh")).is_some());
+}
+
+/// A protection record that cannot be read stops related cleanup paths
+/// explicitly; it is never a shorter protected set.
+#[tokio::test]
+async fn a_root_record_that_cannot_be_read_refuses_cleanup_and_inventory() {
+    let lab = lab();
+    let workspace = lab.ws.store.workspace_id().unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,'bad','relative/path',0,0,'now')",
+        [workspace],
+    ).unwrap();
+    let error = submit_as(&lab, Some("ex"), plan_input("bad", vec![group("d", "delete")],
+        vec![item("e", "d", "entry", &lab.scratch.join("e"))])).await.unwrap_err().to_string();
+    assert!(error.starts_with("roots_unavailable:"), "{error}");
+    let error = lab.ws.collaboration_call(Some("ex"), "cleanup_inventory", json!({"requestId": "i", "taskId": "T-1"}))
+        .await.unwrap_err().to_string();
+    assert!(error.starts_with("roots_unavailable:"), "{error}");
+}
+
+/// A failed protection backfill fails the related paths explicitly, and is
+/// retried by the next call instead of being cached until restart.
+#[test]
+fn a_failed_root_backfill_is_retried_and_not_kept() {
+    let lab = lab();
+    let workspace = lab.ws.store.workspace_id().unwrap();
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO executor_temp_dirs(workspace_id,agent_id,path,dev,ino,created_at) VALUES(?1,'bad','relative/path',0,0,'now')",
+        [workspace],
+    ).unwrap();
+    assert!(lab.ws.cleanup.ensure_roots(&lab.ws.store, &lab.ws.data_dir).is_err());
+    lab.ws.store.db.write().unwrap().execute("DELETE FROM executor_temp_dirs WHERE agent_id='bad'", []).unwrap();
+    assert!(lab.ws.cleanup.ensure_roots(&lab.ws.store, &lab.ws.data_dir).is_ok());
 }
 
 #[path = "apply_tests.rs"]
