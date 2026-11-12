@@ -263,6 +263,8 @@ struct Entry {
     prepare_deadline: Instant,
     size: usize,
     decision: Mutex<Option<Answer>>,
+    #[cfg(test)]
+    prepared: tokio::sync::Notify,
     preflight: AtomicBool,
     /// A reject of this request was started by Core.
     reject_started: AtomicBool,
@@ -332,7 +334,7 @@ pub(crate) struct Engine<R: MessageReader + 'static, J: Judge + 'static, N: Nati
     /// A test-only pause before a reject's preflight, so a Once request can
     /// be prepared and its worker queued on the same session first.
     #[cfg(test)]
-    preflight_gate: Mutex<Option<(String, Arc<tokio::sync::Notify>)>>,
+    preflight_gate: Mutex<Option<(String, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     state: Mutex<State>,
     sessions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -375,8 +377,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
 
     /// Pause this request's reject just before its preflight list.
     #[cfg(test)]
-    fn with_preflight_gate(self, request: &str, gate: Arc<tokio::sync::Notify>) -> Self {
-        *self.preflight_gate.lock().unwrap() = Some((request.to_owned(), gate));
+    fn with_preflight_gate(self, request: &str, entered: Arc<tokio::sync::Notify>, gate: Arc<tokio::sync::Notify>) -> Self {
+        *self.preflight_gate.lock().unwrap() = Some((request.to_owned(), entered, gate));
         self
     }
 
@@ -384,9 +386,10 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
     async fn await_preflight_gate(&self, request: &str) {
         let gate = {
             let held = self.preflight_gate.lock().unwrap();
-            held.as_ref().filter(|(only, _)| only == request).map(|(_, gate)| gate.clone())
+            held.as_ref().filter(|(only, _, _)| only == request).map(|(_, entered, gate)| (entered.clone(), gate.clone()))
         };
-        if let Some(gate) = gate {
+        if let Some((entered, gate)) = gate {
+            entered.notify_one();
             gate.notified().await;
         }
     }
@@ -426,6 +429,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             prepare_deadline: admitted + PREPARE_LIMIT,
             size,
             decision: Mutex::new(None),
+            #[cfg(test)]
+            prepared: tokio::sync::Notify::new(),
             preflight: AtomicBool::new(false),
             reject_started: AtomicBool::new(false),
             collateral: AtomicBool::new(false),
@@ -545,6 +550,8 @@ impl<R: MessageReader + 'static, J: Judge + 'static, N: Native + 'static> Engine
             return;
         }
         *entry.decision.lock().unwrap() = Some(answer.clone());
+        #[cfg(test)]
+        entry.prepared.notify_one();
         let lock = self.session_lock(&asked.session);
         let held = match remaining(entry.prepare_deadline) {
             Some(_) => match timeout_at(entry.prepare_deadline, lock.lock()).await {
