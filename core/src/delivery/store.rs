@@ -575,6 +575,22 @@ fn continued(db: &Connection, f: &Flow, linked: &Value, head: &str) -> Result<Op
         attempt < MAX_ATTEMPTS,
         "Round {round} already had {MAX_ATTEMPTS} attempts; human judgment is required. No attempt was authorized."
     );
+    // The round's CI is set up once per round, never per attempt. Once its
+    // setup used its three tries without a subscription, ended or not, and
+    // no receipt a claim could read it back from exists, another attempt
+    // would pay for a review this round can't take to ready (R3 5e57e962).
+    if r.ci.id.is_none() && r.ci.attempts >= 3 {
+        let receipt: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM collaboration_requests WHERE actor=?1 AND operation='ci_subscribe' AND request_id=?2)",
+            params![format!("agent:{}", f.owner.id), r.ci.request_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            receipt,
+            "Round {round}'s CI subscription setup used its three tries without a subscription, and no receipt of it can recover one: another attempt would pay for a review this round can't take to ready. Reconcile its original CI operation ({}) first. No attempt was authorized.",
+            r.ci.request_id
+        );
+    }
     // Not replaced: its review counts, although no head recorded on it
     // placed it in the head's history.
     match replaced {
