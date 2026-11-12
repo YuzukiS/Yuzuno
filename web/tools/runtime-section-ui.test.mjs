@@ -217,7 +217,22 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
   };
   const page = mount(answers, { release: null });
   page.window.show();
-  await tick();
+  // Wait for the read and its DOM commit, not a fixed delay after root.render.
+  await new Promise((resolve, reject) => {
+    const observer = new page.window.MutationObserver(ready);
+    const timeout = setTimeout(() => {
+      observer.disconnect();
+      reject(new Error("Runtime facts did not finish rendering within 2 seconds"));
+    }, 2000);
+    function ready() {
+      if (!page.document.querySelector('#settings-runtime[aria-busy="false"] .runtime-groups')) return;
+      clearTimeout(timeout);
+      observer.disconnect();
+      resolve();
+    }
+    observer.observe(page.document.getElementById("root"), { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-busy"] });
+    ready();
+  });
   assert.deepEqual(page.facts(page.group("Workspace service")), {
     Version: "Unknown · Not known · Core could not be read: Core is starting",
     Release: "Unknown · Not known",
