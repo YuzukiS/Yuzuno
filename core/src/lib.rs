@@ -77,6 +77,7 @@ mod opencode_agent;
 /// How Core is to answer an OpenCode executor's permission requests at
 /// Auto-approve (YN-78 S4a): passive, used nowhere yet.
 mod opencode_permissions;
+mod opencode_protection;
 mod opencode_responder;
 pub mod opencode_commands;
 pub mod opencode_login;

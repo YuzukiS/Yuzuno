@@ -45,9 +45,9 @@ use anyhow::{bail, ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-/// The rules Core is to give an OpenCode executor once it answers its
-/// permission requests itself (YN-78 S3a): passive, used nowhere yet.
-mod opencode_policy;
+/// The rules Core gives an OpenCode executor whose permission requests it
+/// answers itself (YN-78 S3a; Auto-approve from S4b-2).
+pub(crate) mod opencode_policy;
 
 /// Each level, with what it is on Codex (its permission preset) and on Claude
 /// Code (its permission mode); None where that harness doesn't keep it.
@@ -275,6 +275,13 @@ pub(crate) const OPENCODE_MANAGED: &str = if cfg!(target_os = "macos") { "/Libra
 pub(crate) fn opencode_check(id: &str, agents: &Value, managed: Option<&str>) -> Result<()> {
     let ours = opencode_ruleset(id);
     ensure!(!ours.is_empty(), "OpenCode keeps no permission level {id}");
+    check_rules(id, &ours, PROBES.iter().copied(), agents, managed)
+}
+
+/// `opencode_check` against any rules (`ours`) and probes: each agent must
+/// decide each probe as `ours` alone do.
+fn check_rules<'p>(id: &str, ours: &[(&str, &str, &str)], probes: impl Iterator<Item = (&'p str, &'p str)> + Clone, agents: &Value,
+    managed: Option<&str>) -> Result<()> {
     let agents = agents.as_array().filter(|a| !a.is_empty())
         .ok_or_else(|| anyhow::anyhow!("OpenCode listed no agent, so its permission level {id} can't be checked"))?;
     for agent in agents {
@@ -285,7 +292,7 @@ pub(crate) fn opencode_check(id: &str, agents: &Value, managed: Option<&str>) ->
         let rules: Vec<(&str, &str, &str)> = rules.iter()
             .map(|r| (r["action"].as_str().unwrap_or(""), r["resource"].as_str().unwrap_or(""), r["effect"].as_str().unwrap_or("")))
             .collect();
-        for (action, resource) in PROBES {
+        for (action, resource) in probes.clone() {
             let (got, want) = (decided(rules.iter().copied(), action, resource), decided(ours.iter().copied(), action, resource));
             if got != want {
                 let why = match managed {

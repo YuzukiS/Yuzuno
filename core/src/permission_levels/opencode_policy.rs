@@ -1,15 +1,14 @@
-//! The rules Core is to give an OpenCode executor once Core itself answers
-//! that executor's permission requests (YN-78 S3a; design v4 2.2 and 2.5,
-//! with the Dev Lead's activation rule, activity 8121). They are made here
-//! and used nowhere yet.
+//! The rules Core gives an OpenCode executor whose permission requests Core
+//! itself answers (YN-78 S3a; design v4 2.2 and 2.5, with the Dev Lead's
+//! activation rule, activity 8121).
 //!
-//! **Passive.** Nothing calls `policy`. Every level still starts with
-//! `opencode_config`, and its start is still checked with `opencode_check`
-//! and PROBES. No instructions file is written or loaded, and no request is
-//! answered for the user, so this asks the user as often as before. These
-//! rules hand each read and search to Core. Without Core's answers (S4 for
-//! Auto-approve, S5 for Ask you first) they would ask the user more, not
-//! less. So each level's rules start only together with its answerer.
+//! **Who gets them.** Only a local OpenCode executor at Auto-approve on Unix
+//! (opencode_auto.rs), and only together with Core's answers to its
+//! requests (opencode_responder.rs), the instructions file and a start that
+//! reads them back from every agent (`check`): these rules hand each read and
+//! search to Core, so without its answers they would ask the user more, not
+//! less. Ask you first keeps today's rules until its answerer (S5); every
+//! other level starts with `opencode_config`, checked with `opencode_check`.
 //!
 //! What it makes on Unix (design 2.2):
 //! - `auto`. Nothing statically allows a folder outside the executor's own
@@ -53,9 +52,8 @@
 //! **Probes.** They are what a start is to check each agent decides as these
 //! rules do: each part of the order, so a configuration read after Yuzuno's,
 //! or an order OpenCode reads differently, is caught.
-#![cfg_attr(not(test), allow(dead_code))]
 
-use super::{label, opencode_config, opencode_ruleset, PROBES};
+use super::{check_rules, label, opencode_config, opencode_ruleset, PROBES};
 use anyhow::{bail, ensure, Result};
 use std::path::Path;
 
@@ -114,6 +112,15 @@ pub(crate) fn policy(inputs: &Inputs<'_>) -> Result<Option<Policy>> {
         (Platform::Unix, "ask") => Ok(Some(ask())),
         _ => Ok(today(id)),
     }
+}
+
+/// Refuses an OpenCode server whose agents (`GET /api/agent`'s data) don't
+/// decide each of `policy`'s probes as its rules alone do: a configuration
+/// OpenCode reads after Yuzuno's can override them (`opencode_check`).
+pub(crate) fn check(policy: &Policy, id: &str, agents: &serde_json::Value, managed: Option<&str>) -> Result<()> {
+    let ours: Vec<(&str, &str, &str)> = policy.rules.iter().map(|(action, pattern, effect)| (action.as_str(), pattern.as_str(), *effect)).collect();
+    ensure!(!ours.is_empty(), "No rules were made for the permission level {id}");
+    check_rules(id, &ours, policy.probes.iter().map(|(action, resource)| (action.as_str(), resource.as_str())), agents, managed)
 }
 
 /// Today's rules for level `id`, unchanged.

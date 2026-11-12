@@ -149,6 +149,9 @@ enum McpCheck {
 pub(crate) struct Started {
     pub server: Arc<Server>,
     pub files: std::result::Result<crate::opencode_revert_files::Started, String>,
+    /// What Core's answers to its permission requests decide by, for an
+    /// executor at Auto-approve whose start prepared them (YN-78 S4b-2).
+    pub auto: Option<auto::Context>,
 }
 
 /// One Agent's live OpenCode process and the session it drives there.
@@ -179,6 +182,10 @@ pub(crate) struct Connection {
     /// When a message's admission last found the Workspace MCP ready on this
     /// connection (`opencode_mcp`): its send stands on that within MCP_FRESH.
     mcp_confirmed: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// Core's own answers to this connection's permission requests (YN-78
+    /// S4b-2): set from the connection's start, for an executor at
+    /// Auto-approve; its requests then never become the user's.
+    pub(crate) auto: Option<Arc<auto::Auto>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -225,7 +232,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default() }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default(), auto: None }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -869,7 +876,14 @@ impl Workspace {
         // A routing key goes to this Agent's server only (YN-34 S1c).
         launch.extra = self.opencode_launch(id).await?;
         // So does its permission level, as OpenCode's rules (YN-56 S3).
-        let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };
+        let (level, kind) = {
+            let agent = id.to_owned();
+            self.stored(move |store| {
+                let level = store.permission_level(&agent)?;
+                let db = store.db.read()?;
+                Ok((level, crate::agent_roles::kind(&db, &agent)?))
+            }).await?
+        };
         launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
         // Its own temporary directory, when it is an executor whose level
         // lets it work alone (YN-78 S2a). Only then do TMPDIR, TMP and TEMP
@@ -878,21 +892,36 @@ impl Workspace {
             let (data, agent) = (self.data_dir.clone(), id.to_owned());
             launch.temp_dir = self.stored(move |store| crate::executor_temp::ensure_at_start(store, &data, &agent)).await?;
         }
+        // A local executor at Auto-approve starts with Core's own answers, its
+        // rules and their instructions together, or not at all (YN-78 S4b-2).
+        let prepared = if auto::eligible(level.as_deref(), kind) {
+            let prepared = auto::prepare(&folder, &self.data_dir, &launch).await.map_err(refused_auto)?;
+            launch.config = Some(prepared.config.clone());
+            Some(prepared)
+        } else {
+            None
+        };
         let server = Arc::new(Server::start(&launch).await?);
         // Its agents must keep the level: a configuration OpenCode reads after Yuzuno's
         // can override it. A server that doesn't is dropped, which ends it.
-        if let Some(level) = &level {
-            let managed = crate::permission_levels::OPENCODE_MANAGED;
-            let managed = std::path::Path::new(managed).exists().then_some(managed);
-            crate::permission_levels::opencode_check(level, &server.agent_rules(cwd).await?, managed)?;
-        }
+        let auto = match prepared {
+            Some(prepared) => Some(auto::started(prepared, &server, cwd).await.map_err(refused_auto)?),
+            None => {
+                if let Some(level) = &level {
+                    let managed = crate::permission_levels::OPENCODE_MANAGED;
+                    let managed = std::path::Path::new(managed).exists().then_some(managed);
+                    crate::permission_levels::opencode_check(level, &server.agent_rules(cwd).await?, managed)?;
+                }
+                None
+            }
+        };
         let pid = server.pid();
         // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
         let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();
         let var = move |name: &str| given.iter().find(|(set, _)| *set == name).map(|(_, value)| value.clone()).or_else(|| std::env::var_os(name));
         let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, var,
             std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
-        Ok(Started { server, files })
+        Ok(Started { server, files, auto })
     }
 
     /// Wires a started process to the Agent: its session (created on the
@@ -900,7 +929,7 @@ impl Workspace {
     /// is in `opencodes`, `started` is its only owner: an error below drops
     /// it, which ends its process group.
     async fn opencode_attach(self: &Arc<Self>, id: &str, d: &AgentDetail, started: Started) -> Result<Connection> {
-        let Started { server, files } = started;
+        let Started { server, files, auto: context } = started;
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
@@ -926,13 +955,21 @@ impl Workspace {
         let children = sub_agents(&server, &session).await?;
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
+        let mut c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
+        // Its engine before anything of it is read: the snapshot's requests and
+        // every event's go to Core, never to the user's queue (YN-78 S4b-2).
+        if let Some(context) = context {
+            c.auto = Some(auto::Auto::new(self, id, &c, context));
+        }
         // Each listed model's context window, read once as it connects (T-10).
         if let Ok(models) = server.models().await {
             c.windows(&models);
         }
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
+        if let Some(auto) = &c.auto {
+            auto.snapshot(generation, &snapshot.permissions);
+        }
         let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":server.version()}));
         let usage = c.clone();
         // Compared as before, since it changes Turns, without returning a copy
@@ -1108,6 +1145,10 @@ impl Workspace {
         if self.opencode_current(id, c.generation).is_none() {
             return Ok(());
         }
+        // What waited while no stream was open, answered by Core as a live one is.
+        if let Some(auto) = &c.auto {
+            auto.snapshot(c.generation, &snapshot.permissions);
+        }
         let (agent, generation, session) = (id.to_owned(), c.generation, c.session.clone());
         let data = json!({"generation":generation,"messages":snapshot.messages.as_array().map_or(0, Vec::len),
             "status":snapshot.status,"permissions":snapshot.permissions.len(),"questions":snapshot.questions.len()});
@@ -1201,6 +1242,17 @@ impl Workspace {
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
+        // An executor at Auto-approve (YN-78 S4b-2): its tool calls are what a
+        // request is bound to, and its permission requests are Core's to
+        // answer, never the user's. Neither waits here, nor is journaled one by one.
+        if let Some(auto) = c.auto.as_ref().filter(|_| c.owns(session)) {
+            auto.tool_event(generation, event);
+            match kind {
+                "permission.asked" => return auto.asked(generation, &event["data"]),
+                "permission.replied" => return auto.replied(session, &event["data"]),
+                _ => {}
+            }
+        }
         // 1.19.3's text as it streams: the completed part replaces it.
         if kind == "message.part.delta" {
             return;
@@ -2184,7 +2236,8 @@ impl Workspace {
 /// What a permission answer's runtime tail captured (YN-78 S4b-1): this
 /// same Agent, connection generation and `Server`, never one looked up
 /// again. If the connection has moved on, it is not this runtime and no
-/// signal is sent; the new one is never touched. Nothing calls it yet.
+/// signal is sent; the new one is never touched. Each Auto-approve engine
+/// ends its own connection's runtime only through it (S4b-2).
 pub(crate) struct CapturedRuntime {
     workspace: Weak<Workspace>,
     agent: String,
@@ -2581,6 +2634,13 @@ fn stale(d: &mut AgentDetail) {
     }
 }
 
+/// The requests of a snapshot that are the user's: its forms, and its
+/// permission requests unless Core answers them itself (YN-78 S4b-2).
+fn user_requests<'a>(snapshot: &'a Snapshot, c: &Connection) -> impl Iterator<Item = &'a Value> {
+    let permissions: &[Value] = if c.auto.is_some() { &[] } else { &snapshot.permissions };
+    permissions.iter().chain(&snapshot.questions)
+}
+
 /// What a snapshot holds, applied as the events it stands for would be; each
 /// part and message replaces its own, so applying one again changes nothing.
 fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>, c: &Connection) {
@@ -2591,7 +2651,7 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         let read = crate::opencode_v2::read_messages(&snapshot.messages);
         let mut cursor = c.cursor.lock().unwrap();
         cursor.resumed(session, &read, &snapshot.inbox);
-        for request in snapshot.permissions.iter().chain(&snapshot.questions) {
+        for request in user_requests(snapshot, c) {
             cursor.asked(request);
         }
         (read.messages, read.ended, read.compactions)
@@ -2618,10 +2678,12 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     }
     // This process's requests are what it has pending now; it answered or
     // dropped the others while no stream was open.
-    let pending: Vec<&Value> = snapshot.permissions.iter().chain(&snapshot.questions).map(|r| &r["id"]).collect();
+    let pending: Vec<&Value> = user_requests(snapshot, c).map(|r| &r["id"]).collect();
     d.pending.retain(|r| r.params["_runtimeGeneration"] != generation || pending.contains(&&r.params["id"]));
-    // Each in the session that asked, the Agent's or a sub-agent's.
-    for (method, requests) in [(PERMISSION, &snapshot.permissions), (QUESTION, &snapshot.questions)] {
+    // Each in the session that asked, the Agent's or a sub-agent's. Core's
+    // own answers took the permission requests of an executor at Auto-approve.
+    let permissions: &[Value] = if c.auto.is_some() { &[] } else { &snapshot.permissions };
+    for (method, requests) in [(PERMISSION, permissions), (QUESTION, &snapshot.questions[..])] {
         for request in requests {
             let asked = request["sessionID"].as_str().unwrap_or(session);
             ask(d, method, generation, asked, children.get(asked), request);
@@ -3210,6 +3272,19 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
         }
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }
+}
+
+#[path = "opencode_auto.rs"]
+mod auto;
+
+/// Why an executor at Auto-approve has no working connection: Core's own
+/// answers to its requests could not be made ready, and it is not run with
+/// weaker rules. One message, the cause in its own text, so every place that
+/// shows only an error's top line (the API, `opencode/connectFailed`, the
+/// Agent's error) says why.
+fn refused_auto(error: anyhow::Error) -> anyhow::Error {
+    anyhow!("Core did not enable its Auto-approve answers for this OpenCode executor, so it has no working connection and was not run with \
+        weaker rules: {error:#}")
 }
 
 #[path = "opencode_revert.rs"]

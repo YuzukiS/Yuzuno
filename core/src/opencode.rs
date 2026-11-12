@@ -341,7 +341,7 @@ pub enum Mcp {
 }
 
 /// What OpenCode holds for one session now.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Snapshot {
     /// When the read began, on this process's own clock (`Server::tick`,
     /// #699 R2 and P3-a): what it found missing was missing from then on,
