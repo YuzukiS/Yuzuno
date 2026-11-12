@@ -890,7 +890,7 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
                 "infrastructure_error",
                 if unrecorded {
                     format!(
-                        "{name} setup used its three attempts with the same request ID, and the end of one or more of them isn't recorded: they may still be in flight, or were interrupted (a restart). It isn't retried, and the same head can't be authorized again as another attempt. Reconcile the retained operation; no replacement review is started. {}",
+                        "{name} setup used its three starts with the same request ID, and the completion of one or more of them isn't recorded: they may still be in flight, or their result wasn't saved. No fourth start is made; check the original request and operation. Until that is confirmed, no replacement attempt can be authorized on it. This doesn't prove that the setup failed or that nothing ran. {}",
                         step.error.as_deref().unwrap_or("Completion was not confirmed.")
                     )
                 } else {

@@ -501,7 +501,7 @@ fn a_setup_in_flight_or_unrecorded_is_not_replaced() {
     let f = get(&s, &t);
     assert_eq!((&f["rounds"][0]["review"]["attempts"], &f["rounds"][0]["review"]["finished"]), (&json!(3), &json!(2)));
     assert_eq!(f["state"], "infrastructure_error", "{f}");
-    assert!(f["reason"].as_str().unwrap().contains("the end of one or more of them isn't recorded"), "{f}");
+    assert!(f["reason"].as_str().unwrap().contains("the completion of one or more of them isn't recorded"), "{f}");
     assert!(s.delivery_claim(&task, "review").unwrap().is_none(), "never tried again");
     assert!(s.delivery_reconcile(&task).unwrap());
     assert!(!s.delivery_reconcile(&task).unwrap());
@@ -540,7 +540,7 @@ fn an_unrecorded_try_recovers_from_its_real_record() {
     fail_setup(&s, &t, 2);
     let task = internal(&s, &t);
     let late = s.delivery_claim(&task, "review").unwrap().unwrap();
-    assert!(get(&s, &t)["reason"].as_str().unwrap().contains("isn't recorded"));
+    assert!(get(&s, &t)["reason"].as_str().unwrap().contains("Until that is confirmed, no replacement attempt can be authorized"));
     assert!(refused(&s, &t, "a", "b", "early").contains("hasn't been confirmed to have ended"));
     s.delivery_finish(&task, &late, Err("Reviewer admission unavailable".into())).unwrap();
     let f = get(&s, &t);
