@@ -29,6 +29,9 @@ export type ExecutorLifecycle = {
   position?: number | null;
   /** Its task's blocker, while it runs on a blocked task. */
   blocked?: string | null;
+  /** While it runs: when its task's newest result was handed in on its own dispatch (as doing, or its task no longer in
+   * review; YN-92). Absent otherwise, and from an older Core's answer. */
+  resultAt?: string | null;
   /** What executor routing gave it (YN-57 S4a), when its dispatch has a record; absent from an older Core's answer. */
   route?: ExecutorRoute | null;
   /** Its own temporary directory, or why it has none (YN-78 S2a); `usage` its latest measurement (S2c), absent

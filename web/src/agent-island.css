@@ -113,11 +113,12 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 @keyframes island-breathe {
   50% { stroke-width: 3.4px; }
 }
-/* What a turning ring waits on (YN-51; the user picked the work dock's
-   icons at 11 px): centred in the ring, inside its arc's inner edge (7.6 px
-   from the centre at 22 px), still and in the ring's colour, so the ring
-   alone still says the state. It fades in; nothing moves under reduced
-   motion. Only a working ring holds one (AgentIsland.tsx). */
+/* What a ring waits on (YN-51; the user picked the work dock's icons at
+   11 px): centred in the ring, inside its arc's inner edge (7.6 px from the
+   centre at 22 px), still and in the ring's colour, so the ring alone still
+   says the state. It fades in; nothing moves under reduced motion. Only a
+   turning ring holds one, and a still grey ring whose Agent's Turn has
+   ended and waits only on what it left running (YN-92; AgentIsland.tsx). */
 .island-wait {
   position: absolute;
   top: 5.5px;

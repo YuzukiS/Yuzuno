@@ -154,6 +154,34 @@ async fn the_listing_and_its_task_show_each_executors_lifecycle() {
     assert_eq!(listed(s, "e1")["state"], "failed", "closed while its task is blocked on it");
 }
 
+/// YN-92: an executor at work with a result in on its own dispatch says when
+/// (`resultAt`), so its row can say "Result in" once its Turn ends; a result
+/// on another dispatch, none, or one its task reviews (handed in) says nothing.
+#[tokio::test]
+async fn an_executor_at_work_says_when_its_own_result_came_in() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    let (_, own) = task(s, "Own result");
+    let (_, other) = task(s, "Another's result");
+    let (_, none) = task(s, "No result");
+    executor(s, "e1", &own, "user", "d1", "running", None);
+    executor(s, "e2", &other, "user", "d2", "running", None);
+    executor(s, "e3", &none, "user", "d3", "running", None);
+    task_is(s, &own, "doing", "", Some("d1"));
+    task_is(s, &other, "doing", "", Some("d-else"));
+    let e1 = listed(s, "e1");
+    assert_eq!((e1["state"].as_str(), e1["resultAt"].as_str()), (Some("running"), Some("2026-11-06T02:00:00Z")), "{e1}");
+    let e2 = listed(s, "e2");
+    assert_eq!(e2["state"], "running");
+    assert!(e2.get("resultAt").is_none(), "a result on another dispatch is not its own: {e2}");
+    assert!(listed(s, "e3").get("resultAt").is_none(), "no result, none");
+    // Its task in review on that result: handed in, said by `since`.
+    task_is(s, &own, "review", "", Some("d1"));
+    let e1 = listed(s, "e1");
+    assert_eq!((e1["state"].as_str(), e1["since"].as_str()), (Some("delivering"), Some("2026-11-06T02:00:00Z")), "{e1}");
+    assert!(e1.get("resultAt").is_none(), "only while it runs: {e1}");
+}
+
 /// T-43 S2 (g8): the sidebar names an executor's task by the key it has now,
 /// as the executor's own name, Home's live references and task_get do, not
 /// `T-<n>`; and it says which template the executor was made from (its

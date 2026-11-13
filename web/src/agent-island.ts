@@ -14,7 +14,9 @@ import type { Agent, TurnWait } from "./types";
  * "排队 · 第 2 位"). A passing event (CI, a merge, a start) takes the pill's
  * place for a few seconds. Needs you and failed make the row the island
  * until handled. A click on the row opens the conversation; a click on the
- * ring goes straight to its state's place.
+ * ring goes straight to its state's place. Only a running Turn turns the
+ * ring (YN-92): once its Turn ends, an Agent is at rest, its ring the grey
+ * idle one, and a pill says what holds it ("在等 Job", "等下一轮").
  * Pure: the words are AgentIsland.tsx's, the facts the Agent listing's and,
  * for an executor, executorView's.
  */
@@ -36,7 +38,19 @@ export type IslandStay =
   /** Approved, its checks green or pending: ready to merge. */
   | { kind: "ready" }
   | { kind: "merged" }
-  | { kind: "offline" };
+  | { kind: "offline" }
+  /** Its Turn has ended and these say why it still holds (YN-92: only a running
+   * Turn turns the ring): the ring rests, grey, and the pill stays until the
+   * state changes or a new Turn starts. What it started and left running, its
+   * wait's icon in the ring; */
+  | { kind: "waits"; on: WaitKind }
+  /** only a Job or CI whose outcome is to check (a standing Agent's); */
+  | { kind: "check"; label: string }
+  /** an executor at work on a blocked task; one that handed in a result its
+   * task doesn't review yet; or one between Turns, nothing running. */
+  | { kind: "blocked" }
+  | { kind: "resultIn" }
+  | { kind: "between" };
 
 /** live: a clock that runs; since: how long ago it stopped; total: an
  * ended executor's whole time on its task, which no longer runs. */
@@ -71,6 +85,9 @@ export type IslandWait = {
   name?: string | null;
   label?: string;
   background?: boolean;
+  /** No Turn runs: it waits on what it left running (YN-92); false: on the
+   * call a running Turn is stopped on. */
+  left: boolean;
   also: { kind: WaitKind; count: number }[];
 };
 
@@ -88,12 +105,13 @@ export type WaitFacts = {
 };
 
 /**
- * The one wait a turning ring shows, by WAIT_ORDER (YN-51): while a Turn
- * runs, the call it is stopped on (a sub-agent or a shell command), and
- * nothing while it thinks or writes; while none runs, what the Agent started
- * that hasn't ended: reviews mailed to it, CI it watches (running, being
- * found, or awaiting its first run), Jobs (not those whose outcome is
- * unknown: a thing to check is no wait), background sub-agents and shells.
+ * The one wait its ring shows, by WAIT_ORDER (YN-51): while a Turn runs, the
+ * call it is stopped on (a sub-agent or a shell command), and nothing while
+ * it thinks or writes; while none runs (`left`: its ring rests, YN-92), what
+ * the Agent started that hasn't ended: reviews mailed to it, CI it watches
+ * (running, being found, or awaiting its first run), Jobs (not those whose
+ * outcome is unknown: a thing to check is no wait), background sub-agents
+ * and shells.
  */
 export function waitOn(f: WaitFacts): IslandWait | null {
   type Found = Omit<IslandWait, "kind" | "also">;
@@ -112,13 +130,14 @@ export function waitOn(f: WaitFacts): IslandWait | null {
   }
   const [kind, ...rest] = WAIT_ORDER.filter((k) => found[k]);
   if (!kind) return null;
-  return { kind, ...found[kind]!, also: rest.map((k) => ({ kind: k, count: found[k]!.count })) };
+  return { kind, ...found[kind]!, left: !f.turn, also: rest.map((k) => ({ kind: k, count: found[k]!.count })) };
 }
 
 export type IslandView = {
   /** The ring: one of five. */
   state: IslandState;
-  /** What a turning ring waits on (YN-51); null for every other ring. */
+  /** What a turning ring waits on (YN-51), or a ring at rest whose Agent
+   * waits only on what it left running (YN-92); null for every other ring. */
   wait: IslandWait | null;
   /** The pill that stays while a state other than the ring's holds. */
   stay: IslandStay | null;
@@ -153,7 +172,8 @@ export type IslandFacts = {
   compacting?: boolean;
   /** Its oldest wait in Home's Needs you (ms). */
   waitingSince?: number | null;
-  /** What it waits on (`waitOn`, YN-51): only a turning ring shows it. */
+  /** What it waits on (`waitOn`, YN-51): a turning ring shows it, and a ring
+   * at rest that waits only on what it left running (YN-92). */
   wait?: IslandWait | null;
 };
 
@@ -182,9 +202,12 @@ function standing(facts: IslandFacts): Read {
   if (facts.compacting) return out("working", null, text(facts.statusLabel));
   // The runtime gives no start for a standing Agent's Turn: it says it works, without a clock.
   if (agent.status === "working" || agent.status === "uncertain") return out("working", null, first(summary, text(facts.statusLabel)));
-  // What it started and left running (its Jobs, CI, reviews, background
-  // work) turns its ring; a Turn's end not seen yet is said first (done).
-  if (facts.waiting || (facts.wait && !facts.unseen)) return out("working", null, text(facts.waiting));
+  // Its Turn has ended (YN-92: only a running Turn turns the ring). What it
+  // started and left running (its Jobs, CI, reviews, background work): the
+  // ring rests with the wait's icon, its pill says it; a Turn's end not seen
+  // yet is said first (done). Only a Job or CI to check: the pill says so.
+  if (facts.wait?.left && !facts.unseen) return out("idle", null, text(facts.waiting), { kind: "waits", on: facts.wait.kind });
+  if (facts.waiting) return out("idle", null, text(facts.waiting), { kind: "check", label: facts.waiting });
   // Done is a Turn it ended that this device hasn't shown; updates unread are no state (the user, v11).
   if (facts.unseen === "finished") return out("done", since(ended), summary);
   return out("idle", since(ended), summary);
@@ -241,7 +264,20 @@ function executor(facts: IslandFacts, view: ExecutorView): Read {
       const blocked = view.detail?.kind === "blocked" ? said(view.detail) : NONE;
       // Its PR is its pill's when handed in, not line two's.
       const at = view.detail && view.detail.kind !== "pr" ? said(view.detail) : NONE;
-      return out("working", live(view.started), first(blocked, summary, at));
+      const line = first(blocked, summary, at);
+      // Only a running Turn turns the ring (YN-92). Its Turn ended: at rest,
+      // and the pill says why, first that holds: what it left running, its
+      // PR, its task's blocker, a result it handed in, else between Turns.
+      const turn = agent.status === "working" || agent.status === "uncertain" || !!facts.compacting;
+      if (!turn) {
+        const stay: IslandStay = facts.wait?.left ? { kind: "waits", on: facts.wait.kind }
+          : view.pr ? handed(view)
+            : view.detail?.kind === "blocked" ? { kind: "blocked" }
+              : lifecycle?.resultAt ? { kind: "resultIn" }
+                : { kind: "between" };
+        return out("idle", live(view.started), line, stay);
+      }
+      return out("working", live(view.started), line);
     }
   }
 }
@@ -256,7 +292,9 @@ export function islandView(facts: IslandFacts): IslandView {
   const name = task?.shortName?.trim() || task?.title?.trim() || null;
   return {
     state, stay, clock, line,
-    wait: state === "working" ? facts.wait ?? null : null,
+    // A turning ring, and a ring at rest whose Agent waits only on what it
+    // left running (YN-92), hold what it waits on.
+    wait: state === "working" || stay?.kind === "waits" ? facts.wait ?? null : null,
     title: view ? name : null,
     dot: facts.agent.kind === "lead" && (facts.agent.unreadCount || 0) > 0,
     auto: state === "waiting" || state === "failed",

@@ -227,16 +227,26 @@ export function AgentRailRow({
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince, wait });
   const words = islandText(language);
   const waitWords = island.wait ? waitText(island.wait, language) : null;
-  // The row says what its ring waits on too, for whoever doesn't see the icon.
-  const said = t.description(waitWords ? `${shown}${words.gap}${waitWords.short}` : shown, executor ? null : waiting?.detail ?? null, machine, unread);
   const now = useMinute();
   const timeDisplay = useTimeDisplay();
+  // The row says what its ring waits on too, for whoever doesn't see the
+  // icon. At rest, its Turn ended (YN-92), it never says it works: it starts
+  // with the wait it left running, else its pill's words (its PR's too).
+  const still = island.state === "idle" && !!island.stay
+    && (island.stay.kind === "waits" || island.stay.kind === "check" || executor?.shown === "working");
+  const head = island.stay?.kind === "waits" && waitWords ? waitWords.line
+    : still ? stayText(island.stay!, language, timeDisplay)
+      : waitWords ? `${shown}${words.gap}${waitWords.short}` : shown;
+  const said = t.description(head, executor ? null : waiting?.detail ?? null, machine, unread);
   const stay: IslandPill | null = island.stay && !island.auto
     ? { text: stayText(island.stay, language, timeDisplay), ring: null, tone: stayTone(island.stay), event: false } : null;
   const rest: IslandForm = island.auto ? "row" : stay ? "pill" : "ring";
   // A passing event takes the pill's place for a few seconds; then what stays comes back.
   const queued = island.stay?.kind === "queued" || island.stay?.kind === "candidate" || island.stay?.kind === "starting";
-  const event = usePassingEvent({ state: queued ? "queued" : island.state, pr: pr ?? null, language, quiet: island.auto });
+  // An executor at work on its task counts as working for its events, its
+  // Turn running or not (YN-92): one that starts between Turns still says
+  // it started, and its Turns starting and ending say nothing.
+  const event = usePassingEvent({ state: queued ? "queued" : executor?.shown === "working" ? "working" : island.state, pr: pr ?? null, language, quiet: island.auto });
   const pill = event ?? stay;
   const form: IslandForm = island.auto ? "row" : pill ? "pill" : rest;
   const shell = useRef<HTMLSpanElement>(null);
