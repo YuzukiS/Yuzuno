@@ -7,6 +7,7 @@ import path from "node:path";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 const web = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(web, "node_modules/.cache");
@@ -505,15 +506,11 @@ test("ordinary revisions preserve the actual Home reply field, its draft and foc
     p.w.renderHome("same");
     await until(() => reads.length === 1);
     reads[0](first);
-    await until(() =>
-      p.doc.querySelector('[data-section-key="card-4"] textarea'),
-    );
-    const draft = p.doc.querySelector('[data-section-key="card-4"] textarea');
-    Object.getOwnPropertyDescriptor(
-      p.w.HTMLTextAreaElement.prototype,
-      "value",
-    ).set.call(draft, "Keep my unsent decision");
-    draft.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    // The reply's field: the conversation's composer (YN-91).
+    const field = () => p.doc.querySelector('[data-section-key="card-4"] [data-composer-input]');
+    await until(field);
+    const draft = field();
+    setComposerText(draft, "Keep my unsent decision");
     draft.focus();
     const overview = p.doc.querySelector(".home-return-overview");
     const next = structuredClone(first);
@@ -523,21 +520,15 @@ test("ordinary revisions preserve the actual Home reply field, its draft and foc
     reads[1](next);
     await until(() => p.doc.querySelector(".home-return-refresh.has-update"));
     assert.equal(p.doc.querySelector(".home-return-overview"), overview);
-    assert.equal(
-      p.doc.querySelector('[data-section-key="card-4"] textarea'),
-      draft,
-    );
-    assert.equal(draft.value, "Keep my unsent decision");
-    assert.equal(p.doc.activeElement, draft);
+    assert.ok(field() === draft, "the same reply field");
+    assert.equal(composerText(draft), "Keep my unsent decision");
+    assert.ok(p.doc.activeElement === draft, "focus stays in it");
     p.doc.querySelectorAll(".home-density-option")[1].click();
     await until(
       () => p.doc.querySelector(".home-view").dataset.density === "high",
     );
-    assert.equal(
-      p.doc.querySelector('[data-section-key="card-4"] textarea'),
-      draft,
-    );
-    assert.equal(draft.value, "Keep my unsent decision");
+    assert.ok(field() === draft, "the same reply field");
+    assert.equal(composerText(draft), "Keep my unsent decision");
   } finally {
     p.close();
   }
