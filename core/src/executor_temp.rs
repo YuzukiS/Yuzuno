@@ -97,6 +97,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             registered_at TEXT NOT NULL,
             PRIMARY KEY(workspace_id, path));",
     )?;
+    crate::executor_temp_usage::migrate(db)?;
     Ok(())
 }
 
@@ -170,6 +171,11 @@ pub(crate) fn view(db: &Connection, agent: &str) -> Result<Option<Value>> {
         if let Some(released_at) = released_at {
             view["releasedAt"] = json!(released_at);
         }
+        // Its last measurement, when it had one (YN-78 S2c); none read is no
+        // usage at all, never 0.
+        if let Some(usage) = crate::executor_temp_usage::view(db, agent)? {
+            view["usage"] = usage;
+        }
     }
     if let Some(note) = note {
         view["note"] = json!(note);
@@ -178,7 +184,7 @@ pub(crate) fn view(db: &Connection, agent: &str) -> Result<Option<Value>> {
 }
 
 /// The current Workspace's ID, as the protection records are kept under it.
-fn workspace_of(db: &Connection) -> Result<String> {
+pub(crate) fn workspace_of(db: &Connection) -> Result<String> {
     Ok(db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?)
 }
 
@@ -358,6 +364,20 @@ fn eligible(store: &Store, agent: &str) -> Result<bool> {
 }
 
 pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result<Option<PathBuf>> {
+    Ok(allocate_at_start(store, data, agent)?.map(|given| given.path))
+}
+
+/// The directory a start gives its server, as it was verified then: its
+/// canonical path and its device and inode (YN-78 S2c measures only this one,
+/// never what the record says later).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Given {
+    pub path: PathBuf,
+    pub dev: i64,
+    pub ino: i64,
+}
+
+fn allocate_at_start(store: &Store, data: &Path, agent: &str) -> Result<Option<Given>> {
     #[cfg(not(unix))]
     {
         let _ = (store, data, agent);
@@ -380,9 +400,9 @@ pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result
         let outcome = allocate(store, data, &workspace, agent)
             .unwrap_or_else(|error| Outcome::Unavailable(format!("Core could not prepare a temporary directory: {error:#}")));
         match outcome {
-            Outcome::Ready(path) => {
+            Outcome::Ready(given) => {
                 store.clear_executor_temp_note(&workspace, agent)?;
-                Ok(Some(path))
+                Ok(Some(given))
             }
             Outcome::Unavailable(reason) => {
                 store.note_executor_temp(&workspace, agent, &reason)?;
@@ -399,7 +419,7 @@ pub(crate) fn ensure_at_start(store: &Store, data: &Path, agent: &str) -> Result
 /// future is cancelled or times out cannot release it while creation is
 /// still under way. Only an eligible Agent takes the gate; every other start
 /// is untouched.
-pub(crate) async fn ensure_at_start_gated(ws: &crate::workspace::Workspace, agent: &str) -> Result<Option<PathBuf>> {
+pub(crate) async fn ensure_at_start_gated(ws: &crate::workspace::Workspace, agent: &str) -> Result<Option<Given>> {
     let fits = {
         let agent = agent.to_owned();
         ws.stored(move |store| eligible(store, &agent)).await?
@@ -411,7 +431,7 @@ pub(crate) async fn ensure_at_start_gated(ws: &crate::workspace::Workspace, agen
     let (store, data, agent) = (ws.store.clone(), ws.data_dir.clone(), agent.to_owned());
     tokio::task::spawn_blocking(move || {
         let _held = held;
-        ensure_at_start(&store, &data, &agent)
+        allocate_at_start(&store, &data, &agent)
     })
     .await?
 }
@@ -429,7 +449,7 @@ pub(crate) fn release_for_close(db: &Connection, agent: &str, at: &str) -> Resul
 /// What an Agent about to start may get.
 #[cfg(unix)]
 enum Outcome {
-    Ready(PathBuf),
+    Ready(Given),
     Unavailable(String),
 }
 
@@ -454,7 +474,7 @@ fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<
         // reused, deleted or rebound, and no environment is passed.
         let path = Path::new(&record.path);
         return Ok(match verify(path, record.dev, record.ino).and_then(|()| within_root(path, &root, &prefixes)) {
-            Ok(()) => Outcome::Ready(path.to_path_buf()),
+            Ok(()) => Outcome::Ready(Given { path: path.to_path_buf(), dev: record.dev, ino: record.ino }),
             Err(why) => Outcome::Unavailable(format!("its recorded temporary directory can't be used: {why}")),
         });
     }
@@ -508,7 +528,8 @@ fn allocate(store: &Store, data: &Path, workspace: &str, agent: &str) -> Result<
             return Ok(Outcome::Unavailable(format!("{} could not be recorded for this Agent. It was left in place.", canonical.display())));
         }
         return Ok(match store.executor_temp_dir(workspace, agent)? {
-            Some(record) if record.path == canonical.to_string_lossy() => Outcome::Ready(canonical),
+            Some(record) if record.path == canonical.to_string_lossy() && (record.dev, record.ino) == (dev, ino) =>
+                Outcome::Ready(Given { path: canonical, dev, ino }),
             _ => Outcome::Unavailable(format!("{} could not be recorded for this Agent. It was left in place.", canonical.display())),
         });
     }
@@ -622,6 +643,20 @@ fn within_root(path: &Path, root: &Path, prefixes: &[String]) -> std::result::Re
         return Err(format!("{} is not a name for this Agent's temporary directory", path.display()));
     }
     Ok(())
+}
+
+/// Whether `path` is still this Agent's directory as a start would use it
+/// (YN-78 S2c, before a measurement reads anything below it): the same
+/// directory by device and inode, the owner's, 0700, its canonical path,
+/// within the platform's limit, and directly under this Core's current
+/// default root with one of this Agent's names. Exactly S2a's checks; any
+/// doubt is a refusal.
+#[cfg(unix)]
+pub(crate) fn still_current(data: &Path, agent: &str, path: &Path, dev: i64, ino: i64) -> std::result::Result<(), String> {
+    let data = canonical_data(data).map_err(|error| format!("{error:#}"))?;
+    let root = plain_absolute(&data.join(ROOT_NAME)).map_err(|error| format!("{error:#}"))?;
+    let prefixes = prefixes(agent).map_err(|error| format!("{error:#}"))?;
+    verify(path, dev, ino).and_then(|()| within_root(path, &root, &prefixes))
 }
 
 #[cfg(all(test, unix))]

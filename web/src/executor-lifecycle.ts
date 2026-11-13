@@ -31,6 +31,22 @@ export type ExecutorLifecycle = {
   blocked?: string | null;
   /** What executor routing gave it (YN-57 S4a), when its dispatch has a record; absent from an older Core's answer. */
   route?: ExecutorRoute | null;
+  /** Its own temporary directory, or why it has none (YN-78 S2a); `usage` its latest measurement (S2c), absent
+   * until one was made and from an older Core. */
+  tempDir?: { path?: string; releasedAt?: string; note?: string; usage?: TempUsage | null } | null;
+};
+
+/** The latest measurement of an executor's temporary directory, as Core keeps it (YN-78 S2c): a byte count only from a
+ * complete walk; otherwise unknown with a reason code. `lastMeasured` is the last byte count, with its own time. */
+export type TempUsage = {
+  revision: number;
+  state: "measured" | "unknown";
+  bytes: number | null;
+  reason?: string | null;
+  at: string;
+  limitBytes: number;
+  over?: boolean;
+  lastMeasured?: { bytes: number; at: string } | null;
 };
 
 /** What routing gave an executor, as Core says it (docs/executor-model.md): chosen, with what it runs and its account

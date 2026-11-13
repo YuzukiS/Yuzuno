@@ -641,3 +641,229 @@ async fn lab_deepseek_auto_approve_turn() {
     ws.close_agent("oc").await.unwrap();
     assert_eq!((result["pending"].as_u64(), result["userRequestsJournaled"].as_u64()), (Some(0), Some(0)), "no request was the user's: {result:#}");
 }
+
+/// YN-78 S2c: a Turn's end is reported once, the first time it is recorded
+/// live, whatever it ended as: completed, failed or interrupted. One still
+/// running, one a whole read finds ended (nothing was running) and a second
+/// live event about the same Turns report nothing.
+#[test]
+fn a_turn_ended_live_is_reported_once_whatever_it_ended_as() {
+    let mut d = agent("/synthetic/work");
+    d.turns = ["c", "f", "i", "r"].iter().map(|id| json!({"id": id, "status": "inProgress"})).collect();
+    d.turns.push(json!({"id": "old", "status": "completed"}));
+    let running = running_ids(&d);
+    for (id, status) in [("c", "completed"), ("f", "failed"), ("i", "interrupted")] {
+        d.turns.iter_mut().find(|t| t["id"] == id).unwrap()["status"] = status.into();
+    }
+    assert_eq!(ended_live(&mut d, &running, 7), ["c", "f", "i"]);
+    assert!(ended_live(&mut d, &running, 9).is_empty(), "already recorded");
+    assert!(ended_live(&mut d, &[], 11).is_empty(), "a whole read");
+    assert_eq!(d.turns[0]["_yuzunoCompletedAt"], 7, "the first time stands");
+}
+
+/// The executor's latest measurement as its Overview reads it, and its
+/// latest ticket's revision.
+#[cfg(target_os = "linux")]
+fn temp_usage(ws: &Workspace) -> (Option<Value>, Option<i64>) {
+    use rusqlite::OptionalExtension;
+    let db = ws.store.db.read().unwrap();
+    let ticket = db.query_row("SELECT revision FROM executor_temp_usage WHERE agent_id='oc'", [], |r| r.get(0)).optional().unwrap();
+    (crate::executor_temp_usage::view(&db, "oc").unwrap(), ticket)
+}
+
+/// Each `agent.tempUsage` told on `live` so far.
+#[cfg(target_os = "linux")]
+fn told(live: &mut crate::events::Subscription) -> Vec<Value> {
+    let mut found = Vec::new();
+    while let Some(entry) = live.try_next() {
+        let message: Value = serde_json::from_str(&entry.data).unwrap();
+        if message["type"] == "agent.tempUsage" {
+            found.push(message);
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "linux")]
+async fn told_within(live: &mut crate::events::Subscription, seconds: u64) -> Vec<Value> {
+    let until = std::time::Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let found = told(live);
+        if !found.is_empty() || std::time::Instant::now() >= until {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Everything the stand-in sent before this is applied: an event of no kind
+/// Core projects, journaled after the ones before it on the same stream.
+#[cfg(target_os = "linux")]
+async fn applied_so_far(ws: &Workspace, data: &std::path::Path, session: &str, name: &str) {
+    let kind = format!("yuzuno.test.{name}");
+    control(data, "event", json!({"type": kind, "created": 1, "properties": {"sessionID": session}})).await;
+    let journal = format!("opencode/{kind}");
+    for _ in 0..400 {
+        let seen: i64 = ws.store.db.read().unwrap()
+            .query_row("SELECT COUNT(*) FROM journal WHERE agent_id='oc' AND kind=?1", [&journal], |r| r.get(0)).unwrap();
+        if seen > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{journal} was not applied within 10 s");
+}
+
+/// The allocated bytes below `dir`, as the walk counts them.
+#[cfg(target_os = "linux")]
+fn allocated_below(dir: &std::path::Path) -> i64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let meta = std::fs::symlink_metadata(entry.unwrap().path()).unwrap();
+        total += if meta.is_dir() { 0 } else { meta.blocks() as i64 * 512 };
+    }
+    total
+}
+
+#[cfg(target_os = "linux")]
+async fn turn_ended(ws: &Workspace, turn: &str) -> Value {
+    for _ in 0..400 {
+        let d = ws.store.detail("oc").unwrap();
+        if let Some(t) = d.turns.iter().find(|t| t["id"] == turn && t["status"] != "inProgress") {
+            return t["status"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the turn did not end within 10 s");
+}
+
+#[cfg(target_os = "linux")]
+fn message(client: &str, text: &str) -> crate::model::MessageInput {
+    serde_json::from_value(json!({"clientMessageId": client, "text": text})).unwrap()
+}
+
+/// YN-78 S2c: once a live main-session Turn of an executor at Auto-approve
+/// ends, its temporary directory is measured once, in the background, and
+/// clients are told only its revision. The Turn's end is committed first: a
+/// worker held at a barrier leaves it visible, and the ticket made, with no
+/// result yet. A repeated idle, a sub-agent's session and a reconnect's whole
+/// read make no ticket.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_main_turn_ended_live_measures_the_executors_temp_dir_once() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let session = ws.store.detail("oc").unwrap().agent.opencode_session_id.unwrap();
+    let workspace = ws.store.workspace_id().unwrap();
+    let temp = std::path::PathBuf::from(ws.store.executor_temp_dir(&workspace, "oc").unwrap().unwrap().path);
+    std::fs::write(temp.join("scratch.bin"), vec![7u8; 40 * 1024]).unwrap();
+    let mut live = ws.changes.subscribe(None);
+
+    let first = ws.send_message("oc", message("c1", "hello")).await.unwrap().turn_id.unwrap();
+    control(&data, "reply", json!({"sessionID": session, "text": "Done."})).await;
+    assert_eq!(turn_ended(&ws, &first).await, "completed");
+    assert_eq!(told_within(&mut live, 10).await, [json!({"type": "agent.tempUsage", "agentId": "oc", "revision": 1})],
+        "its revision only: no path, no count");
+    let (usage, ticket) = temp_usage(&ws);
+    let usage = usage.unwrap();
+    assert_eq!((usage["state"].as_str(), usage["bytes"].as_i64(), ticket), (Some("measured"), Some(allocated_below(&temp)), Some(1)));
+    assert!(usage["bytes"].as_i64().unwrap() >= 40 * 1024);
+
+    // A repeated idle, a sub-agent's session going idle, and a reconnect's
+    // whole read of the same history: no new ticket, nothing told.
+    control(&data, "idle", json!({"sessionID": session})).await;
+    let child = control(&data, "child", json!({"parentID": session, "title": "helper"})).await["id"].as_str().unwrap().to_owned();
+    control(&data, "busy", json!({"sessionID": child})).await;
+    control(&data, "idle", json!({"sessionID": child})).await;
+    applied_so_far(&ws, &data, &session, "after-idle").await;
+    ws.reconnect("oc").await.unwrap();
+    applied_so_far(&ws, &data, &session, "after-reconnect").await;
+    assert_eq!(temp_usage(&ws).1, Some(1));
+    assert!(told(&mut live).is_empty());
+
+    // The next Turn, its worker held at a barrier: the Turn's end is
+    // visible first, its ticket made, its result not yet.
+    let (at_barrier, worker_there) = std::sync::mpsc::channel::<()>();
+    let (release, barrier) = std::sync::mpsc::channel::<()>();
+    let barrier = std::sync::Mutex::new(barrier);
+    let at_barrier = std::sync::Mutex::new(at_barrier);
+    ws.temp_usage.hooks.lock().unwrap().before_walk = Some(Arc::new(move || {
+        at_barrier.lock().unwrap().send(()).unwrap();
+        barrier.lock().unwrap().recv().unwrap();
+    }));
+    let second = ws.send_message("oc", message("c2", "again")).await.unwrap().turn_id.unwrap();
+    control(&data, "reply", json!({"sessionID": session, "text": "Again."})).await;
+    assert_eq!(turn_ended(&ws, &second).await, "completed");
+    tokio::task::spawn_blocking(move || worker_there.recv_timeout(Duration::from_secs(10))).await.unwrap()
+        .expect("the worker reached its barrier");
+    let (usage, ticket) = temp_usage(&ws);
+    assert_eq!((usage.unwrap()["revision"].as_i64(), ticket), (Some(1), Some(2)), "the ticket is made, the result not yet");
+    assert!(told(&mut live).is_empty());
+    release.send(()).unwrap();
+    assert_eq!(told_within(&mut live, 10).await, [json!({"type": "agent.tempUsage", "agentId": "oc", "revision": 2})]);
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// YN-78 S2c: no measurement for a Turn whose end could not be written, nor
+/// later from a reconnect's whole read of the same history.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_turn_end_not_written_is_never_measured() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("auto")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let session = ws.store.detail("oc").unwrap().agent.opencode_session_id.unwrap();
+    let first = ws.send_message("oc", message("c1", "hello")).await.unwrap().turn_id.unwrap();
+    // Every write that would end a Turn fails.
+    ws.store.db.write().unwrap().execute_batch(
+        "CREATE TRIGGER no_end_update BEFORE UPDATE ON agent_turns WHEN json_extract(NEW.data,'$.status') <> 'inProgress'
+           BEGIN SELECT RAISE(ABORT,'synthetic write failure'); END;
+         CREATE TRIGGER no_end_insert BEFORE INSERT ON agent_turns WHEN json_extract(NEW.data,'$.status') <> 'inProgress'
+           BEGIN SELECT RAISE(ABORT,'synthetic write failure'); END;").unwrap();
+    control(&data, "reply", json!({"sessionID": session, "text": "Done."})).await;
+    applied_so_far(&ws, &data, &session, "after-failure").await;
+    let turn = ws.store.detail("oc").unwrap().turns.into_iter().find(|t| t["id"] == first.as_str()).unwrap();
+    assert_eq!((turn["status"].as_str(), turn["_yuzunoCompletedAt"].is_null()), (Some("inProgress"), true), "its end was not written");
+    assert_eq!(temp_usage(&ws), (None, None), "a rolled-back end starts nothing");
+    // Writes work again; a reconnect reads the session whole: still no ticket.
+    ws.store.db.write().unwrap().execute_batch("DROP TRIGGER no_end_update; DROP TRIGGER no_end_insert;").unwrap();
+    ws.reconnect("oc").await.unwrap();
+    applied_so_far(&ws, &data, &session, "after-whole-read").await;
+    assert_eq!(temp_usage(&ws), (None, None));
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// YN-78 S2c: a read-only executor's start passes no temporary directory, so
+/// its Turns have nothing to measure.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_read_only_executor_has_no_temp_dir_to_measure() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    executor(&ws, "oc");
+    ws.store.set_permission_level("oc", Some("read-only")).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    assert!(ws.opencodes.lock().unwrap().get("oc").unwrap().temp.is_none());
+    let session = ws.store.detail("oc").unwrap().agent.opencode_session_id.unwrap();
+    let turn = ws.send_message("oc", message("c1", "hello")).await.unwrap().turn_id.unwrap();
+    control(&data, "reply", json!({"sessionID": session, "text": "Done."})).await;
+    assert_eq!(turn_ended(&ws, &turn).await, "completed");
+    applied_so_far(&ws, &data, &session, "read-only").await;
+    assert_eq!(temp_usage(&ws), (None, None));
+    ws.close_agent("oc").await.unwrap();
+}
