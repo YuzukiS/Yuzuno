@@ -199,6 +199,24 @@ jobs:
           rustc --edition 2021 --test desktop/src/badge_rules.rs -o "$RUNNER_TEMP/desktop-badge"
           "$RUNNER_TEMP/desktop-badge"
 
+      # Likewise how the Windows app reads `wsl.exe --list --verbose`
+      # (against the bytes a real WSL printed) and what its read-only check
+      # of a distribution means (YN-109).
+      - name: Desktop WSL list
+        run: |
+          rustc --edition 2021 --test desktop/src/local_core/wsl_list.rs -o "$RUNNER_TEMP/desktop-wsl-list"
+          "$RUNNER_TEMP/desktop-wsl-list"
+
+      - name: Desktop local Core check rules
+        run: |
+          rustc --edition 2021 --test desktop/src/local_core/check_rules.rs -o "$RUNNER_TEMP/desktop-check-rules"
+          "$RUNNER_TEMP/desktop-check-rules"
+
+      # The check script itself, under dash and bash, with a fake HOME and
+      # a PATH of stand-ins: what it prints, and that it writes nothing.
+      - name: Desktop local Core check script
+        run: python3 desktop/tests/local_core_scripts.py --verbose
+
       # Cargo dependencies only (the workspace's own build output is not
       # kept). Restores on every run; saves only from main, so a PR cannot
       # write a cache that main later reads.

@@ -1,3 +1,4 @@
+use crate::local_core::check_rules;
 use url::{Host, Url};
 
 pub const DEFAULT_CORE_URL: &str = "http://127.0.0.1:4317";
@@ -123,25 +124,13 @@ pub struct StartProfile {
 
 impl StartProfile {
     pub fn new(core: &Url, wsl_distro: &str, user: &str, install_dir: &str, workspace_id: &str) -> Option<Self> {
-        let named = |text: &str, max: usize, more: &[char]| {
-            !text.is_empty()
-                && text.len() <= max
-                && text.chars().all(|c| c.is_ascii_alphanumeric() || more.contains(&c))
-        };
-        let path_ok = install_dir.starts_with('/')
-            && install_dir.len() <= 512
-            && install_dir.chars().all(|c| c.is_ascii_alphanumeric() || "._-+@/".contains(c))
-            && install_dir[1..].split('/').all(|part| !matches!(part, "" | "." | ".."))
-            // Windows folders seen from WSL: not a Linux installation.
-            && !install_dir.starts_with("/mnt/");
+        // The same rules as for what the connection page installs.
         let ok = is_loopback(core)
             && core.port_or_known_default().is_some()
-            && named(wsl_distro, 64, &['.', '_', '-'])
-            && !wsl_distro.starts_with(['-', '.'])
-            && named(user, 32, &['_', '-'])
-            && !user.starts_with('-')
-            && path_ok
-            && named(workspace_id, 64, &['-', '_']);
+            && check_rules::distro_name_ok(wsl_distro)
+            && check_rules::user_name_ok(user)
+            && check_rules::linux_path_ok(install_dir)
+            && check_rules::workspace_id_ok(workspace_id);
         ok.then(|| Self {
             core: core.clone(),
             wsl_distro: wsl_distro.into(),

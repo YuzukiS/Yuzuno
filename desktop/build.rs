@@ -9,6 +9,8 @@ fn main() {
             "remove_core",
             "forget_address",
             "start_core",
+            "local_core_targets",
+            "local_core_check",
             "set_appearance",
             "desktop_update_status",
             "desktop_update_check",

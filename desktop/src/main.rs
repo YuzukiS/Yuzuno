@@ -11,6 +11,7 @@ mod chrome;
 mod connection;
 mod entries;
 mod health;
+mod local_core;
 mod notification_text;
 mod notify;
 // The window buttons stand over the toolbar on macOS only.
@@ -757,103 +758,10 @@ async fn open_core(
     Ok(desktop_url(&core).into())
 }
 
-/// How long the connection page waits for a start in WSL. The start itself
-/// waits up to two minutes for Core to answer; booting WSL comes first.
-#[cfg(windows)]
-const START_WAIT: Duration = Duration::from_secs(180);
-
-/// Runs the installation's start entry in its WSL distribution and reads
-/// its result as soon as it is printed. After starting Core the entry stays
-/// while Core runs, so WSL keeps the distribution running: that `wsl.exe`
-/// is left running, hidden, and outlives this window. Waiting ends after
-/// [`START_WAIT`]; nothing is stopped then.
-#[cfg(windows)]
-fn wsl_start(profile: &StartProfile) -> StartOutcome {
-    use std::{
-        io::{BufRead, BufReader, Read},
-        os::windows::process::CommandExt,
-        process::{Command, Stdio},
-        sync::mpsc::{self, RecvTimeoutError},
-        time::Instant,
-    };
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    // Windows' own wsl.exe, never one found on PATH.
-    let wsl = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join(r"System32\wsl.exe");
-    if !wsl.is_file() {
-        return StartOutcome::Failed("WSL is not installed on this computer, so Core cannot be started from here.".into());
-    }
-    let child = Command::new(&wsl)
-        .args(profile.wsl_arguments())
-        // wsl.exe's own messages in UTF-8 rather than UTF-16.
-        .env("WSL_UTF8", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(error) => return StartOutcome::Failed(format!("Could not run WSL: {error}")),
-    };
-    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(pipe) = pipe {
-                let _ = pipe.take(64 * 1024).read_to_end(&mut bytes);
-            }
-            bytes
-        })
-    }
-    let stderr = read_all(child.stderr.take());
-    let (lines, arriving) = mpsc::channel();
-    if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || {
-            let mut stdout = BufReader::new(stdout.take(64 * 1024));
-            let mut line = Vec::new();
-            while matches!(stdout.read_until(b'\n', &mut line), Ok(read) if read > 0) {
-                if lines.send(String::from_utf8_lossy(&line).into_owned()).is_err() {
-                    break;
-                }
-                line.clear();
-            }
-        });
-    }
-    let deadline = Instant::now() + START_WAIT;
-    let mut output = String::new();
-    loop {
-        match arriving.recv_timeout(Duration::from_millis(200)) {
-            Ok(line) if connection::start_result_line(&line).is_some() => {
-                return connection::start_result(profile, &line);
-            }
-            Ok(line) => output.push_str(&line),
-            // wsl.exe ended without a result: what it said is why.
-            Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-        if Instant::now() >= deadline {
-            return StartOutcome::Unanswered;
-        }
-    }
-    // Its output has closed; give it and its error stream a moment to end,
-    // never more.
-    let ending = Instant::now() + Duration::from_secs(5);
-    while (matches!(child.try_wait(), Ok(None)) || !stderr.is_finished()) && Instant::now() < ending {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    if stderr.is_finished() {
-        output.push('\n');
-        output.push_str(&String::from_utf8_lossy(&stderr.join().unwrap_or_default()));
-    }
-    connection::start_result(profile, &output)
-}
-
 #[cfg(windows)]
 async fn run_start(profile: &StartProfile) -> StartOutcome {
     let profile = profile.clone();
-    tauri::async_runtime::spawn_blocking(move || wsl_start(&profile))
+    tauri::async_runtime::spawn_blocking(move || local_core::wsl::start(&profile))
         .await
         .unwrap_or_else(|error| StartOutcome::Failed(error.to_string()))
 }
@@ -994,6 +902,7 @@ fn main() {
             starting: AtomicBool::new(false),
         })
         .manage(update::DesktopUpdates::default())
+        .manage(local_core::LocalCore::default())
         .invoke_handler(tauri::generate_handler![
             connection_info,
             connect_core,
@@ -1002,6 +911,8 @@ fn main() {
             forget_address,
             start_core,
             set_appearance,
+            local_core::local_core_targets,
+            local_core::local_core_check,
             update::desktop_update_status,
             update::desktop_update_check,
             update::desktop_update_install,
