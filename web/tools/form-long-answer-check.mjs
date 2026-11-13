@@ -131,7 +131,8 @@ async function conversationForm(page) {
     // A phone shows one pane: back to the list first, unless it is the list.
     if ((await page.locator(".phone-back").count()) && !(await page.locator(".app.phone-list").count()))
       await page.locator(".phone-back").first().click();
-    await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').first().click();
+    // The fixture's one Agent's row: its label is in the page's language.
+    await page.locator(".agent-row .agent-select").first().click();
     await form.waitFor({ timeout: 10_000 });
   }
   return form;
