@@ -19,7 +19,9 @@
 //   edge, in the ring's colour, and adds nothing to the row's height;
 // - its card says which one and names the rest (at rest, in its state's
 //   line, never "Working"); the row's screen-reader text and the ring's
-//   label say it; nothing cut;
+//   label say it; line one never cut, line two only where a pill that
+//   stays takes its width (rail v11: one line, ending in "…"), and each such
+//   row is listed in the report;
 // - every pill of a Turn ended is no wider than 排队 · 第 3 位 / Queued · 3
 //   in line, the widest pill a 240 px rail leaves line one room beside;
 // - under reduced motion nothing moves (the icon's fade included); with
@@ -38,7 +40,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-92 (YN-51 S1b's check)", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, pills: {} };
+const report = { task: "YN-92 (YN-51 S1b's check)", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, pills: {}, lineTwoCut: {} };
 const check = (name) => {
   report.checks.push({ name });
   console.log(`PASS ${name}`);
@@ -203,7 +205,10 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
     said: r.querySelector(".agent-select")?.getAttribute("aria-description") ?? "",
     label: r.querySelector(":scope > button.agent-island")?.getAttribute("aria-label") ?? null,
     height: r.getBoundingClientRect().height,
-    cut: cut(one) || cut(two),
+    cut: cut(one),
+    // Line two is one line ending in "…" (reading.css, rail v11): a pill that stays may take its width.
+    cutTwo: cut(two),
+    two: two?.textContent ?? null,
   };
 }));
 // The arc's inner edge, from the ring's centre, in a 22 px ring (agent-island.css: r 9.5, arc 2.4, in 24).
@@ -249,7 +254,9 @@ async function run({ width, height, theme, lang, motion = false }) {
       assert.ok(r, `${tag}: ${id} listed`);
       assert.equal(r.wait, wait, `${tag}: ${id} waits on ${wait}`);
       assert.equal(r.icons, wait ? 1 : 0, `${tag}: ${id} holds ${wait ? "one icon" : "none"}`);
-      assert.ok(!r.cut, `${tag}: ${id}'s words are not cut`);
+      assert.ok(!r.cut, `${tag}: ${id}'s line one is not cut`);
+      assert.ok(!r.cutTwo || r.stay != null, `${tag}: ${id}'s line two is cut with no pill beside it: ${r.two}`);
+      if (r.cutTwo) (report.lineTwoCut[tag] ??= []).push({ id, pill: r.pill, two: r.two });
       const rest = AT_REST[id];
       // Its row's screen-reader text, after "Lead · " or "Executor · ".
       const said = r.said.replace(/^(Lead|Executor|负责人|执行者) · /, "");
