@@ -445,6 +445,41 @@ async fn a_join_sends_the_words_to_who_answers_for_the_card_and_why_by_the_front
     assert!(answer["routes"][1]["error"].as_str().unwrap().starts_with("not_a_card"), "{answer}");
 }
 
+// R1 5e385a9d: a card whose executor still waits for its slot takes no
+// message from Home before it starts, so a join hands it the request in one
+// mail from the front desk, which it reads once it starts: Core's head, the
+// user's words byte for byte, then why; nothing is sent as the user's. When
+// that is more than a mail holds, the join is refused, retryable once the
+// executor has started, before the route records the card.
+#[tokio::test]
+async fn a_join_to_a_card_whose_executor_waits_for_its_slot_goes_by_the_front_desks_mail() {
+    let lab = lab();
+    let first = lab.say("设置页重新排版", "m1").await;
+    let made = lab.route("desk", first, "设置页排版", "好。", vec![design("设置页排版", "要设计")]).await.unwrap();
+    let (key, executor) = (made["routes"][0]["task"].as_str().unwrap().to_owned(), made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned());
+    let slot: String = lab.ws.store.db.read().unwrap().query_row("SELECT state FROM executor_slots WHERE agent_id=?1", [&executor], |r| r.get(0)).unwrap();
+    assert_eq!(slot, "waiting", "it has not started");
+    let words = " 文案也改口语 😀\r\n第二行 ";
+    let second = lab.say(words, "m2").await;
+    let answer = lab.route("desk", second, "文案口语", "并进设计卡。", vec![join(&key.to_lowercase(), "同一张设置页")]).await.unwrap();
+    assert_eq!((answer["routes"][0]["state"].clone(), answer["routes"][0]["to"]["agentId"].clone()), (json!("done"), json!(executor)), "{answer}");
+    assert_eq!(lab.sent(&executor), 0, "no message from Home");
+    let mail: Vec<_> = lab.mail(&executor).into_iter().filter(|m| m["dispatchId"].is_null()).collect();
+    assert_eq!((mail.len(), mail[0]["sender"]["id"].clone()), (1, json!("desk")), "{mail:?}");
+    let head = format!("Request R-2 from the user to the project Code (Workspace {}, Project {}), routed by the front desk Desk to task {key}, \
+        whose card you answer for. You had not started yet, so it comes by the front desk's mail; the user's words, exactly as written:",
+        lab.workspace, lab.project);
+    assert_eq!(mail[0]["body"], format!("{head}\n\n{words}\n\nWhy, in the front desk's words (not the user's): 同一张设置页"));
+    assert_eq!(lab.request(second)["cards"][0]["task"]["id"], key);
+    // More than a mail holds: refused, nothing recorded on the card.
+    let third = lab.say(&"长".repeat(crate::collaboration_store::MAX_MAIL_BODY / 3), "m3").await;
+    let refused = lab.route("desk", third, "很长的补充", "等它开始。", vec![join(&key.to_lowercase(), "同一张设置页")]).await.unwrap();
+    assert_eq!(refused["routes"][0]["state"], "failed");
+    assert!(refused["routes"][0]["error"].as_str().unwrap().starts_with("executor_queued"), "{refused}");
+    assert_eq!((refused["routes"][0]["task"].clone(), refused["routes"][0]["cardKey"].clone()), (Value::Null, Value::Null));
+    assert_eq!(lab.mail(&executor).into_iter().filter(|m| m["dispatchId"].is_null()).count(), 1, "nothing more sent");
+}
+
 // Dev Lead 2 seq 12103: a new executor's task must hold the words whole:
 // Core's head, a blank line and the words, within a task description's
 // limit less the room for the longest why. At the limit the route is done;

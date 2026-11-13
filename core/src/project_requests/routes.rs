@@ -663,11 +663,14 @@ fn agent_name(db: &Connection, id: &str) -> String {
 /// An existing route: the request joins a live card bound to a task that
 /// has not ended, and its words go to who answers for the card now, with
 /// the front desk's why by mail; nothing is sent when that is the front
-/// desk itself.
+/// desk itself. An executor still waiting for its slot takes no message
+/// from Home before it starts (R1 5e385a9d): it gets the words and why in
+/// one mail from the front desk, which it reads once it starts
+/// (`queued_hand_off`). Every check comes before the route records its card.
 async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Result<()> {
     let wanted = row.input["cardKey"].as_str().unwrap_or_default().to_owned();
     let project = ctx.project.clone();
-    let (card, task, ended, responsible) = ws
+    let (card, task, ended, responsible, waiting) = ws
         .stored(move |store| {
             let db = store.db.read()?;
             let card = crate::project_brief::live_card(&db, &project, &wanted)?
@@ -677,12 +680,20 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
             })?;
             let ended = crate::project_brief::task_ended(&db, &task)?;
             let responsible = crate::project_brief::responsible_agent(&db, &task)?;
-            Ok((card, task, ended, responsible))
+            let waiting = match &responsible {
+                Some(agent) => super::waits_for_slot(&db, agent)?,
+                None => false,
+            };
+            Ok((card, task, ended, responsible, waiting))
         })
         .await?;
     let id = task.clone();
     let key = ws.stored(move |store| Ok(crate::collaboration_store::task_shown(&*store.db.read()?, &id))).await?;
     ensure!(!ended, "card_ended: {}'s task {key} has ended; route it to a card whose work goes on, or make a new card", card.key);
+    let agent = responsible.with_context(|| {
+        format!("no_responsible: no Agent answers for {}: its task {key} has no executor or assignee; dispatch it first", card.key)
+    })?;
+    let queued = (waiting && agent != actor).then(|| queued_hand_off(ctx, &row.why, &key)).transpose()?;
     let (route, card_key, identity, bound) = (row.id.clone(), card.key.clone(), card.identity, task.clone());
     ws.stored(move |store| {
         store.db.write()?.execute(
@@ -692,15 +703,45 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
         Ok(())
     })
     .await?;
-    let agent = responsible.with_context(|| {
-        format!("no_responsible: no Agent answers for {}: its task {key} has no executor or assignee; dispatch it first", card.key)
-    })?;
-    if agent != actor {
-        let shown = format!("card {} (task {key})", card.key);
-        hand_off(ws, ctx, row, &agent, &hand_off_head(ctx, &key)).await?;
-        tell_why(ws, actor, ctx, row, &agent, &task, &shown).await?;
+    match queued {
+        Some(body) => {
+            own_call(ws, actor, "peer_send", json!({"requestId":format!("{}:{agent}", step(row, "words")),
+                "toAgentId":agent,"taskId":task,"body":body}))
+                .await?;
+        }
+        None if agent != actor => {
+            let shown = format!("card {} (task {key})", card.key);
+            hand_off(ws, ctx, row, &agent, &hand_off_head(ctx, &key)).await?;
+            tell_why(ws, actor, ctx, row, &agent, &task, &shown).await?;
+        }
+        None => {}
     }
     save(ws, &row.id, "target_agent_id", json!(agent)).await
+}
+
+/// The mail that hands a request to a card's executor still waiting for its
+/// slot (`existing`): Core's head, a blank line, the user's words byte for
+/// byte, then the front desk's why, as one mail from the front desk (so no
+/// Agent's words are ever sent as the user's). Refused, retryable once the
+/// executor has started, when that is more than a mail holds.
+fn queued_hand_off(ctx: &Ctx, why: &str, task: &str) -> Result<String> {
+    let head = format!(
+        "Request R-{} from the user to the project {} (Workspace {}, Project {}), routed by the front desk {} to task {task}, \
+         whose card you answer for. You had not started yet, so it comes by the front desk's mail; the user's words, exactly \
+         as written:",
+        ctx.request.n, ctx.name, ctx.workspace, ctx.project, ctx.front
+    );
+    let body = format!("{head}\n\n{}{WHY_PREFIX}{why}", ctx.request.text);
+    ensure!(
+        body.len() <= crate::collaboration_store::MAX_MAIL_BODY,
+        "executor_queued: who answers for task {task} is an executor still waiting for its slot, which takes no message from Home \
+         before it starts, and R-{}'s words with Core's head and your why are {} bytes, more than a mail holds ({}). Route it \
+         again once that executor has started (task_get shows its executorSlot); nothing was recorded on the card",
+        ctx.request.n,
+        body.len(),
+        crate::collaboration_store::MAX_MAIL_BODY
+    );
+    Ok(body)
 }
 
 #[cfg(test)]

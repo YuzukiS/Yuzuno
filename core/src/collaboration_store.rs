@@ -649,6 +649,9 @@ pub(crate) const SHORT_NAME_CHARS: usize = 16;
 pub(crate) const MAX_TITLE: usize = 300;
 pub(crate) const MAX_DESCRIPTION: usize = 32_768;
 
+/// The longest mail body (peer_send), in UTF-8 bytes.
+pub(crate) const MAX_MAIL_BODY: usize = 16_384;
+
 /// A task's short name from `input`: one line of at most SHORT_NAME_CHARS
 /// characters, trimmed; null or empty is none.
 fn short_name(input: &Value) -> Result<Option<String>> {
@@ -1612,7 +1615,7 @@ fn create_message(
     let recipient = agent_actor(store, db, &to)?;
     // An archived executor takes no more mail or work (T-36).
     crate::executor_archive::refuse_mail(db, &to)?;
-    let body = required_text(input, "body", 16_384)?;
+    let body = required_text(input, "body", MAX_MAIL_BODY)?;
     let priority = message_priority(input)?;
     let mut task_id = optional_text(input, "taskId", 128)?;
     let reply_to = optional_text(input, "replyTo", 128)?;

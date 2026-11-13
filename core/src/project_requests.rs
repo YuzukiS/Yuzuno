@@ -351,6 +351,13 @@ fn forget_request(db: &Connection, id: &str, agent: &str, client: &str) -> Resul
     Ok(())
 }
 
+/// Whether `agent` is an executor still waiting for its slot: it takes no
+/// message from Home before it starts (executor_slots.rs `executor_slot_gate`),
+/// only mail, which reaches it once it has.
+pub(super) fn waits_for_slot(db: &Connection, agent: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting')", [agent], |r| r.get(0))?)
+}
+
 /// Who a follow-up goes to (YN-86 §4.4): once the request is routed, each
 /// open Agent that answers for one of its cards now (cards.rs: the task's
 /// newest executor not yet released, else its assignee), in the order its
@@ -362,15 +369,10 @@ fn follow_up_to(db: &Connection, project: &str, request: &str) -> Result<Vec<Str
     for task in progress::routed_tasks(db, request)? {
         let Some(agent) = crate::project_brief::responsible_agent(db, &task)? else { continue };
         let open: bool = db
-            .query_row(
-                "SELECT json_extract(data,'$.agent.closedAt') IS NULL
-                    AND NOT EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting') FROM agents WHERE id=?1",
-                [&agent],
-                |r| r.get(0),
-            )
+            .query_row("SELECT json_extract(data,'$.agent.closedAt') IS NULL FROM agents WHERE id=?1", [&agent], |r| r.get(0))
             .optional()?
             .unwrap_or(false);
-        if open && !to.contains(&agent) {
+        if open && !waits_for_slot(db, &agent)? && !to.contains(&agent) {
             to.push(agent);
         }
     }
