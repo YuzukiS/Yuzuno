@@ -18,6 +18,7 @@ window.YUZUNO_I18N = {
     intro: '连接到你的 Agent 所在的地方。<br />一切都在你离开时的位置。', // html
     introLocal: 'Yuzuno 的 Core 可以跑在这台电脑的 WSL 里，也可以在别的电脑上。选一种开始。',
     introSaved: '上次的工作区没有应答。启动它，或换一个。',
+    introSavedOther: '上次的工作区没有应答。再试一次，或换一个。',
     language: '语言',
     details: '详情',
 
@@ -40,7 +41,7 @@ window.YUZUNO_I18N = {
     autoStartFailed: '没能改这个设置。',
     startingWsl: '正在这台电脑的 WSL（{where}）里启动 Core…可能要一分钟。',
     startingMac: '正在这台 Mac 上启动 Core…可能要一分钟。',
-    autoStarting: '上次的工作区没有应答，正在自动启动…可能要一分钟。',
+    autoStarting: '正在自动启动这台电脑的 Core…可能要一分钟。',
     started: 'Core 已经在运行，正在打开工作区…',
     startFailed: 'Core 没有启动。',
 
@@ -206,6 +207,7 @@ window.YUZUNO_I18N = {
     intro: 'Connect to where your agents live.<br />Everything will be right where you left it.', // html
     introLocal: "Yuzuno's Core can run in this computer's WSL or on another computer. Pick one to begin.",
     introSaved: 'Your last workspace did not answer. Start it, or choose another.',
+    introSavedOther: 'Your last workspace did not answer. Try again, or choose another.',
     language: 'Language',
     details: 'Details',
 
@@ -228,7 +230,7 @@ window.YUZUNO_I18N = {
     autoStartFailed: 'The setting was not changed.',
     startingWsl: "Starting Core in this computer's WSL ({where})… This can take a minute.",
     startingMac: 'Starting Core on this Mac… This can take a minute.',
-    autoStarting: 'Your last workspace did not answer. Starting it automatically… This can take a minute.',
+    autoStarting: "Starting this computer's Core automatically… This can take a minute.",
     started: 'Core is running. Opening your workspace…',
     startFailed: 'Core did not start.',
 

@@ -248,7 +248,8 @@ test('the app says it is starting by itself while it does', async () => {
     if (command === 'start_core') return new Promise((resolve) => { finish = resolve; });
   });
   try {
-    assert.match(dom.window.document.querySelector('#start-message').textContent, /Starting it automatically/);
+    assert.match(dom.window.document.querySelector('#start-message').textContent, /Starting this computer's Core automatically/);
+    assert.match(dom.window.document.querySelector('#intro').textContent, /did not answer\. Start it/);
     finish('http://127.0.0.1:4317/?shell=desktop');
     await settle();
   } finally { dom.window.close(); }
@@ -308,7 +309,8 @@ test('a record without the switch is on, and turning it off goes through the app
 test('where this app cannot install or start Core, only Connect is shown', async () => {
   for (const targets of [macTargets, { platform: null, available: false, reason: 'unsupported', targets: [] }]) {
     const dom = await mount(async (command) => {
-      if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [], remembered: [] };
+      if (command === 'connection_info')
+        return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [{ id: 'core-1', name: 'Studio', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }], remembered: [] };
       if (command === 'local_core_targets') return targets;
       throw offline;
     });
@@ -318,7 +320,7 @@ test('where this app cannot install or start Core, only Connect is shown', async
       assert.equal(visible(document.querySelector('#act-install')), false, targets.reason);
       assert.equal(visible(document.querySelector('#act-connect')), true);
       assert.equal(visible(document.querySelector('#guide')), false, 'its steps are WSL steps');
-      assert.doesNotMatch(document.querySelector('#intro').textContent, /WSL/);
+      assert.equal(document.querySelector('#intro').textContent, 'Your last workspace did not answer. Try again, or choose another.');
     } finally { dom.window.close(); }
   }
 });
@@ -350,16 +352,17 @@ test('the first-run guide shows while nothing is saved and the default address d
   } finally { again.window.close(); }
 });
 
-test('the guide is not shown once something is saved, before the address is tried, or when the list cannot be read', async () => {
-  for (const info of [
-    { ...nothing, saved: [{ id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }] },
-    { ...nothing, remembered: [{ url: 'http://127.0.0.1:4319/', workspaceId: 'w-three' }] },
-    { ...nothing, autoConnect: false },
-    { ...nothing, savedError: 'it could not be read (denied)' },
+test('the guide is not shown once something is saved, before the address is tried, when the list cannot be read, or on the Mac', async () => {
+  for (const [info, targets = wslTargets] of [
+    [{ ...nothing, saved: [{ id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }] }],
+    [{ ...nothing, remembered: [{ url: 'http://127.0.0.1:4319/', workspaceId: 'w-three' }] }],
+    [{ ...nothing, autoConnect: false }],
+    [{ ...nothing, savedError: 'it could not be read (denied)' }],
+    [nothing, macTargets],
   ]) {
     const dom = await mount(async (command) => {
       if (command === 'connection_info') return info;
-      if (command === 'local_core_targets') return wslTargets;
+      if (command === 'local_core_targets') return targets;
       throw offline;
     });
     try {

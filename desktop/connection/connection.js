@@ -196,7 +196,9 @@ function nothingSaved() {
 // ---- Drawing --------------------------------------------------------------
 function drawIntro() {
   const intro = $('#intro');
-  if (page.unreachable && (page.info?.saved ?? []).length) intro.textContent = t('introSaved');
+  // "Start it" only where there is a start to offer.
+  if (page.unreachable && (page.info?.saved ?? []).length)
+    intro.textContent = t(page.startable && localOffered() ? 'introSaved' : 'introSavedOther');
   else if (localOffered() && page.targets?.platform === 'wsl') intro.textContent = t('introLocal');
   else intro.innerHTML = t('intro');
 }
