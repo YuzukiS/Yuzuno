@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import { useTimeDisplay } from "../../time-preferences";
 import {
   ArrowUpRight,
@@ -12,6 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { errorText } from "../../api";
+import { CopyButton } from "../../components";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
@@ -99,6 +100,38 @@ async function readPart(url: string, part: "head" | "tail", signal: AbortSignal)
   if (truncated)
     text = part === "head" ? text.slice(0, text.lastIndexOf("\n") + 1) : text.slice(text.indexOf("\n") + 1);
   return { text, truncated };
+}
+
+/** A snapshot whole, as it was kept: what Copy all copies, never only the
+ * lines shown (YN-102). Its size is Core's to bound: it keeps no snapshot
+ * over 25 MiB (`SNAPSHOT_FILE_BYTES`), and only references a larger file. */
+async function readWhole(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Core answered ${response.status}.`);
+  return response.text();
+}
+
+/**
+ * Whether this page can drag a kept file out as itself (YN-102): Chromium
+ * on Windows and macOS (Chrome, Edge, the Windows app's WebView2) saves a
+ * `DownloadURL` dropped on a folder, the desktop or an app as that file.
+ * Safari, Firefox, the Mac and iPhone apps (WKWebView) and phones have no
+ * such drag, so there it is not offered; nor on Linux, where only some file
+ * managers take that drop and none was checked.
+ * By the user agent: `navigator.userAgentData` exists only in a secure
+ * context, and Core is also opened over plain http at a LAN address.
+ */
+export function dragsOutAsFile(agent = navigator.userAgent) {
+  return /\bChrome\/\d/.test(agent) && /Windows NT|Macintosh/.test(agent);
+}
+
+/** The drag of a kept file: the browser fetches its snapshot as the page
+ * does (no credential in the address) and saves it under its own name,
+ * which Core keeps to `[\w.-]`, so it never holds the format's colons. */
+function dragOut(event: DragEvent<HTMLElement>, attachment: SectionAttachment, url: string) {
+  const type = attachment.mime.split(";")[0].trim() || "application/octet-stream";
+  event.dataTransfer.setData("DownloadURL", `${type}:${attachment.name}:${new URL(url, window.location.href).href}`);
+  event.dataTransfer.effectAllowed = "copy";
 }
 
 type Preview<T> = { state: "loading" } | { state: "error"; error: string } | ({ state: "ready" } & T);
@@ -283,18 +316,35 @@ function TextTail({ url, attachment }: { url: string; attachment: SectionAttachm
     return { lines: lines.slice(-TAIL_LINES), more: truncated || lines.length > TAIL_LINES };
   });
   const box = useRef<HTMLPreElement>(null);
-  // The end of a log is what matters; start there.
   useLayoutEffect(() => {
-    if (preview.state === "ready" && box.current) box.current.scrollTop = box.current.scrollHeight;
+    const frame = box.current;
+    if (preview.state !== "ready" || !frame) return;
+    // The end of a log is what matters; start there.
+    frame.scrollTop = frame.scrollHeight;
+    // Copy all stands clear of the frame's scroll bar, where it takes room.
+    const bar = frame.offsetWidth - frame.clientWidth - 2 * frame.clientLeft;
+    frame.parentElement?.style.setProperty("--frame-scroll-bar", `${Math.max(0, bar)}px`);
   }, [preview]);
-  if (preview.state === "loading") return <Placeholder text={t.loadingPreview} />;
-  if (preview.state === "error") return <Placeholder text={t.previewUnavailable(preview.error)} />;
+  // The frame's own place as a preview's (Placeholder), with Copy all in its
+  // corner (YN-102, the user's choice) whatever the preview's state: it reads
+  // the file itself, so one kept across states keeps its feedback.
   return (
     <div className="brief-preview">
-      <pre ref={box} className="brief-preview-frame brief-tail" tabIndex={0} aria-label={t.lastLinesOf(name)}>
-        {preview.lines.join("\n")}
-      </pre>
-      <small>{preview.more ? t.lastLines(preview.lines.length) : t.lines(preview.lines.length)}</small>
+      {preview.state === "ready" ? (
+        <pre ref={box} className="brief-preview-frame brief-tail" tabIndex={0} aria-label={t.lastLinesOf(name)}>
+          {preview.lines.join("\n")}
+        </pre>
+      ) : (
+        <p className="brief-preview-frame brief-attachment-note" role="status">
+          {preview.state === "loading" ? t.loadingPreview : t.previewUnavailable(preview.error)}
+        </p>
+      )}
+      <CopyButton text={() => readWhole(url)} label={t.copyAll} unavailable={t.copyAllUnavailable} />
+      {preview.state === "ready" ? (
+        <small>{preview.more ? t.lastLines(preview.lines.length) : t.lines(preview.lines.length)}</small>
+      ) : (
+        <small aria-hidden="true">&nbsp;</small>
+      )}
     </div>
   );
 }
@@ -418,6 +468,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const kept = attachment.snapshot && attachment.kind !== "link";
   // A kept HTML page opens working (T-5): its source only when asked for.
   const page = kept && attachment.kind !== "image" && htmlFile(attachment.name);
+  // A kept file dragged out becomes that file, where the page can (YN-102).
+  const drags = kept && dragsOutAsFile();
   const preview = viewer.open;
   const imagePreview = viewer.dialog;
   // A kept image (T-9): the picture whole, then what it shows; the file's
@@ -472,10 +524,21 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   return (
     <div className="brief-attachment" data-kind={attachment.kind}>
       <header>
-        <Icon size={14} aria-hidden="true" />
-        <Tip content={<TipText title={attachment.name} />} cut>
-          <strong>{attachment.name}</strong>
-        </Tip>
+        {drags ? (
+          <Tip content={<TipText title={attachment.name} body={t.dragToSave} />}>
+            <span className="brief-file" draggable onDragStart={(event) => dragOut(event, attachment, url)}>
+              <Icon size={14} aria-hidden="true" />
+              <strong>{attachment.name}</strong>
+            </span>
+          </Tip>
+        ) : (
+          <>
+            <Icon size={14} aria-hidden="true" />
+            <Tip content={<TipText title={attachment.name} />} cut>
+              <strong>{attachment.name}</strong>
+            </Tip>
+          </>
+        )}
         {attachment.mayChange && (
           <Tip content={<TipText body={t.mayChangeTitle} />}>
             <span className="brief-chip" data-state="changed">
