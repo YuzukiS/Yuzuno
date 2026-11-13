@@ -26,6 +26,9 @@ mod editors;
 mod home;
 /// The Needs you item of an executor the user dispatched (T-36 S3), for web push too (T-43 S4a).
 pub(crate) use home::executor_need;
+/// What a message to a Project shares with a reply from Home (YN-86 S3a,
+/// project_requests): its limit and the Turn it joins.
+pub(crate) use home::{follow_up_turn, MAX_REPLY};
 mod http;
 /// A kept image's size from its header alone, within a budget (T-19 HM:B14).
 mod image_header;

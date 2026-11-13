@@ -62,6 +62,7 @@ pub(crate) mod permission_levels;
 pub mod permissions;
 pub mod project_brief;
 pub mod projects;
+pub mod project_requests;
 pub(crate) mod task_keys;
 pub mod github;
 pub mod guide;

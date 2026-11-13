@@ -1232,6 +1232,7 @@ impl Store {
         crate::claude_quota::migrate(&db)?;
         crate::results::migrate(&db)?;
         crate::project_brief::migrate(&db)?;
+        crate::project_requests::migrate(&db)?;
         crate::brief_turns::migrate(&db)?;
         crate::task_workspaces::migrate(&db)?;
         crate::build_cleanup::migrate(&db)?;

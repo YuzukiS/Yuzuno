@@ -15,7 +15,7 @@ const ORDER_KEY: &str = "home.projectOrder";
 /// (MAX_MESSAGE_TEXT), with Core's quote of the card or ask it answers
 /// before it: QUOTE_ROOM is kept for that quote, and the longest one Brief
 /// sections allow fits in it (tests.rs, the_longest_quote_fits_beside_the_longest_reply).
-pub(super) const MAX_REPLY: usize = 92_000;
+pub(crate) const MAX_REPLY: usize = 92_000;
 pub(super) const QUOTE_ROOM: usize = crate::model::MAX_MESSAGE_TEXT - MAX_REPLY;
 
 fn stored_order(store: &Store) -> Result<Vec<String>> {
@@ -563,7 +563,7 @@ pub(super) fn same_card_reply(sent: &str, head: &str, text: &str) -> bool {
 /// The Turn a reply joins, as the composer chooses it (App.tsx): the newest
 /// running Turn. Claude takes it while it works, whether the Turn is yours
 /// or one of its own (T-45).
-pub(super) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Option<String> {
+pub(crate) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Option<String> {
     let busy = detail.agent.closed_at.is_none() && matches!(detail.agent.status.as_str(), "working" | "waiting");
     if detail.agent.harness == "claude" && !busy {
         return None;
