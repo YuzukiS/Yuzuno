@@ -1,0 +1,54 @@
+/* A form's field for long text (YN-106): the conversation's composer, drawn
+   as the textarea it took the place of (collaboration.css .collab-field
+   textarea), focused as an input is (styles.css input:focus). It grows with
+   its words to about ten lines, then scrolls inside; a long paste is one
+   block in it, never wider than the field. */
+.long-text-field .home-composer {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--input);
+  color: var(--ink);
+}
+.long-text-field .home-composer:focus-within {
+  border-color: #9aac87;
+  box-shadow: 0 0 0 3px #82986310;
+}
+.long-text-field .home-composer .cm-content:focus-visible {
+  outline: none;
+}
+.long-text-field .home-composer:has([aria-invalid="true"]) {
+  border-color: var(--red, #b34e48);
+}
+.long-text-field .home-composer[data-readonly] .cm-content {
+  color: var(--muted);
+}
+.long-text-field .pasted-text-composer .cm-editor {
+  font-size: 0.92rem;
+}
+.long-text-field .pasted-text-composer .cm-scroller {
+  line-height: 1.6;
+  max-height: min(calc(10 * 1.6em + 22px), 40dvh);
+}
+.long-text-field .pasted-text-composer .cm-content {
+  min-height: calc(2 * 1.6em);
+  padding: 11px;
+}
+/* How long it is, near or over Core's limit, and why the form did not take it. */
+.long-text-note:empty {
+  display: none;
+}
+.long-text-note .home-reply-length,
+.long-text-error {
+  margin: 0;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.long-text-note .home-reply-length:not([data-over]) {
+  color: var(--muted);
+}
+.long-text-error {
+  color: var(--red, #b34e48);
+}

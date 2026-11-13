@@ -290,7 +290,8 @@ try {
     name: "closing historical evidence restores focus to its exact trigger",
   });
   await page.getByRole("button", { name: "更新结果", exact: true }).click();
-  const draft = page.locator(".collab-result textarea").first();
+  // The summary is written in the conversation's composer (YN-106).
+  const draft = page.locator(".collab-result .long-text-field [data-composer-input]").first();
   await draft.fill("不会被后台刷新抹掉的草稿");
   await draft.focus();
   fixture.tasks[0].version++;
@@ -304,7 +305,7 @@ try {
     }),
   );
   await page.waitForTimeout(250);
-  assert.equal(await draft.inputValue(), "不会被后台刷新抹掉的草稿");
+  assert.equal((await draft.innerText()).trim(), "不会被后台刷新抹掉的草稿");
   assert.equal(await draft.evaluate((e) => e === document.activeElement), true);
   report.checks.push({ name: "background refresh preserves draft and focus" });
   await page.getByRole("button", { name: "查看原始对话", exact: true }).click();

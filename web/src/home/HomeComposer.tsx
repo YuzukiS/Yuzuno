@@ -1,6 +1,6 @@
 import { forwardRef, useRef } from "react";
 import { PastedTextComposer, type ComposerHandle } from "../PastedTextComposer";
-import { useDevicePreferences } from "../device-preferences";
+import { useDevicePreferences, type SendKey } from "../device-preferences";
 import { draftText, type ComposerDraft } from "../composer-draft";
 import { draftFromTextBlocks, draftTextBlocks, type TextBlock } from "../message-content";
 
@@ -42,9 +42,14 @@ export const HomeComposer = forwardRef<
     onEscape?: () => void;
     /** More attributes of the field itself (PastedTextComposer). */
     attributes?: Record<string, string>;
+    /** Which key sends from this field (YN-106): a form's field that edits
+     * text makes Return a new line (`modEnter`). Unset, as this device sends
+     * from the conversation. */
+    sendKey?: SendKey;
   }
->(function HomeComposer({ slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape, attributes }, ref) {
-  const { sendKey } = useDevicePreferences();
+>(function HomeComposer({ slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape, attributes, sendKey: fieldKey }, ref) {
+  const { sendKey: deviceKey } = useDevicePreferences();
+  const sendKey = fieldKey ?? deviceKey;
   // The editor's own draft while the words are the ones it wrote, so it keeps
   // its blocks, numbers and cursor; words changed elsewhere (sent, written in
   // another place this reply shows) are drawn afresh.

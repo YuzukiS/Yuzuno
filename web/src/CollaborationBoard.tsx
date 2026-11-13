@@ -1,4 +1,4 @@
-import { TaskOutcome, TaskOutcomeEditor } from "./TaskOutcome";
+import { TaskOutcome, TaskOutcomeEditor, firstBlankReport, outcomeTooLong, reportFieldId } from "./TaskOutcome";
 import { TaskResearch, type ResearchRecord } from "./TaskResearch";
 import { isStepResult, outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
@@ -49,6 +49,8 @@ import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
 import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
 import { randomId } from "./random-id";
 import { Tip, TipLines, TipText } from "./Tip";
+import { LongTextField } from "./LongTextField";
+import { coreLimits, overLimit } from "./core-limits";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -233,6 +235,12 @@ function ShortNameField({ value, onChange, t }: { value: string; onChange: (valu
     </>
   );
 }
+
+/** A task's long fields as Core counts them (YN-106): over, the form sends nothing. */
+const draftTooLong = (draft: Pick<TaskDraft, "description" | "progress" | "blocker">) =>
+  overLimit(draft.description, coreLimits.taskDescription) ||
+  overLimit(draft.progress, coreLimits.taskProgress) ||
+  overLimit(draft.blocker, coreLimits.taskBlocker);
 
 /** Only changed fields cross the wire. Comments never participate in this version check. */
 export function taskPatch(task: SharedTask, draft: TaskDraft) {
@@ -1330,7 +1338,7 @@ function NewTask({
   const mutation = useMutation();
   async function create(event: React.FormEvent) {
     event.preventDefault();
-    if (!draft.title.trim()) return;
+    if (!draft.title.trim() || overLimit(draft.description, coreLimits.taskDescription)) return;
     const answer = await mutation.execute<{ task: SharedTask }>("task_create", {
       title: draft.title.trim(),
       ...(draft.shortName.trim() ? { shortName: draft.shortName.trim() } : {}),
@@ -1377,19 +1385,17 @@ function NewTask({
           />
         </label>
         <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
-        <label className="collab-field">
-          <span>
-            {t.descriptionLabel} <small>{t.optional}</small>
-          </span>
-          <textarea
-            rows={5}
-            placeholder={t.descriptionPlaceholder}
-            value={draft.description}
-            onChange={(event) =>
-              setDraft({ ...draft, description: event.target.value })
-            }
-          />
-        </label>
+        <LongTextField
+          slot="task:new:description"
+          label={t.descriptionLabel}
+          optional={t.optional}
+          placeholder={t.descriptionPlaceholder}
+          value={draft.description}
+          onChange={(description) => setDraft((current) => ({ ...current, description }))}
+          limit={coreLimits.taskDescription}
+          returnKey="newline"
+          readOnly={mutation.pending}
+        />
         <PersonSelect
           agents={agents}
           value={draft.assigneeAgentId}
@@ -1407,7 +1413,7 @@ function NewTask({
         <ErrorNote text={mutation.error} />
         <button
           className="primary-button"
-          disabled={mutation.pending || !draft.title.trim()}
+          disabled={mutation.pending || !draft.title.trim() || overLimit(draft.description, coreLimits.taskDescription)}
         >
           {mutation.pending ? (
             <LoaderCircle className="spin" size={15} />
@@ -1470,6 +1476,8 @@ function TaskPane({
   const [comment, setComment] = useState("");
   const [result, setResult] = useState("");
   const [resultOutcome, setResultOutcome] = useState<OutcomeReport | undefined>();
+  // The criterion whose report was left empty when the result was submitted.
+  const [blankReport, setBlankReport] = useState("");
   const [resultStatus, setResultStatus] = useState<ResultStatus>("review");
   const [resultVersion, setResultVersion] = useState(0);
   const [deliveryCandidate, setDeliveryCandidate] = useState<DeliveryCandidate | null>(null);
@@ -1580,7 +1588,7 @@ function TaskPane({
   };
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!task || !draft || !editBase) return;
+    if (!task || !draft || !editBase || draftTooLong(draft)) return;
     const patch = taskPatch(editBase, draft);
     if (!Object.keys(patch).length) {
       setEditing(false);
@@ -1598,7 +1606,7 @@ function TaskPane({
   };
   const dispatch = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!task || (from === "agent" && !toAgentId)) return;
+    if (!task || (from === "agent" && !toAgentId) || overLimit(instruction, coreLimits.dispatchNote)) return;
     let version = task.version;
     // A new executor goes by its task's short name: a changed one is saved first.
     const short = shortName.trim();
@@ -1634,6 +1642,14 @@ function TaskPane({
     event.preventDefault();
     if (!task || !result.trim()) return;
     if (links.some((link) => !safeCollaborationLink(link.url))) return;
+    if (overLimit(result, coreLimits.resultSummary) || outcomeTooLong(resultOutcome)) return;
+    // A criterion's report is required, as its field once said to the browser.
+    const blank = firstBlankReport(resultOutcome);
+    setBlankReport(blank ?? "");
+    if (blank) {
+      document.getElementById(reportFieldId(blank))?.focus();
+      return;
+    }
     const answer = await mutation.execute<{ task: SharedTask }>(
       "task_submit_result",
       {
@@ -1658,7 +1674,7 @@ function TaskPane({
   };
   const addComment = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!comment.trim()) return;
+    if (!comment.trim() || overLimit(comment, coreLimits.taskComment)) return;
     const sent = comment;
     const answer = await mutation.execute<unknown>("task_comment", {
       taskId: id,
@@ -1690,6 +1706,7 @@ function TaskPane({
                   setResultStatus(task.status === "done" ? "done" : "review");
                   setResult(task.result?.summary || "");
                   setResultOutcome(task.result?.outcome || undefined);
+                  setBlankReport("");
                   setLinks(task.result?.links || []);
                   mutation.clearError();
                 }}
@@ -1716,17 +1733,27 @@ function TaskPane({
                     </button>
                   </div>
                 )}
-                <label className="collab-field">
-                  <span>{t.resultSummary}</span>
-                  <textarea
-                    required
-                    rows={4}
-                    placeholder={t.resultPlaceholder}
-                    value={result}
-                    onChange={(event) => setResult(event.target.value)}
-                  />
-                </label>
-                <TaskOutcomeEditor value={resultOutcome} onChange={setResultOutcome} agents={agents.filter(agent => !agent.closedAt)} />
+                <LongTextField
+                  slot={`task:${id}:result`}
+                  label={t.resultSummary}
+                  placeholder={t.resultPlaceholder}
+                  value={result}
+                  onChange={setResult}
+                  limit={coreLimits.resultSummary}
+                  returnKey="newline"
+                  readOnly={mutation.pending}
+                  required
+                />
+                <TaskOutcomeEditor
+                  value={resultOutcome}
+                  onChange={(next) => {
+                    setResultOutcome(next);
+                    if (blankReport && !next?.criteria.some((c) => c.id === blankReport && !c.report.trim())) setBlankReport("");
+                  }}
+                  agents={agents.filter(agent => !agent.closedAt)}
+                  readOnly={mutation.pending}
+                  blankReport={blankReport}
+                />
                 <label className="collab-field">
                   <span>{t.afterResult}</span>
                   <select
@@ -1811,7 +1838,9 @@ function TaskPane({
                   disabled={
                     mutation.pending ||
                     !result.trim() ||
-                    links.some((link) => !safeCollaborationLink(link.url))
+                    links.some((link) => !safeCollaborationLink(link.url)) ||
+                    overLimit(result, coreLimits.resultSummary) ||
+                    outcomeTooLong(resultOutcome)
                   }
                 >
                   <Check size={15} />
@@ -1976,17 +2005,17 @@ function TaskPane({
                   <ShortNameField t={t} value={shortName} onChange={setShortName} />
                 </>
               )}
-              <label className="collab-field">
-                <span>
-                  {t.note} <small>{t.optional}</small>
-                </span>
-                <textarea
-                  rows={3}
-                  placeholder={t.notePlaceholder}
-                  value={instruction}
-                  onChange={(event) => setInstruction(event.target.value)}
-                />
-              </label>
+              <LongTextField
+                slot={`task:${id}:dispatch-note`}
+                label={t.note}
+                optional={t.optional}
+                placeholder={t.notePlaceholder}
+                value={instruction}
+                onChange={setInstruction}
+                limit={coreLimits.dispatchNote}
+                returnKey="newline"
+                readOnly={mutation.pending}
+              />
               <label className="collab-urgent-option">
                 <input
                   type="checkbox"
@@ -2000,6 +2029,7 @@ function TaskPane({
                 className="primary-button"
                 disabled={
                   mutation.pending ||
+                  overLimit(instruction, coreLimits.dispatchNote) ||
                   (from === "agent"
                     ? !toAgentId || !activeAgents(agents).some((agent) => agent.id === toAgentId)
                     : templateId !== "" && !templates?.some(({ template }) => template.id === templateId))
@@ -2055,16 +2085,15 @@ function TaskPane({
                 />
               </label>
               <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
-              <label className="collab-field">
-                <span>{t.descriptionLabel}</span>
-                <textarea
-                  rows={4}
-                  value={draft.description}
-                  onChange={(event) =>
-                    setDraft({ ...draft, description: event.target.value })
-                  }
-                />
-              </label>
+              <LongTextField
+                slot={`task:${id}:description`}
+                label={t.descriptionLabel}
+                value={draft.description}
+                onChange={(description) => setDraft((current) => current && { ...current, description })}
+                limit={coreLimits.taskDescription}
+                returnKey="newline"
+                readOnly={mutation.pending}
+              />
               <div className="collab-form-pair">
                 <label className="collab-field">
                   <span>{t.taskStatus}</span>
@@ -2098,34 +2127,30 @@ function TaskPane({
                 value={draft.projectId}
                 onChange={(projectId) => setDraft({ ...draft, projectId })}
               />
-              <label className="collab-field">
-                <span>
-                  {t.latestProgress} <small>{t.optional}</small>
-                </span>
-                <textarea
-                  rows={2}
-                  value={draft.progress}
-                  onChange={(event) =>
-                    setDraft({ ...draft, progress: event.target.value })
-                  }
-                />
-              </label>
-              <label className="collab-field">
-                <span>
-                  {t.inTheWay} <small>{t.optional}</small>
-                </span>
-                <textarea
-                  rows={2}
-                  value={draft.blocker}
-                  onChange={(event) =>
-                    setDraft({ ...draft, blocker: event.target.value })
-                  }
-                />
-              </label>
+              <LongTextField
+                slot={`task:${id}:progress`}
+                label={t.latestProgress}
+                optional={t.optional}
+                value={draft.progress}
+                onChange={(progress) => setDraft((current) => current && { ...current, progress })}
+                limit={coreLimits.taskProgress}
+                returnKey="newline"
+                readOnly={mutation.pending}
+              />
+              <LongTextField
+                slot={`task:${id}:blocker`}
+                label={t.inTheWay}
+                optional={t.optional}
+                value={draft.blocker}
+                onChange={(blocker) => setDraft((current) => current && { ...current, blocker })}
+                limit={coreLimits.taskBlocker}
+                returnKey="newline"
+                readOnly={mutation.pending}
+              />
               <div className="collab-actions">
                 <button
                   className="primary-button"
-                  disabled={mutation.pending || !draft.title.trim()}
+                  disabled={mutation.pending || !draft.title.trim() || draftTooLong(draft)}
                 >
                   <Check size={15} />
                   {t.saveChanges}
@@ -2289,20 +2314,21 @@ function TaskPane({
               className="collab-form collab-comment"
               onSubmit={addComment}
             >
-              <label className="collab-field">
-                <span>{t.addNoteLabel}</span>
-                <textarea
-                  rows={3}
-                  placeholder={t.commentPlaceholder}
-                  value={comment}
-                  onChange={(event) => setComment(event.target.value)}
-                />
-              </label>
+              <LongTextField
+                slot={`task:${id}:comment`}
+                label={t.addNoteLabel}
+                placeholder={t.commentPlaceholder}
+                value={comment}
+                onChange={setComment}
+                limit={coreLimits.taskComment}
+                returnKey="send"
+                readOnly={mutation.pending}
+              />
               <div className="collab-comment-foot">
                 <span>{t.sharedOnTask}</span>
                 <button
                   className="secondary-button"
-                  disabled={mutation.pending || !comment.trim()}
+                  disabled={mutation.pending || !comment.trim() || overLimit(comment, coreLimits.taskComment)}
                 >
                   <MessageCircle size={14} />
                   {t.addNote}

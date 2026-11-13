@@ -8,6 +8,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { outcomeFixture } from "./task-outcome-fixture.mjs";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 // Mount the production component with an explicit React root so even failed
 // nested-dialog assertions unmount effects before the JSDOM window closes.
 // Whole-product bundle loading and layout are covered in task-outcome-check.
@@ -281,17 +282,17 @@ test("density, keyboard tabs and background refresh retain result form drafts an
     assert.deepEqual(order(), before);
     p.button("Update result").click();
     await pause();
-    const summary = p.doc.querySelector(".collab-result textarea");
-    Object.getOwnPropertyDescriptor(
-      p.w.HTMLTextAreaElement.prototype,
-      "value",
-    ).set.call(summary, "draft that stays");
-    summary.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    // The summary's field is the conversation's composer (YN-106).
+    const summary = p.doc.querySelector(
+      '.collab-result [data-composer-input][aria-label="Result summary"]',
+    );
+    setComposerText(summary, "draft that stays");
+    await pause();
     summary.focus();
     p.fixture.tasks[0].version++;
     p.doc.querySelector('[aria-label="Refresh task details"]').click();
     await pause(100);
-    assert.equal(summary.value, "draft that stays");
+    assert.equal(composerText(summary), "draft that stays");
     assert.match(
       p.doc.querySelector(".outcome-editor").textContent,
       /checks\/desktop.json/,
@@ -318,7 +319,7 @@ test("density, keyboard tabs and background refresh retain result form drafts an
     );
     drawer.querySelector('[aria-label="Close outcome details"]').click();
     await until(() => p.doc.activeElement === trigger, "focus");
-    assert.equal(summary.value, "draft that stays");
+    assert.equal(composerText(summary), "draft that stays");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
