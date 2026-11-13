@@ -198,6 +198,48 @@ fn the_merge_queues_main_ci_follow_counts_for_the_agent_that_released_it() {
 }
 
 #[test]
+fn a_stale_or_failing_queue_follow_is_a_check_not_a_wait() {
+    let (_dir, s) = setup();
+    let sha = "c".repeat(40);
+    queue_entry(&s, "q1", "T-1", json!({"kind":"agent","id":"a","name":"a"}), &sha, "merged", Value::Null, Value::Null);
+    assert_eq!(counts(&s)["a"]["waitingForRun"], 1);
+    // The queue is overdue by well past its grace: not a wait.
+    let old = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    s.db.write()
+        .unwrap()
+        .execute(
+            "UPDATE merge_entries SET next_check=0,data=json_set(data,'$.nextCheck',0,'$.updatedAt',?1) WHERE id='q1'",
+            [&old],
+        )
+        .unwrap();
+    let a = counts(&s)["a"].clone();
+    assert_eq!(a["check"], 1, "an overdue queue follow needs checking: {a}");
+    assert!(a.get("waitingForRun").is_none(), "{a}");
+    // A failed queue read is a check even when the entry itself was just written.
+    s.db.write()
+        .unwrap()
+        .execute(
+            "UPDATE merge_entries SET data=json_set(data,'$.readFailures',1,'$.nextCheck',strftime('%s','now')+120,'$.updatedAt',?1) WHERE id='q1'",
+            [chrono::Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+    assert_eq!(counts(&s)["a"]["check"], 1, "a failed queue read needs checking");
+    // A running run no longer being read is not current either.
+    let seen = (chrono::Utc::now() - chrono::Duration::seconds(300)).to_rfc3339();
+    let now = chrono::Utc::now().to_rfc3339();
+    s.db.write()
+        .unwrap()
+        .execute(
+            "UPDATE merge_entries SET data=json_set(data,'$.readFailures',0,'$.nextCheck',strftime('%s','now')+60,'$.updatedAt',?1,'$.merge.mainRun',json(?2)) WHERE id='q1'",
+            params![&now, json!({"run":95,"attempt":1,"status":"in_progress","url":"https://github.com/o/r/actions/runs/95","observedAt":seen}).to_string()],
+        )
+        .unwrap();
+    let a = counts(&s)["a"].clone();
+    assert_eq!(a["check"], 1, "a running run the queue stopped reading is a check: {a}");
+    assert_eq!(a["running"], 0, "{a}");
+}
+
+#[test]
 fn recipient_isolation_shared_tasks_runs_and_latest_attempt() {
     let (_dir, s) = setup();
     let a = sub(&s, "a", "T-1", "pull", 7);

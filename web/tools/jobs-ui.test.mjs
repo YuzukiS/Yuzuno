@@ -1079,6 +1079,12 @@ test('the conversation dock shows the merge queue following main CI, linking to 
     item().click(); await wait();
     assert.equal(opened?.source, 'merge_queue');
     assert.equal(opened?.entryId, 'entry-1');
+    // A stale, overdue or failed queue follow is a check, not a wait.
+    follows = [{ ...queue, state: 'check', run: null }];
+    p.window.renderJobs({ ...props, revision: '3' });
+    await until(() => /needs checking/.test(item()?.getAttribute('aria-label') || ''));
+    assert.equal(item().tagName, 'BUTTON');
+    assert.match(item().getAttribute('aria-label'), /Outcome unknown/);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

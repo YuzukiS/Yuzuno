@@ -77,8 +77,9 @@ export type QueueMainCi = {
   number: number;
   headSha: string;
   mainSha: string;
-  /** `waitingForRun`: no run yet; `running`: the run it follows is going. */
-  state: "waitingForRun" | "running";
+  /** `waitingForRun`: no run yet; `running`: the run it follows is going;
+   * `check`: the queue's own read is stale, overdue or failing. */
+  state: "waitingForRun" | "running" | "check";
   run?: { id: number; attempt: number; status: string; url: string } | null;
   mergedAt?: string | null;
   checkedAt?: string | null;
@@ -185,6 +186,7 @@ const ciText = strings({
   dockHistory: "Retained subscription history",
   queueMainCi: (number: number) => `The merge queue is following main CI after #${number} merged`,
   queueNoRun: "Main CI has not appeared yet; the queue checks again.",
+  queueCheck: "The queue's main CI needs checking: its last read is stale, overdue or failed.",
   queueRun: (run: number, status: string) => `CI run #${run} · ${status}`,
   queueChecked: (when: string) => `Queue last checked ${when}`,
   checking: "Checking with GitHub…",
@@ -296,6 +298,7 @@ const ciText = strings({
   dockHistory: "保留的订阅历史",
   queueMainCi: (number) => `合并队列在跟 #${number} 合入后的 main CI`,
   queueNoRun: "main CI 还没出现；队列会再检查。",
+  queueCheck: "合并队列的 main CI 需要核对：队列上次读取已过时、逾期或失败。",
   queueRun: (run, status) => `CI 运行 #${run} · ${status}`,
   queueChecked: (when) => `队列上次检查于 ${when}`,
   checking: "正在向 GitHub 检查…",
@@ -576,13 +579,13 @@ export function ConversationCi({
         <WorkDockItem
           key={`queue:${q.entryId}`}
           className="conversation-job"
-          status={q.state === "running" ? "running" : "pending"}
-          state={q.state === "running" ? t.labels.running : t.labels.pending}
+          status={q.state === "running" ? "running" : q.state === "waitingForRun" ? "pending" : "unknown"}
+          state={q.state === "running" ? t.labels.running : q.state === "waitingForRun" ? t.labels.pending : t.labels.unknown}
           name={t.queueMainCi(q.number)}
-          sub={q.run ? t.queueRun(q.run.id, q.run.status) : t.queueNoRun}
+          sub={q.state === "check" ? t.queueCheck : q.run ? t.queueRun(q.run.id, q.run.status) : t.queueNoRun}
           detail={`${q.repository} · ${q.mainSha.slice(0, 8)}${q.taskRef ? ` · ${q.taskRef}` : ""}`}
           when={q.checkedAt ? t.queueChecked(new Date(q.checkedAt).toLocaleTimeString()) : null}
-          href={q.run?.url}
+          href={q.state === "running" ? q.run?.url : undefined}
           onOpen={() => openQueue(q.entryId)}
         />
       ))}

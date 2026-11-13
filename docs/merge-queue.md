@@ -357,7 +357,8 @@ Once every check holds, the entry merges, one merge at a time per repository:
    head: while it lasts, Core's read-only CI projection (`/api/ci/live`, and
    the conversation's GitHub Actions dock) counts it as that Agent waiting
    for CI, with no subscription, table change or extra mail; a release by the
-   user counts for no Agent.
+   user counts for no Agent. A queue whose own follow is overdue, stale or
+   failing shows as a check, not a wait, just as a stale watch does.
 
 While a run is still going, an entry waits and checks again later, at most
 every 10 minutes, and at least every 2 minutes while a CI run on its head or

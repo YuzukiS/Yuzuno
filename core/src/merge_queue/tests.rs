@@ -469,6 +469,11 @@ async fn the_queue_keeps_the_running_main_ci_run_until_it_concludes() {
     tick(&lab.ws).await.unwrap();
     let e = lab.entry().await;
     assert_eq!(e["state"], "merged", "{e}");
+    assert_eq!(e["merge"]["post"]["ok"], true, "{e}");
+    // The merge's own announcement fills the first follow-up; the next pass
+    // reads main's push CI and keeps the running run it finds.
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "{e}");
     assert_eq!(
         (e["merge"]["mainRun"]["run"].clone(), e["merge"]["mainRun"]["status"].clone(), e["merge"]["mainCi"].clone()),
         (json!(95), json!("in_progress"), Value::Null),

@@ -44,15 +44,26 @@ fn fresh(v: &Value, now: i64) -> bool {
 /// CI on the merge commit, counted for the Agent that released the head while
 /// no subscription mentions it. This is a projection of the queue's own
 /// records: it writes nothing, asks GitHub nothing and makes no subscription.
+#[derive(Clone, Copy)]
+pub(super) enum QueueState {
+    Running,
+    WaitingForRun,
+    /// The queue's own read is stale, overdue or failing: show a check, not
+    /// a wait, as a stale subscription watch does.
+    Check,
+}
 pub(super) struct QueueWait {
     pub(super) agent: String,
     pub(super) key: String,
-    pub(super) running: bool,
+    pub(super) state: QueueState,
     pub(super) checked: Option<i64>,
     pub(super) item: Value,
 }
 
 pub(super) fn queue_waits(db: &rusqlite::Connection, agent: Option<&str>, task: Option<&str>, now: i64) -> Result<Vec<QueueWait>> {
+    // The queue reads a running main CI every minute; after this long without
+    // a successful follow, an old running fact is no longer current.
+    const RUNNING_GRACE: i64 = FRESH_SECONDS + 60;
     let mut q = db.prepare(
         "SELECT data FROM merge_entries
           WHERE state='merged'
@@ -93,9 +104,32 @@ pub(super) fn queue_waits(db: &rusqlite::Connection, agent: Option<&str>, task: 
             continue;
         }
         // The queue keeps the running run it read; without one, this is a
-        // commit waiting for its first run, as a commit watch is.
+        // commit waiting for its first run, as a commit watch is. Its own
+        // health decides whether either still looks current: a failed or
+        // overdue follow is a check, never an old wait.
         let run = e["merge"]["mainRun"].clone();
+        let checked = epoch(&e["updatedAt"]);
+        let recent = |at: Option<i64>, grace: i64| at.is_some_and(|t| t <= now + 5 && now - t <= grace);
+        let healthy = e["readFailures"].as_i64().unwrap_or(0) == 0;
         let running = run.is_object();
+        let due = e["nextCheck"].as_i64();
+        let state = if !healthy {
+            QueueState::Check
+        } else if running {
+            if recent(epoch(&run["observedAt"]), RUNNING_GRACE) && recent(checked, RUNNING_GRACE) {
+                QueueState::Running
+            } else {
+                QueueState::Check
+            }
+        } else {
+            let on_schedule = due.is_some_and(|at| now <= at + FRESH_SECONDS);
+            let just_merged = checked.is_some_and(|at| at <= now + 5 && now - at <= FRESH_SECONDS);
+            if on_schedule || just_merged {
+                QueueState::WaitingForRun
+            } else {
+                QueueState::Check
+            }
+        };
         let entry = e["id"].as_str().unwrap_or("").to_owned();
         let item = json!({
             "entryId": entry,
@@ -106,7 +140,11 @@ pub(super) fn queue_waits(db: &rusqlite::Connection, agent: Option<&str>, task: 
             "number": e["number"],
             "headSha": e["headSha"],
             "mainSha": sha,
-            "state": if running { "running" } else { "waitingForRun" },
+            "state": match state {
+                QueueState::Running => "running",
+                QueueState::WaitingForRun => "waitingForRun",
+                QueueState::Check => "check",
+            },
             "run": if running {
                 json!({"id":run["run"],"attempt":run["attempt"],"status":run["status"],"url":run["url"]})
             } else {
@@ -118,8 +156,8 @@ pub(super) fn queue_waits(db: &rusqlite::Connection, agent: Option<&str>, task: 
         waits.push(QueueWait {
             agent: who,
             key: format!("queue:{entry}"),
-            running,
-            checked: epoch(&e["updatedAt"]),
+            state,
+            checked: if matches!(state, QueueState::WaitingForRun) { checked } else { None },
             item,
         });
     }
@@ -281,10 +319,10 @@ impl Store {
                 wait.key,
                 Fact {
                     attempt: 0,
-                    state: if wait.running {
-                        State::Running
-                    } else {
-                        State::WaitingForRun
+                    state: match wait.state {
+                        QueueState::Running => State::Running,
+                        QueueState::WaitingForRun => State::WaitingForRun,
+                        QueueState::Check => State::Check,
                     },
                     checked: wait.checked,
                 },
