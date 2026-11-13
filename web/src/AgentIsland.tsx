@@ -17,6 +17,10 @@ export const islandText = strings({
     candidate: (from: string | null) => (from ? `From ${from}` : "No candidate yet"),
     starting: "Starting", lead: "Lead's turn", review: "In review", changes: "Changes asked", ciFailed: "CI failed",
     ready: "Ready to merge", merged: "Merged", offline: "Offline",
+    /** Its Turn has ended (YN-92): what it left running, shorter than the card's "Waiting on …", which a 240 px rail's
+     *  pill can't hold; an executor's task blocked, its result handed in, or nothing running between Turns. */
+    waits: { review: "Awaits review", ci: "Awaits CI", job: "Awaits a Job", subAgent: "Awaits sub-agent", shell: "Awaits a shell" } as Record<WaitKind, string>,
+    blocked: "Blocked", resultIn: "Result in", between: "Between turns",
   },
   colon: ": ",
   gap: " · ",
@@ -50,6 +54,8 @@ export const islandText = strings({
     candidate: (from) => (from ? `等候选 · ${from} 起` : "等候选"),
     starting: "启动中", lead: "等负责人", review: "审查中", changes: "要改", ciFailed: "CI 红了",
     ready: "等合并", merged: "已合入", offline: "离线",
+    waits: { review: "在等审查", ci: "在等 CI", job: "在等 Job", subAgent: "在等子代理", shell: "在等 shell" },
+    blocked: "受阻", resultIn: "已交结果", between: "等下一轮",
   },
   colon: "：",
   gap: " · ",
@@ -108,22 +114,28 @@ export function lineText(line: IslandLine, language: Language): string {
 /** A candidate's time as a pill says it: "04:00", in the user's clock format and time zone. */
 const candidateAt = timeFormatter({ hour: "2-digit", minute: "2-digit" });
 
-/** A state that stays, in words: "等负责人", "排队 · 第 2 位", "等候选 · 04:00 起" (`time`: the user's clock and zone). */
+/** A state that stays, in words: "等负责人", "排队 · 第 2 位", "等候选 · 04:00 起" (`time`: the user's clock and zone);
+ * a Turn ended (YN-92): "在等 Job", "核对 Job", "等下一轮". */
 export function stayText(stay: IslandStay, language: Language, time?: TimeDisplay): string {
   const t = islandText(language).stay;
   if (stay.kind === "queued") return t.queued(stay.position);
   if (stay.kind === "candidate") return t.candidate(stay.earliest != null ? candidateAt(time).format(stay.earliest) : null);
+  if (stay.kind === "waits") return t.waits[stay.on];
+  // The Agent list's own words for a Job or CI to check (live-jobs.ts, live-ci.ts).
+  if (stay.kind === "check") return stay.label;
   return t[stay.kind];
 }
 
 /** How a staying state's pill is coloured: good news, bad news, work going
- * on, the lead's turn, or quiet (queued, starting, offline). */
+ * on (a review round; what an Agent at rest left running, YN-92), for
+ * someone to look at (the lead's turn, a Job or CI to check, a task blocked,
+ * a result handed in), or quiet (queued, starting, offline, between Turns). */
 export function stayTone(stay: IslandStay): IslandPill["tone"] {
   switch (stay.kind) {
     case "ready": case "merged": return "ok";
     case "changes": case "ciFailed": return "bad";
-    case "review": return "working";
-    case "lead": return "info";
+    case "review": case "waits": return "working";
+    case "lead": case "check": case "blocked": case "resultIn": return "info";
     default: return "quiet";
   }
 }
@@ -145,9 +157,11 @@ const C = 2 * Math.PI * 9.5;
 
 /**
  * The ring (T-43 rail v11): five states a glance tells apart. Working is an
- * arc that turns; needs you a full ring that breathes, orange; done ✓ and
- * failed ✕ a mark inside; idle a thin grey ring. Under reduced motion
- * nothing turns or breathes.
+ * arc that turns, only while a Turn runs; needs you a full ring that
+ * breathes, orange; done ✓ and failed ✕ a mark inside; idle a thin grey
+ * ring. An Agent at rest is idle, still, whatever it left running (YN-92):
+ * its pill says what holds it, and the wait's icon sits in the grey ring.
+ * Under reduced motion nothing turns or breathes.
  */
 export function IslandRing({ state }: { state: RingState }) {
   const circle = (className: string, extra: Record<string, string> = {}) => <circle cx="12" cy="12" r="9.5" className={className} {...extra} />;
@@ -196,8 +210,9 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
   function AgentIsland({ view, form, name, pill, onGo, ...hooks }, ref) {
     const language = useLanguage();
     const ring: RingState = form === "pill" && pill?.ring ? pill.ring : view.state;
-    // Only the turning ring holds it: a passing event's ✓ or ✕ takes the ring's place.
-    const wait = ring === "working" ? view.wait : null;
+    // The turning ring holds it, and a ring at rest whose Agent waits only on
+    // what it left running (YN-92); not a passing event's ✓ or ✕ in the ring's place.
+    const wait = ring === "working" || (ring === "idle" && view.stay?.kind === "waits") ? view.wait : null;
     const Wait = wait ? WAIT_ICONS[wait.kind] : null;
     const go = view.go;
     const body = (
@@ -207,7 +222,7 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
         )}
         <span className="island-ringbox" data-ring={ring} data-wait={wait?.kind}>
           <IslandRing state={ring} />
-          {/* What the turning ring waits on (YN-51): still, in its colour; the ring stays the state. */}
+          {/* What the ring waits on (YN-51; at rest too, YN-92): still, in its colour; the ring stays the state. */}
           {Wait && <Wait className="island-wait" size={11} strokeWidth={2.4} aria-hidden="true" focusable="false" />}
           {view.dot && <span className="island-dot" aria-hidden="true" />}
         </span>

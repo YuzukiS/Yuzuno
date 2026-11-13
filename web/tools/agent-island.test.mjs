@@ -26,7 +26,8 @@ test("a standing Agent's ring is one of five; offline is a pill; updates unread 
     [agent({ lastTurnEnd: ended }), {}, "idle", null, "since", { kind: "none" }],
     [agent({ status: "working", workSummary: { text: "Merging #659" } }), {}, "working", null, null, { kind: "text", text: "Merging #659" }],
     [agent({ status: "working" }), { compacting: true, statusLabel: "Compacting" }, "working", null, null, { kind: "text", text: "Compacting" }],
-    [agent(), { waiting: "Waiting · Job" }, "working", null, null, { kind: "text", text: "Waiting · Job" }],
+    // Its Turn ended with only a Job or CI to check (YN-92): at rest, the list's words in its pill.
+    [agent(), { waiting: "Check job" }, "idle", "check", null, { kind: "text", text: "Check job" }],
     [agent({ pendingCount: 1, status: "waiting", workSummary: { text: "Allow git push?" } }), { waitingSince: at("2026-11-07T03:20:00Z") }, "waiting", null, "live", { kind: "text", text: "Allow git push?" }],
     [agent({ status: "error", lastTurnEnd: { ...ended, outcome: "failed" } }), { statusLabel: "Needs a look" }, "failed", null, "since", { kind: "text", text: "Needs a look" }],
     // Updates unread don't make it done; a Turn it ended that this device hasn't shown does.
@@ -170,11 +171,12 @@ test("an executor queued for a routing candidate has a pill of its own, from whe
 // YN-51 (the user's answers on Home, design/yn51-ring-wait): a turning ring
 // shows what it waits on, one of review > CI > Job > sub-agent > shell.
 const idle = (more = {}) => ({ turn: false, call: null, ...more });
+const at0 = at("2026-11-07T02:00:00Z");
 const kinds = (w) => (w ? [w.kind, ...w.also.map((a) => a.kind)] : []);
 
 test("a running Turn waits only on the call it is stopped on, a sub-agent or a shell", () => {
   const shell = { kind: "shell", itemId: "c1", label: "cargo test" };
-  assert.deepEqual(waitOn({ turn: true, call: shell }), { kind: "shell", count: 1, label: "cargo test", also: [] });
+  assert.deepEqual(waitOn({ turn: true, call: shell }), { kind: "shell", count: 1, label: "cargo test", left: false, also: [] });
   assert.equal(waitOn({ turn: true, call: { kind: "subAgent", itemId: "a1", label: "Survey" } }).kind, "subAgent");
   // Thinking or writing: no call, no wait, whatever runs in the background.
   assert.equal(waitOn({ turn: true, call: null, jobs: { active: 1, unknown: 0 }, ci: { running: 1, discovering: 0, check: 0 },
@@ -187,7 +189,7 @@ test("with no Turn running, what it started and left running waits, in the user'
     waits: { reviews: { running: 1, pr: 231, round: 2 }, shells: 1, subAgents: 2 }, pr: 231 });
   const w = waitOn(all);
   assert.deepEqual(kinds(w), ["review", "ci", "job", "subAgent", "shell"]);
-  assert.deepEqual({ ...w, also: undefined }, { kind: "review", count: 1, pr: 231, round: 2, also: undefined });
+  assert.deepEqual({ ...w, also: undefined }, { kind: "review", count: 1, pr: 231, round: 2, left: true, also: undefined });
   assert.deepEqual(w.also, [{ kind: "ci", count: 3 }, { kind: "job", count: 2 }, { kind: "subAgent", count: 2 }, { kind: "shell", count: 1 }]);
   // Without the review, CI is next: an executor's PR names it.
   assert.deepEqual(waitOn({ ...all, waits: { shells: 1, subAgents: 2 } }).kind, "ci");
@@ -197,32 +199,107 @@ test("with no Turn running, what it started and left running waits, in the user'
 });
 
 test("a Job is named when it is the one, and an outcome to check is no wait", () => {
-  assert.deepEqual(waitOn(idle({ jobs: { active: 1, unknown: 0, name: "core-lib-tests" } })), { kind: "job", count: 1, name: "core-lib-tests", also: [] });
+  assert.deepEqual(waitOn(idle({ jobs: { active: 1, unknown: 0, name: "core-lib-tests" } })), { kind: "job", count: 1, name: "core-lib-tests", left: true, also: [] });
   assert.equal(waitOn(idle({ jobs: { active: 2, unknown: 0, name: "core-lib-tests" } })).name, null, "two Jobs: how many, not one's name");
   assert.equal(waitOn(idle({ jobs: { active: 1, unknown: 1 } })), null, "a Job whose outcome is unknown is to check");
   assert.equal(waitOn(idle({ ci: { running: 0, discovering: 0, check: 2 } })), null, "CI to check is no wait either");
   assert.equal(waitOn(idle()), null);
 });
 
-test("only a turning ring holds a wait; an idle standing Agent with something running turns", () => {
+// YN-92 (the user chose A on Home, design/yn92-ring-waiting): only a running
+// Turn turns the ring. Once it ends, the ring rests at the grey idle ring;
+// what the Agent left running keeps its icon there, and a pill says it.
+test("only a running Turn turns the ring; what it left running rests in a grey ring with its icon and a pill", () => {
   const wait = waitOn(idle({ waits: { reviews: { running: 1, pr: 9, round: 1 } } }));
-  // A lead waiting on a review it started: its ring turns, and says so.
+  assert.equal(wait.left, true);
+  // A lead waiting on a review it started: at rest, the icon in the grey ring, a pill.
   const lead = standing(agent({ lastTurnEnd: ended }), { wait });
-  assert.equal(lead.state, "working");
+  assert.deepEqual([lead.state, lead.stay, lead.clock], ["idle", { kind: "waits", on: "review" }, null]);
   assert.equal(lead.wait.kind, "review");
-  // Needs you, failed, done and idle rings hold none.
+  assert.equal(lead.go, null, "a standing Agent at rest has nowhere of its own");
+  // A running executor whose Turn ended, with a wait: the same, its clock its time on the task.
+  const working = islandView({ agent: agent(), lifecycle: life("running"), executor: executorView({ agent: agent(), lifecycle: life("running") }), statusLabel: "Ready", wait });
+  assert.deepEqual([working.state, working.stay, working.wait.kind], ["idle", { kind: "waits", on: "review" }, "review"]);
+  assert.deepEqual(working.clock, { kind: "live", from: at("2026-11-07T02:00:00Z"), to: null });
+  assert.equal(working.go, "task");
+  // Needs you, failed, done and idle rings hold none; a Turn's end not seen comes first.
   assert.equal(standing(agent({ pendingCount: 1, status: "waiting" }), { wait }).wait, null);
   assert.equal(standing(agent({ status: "error" }), { wait }).wait, null);
-  assert.equal(standing(agent({ lastTurnEnd: ended }), { unseen: "finished", wait }).wait, null);
+  const unseen = standing(agent({ lastTurnEnd: ended }), { unseen: "finished", wait });
+  assert.deepEqual([unseen.state, unseen.stay, unseen.wait], ["done", null, null]);
   assert.equal(standing(agent()).wait, null);
   // A handed-in executor at rest: its pill says it ("In review"), not an icon.
   const handed = exec(life("delivering"), agent(), { ...pr({ reviews: { approved: 0, changesRequested: false, running: true } }) });
   assert.equal(handed.state, "idle");
   assert.equal(islandView({ agent: agent(), lifecycle: life("delivering"), executor: executorView({ agent: agent(), lifecycle: life("delivering"), ...pr() }),
     statusLabel: "Ready", wait }).wait, null);
-  // A working executor whose Turn ended: its ring keeps turning, with the wait.
-  const working = islandView({ agent: agent(), lifecycle: life("running"), executor: executorView({ agent: agent(), lifecycle: life("running") }), statusLabel: "Ready", wait });
-  assert.equal(working.state, "working");
-  assert.equal(working.wait.kind, "review");
 });
 
+test("a running Turn still turns the ring, with the call it is stopped on", () => {
+  const call = waitOn({ turn: true, call: { kind: "shell", itemId: "c1", label: "cargo test" } });
+  assert.equal(call.left, false);
+  const lead = standing(agent({ status: "working" }), { wait: call });
+  assert.deepEqual([lead.state, lead.stay, lead.wait.kind], ["working", null, "shell"]);
+  assert.deepEqual([standing(agent({ status: "uncertain" })).state, standing(agent(), { compacting: true }).state], ["working", "working"]);
+  const run = islandView({ agent: agent({ status: "working" }), lifecycle: life("running"),
+    executor: executorView({ agent: agent({ status: "working" }), lifecycle: life("running") }), statusLabel: "Working", wait: call });
+  assert.deepEqual([run.state, run.stay, run.wait.kind], ["working", null, "shell"]);
+  assert.equal(exec(life("running"), agent({ status: "uncertain" })).state, "working", "a Turn whose end is uncertain still runs");
+  // Needs you and failed still come first.
+  assert.equal(exec(life("running"), agent({ pendingCount: 1, status: "waiting" })).state, "waiting");
+  assert.equal(exec(life("running"), agent({ status: "error" })).state, "failed");
+});
+
+test("with only a Job or CI to check, a standing Agent rests with the list's words in its pill", () => {
+  const view = standing(agent({ lastTurnEnd: ended }), { waiting: "Check job" });
+  assert.deepEqual([view.state, view.stay, view.wait, view.clock], ["idle", { kind: "check", label: "Check job" }, null, null]);
+  // What it left running comes before what is to check.
+  const both = standing(agent({ lastTurnEnd: ended }), { waiting: "Waiting · Job · Check CI", wait: waitOn(idle({ jobs: { active: 1, unknown: 0, name: "lint" } })) });
+  assert.deepEqual(both.stay, { kind: "waits", on: "job" });
+  // A Turn's end not seen comes first: done, with no pill, whatever label it is given (R1 5dd874cd P2).
+  for (const waiting of ["Waiting · Job", "Check job"]) {
+    const done = standing(agent({ lastTurnEnd: ended }), { unseen: "finished", waiting });
+    assert.deepEqual([done.state, done.stay, done.wait, done.go], ["done", null, null, "reply"], waiting);
+  }
+});
+
+test("an executor at work with no Turn running rests, its pill the first that holds: its PR, its blocker, its result, else between Turns", () => {
+  const rest = (lifecycle, more = {}) => exec(lifecycle, agent(), more);
+  const started = { kind: "live", from: at("2026-11-07T02:00:00Z"), to: null };
+  for (const [lifecycle, more, pill] of [
+    [life("running"), {}, { kind: "between" }],
+    [life("running", { resultAt: "2026-11-07T03:00:00Z" }), {}, { kind: "resultIn" }],
+    [life("running", { blocked: "Waiting for #12", resultAt: "2026-11-07T03:00:00Z" }), {}, { kind: "blocked" }],
+    // Its PR's pill, as a handed-in one's: no round under way, the lead's turn; one under way, in review.
+    [life("running", { blocked: "Waiting for #12" }), pr(), { kind: "lead" }],
+    [life("running"), pr({ reviews: { approved: 0, changesRequested: false, running: true } }), { kind: "review" }],
+    [life("running"), pr({ ci: "failure" }), { kind: "ciFailed" }],
+  ]) {
+    const view = rest(lifecycle, more);
+    assert.deepEqual([view.state, view.stay, view.wait], ["idle", pill, null], JSON.stringify(pill));
+    assert.deepEqual(view.clock, started, "its time on the task");
+    assert.equal(view.go, "task");
+  }
+  // Its line two as before: its blocker, else what it said.
+  assert.deepEqual(rest(life("running", { blocked: "Waiting for #12" })).line, { kind: "detail", detail: { kind: "blocked", text: "Waiting for #12" } });
+  // What it left running comes first, before its PR.
+  const wait = waitOn(idle({ ci: { running: 1, discovering: 0, check: 0 }, pr: 688 }));
+  const ci = islandView({ agent: agent(), lifecycle: life("running"), executor: executorView({ agent: agent(), lifecycle: life("running"), ...pr() }), statusLabel: "Ready", wait });
+  assert.deepEqual([ci.state, ci.stay, ci.wait.pr], ["idle", { kind: "waits", on: "ci" }, 688]);
+  // A Turn running: working, whatever holds.
+  assert.equal(exec(life("running", { resultAt: "2026-11-07T03:00:00Z" }), agent({ status: "working" })).state, "working");
+});
+
+test("an executor at rest whose pill says what it waits on doesn't say it again on line two (YN-92, mail 11854)", () => {
+  const jobs = waitOn(idle({ jobs: { active: 1, unknown: 0, name: "core-lib-tests" } }));
+  const at = (a, waiting, wait) => islandView({ agent: a, lifecycle: life("running"), executor: executorView({ agent: a, lifecycle: life("running"), waiting }),
+    statusLabel: "Ready", wait });
+  // Its unfinished Job is the pill's ("Awaits a Job"): line two has only what it said, then its clock.
+  const quiet = at(agent(), "Waiting · Job", jobs);
+  assert.deepEqual([quiet.stay, quiet.line], [{ kind: "waits", on: "job" }, { kind: "none" }]);
+  assert.deepEqual(quiet.clock, { kind: "live", from: at0, to: null });
+  assert.deepEqual(at(agent({ workSummary: { text: "Slice 2: evidence Job" } }), "Waiting · Job", jobs).line, { kind: "text", text: "Slice 2: evidence Job" });
+  // Only a Job to check: no wait, so no pill says it; line two still does.
+  const check = at(agent(), "Check job", null);
+  assert.deepEqual([check.stay, check.line], [{ kind: "between" }, { kind: "detail", detail: { kind: "waiting", label: "Check job" } }]);
+});

@@ -251,6 +251,12 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
         None => json!({"kind":"user"}),
     };
     let mut view = json!({"state":state,"agentId":role.agent,"dispatcher":dispatcher,"dispatchedAt":role.created_at});
+    // At work with a result in on its own dispatch (handed in as doing, or
+    // its task no longer in review): when, so its row can say so once its
+    // Turn ends (YN-92). Read from the facts above; nothing is written.
+    if let Some(at) = facts.result_at.as_ref().filter(|_| state == "running") {
+        view["resultAt"] = json!(at);
+    }
     // Its own temporary directory, or why it has none (YN-78 S2a), for its
     // detail; nothing is created or changed by reading it.
     if let Some(temp) = crate::executor_temp::view(db, &role.agent)? {

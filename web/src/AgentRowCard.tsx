@@ -41,6 +41,12 @@ export const cardText = strings({
     ready: "Approved; merges once checks are green",
     merged: "Its PR is merged",
     offline: "Its runtime is disconnected",
+    // Its Turn has ended (YN-92): not at work, and why it still holds.
+    waits: "Its Turn has ended: not working, only waiting for what it started",
+    check: "Its Turn has ended and nothing runs; a Job or CI outcome is unknown and needs checking",
+    blocked: "Its Turn has ended; its task is blocked until someone clears it",
+    resultIn: "Its Turn has ended; it handed in a result for the lead to look at",
+    between: "Its Turn has ended and nothing runs; it starts again at its next message",
   },
   unread: "Updates unread",
   leadOf: "Lead of this Project",
@@ -87,6 +93,11 @@ export const cardText = strings({
     ready: "已通过审查，检查变绿后即可合并",
     merged: "它的 PR 已合入",
     offline: "它的运行时已断开",
+    waits: "这一轮已经结束：没在干活，只在等它启动的事跑完",
+    check: "这一轮已经结束，没有东西在跑；有结果不明的 Job 或 CI 要核对",
+    blocked: "这一轮已经结束；任务受阻，等有人处理",
+    resultIn: "这一轮已经结束；它交了结果，等负责人看",
+    between: "这一轮已经结束，没有东西在跑；收到下一条消息再开始",
   },
   unread: "有未读更新",
   leadOf: "此 Project 的负责人",
@@ -129,8 +140,10 @@ export function routeLine(route: ExecutorRoute, language: Language, time?: TimeD
 }
 
 /** Since when, as the card says it: "on its task for 1h12m", "waiting
- * 12m", "Turn ended 3m ago", "last Turn 26m ago", "1h12m in total". */
-export function cardClock(island: IslandView, agent: Pick<Agent, "closedAt">, executor: boolean, now: number, language: Language): string | null {
+ * 12m", "Turn ended 3m ago", "last Turn 26m ago", "1h12m in total". An
+ * executor at work on its task says its time on it, its Turn running or
+ * not (YN-92: "Between turns on its task for 1h12m"). */
+export function cardClock(island: IslandView, agent: Pick<Agent, "closedAt">, executor: ExecutorView | null, now: number, language: Language): string | null {
   const clock = island.clock;
   if (!clock) return null;
   const t = cardText(language).clock;
@@ -143,7 +156,7 @@ export function cardClock(island: IslandView, agent: Pick<Agent, "closedAt">, ex
     return t.since(x);
   }
   if (island.state === "waiting") return t.waiting(x);
-  return executor && island.state === "working" ? t.onTask(x) : t.live(x);
+  return executor && (island.state === "working" || executor.shown === "working") ? t.onTask(x) : t.live(x);
 }
 
 /**
@@ -153,7 +166,8 @@ export function cardClock(island: IslandView, agent: Pick<Agent, "closedAt">, ex
  *  2. its ring, its state in words (or the pill of a state that stays) and
  *     since when;
  *  3. what it is doing or asks, in full, and what its turning ring waits
- *     on (YN-51), with the others it waits on too;
+ *     on (YN-51), with the others it waits on too (at rest, YN-92, its
+ *     state's line says the wait in full, and only the others follow);
  *  4. what the state means where the ring alone doesn't say it (needs you,
  *     done, a state that stays), and a lead's updates unread;
  *  5. quietly: its task, who and where it is, its PR and who dispatched it.
@@ -171,7 +185,7 @@ export function AgentRowCard({ agent, island, executor, lifecycle, machine, badg
   activity: string;
   /** A standing Agent's unfinished Jobs and CI, in full: "2 jobs queued or running". */
   waits?: string | null;
-  /** What its turning ring waits on (YN-51). */
+  /** What its ring waits on (YN-51; at rest too, YN-92). */
   wait?: IslandWait | null;
 }) {
   const language = useLanguage();
@@ -181,9 +195,13 @@ export function AgentRowCard({ agent, island, executor, lifecycle, machine, badg
   const words = islandText(language);
   const title = island.title ?? agent.name;
   const stay = island.stay;
-  const clock = cardClock(island, agent, !!executor, now, language);
+  const clock = cardClock(island, agent, executor, now, language);
   // An idle ring with a state that stays: the pill says the state.
   const word = stay && island.state === "idle" ? null : words.word[island.state];
+  // At rest waiting only on what it left running (YN-92): the state's line
+  // says the wait in full ("在等 Job：train-eval"), so it is said once.
+  const left = stay?.kind === "waits" && wait ? waitText(wait, language) : null;
+  const pillText = left ? left.line : stay ? stayText(stay, language, time) : null;
   const meaning = stay ? t.stay[stay.kind]
     : island.state === "waiting" ? t.meaning.waiting
       : island.state === "done" && !executor ? t.meaning.done
@@ -221,12 +239,13 @@ export function AgentRowCard({ agent, island, executor, lifecycle, machine, badg
         {/* Spaces between the words for whoever reads the text; the flex
             layout spaces them on screen. */}
         {word && <> <span className="agent-card-word">{word}</span></>}
-        {stay && <> <span className="agent-card-pill" data-tone={stayTone(stay)}>{stayText(stay, language, time)}</span></>}
+        {stay && <> <span className="agent-card-pill" data-tone={stayTone(stay)}>{pillText}</span></>}
         {clock && <> <span className="agent-card-clock">{clock}</span></>}
       </span>
       {activity && <span className="tip-body agent-card-activity">{activity}</span>}
       {waits && <span className="tip-body">{waits}</span>}
-      {wait && <CardWait wait={wait} />}
+      {wait && !left && <CardWait wait={wait} />}
+      {left?.also && <small className="agent-card-also">{left.also}</small>}
       {meaning && <span className="agent-card-meaning">{meaning}</span>}
       {island.dot && <span className="agent-card-unread">{t.unread}</span>}
       <span className="agent-card-facts">

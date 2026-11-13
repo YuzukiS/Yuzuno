@@ -775,7 +775,10 @@ below), who dispatched it
 was made from (`template`: its `id`, and its `label` as its dispatch's
 materials give it), when it was dispatched (`dispatchedAt`), and since when
 it is in its state (`since`). An executor at work whose task is blocked also
-has the blocker (`blocked`); its state stays what it is.
+has the blocker (`blocked`); its state stays what it is. One at work
+(`running`) whose task's newest result came in on its own dispatch (handed
+in as doing, or its task no longer in review) also says when (`resultAt`,
+YN-92); a handed-in one says it by `since`.
 
 An executor with a dispatch record also says what executor routing gave it
 (`route`, YN-57). It is one of three kinds:
@@ -835,23 +838,35 @@ It never holds a key's value or an account's email.
   context-menu key or Shift+F10 on its link opens its actions.
 - **The ring says one of five states** (22 px, strokes only, at the row's
   top right; `AgentIsland.tsx` over `agent-island.ts`): working, an arc
-  that turns; needs you, a bold orange ring that breathes; done, ✓; failed,
-  ✕; idle, a thin grey ring. Under reduced motion nothing turns or
-  breathes. Only a lead shows updates unread, as a small dot at the ring's
-  top left with no count; other Agents show none.
-  - An executor's: working while it runs (handed in too, while a Turn runs
-    on its next slice); needs you while a request or question waits; ✕ when
-    its start or its Turn failed; ✓ once released or archiving (what an
-    archiving one waits for is line two); otherwise grey.
-  - A standing Agent's: working while a Turn runs (compacting too, and an
-    idle Agent's unfinished Jobs or CI, reviews under way that are mailed to
-    it, or background shells and sub-agents); needs you; ✕ for an error or a
-    failed Turn not yet shown; ✓ for a Turn it ended that this device
-    hasn't shown; otherwise grey (offline and closed too).
-- **A turning ring shows what it waits on** (YN-51, the user's choices on
-  Home): one icon inside the working ring, 11 px, still, in the ring's
-  colour; the ring itself still says the state, and no other ring holds
-  one. The icons are the work dock's: a review (GitPullRequest), CI
+  that turns, only while a Turn runs; needs you, a bold orange ring that
+  breathes; done, ✓; failed, ✕; idle, a thin grey ring. Under reduced
+  motion nothing turns or breathes. Once its Turn ends, an Agent's ring
+  rests at the grey idle ring, and a pill says what holds it (YN-92: a
+  turning ring reads as at work). Only a lead shows updates unread, as a
+  small dot at the ring's top left with no count; other Agents show none.
+  - An executor's: working while a Turn runs on its task (compacting too;
+    handed in too, while a Turn runs on its next slice); needs you while a
+    request or question waits; ✕ when its start or its Turn failed; ✓ once
+    released or archiving (what an archiving one waits for is line two);
+    otherwise grey. At work on its task with no Turn running, it is grey
+    with a pill, the first that holds: what it left running (在等 Job
+    Awaits a Job, below; its line two then says only what it said and its
+    clock, not the wait again); its PR's (审查中 In review, 等负责人 Lead's turn and
+    the others below); 受阻 Blocked, its task blocked; 已交结果 Result in, a
+    result in on its own dispatch (`resultAt`); else 等下一轮 Between turns.
+  - A standing Agent's: working while a Turn runs (compacting too); needs
+    you; ✕ for an error or a failed Turn not yet shown; ✓ for a Turn it
+    ended that this device hasn't shown; otherwise grey (offline and closed
+    too). An idle one whose last end has been seen is grey with a pill
+    while what it started runs: its reviews under way that are mailed to
+    it, CI it watches, Jobs, background shells and sub-agents (在等审查
+    Awaits review, below); or, with only a Job or CI to check, the list's
+    own words for it (核对 Job Check job, 核对 CI Check CI).
+- **A ring shows what it waits on** (YN-51, the user's choices on Home):
+  one icon inside the ring, 11 px, still, in the ring's colour; the ring
+  itself still says the state. Only two rings hold one: a turning ring, for
+  the call its running Turn is stopped on, and a grey ring at rest whose
+  Agent waits only on what it left running (YN-92); no other ring does. The icons are the work dock's: a review (GitPullRequest), CI
   (Github), a Job (BriefcaseBusiness), a sub-agent (Bot) and a shell
   (SquareTerminal). When it waits on several, one shows, in this order:
   review, CI, Job, sub-agent, shell.
@@ -874,8 +889,12 @@ It never holds a key's value or an account's email.
     as OpenCode's background shells, shows nothing.
   - The row's card says which one ("在等 CI：PR #214", an executor's PR from
     its live read; "Waiting on a Job: web-tests"), and under it, smaller,
-    the others it waits on ("另有：CI、1 个 Job"). The row's screen-reader
-    text and the ring's label add what it waits on ("在等审查").
+    the others it waits on ("另有：CI、1 个 Job"). At rest, the card's state
+    line is that wait in full, then the others and a line that says its
+    Turn has ended ("这一轮已经结束：没在干活，只在等它启动的事跑完"). The row's
+    screen-reader text and the ring's label add what it waits on ("在等审查");
+    at rest the row's text starts with the wait, or with its pill's words,
+    and never says it works.
   - The web reads `/api/waits/live` again when Core says an Agent changed
     (a background count, a Turn ending) or the board did (a review starting
     or ending).
@@ -883,7 +902,12 @@ It never holds a key's value or an account's email.
   stays while the state holds: 排队 · 第 2 位 Queued · 2 in line, 启动中
   Starting, 等负责人 Lead's turn (handed in, its review not under way), 审查中
   In review, 要改 Changes asked, CI 红了 CI failed, 等合并 Ready to merge, 已合入
-  Merged, and 离线 Offline. A passing event takes the pill's place for about
+  Merged, and 离线 Offline; and once its Turn has ended (YN-92), 在等审查
+  Awaits review, 在等 CI Awaits CI, 在等 Job Awaits a Job, 在等子代理 Awaits
+  sub-agent, 在等 shell Awaits a shell, 核对 Job Check job (and 核对 CI, 核对
+  Job / CI), 受阻 Blocked, 已交结果 Result in and 等下一轮 Between turns. None
+  is wider than 排队 · 第 3 位 Queued · 3 in line, which leaves line one its
+  width in a 240 px rail. A passing event takes the pill's place for about
   three seconds (five for bad news), then the state's pill comes back: its
   PR merged, its checks failed or turned green, it started after queuing.
   Review news is the staying pill's own, and new messages are no event.
@@ -893,7 +917,7 @@ It never holds a key's value or an account's email.
   the row as the island (its outline round the whole row) until handled,
   with no pill.
 - **Its clock** runs while it works (an executor's time on its task since
-  its dispatch), needs you (since its oldest wait in Home's Needs you), is
+  its dispatch, its Turn running or not), needs you (since its oldest wait in Home's Needs you), is
   handed in (since it handed in) and is queued. For idle, offline, done and
   failed it says how long ago, and for an archived executor its whole time,
   which no longer runs. A standing Agent's runtime gives no start for its

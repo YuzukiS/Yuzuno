@@ -75,6 +75,10 @@ const agents = () => [
   executor("c", "YN-c · Design first", "queued", {}, { position: 1, route: { kind: "waiting", earliest: CANDIDATE_AT } }),
   // Made from no template (an empty id).
   executor("g", "Agent g", "running", { status: "working" }, { template: { id: "", label: null }, route: { kind: "unrouted", why: "none" } }),
+  // At work on its task, its Turn ended and nothing running (YN-92): at rest
+  // between Turns; and one with a result in on its own dispatch.
+  executor("b", "YN-b · Design first", "running"),
+  executor("r", "YN-r · Design first", "running", {}, { resultAt: at(20) }),
 ];
 const live = {
   executors: {
@@ -202,13 +206,42 @@ test("line one is the task's short name, else its title; the ring is one of five
     assert.deepEqual(p.state("a"), ["done", "Work a"], "archived: ✓");
     assert.equal(p.meta("a"), "1h30m in all", "its whole time, frozen");
     // Five rings only: no review rounds, no marching dots, no box.
-    for (const id of ["w", "v", "k", "a", "q", "g", "s", "u", "l"])
+    for (const id of ["w", "v", "k", "a", "q", "g", "s", "u", "l", "b", "r"])
       assert.ok(["idle", "working", "waiting", "done", "failed"].includes(p.island(id).dataset.state), `${id}: ${p.island(id).dataset.state}`);
     assert.equal(p.doc.querySelectorAll(".agent-list .r-rounds, .agent-list .r-march, .agent-list .r-dots, .agent-list .r-box, .agent-list .r-dashed").length, 0);
     assert.equal(p.island("a").querySelectorAll("svg path.r-mark").length, 1, "done: its ✓");
     assert.equal(p.island("k").querySelectorAll("svg .r-spin .r-arc").length, 1, "working: its turning arc");
     // No numbers on the row: no task key, no PR.
     for (const id of ["v", "k", "q", "a", "g"]) assert.doesNotMatch(p.row(id).textContent, /#\d|YN-/, `${id}: no key or PR on the row`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an executor at work whose Turn has ended rests: the grey ring, still, and a pill that says why (YN-92)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.pill("b") === "Between turns" && p.pill("r") === "Result in", "the pills of the two at rest");
+    for (const [id, stay] of [["b", "between"], ["r", "resultIn"]]) {
+      assert.deepEqual([p.island(id).dataset.state, p.island(id).dataset.stay, p.form(id)], ["idle", stay, "pill"], id);
+      assert.equal(p.island(id).querySelectorAll(".r-spin").length, 0, `${id}: nothing turns`);
+      assert.equal(p.island(id).querySelectorAll(".island-wait").length, 0, `${id}: no icon`);
+      assert.equal(p.island(id).getAttribute("aria-label"), `YN-${id} · Design first · Open task YN-${id}`, `${id}: its ring still opens its task`);
+    }
+    // Line two as before: its clock, its time on the task.
+    assert.equal(p.meta("b"), "1h5m");
+    const said = (id) => p.row(id).querySelector(".agent-select").getAttribute("aria-description") ?? "";
+    assert.equal(said("b"), "Executor · Between turns, on Core host", "the pill's words, never \"Working\"");
+    assert.equal(said("r"), "Executor · Result in, on Core host");
+    const b = await readTip(p.w, p.row("b").querySelector(".agent-select"));
+    assert.equal(b[1], "Between turns on its task for 1h5m", b.join(" | "));
+    assert.ok(b.includes("Its Turn has ended and nothing runs; it starts again at its next message"), b.join(" | "));
+    const r = await readTip(p.w, p.row("r").querySelector(".agent-select"));
+    assert.ok(r.includes("Its Turn has ended; it handed in a result for the lead to look at"), r.join(" | "));
+    // A Turn running still turns its ring.
+    assert.deepEqual(p.state("k"), ["working", "Keep selection"]);
+    assert.equal(p.island("k").querySelectorAll(".r-spin").length, 1);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -319,6 +352,8 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.deepEqual(p.state("w"), ["waiting", "Export settings"]);
     assert.equal(p.meta("w"), "Approve the design note · 12分");
     assert.equal(p.pill("q"), "排队 · 第 2 位");
+    // At rest, its Turn ended (YN-92).
+    assert.deepEqual([p.pill("b"), p.pill("r")], ["等下一轮", "已交结果"]);
     assert.equal(p.meta("k"), "Slice 2: evidence Job · 1时5分");
     assert.equal(p.meta("a"), "共 1时30分");
     assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · 去 Home 回答提问");
