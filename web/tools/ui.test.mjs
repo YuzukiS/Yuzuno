@@ -4204,6 +4204,27 @@ test("desktop presentation keeps requests, events, and artifacts on the configur
     page.close();
   }
 });
+test("a new Agent's name is counted in bytes as Core counts them: 100 go, 101 do not (YN-106)", async () => {
+  const page = await mount();
+  try {
+    page.document.querySelector('[aria-label="Create agent"]').click();
+    await pause();
+    const dialog = page.document.querySelector('[role="dialog"]');
+    const name = [...dialog.querySelectorAll("label")].find((l) => l.textContent.trim().startsWith("Name")).querySelector("input");
+    const create = () => [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Create agent");
+    typeInto(page, name, `${"名".repeat(33)}ab`);
+    await pause();
+    assert.equal(name.maxLength, -1, "no limit of its own");
+    assert.match(dialog.querySelector(".home-reply-length[data-over]")?.textContent ?? "", /^1 byte too long: this field takes at most 100 bytes/);
+    assert.equal(create().disabled, true);
+    typeInto(page, name, `${"名".repeat(33)}a`);
+    await pause();
+    assert.equal(dialog.querySelector(".home-reply-length[data-over]"), null, "100 bytes: nothing to say");
+    assert.equal(name.getAttribute("aria-invalid"), null);
+  } finally {
+    page.close();
+  }
+});
 test("drafts follow their agent and reading the conversation never implicitly acknowledges requests", async () => {
   const page = await mount();
   try {

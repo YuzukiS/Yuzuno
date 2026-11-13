@@ -39,6 +39,32 @@ export const coreLimits = {
   goalObjective: { max: 4_000, unit: "chars", trim: true },
   /** core/src/pr_operations/mod.rs: a PR's body, sent as written. */
   prBody: bytes(60_000, false),
+  // One-line fields (YN-106 PR 3): a name or a title Core counts in bytes.
+  /** collaboration_store.rs `MAX_TITLE`: a task's title. */
+  taskTitle: bytes(300),
+  /** result_outcome.rs: `required_text(criterion, "label", …)`; sent as written. */
+  criterionLabel: bytes(300, false),
+  /** pr_operations/mod.rs: `self.title.len() <= …`; sent as written. */
+  prTitle: bytes(256, false),
+  /** pr_operations/mod.rs `fn branch`: `s.len() <= …`; a base or head branch, sent as written. */
+  prBranch: bytes(240, false),
+  /** model.rs, ReviewTarget::checked `fn name`: a base branch or a commit to review. */
+  reviewName: bytes(256),
+  /** jobs/mod.rs `validate_command`: a Job's name. */
+  jobName: bytes(160),
+  /** jobs/gpu.rs: why a GPU is closed to new Jobs. */
+  gpuReason: bytes(200),
+  /** An Agent's name, as each way of making one checks it (workspace.rs,
+   * claude.rs, opencode_agent.rs, codex_sessions.rs, claude_sessions.rs). */
+  agentName: bytes(100),
+  /** remote.rs `validate_machine`: a machine's name. */
+  machineName: bytes(128),
+  /** projects.rs `validate_name`: a project's name. */
+  projectName: bytes(100),
+  /** services.rs: a service's name. */
+  serviceName: bytes(80),
+  /** merge_queue/mod.rs, merge_revert: a reason (its MCP schema says the same of the other three). */
+  mergeReason: bytes(2000),
 } satisfies Record<string, CoreLimit>;
 
 /** `text` as Core counts it against `limit`. */

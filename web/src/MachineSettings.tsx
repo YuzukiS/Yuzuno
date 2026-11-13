@@ -12,6 +12,8 @@ import { ChoiceCards } from "./SettingsChoices";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { SettingsSlider } from "./SettingsSlider";
 import "./remote.css";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 /** Jobs at once when a machine has none of its own (Core's remote::SLOTS). */
 const DEFAULT_JOBS = 2;
@@ -103,7 +105,7 @@ export function MachineSettings({ machine, language, onSaved }: {
     }
   }
   useSaveBarPart(`machine:${machine.id}`, machineChanged ? {
-    ready: !problem,
+    ready: !problem && !overLimit(value("name"), coreLimits.machineName),
     save: saveMachine,
     discard: () => { setError(""); setEdits({}); },
   } : null);
@@ -155,8 +157,10 @@ export function MachineSettings({ machine, language, onSaved }: {
         <div className="create-form remote-create machine-settings-fields">
           <label>
             {t.name}
-            <input value={value("name")} maxLength={60} onChange={(e) => set("name")(e.target.value)} placeholder="Mac mini" />
+            <input value={value("name")} onChange={(e) => set("name")(e.target.value)} placeholder="Mac mini"
+              aria-invalid={overLimit(value("name"), coreLimits.machineName) || undefined} />
           </label>
+          <FieldLength value={value("name")} limit={coreLimits.machineName} />
           <label>
             {t.target}
             <input value={value("target")} onChange={(e) => set("target")(e.target.value)} placeholder={t.targetPlaceholder}

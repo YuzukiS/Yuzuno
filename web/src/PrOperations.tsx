@@ -4,7 +4,15 @@ import { strings, useStrings } from "./i18n";
 import "./pr-operations.css";
 import { randomId } from "./random-id";
 import { LongTextField } from "./LongTextField";
+import { FieldLength } from "./FieldLength";
 import { coreLimits, overLimit } from "./core-limits";
+
+/** A PR's fields as Core counts them (YN-106): over, the form sends nothing. */
+const prTooLong = (form: { base: string; head: string; title: string; body: string }) =>
+  overLimit(form.base, coreLimits.prBranch) ||
+  overLimit(form.head, coreLimits.prBranch) ||
+  overLimit(form.title, coreLimits.prTitle) ||
+  overLimit(form.body, coreLimits.prBody);
 
 type Remote = {
   number: number;
@@ -361,7 +369,7 @@ export function PrOperations({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (overLimit(form.body, coreLimits.prBody)) return;
+          if (prTooLong(form)) return;
           void mutate("/pr-operations", {
             taskId,
             action: form.action,
@@ -413,7 +421,7 @@ export function PrOperations({
               <input
                 required
                 value={form.base}
-                maxLength={240}
+                aria-invalid={overLimit(form.base, coreLimits.prBranch) || undefined}
                 onChange={(e) => update("base", e.target.value)}
               />
             </label>
@@ -422,11 +430,13 @@ export function PrOperations({
               <input
                 required
                 value={form.head}
-                maxLength={240}
+                aria-invalid={overLimit(form.head, coreLimits.prBranch) || undefined}
                 onChange={(e) => update("head", e.target.value)}
               />
             </label>
           </div>
+          <FieldLength value={form.base} limit={coreLimits.prBranch} />
+          <FieldLength value={form.head} limit={coreLimits.prBranch} />
           <label>
             {t.number}{" "}
             {form.action === "create" ? t.numberOptional : t.numberRequired}
@@ -445,10 +455,11 @@ export function PrOperations({
             <input
               required
               value={form.title}
-              maxLength={256}
+              aria-invalid={overLimit(form.title, coreLimits.prTitle) || undefined}
               onChange={(e) => update("title", e.target.value)}
             />
           </label>
+          <FieldLength value={form.title} limit={coreLimits.prTitle} />
           {/* The conversation's composer (YN-106): a long paste folds into a
               block and goes whole; Return makes a new line. */}
           <LongTextField
@@ -495,7 +506,7 @@ export function PrOperations({
               !form.repositoryId ||
               !form.head.trim() ||
               !form.title.trim() ||
-              overLimit(form.body, coreLimits.prBody) ||
+              prTooLong(form) ||
               (form.action === "update" && !form.number)
             }
           >

@@ -50,6 +50,7 @@ import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "
 import { randomId } from "./random-id";
 import { Tip, TipLines, TipText } from "./Tip";
 import { LongTextField } from "./LongTextField";
+import { FieldLength } from "./FieldLength";
 import { coreLimits, overLimit } from "./core-limits";
 
 type BoardText = ReturnType<typeof boardText>;
@@ -237,7 +238,8 @@ function ShortNameField({ value, onChange, t }: { value: string; onChange: (valu
 }
 
 /** A task's long fields as Core counts them (YN-106): over, the form sends nothing. */
-const draftTooLong = (draft: Pick<TaskDraft, "description" | "progress" | "blocker">) =>
+const draftTooLong = (draft: Pick<TaskDraft, "title" | "description" | "progress" | "blocker">) =>
+  overLimit(draft.title, coreLimits.taskTitle) ||
   overLimit(draft.description, coreLimits.taskDescription) ||
   overLimit(draft.progress, coreLimits.taskProgress) ||
   overLimit(draft.blocker, coreLimits.taskBlocker);
@@ -1338,7 +1340,7 @@ function NewTask({
   const mutation = useMutation();
   async function create(event: React.FormEvent) {
     event.preventDefault();
-    if (!draft.title.trim() || overLimit(draft.description, coreLimits.taskDescription)) return;
+    if (!draft.title.trim() || draftTooLong(draft)) return;
     const answer = await mutation.execute<{ task: SharedTask }>("task_create", {
       title: draft.title.trim(),
       ...(draft.shortName.trim() ? { shortName: draft.shortName.trim() } : {}),
@@ -1376,14 +1378,15 @@ function NewTask({
           <input
             autoFocus
             required
-            maxLength={240}
             placeholder={t.titlePlaceholder}
             value={draft.title}
+            aria-invalid={overLimit(draft.title, coreLimits.taskTitle) || undefined}
             onChange={(event) =>
               setDraft({ ...draft, title: event.target.value })
             }
           />
         </label>
+        <FieldLength value={draft.title} limit={coreLimits.taskTitle} />
         <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
         <LongTextField
           slot="task:new:description"
@@ -1413,7 +1416,7 @@ function NewTask({
         <ErrorNote text={mutation.error} />
         <button
           className="primary-button"
-          disabled={mutation.pending || !draft.title.trim() || overLimit(draft.description, coreLimits.taskDescription)}
+          disabled={mutation.pending || !draft.title.trim() || draftTooLong(draft)}
         >
           {mutation.pending ? (
             <LoaderCircle className="spin" size={15} />
@@ -2077,13 +2080,14 @@ function TaskPane({
                 <span>{t.taskTitle}</span>
                 <input
                   required
-                  maxLength={240}
                   value={draft.title}
+                  aria-invalid={overLimit(draft.title, coreLimits.taskTitle) || undefined}
                   onChange={(event) =>
                     setDraft({ ...draft, title: event.target.value })
                   }
                 />
               </label>
+              <FieldLength value={draft.title} limit={coreLimits.taskTitle} />
               <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
               <LongTextField
                 slot={`task:${id}:description`}

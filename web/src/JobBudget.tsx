@@ -7,6 +7,8 @@ import { strings, useStrings } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { SettingsSlider } from "./SettingsSlider";
 import { Tip, TipLines, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 type Resources = { cpuMillis: number; memoryMiB: number; swapMiB: number };
 /** Memory in GiB once it reaches one, else MiB. */
 export const memoryText = (miB: number) =>
@@ -1123,13 +1125,14 @@ function GpuSettings({ device, onSaved }: { device: GpuDevice; onSaved: () => vo
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if (overLimit(reason, coreLimits.gpuReason)) return;
             void save("admission", { open: false, ...(reason.trim() ? { reason: reason.trim() } : {}) });
           }}
         >
           <SettingField
             label={t.reason}
             extra={
-              <button className="secondary-button" disabled={busy}>
+              <button className="secondary-button" disabled={busy || overLimit(reason, coreLimits.gpuReason)}>
                 {t.close}
               </button>
             }
@@ -1139,8 +1142,8 @@ function GpuSettings({ device, onSaved }: { device: GpuDevice; onSaved: () => vo
                 id={id}
                 name="reason"
                 className="settings-input jobs-settings-reason"
-                maxLength={200}
                 value={reason}
+                aria-invalid={overLimit(reason, coreLimits.gpuReason) || undefined}
                 onChange={(e) => {
                   setDone(false);
                   setReason(e.target.value);
@@ -1148,6 +1151,7 @@ function GpuSettings({ device, onSaved }: { device: GpuDevice; onSaved: () => vo
               />
             )}
           </SettingField>
+          <FieldLength value={reason} limit={coreLimits.gpuReason} />
         </form>
       )}
       <form

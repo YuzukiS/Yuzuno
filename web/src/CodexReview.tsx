@@ -5,6 +5,7 @@ import { ChoiceChips } from "./ChoiceChips";
 import { Modal } from "./components";
 import type { Agent } from "./types";
 import { LongTextField } from "./LongTextField";
+import { FieldLength } from "./FieldLength";
 import { coreLimits, overLimit } from "./core-limits";
 import "./remote.css";
 
@@ -58,8 +59,8 @@ export function CodexReviewDialog({ agent, open, onOpenChange, onStarted }: {
   const [error, setError] = useState("");
   const target: ReviewTarget | null =
     type === "uncommittedChanges" ? { type }
-      : type === "baseBranch" ? (branch.trim() ? { type, branch: branch.trim() } : null)
-        : type === "commit" ? (sha.trim() ? { type, sha: sha.trim(), title: title.trim() || null } : null)
+      : type === "baseBranch" ? (branch.trim() && !overLimit(branch, coreLimits.reviewName) ? { type, branch: branch.trim() } : null)
+        : type === "commit" ? (sha.trim() && !overLimit(sha, coreLimits.reviewName) ? { type, sha: sha.trim(), title: title.trim() || null } : null)
           // Within a message's length, as Core takes it (YN-106): longer starts nothing.
           : instructions.trim() && !overLimit(instructions, coreLimits.reviewInstructions)
             ? { type, instructions: instructions.trim() } : null;
@@ -89,17 +90,23 @@ export function CodexReviewDialog({ agent, open, onOpenChange, onStarted }: {
             onChange={(value) => setType(value as ReviewTarget["type"])} />
           <p className="remote-field-note">{hints[type]}</p>
           {type === "baseBranch" && (
-            <label>
-              Base branch
-              <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" maxLength={256} required />
-            </label>
+            <>
+              <label>
+                Base branch
+                <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" required
+                  aria-invalid={overLimit(branch, coreLimits.reviewName) || undefined} />
+              </label>
+              <FieldLength value={branch} limit={coreLimits.reviewName} />
+            </>
           )}
           {type === "commit" && (
             <>
               <label>
                 Commit
-                <input value={sha} onChange={(e) => setSha(e.target.value)} placeholder="Commit hash" maxLength={256} required />
+                <input value={sha} onChange={(e) => setSha(e.target.value)} placeholder="Commit hash" required
+                  aria-invalid={overLimit(sha, coreLimits.reviewName) || undefined} />
               </label>
+              <FieldLength value={sha} limit={coreLimits.reviewName} />
               <label>
                 Title (optional)
                 <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />

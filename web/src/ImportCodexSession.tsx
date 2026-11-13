@@ -19,6 +19,8 @@ import type {
 } from "./types";
 import "./session-import.css";
 import { Tip, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 export interface CodexSessionPreview {
   threadId: string;
@@ -126,7 +128,7 @@ export function ImportCodexSession({
   const preset = preview?.permissions?.presets.find(
     (choice) => choice.id === settings.permissionPreset,
   );
-  const canImport = Boolean(preview && name.trim() && preset?.available);
+  const canImport = Boolean(preview && name.trim() && !overLimit(name, coreLimits.agentName) && preset?.available);
 
   async function importSession(event: React.FormEvent) {
     event.preventDefault();
@@ -254,9 +256,10 @@ export function ImportCodexSession({
                     value={name}
                     onChange={(event) => setName(event.target.value)}
                     required
-                    maxLength={60}
+                    aria-invalid={overLimit(name, coreLimits.agentName) || undefined}
                   />
                 </label>
+                <FieldLength value={name} limit={coreLimits.agentName} />
                 <CodexPermissions
                   settings={settings}
                   catalog={preview.permissions}

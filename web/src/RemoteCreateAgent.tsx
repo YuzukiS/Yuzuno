@@ -37,6 +37,8 @@ import {
 const OWN_MODEL = "(the harness’s own default)";
 import "./remote.css";
 import { Tip, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 export interface WorkspaceMachine {
   id: string;
@@ -431,7 +433,7 @@ export function RemoteCreateAgent({
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (disabled || locked || adding || checking || permissionConflict) return;
+    if (disabled || locked || adding || checking || permissionConflict || overLimit(name, coreLimits.agentName)) return;
     setBusy(true);
     setError("");
     try {
@@ -574,9 +576,10 @@ export function RemoteCreateAgent({
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t.namePlaceholder}
                 required
-                maxLength={60}
+                aria-invalid={overLimit(name, coreLimits.agentName) || undefined}
               />
             </label>
+            <FieldLength value={name} limit={coreLimits.agentName} />
             <ChoiceChips
               label={t.harness}
               name="create-harness"
@@ -909,6 +912,7 @@ export function RemoteCreateAgent({
                 adding ||
                 checking ||
                 !name.trim() ||
+                overLimit(name, coreLimits.agentName) ||
                 !cwd.trim() ||
                 permissionConflict
               }

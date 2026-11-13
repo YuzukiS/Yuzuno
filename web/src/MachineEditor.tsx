@@ -8,6 +8,8 @@ import { strings, type Language } from "./i18n";
 import { machineLimitText, parseMachineLimit, useMachineLimit, versionConflict } from "./MachineExecutorLimit";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 // The editor's own words, in the language its page passes (T-189): Machines
 // and New agent pass the interface language. What the user types and Core's
@@ -171,7 +173,7 @@ export function MachineEditor({
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
   async function save() {
-    if (disabled || saving) return;
+    if (disabled || saving || overLimit(name, coreLimits.machineName)) return;
     if (!name.trim() || !target.trim() || !folder.trim()) {
       setError(t.missing);
       return;
@@ -249,11 +251,12 @@ export function MachineEditor({
         <input
           autoFocus={autoFocus}
           value={name}
-          maxLength={60}
+          aria-invalid={overLimit(name, coreLimits.machineName) || undefined}
           onChange={(e) => setName(e.target.value)}
           placeholder="Mac mini"
         />
       </label>
+      <FieldLength value={name} limit={coreLimits.machineName} />
       <label>
         {t.target}
         <input
@@ -369,7 +372,7 @@ export function MachineEditor({
         <button
           type="button"
           className="secondary-button"
-          disabled={disabled || saving}
+          disabled={disabled || saving || overLimit(name, coreLimits.machineName)}
           onClick={() => void save()}
         >
           {saving ? (

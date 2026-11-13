@@ -1014,6 +1014,35 @@ test("a project page saves its changed blocks with one Save, each its own reques
   } finally { page.close(); }
 });
 
+test("a project's name is counted in bytes as Core counts them: over 100, the page's Save waits and says why (YN-106)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App");
+    const dialog = dialogOf(page);
+    const label = await waitFor(() => [...dialog.querySelectorAll("label")].find((l) => l.textContent.startsWith("Project name")), "the name");
+    const input = label.querySelector("input");
+    // 34 Chinese characters are 102 bytes: two over.
+    type(page, input, "项".repeat(34));
+    await waitFor(() => /^2 bytes too long: this field takes at most 100 bytes/.test(dialog.querySelector(".home-reply-length[data-over]")?.textContent ?? ""), "the note");
+    assert.equal(input.maxLength, -1, "no limit of its own");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    // The page's one Save (YN-8) waits for the name.
+    await waitFor(() => saveBar(dialog), "the save bar");
+    assert.equal(button(page, "Save", saveBar(dialog)).disabled, true);
+    type(page, input, `${"项".repeat(33)}a`);
+    await waitFor(() => saveBar(dialog) && button(page, "Save", saveBar(dialog)).disabled === false, "100 bytes may be saved");
+    assert.equal(dialog.querySelector(".home-reply-length[data-over]"), null);
+    page.calls.length = 0;
+    button(page, "Save", saveBar(dialog)).click();
+    await waitFor(() => page.calls.some((call) => call.method === "PATCH" && call.url.endsWith("/api/projects/p-app")), "the rename");
+    assert.equal(page.calls.find((call) => call.method === "PATCH").body.name, `${"项".repeat(33)}a`);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("a Project's settings have no Home editors setting: its leads edit Home, which the Leads intro says in both languages (YN-2 S4)", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { a: { kind: "lead" } }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
   const language = async (value) => {

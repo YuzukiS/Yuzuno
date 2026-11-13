@@ -19,6 +19,8 @@ import type { ServiceBrowserReach } from "./portal/service-observation";
 import { ServiceLifecycle } from "./portal/ServiceLifecycle";
 import { serviceText } from "./portal/service-text";
 import { Tip, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 /** What Core has open for a service now (core/src/services.rs, Access). */
 export type ServiceConnection = {
@@ -430,6 +432,7 @@ export function ProjectServices({
           className="services-form"
           onSubmit={(event) => {
             event.preventDefault();
+            if (overLimit(form.name, coreLimits.serviceName)) return;
             void act("add", async () => {
               await post(path, {
                 name: form.name.trim(),
@@ -448,12 +451,13 @@ export function ProjectServices({
             {t.name}
             <input
               required
-              maxLength={80}
               value={form.name}
               placeholder="Vite dev server"
+              aria-invalid={overLimit(form.name, coreLimits.serviceName) || undefined}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </label>
+          <FieldLength value={form.name} limit={coreLimits.serviceName} />
           <label>
             {t.machine}
             <select value={form.machineId} onChange={(e) => setForm({ ...form, machineId: e.target.value })}>
@@ -489,7 +493,7 @@ export function ProjectServices({
             <button type="button" className="quiet-button" onClick={() => setAdding(false)}>
               {t.cancel}
             </button>
-            <button className="secondary-button" disabled={!!busy || !form.name.trim() || !form.port}>
+            <button className="secondary-button" disabled={!!busy || !form.name.trim() || overLimit(form.name, coreLimits.serviceName) || !form.port}>
               {busy === "add" ? <LoaderCircle size={13} className="spin" /> : null}
               {t.addService}
             </button>
