@@ -17,6 +17,7 @@ fn main() {
             "desktop_notify",
             "desktop_notifications_request",
             "desktop_badge",
+            "desktop_title_bar",
         ]),
     ))
     .expect("Unable to build desktop capabilities");
