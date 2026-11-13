@@ -67,9 +67,26 @@ type Subscription = {
   watchId: string;
   watch: Watch;
 };
+/** Main's push CI the merge queue is following after a merge (YN-97): a
+ * read-only projection of the queue's own follow-up, not a subscription. */
+export type QueueMainCi = {
+  entryId: string;
+  taskId?: string;
+  taskRef?: string;
+  repository: string;
+  number: number;
+  headSha: string;
+  mainSha: string;
+  /** `waitingForRun`: no run yet; `running`: the run it follows is going. */
+  state: "waitingForRun" | "running";
+  run?: { id: number; attempt: number; status: string; url: string } | null;
+  mergedAt?: string | null;
+  checkedAt?: string | null;
+};
 export type Page = {
   runs: Run[];
   subscriptions: Subscription[];
+  mergeQueue?: QueueMainCi[];
   hasMore: boolean;
   nextBefore: number | null;
   subscriptionsTruncated?: boolean;
@@ -166,6 +183,10 @@ const ciText = strings({
   dockClosed: "CI monitoring closed",
   dockNoRuns: "No Actions runs observed yet",
   dockHistory: "Retained subscription history",
+  queueMainCi: (number: number) => `The merge queue is following main CI after #${number} merged`,
+  queueNoRun: "Main CI has not appeared yet; the queue checks again.",
+  queueRun: (run: number, status: string) => `CI run #${run} · ${status}`,
+  queueChecked: (when: string) => `Queue last checked ${when}`,
   checking: "Checking with GitHub…",
   checked: (at: string) => `Checked with GitHub at ${at}.`,
   recent: (at: string) => `Checked with GitHub moments ago, at ${at}; not asked again.`,
@@ -273,6 +294,10 @@ const ciText = strings({
   dockClosed: "CI 监视已关闭",
   dockNoRuns: "尚未观察到 Actions 运行",
   dockHistory: "保留的订阅历史",
+  queueMainCi: (number) => `合并队列在跟 #${number} 合入后的 main CI`,
+  queueNoRun: "main CI 还没出现；队列会再检查。",
+  queueRun: (run, status) => `CI 运行 #${run} · ${status}`,
+  queueChecked: (when) => `队列上次检查于 ${when}`,
   checking: "正在向 GitHub 检查…",
   checked: (at) => `已于 ${at} 向 GitHub 检查。`,
   recent: (at) => `刚刚已向 GitHub 检查（${at}），未再次询问。`,
@@ -437,6 +462,13 @@ const open = (detail: CiOpen) =>
       detail: { ...detail, source: "github_actions" },
     }),
   );
+/** The merge queue's own entry, where its followed main CI is shown (YN-97). */
+const openQueue = (entryId: string) =>
+  window.dispatchEvent(
+    new CustomEvent("yuzuno:open-job", {
+      detail: { source: "merge_queue", entryId },
+    }),
+  );
 /** The conversation's CI runs and subscriptions, for its jobs dock. */
 // The last answer for each Agent. A refresh, or coming back to a
 // conversation, keeps showing it until the next one arrives: an empty dock
@@ -529,7 +561,8 @@ export function ConversationCi({
   more: number;
 }) {
   const t = ciText(useLanguage());
-  if (!page.runs.length && !page.subscriptions.length) return null;
+  const queue = page.mergeQueue ?? [];
+  if (!page.runs.length && !page.subscriptions.length && !queue.length) return null;
   const active = page.subscriptions.filter((s) => s.active).length;
   return (
     <WorkDockGroup
@@ -537,6 +570,22 @@ export function ConversationCi({
       icon={<Github size={14} />}
       onOpen={() => open({ agentId })}
     >
+      {/* The merge queue's own follow-up of main's push CI (YN-97): a wait of
+          the Agent that released the PR, read from the queue's records. */}
+      {queue.map((q) => (
+        <WorkDockItem
+          key={`queue:${q.entryId}`}
+          className="conversation-job"
+          status={q.state === "running" ? "running" : "pending"}
+          state={q.state === "running" ? t.labels.running : t.labels.pending}
+          name={t.queueMainCi(q.number)}
+          sub={q.run ? t.queueRun(q.run.id, q.run.status) : t.queueNoRun}
+          detail={`${q.repository} · ${q.mainSha.slice(0, 8)}${q.taskRef ? ` · ${q.taskRef}` : ""}`}
+          when={q.checkedAt ? t.queueChecked(new Date(q.checkedAt).toLocaleTimeString()) : null}
+          href={q.run?.url}
+          onOpen={() => openQueue(q.entryId)}
+        />
+      ))}
       {runs.map((r) => (
         <WorkDockItem
           key={r.id}
@@ -550,7 +599,7 @@ export function ConversationCi({
           onOpen={() => open({ agentId, runKey: r.id })}
         />
       ))}
-      {!page.runs.length && (
+      {!page.runs.length && !queue.length && (
         <WorkDockItem
           className="conversation-job"
           status={active ? "pending" : "unknown"}

@@ -2,6 +2,7 @@
 //! Active subscriptions alone are not evidence of unfinished CI.
 use crate::store::Store;
 use anyhow::Result;
+use rusqlite::params;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -37,6 +38,92 @@ fn epoch(v: &Value) -> Option<i64> {
 }
 fn fresh(v: &Value, now: i64) -> bool {
     epoch(v).is_some_and(|t| t <= now + 5 && now - t <= FRESH_SECONDS)
+}
+
+/// A merge entry the queue is following after its merge (YN-97): main's push
+/// CI on the merge commit, counted for the Agent that released the head while
+/// no subscription mentions it. This is a projection of the queue's own
+/// records: it writes nothing, asks GitHub nothing and makes no subscription.
+pub(super) struct QueueWait {
+    pub(super) agent: String,
+    pub(super) key: String,
+    pub(super) running: bool,
+    pub(super) checked: Option<i64>,
+    pub(super) item: Value,
+}
+
+pub(super) fn queue_waits(db: &rusqlite::Connection, agent: Option<&str>, task: Option<&str>, now: i64) -> Result<Vec<QueueWait>> {
+    let mut q = db.prepare(
+        "SELECT data FROM merge_entries
+          WHERE state='merged'
+            AND json_extract(data,'$.release.by.kind')='agent'
+            AND json_extract(data,'$.merge.mainCi') IS NULL
+            AND length(COALESCE(json_extract(data,'$.merge.sha'),''))=40
+            AND (?1 IS NULL OR json_extract(data,'$.release.by.id')=?1)
+            AND (?2 IS NULL OR task_id=?2)
+          ORDER BY rowid DESC LIMIT 50",
+    )?;
+    let rows = q
+        .query_map(params![agent, task], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut waits = Vec::new();
+    for raw in rows {
+        let e: Value = serde_json::from_str(&raw)?;
+        let who = e["release"]["by"]["id"].as_str().unwrap_or("").to_owned();
+        let sha = e["merge"]["sha"].as_str().unwrap_or("").to_owned();
+        if who.is_empty() || sha.is_empty() {
+            continue;
+        }
+        // The releaser's own live watch of the same commit is the one wait:
+        // the subscription shows it, so the queue entry adds nothing (and a
+        // dead or stale watch is a check, not a wait).
+        let watched: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ci_subscriptions s
+               JOIN ci_watches w ON w.id=s.watch_id
+               JOIN ci_interests i ON i.subscription_id=s.id
+              WHERE s.agent_id=?1 AND s.active=1 AND s.expires>?2
+                AND i.active=1 AND i.expires>?2
+                AND json_extract(w.data,'$.expectedSha')=?3
+                AND json_extract(w.data,'$.currentHeadSha')=?3
+                AND COALESCE(json_extract(w.data,'$.state'),'')<>'older_commit')",
+            params![who, now, sha],
+            |r| r.get(0),
+        )?;
+        if watched {
+            continue;
+        }
+        // The queue keeps the running run it read; without one, this is a
+        // commit waiting for its first run, as a commit watch is.
+        let run = e["merge"]["mainRun"].clone();
+        let running = run.is_object();
+        let entry = e["id"].as_str().unwrap_or("").to_owned();
+        let item = json!({
+            "entryId": entry,
+            "taskId": e["taskId"],
+            "taskRef": e["taskReference"],
+            "repository": e["repository"],
+            "repositoryId": e["repositoryId"],
+            "number": e["number"],
+            "headSha": e["headSha"],
+            "mainSha": sha,
+            "state": if running { "running" } else { "waitingForRun" },
+            "run": if running {
+                json!({"id":run["run"],"attempt":run["attempt"],"status":run["status"],"url":run["url"]})
+            } else {
+                Value::Null
+            },
+            "mergedAt": e["merge"]["mergedAt"],
+            "checkedAt": e["updatedAt"],
+        });
+        waits.push(QueueWait {
+            agent: who,
+            key: format!("queue:{entry}"),
+            running,
+            checked: epoch(&e["updatedAt"]),
+            item,
+        });
+    }
+    Ok(waits)
 }
 
 impl Store {
@@ -184,6 +271,24 @@ impl Store {
             for (key, fact) in facts {
                 merge(target, key, fact);
             }
+        }
+        // A merge queue entry following main's push CI after its merge is a
+        // wait of the Agent that released it (never the user's): the queue
+        // has no subscription for it, so project its own records here.
+        for wait in queue_waits(&db, None, None, now)? {
+            merge(
+                agents.entry(wait.agent).or_default(),
+                wait.key,
+                Fact {
+                    attempt: 0,
+                    state: if wait.running {
+                        State::Running
+                    } else {
+                        State::WaitingForRun
+                    },
+                    checked: wait.checked,
+                },
+            );
         }
         let mut result = serde_json::Map::new();
         for (id, facts) in agents {

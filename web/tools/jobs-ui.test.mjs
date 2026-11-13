@@ -1049,6 +1049,40 @@ test('each kind keeps to its own limit from Settings, and 0 leaves its group off
   } finally { p.close(); }
 });
 
+test('the conversation dock shows the merge queue following main CI, linking to its run (YN-97)', async () => {
+  const queue = {
+    entryId: 'entry-1', taskId: 'task-one', taskRef: 'T-47', repository: 'o/r',
+    number: 11, headSha: 'b'.repeat(40), mainSha: 'c'.repeat(40),
+    state: 'running', run: { id: 95, attempt: 1, status: 'in_progress', url: 'https://github.com/o/r/actions/runs/95' },
+    mergedAt: new Date().toISOString(), checkedAt: new Date().toISOString(),
+  };
+  let follows = [queue];
+  const p = mount(url => url.startsWith('/api/ci?')
+    ? { runs: [], subscriptions: [], mergeQueue: follows, hasMore: false, nextBefore: null }
+    : page([]));
+  const item = () => p.doc.querySelector('.work-dock [aria-label="GitHub Actions"] .conversation-job');
+  try {
+    await until(() => item());
+    assert.match(item().getAttribute('aria-label'), /The merge queue is following main CI after #11 merged/);
+    assert.match(item().getAttribute('aria-label'), /CI run #95 · in_progress/);
+    assert.equal(item().tagName, 'A', 'a run the queue follows links to GitHub');
+    assert.equal(item().getAttribute('href'), queue.run.url);
+    assert.equal(p.doc.querySelector('.work-dock [aria-label="GitHub Actions"]')?.querySelectorAll('.conversation-job').length, 1,
+      'the queue item is not doubled by the no-runs notice');
+    // Without a run yet, it is a wait that opens the queue entry, not a link.
+    let opened;
+    p.window.addEventListener('yuzuno:open-job', event => { opened = event.detail; });
+    follows = [{ ...queue, state: 'waitingForRun', run: null }];
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => item()?.tagName === 'BUTTON' && /Waiting/.test(item().getAttribute('aria-label')));
+    assert.match(item().getAttribute('aria-label'), /Main CI has not appeared yet/);
+    item().click(); await wait();
+    assert.equal(opened?.source, 'merge_queue');
+    assert.equal(opened?.entryId, 'entry-1');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('the dock keeps its marks while a refresh or a return to the conversation is still loading, so the conversation keeps its place', async () => {
   // A conversation whose dock holds only CI marks: every refresh reads CI
   // again, and the dock must not empty out while that read is out.

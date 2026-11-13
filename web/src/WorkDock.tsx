@@ -505,6 +505,7 @@ export function WorkDockItem({
   detail,
   when,
   className = "",
+  href,
   onOpen,
 }: {
   /** Status key, which picks the mark and its colour. */
@@ -518,11 +519,16 @@ export function WorkDockItem({
   /** Its latest moment, such as "Started 14:02", shown quietly with the name. */
   when?: string | null;
   className?: string;
+  /** Where it goes: an outside page, such as the run on GitHub (YN-97). */
+  href?: string;
   onOpen: (from: HTMLElement) => void;
 }) {
   const Mark = marks[status] || CircleHelp;
   const node = useRef<HTMLSpanElement>(null);
-  const self = useRef<HTMLButtonElement>(null);
+  const self = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
+  const keep = (element: HTMLButtonElement | HTMLAnchorElement | null) => {
+    self.current = element;
+  };
   useSettleOnEnd(node, status);
   const [open, setOpen] = useState(false);
   // Whether the conversation is wide enough to say the time beside the node
@@ -533,14 +539,31 @@ export function WorkDockItem({
   // conversation`); 760px is that query's own threshold.
   const [wide, setWide] = useState(false);
   const toggle = (next: boolean) => {
-    const button = self.current;
-    if (next && button) {
+    const element = self.current;
+    if (next && element) {
       // The phone shows this dock as a drawer with the names already on it.
-      if (button.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return;
-      setWide((button.closest(".main-panel")?.getBoundingClientRect().width ?? 0) >= 760);
+      if (element.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return;
+      setWide((element.closest(".main-panel")?.getBoundingClientRect().width ?? 0) >= 760);
     }
     setOpen(next);
   };
+  const label = [name, state, sub, detail, when].filter(Boolean).join(" · ");
+  const inside = (
+    <>
+      <span className="work-dock-node" aria-hidden="true" ref={node}>
+        <Mark
+          size={14}
+          className={Mark === LoaderCircle ? "spin" : undefined}
+        />
+      </span>
+      <span className="work-dock-label" aria-hidden="true">
+        <strong>{name}</strong>
+        <small>{sub ?? state}</small>
+        {when && <small className="work-dock-when">{when}</small>}
+      </span>
+    </>
+  );
+  const shell = `work-dock-item state-${status} ${className}`.trim();
   return (
     // Beside the dock where there is room for it, else on its other side.
     <Tip
@@ -552,25 +575,28 @@ export function WorkDockItem({
       className="work-dock-tip"
       content={<TipText title={name} status={state} meta={detail} when={wide ? null : when} />}
     >
-      <button
-        ref={self}
-        type="button"
-        className={`work-dock-item state-${status} ${className}`.trim()}
-        aria-label={[name, state, detail, when].filter(Boolean).join(" · ")}
-        onClick={(event) => onOpen(event.currentTarget)}
-      >
-        <span className="work-dock-node" aria-hidden="true" ref={node}>
-          <Mark
-            size={14}
-            className={Mark === LoaderCircle ? "spin" : undefined}
-          />
-        </span>
-        <span className="work-dock-label" aria-hidden="true">
-          <strong>{name}</strong>
-          <small>{sub ?? state}</small>
-          {when && <small className="work-dock-when">{when}</small>}
-        </span>
-      </button>
+      {href ? (
+        <a
+          ref={keep}
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className={shell}
+          aria-label={label}
+        >
+          {inside}
+        </a>
+      ) : (
+        <button
+          ref={keep}
+          type="button"
+          className={shell}
+          aria-label={label}
+          onClick={(event) => onOpen(event.currentTarget)}
+        >
+          {inside}
+        </button>
+      )}
     </Tip>
   );
 }

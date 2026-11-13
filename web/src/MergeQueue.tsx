@@ -1103,6 +1103,8 @@ function EntryDetail({
   const changeWho = releasedByUser ? t.youReleased : t.changeWho(t.releaser(actorName(by, t) || "?"));
   const merge = e.merge;
   const mainCi = merge?.mainCi;
+  const mainRun = merge?.mainRun;
+  const following = mainCi?.run ?? mainRun?.run;
   const history = [...(e.history || [])].reverse();
   const task = e.taskReference || e.taskId;
   return (
@@ -1400,17 +1402,17 @@ function EntryDetail({
             </dd>
             <dt>{t.mainCi}</dt>
             <dd>
-              {!mainCi ? (
+              {!mainCi && !mainRun ? (
                 t.notYet
-              ) : mainCi.conclusion === "unobserved" ? (
+              ) : mainCi?.conclusion === "unobserved" ? (
                 <span className="merge-core-text">{t.unobserved(mainCi.detail || "")}</span>
               ) : (
                 <>
-                  <Link href={safeUrl(mainCi.url, repo) || runLink(repo, mainCi.run)}>
-                    {t.runLine("CI", mainCi.run ?? 0, mainCi.attempt ?? 1)}
+                  <Link href={safeUrl(mainCi?.url ?? mainRun?.url, repo) || runLink(repo, following)}>
+                    {t.runLine("CI", following ?? 0, mainCi?.attempt ?? mainRun?.attempt ?? 1)}
                   </Link>
                   {" · "}
-                  {conclusionWord(mainCi.conclusion, t)}
+                  {conclusionWord(mainCi?.conclusion, t)}
                 </>
               )}
             </dd>

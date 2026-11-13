@@ -454,6 +454,33 @@ async fn a_released_head_with_green_ci_on_the_current_main_merges_and_is_followe
     assert!(result["body"].as_str().unwrap().contains(&line), "{}", result["body"]);
 }
 
+/// YN-97: while main's push CI on the merge commit runs, the entry keeps it,
+/// so the read-only live projection can show the releaser waiting on it and
+/// link to it; a conclusion ends that and the follow-up as before.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_queue_keeps_the_running_main_ci_run_until_it_concludes() {
+    let lab = lab_with(|s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":95,"name":"CI","run_attempt":1,
+            "head_sha":merge_commit(),"status":"in_progress","conclusion":null,
+            "created_at":"2026-11-05T05:02:00Z","html_url":"https://github.com/owner/repo/actions/runs/95"}));
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    assert_eq!(
+        (e["merge"]["mainRun"]["run"].clone(), e["merge"]["mainRun"]["status"].clone(), e["merge"]["mainCi"].clone()),
+        (json!(95), json!("in_progress"), Value::Null),
+        "the queue records the run it follows: {e}"
+    );
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    let e = lab.step().await;
+    assert_eq!(e["state"], "done", "{e}");
+    assert_eq!(e["merge"]["mainCi"]["conclusion"], "success");
+    assert!(e["merge"]["mainRun"].is_null(), "a concluded run is not kept as a running one: {e}");
+}
+
 /// YN-68 (Dev Lead 2, mail 10300): once the task's executor is released,
 /// its copy of the merge goes to the lead who dispatched it, who released
 /// the entry too: one mail each time, and it rings, since nobody else will

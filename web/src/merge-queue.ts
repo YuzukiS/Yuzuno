@@ -107,6 +107,8 @@ export interface MergeRecord {
     url?: string;
     detail?: string;
   } | null;
+  /** Main's push CI the queue is following but has not concluded (YN-97). */
+  mainRun?: { run?: number; attempt?: number; status?: string; url?: string } | null;
 }
 /** YN-52: one binary file the release acknowledged, as Core read it at the head. */
 export interface MergeBinary {

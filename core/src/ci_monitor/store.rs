@@ -366,8 +366,15 @@ impl Store {
         runs.truncate(50);
         let cooldown = cooldown(&db)?;
         let cooldown = (cooldown > chrono::Utc::now().timestamp()).then(|| super::stamp(cooldown));
+        // The queue's own follow-up of main's push CI (YN-97), read-only: the
+        // conversation's GitHub Actions dock shows this as the releaser's wait
+        // beside the runs its subscriptions hold.
+        let merge_queue = super::live::queue_waits(&db, agent, task.as_deref(), chrono::Utc::now().timestamp())?
+            .into_iter()
+            .map(|wait| wait.item)
+            .collect::<Vec<_>>();
         Ok(
-            json!({"nextBefore":if has_more{runs.last().map(|v|v["cursor"].clone())}else{None},"runs":runs,"hasMore":has_more,"subscriptions":subscriptions,"subscriptionsTruncated":more,"activeSubscriptionCount":active,"cooldownUntil":cooldown,"source":"github_actions"}),
+            json!({"nextBefore":if has_more{runs.last().map(|v|v["cursor"].clone())}else{None},"runs":runs,"mergeQueue":merge_queue,"hasMore":has_more,"subscriptions":subscriptions,"subscriptionsTruncated":more,"activeSubscriptionCount":active,"cooldownUntil":cooldown,"source":"github_actions"}),
         )
     }
     /// The watches a manual refresh may check, most overdue first: those
