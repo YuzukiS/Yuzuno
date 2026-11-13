@@ -25,10 +25,10 @@ pub const LIGHTS_X: f64 = 17.0;
 /// macOS workflow measures it with the Accessibility API on every run and
 /// fails unless the close button's centre is 24±1px from the window's top:
 /// the middle of the toolbar's 48px above its 1px bottom border. On the
-/// macOS 26 runner, 22 put the centre of the 16px buttons at 20
-/// (run 43350114050), as if AppKit centred them in the taller title bar
-/// (19) and 1pt lower; 30 does the same at 24.
-pub const LIGHTS_Y: f64 = 30.0;
+/// macOS 26 runner the centre of the 16px buttons follows it at
+/// `LIGHTS_Y - 2`: 22 put it at 20 (run 43350114050) and 30 at 28
+/// (run 43352183675), so 26 puts it at 24.
+pub const LIGHTS_Y: f64 = 26.0;
 
 /// What a double click on the title bar does, as the user chose in System
 /// Settings ("Double-click a window's title bar to").
