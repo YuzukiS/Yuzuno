@@ -127,6 +127,8 @@ assert.deepEqual(report.opened.map((entry) => entry.run).sort(), runs.map((run) 
 console.log(`project-home-check: ${report.runs.length} runs, ${report.runs.reduce((n, run) => n + run.checks.length, 0)} checks`);
 
 async function check(run) {
+  // Each width starts from the same Core data: a report read at one is unread again at the next.
+  state.home = home();
   const result = { run: run.name, checks: [], shots: [] };
   report.runs.push(result);
   const pass = (name, extra = {}) => {
