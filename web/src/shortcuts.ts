@@ -146,12 +146,13 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = de
     {
       title: t.home,
       shortcuts: [
-        // A reply from Home takes the composer's Return keys (YN-3, device-preferences.ts returnKey).
+        // A reply from Home is written in the composer itself (YN-91, HomeComposer), and takes its Return keys
+        // (YN-3, device-preferences.ts returnKey); Escape in it is the reply's own.
         send
-          ? { keys: ["Return"], action: t.reply, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" }
-          : { keys: ["Return"], action: t.newLine, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" },
-        { keys: [modifier, "Return"], action: t.reply, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" },
-        { keys: ["Esc"], action: t.closeReply, source: "home/CardReply.tsx" },
+          ? { keys: ["Return"], action: t.reply, source: "PastedTextComposer.tsx, device-preferences.ts" }
+          : { keys: ["Return"], action: t.newLine, source: "PastedTextComposer.tsx, device-preferences.ts" },
+        { keys: [modifier, "Return"], action: t.reply, source: "PastedTextComposer.tsx, device-preferences.ts" },
+        { keys: ["Esc"], action: t.closeReply, source: "home/HomeComposer.tsx" },
       ],
     },
     {
