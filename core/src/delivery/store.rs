@@ -17,6 +17,11 @@ struct Step {
     /// round limit. It is not retried: a person decides what happens next.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_refused: Option<String>,
+    /// How many of its `attempts` setup calls have ended (YN-12 S4): only
+    /// when all three have is its setup proven to have failed. None on a
+    /// step an older Core wrote, which can't prove that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finished: Option<u8>,
 }
 impl Step {
     fn new(id: &str, round: usize, kind: &str) -> Self {
@@ -27,8 +32,43 @@ impl Step {
             next_try: 0,
             error: None,
             limit_refused: None,
+            finished: Some(0),
         }
     }
+    /// The review of a round's attempt `n`; the first keeps the round's
+    /// original request ID, so a flow an older Core started reads the same.
+    fn review(id: &str, round: usize, n: usize) -> Self {
+        let mut step = Self::new(id, round, "review");
+        if n > 1 {
+            step.request_id = format!("{}:{n}", step.request_id);
+        }
+        step
+    }
+    /// Its setup is proven to have failed: all three tries ended without an
+    /// operation, and none was refused by the PR's started round limit.
+    fn exhausted(&self) -> bool {
+        self.id.is_none()
+            && self.limit_refused.is_none()
+            && self.attempts >= 3
+            && self.finished.is_some_and(|done| done >= self.attempts)
+    }
+}
+/// A round's paid review attempts at its one head, the same as the three
+/// setup tries each gets (YN-12 S4, and mod.rs).
+const MAX_ATTEMPTS: usize = 3;
+/// One attempt a round moved past: a paid review of one fixed base and head,
+/// or its setup, that reached no verdict and doesn't count (YN-12 S4).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Attempt {
+    number: usize,
+    base_sha: String,
+    review: Step,
+    result_id: Option<String>,
+    authorized_by: collaboration::TaskActor,
+    authorized_at: String,
+    /// `uncounted_failure` or `setup_exhausted`.
+    replaced: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +81,22 @@ struct Round {
     authorized_at: String,
     result_id: Option<String>,
     review: Step,
+    /// One per round, whichever attempt its review is at.
     ci: Step,
+    /// The attempts at this head before the current one, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    earlier: Vec<Attempt>,
+}
+impl Round {
+    /// The current attempt's number.
+    fn attempt(&self) -> usize {
+        self.earlier.len() + 1
+    }
+    /// This Core wrote its current attempt: its mail and view name the
+    /// attempt. A round an older Core wrote and nobody retried reads as before.
+    fn names_attempts(&self) -> bool {
+        self.review.finished.is_some()
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +116,11 @@ struct Flow {
     notified: Vec<String>,
     #[serde(default)]
     terminal: Option<Terminal>,
+    /// The attempt and state last reconciled, `{round}[.{attempt}]:{state}`
+    /// (YN-12 S4). None where it is `{round}:{lastState}`, as older Cores
+    /// wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_key: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Terminal {
@@ -85,6 +145,11 @@ fn load(db: &Connection, task: &str) -> Result<Option<Flow>> {
 fn save(db: &Connection, f: &Flow) -> Result<()> {
     db.execute("INSERT INTO delivery_flows(task_id,data) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data", params![f.task_id, serde_json::to_string(f)?])?;
     Ok(())
+}
+/// Reads a flow and saves it unchanged, as any write of an older flow does.
+#[cfg(test)]
+pub(super) fn resave(db: &Connection, task: &str) -> Result<()> {
+    save(db, &load(db, task)?.context("Delivery missing")?)
 }
 fn finish(db: &Connection, f: &mut Flow, state: &str, reason: &str) -> Result<()> {
     if f.terminal.is_none() {
@@ -287,6 +352,9 @@ pub(crate) fn call(
         input["settings"] == config,
         "The review settings for this task changed; read delivery_get and authorize the actual settings"
     );
+    // Why the last round's current attempt is replaced, when this continues
+    // its head as another attempt rather than as the next round.
+    let mut retry = None;
     let mut f = if op == "delivery_enable" {
         allowed(
             input,
@@ -326,6 +394,7 @@ pub(crate) fn call(
             last_state: String::new(),
             notified: vec![],
             terminal: None,
+            last_key: None,
         }
     } else {
         allowed(
@@ -353,40 +422,49 @@ pub(crate) fn call(
             "Delivery identity or round changed; reread before continuing"
         );
         ensure!(
-            f.rounds.len() < f.max_rounds,
-            "Authorized review limit reached; human judgment is required"
-        );
-        ensure!(
             f.owner.id == owner_id && f.dispatch_id == task.dispatch.as_ref().map(|d| d.id.clone()),
             "Task assignment changed; reconcile this delivery manually"
         );
-        let r = f.rounds.last().unwrap();
-        let review = review(db, r.review.id.as_deref())?;
-        ensure!(
-            review.as_ref().is_some_and(|v| !matches!(
-                v["status"].as_str(),
-                Some("preparing" | "running" | "unknown")
-            )),
-            "Reconcile the existing review first; an unfinished or unknown review cannot be replaced"
-        );
+        retry = continued(db, &f, &linked, &head)?;
         f
     };
-    let number = f.rounds.len() + 1;
-    let r = Round {
-        number,
-        base_sha: base,
-        head_sha: head,
-        settings: config,
-        authorized_by: actor.clone(),
-        authorized_at: now(),
-        result_id: None,
-        review: Step::new(&f.id, number, "review"),
-        ci: Step::new(&f.id, number, "ci"),
-    };
-    f.rounds.push(r);
+    if let Some(replaced) = retry {
+        // Another attempt at the last round's head: the attempt it replaces
+        // is kept whole in `earlier`; the round's CI stays as it is.
+        let flow = f.id.clone();
+        let r = f.rounds.last_mut().unwrap();
+        let (round, number) = (r.number, r.attempt());
+        let attempt = Attempt {
+            number,
+            base_sha: std::mem::replace(&mut r.base_sha, base),
+            review: std::mem::replace(&mut r.review, Step::review(&flow, round, number + 1)),
+            result_id: r.result_id.take(),
+            authorized_by: std::mem::replace(&mut r.authorized_by, actor.clone()),
+            authorized_at: std::mem::replace(&mut r.authorized_at, now()),
+            replaced: replaced.into(),
+        };
+        r.earlier.push(attempt);
+        r.settings = config;
+    } else {
+        let number = f.rounds.len() + 1;
+        let r = Round {
+            number,
+            base_sha: base,
+            head_sha: head,
+            settings: config,
+            authorized_by: actor.clone(),
+            authorized_at: now(),
+            result_id: None,
+            review: Step::review(&f.id, number, 1),
+            ci: Step::new(&f.id, number, "ci"),
+            earlier: vec![],
+        };
+        f.rounds.push(r);
+    }
     f.enabled = true;
     // Enabling around a manual review adopts its identity, including unknown.
-    // Continuing deliberately authorizes a NEW attempt, even for the same SHA.
+    // Continuing authorizes a new round for a new head, or another attempt
+    // at the same head only after its attempt reached no verdict (continued).
     if op == "delivery_enable" {
         let r = f.rounds.last_mut().unwrap();
         let raw:Option<String>=db.query_row("SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND COALESCE(json_extract(data,'$.requestedBaseSha'),json_extract(data,'$.baseSha'))=?3 AND COALESCE(json_extract(data,'$.requestedHeadSha'),json_extract(data,'$.headSha'))=?4 AND json_extract(data,'$.requestedHarness')=?5 AND json_extract(data,'$.requestedModel')=?6 ORDER BY rowid DESC LIMIT 1",params![id,f.link_id,r.base_sha,r.head_sha,r.settings["harness"].as_str(),r.settings["model"].as_str()],|row|row.get(0)).optional()?;
@@ -412,15 +490,113 @@ pub(crate) fn call(
         );
     }
     save(db, &f)?;
-    collaboration::activity(
-        db,
-        &id,
-        "comment",
-        actor,
-        source,
-        json!({"body":format!("Delivery {} authorized: round {number}/{}, fixed {} → {}. Matching result submission starts review and CI; no automatic merge or release.",f.id,f.max_rounds,f.rounds[number-1].base_sha,f.rounds[number-1].head_sha),"deliveryId":f.id}),
-    )?;
+    let r = f.rounds.last().unwrap();
+    let body = match r.earlier.last().filter(|_| retry.is_some()) {
+        Some(before) => format!(
+            "Delivery {} authorized attempt {} of round {}/{} at {} → {}: attempt {} ({}) reached no verdict and doesn't count. A matching result submission starts the review; no automatic merge or release.",
+            f.id, r.attempt(), r.number, f.max_rounds, r.base_sha, r.head_sha, before.number,
+            before.review.id.as_deref().unwrap_or("setup")
+        ),
+        None => format!(
+            "Delivery {} authorized: round {}/{}, fixed {} → {}. Matching result submission starts review and CI; no automatic merge or release.",
+            f.id, r.number, f.max_rounds, r.base_sha, r.head_sha
+        ),
+    };
+    collaboration::activity(db, &id, "comment", actor, source, json!({"body":body,"deliveryId":f.id}))?;
     Ok(json!({"flow":view(db,&f)?}))
+}
+
+/// What `delivery_continue` may authorize for `head` after the last round
+/// (YN-12 S4): a round is one head, an attempt one paid review of a fixed
+/// base and head. Some(why the current attempt is replaced) for another
+/// attempt at the round's head, None for the next round, or the refusal.
+/// A head with a counted review of this PR, by this flow or anyone else, is
+/// never reviewed again here, and a base-only change adds nothing.
+fn continued(db: &Connection, f: &Flow, linked: &Value, head: &str) -> Result<Option<&'static str>> {
+    let r = f.rounds.last().unwrap();
+    let (round, attempt) = (r.number, r.attempt());
+    ensure!(
+        r.review.id.is_some() || r.review.limit_refused.is_none(),
+        "Round {round} attempt {attempt} was refused by this PR's two started review rounds before it started. Only whoever decides can go beyond that limit, by starting a round themselves. No attempt was authorized."
+    );
+    // The current attempt must have ended with what it ended with known.
+    let (current, replaced) = match r.review.id.as_deref() {
+        Some(id) => {
+            let rv = review(db, Some(id))?;
+            let rv = rv
+                .filter(|v| !matches!(v["status"].as_str(), Some("preparing" | "running" | "unknown")))
+                .context("Reconcile the existing review first; an unfinished or unknown review cannot be replaced")?;
+            let status = rv["status"].as_str().unwrap_or("unknown").to_owned();
+            // A completed review without an explicit conclusion is an unknown
+            // outcome too: a person judges it before any round or attempt
+            // replaces it (Lead 11659). A failed or cancelled one keeps its path.
+            ensure!(
+                status != "completed"
+                    || matches!(rv["conclusion"].as_str(), Some("no_findings" | "approved_with_notes" | "changes_requested")),
+                "Reconcile the existing review first: review {id} completed without an explicit conclusion ({}), and an unknown outcome cannot be replaced by another round or attempt. No attempt was authorized.",
+                rv["conclusion"].as_str().unwrap_or("none recorded")
+            );
+            let uncounted = status == "failed" && !crate::pr_review::store::counts_toward_limit(db, id)?;
+            (Some((id.to_owned(), status)), uncounted.then_some("uncounted_failure"))
+        }
+        None => {
+            ensure!(
+                r.review.attempts > 0,
+                "Reconcile the existing review first; an unfinished or unknown review cannot be replaced"
+            );
+            let receipt: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM collaboration_requests WHERE actor=?1 AND operation='review_start' AND request_id=?2)",
+                params![format!("agent:{}", f.owner.id), r.review.request_id],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                r.review.exhausted() && !receipt,
+                "Round {round} attempt {attempt} hasn't been confirmed to have ended: its setup is in flight or wasn't recorded as finished. Reconcile it first. No attempt was authorized."
+            );
+            (None, Some("setup_exhausted"))
+        }
+    };
+    let counted = |(id, status): (String, String)| {
+        anyhow::anyhow!(
+            "Head {head} already has a counted review of this PR ({id}, {status}); a head gets one counted round, and a base-only change doesn't add one. Push a fix and continue with its new head, or ask whoever decides. No attempt was authorized."
+        )
+    };
+    if let Some(found) = crate::pr_review::store::counted_at_head(db, linked["repositoryId"].as_i64(), linked["number"].as_i64(), head)? {
+        return Err(counted(found));
+    }
+    if r.head_sha != head {
+        ensure!(
+            f.rounds.len() < f.max_rounds,
+            "Authorized review limit reached; human judgment is required"
+        );
+        return Ok(None);
+    }
+    ensure!(
+        attempt < MAX_ATTEMPTS,
+        "Round {round} already had {MAX_ATTEMPTS} attempts; human judgment is required. No attempt was authorized."
+    );
+    // The round's CI is set up once per round, never per attempt. Once its
+    // setup used its three tries without a subscription, ended or not, and
+    // no receipt a claim could read it back from exists, another attempt
+    // would pay for a review this round can't take to ready (R3 5e57e962).
+    if r.ci.id.is_none() && r.ci.attempts >= 3 {
+        let receipt: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM collaboration_requests WHERE actor=?1 AND operation='ci_subscribe' AND request_id=?2)",
+            params![format!("agent:{}", f.owner.id), r.ci.request_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            receipt,
+            "Round {round}'s CI subscription setup used its three tries without a subscription, and no receipt of it can recover one: another attempt would pay for a review this round can't take to ready. Reconcile its original CI operation ({}) first. No attempt was authorized.",
+            r.ci.request_id
+        );
+    }
+    // Not replaced: its review counts, although no head recorded on it
+    // placed it in the head's history.
+    match replaced {
+        Some(replaced) => Ok(Some(replaced)),
+        None => Err(counted(current.unwrap_or_default())),
+    }
 }
 /// Called in the result transaction, before its receipt commits.
 pub(crate) fn submitted(
@@ -473,11 +649,40 @@ fn review(db: &Connection, id: Option<&str>) -> Result<Option<Value>> {
     raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
 }
 /// Whether `review` is one of the reviews this task's delivery flow
-/// registered (a round's review, started by the flow or attached to it): the
-/// flow's own mail tells its owner and recipient, so a review's end sends no
-/// dispatcher copy for it (YN-12 S2, pr_review/store.rs). Read only.
+/// registered (a round's review, started by the flow or attached to it, at
+/// any of its attempts): the flow's own mail tells its owner and recipient,
+/// so a review's end sends no dispatcher copy for it (YN-12 S2,
+/// pr_review/store.rs). Read only.
 pub(crate) fn registers_review(db: &Connection, task: &str, review: &str) -> Result<bool> {
-    Ok(load(db, task)?.is_some_and(|f| f.rounds.iter().any(|r| r.review.id.as_deref() == Some(review))))
+    Ok(load(db, task)?.is_some_and(|f| {
+        f.rounds.iter().any(|r| {
+            r.review.id.as_deref() == Some(review)
+                || r.earlier.iter().any(|a| a.review.id.as_deref() == Some(review))
+        })
+    }))
+}
+/// Refuses a review request of this task's delivery flow that it moved past:
+/// an earlier attempt's or an earlier round's, whatever candidate it names
+/// (YN-12 S4). Such a request may never start a review: it is refused before
+/// any candidate is matched, so naming the base an attempt was replaced
+/// from can't start one unregistered. A request that already has a receipt
+/// never gets here: its original review is returned (pr_review previous()).
+pub(crate) fn refuse_replaced_request(db: &Connection, task: &str, request_id: &str) -> Result<()> {
+    let Some(f) = load(db, task)? else {
+        return Ok(());
+    };
+    let Some((last, before)) = f.rounds.split_last() else {
+        return Ok(());
+    };
+    let replaced = before.iter().any(|r| r.review.request_id == request_id)
+        || f.rounds.iter().flat_map(|r| &r.earlier).any(|a| a.review.request_id == request_id);
+    ensure!(
+        !replaced,
+        "This delivery attempt was replaced by attempt {} of round {}; its request can't start a review. No review was started.",
+        last.attempt(),
+        last.number
+    );
+    Ok(())
 }
 /// Both native manual requests and automation enter this same transaction.
 /// A registered candidate returns its original attempt even after restart.
@@ -526,6 +731,9 @@ pub(crate) fn attach_review(
     request_id: &str,
     id: &str,
 ) -> Result<()> {
+    // Before matching: a replaced attempt's request naming its old base
+    // would match no candidate and start unregistered (YN-12 S4).
+    refuse_replaced_request(db, task, request_id)?;
     let Some(mut f) = matching(db, task, link_id, base, head)? else {
         return Ok(());
     };
@@ -697,14 +905,27 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
     }
     for (name, step) in [("Review", &r.review), ("CI subscription", &r.ci)] {
         if step.id.is_none() && step.attempts >= 3 {
+            // Its three tries are used either way, and nothing tries again:
+            // whoever decides is told (PR #901 R1). Only a step whose every
+            // try recorded its end proves its setup failed, so
+            // delivery_continue may retry it (YN-12 S4). `finished` is a
+            // total, so the try whose end is missing may be any of them.
+            let unrecorded = step.finished.is_some_and(|done| done < step.attempts);
             return Ok((
                 "infrastructure_error",
-                format!(
-                    "{name} setup failed after three attempts with the same request ID. Reconcile the retained operation; no replacement review is started. {}",
-                    step.error
-                        .as_deref()
-                        .unwrap_or("Completion was not confirmed.")
-                ),
+                if unrecorded {
+                    format!(
+                        "{name} setup used its three starts with the same request ID, and the completion of one or more of them isn't recorded: they may still be in flight, or their result wasn't saved. No fourth start is made; check the original request and operation. Until that is confirmed, no replacement attempt can be authorized on it. This doesn't prove that the setup failed or that nothing ran. {}",
+                        step.error.as_deref().unwrap_or("Completion was not confirmed.")
+                    )
+                } else {
+                    format!(
+                        "{name} setup failed after three attempts with the same request ID. Reconcile the retained operation; no replacement review is started. {}",
+                        step.error
+                            .as_deref()
+                            .unwrap_or("Completion was not confirmed.")
+                    )
+                },
             ));
         }
     }
@@ -854,6 +1075,10 @@ fn view(db: &Connection, f: &Flow) -> Result<Value> {
     v["reason"] = json!(reason);
     v["candidate"] =
         json!({"flowId":f.id,"round":r.number,"baseSha":r.base_sha,"headSha":r.head_sha});
+    // Only a round this Core wrote names its attempt; an older one reads as it did.
+    if r.names_attempts() {
+        v["attempt"] = json!(r.attempt());
+    }
     v["reviewEvidence"] = if rv.is_null() {
         Value::Null
     } else {
@@ -867,6 +1092,9 @@ pub(super) struct Plan {
     pub input: Value,
     kind: &'static str,
     round: usize,
+    /// The step's request ID when claimed: its finish writes to that step
+    /// only, so a late one never lands on a newer attempt (YN-12 S4).
+    request_id: String,
 }
 impl Store {
     pub(super) fn delivery_tasks(&self) -> Result<Vec<String>> {
@@ -907,6 +1135,11 @@ impl Store {
         }
         if kind == "review" && settings(&tx, &f.task_id)? != r.settings && r.review.id.is_none() {
             let r = f.rounds.last_mut().unwrap();
+            // The tries left end here without a call; one already in flight
+            // (finished behind attempts) still hasn't.
+            if let Some(done) = r.review.finished.as_mut() {
+                *done += 3u8.saturating_sub(r.review.attempts);
+            }
             r.review.attempts = 3;
             r.review.error = Some("The review settings for this task changed after authorization.".into());
             save(&tx, &f)?;
@@ -943,6 +1176,7 @@ impl Store {
             input,
             kind,
             round: r.number,
+            request_id: step.request_id.clone(),
         };
         save(&tx, &f)?;
         tx.commit()?;
@@ -958,11 +1192,25 @@ impl Store {
         let tx = db.transaction()?;
         let mut f = load(&tx, task_id)?.context("Delivery missing")?;
         let r = &mut f.rounds[plan.round - 1];
+        // The step the plan was claimed for: the round's current one, or the
+        // earlier attempt it became. A request the round no longer has gets
+        // nothing written (YN-12 S4).
         let step = if plan.kind == "review" {
-            &mut r.review
+            if r.review.request_id == plan.request_id {
+                Some(&mut r.review)
+            } else {
+                r.earlier.iter_mut().map(|a| &mut a.review).find(|s| s.request_id == plan.request_id)
+            }
         } else {
-            &mut r.ci
+            Some(&mut r.ci).filter(|s| s.request_id == plan.request_id)
         };
+        let Some(step) = step else {
+            return Ok(());
+        };
+        // This setup call has ended, whatever it answered.
+        if let Some(done) = step.finished.as_mut() {
+            *done = done.saturating_add(1);
+        }
         match answer {
             Ok(value) => {
                 step.id = Some(text(&value, "id")?.into());
@@ -990,13 +1238,26 @@ impl Store {
         let mut f = load(&tx, task_id)?.context("Delivery missing")?;
         let v = view(&tx, &f)?;
         let current = text(&v, "state")?;
-        if f.last_state == current {
+        let round = f.rounds.len();
+        let r = f.rounds.last().unwrap();
+        let (attempt, names) = (r.attempt(), r.names_attempts());
+        // Each attempt is notified of its own states: its key carries the
+        // attempt from the second on, so the first keeps the key older Cores
+        // wrote, and a flow they wrote reads as unchanged as it did.
+        let key = match attempt {
+            1 => format!("{round}:{current}"),
+            n => format!("{round}.{n}:{current}"),
+        };
+        let last_key = f.last_key.clone().unwrap_or_else(|| format!("{round}:{}", f.last_state));
+        if f.last_state == current && last_key == key {
             tx.commit()?;
             return Ok(false);
         }
         f.last_state = current.into();
-        let round = f.rounds.len();
-        let key = format!("{round}:{current}");
+        if names {
+            f.last_key = Some(key.clone());
+        }
+        let attempt_note = if names { format!(", attempt {attempt}/{MAX_ATTEMPTS}") } else { String::new() };
         if matches!(
             current,
             "waiting_fix"
@@ -1021,9 +1282,13 @@ impl Store {
             }
             for recipient in recipients {
                 let id = uuid::Uuid::new_v4().to_string();
+                let mut metadata = json!({"kind":"delivery","name":f.task_ref,"status":current,"deliveryId":f.id,"round":round});
+                if names {
+                    metadata["attempt"] = json!(attempt);
+                }
                 collaboration::insert_message(
                     &tx,
-                    json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":recipient,"body":format!("{} delivery round {round}/{}: {current}. {} PR {}. Read delivery_get(taskId={}) for fixed revision, review and CI evidence. This message does not authorize another paid review, merge or deployment.",f.task_ref,f.max_rounds,v["reason"].as_str().unwrap_or(""),f.url,f.task_ref),"taskId":f.task_id,"replyTo":null,"threadId":id,"createdAt":now(),"source":{"deliveryId":f.id},"priority":"normal","metadata":{"kind":"delivery","name":f.task_ref,"status":current,"deliveryId":f.id,"round":round}}),
+                    json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":recipient,"body":format!("{} delivery round {round}/{}{attempt_note}: {current}. {} PR {}. Read delivery_get(taskId={}) for fixed revision, review and CI evidence. This message does not authorize another paid review, merge or deployment.",f.task_ref,f.max_rounds,v["reason"].as_str().unwrap_or(""),f.url,f.task_ref),"taskId":f.task_id,"replyTo":null,"threadId":id,"createdAt":now(),"source":{"deliveryId":f.id},"priority":"normal","metadata":metadata}),
                 )?;
             }
         }

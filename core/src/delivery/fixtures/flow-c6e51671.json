@@ -1,0 +1,28 @@
+{
+  "id": "{FLOW}",
+  "taskId": "{TASK}",
+  "taskRef": "{REF}",
+  "linkId": "7:pull:1",
+  "url": "{URL}",
+  "owner": {"kind": "agent", "id": "owner", "name": "Owner"},
+  "recipient": null,
+  "dispatchId": null,
+  "maxRounds": 2,
+  "enabled": true,
+  "rounds": [
+    {
+      "number": 1,
+      "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "settings": {"harness": "codex", "model": "gpt-6.1-sol"},
+      "authorizedBy": {"kind": "user", "id": "user", "name": "You"},
+      "authorizedAt": "2026-11-01T00:00:00+00:00",
+      "resultId": "legacy-result",
+      "review": {"requestId": "delivery:{FLOW}:1:review", "id": null, "attempts": 3, "nextTry": 1761955290, "error": "Reviewer admission unavailable"},
+      "ci": {"requestId": "delivery:{FLOW}:1:ci", "id": null, "attempts": 0, "nextTry": 0, "error": null}
+    }
+  ],
+  "lastState": "infrastructure_error",
+  "notified": ["1:infrastructure_error"],
+  "terminal": null
+}

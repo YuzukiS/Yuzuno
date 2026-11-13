@@ -1,5 +1,7 @@
 use crate::{github::client::Repository, store::Store};
 use serde_json::{Value, json};
+/// YN-12 S4: rounds by head, attempts within a round.
+mod attempts;
 fn setup() -> (tempfile::TempDir, Store, String) {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
