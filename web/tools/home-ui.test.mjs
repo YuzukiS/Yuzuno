@@ -3883,7 +3883,7 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     const fold = group.querySelector(".project-group-fold");
     const name = group.querySelector(".project-group-toggle");
     assert.equal(fold.getAttribute("aria-expanded"), "true");
-    assert.equal(name.getAttribute("aria-label"), "Open App's project page");
+    assert.match(name.getAttribute("aria-label"), /^Open App's project page · 2 agents$/);
     // Tab order in the heading: the arrow, the name, then +.
     assert.deepEqual(
       [...group.querySelector(".project-group-head").children].slice(0, 3).map((el) => el.className),
@@ -3954,7 +3954,7 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     const group = zh.doc.querySelector('.project-group[data-group="p-app"]');
     const name = group.querySelector(".project-group-toggle");
     assert.equal(group.querySelector(".project-group-fold").getAttribute("aria-label"), "折叠 App");
-    assert.equal(name.getAttribute("aria-label"), "打开 App 的项目页");
+    assert.match(name.getAttribute("aria-label"), /^打开 App 的项目页 · 2 个 Agent$/);
     name.click();
     await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
     assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);

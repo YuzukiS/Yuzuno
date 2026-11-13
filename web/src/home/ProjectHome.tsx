@@ -13,11 +13,11 @@ import type { HomeTarget } from "./home-navigation";
 import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
 import { HomeDensity, RefreshHome } from "./home-tools";
-import { ProjectDeck, ProjectFacts, RepoBlock } from "./HomePanel";
+import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
 import { ProjectReply } from "./AskReply";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
-import { projectNeeds, projectUnseen } from "./unseen";
+import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
 import "./project-home.css";
 import { Tip, TipText } from "../Tip";
@@ -86,14 +86,9 @@ export function ProjectHome({
   const sections = panel?.brief.sections ?? [];
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
   const executors = needsYou.filter((item) => item.kind === "executor");
-  const now = Date.now();
-  const openAsks = sections.filter(
-    (section) =>
-      section.kind === "ask" &&
-      section.ask?.state !== "replied" &&
-      !(section.ask?.deferredUntil && Date.parse(section.ask.deferredUntil) > now),
-  ).length;
-  const needsCount = panel ? projectNeeds(needsYou, panel.pending, openAsks) : 0;
+  // Count what the page lists, from the same deck: its Needs group's cards, with its approvals and executor rows.
+  const { deck } = useProjectDeck(panel);
+  const needsCount = deck.counts.needs + (panel?.pending.length ?? 0) + executors.length;
   const unseen = panel ? projectUnseen(panel) : 0;
   const changed = sections.filter(changedSinceSeen).length;
   const asks = waitingAsks(needsYou);

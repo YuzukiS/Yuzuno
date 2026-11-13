@@ -15,7 +15,8 @@ const text = strings({
   overviewLabel: (name: string) => `Project overview: ${name}`,
   newIn: (name: string) => `New agent in ${name}`,
   newWithout: "New agent without a project",
-  fold: (name: string) => `Collapse ${name}`,
+  collapse: (name: string) => `Collapse ${name}`,
+  expand: (name: string) => `Expand ${name}`,
   open: (name: string) => `Open ${name}'s project page`,
   needs: (count: number) => `${count} ${count === 1 ? "needs" : "need"} you`,
   working: (count: number) => `${count} working`,
@@ -25,7 +26,8 @@ const text = strings({
   count: (count) => `${count} 个 Agent`,
   newIn: (name) => `在 ${name} 中新建 Agent`,
   newWithout: "新建不属于任何项目的 Agent",
-  fold: (name) => `折叠 ${name}`,
+  collapse: (name) => `折叠 ${name}`,
+  expand: (name) => `展开 ${name}`,
   open: (name) => `打开 ${name} 的项目页`,
   overview: "项目概览",
   overviewLabel: (name) => `项目概览：${name}`,
@@ -222,6 +224,12 @@ function GroupSection({
   const summary = groupSummary(group.agents);
   const marked = folded && (summary.needs > 0 || summary.working > 0 || summary.unread > 0);
   const [toggle, stacked] = useStacked(marked ? `${summary.needs}/${summary.working}/${summary.unread}` : null);
+  // What the marks say, for the name button's accessible name: the visible marks are not in its content when it has one.
+  const marksSaid = [
+    summary.needs && t.needs(summary.needs),
+    summary.working && t.working(summary.working),
+    summary.unread && t.unread(summary.unread),
+  ].filter(Boolean).join(t.listJoin);
   return (
     <section
       className={`project-group project-group-${style}${group.projectId ? "" : " is-unassigned"}${folded ? " is-folded" : ""}${instant ? " is-instant" : ""}`}
@@ -236,7 +244,7 @@ function GroupSection({
           className="project-group-fold"
           aria-expanded={!folded}
           aria-controls={body}
-          aria-label={t.fold(group.name)}
+          aria-label={folded ? t.expand(group.name) : t.collapse(group.name)}
           onClick={onToggle}
         >
           <ChevronDown size={12} className="project-group-chevron" aria-hidden="true" />
@@ -247,7 +255,7 @@ function GroupSection({
             type="button"
             className="project-group-toggle"
             aria-current={current ? "page" : undefined}
-            aria-label={t.open(group.name)}
+            aria-label={[t.open(group.name), t.count(count), marked ? marksSaid : ""].filter(Boolean).join(" · ")}
             onClick={onOpenProject}
           >
             {style === "bands" ? (
@@ -263,8 +271,13 @@ function GroupSection({
           </button>
         ) : (
           <button ref={toggle} type="button" className="project-group-toggle project-group-title" disabled>
-            <Minus size={12} aria-hidden="true" />
+            {style === "bands" ? (
+              <span className="project-group-dot" aria-hidden="true" />
+            ) : (
+              <Minus size={12} aria-hidden="true" />
+            )}
             <span className="project-group-name">{group.name}</span>
+            {marked && <Summary {...summary} />}
             <span className="project-group-count" aria-label={t.count(count)}>
               {count}
             </span>

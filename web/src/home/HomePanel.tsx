@@ -330,6 +330,27 @@ function History30({
 }
 
 /**
+ * The visit's places and groups for a Project's cards (YN-86 §2.2), and its
+ * deck in the three groups. A card first shown in this visit keeps its place
+ * and its group (card-sizes.ts); a Project's page counts what it lists from
+ * the same deck.
+ */
+export function useProjectDeck(panel: ProjectPanel | null) {
+  const sizes = useContext(DeckSizes);
+  const now = Date.now();
+  const sections = panel?.brief.sections ?? [];
+  const projectId = panel?.project.id ?? "";
+  const ownPlaces = sections.map((section) => [section.key, deckPlace(section, now)] as const);
+  const places: Map<string, DeckPlace> = sizes ? sizes.places(projectId, ownPlaces) : new Map(ownPlaces);
+  const placeOf = (section: Section) => places.get(section.key) ?? deckPlace(section, now);
+  const ownGroups = sections.map((section) => [section.key, deckGroup(placeOf(section), unreadChange(section))] as const);
+  const held = sizes ? sizes.groups(projectId, ownGroups) : new Map(ownGroups);
+  const groupOf = (section: Section) => held.get(section.key) ?? deckGroup(placeOf(section), unreadChange(section));
+  const groups = groupSections(sections);
+  return { groups, ordered: orderDeck(groups, placeOf), placeOf, deck: groupDeck(groups, groupOf, placeOf) };
+}
+
+/**
  * One Project's cards (YN-86 §2.2): the whole deck as a project's panel on
  * Home shows it, or, with `grouped`, the three groups of its own page: what
  * needs the user, what is in progress and what is done. Both draw the same
@@ -379,17 +400,7 @@ export function ProjectDeck({
   // The deck's order (YN-3, deck-order.ts): what needs the user, then current status, reports, Asks put off and
   // what came in during this visit; then the Asks the user answered, under their heading; last, status out of
   // date, closed. Each card keeps the place it was first shown in during this visit (card-sizes.ts).
-  const sizes = useContext(DeckSizes);
-  const now = Date.now();
-  const ownPlaces = sections.map((s) => [s.key, deckPlace(s, now)] as const);
-  const places: Map<string, DeckPlace> = sizes ? sizes.places(id, ownPlaces) : new Map(ownPlaces);
-  const placeOf = (s: Section) => places.get(s.key) ?? deckPlace(s, now);
-  // The group each card stands in for this visit (project-deck.ts), fixed as its place is.
-  const ownGroups = sections.map((s) => [s.key, deckGroup(placeOf(s), unreadChange(s))] as const);
-  const heldGroups = sizes ? sizes.groups(id, ownGroups) : new Map(ownGroups);
-  const groupOf = (s: Section) => heldGroups.get(s.key) ?? deckGroup(placeOf(s), unreadChange(s));
-  const groups = groupSections(sections);
-  const ordered = orderDeck(groups, placeOf);
+  const { groups, ordered, placeOf, deck } = useProjectDeck(panel);
   const inGroup = (place: DeckPlace) => ordered.filter((o) => o.place === place).map((o) => o.group);
   const members = (list: TopicGroup[]) => list.flatMap((g) => [...(g.parent ? [g.parent] : []), ...g.subs]);
   const deckMain = ordered.filter((o) => o.place !== "replied" && o.place !== "stale").map((o) => o.group);
@@ -398,7 +409,7 @@ export function ProjectDeck({
   const repliedCount = members(deckReplied).filter((s) => placeOf(s) === "replied").length;
   const staleStatus = members(deckStale).filter((s) => placeOf(s) === "stale" && s.status);
   const newestStale = staleStatus.map((s) => s.status!.asOf).sort().at(-1) ?? null;
-  const groupedDeck = grouped ? groupDeck(groups, groupOf, placeOf) : null;
+  const groupedDeck = grouped ? deck : null;
   const live = useMemo(() => [...sections, ...(panel.brief.teamSections ?? [])], [sections, panel.brief.teamSections]);
   const referable = useMemo(() => referableHistory(panel.brief.history, live.map((s) => s.key)), [panel.brief.history, live]);
   // The grids this component lays out: the panel's one deck, or a Project page's groups.
