@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     updates::{
         lifecycle::WorkspaceRuntime,
+        public_github::stand_in::{self, Answer},
         state::{Launch, ReleaseRef},
     },
     workspace::Workspace,
@@ -169,6 +170,8 @@ async fn signed_download_registers_only_then_requires_manual_prepare() {
     Releases::check(&c).unwrap();
     wait(&c, "available").await;
     assert_eq!(c.releases.status()["candidate"]["releaseId"], "signed-test");
+    assert_eq!(c.releases.status()["via"], "gh");
+    assert_eq!(c.releases.status()["candidate"]["source"], "owner/repo · core-test · Signature verified");
     Releases::download(&c, "signed-test").unwrap();
     Releases::download(&c, "signed-test").unwrap();
     wait(&c, "downloaded").await;
@@ -200,6 +203,47 @@ async fn signed_download_registers_only_then_requires_manual_prepare() {
     let s = c.releases.status();
     assert_eq!(s["candidate"]["releaseId"], "signed-test");
     assert!(!s.to_string().contains("secret diagnostic"));
+}
+
+#[tokio::test]
+async fn a_signed_out_gh_checks_and_downloads_the_public_way() {
+    let (dir, mut c) = fixture();
+    let github = stand_in::serve(|path, _| {
+        let names = ["yuzuno-core-linux-x86_64.json", "yuzuno-core-linux-x86_64.json.minisig", "yuzuno-core-linux-x86_64.tar.gz"];
+        let files = [INDEX, SIGNATURE.as_bytes(), ARCHIVE];
+        if path == "/repos/owner/repo/releases?per_page=100" {
+            let assets: Vec<_> = names.iter().zip(files).enumerate()
+                .map(|(i, (name, bytes))| json!({"id":i+1,"name":name,"state":"uploaded","size":bytes.len()})).collect();
+            return Answer::ok(json!([{"tag_name":"core-test","draft":false,"prerelease":false,"published_at":"2026-10-14T00:00:00Z","assets":assets}]).to_string());
+        }
+        // As GitHub does, each asset answers with a redirect to its file.
+        match path.strip_prefix("/repos/owner/repo/releases/assets/").or_else(|| path.strip_prefix("/files/")) {
+            Some(n) if path.starts_with("/repos/") => Answer::redirect(format!("/files/{n}")),
+            Some(n) => n.parse::<usize>().ok().and_then(|n| files.get(n.wrapping_sub(1))).map_or(Answer::status(404), |b| Answer::ok(*b)),
+            None => Answer::status(404),
+        }
+    });
+    let script = dir.path().join("gh-signed-out");
+    fs::write(&script, "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    {
+        let releases = Arc::get_mut(&mut Arc::get_mut(&mut c).unwrap().releases).unwrap();
+        releases.client.program = script.to_string_lossy().into();
+        releases.public = github.reader(&[]);
+    }
+    Releases::check(&c).unwrap();
+    wait(&c, "available").await;
+    let s = c.releases.status();
+    assert_eq!((&s["via"], &s["candidate"]["releaseId"]), (&json!("public"), &json!("signed-test")));
+    assert_eq!(s["candidate"]["source"], "owner/repo · core-test · Signature verified · public download");
+    Releases::download(&c, "signed-test").unwrap();
+    wait(&c, "downloaded").await;
+    assert_eq!(c.releases.status()["via"], "public");
+    c.check().await.unwrap();
+    assert_eq!(c.status().await.unwrap()["candidates"][0]["releaseId"], "signed-test");
+    let paths: Vec<_> = github.requests().iter().map(|head| head.split_whitespace().nth(1).unwrap().to_owned()).collect();
+    assert_eq!(paths, ["/repos/owner/repo/releases?per_page=100", "/repos/owner/repo/releases/assets/1", "/files/1",
+        "/repos/owner/repo/releases/assets/2", "/files/2", "/repos/owner/repo/releases/assets/3", "/files/3"]);
 }
 
 #[tokio::test]

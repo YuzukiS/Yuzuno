@@ -66,6 +66,7 @@ pub mod project_requests;
 pub(crate) mod task_keys;
 pub mod github;
 pub mod guide;
+pub(crate) mod https;
 pub mod pr_review;
 pub mod pr_operations;
 pub mod merge_queue;

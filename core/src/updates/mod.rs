@@ -13,6 +13,7 @@ pub mod helper;
 pub mod lifecycle;
 pub(crate) mod notices;
 pub mod package;
+pub mod public_github;
 pub mod releases;
 #[cfg(unix)]
 pub mod start;
