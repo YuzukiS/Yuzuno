@@ -613,3 +613,78 @@ test("each dialog's limit is the one Core checks, in Core's unit", async (t) => 
   assert.equal(coreLimits.prBody.max, one(pr, /self\.body\.len\(\) <= ([\d_]+)/g, "a PR's body"));
   assert.equal(coreLimits.prBody.unit, "bytes");
 });
+
+// One-line fields (YN-106 PR 3): a name or a title is counted in the bytes
+// Core counts. 100 Chinese characters are 300 bytes: a task's title takes
+// them; with one more Core would refuse it, so the page says so and sends
+// nothing. Nothing cuts a paste short.
+test("a task's title is counted in bytes as Core counts them: 100 Chinese characters go, 101 do not", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const titleInput = () =>
+    [...page.document.querySelectorAll("label")].find((l) => l.querySelector("span")?.textContent.trim() === "Task title")?.querySelector("input");
+  const overNote = () => titleInput()?.closest("label").nextElementSibling?.querySelector(".home-reply-length[data-over]");
+  await page.click("New task");
+  await page.input("Task title", "长".repeat(101));
+  assert.equal(titleInput().maxLength, -1, "no limit of its own: a paste is never cut short");
+  assert.equal(titleInput().getAttribute("aria-invalid"), "true");
+  assert.match(overNote()?.textContent ?? "", /^3 bytes too long: this field takes at most 300 bytes/);
+  assert.equal(page.button("Create task").disabled, true);
+  titleInput().form.requestSubmit();
+  await tick();
+  assert.equal(page.sent("task_create").length, 0, "nothing is sent");
+  await page.input("Task title", "长".repeat(100));
+  assert.ok(!overNote(), "at the limit, nothing to say");
+  await page.click("Create task");
+  const created = await until(() => page.sent("task_create")[0], "the task created");
+  assert.equal(created.body.title, "长".repeat(100));
+
+  await page.openTask("T-3");
+  await page.click("Edit task");
+  await page.input("Task title", "长".repeat(101));
+  assert.equal(page.button("Save changes").disabled, true, "an edited title too");
+  titleInput().form.requestSubmit();
+  await tick();
+  assert.equal(page.sent("task_update").length, 0);
+  await page.input("Task title", "长".repeat(100));
+  await page.click("Save changes");
+  const saved = await until(() => page.sent("task_update")[0], "the title saved");
+  assert.equal(saved.body.patch.title, "长".repeat(100));
+  assert.deepEqual(page.errors, []);
+});
+
+// Each number is the one in the Rust line that checks the field, and Core
+// counts it with str::len, in bytes.
+test("each one-line field's limit is the one Core checks", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const rust = async (file) => readFile(path.join(root, "../core/src", file), "utf8");
+  const one = async (file, pattern, what) => {
+    const found = [...(await rust(file)).matchAll(pattern)];
+    assert.equal(found.length, 1, `one Rust line in ${file} for ${what}`);
+    return Number(found[0][1].replaceAll("_", ""));
+  };
+  const core = {
+    taskTitle: await one("collaboration_store.rs", /const MAX_TITLE: usize = ([\d_]+);/g, "a task's title"),
+    criterionLabel: await one("collaboration_store/result_outcome.rs", /required_text\(criterion, "label", ([\d_]+)\)/g, "a criterion's label"),
+    prTitle: await one("pr_operations/mod.rs", /self\.title\.len\(\) <= ([\d_]+)/g, "a PR's title"),
+    prBranch: await one("pr_operations/mod.rs", /\bs\.len\(\) <= ([\d_]+)/g, "a PR's branch"),
+    reviewName: await one("model.rs", /value\.len\(\) <= ([\d_]+)/g, "a branch or commit to review"),
+    jobName: await one("jobs/mod.rs", /self\.name\.len\(\) <= ([\d_]+)/g, "a Job's name"),
+    gpuReason: await one("jobs/gpu.rs", /r\.len\(\) <= ([\d_]+)/g, "a GPU's closing reason"),
+    machineName: await one("remote.rs", /"机器名称", &machine\.name, ([\d_]+)\)/g, "a machine's name"),
+    projectName: await one("projects.rs", /name\.len\(\) > ([\d_]+)/g, "a project's name"),
+    serviceName: await one("services.rs", /name\.len\(\) <= ([\d_]+)/g, "a service's name"),
+    mergeReason: await one("merge_queue/mod.rs", /r\.len\(\) <= ([\d_]+)/g, "a revert's reason"),
+  };
+  // An Agent's name: every way Core makes one checks the same number.
+  for (const [file, count] of [["workspace.rs", 1], ["claude.rs", 1], ["opencode_agent.rs", 1], ["codex_sessions.rs", 2], ["claude_sessions.rs", 1]]) {
+    const found = [...(await rust(file)).matchAll(/name\.len\(\) (?:>|<=) ([\d_]+)/g)].map((m) => Number(m[1].replaceAll("_", "")));
+    assert.equal(found.length, count, `${file}: its Agent name checks`);
+    for (const max of found) assert.equal(page.window.coreLimits.agentName.max, max, `${file}: an Agent's name`);
+  }
+  for (const [key, max] of Object.entries(core)) {
+    assert.equal(page.window.coreLimits[key].max, max, `${key} is Core's ${max}`);
+    assert.equal(page.window.coreLimits[key].unit, "bytes", key);
+  }
+});

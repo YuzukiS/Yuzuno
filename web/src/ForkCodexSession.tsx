@@ -15,6 +15,8 @@ import type { Agent, AgentDetail, ForkOutcome, ForkPreview } from "./types";
 import "./session-import.css";
 import "./codex-fork.css";
 import { randomId } from "./random-id";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 // One request ID per source and boundary, kept across reloads, so a retry
 // after a lost response settles the same attempt instead of forking again.
@@ -258,7 +260,7 @@ export function ForkCodexDialog({
   const through = preview?.throughTurnId;
   const uncertain = outcome?.state === "uncertain";
   async function fork() {
-    if (running.current || !through || !name.trim() || !workspaceId) return;
+    if (running.current || !through || !name.trim() || overLimit(name, coreLimits.agentName) || !workspaceId) return;
     running.current = true;
     setBusy(true);
     setError("");
@@ -373,9 +375,10 @@ export function ForkCodexDialog({
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   required
-                  maxLength={60}
+                  aria-invalid={overLimit(name, coreLimits.agentName) || undefined}
                 />
               </label>
+              <FieldLength value={name} limit={coreLimits.agentName} />
             </fieldset>
             <p className="session-handoff-note">{t.note(preview.excludedTurns > 0)}</p>
           </>
@@ -402,7 +405,7 @@ export function ForkCodexDialog({
           </button>
           <button
             className="primary-button"
-            disabled={busy || loading || !through || !name.trim() || !workspaceId}
+            disabled={busy || loading || !through || !name.trim() || overLimit(name, coreLimits.agentName) || !workspaceId}
           >
             {busy ? (
               <LoaderCircle size={15} className="spin" />

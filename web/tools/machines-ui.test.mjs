@@ -394,6 +394,39 @@ test("SSH machines are added, edited and removed here; the Core host is only che
   }
 });
 
+test("a machine's name is counted in bytes as Core counts them: over 128, Save machine waits and says why (YN-106)", async () => {
+  let listed = [local, mini];
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines") && method === "POST") {
+      listed = [...listed, { id: "studio", kind: "ssh", ...JSON.parse(init.body), lastCheck: null }];
+      return listed.at(-1);
+    }
+    if (url.endsWith("/machines")) return { machines: listed };
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    button(page.document, "Add SSH machine").click();
+    await until(() => page.document.querySelector("#machines-new-ssh"), "the new machine form");
+    // 43 Chinese characters are 129 bytes: one over.
+    type(page, "Machine name", "机".repeat(43));
+    type(page, "SSH destination", "me@studio.local");
+    type(page, "Default working folder", "/Users/me/studio");
+    await tick();
+    assert.match(page.document.querySelector("#machines-new-ssh .home-reply-length[data-over]")?.textContent ?? "", /^1 byte too long: this field takes at most 128 bytes/);
+    assert.equal(button(page.document, "Save machine").disabled, true);
+    type(page, "Machine name", `${"机".repeat(42)}aa`);
+    await tick();
+    button(page.document, "Save machine").click();
+    await until(() => page.calls.some((c) => c.method === "POST"), "the machine added");
+    assert.equal(page.calls.find((c) => c.method === "POST").body.name, `${"机".repeat(42)}aa`);
+  } finally {
+    page.close();
+  }
+});
+
 test("an edit Core saved shows its new values even if the list can't be read again (T-187)", async () => {
   let saved = false;
   const page = mount((url, init) => {

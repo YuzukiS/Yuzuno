@@ -64,6 +64,8 @@ import {
   type Placement,
 } from "./JobParts";
 import { randomId } from "./random-id";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 type Resources = { cpuMillis: number; memoryMiB: number; swapMiB: number };
 type Job = {
@@ -795,7 +797,7 @@ export function Jobs({
   }, [revision, disabled, open]);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || overLimit(draft.name, coreLimits.jobName)) return;
     setBusy(true);
     setError("");
     try {
@@ -1956,10 +1958,11 @@ function JobForm({
           <input
             required
             value={draft.name}
-            maxLength={160}
+            aria-invalid={overLimit(draft.name, coreLimits.jobName) || undefined}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
           />
         </label>
+        <FieldLength value={draft.name} limit={coreLimits.jobName} />
         <label>
           {t.existingTask}
           <input
@@ -2147,7 +2150,7 @@ function JobForm({
           <br />
           {t.completionNote}
         </small>
-        <button className="primary-button" disabled={busy} type="submit">
+        <button className="primary-button" disabled={busy || overLimit(draft.name, coreLimits.jobName)} type="submit">
           {busy ? t.submitting : locked ? t.retry : t.submit}
         </button>
       </div>

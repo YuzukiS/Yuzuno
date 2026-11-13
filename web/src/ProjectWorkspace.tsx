@@ -42,6 +42,8 @@ import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
 import { ProjectMembers } from "./ProjectLeads";
 import { SaveBarScope, useSaveBarPart } from "./SettingsSaveBar";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 function useOutsideClose(
   open: boolean,
@@ -670,7 +672,7 @@ function NewProject({
       className="appearance-field project-form"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (!name.trim()) return;
+        if (!name.trim() || overLimit(name, coreLimits.projectName)) return;
         const created = await action.run("create", () =>
           post<Project>("/projects", {
             name: name.trim(),
@@ -685,12 +687,13 @@ function NewProject({
         <input
           autoFocus
           required
-          maxLength={100}
           value={name}
+          aria-invalid={overLimit(name, coreLimits.projectName) || undefined}
           onChange={(event) => setName(event.target.value)}
           placeholder="my-project"
         />
       </label>
+      <FieldLength value={name} limit={coreLimits.projectName} />
       <label>
         {t.folderOn(host?.name || t.coreHost)} <small>{t.optional}</small>
         <input
@@ -711,7 +714,7 @@ function NewProject({
       <div className="modal-actions">
         <button
           className="primary-button"
-          disabled={!!action.busy || !name.trim()}
+          disabled={!!action.busy || !name.trim() || overLimit(name, coreLimits.projectName)}
         >
           {action.busy ? (
             <LoaderCircle size={15} className="spin" />
@@ -788,7 +791,7 @@ function ProjectDetail({
   // each its own request (YN-8); Archive and Delete are done at once.
   const nextName = name.trim();
   useSaveBarPart("name", nextName !== base.name ? {
-    ready: !!nextName,
+    ready: !!nextName && !overLimit(nextName, coreLimits.projectName),
     save: async () => !!(await nameAction.run("name", () => change({ name: nextName }))),
     discard: () => { nameAction.clear(); setName(base.name); },
   } : null);
@@ -834,12 +837,12 @@ function ProjectDetail({
               {t.projectName}
               <input
                 required
-                maxLength={100}
                 value={name}
-                aria-invalid={!nextName}
+                aria-invalid={!nextName || overLimit(nextName, coreLimits.projectName)}
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
+            <FieldLength value={nextName} limit={coreLimits.projectName} />
           </div>
           {!nextName && <p className="inline-error">{t.nameNeeded}</p>}
           {nameAction.error && (
@@ -1037,6 +1040,7 @@ function Unassigned({
               className="project-suggestion-row"
               onSubmit={async (event) => {
                 event.preventDefault();
+                if (!name.trim() || overLimit(name, coreLimits.projectName)) return;
                 const created = await action.run(
                   `create:${group.key}`,
                   async () => {
@@ -1058,18 +1062,20 @@ function Unassigned({
               <input
                 aria-label={t.newNameFor(group.cwd)}
                 value={name}
-                maxLength={100}
+                aria-invalid={overLimit(name, coreLimits.projectName) || undefined}
                 onChange={(event) =>
                   setNames({ ...names, [group.key]: event.target.value })
                 }
               />
               <button
                 className="secondary-button"
-                disabled={!!action.busy || !name.trim()}
+                disabled={!!action.busy || !name.trim() || overLimit(name, coreLimits.projectName)}
               >
                 <FolderPlus size={14} /> {t.create}
               </button>
             </form>
+            {/* Why Create waits, as each name field says it (YN-106 R1). */}
+            <FieldLength value={name} limit={coreLimits.projectName} />
             {activeProjects(projects).length > 0 && (
               <form
                 className="project-suggestion-row"

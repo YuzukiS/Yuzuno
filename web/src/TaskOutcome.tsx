@@ -40,6 +40,7 @@ import "./task-outcome.css";
 import { randomId } from "./random-id";
 import { Tip, TipText } from "./Tip";
 import { LongTextField } from "./LongTextField";
+import { FieldLength } from "./FieldLength";
 import { coreLimits, overLimit } from "./core-limits";
 
 type Text = ReturnType<typeof outcomeText>;
@@ -70,7 +71,11 @@ export const firstBlankReport = (report?: OutcomeReport) =>
 /** Whether a report's text is longer than Core takes (result_outcome.rs). */
 export const outcomeTooLong = (report?: OutcomeReport) =>
   !!report &&
-  (report.criteria.some((criterion) => overLimit(criterion.report, coreLimits.criterionReport)) ||
+  (report.criteria.some(
+    (criterion) =>
+      overLimit(criterion.label, coreLimits.criterionLabel) ||
+      overLimit(criterion.report, coreLimits.criterionReport),
+  ) ||
     overLimit(report.remaining ?? "", coreLimits.outcomeRemaining) ||
     overLimit(report.nextStep ?? "", coreLimits.outcomeNextStep));
 
@@ -120,11 +125,12 @@ export function TaskOutcomeEditor({
             </span>
             <input
               required
-              maxLength={300}
               value={criterion.label}
+              aria-invalid={overLimit(criterion.label, coreLimits.criterionLabel) || undefined}
               onChange={(e) => update(criterion.id, { label: e.target.value })}
             />
           </label>
+          <FieldLength value={criterion.label} limit={coreLimits.criterionLabel} />
           <label className="collab-field">
             <span>{t.reportedStatus}</span>
             <select

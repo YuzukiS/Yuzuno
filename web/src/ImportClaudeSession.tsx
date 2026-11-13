@@ -15,6 +15,8 @@ import type { Agent, AgentDetail, Project } from "./types";
 import "./session-import.css";
 import "./claude-sessions.css";
 import { Tip, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 /** A Claude Code session saved on the Core host, as the list shows it. */
 export interface ClaudeSession {
@@ -207,7 +209,7 @@ export function ImportClaudeSession({
   const existing = preview?.existingAgentId ?? null;
   const folder = preview?.session.cwd ?? null;
   const canImport = Boolean(
-    preview && !existing && name.trim() && folder && preview.folderExists,
+    preview && !existing && name.trim() && !overLimit(name, coreLimits.agentName) && folder && preview.folderExists,
   );
 
   async function importSession(event: React.FormEvent) {
@@ -446,9 +448,10 @@ export function ImportClaudeSession({
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
-                  maxLength={60}
+                  aria-invalid={overLimit(name, coreLimits.agentName) || undefined}
                 />
               </label>
+              <FieldLength value={name} limit={coreLimits.agentName} />
               <label>
                 {t.project}
                 <select

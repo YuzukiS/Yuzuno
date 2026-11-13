@@ -2,26 +2,8 @@ import { useId, useRef, useState } from "react";
 import { HomeComposer, type ReplyWords } from "./home/HomeComposer";
 import { ReplyLength } from "./home/reply-limit";
 import { measured, type CoreLimit } from "./core-limits";
-import { strings, useStrings } from "./i18n";
+import { useLengthWords } from "./FieldLength";
 import "./long-text-field.css";
-
-const n = (value: number) => value.toLocaleString("en-US");
-const text = strings({
-  bytesLeft: (left: number, most: number) =>
-    `${n(left)} ${left === 1 ? "byte" : "bytes"} left of ${n(most)} (UTF-8: a Chinese character is 3).`,
-  bytesOver: (over: number, most: number) =>
-    `${n(over)} ${over === 1 ? "byte" : "bytes"} too long: this field takes at most ${n(most)} bytes in UTF-8, where a Chinese character is 3. Nothing is sent until it is shorter; what you wrote is kept.`,
-  charsLeft: (left: number, most: number) =>
-    `${n(left)} ${left === 1 ? "character" : "characters"} left of ${n(most)}.`,
-  charsOver: (over: number, most: number) =>
-    `${n(over)} ${over === 1 ? "character" : "characters"} too long: this field takes at most ${n(most)} characters. Nothing is sent until it is shorter; what you wrote is kept.`,
-}, {
-  bytesLeft: (left, most) => `还能输入 ${n(left)} 字节，上限 ${n(most)} 字节（UTF-8，一个汉字 3 字节）。`,
-  bytesOver: (over, most) =>
-    `超出 ${n(over)} 字节：这一栏最多 ${n(most)} 字节（UTF-8，一个汉字 3 字节）。删减之前不会提交，已写的内容不会丢。`,
-  charsLeft: (left, most) => `还能输入 ${n(left)} 个字，上限 ${n(most)} 个字。`,
-  charsOver: (over, most) => `超出 ${n(over)} 个字：这一栏最多 ${n(most)} 个字。删减之前不会提交，已写的内容不会丢。`,
-});
 
 /**
  * Submits `form` as Return in one of its inputs would (HTML's implicit
@@ -84,7 +66,7 @@ export function LongTextField({
   /** The field's place: a task's form, unless another form draws it (long-text-field.css). */
   className?: string;
 }) {
-  const t = useStrings(text);
+  const say = useLengthWords(limit);
   const id = useId();
   const box = useRef<HTMLDivElement>(null);
   const [kept, setKept] = useState<ReplyWords>({ text: value });
@@ -122,11 +104,7 @@ export function LongTextField({
       />
       <div id={`${id}-note`} className="long-text-note">
         {error && <p className="long-text-error" role="alert">{error}</p>}
-        <ReplyLength
-          bytes={used}
-          max={limit.max}
-          words={limit.unit === "chars" ? { left: t.charsLeft, over: t.charsOver } : { left: t.bytesLeft, over: t.bytesOver }}
-        />
+        <ReplyLength bytes={used} max={limit.max} words={say} />
       </div>
     </div>
   );

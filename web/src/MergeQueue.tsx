@@ -45,6 +45,8 @@ import {
 import type { Agent, Project } from "./types";
 import "./merge-queue.css";
 import { Tip, TipText } from "./Tip";
+import { FieldLength } from "./FieldLength";
+import { coreLimits, overLimit } from "./core-limits";
 
 export type MergeQueueOpen = { entryId?: string };
 
@@ -736,7 +738,7 @@ function MergeActionBox({
   }, []);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || overLimit(reason, coreLimits.mergeReason)) return;
     setBusy(true);
     setRefusal("");
     setUnconfirmed(null);
@@ -765,14 +767,15 @@ function MergeActionBox({
             <textarea
               value={reason}
               rows={2}
-              maxLength={2000}
+              aria-invalid={overLimit(reason, coreLimits.mergeReason) || undefined}
               onChange={(event) => setReason(event.target.value)}
               disabled={busy}
             />
           </label>
+          <FieldLength value={reason} limit={coreLimits.mergeReason} />
           <p className="job-footnote">{help}</p>
           <div className="merge-action-buttons">
-            <button type="submit" className="primary-button" disabled={busy}>
+            <button type="submit" className="primary-button" disabled={busy || overLimit(reason, coreLimits.mergeReason)}>
               {icon}
               {busy ? t.sending : label}
             </button>

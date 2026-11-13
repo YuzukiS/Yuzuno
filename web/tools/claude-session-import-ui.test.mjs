@@ -402,7 +402,10 @@ test("Existing Claude session follows a language change from another window, the
     await open(page);
     button(page, "Fix the build").click();
     await tick();
-    const name = () => page.document.querySelector('.session-import input[maxlength="60"]');
+    // The name field by its label in either language: it has no maxLength
+    // since YN-106 (an Agent's name is counted in Core's bytes).
+    const name = () =>
+      [...page.document.querySelectorAll(".session-import label")].find((l) => /^(Agent name|Agent 名称)/.test(l.textContent.trim()))?.querySelector("input");
     await value(page, name(), "Build fix");
     await value(page, page.document.querySelector("select"), "p2");
     const kept = () => ({
