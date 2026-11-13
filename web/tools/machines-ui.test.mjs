@@ -978,3 +978,67 @@ test("each machine's page shows its id to copy, the one a dispatch names, in Eng
     }
   }
 });
+
+// YN-104: macOS holds no limit. A Mac's page offers only the mode its Jobs
+// run in and says its budget only queues and records them, and a save sends
+// no mode, so what it saved stays. A machine whose platform isn't known yet
+// keeps the three, with a line on what a Mac does; a Linux machine keeps
+// them as before.
+test("a Mac's Jobs settings offer no strict mode and say the budget only queues and records; Linux and unknown keep the three (YN-104)", async () => {
+  const mac = { ...mini, platform: "Darwin", limitMode: "strict", budget: { cpuMillis: 4000, memoryMiB: 8192 }, lastCheck: null };
+  const linux = { id: "box", name: "Build box", kind: "ssh", target: "builder@box.test", codex: "codex", defaultCwd: "/srv",
+    limitMode: "strict", platform: "Linux", lastCheck: null };
+  const unknown = { ...linux, id: "fresh", name: "Fresh box", target: "fresh-box", platform: null };
+  const words = {
+    en: { mode: "A limit this machine can’t enforce", macMode: "Limits on macOS", limited: "Run it and say", cpu: "Jobs CPU budget (CPUs)",
+      budget: /^Used only to queue and record Jobs: macOS can’t enforce CPU or RAM, so nothing is held while a Job runs\./,
+      note: /^If this is a Mac, its Jobs run as “Run it and say” whatever is chosen here: macOS can’t enforce CPU or RAM\. Check the machine once to show its platform here\.$/ },
+    zh: { mode: "此机器无法强制执行的限制", macMode: "macOS 上的限制", limited: "运行并说明", cpu: "Job CPU 预算（CPU 数）",
+      budget: /^只用于排队和记录：macOS 限不住 CPU 和内存，Job 运行时不会被限制。/,
+      note: /^如果这是一台 Mac，不管这里选什么，Job 都按「运行并说明」跑，因为 macOS 限不住 CPU 和内存。 检查一次这台机器，这里就会按它的平台显示。$/ },
+  };
+  for (const language of ["en", "zh"]) {
+    const w = words[language];
+    const page = mount((url, init) => {
+      const method = init.method || "GET";
+      if (url.endsWith("/machines/mini") && method === "PUT") return { ...mac, ...JSON.parse(init.body) };
+      if (url.endsWith("/machines")) return { machines: [local, mac, linux, unknown] };
+      return undefined;
+    });
+    try {
+      if (language === "zh") chinese(page);
+      render(page);
+      await loaded(page);
+      const jobs = () => page.document.querySelector(".machine-settings-jobs");
+      const modes = () => [...jobs().querySelectorAll('input[type="radio"]')].map((input) => `${input.value}${input.checked ? "*" : ""}`);
+      const label = () => jobs().querySelector(".machine-settings-label").textContent;
+      const helps = () => [...jobs().querySelectorAll(".appearance-help")].map((p) => p.textContent);
+      await show(page, "mini");
+      await until(() => jobs(), "the Mac's Jobs settings");
+      assert.deepEqual(modes(), ["limited*"], "only the mode its Jobs run in, chosen");
+      assert.equal(label(), w.macMode);
+      assert.ok(jobs().querySelector(".settings-choice").textContent.startsWith(w.limited));
+      assert.ok(helps().some((text) => w.budget.test(text)), "its budget only queues and records");
+      assert.ok(!helps().some((text) => w.note.test(text)), "no line for a platform not known");
+      // A change saves without a mode: what it saved stays as it is.
+      type(page, w.cpu, "2");
+      await until(() => saveBar(page), "the save bar");
+      saveBar(page).querySelector("button.primary-button").click();
+      await until(() => page.calls.some((c) => c.method === "PUT"), "the save");
+      const put = page.calls.find((c) => c.method === "PUT").body;
+      assert.equal("limitMode" in put, false, JSON.stringify(put));
+      assert.deepEqual(put.budget, { cpuMillis: 2000, memoryMiB: 8192 });
+      for (const [id, note] of [["box", false], ["fresh", true]]) {
+        await show(page, id);
+        await until(() => jobs() && modes().length === 3, `${id}'s three modes`);
+        assert.deepEqual(modes(), ["strict*", "limited", "legacy"]);
+        assert.equal(label(), w.mode);
+        assert.equal(helps().some((text) => w.note.test(text)), note, `${id}: the line for a platform not known`);
+        assert.ok(!helps().some((text) => w.budget.test(text)), `${id}: the budget's usual line`);
+      }
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});

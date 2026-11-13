@@ -2336,12 +2336,114 @@ async fn a_mac_is_told_its_limits_are_declared_only_and_that_it_cannot_pause() {
     assert_eq!(starts(&lab), 1);
     // A later submit is told what the machine was when it last answered.
     assert_eq!(lab.ws.store.machine_platform("m1").unwrap().as_deref(), Some("Darwin"));
+    // The Machines page's too, by the address it answered at (YN-104).
+    let at_lab_box = ("m1".to_owned(), "lab-box".to_owned());
+    assert_eq!(lab.ws.store.attempt_platforms().unwrap(), std::collections::HashMap::from([(at_lab_box.clone(), "Darwin".to_owned())]));
     // The same machine answering as Linux again: its next attempt says Linux.
     let linux = submit(&lab, "on-linux", "echo once >> runs.txt");
     let ended = until(&lab, &lab.ssh, &linux, |j| j["reserved"] == false).await;
     assert_eq!((ended["status"].as_str(), ended["remote"]["platform"].as_str()), (Some("succeeded"), Some("Linux")), "{ended}");
     assert_eq!(ended["capabilities"], remote::capabilities());
     assert_eq!(lab.ws.store.machine_platform("m1").unwrap().as_deref(), Some("Linux"));
+    assert_eq!(lab.ws.store.attempt_platforms().unwrap(), std::collections::HashMap::from([(at_lab_box, "Linux".to_owned())]));
+}
+
+/// A stand-in Mac: the real helper on this host, saying "Darwin" at hello.
+fn mac(lab: &Lab) -> String {
+    let path = |name: &str| lab.dir.path().join(name);
+    let at = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
+        path("home").display(), path("machine-a").display(), path("capabilities.json").display());
+    script(path("ssh-mac"), format!(
+        "#!/bin/sh\n{ARGS}request=$(cat)\nreply=$(printf '%s' \"$request\" | {at} /bin/sh -c \"$1\")\ncode=$?\nprintf '%s\\n' \"$reply\" | sed 's/\"platform\": \"Linux\"/\"platform\": \"Darwin\"/'\nexit $code\n"))
+}
+
+fn save_mode(lab: &Lab, mode: Option<&str>) {
+    let machine = RemoteMachine { limit_mode: mode.map(str::to_owned), ..lab.ws.store.machine("m1").unwrap() };
+    lab.ws.store.update_machine(&machine).unwrap();
+}
+
+/// On a Mac every attempt runs in the limited mode, whatever its machine
+/// saved (YN-104): macOS holds no limit, so strict would refuse every start
+/// there. Decided at the attempt's hello, before anything is sent, for an
+/// attempt pinned at its start and one bound at submit alike; the machine's
+/// setting stays as saved, and the attempt keeps the mode it was bound with
+/// beside the one it runs in. The same machine answering as Linux is refused
+/// in strict as before.
+#[tokio::test]
+async fn a_mac_runs_every_attempt_limited_whatever_its_machine_saved() {
+    let lab = lab();
+    let mac = mac(&lab);
+    save_mode(&lab, Some("strict"));
+    let plain = submit(&lab, "plain", "sleep 2; echo once >> runs.txt");
+    let running = until(&lab, &mac, &plain, |j| j["status"] == "running").await;
+    assert_eq!((running["executor"]["limitMode"].as_str(), running["executor"]["limitModeSaved"].as_str()), (Some("limited"), Some("strict")), "{running}");
+    let reason = running["reason"].as_str().unwrap();
+    assert!(reason.ends_with("they are reserved for this Core's admission and recorded only; it runs in the limited mode, as every attempt on macOS does: lab box's saved mode (strict) applies on Linux only"), "{reason}");
+    let ended = until(&lab, &mac, &plain, |j| j["reserved"] == false).await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    assert_eq!(ended["result"]["evidence"]["result"]["limits"]["mode"], "limited", "{ended}");
+    assert_eq!(ended["remote"]["digest"].as_str(), Some(remote::digest(&remote::spec(&ended)).as_str()));
+    assert_eq!(starts(&lab), 1);
+    // Bound strict at submit: bound again as limited before anything was sent.
+    let artifacts = json!({"artifacts": [{"path": "out.json", "format": "json"}]});
+    let bound = create(&lab, input(&lab, "bound", "echo once >> runs.txt; printf '[1]' > out.json", artifacts.clone()));
+    assert_eq!(bound["executor"]["limitMode"], "strict", "{bound}");
+    let ended = until(&lab, &mac, &bound, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    assert_eq!((ended["executor"]["limitMode"].as_str(), ended["executor"]["limitModeSaved"].as_str()), (Some("limited"), Some("strict")), "{ended}");
+    assert_ne!(ended["remote"]["digest"], bound["remote"]["digest"]);
+    assert_eq!(ended["remote"]["digest"].as_str(), Some(remote::digest(&remote::spec(&ended)).as_str()));
+    assert_eq!(ended["result"]["artifacts"][0]["ok"], true, "{ended}");
+    assert_eq!(starts(&lab), 2);
+    // A Core that stopped between the hello and the start compares the
+    // machine's setting with the one the attempt was bound with, and starts
+    // it as bound again.
+    let waiting = create(&lab, input(&lab, "restarted", "echo once >> runs.txt; printf '[1]' > out.json", artifacts));
+    let id = waiting["id"].as_str().unwrap();
+    lab.ws.store.reserve_remote(id).unwrap().unwrap();
+    let pinned = lab.ws.store.remote_note(id, &waiting["attempt"],
+        json!({"hostId": host_a(), "platform": "Darwin", "digest": waiting["remote"]["digest"]}), None).unwrap().unwrap();
+    assert_eq!((pinned["executor"]["limitMode"].as_str(), pinned["executor"]["limitModeSaved"].as_str()), (Some("limited"), Some("strict")), "{pinned}");
+    let ended = until(&lab, &mac, &waiting, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!((ended["status"].as_str(), ended["remote"]["digest"].as_str()), (Some("succeeded"), pinned["remote"]["digest"].as_str()), "{ended}");
+    assert_eq!(starts(&lab), 3);
+    // Saved record-only, it runs limited too.
+    save_mode(&lab, None);
+    let record_only = submit(&lab, "record-only", "echo once >> runs.txt");
+    let ended = until(&lab, &mac, &record_only, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!((ended["status"].as_str(), ended["executor"]["limitMode"].as_str(), ended["executor"]["limitModeSaved"].as_str()),
+        (Some("succeeded"), Some("limited"), Some("legacy")), "{ended}");
+    // The machine keeps what it saved; answering as Linux, strict refuses as before.
+    save_mode(&lab, Some("strict"));
+    assert_eq!(lab.ws.store.machine("m1").unwrap().limit_mode.as_deref(), Some("strict"));
+    let linux = submit(&lab, "linux", "touch ran-linux");
+    let ended = until(&lab, &lab.ssh, &linux, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!((ended["status"].as_str(), ended["executor"]["limitMode"].as_str()), (Some("rejected"), Some("strict")), "{ended}");
+    assert!(ended["executor"]["limitModeSaved"].is_null(), "{ended}");
+    assert!(ended["reason"].as_str().unwrap().starts_with("Not started on lab box: This machine cannot hold strict limits"), "{ended}");
+    assert!(!lab.work.join("ran-linux").exists());
+}
+
+/// Bound again on a Mac only for its mode (YN-104, Lead seq 12202): a job
+/// bound at submit whose request changed since keeps the digest it was bound
+/// with and the mode, and is not started, as on any machine.
+#[tokio::test]
+async fn a_request_changed_since_it_was_bound_is_not_started_on_a_mac_either() {
+    let lab = lab();
+    let mac = mac(&lab);
+    save_mode(&lab, Some("strict"));
+    let bound = create(&lab, input(&lab, "bound", "touch ran", json!({"artifacts": [{"path": "out.json", "format": "json"}]})));
+    let id = bound["id"].as_str().unwrap();
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE local_jobs SET data=json_set(data,'$.argv[2]','touch changed') WHERE id=?1", [id]).unwrap();
+    let ended = until(&lab, &mac, &bound, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "rejected", "{ended}");
+    assert_eq!(ended["reason"], "Not started on lab box: its request no longer matches the one bound when it was submitted; nothing was sent there");
+    assert_eq!((ended["remote"]["platform"].as_str(), ended["executor"]["limitMode"].as_str()), (Some("Darwin"), Some("strict")), "{ended}");
+    assert!(ended["executor"]["limitModeSaved"].is_null(), "{ended}");
+    assert_eq!(ended["remote"]["digest"], bound["remote"]["digest"]);
+    assert!(ended["remote"]["startSentAt"].is_null(), "{ended}");
+    assert!(!lab.work.join("ran").exists() && !lab.work.join("changed").exists());
 }
 
 /// What a Mac's attempt can be told it gets: the Linux statement's inputs,

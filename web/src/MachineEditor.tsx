@@ -51,6 +51,12 @@ export const machineEditorText = strings({
   limitedName: "Run it and say",
   limitedNote: "It runs, and its Job says which limit isn’t enforced.",
   legacyName: "Hold no limits",
+  // A Mac (YN-104): macOS holds no limit, so its Jobs always run limited.
+  macMode: "Limits on macOS",
+  macLimitedNote: "macOS has no cgroup, so it can’t hold a Job’s CPU or RAM: Jobs run, and each Job says which limit isn’t enforced.",
+  macBudgetHint: "Used only to queue and record Jobs: macOS can’t enforce CPU or RAM, so nothing is held while a Job runs. Each job still declares its own CPU and RAM.",
+  macNote: "If this is a Mac, its Jobs run as “Run it and say” whatever is chosen here: macOS can’t enforce CPU or RAM.",
+  checkToShow: "Check the machine once to show its platform here.",
   readAgain: "Read again",
   isDefault: (n: number) => `The default, ${n}.`,
   useDefault: (n: number) => `Use the default (${n})`,
@@ -92,6 +98,11 @@ export const machineEditorText = strings({
   limitedName: "运行并说明",
   limitedNote: "照常运行，并在该 Job 上说明哪些限制没有被强制执行。",
   legacyName: "不设限制",
+  macMode: "macOS 上的限制",
+  macLimitedNote: "macOS 没有 cgroup，限不住 Job 的 CPU 和内存：Job 照常运行，并在该 Job 上说明这些限制没有被强制执行。",
+  macBudgetHint: "只用于排队和记录：macOS 限不住 CPU 和内存，Job 运行时不会被限制。每个 Job 仍各自声明 CPU 和内存。",
+  macNote: "如果这是一台 Mac，不管这里选什么，Job 都按「运行并说明」跑，因为 macOS 限不住 CPU 和内存。",
+  checkToShow: "检查一次这台机器，这里就会按它的平台显示。",
   readAgain: "重新读取",
   isDefault: (n) => `默认值 ${n}。`,
   useDefault: (n) => `使用默认值（${n}）`,
@@ -324,6 +335,8 @@ export function MachineEditor({
         {mode === "legacy" && (
           <span className="field-hint">{t.legacyHint}</span>
         )}
+        {/* A machine being added has no platform yet; a Mac's Jobs run limited (YN-104). */}
+        {current?.platform !== "Linux" && <span className="field-hint">{t.macNote}</span>}
       </label>
       <label>
         {executorText.title}

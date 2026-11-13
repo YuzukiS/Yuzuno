@@ -997,11 +997,15 @@ async fn set_agent_project(State(ws): State<Arc<Workspace>>, Path(id): Path<Stri
     Ok(Json(serde_json::to_value(ws.listed(&id).await?)?))
 }
 async fn machines(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
-    let (mut checks, machines) = ws.stored(|store| Ok((store.machine_checks()?, store.machines()?))).await?;
+    let (mut checks, machines, attempts) =
+        ws.stored(|store| Ok((store.machine_checks()?, store.machines()?, store.attempt_platforms()?))).await?;
     let mut list = vec![json!({"id":"local","name":"Core host","kind":"local","defaultCwd":ws.default_cwd})];
     for machine in machines {
+        // What it runs on as Core last learnt it, or null (YN-104).
+        let platform = crate::machines::known_platform(&machine, checks.get(&machine.id), &attempts);
         let mut value = serde_json::to_value(machine)?;
         value["kind"] = "ssh".into();
+        value["platform"] = json!(platform);
         list.push(value);
     }
     // The most recent manual check, or null when this machine was never checked.
@@ -1076,6 +1080,8 @@ async fn add_machine(State(ws): State<Arc<Workspace>>, Json(mut p): Json<NewMach
     let _ = ws.changes.send(json!({"machines":true}));
     let mut result = serde_json::to_value(machine)?;
     result["kind"] = "ssh".into();
+    // Not known until it is checked or a Job reaches it (YN-104).
+    result["platform"] = Value::Null;
     Ok(Json(result))
 }
 /// A machine setting older Cores would ignore keeps them out of the Workspace
@@ -1105,8 +1111,12 @@ async fn update_machine(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
     ws.machine_live.saved(&held, &machine);
     drop(held);
     let _ = ws.changes.send(json!({"machines":true}));
+    // As the listing says it, after this edit: a check of an old address is gone.
+    let (checks, attempts) = ws.stored(|store| Ok((store.machine_checks()?, store.attempt_platforms()?))).await?;
+    let platform = crate::machines::known_platform(&machine, checks.get(&machine.id), &attempts);
     let mut result = serde_json::to_value(machine)?;
     result["kind"] = "ssh".into();
+    result["platform"] = json!(platform);
     Ok(Json(result))
 }
 /// Refused while an open Agent works there or an unfinished Job runs there;
