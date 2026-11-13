@@ -204,12 +204,13 @@ function standing(facts: IslandFacts): Read {
   if (agent.status === "working" || agent.status === "uncertain") return out("working", null, first(summary, text(facts.statusLabel)));
   // Its Turn has ended (YN-92: only a running Turn turns the ring). What it
   // started and left running (its Jobs, CI, reviews, background work): the
-  // ring rests with the wait's icon, its pill says it; a Turn's end not seen
-  // yet is said first (done). Only a Job or CI to check: the pill says so.
+  // ring rests with the wait's icon, its pill says it. A Turn's end not seen
+  // yet is said first (done): before what runs, and before anything to check.
   if (facts.wait?.left && !facts.unseen) return out("idle", null, text(facts.waiting), { kind: "waits", on: facts.wait.kind });
-  if (facts.waiting) return out("idle", null, text(facts.waiting), { kind: "check", label: facts.waiting });
   // Done is a Turn it ended that this device hasn't shown; updates unread are no state (the user, v11).
   if (facts.unseen === "finished") return out("done", since(ended), summary);
+  // Only a Job or CI to check (nothing it left runs: that is a wait, above): the pill says so.
+  if (facts.waiting) return out("idle", null, text(facts.waiting), { kind: "check", label: facts.waiting });
   return out("idle", since(ended), summary);
 }
 

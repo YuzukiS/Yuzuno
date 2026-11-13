@@ -256,6 +256,11 @@ test("with only a Job or CI to check, a standing Agent rests with the list's wor
   // What it left running comes before what is to check.
   const both = standing(agent({ lastTurnEnd: ended }), { waiting: "Waiting · Job · Check CI", wait: waitOn(idle({ jobs: { active: 1, unknown: 0, name: "lint" } })) });
   assert.deepEqual(both.stay, { kind: "waits", on: "job" });
+  // A Turn's end not seen comes first: done, with no pill, whatever label it is given (R1 5dd874cd P2).
+  for (const waiting of ["Waiting · Job", "Check job"]) {
+    const done = standing(agent({ lastTurnEnd: ended }), { unseen: "finished", waiting });
+    assert.deepEqual([done.state, done.stay, done.wait, done.go], ["done", null, null, "reply"], waiting);
+  }
 });
 
 test("an executor at work with no Turn running rests, its pill the first that holds: its PR, its blocker, its result, else between Turns", () => {
