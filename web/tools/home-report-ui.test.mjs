@@ -32,7 +32,7 @@ const root=createRoot(document.getElementById('root'));
 const links={href:()=>null,open:(link)=>window.actions.push(['open',link]),
   reportHref:(link)=>reportLinkHref('https://report.test/',{workspaceId:'ws-1',...link}),
   openReport:(link,from)=>window.actions.push(['report',link,from])};
-const home=(report,revision,workspaceId,visit,arrival)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} report={report} visit={visit} arrival={arrival}/></MessageLinks.Provider>;
+const home=(report,revision,workspaceId,visit,arrival)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} onOpenProject={(id,key)=>window.actions.push(['project',id,key])} report={report} visit={visit} arrival={arrival}/></MessageLinks.Provider>;
 // visit: bumped on each explicit way to Home (App's goHome); arrival: a reply's Open on Home.
 window.renderHome=(report=null,revision=0,workspaceId='ws-1',visit=0,arrival=null)=>root.render(home(report,revision,workspaceId,visit,arrival));
 // Drawn before returning: what the first frame shows.
@@ -350,7 +350,8 @@ test("only the very version linked is shown, live or in History; otherwise the v
   assert.equal(report.querySelector(".report-article"), null);
   await page.press(report, "Show the project on Home");
   await until(() => !page.report(), "the report closed");
-  await until(() => page.document.querySelector('[data-project-home="p1"]'), "the Project's page shown");
+  await until(() => page.window.actions.some(([kind]) => kind === "project"), "the Project's page opened");
+  assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions.find(([kind]) => kind === "project"))), ["project", "p1", "eval"]);
   page.close();
 
   // Its project is not on Home.
