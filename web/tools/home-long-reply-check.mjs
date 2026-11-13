@@ -4,6 +4,8 @@
 // sent but the replies these checks make on purpose.
 //   - A report card's reply takes a 25,000-character paste whole: a field
 //     that stopped at 20,000 characters cut it short and said nothing.
+//   - A paste over the limit (92,000 bytes, Core's) says how far over and
+//     why, holds Send, and keeps every character.
 //   - An Ask's free text takes 8,000 Chinese characters (24,000 bytes) whole.
 // On a desktop window and a 390px phone.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/home-long-reply-check.mjs
@@ -175,6 +177,25 @@ try {
         assert.equal(reply.text.length, LONG.trim().length, "the reply sent whole");
         assert.ok(reply.text === LONG.trim(), "the same text");
         return { sentCharacters: reply.text.length };
+      });
+      await check(`${view.name}: a paste over the limit says how far over, holds Send and keeps every character`, async () => {
+        const notes = card(page, "notes");
+        const box = notes.locator(".home-card-reply");
+        const count = replies(writes).length;
+        // 92,100 bytes: 100 more than a reply from Home can be.
+        const over = "长".repeat(30_700);
+        await paste(page, box, over);
+        const note = box.locator(".home-reply-length[data-over]");
+        await note.waitFor({ timeout: 5_000 });
+        assert.match(await note.textContent(), view.lang === "zh" ? /^超出 100 字节，发不出去/ : /^100 bytes too long to send/);
+        assert.ok(await box.locator("button[type=submit]").isDisabled(), "Send is held");
+        const value = await plainValue(box);
+        if (value !== null) assert.equal(value.length, over.length, "the field keeps it all");
+        await box.locator(FIELD).first().press(view.touch ? "Enter" : "Control+Enter");
+        await page.waitForTimeout(300);
+        assert.equal(replies(writes).length, count, "nothing sent");
+        await shoot(notes, `card-over-limit-${view.name}`);
+        return { bytes: new TextEncoder().encode(over).length };
       });
       await check(`${view.name}: an Ask's free text takes 8,000 Chinese characters whole`, async () => {
         const words = card(page, "words");

@@ -203,6 +203,10 @@ export const homeText = strings({
   replyFor: (agent: string) => `A reply for ${agent}…`,
   send: "Send",
   sending: "Sending…",
+  replyBytesLeft: (left: number, most: number) =>
+    `${left.toLocaleString("en-US")} ${left === 1 ? "byte" : "bytes"} left of ${most.toLocaleString("en-US")} (UTF-8: a Chinese character is 3).`,
+  replyTooLong: (over: number, most: number) =>
+    `${over.toLocaleString("en-US")} ${over === 1 ? "byte" : "bytes"} too long to send: a reply from Home is at most ${most.toLocaleString("en-US")} bytes in UTF-8, where a Chinese character is 3. Shorten it to send; what you wrote is kept.`,
   queuedFor: (agent: string, version: number) => `Queued for ${agent}, referring to version ${version}; not confirmed as read yet.`,
   sentTo: (agent: string, version: number) => `Sent to ${agent}, referring to version ${version}.`,
   olderCore:
@@ -539,6 +543,10 @@ export const homeText = strings({
   replyFor: (agent) => `给 ${agent} 的回复…`,
   send: "发送",
   sending: "正在发送…",
+  replyBytesLeft: (left, most) =>
+    `还能输入 ${left.toLocaleString("en-US")} 字节，上限 ${most.toLocaleString("en-US")} 字节（UTF-8，一个汉字 3 字节）。`,
+  replyTooLong: (over, most) =>
+    `超出 ${over.toLocaleString("en-US")} 字节，发不出去：Home 的一条回复最多 ${most.toLocaleString("en-US")} 字节（UTF-8，一个汉字 3 字节）。删减后才能发送，已写的内容不会丢。`,
   queuedFor: (agent, version) => `已排队发给 ${agent}，指向版本 ${version}；尚未确认已读。`,
   sentTo: (agent, version) => `已发送给 ${agent}，指向版本 ${version}。`,
   olderCore: "此 Core 还不能把回复绑定到卡片版本，因此没有发送任何内容。请更新 Core 后再回复卡片，或在会话中写给该 Agent。",

@@ -8,7 +8,15 @@ use chrono::{DateTime, Utc};
 use std::collections::{hash_map::Entry, HashMap};
 
 const ORDER_KEY: &str = "home.projectOrder";
-const MAX_REPLY: usize = 20_000;
+/// The longest reply Home sends, in UTF-8 bytes, the unit Core counts a
+/// message in and Home's page counts too (web/src/home/reply-limit.tsx, which
+/// says the same number; YN-91). A reply goes to its Agent as one message,
+/// under the limit any message has, a conversation's included
+/// (MAX_MESSAGE_TEXT), with Core's quote of the card or ask it answers
+/// before it: QUOTE_ROOM is kept for that quote, and the longest one Brief
+/// sections allow fits in it (tests.rs, the_longest_quote_fits_beside_the_longest_reply).
+pub(super) const MAX_REPLY: usize = 92_000;
+pub(super) const QUOTE_ROOM: usize = crate::model::MAX_MESSAGE_TEXT - MAX_REPLY;
 
 fn stored_order(store: &Store) -> Result<Vec<String>> {
     let raw: Option<String> = store.db.read()?
@@ -529,7 +537,13 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// `POST /api/projects/{id}/brief/reply`: one user message to `agentId`,
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
-    ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
+    let bytes = input.text.len();
+    if bytes > MAX_REPLY {
+        return Err(not_submitted(format!(
+            "reply_too_long: this reply is {bytes} bytes; a reply from Home is at most {MAX_REPLY} bytes in UTF-8, \
+             where a Chinese character is 3. Nothing was sent, and your reply is kept."
+        )));
+    }
     let input = reply_target(ws, &project, input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");

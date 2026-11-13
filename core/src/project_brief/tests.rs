@@ -1356,6 +1356,67 @@ async fn a_long_reply_from_home_is_handed_to_the_agent_whole() {
     }
 }
 
+/// `MAX_REPLY` bytes: Chinese characters, then what is left of the limit.
+fn longest_reply() -> String {
+    let words = "长".repeat(home::MAX_REPLY / 3) + &"a".repeat(home::MAX_REPLY % 3);
+    assert_eq!(words.len(), home::MAX_REPLY);
+    words
+}
+
+// YN-91: the longest reply Home sends, with Core's quote of its card, is a
+// message Core takes (the receipt is written only after send_message_from
+// admits it). One byte longer, nothing is sent, and Core says how long it
+// is and the limit, in the unit it counts.
+#[tokio::test]
+async fn a_reply_over_the_limit_is_refused_and_says_its_bytes() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("c1", 0, vec![put("news", "report")])).await;
+    let reply = |id: &str, text: String| home::ReplyInput {
+        key: Some("news".into()), agent_id: "b".into(), text, client_message_id: id.into(),
+        choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None };
+    let _ = home::reply(&ws, project.clone(), reply("most", longest_reply())).await;
+    assert!(ws.store.receipt("b", "most").unwrap().is_some(), "the longest reply is handed to the Agent");
+    let error = home::reply(&ws, project.clone(), reply("over", longest_reply() + "a")).await.unwrap_err();
+    assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    assert_eq!(error.to_string(), "reply_too_long: this reply is 92001 bytes; a reply from Home is at most 92000 bytes in UTF-8, \
+        where a Chinese character is 3. Nothing was sent, and your reply is kept.");
+    assert!(ws.store.receipt("b", "over").unwrap().is_none(), "no receipt");
+}
+
+// YN-91: Core's quote of what a reply answers fits in the room MAX_REPLY
+// leaves of a message, at the longest Brief sections allow: a project name of
+// 100 bytes, a key of two 48-character parts, a title of 120 and a question
+// of 500 characters (core/src/projects.rs, brief-contract.ts), an option of
+// 160, each character 4 bytes, or the question broken into lines.
+#[test]
+fn the_longest_quote_fits_beside_the_longest_reply() {
+    let wide = |n: usize| "😀".repeat(n);
+    let words = longest_reply();
+    let (workspace, project_id, name) = ("w".repeat(64), "p".repeat(64), "n".repeat(100));
+    let key = format!("{}/{}", "k".repeat(48), "s".repeat(48));
+    let choice = ("c".repeat(64), wide(160));
+    for question in [wide(500), "😀\n".repeat(250), "\n".repeat(500)] {
+        let row = sections::Row {
+            seq: 1, project_id: project_id.clone(), key: key.clone(), live: true, kind: "ask".into(), version: i64::MAX,
+            owner_id: "a".into(), owner_name: "A".into(),
+            data: json!({"title": wide(120), "ask": {"question": question, "reply": {}}}),
+            ask_state: Some("open".into()), ask_since: None, replied_at: None, reply_text: None, deferred_until: None,
+            updated_at: String::new(), updated_turn_id: None, history_reason: None, history_at: None, identity: 1,
+        };
+        let report = sections::Row { kind: "report".into(), ..row.clone() };
+        for message in [
+            home::compose_ask(&workspace, &name, &project_id, &row, Some(&choice), &words),
+            home::compose(&name, Some(&report), None, &words),
+            home::compose_card(&workspace, &name, &project_id, &key, i64::MAX, &wide(120), &words),
+            home::compose(&name, None, None, &words),
+        ] {
+            assert!(message.contains(&words), "the reply whole");
+            assert!(message.len() - words.len() <= home::QUOTE_ROOM, "a quote of {} bytes", message.len() - words.len());
+            assert!(message.len() <= crate::model::MAX_MESSAGE_TEXT);
+        }
+    }
+}
+
 // T-9: a reply to an ask is bound to the Workspace, Project, key and version
 // the user saw. A Home that does not say which version, another Workspace,
 // or a version no longer live sends nothing; a retry of a message already
