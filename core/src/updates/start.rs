@@ -62,7 +62,7 @@ pub const ENVIRONMENT: [&str; 16] = [
     "YUZUNO_REMOTE_ORIGIN",
     "YUZUNO_REMOTE_LOGIN",
 ];
-const MAX_VALUE: usize = 8192;
+pub(super) const MAX_VALUE: usize = 8192;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,7 +111,7 @@ pub fn record(
     Ok(())
 }
 
-fn read_record(layout: &Layout) -> Option<Record> {
+pub(super) fn read_record(layout: &Layout) -> Option<Record> {
     let mut bytes = Vec::new();
     File::open(layout.updates().join(RECORD))
         .ok()?
@@ -135,15 +135,22 @@ pub fn profile(layout: Option<&Layout>, port: u16, workspace_id: &str) -> Value 
     {
         return json!({"available":false,"reason":"notRecorded"});
     }
-    let Some(user) = user_name() else {
+    let Some(user) = user_info().map(|user| user.name) else {
         return json!({"available":false,"reason":"noUser"});
     };
     json!({"available":true,"wslDistro":distro,"user":user,"installDir":layout.root,
         "port":port,"workspaceId":workspace_id})
 }
 
-/// This process's user name, from the user database.
-fn user_name() -> Option<String> {
+/// This process's user, from the user database.
+pub(super) struct User {
+    pub name: String,
+    /// The login shell, when the user database names one.
+    pub shell: Option<PathBuf>,
+}
+
+/// This process's user name and login shell, from the user database.
+pub(super) fn user_info() -> Option<User> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
@@ -156,12 +163,18 @@ fn user_name() -> Option<String> {
         if status != 0 || found.is_null() {
             return None;
         }
-        // SAFETY: on success pw_name points into `buffer`, NUL-terminated.
+        // SAFETY: on success pw_name and pw_shell point into `buffer`,
+        // NUL-terminated (pw_shell may be null).
         let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
-        name.to_str().ok().map(str::to_owned)
+        let shell = (!entry.pw_shell.is_null())
+            .then(|| unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) })
+            .and_then(|shell| shell.to_str().ok())
+            .filter(|shell| !shell.is_empty())
+            .map(PathBuf::from);
+        name.to_str().ok().map(|name| User { name: name.to_owned(), shell })
     }
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-    std::env::var("USER").ok()
+    std::env::var("USER").ok().map(|name| User { name, shell: None })
 }
 
 /// How long a start may wait: for another start of this Core to finish, and
@@ -178,16 +191,16 @@ impl Default for Budget {
 }
 
 /// Why nothing was started or stopped, or how a start or stop failed.
-struct Stop {
-    state: &'static str,
-    code: &'static str,
-    message: String,
-    log: Option<String>,
+pub(super) struct Stop {
+    pub state: &'static str,
+    pub code: &'static str,
+    pub message: String,
+    pub log: Option<String>,
 }
-fn refused(code: &'static str, message: impl Into<String>) -> Stop {
+pub(super) fn refused(code: &'static str, message: impl Into<String>) -> Stop {
     Stop { state: "refused", code, message: message.into(), log: None }
 }
-fn failed(code: &'static str, message: impl Into<String>) -> Stop {
+pub(super) fn failed(code: &'static str, message: impl Into<String>) -> Stop {
     Stop { state: "failed", code, message: message.into(), log: None }
 }
 
@@ -215,7 +228,7 @@ impl Remote {
     }
 }
 
-fn result_of(result: Result<Value, Stop>) -> Value {
+pub(super) fn result_of(result: Result<Value, Stop>) -> Value {
     match result {
         Ok(outcome) => outcome,
         Err(stop) => {
@@ -249,6 +262,23 @@ pub fn start_with(root: &Path, port: u16, workspace_id: &str, remote: &Remote, b
 /// its start lock while the returned file lives, that last ran on `port` with
 /// `workspace_id`, and no update switching its release.
 fn prepare(root: &Path, port: u16, workspace_id: &str, wait: Duration) -> Result<(Layout, File, Record), Stop> {
+    let (layout, lock) = open_locked(root, wait)?;
+    let Some(record) = read_record(&layout) else {
+        return Err(refused("noRecord", "This installation has not recorded how its Core starts. Start Core in WSL once with this version."));
+    };
+    if record.port != port {
+        return Err(refused("otherPort", format!("This installation's Core last ran on port {}, not {port}.", record.port)));
+    }
+    if record.workspace_id != workspace_id {
+        return Err(refused("otherWorkspace", "This installation's Core last opened another Workspace."));
+    }
+    refuse_while_switching(&layout)?;
+    Ok((layout, lock, record))
+}
+
+/// The installation at `root`, held by its start lock while the returned
+/// file lives: what every start and stop opens first.
+pub(super) fn open_locked(root: &Path, wait: Duration) -> Result<(Layout, File), Stop> {
     let installed = |path: &Path| path.is_absolute() && path.join("current.json").is_file();
     if !installed(root) {
         return Err(refused("notInstalled", format!("No Yuzuno installation is at {}.", root.display())));
@@ -264,15 +294,11 @@ fn prepare(root: &Path, port: u16, workspace_id: &str, wait: Duration) -> Result
             Err(fs::TryLockError::Error(error)) => return Err(failed("error", error.to_string())),
         }
     }
-    let Some(record) = read_record(&layout) else {
-        return Err(refused("noRecord", "This installation has not recorded how its Core starts. Start Core in WSL once with this version."));
-    };
-    if record.port != port {
-        return Err(refused("otherPort", format!("This installation's Core last ran on port {}, not {port}.", record.port)));
-    }
-    if record.workspace_id != workspace_id {
-        return Err(refused("otherWorkspace", "This installation's Core last opened another Workspace."));
-    }
+    Ok((layout, lock))
+}
+
+/// Refused while an update switches this installation's release.
+pub(super) fn refuse_while_switching(layout: &Layout) -> Result<(), Stop> {
     if let Ok(journal) = layout.journal() {
         if journal.operation.is_some_and(|op| {
             op.phase.active() && op.helper_process.as_ref().is_some_and(|helper| helper.alive())
@@ -280,7 +306,7 @@ fn prepare(root: &Path, port: u16, workspace_id: &str, wait: Duration) -> Result
             return Err(refused("updating", "A Core update is switching releases right now. Wait for it to finish."));
         }
     }
-    Ok((layout, lock, record))
+    Ok(())
 }
 
 fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget: Budget) -> Result<Value, Stop> {
@@ -294,7 +320,7 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget
     // another one, or something else.
     let until = Instant::now() + budget.ready;
     loop {
-        match probe(&client, port, workspace_id) {
+        match probe(&client, port, Some(workspace_id)) {
             Answer::Free => break,
             Answer::Ours { .. } if *remote == Remote::Recorded => return Ok(json!({"state":"running","workspaceId":workspace_id})),
             Answer::Ours { .. } => {
@@ -306,24 +332,8 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget
             Answer::Silent => return Err(refused("portInUse", format!("Something holds port {port} but does not answer as Yuzuno Core."))),
         }
     }
-    let release: ReleaseRef = File::open(root.join("current.json"))
-        .ok()
-        .and_then(|file| serde_json::from_reader(file).ok())
-        .ok_or_else(|| failed("missingRelease", "current.json does not name a release."))?;
-    package::valid_id(&release.release_id).map_err(|error| failed("missingRelease", format!("{error:#}")))?;
-    let core = layout.root.join("releases").join(&release.release_id).join("bin/yuzuno-workspace");
-    if !core.is_file() {
-        return Err(failed("missingRelease", format!("The installed release {} is missing its Core.", release.release_id)));
-    }
-    let log_path = layout.root.join(LOG);
-    let log = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&log_path)
-        .map_err(|error| failed("error", format!("Cannot open {}: {error}", log_path.display())))?;
-    let offset = log.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let (release, core) = installed_core(&layout)?;
+    let (log, log_path, offset) = open_log(&layout)?;
     let mut child = spawn(&core, &layout, &record, log, remote).map_err(|error| failed("spawn", format!("Cannot start Core: {error}")))?;
     let pid = child.id();
     let until = Instant::now() + budget.ready;
@@ -331,9 +341,9 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget
         if let Ok(Some(status)) = child.try_wait() {
             return Err(Stop { log: tail(&log_path, offset), ..failed("exited", format!("Core exited before it answered ({status}).")) });
         }
-        match probe(&client, port, workspace_id) {
+        match probe(&client, port, Some(workspace_id)) {
             Answer::Ours { ready: true, .. } => {
-                let mut outcome = json!({"state":"started","pid":pid,"releaseId":release.release_id,"workspaceId":workspace_id});
+                let mut outcome = json!({"state":"started","pid":pid,"releaseId":release,"workspaceId":workspace_id});
                 if *remote != Remote::Recorded {
                     outcome["remote"] = remote_outcome(&layout, remote);
                 }
@@ -344,7 +354,7 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget
             }
             _ if Instant::now() < until => std::thread::sleep(Duration::from_millis(250)),
             _ => {
-                let mut outcome = json!({"state":"starting","pid":pid,"releaseId":release.release_id,"workspaceId":workspace_id});
+                let mut outcome = json!({"state":"starting","pid":pid,"releaseId":release,"workspaceId":workspace_id});
                 if *remote != Remote::Recorded {
                     outcome["remote"] = json!({"recorded":false,"message":"Core has not answered yet, so whether it took this remote entry is not known."});
                 }
@@ -352,6 +362,35 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, remote: &Remote, budget
             }
         }
     }
+}
+
+/// The release `current.json` names, and its Core.
+pub(super) fn installed_core(layout: &Layout) -> Result<(String, PathBuf), Stop> {
+    let release: ReleaseRef = File::open(layout.root.join("current.json"))
+        .ok()
+        .and_then(|file| serde_json::from_reader(file).ok())
+        .ok_or_else(|| failed("missingRelease", "current.json does not name a release."))?;
+    package::valid_id(&release.release_id).map_err(|error| failed("missingRelease", format!("{error:#}")))?;
+    let core = layout.root.join("releases").join(&release.release_id).join("bin/yuzuno-workspace");
+    if !core.is_file() {
+        return Err(failed("missingRelease", format!("The installed release {} is missing its Core.", release.release_id)));
+    }
+    Ok((release.release_id, core))
+}
+
+/// `core.log`, where a start writes Core's output, with its path and how
+/// long it was before this start.
+pub(super) fn open_log(layout: &Layout) -> Result<(File, PathBuf, u64), Stop> {
+    let path = layout.root.join(LOG);
+    let log = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&path)
+        .map_err(|error| failed("error", format!("Cannot open {}: {error}", path.display())))?;
+    let offset = log.metadata().map(|meta| meta.len()).unwrap_or(0);
+    Ok((log, path, offset))
 }
 
 /// What a started Core took of the remote entry this start gave it. Core
@@ -392,7 +431,10 @@ impl Default for Keep {
 /// held by something else, for `grace`, which an update's restart stays
 /// within. It starts, stops and restarts nothing. One per installation: if
 /// another start already keeps the distribution, it returns at once.
-pub fn keep_running(root: &Path, port: u16, workspace_id: &str, keep: Keep) -> Result<()> {
+/// `workspace_id` is the Workspace that Core opened, or None when that is not
+/// known yet (a first start whose Core has not answered): then any Yuzuno
+/// Core on `port` counts.
+pub fn keep_running(root: &Path, port: u16, workspace_id: Option<&str>, keep: Keep) -> Result<()> {
     let lock = state::private_file(&root.join("updates").join(KEEP_LOCK))?;
     match lock.try_lock() {
         Ok(()) => {}
@@ -409,6 +451,19 @@ pub fn keep_running(root: &Path, port: u16, workspace_id: &str, keep: Keep) -> R
             return Ok(());
         }
         std::thread::sleep(keep.poll);
+    }
+}
+
+/// After `start` or `first-start` printed a result that launched Core: in
+/// WSL, which `distro` (`WSL_DISTRO_NAME`, which WSL sets in every process
+/// it starts) says, it stays while that Core runs ([`keep_running`]);
+/// elsewhere it returns at once, since nothing ends a detached Core there
+/// when the command that started it exits.
+pub fn stay(root: &Path, port: u16, workspace_id: Option<&str>, distro: Option<&std::ffi::OsStr>, keep: Keep) -> Result<()> {
+    if distro.is_some_and(|name| !name.is_empty()) {
+        keep_running(root, port, workspace_id, keep)
+    } else {
+        Ok(())
     }
 }
 
@@ -443,7 +498,7 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
     use rustix::process::{pidfd_open, pidfd_send_signal, Pid, PidfdFlags, Signal};
     let (layout, _lock, _record) = prepare(root, port, workspace_id, budget.lock)?;
     let client = client().map_err(|error| failed("error", error.to_string()))?;
-    let release = match probe(&client, port, workspace_id) {
+    let release = match probe(&client, port, Some(workspace_id)) {
         Answer::Free => return Ok(json!({"state":"notRunning","workspaceId":workspace_id})),
         Answer::Ours { release: Some(release), .. } => release,
         Answer::Ours { release: None, .. } => {
@@ -462,7 +517,7 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
     // the one interrupted.
     let held = pidfd_open(pid, PidfdFlags::empty())
         .map_err(|error| refused("changed", format!("Core (process {}) could not be held ({error}); nothing was stopped.", core.pid)))?;
-    if !core.alive() || !holds(core.pid, port) {
+    if !core.alive() || holds(core.pid, port) != Some(true) {
         return Err(refused("changed", format!("Core (process {}) changed while it was checked; nothing was stopped.", core.pid)));
     }
     pidfd_send_signal(&held, Signal::INT).map_err(|error| failed("signal", format!("Cannot interrupt Core (process {}): {error}", core.pid)))?;
@@ -472,7 +527,7 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
             let mut outcome = json!({"state":"stopped","pid":core.pid,"releaseId":release,"workspaceId":workspace_id});
             // Core has gone; something may hold its port again already (a
             // start that started Core again, or another program).
-            let holder = match probe(&client, port, workspace_id) {
+            let holder = match probe(&client, port, Some(workspace_id)) {
                 Answer::Free => None,
                 Answer::Ours { .. } => Some("thisWorkspace"),
                 Answer::Workspace => Some("otherWorkspace"),
@@ -556,7 +611,7 @@ fn instance(layout: &Layout, port: u16, release: &str) -> Result<state::ProcessI
             format!("Process {} runs {}, not the release its Core says it runs ({release}); nothing was stopped.", identity.pid, identity.executable.display()),
         ));
     }
-    if option(arguments, "--port") != Some(port.to_string().as_str()) || !holds(identity.pid, port) {
+    if option(arguments, "--port") != Some(port.to_string().as_str()) || holds(identity.pid, port) != Some(true) {
         return Err(refused("unidentified", format!("Process {} of this installation does not hold port {port}; nothing was stopped.", identity.pid)));
     }
     Ok(identity.clone())
@@ -585,13 +640,18 @@ fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
     })
 }
 
-/// Whether process `pid` holds the socket listening on 127.0.0.1:`port`.
+/// Whether process `pid` holds the socket listening on 127.0.0.1:`port`,
+/// from /proc. None where that cannot be told: not on Linux.
 #[cfg(target_os = "linux")]
-fn holds(pid: u32, port: u16) -> bool {
-    let Some(inode) = listening(port) else { return false };
+pub(super) fn holds(pid: u32, port: u16) -> Option<bool> {
+    let Some(inode) = listening(port) else { return Some(false) };
     let socket = format!("socket:[{inode}]");
-    let Ok(descriptors) = fs::read_dir(format!("/proc/{pid}/fd")) else { return false };
-    descriptors.flatten().any(|descriptor| fs::read_link(descriptor.path()).is_ok_and(|link| link.as_os_str() == socket.as_str()))
+    let Ok(descriptors) = fs::read_dir(format!("/proc/{pid}/fd")) else { return Some(false) };
+    Some(descriptors.flatten().any(|descriptor| fs::read_link(descriptor.path()).is_ok_and(|link| link.as_os_str() == socket.as_str())))
+}
+#[cfg(not(target_os = "linux"))]
+pub(super) fn holds(_pid: u32, _port: u16) -> Option<bool> {
+    None
 }
 
 /// The inode of the socket listening on 127.0.0.1:`port` (`/proc/net/tcp`).
@@ -606,7 +666,7 @@ fn listening(port: u16) -> Option<u64> {
     })
 }
 
-fn client() -> reqwest::Result<reqwest::blocking::Client> {
+pub(super) fn client() -> reqwest::Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -616,7 +676,7 @@ fn client() -> reqwest::Result<reqwest::blocking::Client> {
 
 /// The installed Core, detached from this helper and from `wsl.exe`, with
 /// the recorded options and environment, and the remote entry `remote`.
-fn spawn(core: &Path, layout: &Layout, record: &Record, log: File, remote: &Remote) -> std::io::Result<Child> {
+pub(super) fn spawn(core: &Path, layout: &Layout, record: &Record, log: File, remote: &Remote) -> std::io::Result<Child> {
     let mut command = Command::new(core);
     command
         .arg("--install-dir")
@@ -655,7 +715,7 @@ fn spawn(core: &Path, layout: &Layout, record: &Record, log: File, remote: &Remo
 }
 
 /// The last few kilobytes this start wrote to the log.
-fn tail(path: &Path, from: u64) -> Option<String> {
+pub(super) fn tail(path: &Path, from: u64) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let end = file.metadata().ok()?.len();
     file.seek(SeekFrom::Start(end.saturating_sub(4096).max(from))).ok()?;
@@ -664,11 +724,12 @@ fn tail(path: &Path, from: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-enum Answer {
+pub(super) enum Answer {
     /// Nothing listens.
     Free,
-    /// This Workspace's Core, and the release it says it runs.
-    Ours { ready: bool, release: Option<String> },
+    /// This Workspace's Core (any Core, when no Workspace was given), the
+    /// Workspace it says it has open, and the release it says it runs.
+    Ours { ready: bool, release: Option<String>, workspace: String },
     /// Another Workspace's Core.
     Workspace,
     /// Not a Yuzuno Core.
@@ -677,7 +738,9 @@ enum Answer {
     Silent,
 }
 
-fn probe(client: &reqwest::blocking::Client, port: u16, workspace_id: &str) -> Answer {
+/// What answers on `port`, as the Core of `workspace_id` or, given None, of
+/// any Workspace.
+pub(super) fn probe(client: &reqwest::blocking::Client, port: u16, workspace_id: Option<&str>) -> Answer {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     match TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Answer::Free,
@@ -705,29 +768,31 @@ fn probe(client: &reqwest::blocking::Client, port: u16, workspace_id: &str) -> A
     };
     if !core {
         Answer::Other
-    } else if health["workspaceId"] != workspace_id {
+    } else if workspace_id.is_some_and(|workspace_id| health["workspaceId"] != workspace_id) {
         Answer::Workspace
     } else {
         Answer::Ours {
             ready: health["apiReady"] != false && health["storageReady"] != false,
             release: health["releaseId"].as_str().map(str::to_owned),
+            workspace: health["workspaceId"].as_str().unwrap_or_default().to_owned(),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::updates) mod tests {
     use super::*;
     use crate::test_ports::free_port;
     use crate::updates::catalog;
     use std::{io::Write, net::TcpListener, os::unix::fs::PermissionsExt, sync::Arc};
 
-    struct Install {
-        temp: tempfile::TempDir,
-        layout: Layout,
-        running: Bundle,
+    pub(in crate::updates) struct Install {
+        pub temp: tempfile::TempDir,
+        pub layout: Layout,
+        pub running: Bundle,
     }
-    fn install() -> Install {
+    /// A managed installation of release a that has not started yet.
+    pub(in crate::updates) fn install() -> Install {
         let temp = tempfile::tempdir().unwrap();
         let a = package::fixture(&temp.path().join("source-a"), "a");
         let root = temp.path().join("managed");
@@ -776,7 +841,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         fs::set_permissions(&core, fs::Permissions::from_mode(0o700)).unwrap();
         notes
     }
-    fn starts_seen(path: &Path) -> Vec<Value> {
+    pub(in crate::updates) fn starts_seen(path: &Path) -> Vec<Value> {
         fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
@@ -797,7 +862,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     }
 
     /// Answers every connection with `body` as an HTTP 200, until stopped.
-    fn answer(body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
+    pub(in crate::updates) fn answer(body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
         answer_with("200 OK", body)
     }
     fn answer_with(status: &'static str, body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
@@ -917,13 +982,13 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         let keep = Keep { grace: Duration::from_millis(800), poll: Duration::from_millis(100) };
         let staying = {
             let root = root.clone();
-            std::thread::spawn(move || keep_running(&root, port, WORKSPACE, keep))
+            std::thread::spawn(move || keep_running(&root, port, Some(WORKSPACE), keep))
         };
         std::thread::sleep(Duration::from_millis(1500));
         assert!(!staying.is_finished(), "it stays while Core answers");
         // Another start that launched a Core finds this one keeping and returns.
         let other = Instant::now();
-        keep_running(&root, port, WORKSPACE, keep).unwrap();
+        keep_running(&root, port, Some(WORKSPACE), keep).unwrap();
         assert!(other.elapsed() < Duration::from_millis(500));
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         let gone = Instant::now();
@@ -933,6 +998,37 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         }
         staying.join().unwrap().unwrap();
         assert!(gone.elapsed() >= keep.grace, "it waited out the grace: {:?}", gone.elapsed());
+    }
+
+    /// Only in WSL does a start stay after it printed; there, before Core
+    /// has said which Workspace it opened, any Core on the port counts.
+    #[test]
+    fn a_start_stays_only_in_wsl() {
+        let install = install();
+        let root = install.layout.root.clone();
+        let (port, stop) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-2","apiReady":true}"#);
+        let keep = Keep { grace: Duration::from_millis(800), poll: Duration::from_millis(100) };
+        for distro in [None, Some(std::ffi::OsStr::new(""))] {
+            let asked = Instant::now();
+            stay(&root, port, None, distro, keep).unwrap();
+            assert!(asked.elapsed() < Duration::from_millis(500), "{distro:?}: {:?}", asked.elapsed());
+        }
+        let staying = std::thread::spawn(move || stay(&root, port, None, Some(std::ffi::OsStr::new("Ubuntu-24.04")), keep));
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!staying.is_finished(), "it stays while a Core answers");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let gone = Instant::now();
+        while !staying.is_finished() {
+            assert!(gone.elapsed() < Duration::from_secs(10), "it stayed after Core had gone");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        staying.join().unwrap().unwrap();
+        // Given a Workspace, another one's Core does not count.
+        let (port, stop) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-2","apiReady":true}"#);
+        let asked = Instant::now();
+        keep_running(&install.layout.root, port, Some(WORKSPACE), keep).unwrap();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(asked.elapsed() < Duration::from_secs(5), "{:?}", asked.elapsed());
     }
 
     #[test]
@@ -1041,7 +1137,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         })
     }
     /// The compiled stand-in as `name` in release a's `bin/`.
-    fn compiled(install: &Install, name: &str) -> PathBuf {
+    pub(in crate::updates) fn compiled(install: &Install, name: &str) -> PathBuf {
         let path = install.layout.root.join("releases/a/bin").join(name);
         fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
         let _ = fs::remove_file(&path);
@@ -1051,7 +1147,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     }
     /// A Core this test started, ended at the end of the test only while it
     /// is still that process.
-    struct Held(Option<state::ProcessIdentity>);
+    pub(in crate::updates) struct Held(pub Option<state::ProcessIdentity>);
     impl Drop for Held {
         fn drop(&mut self) {
             if let Some(core) = self.0.take().filter(state::ProcessIdentity::alive) {
@@ -1061,10 +1157,10 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             }
         }
     }
-    fn held(outcome: &Value) -> Held {
+    pub(in crate::updates) fn held(outcome: &Value) -> Held {
         Held(outcome["pid"].as_u64().and_then(|pid| state::ProcessIdentity::read(pid as u32).ok()))
     }
-    fn alive(core: &Held) -> bool {
+    pub(in crate::updates) fn alive(core: &Held) -> bool {
         core.0.as_ref().is_some_and(state::ProcessIdentity::alive)
     }
     fn on(port: u16) -> Remote {
@@ -1195,7 +1291,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         assert_eq!((&stopped["pid"], &stopped["releaseId"]), (&outcome["pid"], &json!("a")));
         assert!(!alive(&core));
         assert!(still, "the helper was signalled");
-        assert!(matches!(probe(&client().unwrap(), port, WORKSPACE), Answer::Free));
+        assert!(matches!(probe(&client().unwrap(), port, Some(WORKSPACE)), Answer::Free));
         assert_eq!(stop(&install.layout.root, port, WORKSPACE, QUICK_STOP)["state"], "notRunning");
     }
 
@@ -1301,7 +1397,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         let stopped = stop(&install.layout.root, port, WORKSPACE, StopBudget { lock: QUICK_STOP.lock, exit: Duration::from_secs(1) });
         assert_eq!((stopped["state"].as_str(), stopped["code"].as_str()), (Some("stopping"), Some("timeout")), "{stopped}");
         assert!(alive(&core), "it was killed");
-        assert!(matches!(probe(&client().unwrap(), port, WORKSPACE), Answer::Ours { .. }));
+        assert!(matches!(probe(&client().unwrap(), port, Some(WORKSPACE)), Answer::Ours { .. }));
     }
 
     /// A Core that has exited while its port is held again (here by a process

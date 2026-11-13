@@ -15,6 +15,8 @@ pub(crate) mod notices;
 pub mod package;
 pub mod releases;
 #[cfg(unix)]
+pub mod setup;
+#[cfg(unix)]
 pub mod start;
 pub mod state;
 pub mod storage;

@@ -36,10 +36,46 @@ enum Command {
         #[arg(long)]
         operation: String,
     },
+    /// Install a signed release, unpacked at --bundle, as a new managed
+    /// installation (as `register --initialize`), and allow its updates from
+    /// --repository signed with --public-key (release-source.json). Prints
+    /// one JSON result. Starts nothing. Run by the unpacked release's helper.
+    Install {
+        #[arg(long)]
+        install_dir: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        manifest_sha256: String,
+        #[arg(long)]
+        reviewed_source: String,
+        /// GitHub owner/repo of the releases.
+        #[arg(long)]
+        repository: String,
+        /// The publisher's minisign public key.
+        #[arg(long)]
+        public_key: String,
+    },
+    /// Start a new installation's Core for the first time, before it has
+    /// recorded how it starts, with the environment of your login shell.
+    /// Prints one JSON result; in WSL it then stays while that Core runs, as
+    /// `start` does. It supervises nothing.
+    FirstStart {
+        #[arg(long)]
+        install_dir: PathBuf,
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        data_dir: PathBuf,
+        #[arg(long)]
+        cwd: PathBuf,
+        #[arg(long)]
+        codex: Option<String>,
+    },
     /// Start this installation's Core as it last started, unless it already
-    /// answers on its port. Prints one JSON result; after starting Core it
-    /// stays while that Core runs, so WSL keeps the distribution running.
-    /// It supervises nothing.
+    /// answers on its port. Prints one JSON result; in WSL, after starting
+    /// Core it stays while that Core runs, so WSL keeps the distribution
+    /// running. It supervises nothing.
     Start {
         #[arg(long)]
         install_dir: PathBuf,
@@ -99,6 +135,56 @@ fn main() -> anyhow::Result<()> {
             install_dir,
             operation,
         } => yuzuno_workspace::updates::helper::run(&install_dir, &operation),
+        Command::Install {
+            install_dir,
+            bundle,
+            manifest_sha256,
+            reviewed_source,
+            repository,
+            public_key,
+        } => {
+            let outcome = yuzuno_workspace::updates::setup::install(
+                &install_dir,
+                &bundle,
+                &manifest_sha256,
+                &reviewed_source,
+                &repository,
+                &public_key,
+            );
+            println!("{outcome}");
+            match outcome["state"].as_str() {
+                Some("installed") => Ok(()),
+                _ => std::process::exit(3),
+            }
+        }
+        Command::FirstStart {
+            install_dir,
+            port,
+            data_dir,
+            cwd,
+            codex,
+        } => {
+            use yuzuno_workspace::updates::{setup, start};
+            let request = setup::FirstStart {
+                root: install_dir,
+                port,
+                data_dir,
+                cwd,
+                codex,
+            };
+            let outcome = setup::first_start(&request, setup::FirstBudget::default());
+            println!("{outcome}");
+            match outcome["state"].as_str() {
+                Some("started" | "starting") => start::stay(
+                    &request.root,
+                    port,
+                    outcome["workspaceId"].as_str(),
+                    std::env::var_os("WSL_DISTRO_NAME").as_deref(),
+                    start::Keep::default(),
+                ),
+                _ => std::process::exit(3),
+            }
+        }
         Command::Start {
             install_dir,
             port,
@@ -117,9 +203,13 @@ fn main() -> anyhow::Result<()> {
             let outcome = start::start_with(&install_dir, port, &workspace_id, &remote, start::Budget::default());
             println!("{outcome}");
             match outcome["state"].as_str() {
-                Some("started" | "starting") => {
-                    start::keep_running(&install_dir, port, &workspace_id, start::Keep::default())
-                }
+                Some("started" | "starting") => start::stay(
+                    &install_dir,
+                    port,
+                    Some(&workspace_id),
+                    std::env::var_os("WSL_DISTRO_NAME").as_deref(),
+                    start::Keep::default(),
+                ),
                 Some("running") => Ok(()),
                 _ => std::process::exit(3),
             }

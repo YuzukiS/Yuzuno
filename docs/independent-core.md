@@ -103,6 +103,35 @@ The commands below install into `~/.local/share/yuzuno-core` and keep the Worksp
 
    You can delete `~/yuzuno-download` afterwards.
 
+## Installed by the desktop app
+
+The Windows desktop app is to install and start Core in a WSL distribution you choose, without the steps above; that part of the app is not released yet. It runs two commands of the release's update helper, which releases whose `yuzuno-update-helper --help` lists `install` and `first-start` have. They do what the steps above and below do, and you can run them yourself. Older helpers exit with code 2 (unknown command).
+
+- **Where:** the same folders as above by default, owned by the account that runs the commands (in WSL, the distribution's default account, not root).
+- **Install** (steps 3 and 4 in one), run by the unpacked release's own helper:
+
+  ```sh
+  bundle/bin/yuzuno-update-helper install --install-dir "$ROOT" --bundle "$PWD/bundle" \
+    --manifest-sha256 "$(cat manifest.sha256)" --reviewed-source "$TAG" \
+    --repository YuzukiS/Yuzuno --public-key "$KEY"
+  ```
+
+  It registers the release as `register --initialize` does, checking every file against the signed manifest, then writes `release-source.json` (readable by you only) and reads it back as Core does. Writing nothing, it refuses a repository or key Core would not accept, and a folder that already holds an installation (`current.json`). If registering fails, it removes `$ROOT` only when it made that folder itself and no release was installed there (`"cleaned":true`); a folder that was there before is left as it was.
+- **First start**, before Core has recorded how it starts (so before `updates/start` exists), run by the installed release's helper:
+
+  ```sh
+  RELEASE=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['releaseId'])" "$ROOT/current.json")
+  "$ROOT/releases/$RELEASE/bin/yuzuno-update-helper" first-start --install-dir "$ROOT" \
+    --port 4317 --data-dir "$DATA" --cwd "$HOME"
+  ```
+
+  It starts Core as the start command below does, with the environment your login shell sets, so that Core finds `node`, `claude` and `codex` where your profile puts them, as in a terminal. It runs your shell from the user database (`/bin/sh` when there is none) as an interactive login shell with no input, and keeps only the values Core records. It knows the options of bash, zsh, sh, dash, ksh, mksh, fish, csh and tcsh; another shell is not run, and a shell that has not finished within 10 seconds is ended, with the processes it started in its process group. Core then starts with the helper's own environment, and the result says so (`"environment":"inherited"` and an `environmentNote`).
+
+  It refuses an installation whose Core has recorded a start already (it names its port and Workspace; use `updates/start start`), a port on which a Core or another program answers, and a Workspace folder inside the release packages. Once Core answers, it checks that the Core it started holds the port, and says whether Core `recorded` how it started; later starts use `updates/start` (below).
+- **Results:** each prints one JSON line with a `state`: `installed`, or `started` (with `workspaceId`) or `starting` (Core runs but has not answered within two minutes; nothing is stopped). `refused` (nothing done) and `failed` come with a `code` and `message`, and exit with code 3.
+- **WSL:** like `updates/start start`, `first-start` then stays while Core runs, so that WSL keeps the distribution running, only in WSL (where `WSL_DISTRO_NAME` is set). Elsewhere it returns once it has printed.
+- **Uninstall** as below ([Uninstall](#uninstall)): these commands install the same files as the steps above.
+
 ## Start, stop and restart
 
 Core runs the release recorded in `current.json`, which an update changes. Start it detached from your terminal:
@@ -270,7 +299,7 @@ Core keeps what it applied in `remote-access.json` in the Workspace data folder,
    "$ROOT/updates/start" start --install-dir "$ROOT" --port 4317 --workspace-id <Workspace> \
      --remote-port 4318 --remote-origin https://core.example-tailnet.ts.net:8444 --remote-login person@example.com
    ```
-   The port is Core's second loopback port; the origin is exactly what the phone's browser shows, `https://<node>:<Serve port>` (no port for 443); the login is your tailnet login as Tailscale shows it. `start` checks them as Core does, and refuses to change a Core that is running. It prints one line, which says what the started Core recorded (`"remote":{"entry":"on",…,"recorded":true}`), and then stays while Core runs, so that WSL keeps running; Ctrl-C ends only it. Core records these settings with the rest of how it started, so the desktop app's starts and Core updates keep the entry. Core says `Remote entry: http://127.0.0.1:4318 …` in `$ROOT/core.log` when it starts.
+   The port is Core's second loopback port; the origin is exactly what the phone's browser shows, `https://<node>:<Serve port>` (no port for 443); the login is your tailnet login as Tailscale shows it. `start` checks them as Core does, and refuses to change a Core that is running. It prints one line, which says what the started Core recorded (`"remote":{"entry":"on",…,"recorded":true}`). In WSL it then stays while Core runs, so that WSL keeps running; Ctrl-C ends only it. Elsewhere it returns once it has printed. Core records these settings with the rest of how it started, so the desktop app's starts and Core updates keep the entry. Core says `Remote entry: http://127.0.0.1:4318 …` in `$ROOT/core.log` when it starts.
 
    A Core run from a source build, or a release without `--remote-port` in `updates/start start --help`, reads them from its environment instead (not options, so that a Core update, which keeps the environment, keeps the entry), all three or none:
    ```sh
