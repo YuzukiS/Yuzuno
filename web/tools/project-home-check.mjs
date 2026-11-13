@@ -55,7 +55,10 @@ const sections = [
   section("status", "status", "This week", spec(["s"], { s: md("Two cards run; one waits for your choice.") }), {
     status: { asOf: at(20), validFor: 86_400, stale: false },
   }),
-  section("design", "report", "Settings groups", spec(["a"], { a: md("Two groups were compared; the first keeps the common controls together.") })),
+  section("design", "report", "Settings groups", spec(["a", "b"], {
+    a: md("Two groups were compared; the first keeps the common controls together."),
+    b: md("The second reads faster but puts the account controls two levels down."),
+  })),
   section("read-a", "report", "Earlier read", spec(["a"], { a: md("Read at this version.") }), {
     updatedAt: at(240), seen: { version: 2, at: at(200) },
   }),
