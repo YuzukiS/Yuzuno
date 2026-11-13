@@ -15,7 +15,8 @@
 //!   start (routing_accounts::resolve): the host's current default login
 //!   starts on the plain host login; another listed account starts through
 //!   runtimes/claude/cswap-claude; one no longer listed does not start, and
-//!   never as another account.
+//!   never as another account. Except at the read-only level, the launcher
+//!   is asked to name Claude's auto memory folder by its real path (YN-93).
 //! - **An API key**, local or from 1Password (read once, here, per start):
 //!   Claude Code gets ANTHROPIC_API_KEY with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1,
 //!   so its Bash commands, hooks and stdio MCP servers don't inherit it.
@@ -159,13 +160,18 @@ impl Workspace {
                         let bridge = crate::claude_sdk::bridge_script(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")).await?;
                         let executable = bridge.parent().context("The Claude runtime has no folder")?.join("cswap-claude");
                         anyhow::ensure!(executable.is_file(), "The claude-swap launcher {} is missing from the Claude runtime", executable.display());
-                        Ok(ClaudeLaunch {
-                            env: vec![
-                                ("YUZUNO_CSWAP_PYTHON".into(), Secret::new(python.display().to_string())),
-                                ("YUZUNO_CSWAP_ACCOUNT".into(), Secret::new(number.to_string())),
-                            ],
-                            executable: Some(executable),
-                        })
+                        let mut env = vec![
+                            ("YUZUNO_CSWAP_PYTHON".into(), Secret::new(python.display().to_string())),
+                            ("YUZUNO_CSWAP_ACCOUNT".into(), Secret::new(number.to_string())),
+                        ];
+                        // The launcher names the auto memory folder by its real path
+                        // (cswap-run.py, YN-93); not at the read-only level, which cannot write.
+                        let agent = id.to_owned();
+                        let level = self.stored(move |store| store.permission_level(&agent)).await?;
+                        if level.as_deref() != Some(crate::permission_levels::READ_ONLY) {
+                            env.push(("YUZUNO_CSWAP_REAL_MEMORY".into(), Secret::new("1".into())));
+                        }
+                        Ok(ClaudeLaunch { env, executable: Some(executable) })
                     }
                     AccountLaunch::Gone => bail!("The claude-swap account this executor is bound to is no longer listed: it does not start, and never as another account"),
                 }

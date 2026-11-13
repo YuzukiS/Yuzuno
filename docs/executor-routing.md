@@ -189,6 +189,27 @@ profile, refreshes its tokens and guards the default login.
   Python's `sys.stdout` at stderr, writing through at once, leaves file
   descriptor 1 alone, and calls `cswap run <slot> --require-session -- …`.
   claude-swap then execs Claude, which writes to the original stdout.
+- **The auto memory folder (YN-93).** claude-swap shares chat history by
+  default, linking the profile's `projects/` to `~/.claude/projects`. Claude
+  Code keeps auto memory in `<config dir>/projects/<project>/memory/`, checks
+  a write at both the path asked for and the path it resolves to, and allows
+  memory writes without asking only inside its memory folder as spelled.
+  Through the link every memory write asked for permission. So, except at
+  the read-only level, Core sets `YUZUNO_CSWAP_REAL_MEMORY=1` for the
+  launcher, which, when claude-swap execs Claude, passes
+  `--settings {"autoMemoryDirectory": "<the same folder's real path>"}`
+  ([memory](https://code.claude.com/docs/en/memory): read from `--settings`
+  like any settings scope). The folder name follows Claude Code 2.1.318: the
+  repository's main checkout (or the folder outside a repository), each
+  character but `a-z A-Z 0-9` as `-`. Nothing is added when the profile's
+  `projects/` is not a link, when a settings file there already names
+  `autoMemoryDirectory` or cannot be read, when Claude is already given
+  `--settings`, for a name over 200 characters, a bare repository's
+  worktree, a path not in Unicode NFC, or when `CLAUDE_CODE_PROJECT_DIR_NAME`,
+  `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` or `CLAUDE_CODE_REMOTE_MEMORY_DIR` is
+  set: memory writes then ask as before. `additionalDirectories` does not
+  help here: the real path is under `~/.claude`, a protected path, and Claude
+  Code still asks.
 - This was written against claude-swap **1.0.0** and tested only with
   stand-ins: a stub `cswap` and a stub `claude_swap` package. Whether it works
   with a real claude-swap and two real accounts is a separate check, made with
