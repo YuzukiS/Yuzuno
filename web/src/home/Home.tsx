@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
+import { House, ListOrdered, LoaderCircle } from "lucide-react";
 import { errorText } from "../api";
 import { langTag, useLanguage } from "../i18n";
 import { shellText } from "../shell-text";
@@ -13,6 +13,8 @@ import { markOpened, markSeen, readHome, saveHomeOrder, type SeenMark } from "./
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
+import { ProjectHome } from "./ProjectHome";
+import { HomeDensity, RefreshHome } from "./home-tools";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
 import { arrangeWidgets, HomeWidgets, type HomeWidget } from "./HomeWidgets";
@@ -32,12 +34,11 @@ import { replyableIn } from "./CardReply";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
-import { BriefDensity, chooseHomeDensity, densities, useHomeDensity, useHomeDensityRefusal } from "./home-density";
+import { BriefDensity, useHomeDensity, useHomeDensityRefusal } from "./home-density";
 import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
 import { settleWhenLanded } from "../settle";
-import { Tip, TipText } from "../Tip";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -102,6 +103,9 @@ export function Home({
   onBackToReply,
   report: incomingReport = null,
   visit = 0,
+  project = null,
+  onOpenProject,
+  onCloseProject,
 }: {
   /** Bumped (debounced) on Agent changes and anything else Home shows. */
   revision: number;
@@ -129,6 +133,12 @@ export function Home({
   /** Bumped on each explicit way to Home (the toolbar, a notification, a
    * Home link, a reply's Open on Home): an open report closes (T-18 R3). */
   visit?: number;
+  /** The Project whose page is shown (YN-86): its pane instead of all of Home. */
+  project?: string | null;
+  /** Opens a Project's page, at one of its cards when named (YN-86). */
+  onOpenProject?: (projectId: string, sectionKey?: string) => void;
+  /** Back to the whole of Home from a Project's page. */
+  onCloseProject?: () => void;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -146,6 +156,11 @@ export function Home({
   const jumped = useRef(0);
   useEffect(() => {
     if (!jumpTo || !data || jumped.current === jumpTo.n) return;
+    // A Project's page takes its own jump, to the card it names (ProjectHome).
+    if (jumpTo.projectId && jumpTo.projectId === project) {
+      jumped.current = jumpTo.n;
+      return;
+    }
     if (jumpTo.agentId) {
       // An Agent's ring: its item in Needs you, else Needs you itself.
       jumped.current = jumpTo.n;
@@ -314,6 +329,12 @@ export function Home({
     const byId = new Map(data.projects.map((p) => [p.project.id, p] as const));
     return displayOrder(data, localOrder).map((id) => byId.get(id)!);
   }, [data, localOrder]);
+  /** The Project whose page is shown, when Core's read has it (YN-86). */
+  const projectPanel = project ? data?.projects.find((panel) => panel.project.id === project) : undefined;
+  /** A Project's page takes the jump that opened or named it (YN-86). */
+  const projectFocus = project && jumpTo?.projectId === project && !jumpTo.agentId
+    ? { key: jumpTo.sectionKey, n: jumpTo.n }
+    : null;
   useEffect(() => {
     // A saved order shows as soon as Core reports it.
     if (localOrder && data && !saving && data.order.join("\n") === localOrder.join("\n")) setLocalOrder(null);
@@ -359,10 +380,37 @@ export function Home({
       : shellText(language).noProject;
   /** Shows the project's panel whole, then scrolls to and focuses the target in it. */
   function revealIn(projectId: string, target: () => HTMLElement | null, within = false) {
-    const n = reveal.n + 1;
-    pendingJump.current = { target: () => target() || document.getElementById(projectDomId(projectId)), n, within };
-    setReveal({ n, projects: { ...reveal.projects, [projectId]: n } });
+    jumpToEl(() => target() || document.getElementById(projectDomId(projectId)), "center", within, projectId);
   }
+  /** Scrolls Home (or the Project page on it) to a target, once, and focuses it. */
+  function jumpToEl(
+    target: () => HTMLElement | null,
+    block: ScrollLogicalPosition = "center",
+    within = false,
+    showProject?: string,
+  ) {
+    const n = reveal.n + 1;
+    pendingJump.current = { target, n, block, within };
+    setReveal({ n, projects: showProject ? { ...reveal.projects, [showProject]: n } : reveal.projects });
+  }
+  // A Project's page replaces Home's panes in the same scroller: entering it starts at its top, and coming
+  // back returns to where the reader was in the whole of Home (YN-86).
+  const shownProject = useRef<string | null>(null);
+  const homeScroll = useRef(0);
+  useLayoutEffect(() => {
+    const element = view.current;
+    if (!element || shownProject.current === project) return;
+    const from = shownProject.current;
+    shownProject.current = project;
+    if (!project) {
+      if (from) element.scrollTo({ top: homeScroll.current });
+      return;
+    }
+    if (!from) homeScroll.current = element.scrollTop;
+    element.scrollTo({ top: 0 });
+    // Only entering or leaving a Project's page moves the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
   // A reply's "Open on Home" (T-9): once Home has read, to the section it
   // answered while Home shows that very section, else to its project; once
   // per opening. What has become of that version is said from what Home
@@ -755,7 +803,7 @@ export function Home({
           <PinnedSection
             pin={p}
             source={source}
-            onOpen={() => revealIn(p.projectId, () => document.getElementById(sectionDomId(p.projectId, p.key)))}
+            onOpen={() => onOpenProject?.(p.projectId, p.key)}
             onUnpin={() => unpin(p)}
             reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
@@ -813,57 +861,30 @@ export function Home({
       data-density={density}
       inert={report ? true : undefined}
     >
-      <header className="home-header">
-        <h1>
-          <House size={18} />
-          {t.home}
-        </h1>
-        <span className="home-header-tools">
-          {/* One tip on each choice, what it shows and how it is kept: none on the group around them. */}
-          <span className="home-density" role="group" aria-label={t.density}>
-            {densities.map((option) => (
-              <Tip key={option} content={<TipText title={option === "low" ? t.densityLowHelp : t.densityHighHelp} body={t.densityHelp} />} side="bottom">
-                <button
-                  type="button"
-                  className="home-density-option"
-                  aria-pressed={density === option}
-                  onClick={() => chooseHomeDensity(densityWorkspace, option)}
-                >
-                  {option === "low" ? t.densityLow : t.densityHigh}
-                </button>
-              </Tip>
-            ))}
-          </span>
-          {data && panels.length > 1 && !readOnly && (
-            <button
-              type="button"
-              className={`quiet-button${reordering ? " is-active" : ""}`}
-              aria-pressed={reordering}
-              onClick={() => setReordering((v) => !v)}
-            >
-              <ListOrdered size={13} />
-              {reordering ? t.reorderDone : t.reorder}
-            </button>
-          )}
-          {!readOnly && (
-            <Tip content={<TipText title={t.refresh} />} describe={false} side="bottom">
+      {!project && (
+        <header className="home-header">
+          <h1>
+            <House size={18} />
+            {t.home}
+          </h1>
+          <span className="home-header-tools">
+            <HomeDensity workspaceId={densityWorkspace} />
+            {data && panels.length > 1 && !readOnly && (
               <button
                 type="button"
-                className="icon-button home-refresh"
-                aria-label={t.refresh}
-                aria-busy={refreshing || undefined}
-                onClick={() => {
-                  setRefreshing(true);
-                  reload();
-                }}
+                className={`quiet-button${reordering ? " is-active" : ""}`}
+                aria-pressed={reordering}
+                onClick={() => setReordering((v) => !v)}
               >
-                <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
+                <ListOrdered size={13} />
+                {reordering ? t.reorderDone : t.reorder}
               </button>
-            </Tip>
-          )}
-        </span>
-      </header>
-      {data && (
+            )}
+            {!readOnly && <RefreshHome busy={refreshing} onRefresh={() => { setRefreshing(true); reload(); }} />}
+          </span>
+        </header>
+      )}
+      {!project && data && (
         <HomeJumps
           asks={asks.length}
           report={latest && { title: latest.section.title, projectName: latest.projectName }}
@@ -893,6 +914,27 @@ export function Home({
             {t.reading}
           </div>
         )
+      ) : project ? (
+        <ProjectHome
+          key={project}
+          projectId={project}
+          panel={projectPanel ?? null}
+          workspaceId={workspaceId}
+          agents={projectAgents(project)}
+          needsYou={data.needsYou.filter((item) => item.projectId === project)}
+          readOnly={readOnly}
+          densityWorkspace={densityWorkspace}
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            reload();
+          }}
+          onNavigate={onNavigate}
+          onChanged={changed}
+          onSeen={seen}
+          focus={projectFocus}
+          onExit={() => onCloseProject?.()}
+        />
       ) : (
         // Needs you first, on its own; then My widgets, two columns where
         // the pane is wide; then the projects.
@@ -983,7 +1025,16 @@ export function Home({
         readOnly={readOnly}
         onBack={() => closeReport()}
         onOpenVersion={(link) => openReport(link, null, null)}
-        onShowProject={(projectId) => closeReport(() => revealIn(projectId, () => null))}
+        onShowProject={(projectId) =>
+          // On Home, its page; on the project's own page, that card (YN-86 §2.4).
+          closeReport(() => {
+            if (projectId === project) {
+              jumpToEl(() => document.getElementById(sectionDomId(projectId, report.link.key)), "center", true);
+              return;
+            }
+            onOpenProject?.(projectId, report.link.key);
+          })
+        }
         onSeen={seen}
         onOpened={opened}
         readError={error?.kind === "read" || error?.kind === "unavailable" ? error : null}

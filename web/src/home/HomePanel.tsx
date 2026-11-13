@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import {
@@ -21,10 +21,12 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
-import { changedSinceSeen, groupSections, projectDomId, readVersion, requestDomId, topicName, unreadChange, type TopicGroup } from "./brief-layout";
+import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName, unreadChange, type TopicGroup } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
 import { deckPlace, orderDeck, type DeckPlace } from "./deck-order";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
+import { deckGroup, groupDeck } from "./project-deck";
+import { projectUnseen } from "./unseen";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, relative } from "./format";
 import { readLinkedRepositories, type LinkedRepositories, type SeenMark } from "./home-api";
@@ -52,7 +54,7 @@ const touchedPanels = new Set<string>();
 const missingText = (missing: ReturnType<typeof homeText>["missing"], outcome: BriefOutcome) =>
   outcome === "missing" || outcome === "reminded" || outcome === "remindFailed" ? missing[outcome] : missing.other;
 
-function AgentCounts({ agents }: { agents: ProjectPanel["agents"] }) {
+export function AgentCounts({ agents }: { agents: ProjectPanel["agents"] }) {
   const t = useStrings(homeText);
   const counts: ("working" | "idle" | "waiting" | "error" | "offline")[] = [
     "working",
@@ -74,8 +76,7 @@ function AgentCounts({ agents }: { agents: ProjectPanel["agents"] }) {
 }
 
 /** Whether the capped body hides anything, so "Show more" appears only then. */
-function useOverflow(active: boolean) {
-  const ref = useRef<HTMLDivElement>(null);
+function useOverflow(ref: RefObject<HTMLElement | null>, active: boolean) {
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const element = ref.current;
@@ -88,7 +89,7 @@ function useOverflow(active: boolean) {
     for (const child of Array.from(element.children)) observer.observe(child);
     return () => observer.disconnect();
   });
-  return [ref, overflowing] as const;
+  return overflowing;
 }
 
 /**
@@ -98,7 +99,7 @@ function useOverflow(active: boolean) {
  * switch are in Settings › Projects, which Manage in Settings opens. A
  * project without any repository shows nothing.
  */
-function RepoBlock({ projectId, readOnly, onManage }: { projectId: string; readOnly: boolean; onManage: () => void }) {
+export function RepoBlock({ projectId, readOnly, onManage }: { projectId: string; readOnly: boolean; onManage: () => void }) {
   const t = useStrings(homeText);
   const [page, setPage] = useState<LinkedRepositories | null>(null);
   useEffect(() => {
@@ -122,6 +123,81 @@ function RepoBlock({ projectId, readOnly, onManage }: { projectId: string; readO
         <ChevronRight size={13} aria-hidden />
       </button>
     </div>
+  );
+}
+
+/**
+ * A project's facts as Core gives them (YN-86 §2.2): how its Agents are doing,
+ * their errors, its Jobs and the turns that ended without a Brief update. The
+ * same block stands in a project's panel and on its own page.
+ */
+export function ProjectFacts({ panel, onNavigate }: { panel: ProjectPanel; onNavigate: (target: HomeTarget) => void }) {
+  const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
+  return (
+    <>
+      <AgentCounts agents={panel.agents} />
+      <div className="home-widgets">
+        {panel.errors.length > 0 && (
+          <div className="home-widget home-errors" role="list" aria-label={t.agentErrors}>
+            {panel.errors.map((item) => (
+              <div role="listitem" key={`${item.agentId}:${item.at}`} className="home-error">
+                <CircleAlert size={14} />
+                <button
+                  type="button"
+                  className="inline-link"
+                  onClick={() => onNavigate({ kind: "error", agentId: item.agentId })}
+                >
+                  {item.agentName}
+                </button>
+                <span className="home-error-message">{item.message}</span>
+                <Tip content={<TipText title={absolute(item.at, time)} />}><small>{relative(item.at, language)}</small></Tip>
+              </div>
+            ))}
+          </div>
+        )}
+        {panel.jobs.length > 0 && (
+          <div className="home-widget home-jobs">
+            <h4>
+              <Workflow size={13} /> {t.jobs}
+            </h4>
+            <ul>
+              {panel.jobs.map((job) => (
+                <li key={job.id}>
+                  <button
+                    type="button"
+                    className="home-job"
+                    onClick={() => openJobs({ source: "local", jobId: job.id })}
+                  >
+                    <span className={`home-job-status status-${job.status}`}>{job.status}</span>
+                    <strong>{job.name}</strong>
+                    <span>{job.agentName || t.noAgent}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {panel.missing.length > 0 && (
+          <ul className="home-widget home-missing" aria-label={t.briefsNotMade}>
+            {panel.missing.map((item) => (
+              <li key={`${item.agentId}:${item.turnId}`}>
+                <button
+                  type="button"
+                  className="inline-link"
+                  onClick={() => onNavigate({ kind: "agent", agentId: item.agentId })}
+                >
+                  {item.agentName}
+                </button>{" "}
+                {missingText(t.missing, item.outcome)}
+                <Tip content={<TipText title={absolute(item.at, time)} />}><small> · {relative(item.at, language)}</small></Tip>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -253,85 +329,53 @@ function History30({
   );
 }
 
-export function HomePanel({
+/**
+ * One Project's cards (YN-86 §2.2): the whole deck as a project's panel on
+ * Home shows it, or, with `grouped`, the three groups of its own page: what
+ * needs the user, what is in progress and what is done. Both draw the same
+ * cards from the same sections; where each card stands is held for the visit
+ * (card-sizes.ts), so a report opened and read comes back with no New mark
+ * and in the same place.
+ */
+export function ProjectDeck({
   panel,
-  rank,
   workspaceId,
   agents,
-  needsYou,
   readOnly,
-  reveal,
-  reorder,
-  onNavigate,
-  onChanged,
   onSeen,
+  onChanged,
   arrival = null,
+  grouped = false,
+  needs = null,
+  capped = false,
+  onOverflow,
 }: {
   panel: ProjectPanel;
-  /** Position in Project Priority, from 0. */
-  rank: number;
   workspaceId: string;
   /** The project's open Agents, the ones a reply can go to. */
   agents: Agent[];
-  needsYou: NeedsYouItem[];
   readOnly: boolean;
-  /** Bumped when the needs-you row jumps here: show everything once. */
-  reveal: number;
-  reorder: { onUp?: () => void; onDown?: () => void; busy: boolean } | null;
-  onNavigate: (target: HomeTarget) => void;
-  onChanged: () => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
-  /** Where a reply's "Open on Home" landed in this project (T-9): the note
-   * in the card it answered, or above the cards when that card is gone. */
+  onChanged: () => void;
+  /** Where a reply's "Open on Home" landed in this project (T-9). */
   arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
+  /** The three groups a Project's page shows, instead of the panel's one deck. */
+  grouped?: boolean;
+  /** On a Project's page: its approvals and its executors' matters, in Needs you. */
+  needs?: {
+    pending: (PendingRequest & { agentName: string })[];
+    executors: NeedsYouItem[];
+    onNavigate: (target: HomeTarget) => void;
+  } | null;
+  /** A panel below the top ranks shows about 600 px; "Show more" lifts it. */
+  capped?: boolean;
+  onOverflow?: (overflowing: boolean) => void;
 }) {
-  const time = useTimeDisplay();
   const language = useLanguage();
+  const time = useTimeDisplay();
   const t = homeText(language);
   const id = panel.project.id;
-  const [choice, setChoice] = useState(() => readPanelChoice(workspaceId, id));
-  const [more, setMore] = useState(false);
-  // A jump from the needs-you row shows the panel whole, in the same render,
-  // until the user expands, collapses or caps it again by hand.
-  const [handled, setHandled] = useState({ collapse: 0, cap: 0 });
-  const [seeingAll, setSeeingAll] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => setChoice(readPanelChoice(workspaceId, id)), [workspaceId, id]);
-  // Core's count of what changed since the user last read it (marked seen, or a report opened whole: YN-86), less
-  // the Asks the user answered that their owner has not changed since: those are not new to the user (YN-3).
-  const answered = panel.brief.sections.filter((s) => s.ask?.state === "replied" && (readVersion(s) ?? 0) < s.version && !unreadChange(s)).length;
-  const unseen = Math.max(0, panel.unseen - answered);
-  // Whether a panel starts folded is decided as before, by what the user has not marked seen: a report opened
-  // elsewhere, or here from a link or a widget, never folds its project (YN-86).
-  const quiet = panel.brief.sections.filter(changedSinceSeen).length === 0 && needsYou.length === 0 && panel.pending.length === 0;
-  const session = JSON.stringify([workspaceId, id]);
-  // Decided when the panel first shows in this page session, then follows
-  // later reads only while the user has not acted in this panel.
-  const [autoFold, setAutoFold] = useState(() => autoFolds.get(session) ?? quiet);
-  useEffect(() => {
-    if (!touchedPanels.has(session)) setAutoFold(quiet);
-  }, [quiet, session]);
-  useEffect(() => {
-    autoFolds.set(session, autoFold);
-  }, [session, autoFold]);
-  const touch = () => touchedPanels.add(session);
-  const collapsed =
-    !(reveal > 0 && reveal !== handled.collapse) && (choice ? choice === "collapsed" : autoFold);
-  const toggle = () => {
-    const next = collapsed ? "expanded" : "collapsed";
-    setHandled((h) => ({ ...h, collapse: reveal }));
-    setChoice(next);
-    savePanelChoice(workspaceId, id, next);
-  };
   const sections = panel.brief.sections;
-  // Live sections, shown or kept out of view, and the History entries a
-  // reply may still refer to (T-174).
-  const live = useMemo(() => [...sections, ...(panel.brief.teamSections ?? [])], [sections, panel.brief.teamSections]);
-  const referable = useMemo(
-    () => referableHistory(panel.brief.history, live.map((s) => s.key)),
-    [panel.brief.history, live],
-  );
-  const groups = groupSections(sections);
   // The deck's order (YN-3, deck-order.ts): what needs the user, then current status, reports, Asks put off and
   // what came in during this visit; then the Asks the user answered, under their heading; last, status out of
   // date, closed. Each card keeps the place it was first shown in during this visit (card-sizes.ts).
@@ -340,6 +384,11 @@ export function HomePanel({
   const ownPlaces = sections.map((s) => [s.key, deckPlace(s, now)] as const);
   const places: Map<string, DeckPlace> = sizes ? sizes.places(id, ownPlaces) : new Map(ownPlaces);
   const placeOf = (s: Section) => places.get(s.key) ?? deckPlace(s, now);
+  // The group each card stands in for this visit (project-deck.ts), fixed as its place is.
+  const ownGroups = sections.map((s) => [s.key, deckGroup(placeOf(s), unreadChange(s))] as const);
+  const heldGroups = sizes ? sizes.groups(id, ownGroups) : new Map(ownGroups);
+  const groupOf = (s: Section) => heldGroups.get(s.key) ?? deckGroup(placeOf(s), unreadChange(s));
+  const groups = groupSections(sections);
   const ordered = orderDeck(groups, placeOf);
   const inGroup = (place: DeckPlace) => ordered.filter((o) => o.place === place).map((o) => o.group);
   const members = (list: TopicGroup[]) => list.flatMap((g) => [...(g.parent ? [g.parent] : []), ...g.subs]);
@@ -349,32 +398,24 @@ export function HomePanel({
   const repliedCount = members(deckReplied).filter((s) => placeOf(s) === "replied").length;
   const staleStatus = members(deckStale).filter((s) => placeOf(s) === "stale" && s.status);
   const newestStale = staleStatus.map((s) => s.status!.asOf).sort().at(-1) ?? null;
-  const staleRef = useRef<HTMLDivElement>(null);
-  const uncapped = more || (reveal > 0 && reveal !== handled.cap);
-  const capped = rank >= FULL_RANKS && !uncapped;
-  const toggleMore = () => {
-    if (uncapped) {
-      setMore(false);
-      setHandled((h) => ({ ...h, cap: reveal }));
-    } else setMore(true);
-  };
-  const [briefRef, overflowing] = useOverflow(capped && !collapsed);
-  // With no holes, in that order (deck-pack.ts).
-  useDeckPacking(briefRef, deckItems, deckCard);
-  useDeckPacking(staleRef, deckItems, deckCard);
-  const changed = sections.filter(changedSinceSeen).length;
-  async function seenAll() {
-    setSeeingAll(true);
-    setError("");
-    try {
-      // Every version on screen, exactly as shown.
-      await onSeen(id, sections.map((s) => ({ key: s.key, version: s.version })));
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setSeeingAll(false);
-    }
-  }
+  const groupedDeck = grouped ? groupDeck(groups, groupOf, placeOf) : null;
+  const live = useMemo(() => [...sections, ...(panel.brief.teamSections ?? [])], [sections, panel.brief.teamSections]);
+  const referable = useMemo(() => referableHistory(panel.brief.history, live.map((s) => s.key)), [panel.brief.history, live]);
+  // The grids this component lays out: the panel's one deck, or a Project page's groups.
+  const deckRef = useRef<HTMLDivElement>(null);
+  const needsRef = useRef<HTMLDivElement>(null);
+  const laterRef = useRef<HTMLDivElement>(null);
+  const doingRef = useRef<HTMLDivElement>(null);
+  const doneRef = useRef<HTMLDivElement>(null);
+  useDeckPacking(deckRef, deckItems, deckCard);
+  useDeckPacking(needsRef, deckItems, deckCard);
+  useDeckPacking(laterRef, deckItems, deckCard);
+  useDeckPacking(doingRef, deckItems, deckCard);
+  useDeckPacking(doneRef, deckItems, deckCard);
+  const overflowing = useOverflow(deckRef, capped && !grouped);
+  useEffect(() => {
+    onOverflow?.(overflowing);
+  }, [overflowing, onOverflow]);
   const seen = useCallback((marks: SeenMark[]) => onSeen(id, marks), [onSeen, id]);
   // A report or status shows its summary; the whole body is read on its
   // page (T-18, Lead 2270). An Ask keeps its full card, answered in place.
@@ -432,6 +473,258 @@ export function HomePanel({
         )}
       </div>
     );
+  const viewChanges = (request: PendingRequest) => () =>
+    needs?.onNavigate({
+      kind: "changes",
+      agentId: request.agentId,
+      requestId: request.id,
+      turnId: typeof request.params.turnId === "string" ? request.params.turnId : undefined,
+      itemId: typeof request.params.itemId === "string" ? request.params.itemId : undefined,
+    });
+  if (!grouped || !groupedDeck) {
+    return (
+      <div ref={deckRef} className={`home-brief${capped ? " is-capped" : ""}`}>
+        {groups.length === 0 ? (
+          <p className="home-note home-brief-empty">{t.noContent}</p>
+        ) : (
+          <>
+            {deckMain.map(topicBlock)}
+            {deckReplied.length > 0 && (
+              <>
+                <h3 className="home-deck-heading">{t.repliedGroup(repliedCount)}</h3>
+                {deckReplied.map(topicBlock)}
+              </>
+            )}
+            {deckStale.length > 0 && (
+              // Closed at each visit; a jump to a card in it opens it (card-fold.tsx unfoldAround).
+              <details className="home-out-of-date">
+                <summary>{t.outOfDate(staleStatus.length, newestStale ? absolute(newestStale, time) : "")}</summary>
+                <div className="home-brief-sub">
+                  {deckStale.map(topicBlock)}
+                </div>
+              </details>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
+  const pending = needs?.pending ?? [];
+  const executors = needs?.executors ?? [];
+  const needsCount = groupedDeck.counts.needs + pending.length + executors.length;
+  const doingCount = groupedDeck.counts.doing + groupedDeck.counts.replied;
+  const done = members(groupedDeck.done);
+  const newestDone = done.map((s) => s.updatedAt).sort().at(-1);
+  const history = panel.brief.history;
+  const empty = !needsCount && !groupedDeck.counts.deferred && !doingCount && !done.length && !history.length;
+  return (
+    <div className="project-deck">
+      {empty && <p className="home-note home-brief-empty">{t.noContent}</p>}
+      {(needsCount > 0 || groupedDeck.counts.deferred > 0) && (
+        <section className="project-deck-group" aria-labelledby={`${projectDomId(id)}-needs`}>
+          <h2 className="project-deck-title" id={`${projectDomId(id)}-needs`}>
+            {t.needsYou}
+            <span className="project-deck-count">{needsCount}</span>
+          </h2>
+          <div ref={needsRef} className="home-brief">
+            {groupedDeck.needs.map(topicBlock)}
+            {pending.map((request) => (
+              <div key={request.id} id={requestDomId(request.id)} tabIndex={-1} className="home-approval">
+                <span className="home-from">{t.from(request.agentName)}</span>
+                <PendingCard
+                  request={request}
+                  refresh={onChanged}
+                  disabled={readOnly}
+                  onViewChanges={viewChanges(request)}
+                />
+              </div>
+            ))}
+            {executors.map((item) => (
+              <button
+                key={`${item.agentId}:${item.state}`}
+                type="button"
+                className="project-deck-executor"
+                onClick={() => needs?.onNavigate({ kind: "agent", agentId: item.agentId })}
+              >
+                <span className="home-needs-source">
+                  {t.from(item.agentName)} · {item.state ? t.executorNeeds[item.state] : ""}
+                </span>
+                <strong>{item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
+                <small>{relative(item.since, language)}</small>
+              </button>
+            ))}
+          </div>
+          {groupedDeck.deferred.length > 0 && (
+            <details className="project-deck-later">
+              <summary>{t.deckLater(groupedDeck.counts.deferred)}</summary>
+              <div ref={laterRef} className="home-brief">
+                {groupedDeck.deferred.map(topicBlock)}
+              </div>
+            </details>
+          )}
+        </section>
+      )}
+      {doingCount > 0 && (
+        <section className="project-deck-group" aria-labelledby={`${projectDomId(id)}-doing`}>
+          <h2 className="project-deck-title" id={`${projectDomId(id)}-doing`}>
+            {t.deckDoing}
+            <span className="project-deck-count">{doingCount}</span>
+            <span className="project-deck-note">{t.deckStaysPut}</span>
+          </h2>
+          <div ref={doingRef} className="home-brief">
+            {groupedDeck.doing.map(topicBlock)}
+            {groupedDeck.replied.length > 0 && (
+              <>
+                <h3 className="home-deck-heading">{t.repliedGroup(groupedDeck.counts.replied)}</h3>
+                {groupedDeck.replied.map(topicBlock)}
+              </>
+            )}
+          </div>
+        </section>
+      )}
+      {(done.length > 0 || history.length > 0) && (
+        <details className="project-deck-done">
+          <summary>
+            {t.deckDone(done.length, newestDone ? relative(newestDone, language) : "", history.length)}
+          </summary>
+          <div ref={doneRef} className="home-brief">
+            {groupedDeck.done.map(topicBlock)}
+          </div>
+          <History30
+            sections={history}
+            projectId={id}
+            reply={readOnly ? undefined : { workspaceId, agents, referable }}
+          />
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function HomePanel({
+  panel,
+  rank,
+  workspaceId,
+  agents,
+  needsYou,
+  readOnly,
+  reveal,
+  reorder,
+  onNavigate,
+  onChanged,
+  onSeen,
+  arrival = null,
+}: {
+  panel: ProjectPanel;
+  /** Position in Project Priority, from 0. */
+  rank: number;
+  workspaceId: string;
+  /** The project's open Agents, the ones a reply can go to. */
+  agents: Agent[];
+  needsYou: NeedsYouItem[];
+  readOnly: boolean;
+  /** Bumped when the needs-you row jumps here: show everything once. */
+  reveal: number;
+  reorder: { onUp?: () => void; onDown?: () => void; busy: boolean } | null;
+  onNavigate: (target: HomeTarget) => void;
+  onChanged: () => void;
+  onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
+  /** Where a reply's "Open on Home" landed in this project (T-9): the note
+   * in the card it answered, or above the cards when that card is gone. */
+  arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
+}) {
+  const language = useLanguage();
+  const t = homeText(language);
+  const id = panel.project.id;
+  const [choice, setChoice] = useState(() => readPanelChoice(workspaceId, id));
+  const [more, setMore] = useState(false);
+  // A jump from the needs-you row shows the panel whole, in the same render,
+  // until the user expands, collapses or caps it again by hand.
+  const [handled, setHandled] = useState({ collapse: 0, cap: 0 });
+  const [seeingAll, setSeeingAll] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => setChoice(readPanelChoice(workspaceId, id)), [workspaceId, id]);
+  // Core's count of what changed since the user last read it, less the Asks they answered that their owner has
+  // not changed since (unseen.ts, shared with a Project's page).
+  const unseen = projectUnseen(panel);
+  // Whether a panel starts folded is decided as before, by what the user has not marked seen: a report opened
+  // elsewhere, or here from a link or a widget, never folds its project (YN-86).
+  const quiet = panel.brief.sections.filter(changedSinceSeen).length === 0 && needsYou.length === 0 && panel.pending.length === 0;
+  const session = JSON.stringify([workspaceId, id]);
+  // Decided when the panel first shows in this page session, then follows
+  // later reads only while the user has not acted in this panel.
+  const [autoFold, setAutoFold] = useState(() => autoFolds.get(session) ?? quiet);
+  useEffect(() => {
+    if (!touchedPanels.has(session)) setAutoFold(quiet);
+  }, [quiet, session]);
+  useEffect(() => {
+    autoFolds.set(session, autoFold);
+  }, [session, autoFold]);
+  const touch = () => touchedPanels.add(session);
+  const collapsed =
+    !(reveal > 0 && reveal !== handled.collapse) && (choice ? choice === "collapsed" : autoFold);
+  const toggle = () => {
+    const next = collapsed ? "expanded" : "collapsed";
+    setHandled((h) => ({ ...h, collapse: reveal }));
+    setChoice(next);
+    savePanelChoice(workspaceId, id, next);
+  };
+  const sections = panel.brief.sections;
+  // Live sections, shown or kept out of view, and the History entries a
+  // reply may still refer to (T-174).
+  const live = useMemo(() => [...sections, ...(panel.brief.teamSections ?? [])], [sections, panel.brief.teamSections]);
+  const referable = useMemo(
+    () => referableHistory(panel.brief.history, live.map((s) => s.key)),
+    [panel.brief.history, live],
+  );
+  const seen = useCallback((marks: SeenMark[]) => onSeen(id, marks), [onSeen, id]);
+  // A card the team wrote, kept out of the deck: its whole body, or its summary, as the deck shows it.
+  const teamCard = (section: Section) => section.kind === "ask" ? (
+    <SectionCard
+      key={section.key}
+      section={section}
+      projectId={id}
+      workspaceId={workspaceId}
+      agents={agents}
+      readOnly={readOnly}
+      onSeen={seen}
+      onChanged={onChanged}
+    />
+  ) : (
+    <SummaryCard
+      key={section.key}
+      section={section}
+      projectId={id}
+      workspaceId={workspaceId}
+      agents={agents}
+      deck={false}
+      readOnly={readOnly}
+      onSeen={seen}
+    />
+  );
+  const uncapped = more || (reveal > 0 && reveal !== handled.cap);
+  const capped = rank >= FULL_RANKS && !uncapped;
+  const toggleMore = () => {
+    if (uncapped) {
+      setMore(false);
+      setHandled((h) => ({ ...h, cap: reveal }));
+    } else setMore(true);
+  };
+  // Whether the capped deck hides anything (ProjectDeck measures its own deck).
+  const [overflowing, setOverflowing] = useState(false);
+  const changed = sections.filter(changedSinceSeen).length;
+  async function seenAll() {
+    setSeeingAll(true);
+    setError("");
+    try {
+      // Every version on screen, exactly as shown.
+      await onSeen(id, sections.map((s) => ({ key: s.key, version: s.version })));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSeeingAll(false);
+    }
+  }
   const viewChanges = (request: PendingRequest) => () =>
     onNavigate({
       kind: "changes",
@@ -514,30 +807,17 @@ export function HomePanel({
             )}
             <RepoBlock projectId={id} readOnly={readOnly} onManage={() => onNavigate({ kind: "projectSettings", projectId: id })} />
           </div>
-          <div ref={briefRef} className={`home-brief${capped ? " is-capped" : ""}`}>
-            {groups.length === 0 ? (
-              <p className="home-note home-brief-empty">{t.noContent}</p>
-            ) : (
-              <>
-                {deckMain.map(topicBlock)}
-                {deckReplied.length > 0 && (
-                  <>
-                    <h3 className="home-deck-heading">{t.repliedGroup(repliedCount)}</h3>
-                    {deckReplied.map(topicBlock)}
-                  </>
-                )}
-                {deckStale.length > 0 && (
-                  // Closed at each visit; a jump to a card in it opens it (card-fold.tsx unfoldAround).
-                  <details className="home-out-of-date">
-                    <summary>{t.outOfDate(staleStatus.length, newestStale ? absolute(newestStale, time) : "")}</summary>
-                    <div ref={staleRef} className="home-brief-sub">
-                      {deckStale.map(topicBlock)}
-                    </div>
-                  </details>
-                )}
-              </>
-            )}
-          </div>
+          <ProjectDeck
+            panel={panel}
+            workspaceId={workspaceId}
+            agents={agents}
+            readOnly={readOnly}
+            onSeen={onSeen}
+            onChanged={onChanged}
+            arrival={arrival}
+            capped={capped}
+            onOverflow={setOverflowing}
+          />
           {rank >= FULL_RANKS && (uncapped || overflowing) && (
             <button type="button" className="quiet-button home-more" onClick={toggleMore}>
               {uncapped ? t.showLess : t.showMore}
@@ -575,69 +855,10 @@ export function HomePanel({
           )}
           <details className="home-team-details">
             <summary>{t.teamDetails}</summary>
-            <AgentCounts agents={panel.agents} />
-            <div className="home-widgets">
-            {panel.errors.length > 0 && (
-              <div className="home-widget home-errors" role="list" aria-label={t.agentErrors}>
-                {panel.errors.map((item) => (
-                  <div role="listitem" key={`${item.agentId}:${item.at}`} className="home-error">
-                    <CircleAlert size={14} />
-                    <button
-                      type="button"
-                      className="inline-link"
-                      onClick={() => onNavigate({ kind: "error", agentId: item.agentId })}
-                    >
-                      {item.agentName}
-                    </button>
-                    <span className="home-error-message">{item.message}</span>
-                    <Tip content={<TipText title={absolute(item.at, time)} />}><small>{relative(item.at, language)}</small></Tip>
-                  </div>
-                ))}
-              </div>
-            )}
-            {panel.jobs.length > 0 && (
-              <div className="home-widget home-jobs">
-                <h4>
-                  <Workflow size={13} /> {t.jobs}
-                </h4>
-                <ul>
-                  {panel.jobs.map((job) => (
-                    <li key={job.id}>
-                      <button
-                        type="button"
-                        className="home-job"
-                        onClick={() => openJobs({ source: "local", jobId: job.id })}
-                      >
-                        <span className={`home-job-status status-${job.status}`}>{job.status}</span>
-                        <strong>{job.name}</strong>
-                        <span>{job.agentName || t.noAgent}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {panel.missing.length > 0 && (
-              <ul className="home-widget home-missing" aria-label={t.briefsNotMade}>
-                {panel.missing.map((item) => (
-                  <li key={`${item.agentId}:${item.turnId}`}>
-                    <button
-                      type="button"
-                      className="inline-link"
-                      onClick={() => onNavigate({ kind: "agent", agentId: item.agentId })}
-                    >
-                      {item.agentName}
-                    </button>{" "}
-                    {missingText(t.missing, item.outcome)}
-                    <Tip content={<TipText title={absolute(item.at, time)} />}><small> · {relative(item.at, language)}</small></Tip>
-                  </li>
-                ))}
-              </ul>
-            )}
-            </div>
+            <ProjectFacts panel={panel} onNavigate={onNavigate} />
             {(panel.brief.teamSections?.length ?? 0) > 0 && <div className="home-team-content">
               <p className="home-note">{t.teamNote}</p>
-              {panel.brief.teamSections?.map(section => card(section, undefined, false))}
+              {panel.brief.teamSections?.map(teamCard)}
             </div>}
             <History30
               sections={panel.brief.history}

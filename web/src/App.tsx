@@ -109,7 +109,7 @@ import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
+import { MessageLinks, agentLinkHref, homeLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
 import { ConversationSearch } from "./ConversationSearch";
@@ -142,7 +142,7 @@ import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
 import { RailHeading } from "./RailHeading";
-import { GroupedAgents } from "./ProjectGroups";
+import { GroupedAgents, ProjectOverviewRow } from "./ProjectGroups";
 import { ExecutorRail } from "./ExecutorRail";
 import { inExecutors, isArchived } from "./executor-lifecycle";
 import { groupAgents } from "./project-groups";
@@ -324,6 +324,20 @@ function readingTop(element: HTMLElement) {
  */
 function ownEvent(e: { target: EventTarget; currentTarget: EventTarget }): boolean {
   return e.target instanceof Node && e.currentTarget instanceof Node && e.currentTarget.contains(e.target);
+}
+
+/**
+ * A Project's page on Home (YN-86) lives in a history entry of its own:
+ * `#/home?w=<ws>&p=<project>`. The entry says which project it shows, so the
+ * browser's Back returns to the whole of Home and Forward, or a reload,
+ * returns to the page.
+ */
+const HOME_PROJECT_STATE = "yuzunoHomeProject";
+function projectEntry(): string | null {
+  const state = history.state;
+  if (!state || typeof state !== "object") return null;
+  const value = (state as Record<string, unknown>)[HOME_PROJECT_STATE];
+  return typeof value === "string" ? value : null;
 }
 
 export function App() {
@@ -569,7 +583,7 @@ export function App() {
   // On the desktop the toolbar is the title bar: on Windows without a system
   // frame, on macOS under the system's own window buttons (YN-90).
   const frame = useWindowFrame();
-  const [homeOpen, setHomeOpen] = useState(false);
+  const [homeOpen, setHomeOpen] = useState(() => projectEntry() !== null);
   // A conversation fades in as it opens from Home or another Agent's takes its
   // place (T-19 M6: SH:M11, C01). A phone's list and conversation are push and
   // pop (M8), not this.
@@ -598,10 +612,17 @@ export function App() {
   const [homeReport, setHomeReport] = useState<{ link: ReportLink; back: MessageLink | null; fromAddress: boolean; n: number } | null>(null);
   /** Each explicit way to Home (T-18 R3): Home closes a report open over it. */
   const [homeVisit, setHomeVisit] = useState(0);
-  /** Each report opening, numbered once and only upward: Home, mounted all
-   * along, tells a new opening from one it has handled by this number, even
-   * after a way to Home has dropped the last report (T-18 R3). */
+  /** The Project whose page Home shows, from the address it was opened at (YN-86). */
+  const [homeProject, setHomeProject] = useState<string | null>(() => projectEntry());
+  /** Each report opening, numbered once and only upward (T-18 R3). */
   const reportOpenings = useRef(0);
+  /** Back to the whole of Home, on this page's entry: no Project's page, no report (YN-86). */
+  function leaveProjectEntry() {
+    const state = history.state;
+    if (!state || typeof state !== "object" || !(HOME_PROJECT_STATE in state)) return;
+    const { [HOME_PROJECT_STATE]: _entry, ...rest } = state as Record<string, unknown>;
+    history.replaceState(Object.keys(rest).length ? rest : null, "", window.location.pathname + window.location.search);
+  }
   /** Home, by the user's own way there: the toolbar, a notification, a Home
    * link, a reply's Open on Home, the way back from a jump. A report open over
    * Home closes, and none opened before comes back. */
@@ -610,6 +631,37 @@ export function App() {
     setHomeVisit((n) => n + 1);
     setHomeOpen(true);
     setPhoneList(false);
+    setHomeProject(null);
+    leaveProjectEntry();
+  }
+  /**
+   * A Project's page (YN-86), at one of its cards when named. From the rail
+   * or the whole of Home it is a history entry of its own, which Back leaves;
+   * an address or a notification opens it in the entry it came in.
+   */
+  function enterProject(projectId: string, sectionKey?: string, mode: "push" | "replace" = "push") {
+    setHomeReport(null);
+    setHomeProject(projectId);
+    setHomeOpen(true);
+    setPhoneList(false);
+    if (workspaceId && !previewMode) {
+      const state = {
+        ...(history.state && typeof history.state === "object" ? history.state : {}),
+        [HOME_PROJECT_STATE]: projectId,
+      };
+      const href = homeLinkHref(window.location.pathname + window.location.search, { workspaceId, projectId });
+      if (mode === "replace") history.replaceState(state, "", href);
+      else history.pushState(state, "", href);
+    }
+    setHomeJump((last) => ({ projectId, sectionKey, n: (last?.n ?? 0) + 1 }));
+  }
+  /** The Project's page from the rail or from Home, one more press on the same page being a fresh jump. */
+  function openProject(projectId: string, sectionKey?: string) {
+    if (homeOpen && homeProject === projectId) {
+      setHomeJump((last) => ({ projectId, sectionKey, n: (last?.n ?? 0) + 1 }));
+      return;
+    }
+    enterProject(projectId, sectionKey, "push");
   }
   const [collaborationOpen, setCollaborationOpen] = useState(false);
   const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
@@ -2027,6 +2079,8 @@ export function App() {
         setIncomingLink({ ...link, fromAddress: true });
         return;
       }
+      // A Project's page wrote this entry itself (enterProject): opening it again would leave Home's.
+      if (link.kind === "home" && link.projectId && projectEntry() === link.projectId) return;
       history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setIncomingLink(link);
     };
@@ -2518,6 +2572,10 @@ export function App() {
   }
   /** Home links into a conversation (or Settings › Machines) and leads back. */
   function openFromHome(target: HomeTarget) {
+    if (target.kind === "project") {
+      openProject(target.projectId, target.sectionKey);
+      return;
+    }
     if (target.kind === "machine") {
       openSettingsPage("machines", target.machineId);
       return;
@@ -2604,7 +2662,8 @@ export function App() {
       setNotice(shell.linkOtherHome);
       return;
     }
-    goHome();
+    if (link.projectId) enterProject(link.projectId, undefined, "replace");
+    else goHome();
   }
   /** Opens the report a link names (T-18) over Home; from a message, Back
    * returns to it. Another Workspace's report is said, and nothing opens. */
@@ -2651,8 +2710,22 @@ export function App() {
     if (!homeOpen) {
       setHomeArrival(null);
       setHomeReport(null);
+      setHomeProject(null);
+      leaveProjectEntry();
     }
+    // The entry a Project's page made is left behind, as its page is.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [homeOpen]);
+  // The browser's Back and Forward say which Project's page the entry is (YN-86).
+  useEffect(() => {
+    const onPop = () => {
+      setHomeProject(projectEntry());
+      // Back or Forward opens the page it names at its top, not at an older jump.
+      setHomeJump(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
@@ -3724,6 +3797,9 @@ export function App() {
                   searching={!!search.trim()} renderAgent={row}
                   order={appearance.agentOrder === "attention" ? { seen: turnSeen } : undefined} />
               );
+            // With no group headings, one Project's list still opens its page from a row of its own (YN-86 §2.3).
+            const singleProject =
+              scope.startsWith("project:") ? projects.find((project) => project.id === scope.slice("project:".length)) ?? null : null;
             return groups ? (
               <GroupedAgents
                 groups={groups}
@@ -3733,13 +3809,24 @@ export function App() {
                 searching={!!search.trim()}
                 renderAgent={row}
                 renderList={parts}
+                currentProjectId={homeOpen ? homeProject : null}
+                onOpenProject={openProject}
                 onCreate={(projectId) => {
                   setCreateProject(projectId ?? "");
                   setCreateOpen(true);
                 }}
               />
             ) : (
-              parts(filteredAgents, scope)
+              <>
+                {singleProject && (
+                  <ProjectOverviewRow
+                    name={singleProject.name}
+                    current={homeOpen && homeProject === singleProject.id}
+                    onOpen={() => openProject(singleProject.id)}
+                  />
+                )}
+                {parts(filteredAgents, scope)}
+              </>
             );
           })()}
           {!loading && filteredAgents.length === 0 && !searchLink && (
@@ -3862,6 +3949,9 @@ export function App() {
             onBackToReply={(link) => openMessageLink(link)}
             report={homeReport}
             visit={homeVisit}
+            project={homeOpen ? homeProject : null}
+            onOpenProject={openProject}
+            onCloseProject={goHome}
           />
         ) : agent ? (
           <>

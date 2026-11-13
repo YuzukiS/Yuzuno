@@ -119,7 +119,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null, url = "http://127.0.0.1:4317/", pressHome = true } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -132,7 +132,7 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
   vc.on("jsdomError", (e) => errors.push(e.message));
   vc.on("error", (...args) => logged.push(args.map(String).join(" ")));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: "http://127.0.0.1:4317/",
+    url,
     runScripts: "outside-only",
     pretendToBeVisual: true,
     virtualConsole: vc,
@@ -218,8 +218,10 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     // Home's memory is per workspace: open it once the workspace is read.
     if (holdWorkspace) await waitFor(() => button("Home"), "the toolbar is drawn");
     else await waitFor(() => button("Home") && /Mori/.test(doc.querySelector(".agent-list")?.textContent || ""), "the workspace is read");
-    button("Home").click();
-    await waitFor(() => doc.querySelector("[data-home-project]"), "Home read its panels");
+    if (pressHome) {
+      button("Home").click();
+      await waitFor(() => doc.querySelector("[data-home-project]"), "Home read its panels");
+    }
   } catch (error) {
     w.close();
     throw error;
@@ -3853,5 +3855,112 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
+  }
+});
+
+// YN-86 S1a: a Project's page on Home, its entry on the rail, and the address
+// it lives at. The grouping itself is project-deck.test.mjs's; here the page
+// is built from Core's fixture, the arrow folds without opening it, Back
+// returns to the whole of Home, and an address opens it directly.
+test("a Project's name on the rail opens its page; the arrow only folds; Back returns to Home (YN-86)", async () => {
+  const p = await mount();
+  try {
+    const group = p.doc.querySelector('.project-group[data-group="p-app"]');
+    assert.ok(group, "the rail groups App");
+    const fold = group.querySelector(".project-group-fold");
+    const name = group.querySelector(".project-group-toggle");
+    assert.equal(fold.getAttribute("aria-expanded"), "true");
+    assert.equal(name.getAttribute("aria-label"), "Open App's project page");
+    // Tab order in the heading: the arrow, the name, then +.
+    assert.deepEqual(
+      [...group.querySelector(".project-group-head").children].slice(0, 3).map((el) => el.className),
+      ["project-group-fold", "project-group-toggle", "project-group-add"],
+    );
+    // The arrow folds, and only folds.
+    fold.click();
+    await waitFor(() => group.classList.contains("is-folded"), "the arrow folds the group");
+    assert.equal(fold.getAttribute("aria-expanded"), "false");
+    assert.equal(p.doc.querySelector("[data-project-home]"), null, "no Project's page opened");
+    assert.ok(p.doc.querySelector(".home-layout"), "still on the whole of Home");
+    // The name opens the Project's page: no whole-of-Home panes, its own groups.
+    fold.click();
+    await waitFor(() => !group.classList.contains("is-folded"), "the group opens again");
+    name.click();
+    await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "the Project's page");
+    assert.equal(p.w.location.hash, "#/home?w=ws-home&p=p-app", "the page is in the address");
+    assert.equal(p.doc.querySelector(".home-layout"), null, "the whole of Home gave way");
+    assert.equal(p.doc.querySelector("[data-home-project]"), null, "its panel is not drawn too");
+    assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
+    assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
+    // The three groups, cards in the group their place and read state put them.
+    const deck = (name) => p.doc.querySelector(`[aria-labelledby="home-project-p-app-${name}"]`);
+    assert.match(deck("needs").querySelector(".project-deck-title").textContent, /^Needs you2/);
+    assert.ok(p.doc.getElementById("home-section-p-app-release"), "the open Ask is in Needs you");
+    assert.ok(p.doc.getElementById("home-section-p-app-budget"), "so is the other one");
+    assert.match(deck("doing").querySelector(".project-deck-title").textContent, /^In progress1/);
+    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes/review")), "the unread report is in progress");
+    const done = p.doc.querySelector(".project-deck-done");
+    assert.equal(done.open, false, "Done is closed at first");
+    assert.match(done.querySelector("summary").textContent, /^Done · 1 card · latest .* · 30-day history 1$/);
+    done.querySelector("summary").click();
+    await waitFor(() => done.open, "Done opens");
+    assert.ok(done.contains(p.doc.getElementById("home-section-p-app-notes")), "the read report is done");
+    // A report opens over the page and closes back onto it, the card where it was.
+    const card = p.doc.getElementById("home-section-p-app-notes/review");
+    card.querySelector(".home-report-open").click();
+    await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), "the report page");
+    p.doc.querySelector(".home-report .report-back").click();
+    await waitFor(() => !p.doc.querySelector(".home-report"), "the report closes");
+    assert.ok(deck("doing").contains(card), "the card stayed in In progress");
+    // Core's next read has it read: New goes, the card does not move in this visit.
+    const panel = p.state.home.projects.find((project) => project.project.id === "p-app");
+    const section = panel.brief.sections.find((s) => s.key === "notes/review");
+    section.opened = { version: section.version, at: at(1) };
+    p.doc.querySelector('.project-home [aria-label="Refresh Home"]').click();
+    await waitFor(() => !card.classList.contains("is-changed"), "the read version clears New");
+    assert.ok(deck("doing").contains(card), "and the card stays where this visit first put it");
+    // Back, from the Project's page, to the whole of Home.
+    p.w.history.back();
+    await waitFor(() => p.doc.querySelector(".home-layout"), "Back on the whole of Home");
+    assert.equal(p.doc.querySelector("[data-project-home]"), null, "the Project's page is gone");
+    assert.equal(p.w.location.hash, "", "its address is gone too");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", async () => {
+  const zh = await mount({ storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    const group = zh.doc.querySelector('.project-group[data-group="p-app"]');
+    const name = group.querySelector(".project-group-toggle");
+    assert.equal(group.querySelector(".project-group-fold").getAttribute("aria-label"), "折叠 App");
+    assert.equal(name.getAttribute("aria-label"), "打开 App 的项目页");
+    name.click();
+    await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
+    assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
+    const titles = [...zh.doc.querySelectorAll(".project-deck-title")].map((title) => title.textContent);
+    assert.match(titles[0], /^需要你/);
+    assert.match(titles[1], /^进行中/);
+    assert.match(zh.doc.querySelector(".project-deck-done summary").textContent, /^已完成/);
+    assert.equal(zh.doc.querySelector(".project-deck-note").textContent, "一次访问内位置不变");
+    zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
+    assert.deepEqual(zh.errors, []);
+  } finally {
+    zh.close();
+  }
+  // An address names the Project's page: Home opens it there, without the whole of Home first.
+  const direct = await mount({ url: "http://127.0.0.1:4317/#/home?w=ws-home&p=p-res", pressHome: false });
+  try {
+    await waitFor(() => direct.doc.querySelector('[data-project-home="p-res"]'), "the address opens the Project's page");
+    assert.equal(direct.w.location.hash, "#/home?w=ws-home&p=p-res", "the address stays while the page is open");
+    assert.equal(direct.doc.querySelector(".home-layout"), null);
+    assert.equal(direct.doc.querySelector(".project-home-head h1").textContent.startsWith("Research"), true);
+    assert.deepEqual(direct.errors, []);
+  } finally {
+    direct.close();
   }
 });

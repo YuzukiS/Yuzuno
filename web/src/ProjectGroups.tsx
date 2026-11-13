@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Bell, ChevronDown, Folder, Minus, Plus } from "lucide-react";
+import { Bell, ChevronDown, Folder, House, Minus, Plus } from "lucide-react";
 import type { ProjectGroupStyle } from "./appearance";
 import { strings, useStrings } from "./i18n";
 import { Tip, TipText } from "./Tip";
@@ -11,8 +11,12 @@ import "./project-groups.css";
 // A group's own controls and marks; its name is the project's (T-189).
 const text = strings({
   count: (count: number) => `${count} ${count === 1 ? "agent" : "agents"}`,
+  overview: "Project overview",
+  overviewLabel: (name: string) => `Project overview: ${name}`,
   newIn: (name: string) => `New agent in ${name}`,
   newWithout: "New agent without a project",
+  fold: (name: string) => `Collapse ${name}`,
+  open: (name: string) => `Open ${name}'s project page`,
   needs: (count: number) => `${count} ${count === 1 ? "needs" : "need"} you`,
   working: (count: number) => `${count} working`,
   unread: (count: number) => `${count} unread`,
@@ -21,6 +25,10 @@ const text = strings({
   count: (count) => `${count} 个 Agent`,
   newIn: (name) => `在 ${name} 中新建 Agent`,
   newWithout: "新建不属于任何项目的 Agent",
+  fold: (name) => `折叠 ${name}`,
+  open: (name) => `打开 ${name} 的项目页`,
+  overview: "项目概览",
+  overviewLabel: (name) => `项目概览：${name}`,
   needs: (count) => `${count} 项需要你`,
   working: (count) => `${count} 个工作中`,
   unread: (count) => `${count} 条未读`,
@@ -77,6 +85,8 @@ export function GroupedAgents({
   searching,
   renderAgent,
   renderList,
+  currentProjectId = null,
+  onOpenProject,
   onCreate,
 }: {
   groups: ProjectGroup[];
@@ -88,6 +98,10 @@ export function GroupedAgents({
   /** A group's whole list, in its parts (T-36 S3: ExecutorRail); without
    * it, each Agent's row in the group's order. */
   renderList?: (agents: Agent[], key: string) => ReactNode;
+  /** The Project whose page is shown, for its group's entry (YN-86). */
+  currentProjectId?: string | null;
+  /** Opens a Project's page from its group's name. */
+  onOpenProject: (projectId: string) => void;
   /** Start a new Agent in this project; null for one without a project. */
   onCreate: (projectId: string | null) => void;
 }) {
@@ -130,7 +144,9 @@ export function GroupedAgents({
             style={style}
             folded={isFolded}
             instant={instant}
+            current={!!group.projectId && group.projectId === currentProjectId}
             onToggle={() => fold(group.key, !isFolded)}
+            onOpenProject={() => group.projectId && onOpenProject(group.projectId)}
             onCreate={() => onCreate(group.projectId)}
           >
             {renderList ? renderList(group.agents, group.key) : group.agents.map(renderAgent)}
@@ -180,7 +196,9 @@ function GroupSection({
   style,
   folded,
   instant,
+  current,
   onToggle,
+  onOpenProject,
   onCreate,
   children,
 }: {
@@ -189,7 +207,11 @@ function GroupSection({
   folded: boolean;
   /** Folds or opens without its transition (a search's start or end). */
   instant: boolean;
+  /** The Project's page is the one shown (YN-86). */
+  current: boolean;
   onToggle: () => void;
+  /** Opens the Project's page; only a group with a project has one. */
+  onOpenProject: () => void;
   onCreate: () => void;
   children: ReactNode;
 }) {
@@ -208,28 +230,46 @@ function GroupSection({
       data-group={group.key}
     >
       <div className="project-group-head" data-stacked={(marked && stacked) || undefined}>
+        {/* The arrow folds the group and nothing else; the name opens its Project's page (YN-86 §2.3 A). */}
         <button
-          ref={toggle}
           type="button"
-          className="project-group-toggle"
+          className="project-group-fold"
           aria-expanded={!folded}
           aria-controls={body}
+          aria-label={t.fold(group.name)}
           onClick={onToggle}
         >
           <ChevronDown size={12} className="project-group-chevron" aria-hidden="true" />
-          {style === "bands" ? (
-            <span className="project-group-dot" aria-hidden="true" />
-          ) : group.projectId ? (
-            <Folder size={12} aria-hidden="true" />
-          ) : (
-            <Minus size={12} aria-hidden="true" />
-          )}
-          <span className="project-group-name">{group.name}</span>
-          {marked && <Summary {...summary} />}
-          <span className="project-group-count" aria-label={t.count(count)}>
-            {count}
-          </span>
         </button>
+        {group.projectId ? (
+          <button
+            ref={toggle}
+            type="button"
+            className="project-group-toggle"
+            aria-current={current ? "page" : undefined}
+            aria-label={t.open(group.name)}
+            onClick={onOpenProject}
+          >
+            {style === "bands" ? (
+              <span className="project-group-dot" aria-hidden="true" />
+            ) : (
+              <Folder size={12} aria-hidden="true" />
+            )}
+            <span className="project-group-name">{group.name}</span>
+            {marked && <Summary {...summary} />}
+            <span className="project-group-count" aria-label={t.count(count)}>
+              {count}
+            </span>
+          </button>
+        ) : (
+          <button ref={toggle} type="button" className="project-group-toggle project-group-title" disabled>
+            <Minus size={12} aria-hidden="true" />
+            <span className="project-group-name">{group.name}</span>
+            <span className="project-group-count" aria-label={t.count(count)}>
+              {count}
+            </span>
+          </button>
+        )}
         {group.creatable && (
           <Tip side="bottom" describe={false} content={<TipText title={group.projectId ? t.newIn(group.name) : t.newWithout} />}>
             <button
@@ -283,5 +323,26 @@ function Summary({ needs, working, unread }: ReturnType<typeof groupSummary>) {
         )}
       </span>
     </Tip>
+  );
+}
+
+/**
+ * One Project's page, as the top row of a rail that has no group headings
+ * (YN-86 §2.3): a single Project's scope, or No grouping. The same row as a
+ * group's name, with the house mark.
+ */
+export function ProjectOverviewRow({ name, current, onOpen }: { name: string; current: boolean; onOpen: () => void }) {
+  const t = useStrings(text);
+  return (
+    <button
+      type="button"
+      className={`agent-row project-overview-row${current ? " selected" : ""}`}
+      aria-current={current ? "page" : undefined}
+      aria-label={t.overviewLabel(name)}
+      onClick={onOpen}
+    >
+      <House size={13} aria-hidden="true" />
+      <span>{t.overview}</span>
+    </button>
   );
 }
