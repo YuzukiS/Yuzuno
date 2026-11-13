@@ -462,6 +462,44 @@ test("on macOS, quiet delivery is said; a state the app couldn't read is not a d
   failing.close();
 });
 
+// YN-94: macOS shows Home's count on the dock icon only while the app's
+// "Badge application icon" is on. Settings names that switch while macOS
+// allows the app's notifications but not the badge, and only then.
+test("on macOS, the dock badge's switch is named while macOS allows notifications but not the badge", async () => {
+  const named = /The dock icon shows Home’s “needs you” count only while Badge application icon is on: System Settings → Notifications → Yuzuno\./;
+  for (const [answer, shown, why] of [
+    [macos("allowed", { badge: "off" }), true, "turned off"],
+    [macos("quiet", { badge: "not-requested" }), true, "never asked for: no switch yet"],
+    [macos("allowed", { badge: "on" }), false, "on"],
+    [macos("allowed"), false, "an older app, which doesn't say"],
+    [macos("not-requested", { badge: "not-requested" }), false, "not asked yet: turning notifications on asks for it too"],
+    [macos("denied", { badge: "off" }), false, "notifications off: that is said already"],
+  ]) {
+    const page = await mount({ shell: { answer } });
+    await until(() => /System notifications/.test(page.text()), "macOS's state");
+    assert.equal(named.test(page.text()), shown, why);
+    page.close();
+  }
+
+  // Turned on in System Settings meanwhile, then back to this window.
+  const shell = { answer: macos("allowed", { badge: "off" }) };
+  const page = await mount({ shell });
+  await until(() => named.test(page.text()), "the switch named");
+  assert.deepEqual(page.invoked, [["desktop_notifications"]], "naming it asks nothing");
+  shell.answer = macos("allowed", { badge: "on" });
+  page.window.dispatchEvent(new page.window.Event("focus"));
+  await until(() => !named.test(page.text()), "not named once on");
+  // In Chinese, with macOS's own name for the switch.
+  shell.answer = macos("allowed", { badge: "off" });
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  page.window.dispatchEvent(new page.window.Event("focus"));
+  await until(() => /标记应用程序图标/.test(page.text()), "named in Chinese");
+  assert.match(page.text(), /程序坞图标只有在“标记应用程序图标”打开时，才会显示 Home 上“需要你处理”的数量：系统设置 → 通知 → Yuzuno。/);
+  assert.equal(page.invoked.filter(([command]) => command === "desktop_notifications_request").length, 0, "never asked from here");
+  page.close();
+});
+
 // Push on the iPhone or iPad Home Screen app (T-200): one switch per device.
 const PUSH = "Push notifications on this device";
 // A recorded step without its empty parts (a GET has no body).

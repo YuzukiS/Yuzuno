@@ -8,8 +8,15 @@
 //! keeps the user's answer for this app: the page reads it, a click there may
 //! ask for it once (a third command), and each notification is sent only
 //! after reading it again, as the user can change it in System Settings at
-//! any time. Every wait there is the crate's own; after one, the selected
+//! any time. Every wait there is macOS's own; after one, the selected
 //! workspace is checked again before macOS is asked or given anything.
+//!
+//! The ask covers the dock badge too (YN-94): macOS shows the dock icon's
+//! number of an app that asked for notifications only while its "Badge
+//! application icon" is on, a switch System Settings offers only to an app
+//! that asked for badges. An app allowed before without badges asks once
+//! more, which shows no prompt (`ask_for_badge_once`); the page says where
+//! the switch is (`badge` in its answer).
 //!
 //! The notification plugin is used for its Rust API alone. Its page script,
 //! which would replace every page's `window.Notification` with calls to the
@@ -82,6 +89,10 @@ pub struct Notifications {
     /// macOS: what it allows this app now (`notification_text::Allowed`).
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization: Option<&'static str>,
+    /// macOS: the dock badge, "on", "off" or "not-requested" (no "Badge
+    /// application icon" switch for this app yet), when macOS says (YN-94).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    badge: Option<&'static str>,
     /// macOS: why it couldn't be read, when it couldn't.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -89,7 +100,7 @@ pub struct Notifications {
 
 #[cfg(not(target_os = "macos"))]
 fn here() -> Notifications {
-    Notifications { supported: CHECKED, system: CHECKED.then_some("windows"), authorization: None, reason: None }
+    Notifications { supported: CHECKED, system: CHECKED.then_some("windows"), authorization: None, badge: None, reason: None }
 }
 
 /// The selected Core, when this call comes from that Core's workspace page.
@@ -181,29 +192,61 @@ fn in_front(window: &WebviewWindow) -> Result<bool, String> {
 #[tauri::command]
 pub async fn desktop_notifications(window: WebviewWindow, connection: tauri::State<'_, ConnectionState>) -> Result<Notifications, String> {
     workspace(&window, &connection)?;
-    Ok(mac::answer(mac::allowed().await))
+    Ok(mac::answer(mac::read().await))
 }
 
-/// Asks macOS to allow this app's notifications, from the page's click,
-/// only when the user has not been asked: macOS shows its prompt once, and
-/// a denial is changed in System Settings, not asked again. What the crate
-/// says it granted is not taken as the answer (it reads macOS's error as
-/// "not granted"): what macOS says afterwards is. An error is why macOS
-/// wasn't asked.
+/// Asks macOS to allow this app's notifications, the dock badge included,
+/// from the page's click, only when the user has not been asked: macOS
+/// shows its prompt once, and a denial is changed in System Settings, not
+/// asked again. What macOS says it granted is not taken as the answer: what
+/// it says afterwards is. An error is why macOS wasn't asked.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn desktop_notifications_request(window: WebviewWindow, connection: tauri::State<'_, ConnectionState>) -> Result<Notifications, String> {
     workspace(&window, &connection)?;
-    let before = mac::allowed().await;
-    if !matches!(before, Ok(allowed) if allowed.asks()) {
+    let before = mac::read().await;
+    if !matches!(before, Ok((allowed, _)) if allowed.asks()) {
         return Ok(mac::answer(before));
     }
     // Meanwhile another Core may have been selected.
     workspace(&window, &connection)?;
-    mac_usernotifications::request_auth()
-        .await
-        .map_err(mac::said)?;
-    Ok(mac::answer(mac::allowed().await))
+    mac::request().await?;
+    Ok(mac::answer(mac::read().await))
+}
+
+/// Asks macOS once more, now with the dock badge, when the user has
+/// allowed this app's notifications and its badge isn't on (YN-94): an app
+/// allowed before asked for alerts and sounds only, so System Settings has
+/// no "Badge application icon" switch for it, and macOS drops the dock
+/// icon's number. Asked again, macOS shows no prompt (Apple: "Subsequent
+/// calls to this method don't prompt the person again"); the switch then
+/// appears for the user to turn on. Called with each badge the selected
+/// workspace sets; at most one ask per run. Not asked yet, turned off,
+/// quiet or unread: never asked from here.
+#[cfg(target_os = "macos")]
+pub fn ask_for_badge_once(window: WebviewWindow) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri::Manager;
+    static ASKED: AtomicBool = AtomicBool::new(false);
+    if ASKED.load(Ordering::Relaxed) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let Ok(settings) = mac_usernotifications::get_notification_settings().await else { return };
+        if !mac::asks_for_badge(settings.authorization_status, settings.badge_enabled) {
+            return;
+        }
+        // Meanwhile another Core may have been selected.
+        if workspace(&window, &window.state::<ConnectionState>()).is_err() {
+            return;
+        }
+        if ASKED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Err(error) = mac::request().await {
+            eprintln!("Unable to ask macOS for the dock badge: {error}");
+        }
+    });
 }
 
 /// As on Windows, and only while macOS allows this app's notifications, as
@@ -234,12 +277,18 @@ pub async fn desktop_notify(
     Ok(Handed { handed: true, held: None })
 }
 
-/// macOS's notification center, through mac-usernotifications.
+/// macOS's notification center, through mac-usernotifications, and asked
+/// directly for what that crate doesn't ask for (the badge).
 #[cfg(target_os = "macos")]
 mod mac {
     use super::Notifications;
     use crate::notification_text::Allowed;
-    use mac_usernotifications::{AuthorizationStatus, Error};
+    use block2::RcBlock;
+    use mac_usernotifications::{AuthorizationStatus, Error, NotificationSettingStatus};
+    use objc2::runtime::Bool;
+    use objc2_foundation::NSError;
+    use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
+    use std::cell::Cell;
 
     pub fn from_status(status: AuthorizationStatus) -> Allowed {
         match status {
@@ -261,20 +310,69 @@ mod mac {
         }
     }
 
-    /// What macOS allows this app now, read each time, or why it couldn't be.
-    pub async fn allowed() -> Result<Allowed, String> {
-        mac_usernotifications::get_notification_settings()
-            .await
-            .map(|settings| from_status(settings.authorization_status))
-            .map_err(said)
+    /// The page's word for the dock badge (YN-94): "not-requested" is an app
+    /// that never asked for badges, with no "Badge application icon" switch.
+    pub fn badge_word(setting: NotificationSettingStatus) -> Option<&'static str> {
+        match setting {
+            NotificationSettingStatus::Enabled => Some("on"),
+            NotificationSettingStatus::Disabled => Some("off"),
+            NotificationSettingStatus::NotSupported => Some("not-requested"),
+            NotificationSettingStatus::Unknown => None,
+        }
     }
 
-    pub fn answer(allowed: Result<Allowed, String>) -> Notifications {
-        let (allowed, reason) = match allowed {
-            Ok(allowed) => (allowed, None),
-            Err(reason) => (Allowed::Unknown, Some(reason)),
+    /// Whether to ask again for the badge (`super::ask_for_badge_once`):
+    /// only once the user has allowed this app's notifications, which macOS
+    /// does not ask about again, and while its badge isn't on. Quiet
+    /// (provisional) is left alone: Apple doesn't say a request then shows
+    /// no prompt, and this app never asks for it.
+    pub fn asks_for_badge(status: AuthorizationStatus, badge: NotificationSettingStatus) -> bool {
+        status == AuthorizationStatus::Authorized && badge != NotificationSettingStatus::Enabled
+    }
+
+    /// What macOS allows this app now, and its dock badge, read each time,
+    /// or why it couldn't be.
+    pub async fn read() -> Result<(Allowed, Option<&'static str>), String> {
+        let settings = mac_usernotifications::get_notification_settings().await.map_err(said)?;
+        Ok((from_status(settings.authorization_status), badge_word(settings.badge_enabled)))
+    }
+
+    /// What macOS allows this app now, or why it couldn't be read.
+    pub async fn allowed() -> Result<Allowed, String> {
+        read().await.map(|(allowed, _)| allowed)
+    }
+
+    /// Asks macOS for alerts, sounds and the dock badge (YN-94):
+    /// mac-usernotifications asks for the first two only. Like that crate,
+    /// it first checks this app runs from its bundle, without which the
+    /// notification center can't be used at all. Any thread may use the
+    /// center, and its answer may come on another (Apple). What it says it
+    /// granted is not used: what macOS says afterwards is (`read`).
+    pub async fn request() -> Result<(), String> {
+        mac_usernotifications::check_bundle().map_err(said)?;
+        // The block and the center are not Send: they are gone before the wait.
+        let answered = {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let tx = Cell::new(Some(tx));
+            UNUserNotificationCenter::currentNotificationCenter().requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
+                &RcBlock::new(move |_granted: Bool, _error: *mut NSError| {
+                    if let Some(tx) = tx.take() {
+                        let _ = tx.send(());
+                    }
+                }),
+            );
+            rx
         };
-        Notifications { supported: allowed.sends(), system: Some("macos"), authorization: Some(allowed.word()), reason }
+        answered.await.map_err(|_| "macOS didn't answer".to_string())
+    }
+
+    pub fn answer(read: Result<(Allowed, Option<&'static str>), String>) -> Notifications {
+        let (allowed, badge, reason) = match read {
+            Ok((allowed, badge)) => (allowed, badge, None),
+            Err(reason) => (Allowed::Unknown, None, Some(reason)),
+        };
+        Notifications { supported: allowed.sends(), system: Some("macos"), authorization: Some(allowed.word()), badge, reason }
     }
 }
 
@@ -309,21 +407,49 @@ mod tests {
         use mac_usernotifications::AuthorizationStatus as S;
         let read = [S::NotDetermined, S::Authorized, S::Provisional, S::Denied, S::Ephemeral, S::Unknown].map(from_status);
         assert_eq!(read, [Allowed::NotRequested, Allowed::Yes, Allowed::Quiet, Allowed::Denied, Allowed::Unknown, Allowed::Unknown]);
-        let json = |allowed| serde_json::to_value(answer(allowed)).unwrap();
-        assert_eq!(json(Ok(Allowed::Quiet)), serde_json::json!({ "supported": true, "system": "macos", "authorization": "quiet" }));
-        assert_eq!(json(Ok(Allowed::NotRequested)), serde_json::json!({ "supported": false, "system": "macos", "authorization": "not-requested" }));
+        let json = |read| serde_json::to_value(answer(read)).unwrap();
+        assert_eq!(
+            json(Ok((Allowed::Quiet, Some("on")))),
+            serde_json::json!({ "supported": true, "system": "macos", "authorization": "quiet", "badge": "on" })
+        );
+        assert_eq!(
+            json(Ok((Allowed::NotRequested, None))),
+            serde_json::json!({ "supported": false, "system": "macos", "authorization": "not-requested" })
+        );
         assert_eq!(
             json(Err("unreadable".into())),
             serde_json::json!({ "supported": false, "system": "macos", "authorization": "unknown", "reason": "unreadable" })
         );
     }
 
+    // YN-94: the dock badge as the page names it, and when it is asked for
+    // again: only once allowed (no prompt then) and while it isn't on.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_badge_is_named_and_asked_for_again_only_once_allowed_and_not_on() {
+        use super::mac::{asks_for_badge, badge_word};
+        use mac_usernotifications::{AuthorizationStatus as S, NotificationSettingStatus as B};
+        let badges = [B::Enabled, B::Disabled, B::NotSupported, B::Unknown];
+        assert_eq!(badges.map(badge_word), [Some("on"), Some("off"), Some("not-requested"), None]);
+        let statuses = [S::NotDetermined, S::Authorized, S::Provisional, S::Denied, S::Ephemeral, S::Unknown];
+        let asked: Vec<_> = statuses
+            .iter()
+            .flat_map(|&status| badges.iter().map(move |&badge| (status, badge)))
+            .filter(|&(status, badge)| asks_for_badge(status, badge))
+            .collect();
+        // Never before the user's own answer (not asked yet), after a no,
+        // while quiet, or for a state this app doesn't know.
+        assert_eq!(asked, [(S::Authorized, B::Disabled), (S::Authorized, B::NotSupported), (S::Authorized, B::Unknown)]);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn without_its_app_bundle_macos_is_not_asked() {
-        // A test binary has no bundle identifier: the crate refuses before
+        // A test binary has no bundle identifier: both refuse before
         // touching the notification center (which would crash without one).
         let read = tauri::async_runtime::block_on(super::mac::allowed());
         assert_eq!(read, Err("this app isn't running from its app bundle".into()));
+        let asked = tauri::async_runtime::block_on(super::mac::request());
+        assert_eq!(asked, Err("this app isn't running from its app bundle".into()));
     }
 }

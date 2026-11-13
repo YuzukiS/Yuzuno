@@ -166,6 +166,11 @@ The app's taskbar button (Windows) or dock icon (macOS) shows Home's "needs you"
 - **Windows** puts it on the taskbar button as a small speech bubble at its lower-right (YN-43).
 - **macOS** puts it on the dock icon as the system's own red number (YN-94): not a bubble, and no picture or words of ours. It gives macOS the text `1`–`9` or `9+` through Tauri's `Window::set_badge_label`, and `None` takes it off.
 
+On macOS the number shows only while the app's **Badge application icon** (标记应用程序图标) is on, in System Settings → Notifications → Yuzuno. macOS has that switch only for an app that asked for badges, and drops the number of an app that asked for notifications without them.
+- The app asks for badges together with alerts and sounds, in the one prompt that turning notifications on shows (`desktop_notifications_request`). It calls `UNUserNotificationCenter` itself for that, since mac-usernotifications asks for alerts and sounds only.
+- An app that was allowed earlier, without badges, asks once more with badges, at most once per run. That happens at the first badge the selected workspace sets, while macOS allows notifications and the badge isn't on (`notify::ask_for_badge_once`). macOS shows no prompt then: "Subsequent calls to this method don't prompt the person again" ([`requestAuthorization`](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/requestauthorization(options:completionhandler:))). The switch then appears for the user to turn on. The app never asks from here when notifications haven't been asked for yet, are turned off or are quiet.
+- `desktop_notifications` also says the badge's state (`badge`: `on`, `off`, or `not-requested` for an app with no switch yet). Settings → Notifications names the switch while macOS allows notifications but not the badge.
+
 The rest holds on both:
 
 - The workspace page sends the count to `desktop_badge` when the count or the language changes. Only the selected Core's page in the `main` window may call it. The command refuses anything but a whole number from 0 to 100 000, and the languages `en` and `zh`.

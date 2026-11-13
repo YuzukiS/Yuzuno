@@ -84,6 +84,9 @@ const text = strings({
       help: "macOS doesn’t allow this app’s notifications, and this app won’t ask again. To allow them: System Settings → Notifications → Yuzuno, then come back here. Your choices below are kept.",
     },
   } as Record<"allowed" | "quiet" | "not-requested" | "denied", Access>,
+  // Home's count on the dock icon needs its own switch in macOS (YN-94).
+  macosBadge:
+    "The dock icon shows Home’s “needs you” count only while Badge application icon is on: System Settings → Notifications → Yuzuno.",
   unread: (detail?: string): Access => ({
     label: "Not available now",
     help: `This app couldn’t tell whether macOS allows its notifications: ${detail ?? "macOS gave an answer this app doesn’t know"}.`,
@@ -168,6 +171,7 @@ const text = strings({
       help: "macOS 不允许此应用的通知，此应用也不会再次询问。如需允许：系统设置 → 通知 → Yuzuno，然后回到这里。你在下方的选择会保留。",
     },
   },
+  macosBadge: "程序坞图标只有在“标记应用程序图标”打开时，才会显示 Home 上“需要你处理”的数量：系统设置 → 通知 → Yuzuno。",
   unread: (detail) => ({ label: "暂不可用", help: `此应用无法确定 macOS 是否允许它的通知：${detail ?? "macOS 给出了此应用不认识的状态"}。` }),
   shown: "你的浏览器报告已显示。如果你没有看到，可能是系统暂时拦下了通知（专注模式或勿扰模式）。",
   handed: "已交给 Windows。Windows 不会告诉此应用是否显示了它：如果你没有看到，请检查 Windows 的通知设置和专注模式。",
@@ -215,6 +219,14 @@ export function accessText(access: NotificationAccess, language: Language = "en"
   if (access.state !== "through-app" && access.system === "macos")
     return t.macos[access.state === "allowed" && access.quiet ? "quiet" : access.state];
   return t.access[access.state];
+}
+
+/** In the desktop app on macOS, where to turn on Home's count on the dock
+ * icon, while macOS allows the app's notifications but not its badge
+ * (YN-94). Nothing for an older app, which doesn't say. */
+export function badgeHelp(access: NotificationAccess, language: Language = "en"): string | null {
+  if (access.state !== "allowed" || access.system !== "macos") return null;
+  return access.badge === "off" || access.badge === "not-requested" ? text(language).macosBadge : null;
 }
 
 /** The system the desktop app hands them to, when it does (T-188). */
@@ -324,6 +336,7 @@ export function NotificationSettings() {
     setTest(result);
   };
   const state = accessText(access, language);
+  const badge = badgeHelp(access, language);
   const current = !usable ? state.label : !prefs.enabled ? t.off : prefs.muted ? t.muted : t.on;
   return (
     <section id="settings-notifications" className="settings-section notification-settings" aria-label={t.section}>
@@ -345,6 +358,7 @@ export function NotificationSettings() {
               {system ? t.systemRow : t.permission} <span className="notification-access" data-state={access.state}>{state.label}</span>
             </span>
             <span className="settings-row-help">{state.help}</span>
+            {badge && <span className="settings-row-help notification-badge-help">{badge}</span>}
           </span>
         </div>
         {(usable || offInMacos) && (

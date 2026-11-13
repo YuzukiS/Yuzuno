@@ -14,6 +14,9 @@
 //! macOS draws the count itself, as the red number on the dock icon, through
 //! Tauri's `Window::set_badge_label`; `badge_rules::dock_label` says its
 //! words (1–9, then 9+), all of it, since no picture of ours is used there.
+//! It shows it only while this app's "Badge application icon" is on in
+//! System Settings → Notifications; an app allowed before without badges
+//! asks for them once more here, with no prompt (`notify::ask_for_badge_once`).
 //!
 //! The badge goes when the window leaves the selected workspace, on both.
 //! Nothing flashes or asks for attention. Other systems accept the count and
@@ -69,6 +72,8 @@ pub fn desktop_badge(
     let url = window.url().map_err(|e| e.to_string())?;
     let shown = accepted(window.label(), &url, selected.as_ref(), count, &lang)?;
     show(&window, Some(shown));
+    #[cfg(target_os = "macos")]
+    crate::notify::ask_for_badge_once(window);
     Ok(())
 }
 

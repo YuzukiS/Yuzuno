@@ -39,11 +39,18 @@ tauri-plugin-notification = "=2.7.0"
 # macOS notifications with the user's answer for this app (T-188), through
 # UNUserNotificationCenter: its async API only, through notify.rs.
 mac-usernotifications = { version = "=0.3.1", default-features = false }
+# Asks for the dock badge with alerts and sounds (YN-94, notify.rs): the
+# crate above asks for alerts and sounds only. The bindings it already
+# uses, at its versions, with only what is called there.
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+block2 = { version = "0.6.2", default-features = false, features = ["std"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNUserNotificationCenter"] }
 # Where the system's window buttons end and what a title bar double click
 # does (YN-90, title_bar.rs): the AppKit/Foundation bindings Tauri already
-# uses, at its versions, with only the classes read there.
+# uses, at its versions, with only the classes read there (and NSError,
+# which macOS's answer to notify.rs's request carries).
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSGeometry", "NSString", "NSUserDefaults"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSString", "NSUserDefaults"] }
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.
