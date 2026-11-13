@@ -163,7 +163,9 @@ The `lab-open-failure` Cargo feature makes links to a reserved `.invalid` host f
 
 The app's taskbar button (Windows) or dock icon (macOS) shows Home's "needs you" count, the number on Home's tab and in the window title: 1–9, then 9+, and nothing at 0.
 
-- **Windows** puts it on the taskbar button as a small speech bubble at its lower-right (YN-43).
+- **Windows** puts it on the taskbar button as a small speech bubble (YN-43). Windows picks the corner, and the app can't change it.
+  - Windows 11 draws it over the top-right corner of the icon. The bubble's tail points down-left from there at the character (YN-101; seen on Windows 11 26H2, build 26300).
+  - Windows 10 draws it at the lower-right, as [Microsoft's `SetOverlayIcon` page](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setoverlayicon) says; that page was written for the Windows 7 taskbar. There the tail points below the icon.
 - **macOS** puts it on the dock icon as the system's own red number (YN-94): not a bubble, and no picture or words of ours. It gives macOS the text `1`–`9` or `9+` through Tauri's `Window::set_badge_label`, and `None` takes it off.
 
 The rest holds on both:
