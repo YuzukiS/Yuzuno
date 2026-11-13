@@ -84,6 +84,12 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
+/* A lead's status reads as the glance's own line, not at a body's reading size (.prose). */
+.project-glance-line .brief-markdown {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
 .project-glance-line .brief-markdown > * {
   margin: 0;
   display: inline;
@@ -197,6 +203,13 @@
 }
 .project-glance .home-reorder {
   flex: none;
+}
+/* A quiet project's arrows and its way in keep the row's end, with or without the arrows. */
+.project-glance.is-quiet > .home-reorder {
+  grid-column: -3 / -2;
+}
+.project-glance.is-quiet > .project-glance-open {
+  grid-column: -2 / -1;
 }
 .project-glance-head > .home-reorder {
   margin-left: 4px;
