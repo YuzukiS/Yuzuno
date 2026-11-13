@@ -4,6 +4,8 @@
 // sent but the replies these checks make on purpose.
 //   - A report card's reply takes a 25,000-character paste whole: a field
 //     that stopped at 20,000 characters cut it short and said nothing.
+//   - A long paste folds into a block, as in the conversation's composer: it
+//     opens with its whole text, to read and edit, and is removed.
 //   - A paste over the limit (92,000 bytes, Core's) says how far over and
 //     why, holds Send, and keeps every character.
 //   - An Ask's free text takes 8,000 Chinese characters (24,000 bytes) whole.
@@ -177,6 +179,31 @@ try {
         assert.equal(reply.text.length, LONG.trim().length, "the reply sent whole");
         assert.ok(reply.text === LONG.trim(), "the same text");
         return { sentCharacters: reply.text.length };
+      });
+      await check(`${view.name}: a long paste folds into a block that opens with its whole text and is removed`, async () => {
+        const notes = card(page, "notes");
+        const box = notes.locator(".home-card-reply");
+        await paste(page, box, LONG);
+        const chip = box.locator(".pasted-text-chip");
+        await chip.waitFor({ timeout: 5_000 });
+        assert.equal(await chip.count(), 1, "one block");
+        const label = await chip.getAttribute("aria-label");
+        assert.match(label, view.lang === "zh" ? /651 行。查看并编辑$/ : /651 lines\. View and edit$/);
+        const fits = await chip.evaluate((el) => el.getBoundingClientRect().right <= el.closest(".home-card-reply").getBoundingClientRect().right + 1);
+        assert.ok(fits, "the block fits its reply");
+        await shoot(notes, `card-block-${view.name}`);
+        await chip.click();
+        const dialog = page.getByRole("dialog");
+        await dialog.waitFor({ timeout: 5_000 });
+        assert.equal(await dialog.locator("h2").textContent(), view.lang === "zh" ? "粘贴的文本 #1" : "Pasted text #1");
+        const full = await dialog.locator("textarea").inputValue();
+        assert.equal(full.length, LONG.length, "the whole paste, to read and edit");
+        await dialog.screenshot({ path: `${output}/block-dialog-${view.name}.png` });
+        report.shots.push(`${output}/block-dialog-${view.name}.png`);
+        await dialog.getByRole("button", { name: view.lang === "zh" ? "移除此块" : "Remove block" }).click();
+        await dialog.waitFor({ state: "hidden", timeout: 5_000 });
+        assert.equal(await chip.count(), 0, "removed");
+        return { label, characters: full.length };
       });
       await check(`${view.name}: a paste over the limit says how far over, holds Send and keeps every character`, async () => {
         const notes = card(page, "notes");

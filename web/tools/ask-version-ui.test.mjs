@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 // A reply to an ask names the version of the ask it answers and the
 // Workspace that page showed (T-9): every way of answering (an option, a
@@ -149,12 +150,12 @@ function mount(answer = accepted) {
       key: sectionValue.key, section: sectionValue, projectId: "p1", workspaceId: "ws-1", agents, readOnly: false,
       onSent: () => { box.sent++; }, ...extra,
     });
-  const field = () => document.querySelector(".home-text-reply textarea");
+  // The reply's field: the conversation's composer (YN-91).
+  const field = () => document.querySelector(".home-text-reply [data-composer-input]");
+  const fieldValue = () => composerText(field());
   const sendButton = () => document.querySelector(".home-text-reply button[type=submit]");
   const type = async (text) => {
-    const area = field();
-    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(area, text);
-    area.dispatchEvent(new window.Event("input", { bubbles: true }));
+    setComposerText(field(), text);
     await tick();
   };
   const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
@@ -164,7 +165,7 @@ function mount(answer = accepted) {
   const homeReads = () => posts.filter((post) => post.url.endsWith("/api/home")).length;
   return {
     get window() { return window; }, get document() { return document; },
-    errors, posts, replies, render, field, sendButton, type, button, notes, box, reload, outbox, homeReads, close: () => window.close(),
+    errors, posts, replies, render, field, fieldValue, sendButton, type, button, notes, box, reload, outbox, homeReads, close: () => window.close(),
   };
 }
 
@@ -337,7 +338,7 @@ test("a send not confirmed goes again exactly as it was, even after the ask is a
   const [first, second] = page.replies();
   assert.deepEqual(second, first, "the same version, words and client id");
   assert.equal(c.delivered.size, 1);
-  assert.equal(page.field().value, "", "the draft of those words was that reply");
+  assert.equal(page.fieldValue(), "", "the draft of those words was that reply");
   assert.deepEqual(page.errors, []);
 });
 
@@ -355,12 +356,12 @@ test("a send not confirmed goes again as it was sent, trimmed, whatever spaces i
   assert.ok(!page.notes().some((n) => /You began this reply on version/.test(n)), JSON.stringify(page.notes()));
   page.reload();
   page.render(section("plan", 3));
-  assert.equal(page.field().value, "  Ship on Friday.\n", "the draft as written");
+  assert.equal(page.fieldValue(), "  Ship on Friday.\n", "the draft as written");
   sendAgainButton(page, 2).click();
   await tick();
   const [first, second] = page.replies();
   assert.deepEqual(second, first, "the same version, words and client id");
-  assert.equal(page.field().value, "", "the draft of those words was that reply");
+  assert.equal(page.fieldValue(), "", "the draft of those words was that reply");
   assert.equal(c.delivered.size, 1);
   assert.deepEqual(page.errors, []);
 });
@@ -639,7 +640,7 @@ test("a new edit is told apart from the unconfirmed send: that send goes again a
   assert.ok(page.notes().some((n) => /A reply you wrote here is kept, not sent/.test(n)), JSON.stringify(page.notes()));
   page.button("Reply again").click();
   await tick();
-  assert.equal(page.field().value, "Ship on Monday, after the docs.", "the edit stays");
+  assert.equal(page.fieldValue(), "Ship on Monday, after the docs.", "the edit stays");
   page.sendButton().click();
   await tick();
   const third = page.replies()[2];
@@ -665,7 +666,7 @@ test("a draft written after the unconfirmed send stays when that send goes again
   assert.ok(page.notes().some((n) => /A reply you wrote here is kept, not sent/.test(n)), JSON.stringify(page.notes()));
   page.button("Reply again").click();
   await tick();
-  assert.equal(page.field().value, "Ship on Friday.", "the newer draft stays, though its words are the same");
+  assert.equal(page.fieldValue(), "Ship on Friday.", "the newer draft stays, though its words are the same");
   assert.equal(c.delivered.size, 1);
   assert.deepEqual(page.errors, []);
 });
@@ -732,7 +733,7 @@ test("a reply whose answer was lost or uncertain stays to be sent again; one Cor
       await tick();
       assert.equal(!!sendAgainButton(page, 2), kept, status);
       assert.equal(page.outbox().length, kept ? 1 : 0, status);
-      assert.equal(page.field().value, "Ship on Friday.", `${status}: the words stay`);
+      assert.equal(page.fieldValue(), "Ship on Friday.", `${status}: the words stay`);
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();
@@ -897,7 +898,7 @@ test("another Workspace, or a Core older than the page: nothing sent, reload Hom
   await tick();
   assert.ok(page.notes().some((n) => /Nothing was sent: reload Home to reply here\./.test(n)));
   assert.equal(page.window.localStorage.getItem("yuzuno.home-outbox.v1"), null, "an older Core read nothing: no retry record");
-  assert.equal(page.field().value, "Yes.");
+  assert.equal(page.fieldValue(), "Yes.");
 });
 
 test("words written while a reply is being sent stay", async (t) => {
@@ -913,9 +914,9 @@ test("words written while a reply is being sent stay", async (t) => {
   await tick();
   assert.equal(page.replies()[0].text, "First thought.");
   assert.equal(page.replies()[0].askVersion, 2);
-  assert.equal(page.field()?.value ?? null, null, "shown as replied");
+  assert.equal((page.field() ? page.fieldValue() : null), null, "shown as replied");
   const again = [...page.document.querySelectorAll("button")].find((b) => /again/i.test(b.textContent));
   again.click();
   await tick();
-  assert.equal(page.field().value, "A second thought, written while sending.", "kept, not sent");
+  assert.equal(page.fieldValue(), "A second thought, written while sending.", "kept, not sent");
 });

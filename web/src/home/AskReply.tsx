@@ -3,7 +3,7 @@ import { LoaderCircle, MessageSquareReply, RotateCcw, Send, Trash2 } from "lucid
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
-import { returnKey, returnSends, useDevicePreferences } from "../device-preferences";
+import { returnSends, useDevicePreferences } from "../device-preferences";
 import { touchKeyboard } from "../touch-input";
 import type { Agent, MessageReceipt } from "../types";
 import { Clarification } from "../intelligent-ui/ClarificationForm";
@@ -20,6 +20,7 @@ import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, 
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
+import { HomeComposer, type ReplyWords } from "./HomeComposer";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
 import { CleanupApprovalNote, cleanupOptionView, useCleanupApproval } from "./cleanup-approval";
@@ -164,20 +165,23 @@ export function TargetPicker({
   );
 }
 
-/** A text reply; its owner keeps the text and says what a delivery clears. */
+/** A text reply; its owner keeps the words and says what a delivery clears. */
 function TextReply({
+  slot,
   placeholder,
-  text,
-  onText,
+  words,
+  onWords,
   disabled,
   held = false,
   busy,
   onSend,
   label,
 }: {
+  /** Which reply it is (HomeComposer). */
+  slot: string;
   placeholder: string;
-  text: string;
-  onText: (text: string) => void;
+  words: ReplyWords;
+  onWords: (words: ReplyWords) => void;
   disabled: boolean;
   /** Not sendable as it is, though it can still be written in. */
   held?: boolean;
@@ -186,9 +190,10 @@ function TextReply({
   label: string;
 }) {
   const t = useStrings(homeText);
-  // Return sends as it does from the conversation's composer (YN-3): this device's choice, never while an input
-  // method composes; Shift+Return makes a new line.
+  // Return sends as it does from the conversation's composer (YN-3), whose field this is (YN-91): this device's
+  // choice, never while an input method composes; Shift+Return makes a new line.
   const { sendKey } = useDevicePreferences();
+  const text = words.text;
   const submit = () => {
     const value = text.trim();
     if (!value || disabled || held || busy || replyTooLong(value)) return;
@@ -204,19 +209,14 @@ function TextReply({
           submit();
         }}
       >
-        <textarea
-          aria-label={label}
-          value={text}
-          rows={2}
+        <HomeComposer
+          slot={slot}
+          label={label}
           placeholder={placeholder}
-          disabled={disabled}
-          onChange={(event) => onText(event.target.value)}
-          onKeyDown={(event) => {
-            if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
-              event.preventDefault();
-              submit();
-            }
-          }}
+          words={words}
+          onWords={onWords}
+          onSubmit={submit}
+          readOnly={disabled}
         />
         {/* Its key, as the composer's Send says it. */}
         <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
@@ -259,7 +259,7 @@ function formReply(form: ClarificationProps, values: ClarificationValues) {
  * on screen when it is sent; `version`, the one it was begun on, is kept by
  * drafts from before and is not used.
  */
-type AskDraft = { key: string; text: string; version?: number; agentId: string; at: string };
+type AskDraft = { key: string; text: string; blocks?: ReplyWords["blocks"]; version?: number; agentId: string; at: string };
 const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
 
 /**
@@ -339,7 +339,7 @@ export function AskReply({
     const { version: _begun, ...was } = latest.current ?? { key: section.key, text: "" };
     keep({ ...was, agentId: target, ...patch, at: new Date().toISOString() } as AskDraft);
   };
-  const writeText = (text: string) => write({ text });
+  const writeWords = ({ text, blocks }: ReplyWords) => write({ text, blocks });
   const pickTarget = (agentId: string) => {
     setTarget(agentId);
     if (latest.current?.text.trim()) write({ agentId });
@@ -531,7 +531,8 @@ export function AskReply({
   useLayoutEffect(() => {
     if (!reopened || replied) return;
     const ui = replyUi.current;
-    const first = ui?.querySelector<HTMLElement>("textarea:not([disabled])")
+    // Its first field to write in: the reply's composer (YN-91), or a form's text field before it.
+    const first = ui?.querySelector<HTMLElement>("textarea:not([disabled]), [data-composer-input][contenteditable='true']")
       ?? ui?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled])");
     first?.focus({ preventScroll: true });
     // Only as Reply again brings it back.
@@ -737,10 +738,11 @@ export function AskReply({
           without a choice (project_brief/home.rs). */}
       {restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept}</p>}
       <TextReply
+        slot={slot}
         label={t.replyField(section.title)}
         placeholder={prompt}
-        text={draft?.text ?? ""}
-        onText={writeText}
+        words={{ text: draft?.text ?? "", blocks: draft?.blocks }}
+        onWords={writeWords}
         disabled={disabled}
         held={!!pending}
         busy={busy}
@@ -767,7 +769,7 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
   const t = useStrings(homeText);
   const { send, busy, error, receipt, kept } = useReply(context);
   const [target, setTarget] = useState(kept?.agentId || "");
-  const [text, setText] = useState(kept?.text || "");
+  const [words, setWords] = useState<ReplyWords>({ text: kept?.text || "" });
   const [open, setOpen] = useState(!!kept);
   if (!context.agents.length) return null;
   if (!open)
@@ -782,13 +784,14 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
       <TargetPicker agents={context.agents} value={target} onChange={setTarget} disabled={context.readOnly || busy} />
       {kept && <p className="home-note">{t.notConfirmed}</p>}
       <TextReply
+        slot={outboxKey(context.workspaceId, context.projectId)}
         label={t.replyField(context.projectName)}
         placeholder={t.projectMessage}
-        text={text}
-        onText={setText}
+        words={words}
+        onWords={setWords}
         disabled={context.readOnly || !target}
         busy={busy}
-        onSend={(value) => send(target, value).then(() => setText(""))}
+        onSend={(value) => send(target, value).then(() => setWords({ text: "" }))}
       />
       {receipt && !error && (
         <p className="home-note" role="status">

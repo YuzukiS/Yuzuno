@@ -199,6 +199,8 @@ const shown = () => page.evaluate(async () => {
   const reply = document.querySelector('[data-section-key="progress"] .home-card-reply');
   const panel = document.querySelector('[data-home-project="p1"]');
   const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
+  // What a reply's field (the conversation's composer, YN-91) holds: its lines, not its placeholder.
+  const typed = (field) => [...field.querySelectorAll(".cm-line")].map((line) => (line.querySelector(".cm-placeholder") ? "" : line.textContent)).join("\n");
   return {
     lang: document.querySelector(".home-view").getAttribute("lang"),
     needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: await tipOf(document.querySelector(".home-needs-item")) },
@@ -209,16 +211,16 @@ const shown = () => page.evaluate(async () => {
       question: text(ship.querySelector(".home-question")),
       options: all(".home-ask-options button", ship),
       target: all(".home-ask-reply > .home-reply-target label, .home-ask-reply > .home-reply-target option", ship),
-      placeholder: ship.querySelector(".home-text-reply textarea").getAttribute("placeholder"),
-      typed: ship.querySelector(".home-text-reply textarea").value,
+      placeholder: ship.querySelector(".home-text-reply [data-composer-input]").getAttribute("aria-placeholder"),
+      typed: typed(ship.querySelector(".home-text-reply [data-composer-input]")),
       send: text(ship.querySelector(".home-text-reply button")),
       defer: all(".home-defer button", ship),
     },
     reply: {
       head: text(reply.querySelector(".home-card-reply-head span")),
       to: text(reply.querySelector(".home-reply-target label")),
-      placeholder: reply.querySelector("textarea").getAttribute("placeholder"),
-      typed: reply.querySelector("textarea").value,
+      placeholder: reply.querySelector("[data-composer-input]").getAttribute("aria-placeholder"),
+      typed: typed(reply.querySelector("[data-composer-input]")),
       send: text(reply.querySelector(".home-text-reply button")),
       close: reply.querySelector(".home-card-reply-head button").getAttribute("aria-label"),
     },
@@ -311,8 +313,8 @@ try {
   await page.locator('[data-section-key="progress"] .home-reply-open').click();
   const DRAFT = "Please keep the fold — 先别改";
   const ANSWER = "Ship after the docs land 文档之后";
-  await page.locator('[data-section-key="progress"] .home-card-reply textarea').fill(DRAFT);
-  await page.locator('[data-section-key="ship"] .home-text-reply textarea').fill(ANSWER);
+  await page.locator('[data-section-key="progress"] .home-card-reply [data-composer-input]').fill(DRAFT);
+  await page.locator('[data-section-key="ship"] .home-text-reply [data-composer-input]').fill(ANSWER);
   await page.locator('[data-section-key="ship"] .home-defer > button').click();
   await page.locator('[data-section-key="ship"] .home-defer [role="group"]').waitFor();
   await page.locator('[data-home-project="p1"] .home-team-details summary').click();

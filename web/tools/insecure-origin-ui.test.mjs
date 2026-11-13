@@ -175,6 +175,12 @@ async function mount({ copies = null } = {}) {
   };
 }
 async function type(p, element, value) {
+  // A Home reply's field is the conversation's composer (YN-91).
+  if (element.matches("[data-composer-input]")) {
+    setComposerText(element, value);
+    await pause();
+    return;
+  }
   const proto = element.tagName === "TEXTAREA" ? p.w.HTMLTextAreaElement.prototype : p.w.HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, "value").set.call(element, value);
   element.dispatchEvent(new p.w.Event("input", { bubbles: true }));
@@ -192,7 +198,7 @@ test("YN-36 over plain http on a LAN address, a written reply to an Ask is sent 
   const p = await mount();
   try {
     const release = p.card("release");
-    await type(p, release.querySelector("textarea"), "Ship it after the docs fix");
+    await type(p, release.querySelector(".home-text-reply [data-composer-input]"), "Ship it after the docs fix");
     p.button("Send", release).click();
     await waitFor(() => replies(p).length === 1,
       () => `the reply was sent; the page says: ${JSON.stringify(p.alerts(p.card("release")))}`);
@@ -226,7 +232,7 @@ test("YN-36 over plain http, an option, a choice, a form and a reply to the proj
     await pause();
     const reply = panel.querySelector(".home-project-reply");
     await choose(p, reply.querySelector("select"), "b");
-    await type(p, reply.querySelector("textarea"), "Please tidy the notes");
+    await type(p, reply.querySelector(".home-text-reply [data-composer-input]"), "Please tidy the notes");
     p.button("Send", reply).click();
     await waitFor(() => replies(p).length === 4, () => `the project reply was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[3].body.text, "Please tidy the notes");

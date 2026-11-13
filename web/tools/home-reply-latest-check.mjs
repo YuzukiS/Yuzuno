@@ -217,7 +217,7 @@ try {
       // 2. A report card's reply follows the card, and goes to the version Core has.
       const notes = card(page, "notes");
       await notes.locator(".home-reply-open").click();
-      await notes.locator(".home-card-reply textarea").fill("Please add the numbers.");
+      await notes.locator(".home-card-reply [data-composer-input]").fill("Please add the numbers.");
       sections[2] = { ...sections[2], version: 3, title: "Notes, revised" };
       await refresh(page, "notes", 3);
       const box = notes.locator(".home-card-reply");
@@ -237,7 +237,7 @@ try {
 
       // 3. An Ask's words, refused because Core has a newer version.
       const ask = card(page, "words");
-      await ask.locator(".home-text-reply textarea").fill("Ship after QA.");
+      await ask.locator(".home-text-reply [data-composer-input]").fill("Ship after QA.");
       sections[1] = { ...sections[1], version: 2, ask: { ...sections[1].ask, question: "Anything before we ship on Monday?" } };
       await ask.locator(".home-text-reply button[type=submit]").click();
       await sent(page, writes, "words", 2);

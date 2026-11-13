@@ -1,5 +1,5 @@
-import type { ComposerDraft } from "./composer-draft.ts";
-import { shouldFoldPaste } from "./composer-draft.ts";
+import type { ComposerDraft, DraftPart } from "./composer-draft.ts";
+import { pastedText, shouldFoldPaste, textDraft } from "./composer-draft.ts";
 import type { NativeItem } from "./types.ts";
 
 export type TextBlock = { id: string; start: number; end: number };
@@ -56,6 +56,34 @@ export function draftTextBlocks(draft: ComposerDraft): TextBlock[] {
     offset += part.text.length;
     return part.kind === "paste" ? [{ id: part.id, start, end: offset }] : [];
   });
+}
+
+/**
+ * The draft `draftTextBlocks` describes: `text` with each block a paste
+ * again, numbered in order (YN-91: how Home keeps a reply's pastes with its
+ * text). Blocks that don't fit the text (out of order, overlapping, past its
+ * end, or the same id twice) give the text alone: none of it is lost, only
+ * its blocks.
+ */
+export function draftFromTextBlocks(text: string, blocks?: readonly TextBlock[]): ComposerDraft {
+  if (!blocks?.length) return textDraft(text);
+  const parts: DraftPart[] = [];
+  const ids = new Set<string>();
+  let offset = 0;
+  for (const block of blocks) {
+    if (
+      typeof block?.id !== "string" || !block.id || ids.has(block.id) ||
+      !Number.isInteger(block.start) || !Number.isInteger(block.end) ||
+      block.start < offset || block.end < block.start || block.end > text.length
+    )
+      return textDraft(text);
+    ids.add(block.id);
+    if (block.start > offset) parts.push({ kind: "text", text: text.slice(offset, block.start) });
+    parts.push(pastedText(text.slice(block.start, block.end), ids.size, block.id));
+    offset = block.end;
+  }
+  if (offset < text.length) parts.push({ kind: "text", text: text.slice(offset) });
+  return { version: 1, nextNumber: ids.size + 1, parts };
 }
 
 export function contentParts(

@@ -133,11 +133,11 @@ const card = (page, key) => page.locator(`[data-section-key="${key}"]`).first();
 const reply = (page, key) =>
   card(page, key).evaluate((el) => {
     const box = el.querySelector(".home-ask-reply");
-    const field = box?.querySelector(".home-text-reply textarea");
+    const field = box?.querySelector(".home-text-reply [data-composer-input]");
     const send = box?.querySelector(".home-text-reply button[type=submit]");
     return {
       writable: !!field,
-      placeholder: field?.placeholder ?? null,
+      placeholder: field?.getAttribute("aria-placeholder") ?? null,
       sendDisabled: send?.disabled ?? null,
       options: [...(box?.querySelectorAll(".home-ask-options button") || [])].map((b) => b.textContent),
       choices: [...(box?.querySelectorAll(".home-choice") || [])].map((c) => c.querySelector("strong").textContent),
@@ -188,7 +188,7 @@ try {
         // Writing and sending on a choice-only ask: the one the old condition
         // left with no way to answer in words.
         if (!view.touch && theme === "light") {
-          const field = card(page, "choice").locator(".home-text-reply textarea");
+          const field = card(page, "choice").locator(".home-text-reply [data-composer-input]");
           await field.fill("Plan B, but keep the old import for a week.");
           const before = writes.length;
           await card(page, "choice").locator(".home-text-reply button[type=submit]").click();

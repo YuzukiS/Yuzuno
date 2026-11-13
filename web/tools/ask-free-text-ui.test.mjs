@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 // An open Ask always takes a reply in the user's own words (T-9), whatever
 // the Agent declared: options, a choice or a form never take the writing
@@ -87,15 +88,15 @@ function mount() {
       section: sectionValue, projectId: "p1", workspaceId: "ws", agents, readOnly: false,
       onSent: () => {}, ...extra,
     });
-  const field = () => document.querySelector(".home-text-reply textarea");
+  // The reply's field: the conversation's composer (YN-91).
+  const field = () => document.querySelector(".home-text-reply [data-composer-input]");
+  const fieldValue = () => composerText(field());
   const sendButton = () => document.querySelector(".home-text-reply button[type=submit]");
   const type = async (text) => {
-    const area = field();
-    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(area, text);
-    area.dispatchEvent(new window.Event("input", { bubbles: true }));
+    setComposerText(field(), text);
     await tick();
   };
-  return { window, document, errors, posts, render, field, sendButton, type, close: () => window.close() };
+  return { window, document, errors, posts, render, field, fieldValue, sendButton, type, close: () => window.close() };
 }
 
 test("every open ask takes free text, whatever its Agent declared", (t) => {
@@ -126,13 +127,13 @@ test("freeText only names the field; it never decides whether there is one", (t)
   const page = mount();
   t.after(page.close);
   page.render(section("a", { options: [{ id: "y", label: "Yes" }, { id: "n", label: "No" }] }));
-  const standard = page.field().placeholder;
+  const standard = page.field().getAttribute("aria-placeholder");
   assert.match(standard, /\S/);
   page.render(section("b", { freeText: true }));
-  assert.equal(page.field().placeholder, standard, "declaring free text changes nothing");
+  assert.equal(page.field().getAttribute("aria-placeholder"), standard, "declaring free text changes nothing");
   page.render(section("c", { choice: { a: { id: "a", label: "A" }, b: { id: "b", label: "B" } },
     freeText: { prompt: "Say which and why" } }));
-  assert.equal(page.field().placeholder, "Say which and why", "a prompt names the field");
+  assert.equal(page.field().getAttribute("aria-placeholder"), "Say which and why", "a prompt names the field");
 });
 
 test("an empty reply cannot be sent", async (t) => {
