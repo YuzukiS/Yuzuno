@@ -1333,6 +1333,29 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
             "choice":{"id":"left","label":"Left"}}))));
 }
 
+// YN-91: a long reply from Home goes to the Agent whole. 8,000 Chinese
+// characters are 24,000 bytes, and 30,000 ASCII characters 30,000: a message
+// that long is one the conversation sends (workspace.rs), so a reply that
+// long is not refused for its length, and Core hands the Agent's send all of
+// it. Whether the lab's Agent then takes it is not this test's: the receipt
+// records what was handed over.
+#[tokio::test]
+async fn a_long_reply_from_home_is_handed_to_the_agent_whole() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("c1", 0, vec![put("news", "report")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    for (id, words) in [("chinese", "长".repeat(8_000)), ("ascii", "a".repeat(30_000))] {
+        let reply = home::ReplyInput {
+            key: Some("news".into()), agent_id: "b".into(), text: words.clone(), client_message_id: id.into(),
+            choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None };
+        let result = home::reply(&ws, project.clone(), reply).await;
+        let receipt = ws.store.receipt("b", id).unwrap();
+        assert!(receipt.is_some(), "{id}: a reply of {} bytes is handed to the Agent, not refused: {:?}", words.len(), result.err());
+        let message = home::compose_card(&workspace, "Code", &project, "news", 1, "About news", &words);
+        assert_eq!(receipt.unwrap().input.text, message, "{id}: the whole reply, as composed");
+    }
+}
+
 // T-9: a reply to an ask is bound to the Workspace, Project, key and version
 // the user saw. A Home that does not say which version, another Workspace,
 // or a version no longer live sends nothing; a retry of a message already
