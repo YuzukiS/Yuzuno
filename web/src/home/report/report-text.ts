@@ -1,6 +1,6 @@
 import { strings } from "../../i18n";
 
-type Reason = "seen" | "resolved" | "removed";
+type Reason = "seen" | "resolved" | "removed" | "archived";
 
 /** A Home report's own words (T-18); the section's title and body are shown as written. */
 export const reportText = strings({
@@ -49,7 +49,9 @@ export const reportText = strings({
       ? "You marked this report seen; it is in History."
       : reason === "resolved"
         ? "This was resolved; it is in History."
-        : "Its author removed this report; it is in History.",
+        : reason === "archived"
+          ? "Archived: the task of this report's card ended; it is in History."
+          : "Its author removed this report; it is in History.",
   newerLive: (n: number) => `Version ${n} is current.`,
   unknown: "Home has no report it can tell is the one linked. It may have left History, or another report has its name now.",
   gone: "This report's project is not on Home.",
@@ -97,7 +99,8 @@ export const reportText = strings({
   arrived: (shown: number, now: number) => `你正在阅读第 ${shown} 版。第 ${now} 版已送达；第 ${shown} 版中读自文件的部分可能已无法显示。`,
   notKept: (shown: number) => `第 ${shown} 版已不在 Home 上。这是本页读到的内容；读自文件的部分可能已无法显示。`,
   history: (reason: Reason): string =>
-    reason === "seen" ? "你已将此报告标为已读，它在历史中。" : reason === "resolved" ? "此项已解决，它在历史中。" : "作者已移除此报告，它在历史中。",
+    reason === "seen" ? "你已将此报告标为已读，它在历史中。" : reason === "resolved" ? "此项已解决，它在历史中。"
+      : reason === "archived" ? "已归档：此报告所在卡片的任务已结束，它在历史中。" : "作者已移除此报告，它在历史中。",
   newerLive: (n: number) => `当前是第 ${n} 版。`,
   unknown: "Home 中没有能确认是此链接所指的报告。它可能已离开历史，或另一份报告现在用了它的名称。",
   gone: "此报告所属的项目不在 Home 上。",

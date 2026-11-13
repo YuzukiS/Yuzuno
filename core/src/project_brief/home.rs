@@ -2,7 +2,7 @@
 //! about it (its Agents, their requests and errors, its Jobs), and the
 //! "needs you" strip across Projects. Project Priority only orders this
 //! view; it never changes scheduling.
-use super::{sections, *};
+use super::{cards, sections, *};
 use crate::model::{Agent, MessageInput, MessageReceipt, PendingRequest};
 use chrono::{DateTime, Utc};
 use std::collections::{hash_map::Entry, HashMap};
@@ -200,6 +200,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
     let rank: HashMap<&str, usize> = order.iter().enumerate().map(|(i, id)| (id.as_str(), i)).collect();
     let db = store.db.read()?;
     let mut refs = super::refs::Refs::new(store, &db);
+    let mut cards = cards::Cards::new(&db);
     let jobs = live_jobs(&db, &by_id)?;
     let mut needs: Vec<(usize, Option<DateTime<Utc>>, Value)> = vec![];
     for agent in agents.iter().filter(|a| a.closed_at.is_none()) {
@@ -247,9 +248,14 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let policy = editors::policy(&db, id)?;
         // A source filter, never a Seen mark or deletion. All Asks remain
         // reachable, including a subtopic whose regular parent is hidden.
-        // A lead's (YN-2 S4): the others' are in the team sections.
-        let visible: Vec<_> = live.iter().filter(|row| row.kind == "ask" || policy.includes(&row.owner_id))
-            .cloned().collect();
+        // A lead's (YN-2 S4), and a sub-topic its card's executor wrote
+        // under it (YN-86 S2a): the others' are in the team sections.
+        let mut visible = vec![];
+        for row in &live {
+            if row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)? {
+                visible.push(row.clone());
+            }
+        }
         let team: Vec<_> = live.iter().filter(|row| !visible.iter().any(|shown| shown.key == row.key)).cloned().collect();
         let history = sections::history(&db, id)?;
         let seen = sections::seen(&db, id)?;
@@ -278,11 +284,15 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         // a new one, so a widget pinned to the old one never shows it. A
         // history entry says why it is history and whether its source is
         // one Home shows now (the same test as `visible`).
-        let current = |row: &sections::Row| row.kind == "ask" || policy.includes(&row.owner_id);
-        let mut shown = |rows: &[sections::Row]| -> Vec<Value> {
+        let current = |row: &sections::Row| -> Result<bool> {
+            Ok(row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)?)
+        };
+        let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
                 section["id"] = json!(row.identity);
+                // The task it is the card of and who answers for it (YN-86 S2a).
+                cards::show(&mut section, cards.of(row)?);
                 // The newest version the user's browser showed whole (YN-86):
                 // apart from `seen`, which a report's Seen mark sets.
                 if row.live {
@@ -290,9 +300,9 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 }
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
-                    section["currentSource"] = json!(current(row));
+                    section["currentSource"] = json!(current(row)?);
                 }
-                section
+                Ok(section)
             }).collect()
         };
         panels.push(json!({
@@ -302,7 +312,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             "pending":requests,
             "jobs":jobs.iter().filter(|job| job.project.as_deref() == Some(id)).map(|job| job.shown.clone()).collect::<Vec<_>>(),
             "contentEditors":policy,
-            "brief":{"version":sections::brief_version(&db, id)?,"sections":shown(&visible),"teamSections":shown(&team),"history":shown(&history)},
+            "brief":{"version":sections::brief_version(&db, id)?,"sections":shown(&visible)?,"teamSections":shown(&team)?,"history":shown(&history)?},
             "unseen":sections::unseen(&visible, &seen, &opened),
             "missing":missing(store, &db, id, &by_id)?,
         }));
@@ -511,11 +521,43 @@ fn quote(mut message: String, row: &sections::Row, choice: Option<&(String, Stri
 /// Nothing in it depends on the section as it is now, so a retry composes the
 /// same message after the card has changed.
 pub(super) fn compose_card(workspace: &str, project: &str, project_id: &str, key: &str, version: i64, title: &str, text: &str) -> String {
+    compose_bound_card(workspace, project, project_id, key, version, title, None, text)
+}
+
+/// `compose_card` for the responsible Agent of a card bound to task `bound`
+/// (YN-86 S2a): one more line says so, before the user's words.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compose_bound_card(workspace: &str, project: &str, project_id: &str, key: &str, version: i64, title: &str,
+    bound: Option<&str>, text: &str) -> String {
+    let head = card_head(workspace, project, project_id, key, version, title);
+    match bound {
+        Some(task) => format!("{head}\n{BOUND}{task}{RESPONSIBLE}\n\n{}", text.trim()),
+        None => format!("{head}\n\n{}", text.trim()),
+    }
+}
+
+/// What a card reply's message says before the user's words.
+pub(super) fn card_head(workspace: &str, project: &str, project_id: &str, key: &str, version: i64, title: &str) -> String {
     format!(
         "Reply from the user on Home, to version {version} of the Project Brief section `{key}` (\"{title}\") \
-         of {project} (Workspace {workspace}, Project {project_id}):\n\n{}",
-        text.trim()
+         of {project} (Workspace {workspace}, Project {project_id}):"
     )
+}
+
+const BOUND: &str = "This card is bound to task ";
+const RESPONSIBLE: &str = "; you are its responsible Agent.";
+
+/// Whether `sent`, the message already sent under a card reply's client ID,
+/// is this reply (`head` and the user's `text`): without the line naming
+/// its task or with it, whichever task it named, since the binding and who
+/// answers for it may have changed since and a retry still finds its message.
+pub(super) fn same_card_reply(sent: &str, head: &str, text: &str) -> bool {
+    let Some(line) = sent.strip_prefix(head).and_then(|rest| rest.strip_suffix(text.trim())).and_then(|rest| rest.strip_suffix("\n\n")) else {
+        return false;
+    };
+    line.is_empty()
+        || line.strip_prefix('\n').and_then(|line| line.strip_prefix(BOUND)).and_then(|line| line.strip_suffix(RESPONSIBLE))
+            .is_some_and(|task| !task.is_empty() && !task.contains('\n'))
 }
 
 /// The Turn a reply joins, as the composer chooses it (App.tsx): the newest
@@ -602,21 +644,33 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
 }
 
 /// A reply meant for a released executor (from a Home that showed it as the
-/// section's owner before its release) goes to whoever owns the section now:
-/// its dispatcher, once its archive handed the section over (T-36). With no
-/// other owner it is refused, and nothing is sent.
+/// section's owner, or its card's responsible Agent, before its release)
+/// goes to whoever answers for the section now. For a report or status card
+/// of a task that is its responsible Agent (YN-86 S2a, cards.rs), else its
+/// owner; for an ask its owner, the one Agent that resolves it. That owner
+/// is the dispatcher once the executor's archive handed the section over
+/// (T-36). With nobody else it is refused, and nothing is sent.
 async fn reply_target(ws: &Arc<Workspace>, project: &str, mut input: ReplyInput) -> Result<ReplyInput> {
     let (agent, key, project) = (input.agent_id.clone(), input.key.clone(), project.to_owned());
+    let to_ask = input.ask_version.is_some();
     let owner = ws.stored(move |store| {
         let db = store.db.read()?;
         if crate::executor_release::release_of(&db, &agent)?.is_none() {
             return Ok(None);
         }
-        let owner = match &key {
-            Some(key) => sections::find(&db, &project, key, None)?.filter(|row| row.live).map(|row| row.owner_id),
+        let row = match &key {
+            Some(key) => sections::find(&db, &project, key, None)?.filter(|row| row.live),
             None => None,
         };
-        Ok(Some(owner.filter(|owner| *owner != agent)))
+        let responsible = match row.as_ref().filter(|row| row.kind != "ask" && !to_ask) {
+            Some(row) => match cards::Cards::new(&db).binding(row)? {
+                Some(task) => cards::responsible(&db, &task)?.map(|who| who.agent),
+                None => None,
+            },
+            None => None,
+        };
+        let others = |who: &String| *who != agent;
+        Ok(Some(responsible.filter(others).or(row.map(|row| row.owner_id).filter(others))))
     }).await?;
     match owner {
         None => Ok(input),
@@ -757,11 +811,25 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         let (name, _) = labels.get(&id).context("project_not_found: no Project has this ID")?;
         Ok((workspace, name.clone(), sections::find(&db, &id, &wanted, Some(version))?))
     }).await?;
-    let text = compose_card(&workspace, &name, &project, &key, version, &title, &input.text);
+    // A card of a task tells its responsible Agent so (YN-86 S2a).
+    let bound = match &shown {
+        Some(row) => {
+            let (row, to) = (row.clone(), input.agent_id.clone());
+            ws.stored(move |store| {
+                let db = store.db.read()?;
+                let Some(task) = cards::Cards::new(&db).binding(&row)? else { return Ok(None) };
+                let answers = cards::responsible(&db, &task)?.is_some_and(|who| who.agent == to);
+                Ok(answers.then(|| crate::collaboration_store::task_shown(&db, &task)))
+            }).await?
+        }
+        None => None,
+    };
+    let text = compose_bound_card(&workspace, &name, &project, &key, version, &title, bound.as_deref(), &input.text);
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
-        ensure!(previous.input.text == text, "This clientMessageId was already used for another message");
+        let head = card_head(&workspace, &name, &project, &key, version, &title);
+        ensure!(same_card_reply(&previous.input.text, &head, &input.text), "This clientMessageId was already used for another message");
         return ws.send_message(&input.agent_id, previous.input).await;
     }
     let refused = |message: String| anyhow::Error::new(crate::collaboration_credentials::MessageNotSubmitted(anyhow::anyhow!(message)));

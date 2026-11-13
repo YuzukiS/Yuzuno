@@ -336,6 +336,12 @@ test("only the very version linked is shown, live or in History; otherwise the v
   assert.ok(page.button(report, "Open version 5"));
   page.close();
 
+  // YN-86 S2a: archived with its card's task, said so, never as removed by its author.
+  page = await openHome(() => homeData([], [section("eval", 7, 3, { history: true, historyReason: "archived" })]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
+  report = await until(page.report, "the report");
+  assert.equal(notice(page), "Archived: the task of this report's card ended; it is in History.");
+  page.close();
+
   // Only other versions kept: each offered by where it is.
   page = await openHome(() => homeData([], [section("eval", 7, 4, { history: true, historyReason: "resolved" })]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
   report = await until(page.report, "the report");

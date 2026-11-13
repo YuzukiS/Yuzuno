@@ -1401,13 +1401,16 @@ fn the_longest_quote_fits_beside_the_longest_reply() {
             owner_id: "a".into(), owner_name: "A".into(),
             data: json!({"title": wide(120), "ask": {"question": question, "reply": {}}}),
             ask_state: Some("open".into()), ask_since: None, replied_at: None, reply_text: None, deferred_until: None,
-            updated_at: String::new(), updated_turn_id: None, history_reason: None, history_at: None, identity: 1,
+            updated_at: String::new(), updated_turn_id: None, history_reason: None, history_at: None, identity: 1, task_id: None,
         };
         let report = sections::Row { kind: "report".into(), ..row.clone() };
         for message in [
             home::compose_ask(&workspace, &name, &project_id, &row, Some(&choice), &words),
             home::compose(&name, Some(&report), None, &words),
             home::compose_card(&workspace, &name, &project_id, &key, i64::MAX, &wide(120), &words),
+            // A card bound to a task (YN-86 S2a) says so in one more line;
+            // a task key is a Project key of at most 10 characters and a number (task_keys.rs).
+            home::compose_bound_card(&workspace, &name, &project_id, &key, i64::MAX, &wide(120), Some(&format!("{}-{}", "K".repeat(10), i64::MAX)), &words),
             home::compose(&name, None, None, &words),
         ] {
             assert!(message.contains(&words), "the reply whole");
@@ -2027,6 +2030,8 @@ mod recently_left_tests;
 mod cas_tests;
 #[path = "opened_tests.rs"]
 mod opened_tests;
+#[path = "card_tests.rs"]
+mod card_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {

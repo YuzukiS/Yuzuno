@@ -13,6 +13,10 @@
 //! Rust naming: `store::Brief` is an Agent's listed view; everything here is
 //! a Project Brief.
 mod attachments;
+mod cards;
+/// The end of a task archives its cards (YN-86 S2a), in the transaction
+/// that ends it (collaboration_store.rs `save_task`).
+pub(crate) use cards::task_closed;
 /// A Workspace backup's hold on Brief attachment files (T-192), and an
 /// interactive preview's on one (YN-10).
 pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachments, Hold as AttachmentHold};
@@ -256,7 +260,8 @@ fn update_properties(project: Value) -> Value {
             "ask":{"type":"object","description":"For kind ask: {question, reply:{options?, freeText?, form?, choice?}}."},
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
-            "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment}}}}
+            "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
+            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."}}}}
     })
 }
 
@@ -390,6 +395,20 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS project_brief_opened(
         project_id TEXT NOT NULL, section_id INTEGER NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
         at TEXT NOT NULL, PRIMARY KEY(project_id,section_id));",
+    )?;
+    // task_id: the task a section is the card of (YN-86 S2a), by its
+    // internal ID, as a lead's `task` set it; NULL for every section written
+    // before, which keeps showing as it did. Added once, on any open; a
+    // Core that already has it changes nothing. Older Cores ignore it, and
+    // their put of a bound section keeps it, as it keeps lineage.
+    let has_task: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='task_id')", [], |r| r.get(0))?;
+    if !has_task {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN task_id TEXT")?;
+    }
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
+         WHERE live=1 AND task_id IS NOT NULL;",
     )?;
     Ok(())
 }
@@ -727,11 +746,14 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
     let seen = sections::seen(&db, &project)?;
     let mut owners = sections::Owners::default();
     let mut refs = refs::Refs::new(store, &db);
+    let mut cards = cards::Cards::new(&db);
     let at = chrono::Utc::now();
     let mut listed = vec![];
     for row in full.as_ref().unwrap_or(&rows) {
         let owner = owners.get(store, &db, row)?;
-        listed.push(sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at));
+        let mut section = sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at);
+        cards::show(&mut section, cards.of(row)?);
+        listed.push(section);
     }
     let you = actor.map(|actor| -> Result<Value> {
         let owned: Vec<&str> = rows.iter().filter(|row| row.owner_id == actor).map(|row| row.key.as_str()).collect();

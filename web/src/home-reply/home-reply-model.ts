@@ -45,6 +45,8 @@ export type Arrival =
   | { kind: "changed"; current: number }
   | { kind: "resolved" }
   | { kind: "removed" }
+  /** A card archived when its task ended (YN-86 S2a), now in History. */
+  | { kind: "archived" }
   /** A card the user marked seen, now in History. */
   | { kind: "history" }
   /** Home has no record that is provably that section's (its History may
@@ -60,7 +62,8 @@ export function arrivalOf(origin: HomeReplyOrigin, panel: ProjectPanel | undefin
   const live = [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((s) => s.key === origin.key);
   const past = panel.brief.history.filter((s) => s.key === origin.key);
   const ended = (section: Section): Arrival =>
-    section.historyReason === "resolved" ? { kind: "resolved" } : section.historyReason === "seen" ? { kind: "history" } : { kind: "removed" };
+    section.historyReason === "resolved" ? { kind: "resolved" } : section.historyReason === "seen" ? { kind: "history" }
+      : section.historyReason === "archived" ? { kind: "archived" } : { kind: "removed" };
   const unknown: Arrival = { kind: "unknown", current: live?.version ?? null };
   if (typeof origin.sectionId === "number") {
     // The section answered, by its identity: the same through every edit,

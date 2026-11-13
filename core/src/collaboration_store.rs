@@ -784,6 +784,16 @@ fn check_version(task: &SharedTask, input: &Value) -> Result<()> {
 
 fn save_task(db: &Connection, task: &mut SharedTask, actor: &TaskActor) -> Result<()> {
     let previous = task.version;
+    // Whether the task was closed (done or cancelled) and archived before this write.
+    let closed = |status: &str| matches!(status, "done" | "cancelled");
+    let before = db
+        .query_row(
+            "SELECT json_extract(data,'$.status'),json_extract(data,'$.archivedAt') IS NOT NULL FROM collaboration_tasks WHERE id=?1",
+            [&task.id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?)),
+        )
+        .optional()?
+        .map(|(status, archived)| (status.as_deref().is_some_and(closed), archived));
     task.version += 1;
     task.updated_at = now();
     task.updated_by = actor.clone();
@@ -798,6 +808,15 @@ fn save_task(db: &Connection, task: &mut SharedTask, actor: &TaskActor) -> Resul
     )?;
     ensure!(changed == 1, "version_conflict: task was changed");
     crate::ci_monitor::lifecycle::reconcile(db, Some(&task.id))?;
+    // Its end, as it happens (YN-86 S2a): it became done or cancelled, or it
+    // was archived. Its Home cards leave the live Brief in this same write
+    // (project_brief::task_closed). A task opened again gets none of them
+    // back; one already over when a later write comes archives nothing more.
+    if let Some((was_closed, was_archived)) = before {
+        if (closed(&task.status) && !was_closed) || (task.archived_at.is_some() && !was_archived) {
+            crate::project_brief::task_closed(db, &task.id)?;
+        }
+    }
     Ok(())
 }
 

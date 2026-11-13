@@ -41,6 +41,12 @@ Home 的内容分两类：
   - owner 被关闭或删除时，归属转给 Brief Steward；没有 Steward 时，由项目内的 Agent 领取。
 - **Brief Steward**：可选设置，被指定的 Agent 可以合并、拆分和重组别人的节。
 - **Seen**：只能由用户明确标记，可以逐节标记，也可以一键标记"本项目全部看过"。记录用户实际标记的版本，不根据停留时间推断，与会话的已读分别记录。标记过程中到达的新版本仍未看过；之后又有变化的节会高亮。
+- **卡片、任务与负责人**（YN-86 S2a）：一节可以是某个任务的卡片。
+  - **绑定**：负责人（lead）在 `brief_update` 的 put 或 edit 里写 `task`（任务键如 `YN-90`、`T-12` 或任务 ID）。edit 可以只带 `task`、不带 `elements`。任务必须属于本 Project 且没有归档，否则以 `invalid_task` 拒收；Ask-only 成员（包括执行者）写 `task` 也以 `invalid_task` 拒收。put 不带 `task` 时保留原来的绑定，所以一节的各个版本都带着它；看过后由 owner 重写的报告也接着原来的绑定。`task: null` 解除绑定。Core 把它存在 `project_brief_sections.task_id`（任务 ID）。这一列在打开数据库时补上，已有的就不再动，所以迁移可以重复跑。之前写的节这一列为空，显示和以前一样。
+  - **算出的绑定**：子主题 `T/<sub>` 自己没写 `task` 时，算作主题节 `T` 的任务。另外两种只用来显示卡片：Ask 的 gate 写了任务，或者 owner 是某任务的执行者。这两种不写进数据，也不会因此归档或授予写权限。
+  - **投影**：`brief_get` 和 `/api/home` 的节，凡是某任务的卡片，多一个 `card: {task: {id, title, shortName, status, archived}, responsible}`。不是卡片的节，JSON 和以前完全一样。`responsible` 是 `{agentId, name, kind, state}` 或 null：先取该任务最新派发、还没释放的执行者，没有就取任务的 assignee，都没有就是 null。kind 是 executor、lead 或 agent。执行者的 state 取它的生命周期状态，其他 Agent 取 Agent 状态。每次读取时计算，不落库，所以同一任务换了执行者，卡片的负责人自动跟着换。
+  - **执行者写子节**：卡片任务的当前执行者（最新的、还没释放的那个）可以 put、edit、patch 这张卡主题下的 report 和 status 子节，前提是主题节自己写了 `task`。子节归执行者所有，Home 上和卡片放在一起显示（`sections`，不放进 `teamSections`）。执行者在别的主题下、或已经不是当前执行者时这样写，以 `not_card_responsible` 拒收；其他 Ask-only 规则不变。子节数量仍受每个主题 4 个的上限约束。
+  - **任务结束时归档**：任务进入 done 或 cancelled、或被归档的那次写入里，绑定它的节（自己的 `task`）和它们下面没有自己 `task` 的子节离开 live，进入历史，原因是 `archived`。有两种例外：用户还没在当前版本读过（Seen 或已打开）的 report 留在 live，等用户打开时顺带归档，标 Seen 时照常以 `seen` 收入历史；还没 resolve 的 Ask 留到 owner resolve。归档不改节的版本，也不改 Brief 的版本，同 Seen。只在任务刚结束那次触发：重新打开任务不会恢复已归档的卡；任务结束以后再绑定，也不会立刻归档。之后释放执行者照旧，剩下的 live 节照旧交给派发者。同一任务换执行者时任务没有结束，卡片不归档。
 - **已打开**（YN-86）：报告页把一篇 live report 的某个版本完整显示出来（页面可见、正文画完）后，浏览器把这个版本记给 Core（`POST /api/projects/{id}/brief/opened`，带 Workspace、节的身份、key 和显示的版本）。Core 只记当前 Workspace 上那篇 live report 的这个版本：旧版本、更新的版本、别的节、历史里的版本都不记，也不改成当前版本；同一版本再发不变。它让这个版本不再显示"新 / 已更新"，也不再算进新内容计数（取 Seen 和已打开中较新的一个版本）；下一个版本又算新内容。它不是 Seen：报告留在原处，不收进历史，Seen 照旧提供；不改节的版本和更新时间，Ask 和任务都不变。没有 Agent 工具写它，Agent 在 brief_get 里读到的 `seen` 仍只是用户的 Seen。没记上时报告页说明原因，卡片仍是新内容，下次打开时再试。
 
 ## Agent 的写入流程
@@ -118,6 +124,7 @@ Home 的内容分两类：
 ## 回复与审批
 
 - **回复方式**：自由文本，或 ask 节声明的选项按钮。两者都只生成一条用户消息，发给该节的 owner，消息里引用这一节。项目级的自由回复，设了 Steward 就发给 Steward，否则由用户在项目的 Agent 里选。任何情况下都可以手动改发给其他 Agent。
+  - **发给已释放的执行者**（T-36、YN-86 S2a）：页面打开时还是执行者、发送时已经释放的，Core 改投：report 和 status 卡片发给这张卡的当前负责人，没有就发给 owner；Ask 发给 owner，因为只有 owner 能 resolve。都没有时拒收，回复留在页面上。发给卡片负责人的卡片回复多一行 `This card is bound to task YN-90; you are its responsible Agent.`；用同一个 clientMessageId 重发时，不管这一行当时写了什么，都认作同一条回复。
 - **Agent 正忙时**，效果和在会话输入框里发送完全一样。现有的发送 hook 绑定在当前选中的 Agent 上（`web/src/useConversationSend.ts:87-131`），Home 需要自己的发送路径，自行处理 `clientMessageId` 和 `expectedTurnId`。接口是 `POST /api/agents/{id}/messages`（`core/src/server.rs:579`）。
 - **Agent 写的内容永远不能直接执行操作**，例如合并、部署或批准。
 - **Core 审批**：在 Home 上直接调用 `POST /api/requests/{id}/respond`（`core/src/server.rs:104,632`）。现在审批卡片 `PendingCard`（`web/src/components.tsx:851-1106`）只挂在会话里。

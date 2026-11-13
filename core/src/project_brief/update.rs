@@ -7,7 +7,7 @@
 //! the two, outside any database lock, and attachment files are copied
 //! there too (see attachments::stage).
 use super::{
-    attachments, patch,
+    attachments, cards, patch,
     sections::{self, Owners, Row},
     writes, *,
 };
@@ -211,6 +211,9 @@ pub(super) struct Change {
     /// What the validator repaired to accept this change (YN-14), by paths
     /// in the section; set once the sections pass, and kept with it.
     pub repairs: Vec<Value>,
+    /// put and edit (YN-86 S2a): None leaves the section's task as it is;
+    /// Some(None) unbinds it; Some(Some(reference)) binds it to that task.
+    pub task: Option<Option<String>>,
 }
 
 pub(super) struct Request {
@@ -352,12 +355,18 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
         return None;
     };
     if op == Op::Edit {
-        if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "elements" | "status")) {
+        if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "elements" | "status" | "task")) {
             problems.push(problem("invalid_change", format!("{at}.{extra}"),
-                "edit takes op, key, elements and, for a status section, status; put the section to change anything else.", "sections"));
+                "edit takes op, key, elements, task and, for a status section, status; put the section to change anything else.", "sections"));
             return None;
         }
-        let elements = object.get("elements").and_then(Value::as_object).filter(|blocks| !blocks.is_empty());
+        let Ok(task) = parse_task(&at, object, problems) else { return None };
+        // An edit of the binding alone changes no block.
+        let none = serde_json::Map::new();
+        let elements = match object.get("elements") {
+            None if task.is_some() => Some(&none),
+            sent => sent.and_then(Value::as_object).filter(|blocks| !blocks.is_empty()),
+        };
         let Some(elements) = elements.filter(|blocks| blocks.len() <= MAX_EDITED) else {
             problems.push(problem("invalid_change", format!("{at}.elements"),
                 format!("elements maps 1-{MAX_EDITED} block ids to their new {{type, props, children?}}."), "sections"));
@@ -368,7 +377,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task });
     }
     if op == Op::Patch {
         return parse_patch(&at, key, object, problems);
@@ -378,7 +387,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             problems.push(problem("invalid_change", format!("{at}.{extra}"), "resolve, remove and claim take only op and key.", "sections"));
             return None;
         }
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![] });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None });
     }
     let kind = object.get("kind").and_then(Value::as_str).filter(|kind| matches!(*kind, "ask" | "report" | "status"));
     let Some(kind) = kind else {
@@ -400,9 +409,27 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
     }
+    let Ok(task) = parse_task(&at, object, problems) else { return None };
     let mut section = Value::Object(object.clone());
     section.as_object_mut().unwrap().remove("op");
-    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![] })
+    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task })
+}
+
+/// A put's or edit's `task` (YN-86 S2a), as Change keeps it: None when left
+/// out, Some(None) for null, Some(Some(reference)) for a task's key, T-<n>
+/// or ID; Err once its problem is listed. Whether it names a task this
+/// section may be bound to is `rules`'.
+fn parse_task(at: &str, object: &serde_json::Map<String, Value>, problems: &mut Vec<Value>) -> Result<Option<Option<String>>, ()> {
+    match object.get("task") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(reference)) if !reference.trim().is_empty() && reference.len() <= 128 => Ok(Some(Some(reference.trim().to_owned()))),
+        Some(_) => {
+            problems.push(problem("invalid_task", format!("{at}.task"),
+                "task is the key of a task of this Project, e.g. YN-90 or T-12, or null to unbind the section.", "sections"));
+            Err(())
+        }
+    }
 }
 
 /// A patch change's shape (YN-14 A2): 1-MAX_OPS RFC 6902 operations, each
@@ -453,7 +480,7 @@ fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, pro
         }
     }
     let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] })
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None })
 }
 
 pub(super) struct Caller {
@@ -519,12 +546,15 @@ fn latest(store: &Store, db: &Connection, project: &str, changed: &[&str]) -> Re
     let seen = sections::seen(db, project)?;
     let mut owners = Owners::default();
     let mut refs = super::refs::Refs::new(store, db);
+    let mut cards = cards::Cards::new(db);
     let at = chrono::Utc::now();
     let (mut listed, mut index) = (vec![], vec![]);
     for row in &rows {
         let owner = owners.get(store, db, row)?;
         if changed.contains(&row.key.as_str()) {
-            listed.push(sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at));
+            let mut section = sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at);
+            cards::show(&mut section, cards.of(row)?);
+            listed.push(section);
         }
         index.push(sections::index_json(row, &owner, seen.get(&row.key), at));
     }
@@ -602,18 +632,52 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         let at = format!("changes[{index}]");
         let key = change.key.as_str();
         let existing = planned.get(key).cloned();
+        // The task a section is the card of (YN-86 S2a): a lead binds it to
+        // a task of this Project that is not archived, or unbinds it.
+        if let Some(task) = &change.task {
+            if !can_edit {
+                problems.push(problem("invalid_task", format!("{at}.task"),
+                    "Only a lead of this Project binds a section to a task or unbinds it; leave task out.", "sections"));
+                continue;
+            }
+            if let Some(reference) = task {
+                if let Err(why) = cards::bindable(db, &ctx.project, reference)? {
+                    problems.push(problem("invalid_task", format!("{at}.task"), why, "sections"));
+                    continue;
+                }
+            }
+        }
         if !can_edit {
             let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
             let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
+            // A report or status sub-topic: what a card's responsible
+            // executor may write under its card's topic (YN-86 S2a), and
+            // nothing else of an Ask-only member's.
+            let sub = key.contains('/') && match change.op {
+                Op::Put => change.kind != "ask",
+                Op::Edit | Op::Patch => rows.get(key).is_some_and(|row| row.kind != "ask"),
+                _ => false,
+            };
+            let card = sub && cards::may_write_sub(db, &ctx.project, key, &ctx.agent)?;
             let permitted = match change.op {
-                Op::Put => change.kind == "ask" && (existing.is_none() || own_ask),
+                Op::Put => (change.kind == "ask" && (existing.is_none() || own_ask)) || card,
                 // An edit keeps the stored kind: an Ask-only member edits
-                // only its own ask, never a report or status it wrote before.
-                Op::Resolve | Op::Edit | Op::Patch => own_ask,
+                // only its own ask, never a report or status it wrote before,
+                // but for its card's sub-topics.
+                Op::Edit | Op::Patch => own_ask || card,
+                Op::Resolve => own_ask,
                 // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
                 Op::Remove => own,
                 Op::Claim => false,
             };
+            if !permitted && sub && crate::agent_roles::kind(db, &ctx.agent)? == crate::agent_roles::EXECUTOR {
+                problems.push(problem("not_card_responsible", format!("{at}.key"), format!(
+                    "{key} is not under the card of a task you are the current executor of. You may put and edit report and status \
+                     sub-topics only under the topic whose section a lead bound to your task (e.g. its-topic/result), while you are \
+                     that task's newest executor not yet released; otherwise you are Ask-only here: your own asks, removing your own \
+                     older sections, or noChange:true."), "sections"));
+                continue;
+            }
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
                     "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
@@ -1251,6 +1315,20 @@ fn apply(
     for (index, change) in request.changes.iter().enumerate() {
         let current = sections::live_key(tx, &ctx.project, &change.key)?;
         let row = || current.as_ref().context("the section changed while it was being written");
+        // The task this change binds the section to (YN-86 S2a), by its
+        // internal ID: Some(None) unbinds it, None leaves it as it is.
+        let task = match &change.task {
+            Some(Some(reference)) => Some(Some(cards::bindable(tx, &ctx.project, reference)?.map_err(anyhow::Error::msg)?)),
+            Some(None) => Some(None),
+            None => None,
+        };
+        let bound = |version: i64| {
+            let mut entry = json!({"key":change.key,"version":version});
+            if let Some(task) = &task {
+                entry["task"] = json!(task.as_deref().map(|id| crate::collaboration_store::task_shown(tx, id)));
+            }
+            entry
+        };
         match change.op {
             Op::Put => {
                 let mut data = section_data(&normalized[index], &change.section, &staged[index]);
@@ -1279,9 +1357,10 @@ fn apply(
                     Some(row) => {
                         tx.execute(
                             "UPDATE project_brief_sections SET kind=?2,version=?3,owner_name=?4,data=?5,ask_state=?6,ask_since=?7,
-                             replied_at=?8,reply_text=?9,reply_form=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12 WHERE seq=?1",
+                             replied_at=?8,reply_text=?9,reply_form=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12,
+                             task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END WHERE seq=?1",
                             params![row.seq, change.kind, row.version + 1, ctx.agent_name, data.to_string(), state, since,
-                                replied_at, reply_text, deferred, at, ctx.turn.turn],
+                                replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
                         )?;
                         (row.seq, row.version + 1)
                     }
@@ -1304,18 +1383,31 @@ fn apply(
                         // follows it). Removed or resolved sections, and a key
                         // written by another Agent, start anew.
                         let lineage = sections::continued_identity(tx, &ctx.project, &change.key, &ctx.agent)?;
+                        // Every version of a section keeps its task (YN-86
+                        // S2a): one continued after a Seen keeps the task its
+                        // last version had, unless this put names another.
+                        let task_id = match (&task, lineage) {
+                            (Some(task), _) => task.clone(),
+                            (None, Some(identity)) => tx.query_row(
+                                "SELECT task_id FROM project_brief_sections WHERE project_id=?1 AND key=?2 AND COALESCE(lineage,seq)=?3
+                                 ORDER BY seq DESC LIMIT 1",
+                                params![ctx.project, change.key, identity],
+                                |r| r.get::<_, Option<String>>(0),
+                            ).optional()?.flatten(),
+                            (None, None) => None,
+                        };
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
-                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12)",
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12,?13)",
                             params![ctx.project, change.key, change.kind, previous + 1, ctx.agent, ctx.agent_name,
-                                data.to_string(), state, since, at, ctx.turn.turn, lineage],
+                                data.to_string(), state, since, at, ctx.turn.turn, lineage, task_id],
                         )?;
                         (tx.last_insert_rowid(), previous + 1)
                     }
                 };
                 attachments::index(tx, seq, &ctx.project, &staged[index])?;
-                changed.push(json!({"key":change.key,"version":version}));
+                changed.push(bound(version));
             }
             Op::Edit | Op::Patch => {
                 let row = row()?;
@@ -1336,10 +1428,11 @@ fn apply(
                     repairs => data["repairs"] = json!(repairs),
                 }
                 tx.execute(
-                    "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6 WHERE seq=?1",
-                    params![row.seq, row.version + 1, ctx.agent_name, data.to_string(), at, ctx.turn.turn],
+                    "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
+                     task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END WHERE seq=?1",
+                    params![row.seq, row.version + 1, ctx.agent_name, data.to_string(), at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
                 )?;
-                changed.push(json!({"key":change.key,"version":row.version + 1}));
+                changed.push(bound(row.version + 1));
             }
             Op::Resolve => {
                 let row = row()?;
