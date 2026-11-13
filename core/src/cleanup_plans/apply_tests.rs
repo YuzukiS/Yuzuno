@@ -300,6 +300,29 @@ fn pause() -> (crate::cleanup_plans::FsPause, tokio::sync::oneshot::Sender<()>, 
     (crate::cleanup_plans::FsPause { entered: entered_tx, release: release_rx }, release_tx, entered_rx)
 }
 
+/// Runs `work` as a task, and says on the receiver the first time a poll of
+/// it stops while `parked` holds: for work that waits on a lock and counts
+/// its waiters, that it is queued there now. Each poll is checked as it
+/// returns, so how long the work takes to get there does not matter. Work
+/// that ends without being parked drops the sender.
+fn spawn_parked<T: Send + 'static>(
+    work: impl std::future::Future<Output = T> + Send + 'static,
+    parked: impl Fn() -> bool + Send + 'static,
+) -> (tokio::task::JoinHandle<T>, tokio::sync::oneshot::Receiver<()>) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (mut tx, mut work) = (Some(tx), Box::pin(work));
+    let task = tokio::spawn(std::future::poll_fn(move |cx| {
+        let polled = std::future::Future::poll(work.as_mut(), cx);
+        if polled.is_pending() && parked() {
+            if let Some(tx) = tx.take() {
+                let _ = tx.send(());
+            }
+        }
+        polled
+    }));
+    (task, rx)
+}
+
 /// YN-78 S2b-1: the gate is taken per entry, so a root added while one entry
 /// is being removed is seen by the next; and an allocation started then waits
 /// for the gate instead of racing the removal.
@@ -320,16 +343,15 @@ async fn protection_added_during_one_entry_is_seen_by_the_next_and_registration_
     apply_as(&lab, "ex", "go-b", &plan, "gate-b", &[]).await.unwrap();
     entered.recv().await.unwrap();
     assert!(lab.ws.cleanup.root_gate.try_lock().is_err(), "the apply holds the gate");
-    let waiter = {
-        let ws = lab.ws.clone();
-        tokio::spawn(async move { crate::executor_temp::ensure_at_start_gated(&ws, "late").await })
+    // The allocation first reads the Agent's role on the blocking pool, then
+    // queues for the gate: wait for that queueing itself, however long the
+    // read takes.
+    let (waiter, queued) = {
+        let (ws, counted) = (lab.ws.clone(), lab.ws.clone());
+        spawn_parked(async move { crate::executor_temp::ensure_at_start_gated(&ws, "late").await },
+            move || counted.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0)
     };
-    for _ in 0..1000 {
-        if lab.ws.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    assert!(queued.await.is_ok(), "the allocation waits for the gate");
     assert!(lab.ws.cleanup.gate_waiting.load(std::sync::atomic::Ordering::SeqCst) > 0, "the allocation waits for the gate");
     assert!(!waiter.is_finished());
     // Added while the first entry is being removed: the next entry's set is
