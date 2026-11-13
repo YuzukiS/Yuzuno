@@ -9,6 +9,7 @@ import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
 import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
+import { replyRecipient } from "./card-responsible";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
@@ -160,11 +161,9 @@ export function CardReply({
   const { sendKey } = useDevicePreferences();
   const slot = cardReplySlot(workspaceId, projectId, section.key);
   const { draft, busy, error, sent } = useReplyState(slot);
-  const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
   // A card bound to a task goes to whoever answers for it (YN-86 §3.3), while they are open in the Project; else
   // to its author. The user can pick another all the same.
-  const responsible = section.card?.responsible?.agentId;
-  const recipient = responsible && agents.some((a) => a.id === responsible) ? responsible : ownerOpen ? section.owner.agentId : "";
+  const recipient = replyRecipient(section, agents);
   // The card as this place shows it now, read when sent.
   const onScreen = useRef(section);
   onScreen.current = section;

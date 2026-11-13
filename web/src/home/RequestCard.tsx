@@ -7,7 +7,7 @@ import { CardAgents, shownResponsible } from "./card-responsible";
 import { absolute, relative } from "./format";
 import { cardBinding, cardTitle, mergedInto, requestState, untitledHint } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
-import { requestTrail, RoutingEvents } from "./RoutingEvents";
+import { requestTrail, RoutingEvents, type ShowCard } from "./RoutingEvents";
 import { talkText } from "./talk-text";
 
 /**
@@ -29,7 +29,7 @@ export const RequestCard = forwardRef<
     onFollowUp: () => void;
     onTrail: () => void;
     onResend: () => void;
-    onCard: (key: string) => void;
+    onCard: ShowCard;
   }
 >(function RequestCard({ request, selected, trailOpen, readOnly, resending, onTitle, onFollowUp, onTrail, onResend, onCard }, ref) {
   const language = useLanguage();
@@ -94,8 +94,7 @@ export const RequestCard = forwardRef<
                   type="button"
                   className="request-card-row"
                   aria-label={t.openCardLabel(name)}
-                  disabled={!card.key}
-                  onClick={() => card.key && onCard(card.key)}
+                  onClick={() => onCard(card.key, card.task.id)}
                 >
                   <span className={`status-dot${who?.dot ? ` ${who.dot}` : ""}`} aria-hidden="true" />
                   <span className="request-card-row-title">{name}</span>

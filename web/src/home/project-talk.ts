@@ -9,6 +9,9 @@ import { delivered, type ProjectRequest, type RequestCard, type RequestLine, typ
  * what the user's words mean: every line comes from a field Core gave.
  */
 
+/** A reassignment's why, as Core takes it: at most 120 characters, one short line (routes.rs MAX_LINE, in UTF-16 units). */
+export const MAX_LINE_CHARS = 120;
+
 /** What "Talk to the project" shows (§4.1, v8): the requests, both side by side, or the conversation. */
 export const talkViews = ["requests", "both", "chat"] as const;
 export type TalkView = (typeof talkViews)[number];

@@ -28,7 +28,12 @@ export type TrailEvent = {
   error?: string;
   /** The card it went to: its key on Home, and whether it is live there. */
   card?: { key: string; live: boolean } | null;
+  /** Its task's key, opened where the card is no longer on the page. */
+  task?: string | null;
 };
+
+/** Shows a card on the page, or, where it is no longer there (archived longer ago than Home keeps it), its task. */
+export type ShowCard = (key: string | null, task?: string | null) => void;
 
 /** A route as a trail event, its card's title and place found by `card` (by section). */
 export function routeEvent(route: RouteEvent, card: (sectionId: number | null) => { title: string; key: string | null; live: boolean } | null): TrailEvent {
@@ -46,6 +51,7 @@ export function routeEvent(route: RouteEvent, card: (sectionId: number | null) =
     state: route.state,
     error: route.error,
     card: key ? { key, live: found?.live ?? true } : null,
+    task: route.task,
   };
 }
 
@@ -68,7 +74,7 @@ export function requestTrail(request: ProjectRequest): TrailEvent[] {
 
 const ICONS = { card: SquarePlus, existing: GitMerge, reassign: Forward, note: MessageSquare, done: CircleCheck };
 
-export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard?: (key: string) => void }) {
+export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard?: ShowCard }) {
   const language = useLanguage();
   const t = talkText(language);
   const time = useTimeDisplay();
@@ -122,7 +128,7 @@ export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard
               <span />
             )}
             {event.card && onCard ? (
-              <button type="button" className="talk-link routing-event-link" onClick={() => onCard(event.card!.key)}>
+              <button type="button" className="talk-link routing-event-link" onClick={() => onCard(event.card!.key, event.task)}>
                 {event.card.live ? t.cardLink : t.archiveLink}
               </button>
             ) : (

@@ -163,7 +163,7 @@ async function openPage(options) {
   return p;
 }
 
-test("a card bound to a task says who answers for it at its foot, in the rail's words; its key and Reassign open the task, Open session the conversation (YN-86 S2b)", async (t) => {
+test("a card bound to a task says who answers for it at its foot, in the rail's words; its key opens the task, Reassign its dialog (which can open the task too), Open session the conversation (YN-86 S2b, S3b)", async (t) => {
   const p = await openPage();
   t.after(p.close);
   const spec = p.card("spec");
@@ -181,13 +181,16 @@ test("a card bound to a task says who answers for it at its foot, in the rail's 
   // Reply moved into the line: not also in the card's head.
   assert.equal(spec.querySelector(".home-summary-head .home-reply-open"), null);
   assert.deepEqual([...strip.querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["Reply", "Open session", "Reassign"]);
-  // The key opens its task, and so does Reassign for now (§3.3), where it is assigned or dispatched again.
+  // The key opens its task; Reassign its dialog (S3b, §4.3), from which the task opens too.
   const key = strip.querySelector(".home-card-task");
   assert.equal(key.textContent, "YN-7");
   assert.equal(key.getAttribute("aria-label"), "Open task YN-7");
   key.click();
   strip.querySelector(".home-card-reassign").click();
+  const dialog = await until(() => p.document.querySelector('[role="dialog"]'), "the reassign dialog");
+  [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Open YN-7 in Tasks instead").click();
   assert.deepEqual(realm(p.opened), [{ taskId: "YN-7" }, { taskId: "YN-7" }]);
+  await until(() => !p.document.querySelector('[role="dialog"]'), "the dialog closed");
   // Open session: the executor's conversation (App opens an executor on its Overview first).
   strip.querySelector(".home-card-session").click();
   assert.deepEqual(realm(p.window.navigated), [{ kind: "agent", agentId: "x" }]);
@@ -219,7 +222,11 @@ test("Reply on a bound card and an Ask on it go to whoever answers for the card 
   // An ask has its own reply in place: its line has no Reply, nor its author in the head.
   assert.deepEqual([...p.strip("question").querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["Open session", "Reassign"]);
   assert.equal(ask.querySelector(".home-section-meta .home-owner"), null);
-  // A card whose task is over has no responsible Agent from Core: its reply goes to its author.
+  // A card whose task is over has no responsible Agent from Core: its reply goes to its author, and its Reply's tip
+  // says so, not the released executor its foot names (S2b review 3e7b4dec, P3).
+  assert.equal(p.strip("late").querySelector(".home-card-responsible-name strong").textContent, "YN-5 · Design page");
+  assert.deepEqual(await tipOf(p.strip("late").querySelector(".home-reply-open")), ["Reply to Mori"]);
+  assert.deepEqual(await tipOf(p.strip("spec").querySelector(".home-reply-open")), ["Reply to YN-7 · Build page"]);
   p.strip("late").querySelector(".home-reply-open").click();
   const late = await until(() => p.card("late").querySelector(".home-card-reply"), "the late card's reply");
   assert.equal(late.querySelector(".home-reply-target select").value, "a");

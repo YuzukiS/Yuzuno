@@ -5,7 +5,7 @@ import { stateText } from "../ExecutorRowState";
 import type { Language } from "../i18n";
 import { shellText } from "../shell-text";
 import type { Agent } from "../types";
-import type { CardBinding } from "./types";
+import type { CardBinding, Section } from "./types";
 
 /**
  * Who answers for a card bound to a task (YN-86 §3.2–3.4), as its foot
@@ -101,4 +101,17 @@ export function shownResponsible(card: CardBinding, agents: ReadonlyMap<string, 
     dot: closed ? "offline" : status,
     former,
   };
+}
+
+/**
+ * Whom a reply to a card or an Ask on it goes to by default (YN-86 §3.3):
+ * whoever answers for the card, while they are open in the Project; else its
+ * author, while open there; else nobody yet (the user picks). `agents` are
+ * the Project's open Agents. The card's Reply and its tip say the same one.
+ */
+export function replyRecipient(section: Section, agents: readonly Agent[]): string {
+  const responsible = section.card?.responsible?.agentId;
+  if (responsible && agents.some((agent) => agent.id === responsible)) return responsible;
+  const owner = section.owner;
+  return owner.state === "active" && agents.some((agent) => agent.id === owner.agentId) ? owner.agentId : "";
 }

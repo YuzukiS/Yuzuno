@@ -12,6 +12,7 @@ import { CardAgents } from "./card-responsible";
 import { absolute, duration, relative } from "./format";
 import { HomeComposer, type ReplyWords } from "./HomeComposer";
 import type { HomeTarget } from "./home-navigation";
+import { scrollWithinHome } from "./HomeJumps";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
 import {
@@ -43,6 +44,7 @@ import {
   type RequestPage,
 } from "./project-talk-api";
 import { RequestCard } from "./RequestCard";
+import type { ShowCard } from "./RoutingEvents";
 import { talkText } from "./talk-text";
 import "./project-talk.css";
 
@@ -134,6 +136,8 @@ export function ProjectTalk({
   leadCount,
   onCard,
   onNavigate,
+  reveal = null,
+  onRequests,
 }: {
   projectId: string;
   projectName: string;
@@ -143,9 +147,13 @@ export function ProjectTalk({
   revision: number;
   /** The project's leads, to say why no front desk takes what is said. */
   leadCount: number;
-  /** Shows one of the project's cards on the page. */
-  onCard: (key: string) => void;
+  /** Shows one of the project's cards on the page, or its task where the card is no longer there. */
+  onCard: ShowCard;
   onNavigate: (target: HomeTarget) => void;
+  /** A card's "See words" (§4.5): show request `n`'s words and select it; another `seq` is another ask. */
+  reveal?: { n: number; seq: number } | null;
+  /** The requests read, for the page's cards (talk-link.ts). */
+  onRequests?: (requests: readonly ProjectRequest[]) => void;
 }) {
   const language = useLanguage();
   const t = talkText(language);
@@ -185,7 +193,8 @@ export function ProjectTalk({
   }, [page, older]);
   const hasMore = older ? older.hasMore : !!page?.hasMore;
   const [readingOlder, setReadingOlder] = useState(false);
-  async function readOlder() {
+  /** Reads the page of requests before those read; `onFailed` runs, if it fails, before reading is said to be over. */
+  async function readOlder(onFailed?: () => void) {
     const lowest = Math.min(...requests.map((r) => r.n));
     if (!Number.isFinite(lowest)) return;
     setReadingOlder(true);
@@ -194,6 +203,7 @@ export function ProjectTalk({
       setOlder((was) => ({ requests: [...(was?.requests ?? []), ...value.requests], hasMore: value.hasMore }));
     } catch (e) {
       setLoadError(errorText(e));
+      onFailed?.();
     } finally {
       setReadingOlder(false);
     }
@@ -271,7 +281,8 @@ export function ProjectTalk({
   const [trails, setTrails] = useState<ReadonlySet<number>>(new Set());
   const [doneOpen, setDoneOpen] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
-  const pending = useRef<{ side: Side; n: number; moved: boolean } | null>(null);
+  /** Where to scroll once drawn; `instant` while the page itself scrolls smoothly (a browser runs one smooth scroll at a time). */
+  const pending = useRef<{ side: Side; n: number; moved: boolean; instant?: boolean }[]>([]);
   const items = useMemo(() => conversation(requests), [requests]);
   const cut = useMemo(() => earlierBefore(requests), [requests]);
   const earlier = items.filter((item) => item.at < cut);
@@ -283,7 +294,7 @@ export function ProjectTalk({
     if (groups.done.some((r) => r.n === n)) setDoneOpen(true);
     const moved = !sideOpen(shown, "requests");
     if (moved) changeView("requests");
-    pending.current = { side: "requests", n, moved };
+    pending.current = [{ side: "requests", n, moved }];
   }
   /** Shows the user's own words of a request in the conversation, from its title. */
   function showWords(n: number) {
@@ -292,20 +303,49 @@ export function ProjectTalk({
     if (words && words.at < cut) setShowEarlier(true);
     const moved = !sideOpen(shown, "chat");
     if (moved) changeView("chat");
-    pending.current = { side: "chat", n, moved };
+    pending.current = [{ side: "chat", n, moved }];
   }
+  /** A card's "See words": the talk brought into view, the request selected with its handoffs open, its words shown. */
+  function revealRequest(n: number) {
+    scrollWithinHome(root.current!, "start", !reducedMotion());
+    setTrails((was) => new Set(was).add(n));
+    if (groups.done.some((r) => r.n === n)) setDoneOpen(true);
+    showWords(n);
+    if (sideOpen(shown, "requests")) pending.current.push({ side: "requests", n, moved: false });
+    pending.current = pending.current.map((want) => ({ ...want, instant: true }));
+  }
+  // A card asked for a request not read yet: older pages are read until it is there, or there are none. A read that
+  // fails ends this ask, its error shown; the next "See words" asks again (#924 R1 7db7e3a9).
+  const revealed = useRef(0);
   useEffect(() => {
-    const want = pending.current;
-    if (!want) return;
-    pending.current = null;
+    if (!reveal || revealed.current === reveal.seq || !page) return;
+    if (!byN.has(reveal.n) && hasMore) {
+      const seq = reveal.seq;
+      if (!readingOlder) void readOlder(() => (revealed.current = seq));
+      return;
+    }
+    revealed.current = reveal.seq;
+    if (byN.has(reveal.n)) revealRequest(reveal.n);
+    // The page is drawn by the time this runs; the request's place is read then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal, byN, hasMore, readingOlder, page]);
+  useEffect(() => onRequests?.(requests), [requests, onRequests]);
+  useEffect(() => {
+    const wants = pending.current;
+    if (!wants.length) return;
+    pending.current = [];
     // A side that opens is scrolled once its column has: its text reflows as it widens.
-    afterColumns(want.moved ? grid.current : null, () => {
-      const target = want.side === "requests" ? requestRefs.current.get(want.n) : wordRefs.current.get(want.n);
-      if (!target) return;
+    afterColumns(wants.some((want) => want.moved) ? grid.current : null, () => {
       const smooth = !reducedMotion();
-      scrollInside(want.side === "requests" ? requestsScroll.current : chatScroll.current, target, smooth);
-      target.focus({ preventScroll: true });
-      settleWhenLanded(target, "data-home-highlight", smooth, "animation");
+      for (const [index, want] of wants.entries()) {
+        const target = want.side === "requests" ? requestRefs.current.get(want.n) : wordRefs.current.get(want.n);
+        if (!target) continue;
+        scrollInside(want.side === "requests" ? requestsScroll.current : chatScroll.current, target, smooth && !want.instant);
+        // The first is where the focus goes and the highlight shows: the words, when both are asked for.
+        if (index > 0) continue;
+        target.focus({ preventScroll: true });
+        settleWhenLanded(target, "data-home-highlight", smooth, "animation");
+      }
     });
   });
   // The conversation opens at its newest, and goes there again after the user's own message.
