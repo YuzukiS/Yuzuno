@@ -11,6 +11,7 @@ import { TargetPicker } from "./AskReply";
 import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
+import { ReplyLength, replyTooLong } from "./reply-limit";
 import type { ProjectPanel, Section } from "./types";
 import { Tip, TipText } from "../Tip";
 
@@ -197,7 +198,7 @@ export function CardReply({
     const current = replyState(slot);
     const reply = current.draft;
     const value = reply?.text.trim();
-    if (!reply || !value || !target || current.busy) return;
+    if (!reply || !value || !target || current.busy || replyTooLong(value)) return;
     const shown = onScreen.current;
     update(slot, { busy: true, error: "", sent: null });
     try {
@@ -272,7 +273,6 @@ export function CardReply({
           aria-label={t.replyField(section.title)}
           value={draft.text}
           rows={2}
-          maxLength={20_000}
           placeholder={t.replyFor(name)}
           onChange={(event) => change({ text: event.target.value })}
           onKeyDown={(event) => {
@@ -288,12 +288,13 @@ export function CardReply({
           }}
         />
         <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
-          <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()}>
+          <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim() || replyTooLong(draft.text)}>
             {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
             {t.send}
           </button>
         </Tip>
       </form>
+      <ReplyLength text={draft.text} />
       {busy && <p className="home-note" role="status">{t.sending}</p>}
       {sent && (
         <p className="home-note" role="status">

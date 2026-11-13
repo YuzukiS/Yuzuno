@@ -19,6 +19,7 @@ import { relative } from "./format";
 import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
+import { ReplyLength, replyTooLong } from "./reply-limit";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
 import { CleanupApprovalNote, cleanupOptionView, useCleanupApproval } from "./cleanup-approval";
@@ -190,45 +191,47 @@ function TextReply({
   const { sendKey } = useDevicePreferences();
   const submit = () => {
     const value = text.trim();
-    if (!value || disabled || held || busy) return;
+    if (!value || disabled || held || busy || replyTooLong(value)) return;
     // The text stays until the reply is delivered.
     onSend(value).catch(() => {});
   };
   return (
-    <form
-      className="home-text-reply"
-      onSubmit={(event) => {
-        event.preventDefault();
-        submit();
-      }}
-    >
-      <textarea
-        aria-label={label}
-        value={text}
-        rows={2}
-        maxLength={20_000}
-        placeholder={placeholder}
-        disabled={disabled}
-        onChange={(event) => onText(event.target.value)}
-        onKeyDown={(event) => {
-          if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
-            event.preventDefault();
-            submit();
-          }
+    <>
+      <form
+        className="home-text-reply"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
         }}
-      />
-      {/* Its key, as the composer's Send says it. */}
-      <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={disabled || held || busy || !text.trim()}
-        >
-          {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-          {t.send}
-        </button>
-      </Tip>
-    </form>
+      >
+        <textarea
+          aria-label={label}
+          value={text}
+          rows={2}
+          placeholder={placeholder}
+          disabled={disabled}
+          onChange={(event) => onText(event.target.value)}
+          onKeyDown={(event) => {
+            if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+        />
+        {/* Its key, as the composer's Send says it. */}
+        <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
+          <button
+            type="submit"
+            className="primary-button"
+            disabled={disabled || held || busy || !text.trim() || replyTooLong(text)}
+          >
+            {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
+            {t.send}
+          </button>
+        </Tip>
+      </form>
+      <ReplyLength text={text} />
+    </>
   );
 }
 

@@ -1753,7 +1753,7 @@ impl Workspace {
         // so every refusal up to there says so. The client keeps its draft
         // and shows no delivery to confirm.
         let admitted = async {
-            if (input.text.trim().is_empty() && input.images.is_empty()) || input.text.len() > 100_000 || input.images.len() > crate::input_images::MAX_IMAGES
+            if (input.text.trim().is_empty() && input.images.is_empty()) || input.text.len() > crate::model::MAX_MESSAGE_TEXT || input.images.len() > crate::input_images::MAX_IMAGES
                 || input.client_message_id.is_empty() || input.client_message_id.len() > 100 {
                 bail!("消息或消息编号无效");
             }

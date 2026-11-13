@@ -187,6 +187,12 @@ pub struct ClarificationAnswer {
     pub answers: Value,
 }
 
+/// The longest text one message takes, in UTF-8 bytes (Rust's `str::len`):
+/// a message typed in a conversation, and a reply from Home with Core's quote
+/// of what it answers (project_brief/home.rs, MAX_REPLY). Longer, nothing is
+/// sent (Workspace::send_message_from).
+pub const MAX_MESSAGE_TEXT: usize = 100_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageInput {
