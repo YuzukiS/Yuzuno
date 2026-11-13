@@ -319,7 +319,7 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
     services,
     answersHere,
     reads: () => calls.filter((call) => call.url.endsWith("/review")),
-    railNames: () => [...window.document.querySelectorAll(".agent-list .agent-row")].map((row) => row.textContent),
+    railNames: () => [...window.document.querySelectorAll(".agent-list .agent-row[data-agent-id]")].map((row) => row.textContent),
     close: () => window.close(),
   };
 }

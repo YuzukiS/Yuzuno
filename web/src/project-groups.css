@@ -269,3 +269,86 @@
     color var(--motion-micro) var(--ease-standard),
     opacity var(--motion-micro) var(--ease-standard);
 }
+
+/* A group's heading is two controls (YN-86 §2.3 A): the arrow folds the
+   group and keeps its aria-expanded; the name, with its marks and count,
+   opens the Project's page. Tab goes arrow, name, +. */
+.project-group-fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  align-self: center;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.project-group-fold:hover {
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+.project-group-fold:focus-visible,
+.project-group-title:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.project-group-toggle {
+  padding-left: 2px;
+}
+/* The Project whose page is open is marked as a selected Agent row is. */
+.project-group-toggle[aria-current="page"] {
+  background: var(--surface-hover, #eeeee5);
+}
+.project-group-toggle[aria-current="page"]:hover {
+  background: var(--surface-hover, #eeeee5);
+}
+.project-group-title {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 4px 6px 6px;
+}
+/* Stacked, the name and marks share the row the arrow starts. */
+.project-group-head[data-stacked] {
+  align-items: start;
+}
+.project-group-head[data-stacked] > .project-group-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  row-gap: 3px;
+}
+.project-group-head[data-stacked] .project-group-summary {
+  grid-area: 2 / 2 / 3 / -1;
+  justify-self: start;
+}
+.project-group-head[data-stacked] > .project-group-fold {
+  margin-top: 3px;
+}
+
+/* A Project's entry at the top of a rail with no group headings (YN-86 §2.3). */
+button.project-overview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.project-overview-row > svg {
+  flex: none;
+  color: var(--text-secondary);
+}
+.project-group-title:disabled {
+  cursor: default;
+  opacity: 1;
+  color: inherit;
+}

@@ -90,11 +90,12 @@ export function HomeJumps({
 }: {
   asks: number;
   report: { title: string; projectName: string } | null;
-  /** Widgets on show in My widgets, as arranged: a hidden one is not counted. */
-  widgets: number;
+  /** Widgets on show in My widgets, as arranged: a hidden one is not counted.
+   * Absent on a Project's page, which has no My widgets (YN-86). */
+  widgets?: number;
   onAsk: () => void;
   onReport: () => void;
-  onWidgets: () => void;
+  onWidgets?: () => void;
 }) {
   const t = useStrings(homeText);
   const bar = useRef<HTMLElement>(null);
@@ -134,15 +135,17 @@ export function HomeJumps({
         onPress={onReport}
         kind="report"
       />
-      <Jump
-        icon={<LayoutGrid size={14} />}
-        label={t.widgets}
-        count={widgets}
-        help={widgets ? t.jumpWidgetsHelp(widgets) : t.jumpWidgetsNone}
-        enabled={widgets > 0}
-        onPress={onWidgets}
-        kind="widgets"
-      />
+      {onWidgets && widgets !== undefined && (
+        <Jump
+          icon={<LayoutGrid size={14} />}
+          label={t.widgets}
+          count={widgets}
+          help={widgets ? t.jumpWidgetsHelp(widgets) : t.jumpWidgetsNone}
+          enabled={widgets > 0}
+          onPress={onWidgets}
+          kind="widgets"
+        />
+      )}
     </nav>
   );
 }

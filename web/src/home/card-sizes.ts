@@ -17,10 +17,15 @@
  * later in the visit stands at the end (`late`), so nothing being read moves;
  * a status that goes out of date, or an Ask the user answers, keeps its
  * place until the next visit too.
+ *
+ * So too the group a Project page puts a card in (project-deck.ts): reading
+ * a report clears its New mark, and it stays in the group it was first shown
+ * in until the next visit.
  */
 import { createContext, useCallback, useMemo, useRef } from "react";
 import type { CardSize } from "./card-preview.ts";
 import type { DeckPlace } from "./deck-order.ts";
+import type { DeckGroup } from "./project-deck.ts";
 
 /** One card: a project and Home's id for the section (types.ts Section.id). */
 export const sizeKey = (projectId: string, id: number) => `${projectId}:${id}`;
@@ -36,14 +41,16 @@ export type HeldSizes = {
   answered: (projectId: string, key: string, version: number) => void;
   /** Each section's place on its project's deck in this visit, by key, from the places they have now. */
   places: (projectId: string, now: readonly (readonly [key: string, place: DeckPlace])[]) => Map<string, DeckPlace>;
+  /** Each section's group on its project's page in this visit, by key, from the groups they have now. */
+  groups: (projectId: string, now: readonly (readonly [key: string, group: DeckGroup])[]) => Map<string, DeckGroup>;
   visit: number;
 };
 export const DeckSizes = createContext<HeldSizes | null>(null);
 
 export function useHeldSizes(workspaceId: string, visit: number): HeldSizes {
-  const shown = useRef({ workspaceId, visit, sizes: new Map<string, CardSize>(), replied: new Map<string, boolean>(), answered: new Set<string>(), places: new Map<string, Map<string, DeckPlace>>() });
+  const shown = useRef({ workspaceId, visit, sizes: new Map<string, CardSize>(), replied: new Map<string, boolean>(), answered: new Set<string>(), places: new Map<string, Map<string, DeckPlace>>(), groups: new Map<string, Map<string, DeckGroup>>() });
   if (shown.current.workspaceId !== workspaceId || shown.current.visit !== visit)
-    shown.current = { workspaceId, visit, sizes: new Map(), replied: new Map(), answered: new Set(), places: new Map() };
+    shown.current = { workspaceId, visit, sizes: new Map(), replied: new Map(), answered: new Set(), places: new Map(), groups: new Map() };
   const held = useCallback((projectId: string, id: number, size: CardSize) => {
     const sizes = shown.current.sizes, key = sizeKey(projectId, id);
     if (!sizes.has(key)) sizes.set(key, size);
@@ -66,6 +73,13 @@ export function useHeldSizes(workspaceId: string, visit: number): HeldSizes {
     for (const [key, place] of now) if (!held.has(key)) held.set(key, first ? place : "late");
     return new Map(now.map(([key]) => [key, held!.get(key)!]));
   }, []);
+  const groups = useCallback((projectId: string, now: readonly (readonly [string, DeckGroup])[]) => {
+    const all = shown.current.groups;
+    let held = all.get(projectId);
+    if (!held) all.set(projectId, (held = new Map()));
+    for (const [key, group] of now) if (!held.has(key)) held.set(key, group);
+    return new Map(now.map(([key]) => [key, held!.get(key)!]));
+  }, []);
   // A new visit is a new value, so every card reads its size afresh.
-  return useMemo(() => ({ held, short, answered, places, visit }), [held, short, answered, places, visit]);
+  return useMemo(() => ({ held, short, answered, places, groups, visit }), [held, short, answered, places, groups, visit]);
 }

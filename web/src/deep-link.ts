@@ -95,18 +95,23 @@ export function parseAgentLink(text: string): AgentLink | null {
 
 /**
  * A link to a Workspace's Home (T-200): where a push notification about an
- * Ask, or several updates at once, opens. Only the Workspace, nothing else.
+ * Ask, or several updates at once, opens. It names the Workspace and, for a
+ * Project's page, that project (YN-86). Opening it only shows Home.
  */
 export interface HomeLink {
   workspaceId: string;
+  /** The Project whose page to open; absent for the whole of Home. */
+  projectId?: string;
 }
 
 const HOME_PATH = "#/home?";
-const HOME_FIELDS = { w: "workspaceId" } as const;
+const HOME_FIELDS = { w: "workspaceId", p: "projectId" } as const;
 
 /** The link to a Workspace's Home, on `base` (this client's page, without query or fragment). */
 export function homeLinkHref(base: string, link: HomeLink): string {
-  return `${base}${HOME_PATH}${new URLSearchParams({ w: link.workspaceId })}`;
+  const params = new URLSearchParams({ w: link.workspaceId });
+  if (link.projectId) params.set("p", link.projectId);
+  return `${base}${HOME_PATH}${params}`;
 }
 
 /** The Home an opened link names, or null when it is not one. */

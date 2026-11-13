@@ -1,0 +1,241 @@
+/* A Project's page on Home (YN-86 §2.2): its header and jumps, the reply to
+ * its team, its cards in three groups and, where the page is wide enough,
+ * the team and its running work beside them. Colours and card grids are
+ * Home's own (home.css): this file adds only what the page brings. */
+.project-home {
+  display: block;
+}
+.project-home-head h1 {
+  gap: 10px;
+}
+.project-home-head .project-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+}
+/* The cards' deck container: their columns follow the column's own width (T-18). */
+.project-home-main {
+  min-width: 0;
+  container: deck / inline-size;
+}
+.project-home-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 18px;
+}
+@container home (min-width: 1100px) {
+  .project-home-body {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+}
+
+/* The three groups: what needs you, what is in progress, what is done. */
+.project-deck {
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+}
+.project-deck-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.project-deck-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0;
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-deck-count {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 500;
+  color: var(--home-ink-2);
+}
+.project-deck-note {
+  margin-left: auto;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+  color: var(--home-ink-2);
+}
+/* A group's cards keep the deck's own grid (home.css .home-brief), without
+   the room the panel's first deck needs under its widgets. */
+.project-deck .home-brief {
+  padding-top: 6px;
+}
+.project-deck .home-brief-empty {
+  padding-top: 2px;
+}
+.project-deck-later > summary {
+  width: fit-content;
+  margin-top: 2px;
+  padding: 5px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+  cursor: pointer;
+}
+.project-deck-later > summary:focus-visible,
+.project-deck-done > summary:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.project-deck-later > .home-brief {
+  margin-top: 6px;
+}
+/* Done: closed at each visit; a jump to a card in it opens it (card-fold.tsx). */
+.project-deck-done > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+  list-style: none;
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+  cursor: pointer;
+}
+.project-deck-done > summary::-webkit-details-marker {
+  display: none;
+}
+.project-deck-done > summary::before {
+  content: "›";
+  display: inline-block;
+  color: var(--home-ink-2);
+  transition: transform var(--motion-small) var(--ease-standard);
+}
+.project-deck-done[open] > summary::before {
+  transform: rotate(90deg);
+}
+.project-deck-done .home-history {
+  margin-top: 10px;
+}
+/* One executor matters on a Project's page: a line in Needs you, not a card. */
+.project-deck-executor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-deck-executor:hover {
+  background: var(--home-soft);
+}
+.project-deck-executor:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.project-deck-executor .home-needs-source {
+  grid-column: 1;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+}
+.project-deck-executor strong {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-deck-executor small {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  align-self: center;
+  color: var(--home-ink-2);
+}
+
+/* The team and its running work: a column beside the cards on a wide page,
+   folded under them otherwise (YN-86 §2.2). */
+.project-team {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--home-surface);
+}
+.project-team:not([open]) {
+  padding-block: 10px;
+}
+.project-team > summary {
+  cursor: pointer;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-team-title {
+  margin: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-team-members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+}
+.project-team-member {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  width: 100%;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-team-member:hover {
+  background: var(--home-soft);
+}
+.project-team-member:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 1px;
+}
+.project-team-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-team-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--home-ink-2);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.project-team-member small {
+  grid-column: 2 / 4;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.project-team .home-widgets {
+  padding-top: 0;
+}
+.project-team-written > summary {
+  cursor: pointer;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}

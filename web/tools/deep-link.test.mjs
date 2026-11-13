@@ -71,7 +71,12 @@ test("a Home link names its Workspace only, as a push notification opens it (T-2
   assert.equal(href, "https://phone.example.ts.net/#/home?w=ws-1");
   assert.deepEqual(parseHomeLink(href), { workspaceId: "ws-1" });
   assert.deepEqual(parseAppLink(href), { kind: "home", workspaceId: "ws-1" });
-  for (const text of ["#/home?", "#/home?w=", "#/home?w=ws-1&a=agent-a", "#/home?w=ws 1", "#/homeland?w=ws-1"])
+  // A Project's page in Home names its project too (YN-86); a link without one is the whole of Home.
+  const project = homeLinkHref("https://phone.example.ts.net/", { workspaceId: "ws-1", projectId: "p-1" });
+  assert.equal(project, "https://phone.example.ts.net/#/home?w=ws-1&p=p-1");
+  assert.deepEqual(parseHomeLink(project), { workspaceId: "ws-1", projectId: "p-1" });
+  assert.deepEqual(parseAppLink(project), { kind: "home", workspaceId: "ws-1", projectId: "p-1" });
+  for (const text of ["#/home?", "#/home?w=", "#/home?w=ws-1&a=agent-a", "#/home?w=ws 1", "#/homeland?w=ws-1", "#/home?w=ws-1&p=", "#/home?w=ws-1&p=a b"])
     assert.equal(parseHomeLink(text), null, text);
   // A message or Agent link is still read as one, not as a Home.
   assert.equal(parseAppLink("#/agent?w=ws-1&a=agent-a").kind, "agent");

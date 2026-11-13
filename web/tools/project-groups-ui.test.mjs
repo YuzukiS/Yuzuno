@@ -27,6 +27,7 @@ const root=createRoot(document.getElementById('root'));
 // grouped: false shows the plain list App shows when not grouping.
 window.show=({groups,selectedId,grouped=true,workspaceId='w1',searching=false})=>flushSync(()=>root.render(grouped
   ?<GroupedAgents groups={groups} style="headers" workspaceId={workspaceId} selectedId={selectedId} searching={searching}
+     currentProjectId={null} onOpenProject={()=>{}}
      renderAgent={(a)=><div key={a.id} data-agent={a.id}>{a.name}</div>} onCreate={()=>{}}/>
   :<div>{groups.flatMap((g)=>g.agents).map((a)=><div key={a.id} data-agent={a.id}>{a.name}</div>)}</div>));`,
   );
@@ -59,19 +60,19 @@ function page(storage = null) {
   const w = dom.window;
   if (storage) for (const [k, v] of Object.entries(storage)) w.localStorage.setItem(k, v);
   w.eval(bundle);
-  const toggle = (key) => w.document.querySelector(`[data-group="${key}"] .project-group-toggle`);
+  const fold = (key) => w.document.querySelector(`[data-group="${key}"] .project-group-fold`);
   return {
     w,
     close: () => dom.window.close(),
     storage: () => Object.fromEntries(Object.keys(w.localStorage).map((k) => [k, w.localStorage.getItem(k)])),
     folded: (key) => {
       // A group that is not shown is neither folded nor open.
-      assert.ok(toggle(key), `group ${key} is shown`);
-      return toggle(key).getAttribute("aria-expanded") === "false";
+      assert.ok(fold(key), `group ${key} is shown`);
+      return fold(key).getAttribute("aria-expanded") === "false";
     },
     fold: (key) => {
-      assert.equal(toggle(key).getAttribute("aria-expanded"), "true", `${key} is open before folding it`);
-      toggle(key).click();
+      assert.equal(fold(key).getAttribute("aria-expanded"), "true", `${key} is open before folding it`);
+      fold(key).click();
     },
   };
 }
@@ -244,7 +245,7 @@ test("a search opens every group, and its end folds them back, without their tra
     await settle();
     p.w.show({ groups: twoProjects(), selectedId: "a1" });
     assert.equal(instant("B"), false, "then a fold plays as before");
-    p.w.document.querySelector('[data-group="B"] .project-group-toggle').click();
+    p.w.document.querySelector('[data-group="B"] .project-group-fold').click();
     await settle();
     assert.equal(p.folded("B"), false);
     assert.equal(instant("B"), false, "opened by hand, with its transition");
