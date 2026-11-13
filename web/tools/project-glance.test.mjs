@@ -123,7 +123,7 @@ test("a glance's facts are Core's: cards in progress, executors as the rail coun
   const agents = ["running", "delivering", "queued", "starting", "archived", undefined].map((state) => ({ executor: state ? { state } : null }));
   const glance = projectGlance(p, [], agents);
   // In progress, as the page's group: the current status, the unread report and the Ask waiting on its owner.
-  assert.deepEqual(glance.facts, { doing: 3, running: 2, queued: 2, jobs: 1, errors: 1 });
+  assert.deepEqual(glance.facts, { doing: 3, running: 2, queued: 2, jobs: 1, jobsWaiting: 1, errors: 1 });
   assert.deepEqual(glance.recent.map((r) => [r.section.key, r.unread]), [["ship", true], ["eval", true]]);
   assert.equal(glance.updatedAt, p.brief.sections[0].updatedAt);
   assert.equal(glance.quiet, false);
@@ -134,7 +134,7 @@ test("a glance's facts are Core's: cards in progress, executors as the rail coun
   assert.equal(projectGlance(p, [], agents, () => "ended").facts.doing, 1, "only the Ask waiting on its owner");
 });
 
-test("a project with nothing for the user and nothing at work is quiet; a live Job, an executor or a new card is not", () => {
+test("a project with nothing for the user and nothing at work is quiet; a live Job, an executor, a new card or an Agent's error is not", () => {
   const read = section("guide", "report", { seen: { version: 2, at: at(60) }, updatedAt: at(3 * 24 * 60) });
   const calm = panel("docs", [read]);
   assert.equal(projectGlance(calm, [], []).quiet, true);
@@ -143,6 +143,9 @@ test("a project with nothing for the user and nothing at work is quiet; a live J
   assert.equal(projectGlance(calm, [], [{ executor: { state: "queued" } }]).quiet, false);
   assert.equal(projectGlance(calm, [need("ask", "docs", { sectionKey: "x" })], []).quiet, false);
   assert.equal(projectGlance(panel("docs", [read], { unseen: 1 }), [], []).quiet, false);
+  // An Agent that crashed with nothing else going on: said on the glance, never quiet (PR 915 R1).
+  const crashed = projectGlance(panel("docs", [read], { errors: [{ agentId: "a", agentName: "Mori", message: "exited", at: at(1) }] }), [], []);
+  assert.deepEqual([crashed.quiet, crashed.facts.errors], [false, 1]);
   // An executor done with its work is not at work.
   assert.equal(projectGlance(calm, [], [{ executor: { state: "archived" } }]).quiet, true);
   assert.equal(projectGlance(panel("empty", []), [], []).updatedAt, null);

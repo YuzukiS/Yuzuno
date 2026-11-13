@@ -142,6 +142,7 @@ export function ProjectGlance({
                     </span>
                   )}
                   {facts.jobs > 0 && <span>{t.glanceJobs(facts.jobs)}</span>}
+                  {facts.jobsWaiting > 0 && <span>{t.glanceJobsWaiting(facts.jobsWaiting)}</span>}
                   {facts.errors > 0 && <span className="is-error">{t.glanceErrors(facts.errors)}</span>}
                 </p>
                 {glance.recent.length > 0 && (

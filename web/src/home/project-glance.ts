@@ -32,13 +32,16 @@ export type Glance = {
     queued: number;
     /** The project's Jobs running now (Core's live Jobs whose status is running). */
     jobs: number;
+    /** Its other live Jobs: queued, or holding their place without running. */
+    jobsWaiting: number;
+    /** Its Agents' errors, as its page lists them. */
     errors: number;
   };
   /** Up to two cards that changed last, newest first, each with whether the user has not read that version. */
   recent: { section: Section; unread: boolean }[];
   /** When a card of the project last changed, or null with none. */
   updatedAt: string | null;
-  /** Nothing needs the user, nothing is new to them, no executor or Job is at work. */
+  /** Nothing needs the user, nothing is new to them, no executor or Job is at work, no Agent has an error. */
   quiet: boolean;
 };
 
@@ -94,9 +97,17 @@ export function projectGlance(
     needs,
     unseen,
     line,
-    facts: { doing: deck.counts.doing + deck.counts.replied, running, queued, jobs, errors: panel.errors.length },
+    facts: {
+      doing: deck.counts.doing + deck.counts.replied,
+      running,
+      queued,
+      jobs,
+      jobsWaiting: panel.jobs.length - jobs,
+      errors: panel.errors.length,
+    },
     recent,
     updatedAt: recentCards[0]?.updatedAt ?? null,
-    quiet: needs === 0 && unseen === 0 && running === 0 && queued === 0 && panel.jobs.length === 0,
+    // An Agent's error is never quiet: the glance is where Home says it.
+    quiet: needs === 0 && unseen === 0 && running === 0 && queued === 0 && panel.jobs.length === 0 && panel.errors.length === 0,
   };
 }
