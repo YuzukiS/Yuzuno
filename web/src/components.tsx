@@ -238,10 +238,14 @@ export function Modal({
 export function CopyButton({
   text,
   label,
+  unavailable,
 }: {
   /** The text, or a function giving it when clicked (possibly after a fetch). */
   text: string | (() => string | Promise<string>);
   label?: string;
+  /** What to do instead when the clipboard is unavailable, where selecting
+   * the text shown would not give the text copied (YN-102). */
+  unavailable?: string;
 }) {
   const [state, setState] = useState<"ready" | "copying" | "copied" | "error">("ready");
   // The fetch's own error, as it came; worded with the language shown.
@@ -256,7 +260,7 @@ export function CopyButton({
   }, [state]);
   return (
     // Its name is its text; failed, the tip says why.
-    <Tip content={state === "error" ? <TipText body={problem !== null ? t.loadFailed(problem) : t.clipboardUnavailable} /> : null}>
+    <Tip content={state === "error" ? <TipText body={problem !== null ? t.loadFailed(problem) : unavailable ?? t.clipboardUnavailable} /> : null}>
       <button
         className="quiet-button copy-button"
         disabled={state === "copying"}

@@ -382,6 +382,117 @@ test("a section using every component renders each part from this Core only", as
   assert.deepEqual(page.errors, []);
 });
 
+const EDGE_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
+const CHROME_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const SAFARI_MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+const CHROME_LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const CHROME_ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36";
+const FIREFOX_WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0";
+const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+const asAgent = (window, agent) => Object.defineProperty(window.navigator, "userAgent", { configurable: true, get: () => agent });
+const attachmentNamed = (document, name) =>
+  [...document.querySelectorAll(".brief-attachment")].find((row) => row.querySelector("header strong")?.textContent === name);
+const logReads = (page) => page.requests.filter((r) => r.url === `${base}/attachments/${encodedKey}/test.log?version=3`);
+
+test("YN-102 Copy all in a text frame's corner copies the whole kept file, read again without a Range; data, PDF, link and reference rows have none", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const copied = [];
+  Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: async (text) => void copied.push(text) } });
+  window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+  const row = attachmentNamed(document, "test.log");
+  // Before the tail arrives it is already in the frame's place, and stays the same button after.
+  const early = row.querySelector(".brief-preview > .copy-button");
+  assert.ok(early, "Copy all is there while the preview loads");
+  await until(() => document.querySelector(".brief-tail"), "the log tail");
+  const button = row.querySelector(".brief-preview > .copy-button");
+  assert.equal(button, early, "the same button once the preview is shown");
+  assert.equal(button.textContent, "Copy all");
+  assert.equal(button.previousElementSibling, row.querySelector(".brief-tail"), "after the frame, as the keyboard reaches it");
+  assert.equal(document.querySelectorAll(".brief-attachment .copy-button").length, 1, "only the text frame has Copy all");
+  for (const name of ["loss.csv", "paper.pdf", "docs", "huge.jsonl"])
+    assert.equal(attachmentNamed(document, name).querySelector(".copy-button"), null, `${name} has no Copy all`);
+  assert.equal(logReads(page).length, 1, "nothing more is read until it is clicked");
+  button.click();
+  await until(() => copied.length, "the copy");
+  assert.equal(copied[0], log, "the whole file: all 250 lines, not the last 200 shown");
+  assert.equal(copied[0].split("\n")[0], "line 1");
+  const reads = logReads(page);
+  assert.equal(reads.length, 2, "the file is read once more, whole");
+  assert.equal(reads[1].headers.Range, undefined, "without a Range: the whole file, not its tail");
+  await until(() => button.textContent === "Copied", "it says it copied");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-102 Copy all says why it did not copy: a file Core could not give, or a page with no clipboard; in English and Chinese", async (t) => {
+  let whole = "fails";
+  let reads = 0;
+  const page = mount((url) => {
+    if (url !== `${base}/attachments/${encodedKey}/test.log?version=3`) return respond(url);
+    // The tail is read first; then Copy all reads the file again.
+    if (++reads > 1 && whole === "fails") return { status: 500, body: { error: "unreadable" } };
+    return { text: log };
+  });
+  t.after(page.close);
+  const { document, window } = page;
+  // Plain http at a LAN address: no Clipboard API, and here no copy command either.
+  assert.equal(window.navigator.clipboard, undefined);
+  document.execCommand = () => false;
+  window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+  await until(() => document.querySelector(".brief-tail"), "the log tail");
+  const button = () => attachmentNamed(document, "test.log").querySelector(".brief-preview > .copy-button");
+  button().click();
+  await until(() => button().textContent === "Copy failed", "it says the copy failed");
+  assert.deepEqual(await hoverTip(window, button()), ["Could not load the full text: Core answered 500."]);
+  await until(() => button().textContent === "Copy all", "it is ready again", 4000);
+  whole = "reads";
+  button().click();
+  await until(() => button().textContent === "Copy unavailable", "it says the clipboard is unavailable");
+  assert.deepEqual(await hoverTip(window, button()), ["The clipboard is not available here. Open the file and copy it there."],
+    "not 'select the text': the frame holds only the last lines");
+  window.chooseLanguage("zh-Hans");
+  await until(() => button().textContent === "复制全文", "Copy all in Chinese", 4000);
+  window.chooseLanguage("en");
+  await until(() => button().textContent === "Copy all", "back in English");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-102 a kept file drags out as itself only where Chromium saves a DownloadURL (Windows, macOS): its type, name and snapshot, no credential; elsewhere nothing is draggable and no hint shows", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const render = (agent) => {
+    window.unmountSection();
+    asAgent(window, agent);
+    window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+    return [...document.querySelectorAll(".brief-file")];
+  };
+  const chips = render(EDGE_WINDOWS);
+  assert.deepEqual(chips.map((chip) => chip.textContent), ["loss.csv", "test.log", "paper.pdf"], "kept files: no link, reference or image");
+  assert.ok(chips.every((chip) => chip.getAttribute("draggable") === "true"));
+  const drag = (chip) => {
+    const data = {};
+    const transfer = { effectAllowed: "uninitialized", setData: (type, value) => void (data[type] = value) };
+    const event = new window.Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: transfer });
+    chip.dispatchEvent(event);
+    return { data, effect: transfer.effectAllowed };
+  };
+  const snapshot = (name) => `http://isolated.test${base}/attachments/${encodedKey}/${name}?version=3`;
+  assert.deepEqual(drag(chips[2]), { data: { DownloadURL: `application/pdf:paper.pdf:${snapshot("paper.pdf")}` }, effect: "copy" });
+  assert.deepEqual(drag(chips[1]).data, { DownloadURL: `text/plain:test.log:${snapshot("test.log")}` });
+  assert.deepEqual(await hoverTip(window, chips[2]), ["paper.pdf", "Drag to a folder or an app to save it as a file"]);
+  assert.equal(render(CHROME_MAC).length, 3, "Chrome on a Mac drags out too");
+  for (const agent of [SAFARI_MAC, FIREFOX_WINDOWS, CHROME_LINUX, CHROME_ANDROID, IPHONE]) {
+    assert.deepEqual(render(agent), [], agent);
+    assert.equal(document.querySelector('[draggable="true"]'), null, agent);
+    // The name is as before: its icon, then its name with a tip only when cut.
+    assert.equal(attachmentNamed(document, "paper.pdf").querySelector("header > svg + strong")?.textContent, "paper.pdf", agent);
+  }
+  assert.deepEqual(page.errors, []);
+});
+
 test("a Brief image opens in the app's preview, not a browser tab; without Point & Fix there is no Mark up (T-177)", async (t) => {
   const page = mount();
   t.after(page.close);

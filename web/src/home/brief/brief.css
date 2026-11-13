@@ -1147,6 +1147,43 @@ p.brief-preview-frame {
   outline: 2px solid var(--focus, var(--green));
   outline-offset: 2px;
 }
+/* Copy all (YN-102) in a text frame's top corner, the user's choice: it
+ * stays put while the text scrolls under it, clear of the frame's scroll
+ * bar where that takes room (--frame-scroll-bar, measured on the frame). */
+.brief-preview:has(> .copy-button) {
+  position: relative;
+}
+.brief-preview > .copy-button {
+  position: absolute;
+  top: 6px;
+  right: calc(6px + var(--frame-scroll-bar, 0px));
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+}
+/* A kept file to drag out as itself (YN-102): its icon and name, where the
+ * page can (dragsOutAsFile). */
+.brief-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: -1px -3px;
+  padding: 1px 3px;
+  border-radius: 4px;
+  cursor: grab;
+}
+.brief-file > svg {
+  flex: none;
+  color: var(--muted);
+}
+.brief-file:hover {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+.brief-file:active {
+  cursor: grabbing;
+}
 
 @container brief-body (max-width: 520px) {
   .brief-group {
