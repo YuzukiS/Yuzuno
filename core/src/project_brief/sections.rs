@@ -193,6 +193,17 @@ pub(super) fn find(db: &Connection, project: &str, key: &str, version: Option<i6
     .pop())
 }
 
+/// The section with this identity on Home (`Row::identity`): the live one,
+/// else its newest entry history still keeps.
+pub(super) fn by_identity(db: &Connection, project: &str, identity: i64) -> Result<Option<Row>> {
+    Ok(read(
+        db,
+        "project_id=?1 AND COALESCE(lineage,seq)=?2 AND (live=1 OR history_at>=?3) ORDER BY live DESC, seq DESC LIMIT 1",
+        params![project, identity, history_cutoff()],
+    )?
+    .pop())
+}
+
 /// The Brief's version: how many accepted updates changed it (0 before any).
 pub(super) fn brief_version(db: &Connection, project: &str) -> Result<i64> {
     Ok(db

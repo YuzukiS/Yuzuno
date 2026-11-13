@@ -645,6 +645,13 @@ fn required_text(input: &Value, field: &str, max: usize) -> Result<String> {
 /// The most characters a task's short name has (T-43).
 pub(crate) const SHORT_NAME_CHARS: usize = 16;
 
+/// The longest task title and description, in UTF-8 bytes.
+pub(crate) const MAX_TITLE: usize = 300;
+pub(crate) const MAX_DESCRIPTION: usize = 32_768;
+
+/// The longest mail body (peer_send), in UTF-8 bytes.
+pub(crate) const MAX_MAIL_BODY: usize = 16_384;
+
 /// A task's short name from `input`: one line of at most SHORT_NAME_CHARS
 /// characters, trimmed; null or empty is none.
 fn short_name(input: &Value) -> Result<Option<String>> {
@@ -898,7 +905,7 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
             "materials",
         ],
     )?;
-    let title = required_text(input, "title", 300)?;
+    let title = required_text(input, "title", MAX_TITLE)?;
     let short = short_name(input)?;
     let materials = input.get("materials").map(|v| dispatch_materials::validate(db, v)).transpose()?
         .map(|m| dispatch_materials::with_check(m, sha_check));
@@ -933,7 +940,7 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         seq: 0,
         title,
         short_name: short,
-        description: optional_text(input, "description", 32_768)?.unwrap_or_default(),
+        description: optional_text(input, "description", MAX_DESCRIPTION)?.unwrap_or_default(),
         status,
         assignee_agent_id: assignee_id,
         assignee,
@@ -1033,7 +1040,7 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         None => {}
     }
     if patch.get("title").is_some() {
-        task.title = required_text(patch, "title", 300)?;
+        task.title = required_text(patch, "title", MAX_TITLE)?;
     }
     if patch.get("shortName").is_some() {
         // As kept: trimmed, and null for an empty one.
@@ -1041,7 +1048,7 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         changes["shortName"] = json!(task.short_name);
     }
     if patch.get("description").is_some() {
-        task.description = optional_text(patch, "description", 32_768)?.unwrap_or_default();
+        task.description = optional_text(patch, "description", MAX_DESCRIPTION)?.unwrap_or_default();
     }
     if patch.get("progress").is_some() {
         task.progress = optional_text(patch, "progress", 8_192)?.unwrap_or_default();
@@ -1608,7 +1615,7 @@ fn create_message(
     let recipient = agent_actor(store, db, &to)?;
     // An archived executor takes no more mail or work (T-36).
     crate::executor_archive::refuse_mail(db, &to)?;
-    let body = required_text(input, "body", 16_384)?;
+    let body = required_text(input, "body", MAX_MAIL_BODY)?;
     let priority = message_priority(input)?;
     let mut task_id = optional_text(input, "taskId", 128)?;
     let reply_to = optional_text(input, "replyTo", 128)?;
@@ -1820,6 +1827,8 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::executor_templates::tool_definition(),
         // The machines a dispatch can name (YN-37); served by `machine_list`.
         crate::machine_list::tool_definition(),
+        // The front desk routes the user's requests (YN-86 S3a-2); served by `project_requests`.
+        crate::project_requests::routes::tool_definition(),
         // The working guide, compiled from the yuzuno skill; served by `guide`.
         crate::guide::tool_definition(),
     ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::merge_queue::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).chain(crate::cleanup_plans::tool_definitions()).collect()

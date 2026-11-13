@@ -17,6 +17,10 @@ mod cards;
 /// The end of a task archives its cards (YN-86 S2a), in the transaction
 /// that ends it (collaboration_store.rs `save_task`).
 pub(crate) use cards::task_closed;
+/// What the Project's requests read of cards and write as one (YN-86 S3a-2,
+/// project_requests): a card by its key or identity, who answers for a
+/// task's card, its Asks, and the card project_route puts.
+pub(crate) use cards::{asks_of, card_by_identity, live_card, put_card, responsible_agent, responsible_json, task_ended};
 /// A Workspace backup's hold on Brief attachment files (T-192), and an
 /// interactive preview's on one (YN-10).
 pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachments, Hold as AttachmentHold};
