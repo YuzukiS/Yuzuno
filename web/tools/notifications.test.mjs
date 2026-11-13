@@ -227,6 +227,17 @@ test("in the desktop app on macOS, macOS's answer is read as it is, asked only b
     assert.deepEqual(access.notificationAccess(app(mac(authorization))), state, authorization);
   assert.deepEqual(access.notificationAccess(app(mac("unknown", { reason: "unread here" }))), { state: "unsupported", reason: "unread", detail: "unread here" });
   assert.equal(calls.asked, 0, "the web view's own permission is never read as macOS's");
+  // YN-94: the dock badge, as macOS told the app, goes with an allowed
+  // answer only; an older app says nothing of it.
+  const badged = (authorization, badge) => {
+    const desktop = mac(authorization);
+    return { ...desktop, macos: { ...desktop.macos, badge } };
+  };
+  assert.deepEqual(access.notificationAccess(app(badged("allowed", "off"))), { state: "allowed", system: "macos", badge: "off" });
+  assert.deepEqual(access.notificationAccess(app(badged("quiet", "not-requested"))), { state: "allowed", system: "macos", quiet: true, badge: "not-requested" });
+  assert.deepEqual(access.notificationAccess(app(badged("allowed", "on"))), { state: "allowed", system: "macos", badge: "on" });
+  for (const authorization of ["not-requested", "denied"])
+    assert.deepEqual(access.notificationAccess(app(badged(authorization, "off"))), { state: authorization, system: "macos" }, authorization);
 
   assert.deepEqual(await access.requestNotificationAccess(app(mac("not-requested", { answer: "allowed" }))), { state: "allowed", system: "macos" });
   assert.deepEqual(await access.requestNotificationAccess(app(mac("not-requested", { answer: "denied" }))), { state: "denied", system: "macos" });

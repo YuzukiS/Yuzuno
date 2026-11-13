@@ -8,7 +8,8 @@
 export type NotificationAccess =
   | { state: "unsupported"; reason: UnsupportedReason; detail?: string }
   | { state: "not-requested"; system?: "macos" }
-  | { state: "allowed"; system?: "macos"; quiet?: boolean }
+  /** `badge`: the dock badge, as macOS told the desktop app (YN-94). */
+  | { state: "allowed"; system?: "macos"; quiet?: boolean; badge?: DesktopBadgeSetting }
   | { state: "denied"; system?: "macos" }
   /** The desktop app hands them to the system (T-188, Windows). Whether the
    * system then shows them is its own notification settings', which the app
@@ -46,10 +47,19 @@ type ShownNotification = {
  * says what macOS allows it, and can ask macOS, once (`macos`). */
 export type DesktopNotifier = {
   notify(title: string, body: string, whenAway: boolean): Promise<boolean>;
-  macos?: { authorization: DesktopAuthorization; reason?: string; request(): Promise<DesktopNotifier | null> };
+  macos?: {
+    authorization: DesktopAuthorization;
+    badge?: DesktopBadgeSetting;
+    reason?: string;
+    request(): Promise<DesktopNotifier | null>;
+  };
 };
 /** What macOS allows the desktop app (desktop/src/notification_text.rs). */
 export type DesktopAuthorization = "not-requested" | "allowed" | "quiet" | "denied" | "unknown";
+/** The desktop app's dock badge, as macOS says (YN-94, desktop/src/notify.rs):
+ * macOS shows it only while "Badge application icon" is on for the app, a
+ * switch it has only once the app asked for badges (`not-requested`: not yet). */
+export type DesktopBadgeSetting = "on" | "off" | "not-requested";
 
 /** The parts of the browser this reads: the app passes the window's, a test its own. */
 export type NotificationHost = {
@@ -86,12 +96,12 @@ export function desktopText(text: string, max: number, lines = false): string {
 // Learned from a refused test notification; it does not change on this page.
 const pageOnly = new WeakSet<NotificationApi>();
 
-function macosAccess({ authorization, reason }: NonNullable<DesktopNotifier["macos"]>): NotificationAccess {
+function macosAccess({ authorization, badge, reason }: NonNullable<DesktopNotifier["macos"]>): NotificationAccess {
   switch (authorization) {
     case "allowed":
-      return { state: "allowed", system: "macos" };
+      return { state: "allowed", system: "macos", ...(badge ? { badge } : {}) };
     case "quiet":
-      return { state: "allowed", system: "macos", quiet: true };
+      return { state: "allowed", system: "macos", quiet: true, ...(badge ? { badge } : {}) };
     case "not-requested":
       return { state: "not-requested", system: "macos" };
     case "denied":

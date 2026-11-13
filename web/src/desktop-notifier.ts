@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { desktopShell } from "./DesktopUpdate";
-import type { DesktopAuthorization, DesktopNotifier } from "./notification-access";
+import type { DesktopAuthorization, DesktopBadgeSetting, DesktopNotifier } from "./notification-access";
 
 /**
  * The desktop app's own system notifications (T-188), as it says it has them
@@ -12,10 +12,11 @@ import type { DesktopAuthorization, DesktopNotifier } from "./notification-acces
  * iPhone app, has no such command and answers nothing usable: it stays "not
  * available in this app". Nothing is shown, asked or changed by reading it.
  */
-type Answer = { supported?: unknown; system?: unknown; authorization?: unknown; reason?: unknown };
+type Answer = { supported?: unknown; system?: unknown; authorization?: unknown; badge?: unknown; reason?: unknown };
 type Invoke = NonNullable<ReturnType<typeof desktopShell.invoke>>;
 
 const authorizations: DesktopAuthorization[] = ["not-requested", "allowed", "quiet", "denied", "unknown"];
+const badges: DesktopBadgeSetting[] = ["on", "off", "not-requested"];
 
 let known: DesktopNotifier | null = null;
 let reading: Promise<DesktopNotifier | null> | null = null;
@@ -50,6 +51,8 @@ function notifier(invoke: Invoke, answer: Answer | null): DesktopNotifier | null
     notify,
     macos: {
       authorization: authorizations.find((word) => word === answer?.authorization) ?? "unknown",
+      // An older app says nothing of the dock badge (YN-94).
+      badge: badges.find((word) => word === answer?.badge),
       reason: typeof answer?.reason === "string" ? answer.reason : undefined,
       request: () => invoke("desktop_notifications_request").then((answer) => settle(invoke, answer)),
     },
