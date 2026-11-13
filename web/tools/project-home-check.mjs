@@ -105,7 +105,7 @@ const findSection = (projectId, key) =>
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
   en: { needs: /^Needs you3/, doing: /^In progress2/, done: /^Done · 2 cards · .* · 30-day history 1$/, newMark: "New", inProgress: "In progress" },
-  "zh-Hans": { needs: /^需要你3/, doing: /^进行中2/, done: /^已完成 · 2 张 · .* · 30 天历史 1$/, newMark: "新", inProgress: "进行中" },
+  "zh-Hans": { needs: /^需要你处理3/, doing: /^进行中2/, done: /^已完成 · 2 张 · .* · 30 天历史 1$/, newMark: "新", inProgress: "进行中" },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
