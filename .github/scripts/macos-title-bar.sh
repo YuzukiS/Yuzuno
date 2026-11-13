@@ -8,8 +8,10 @@
 # its three buttons through the Accessibility API, as the system reports
 # them, and checks them; resizes the window and checks again, since AppKit
 # can put the buttons back where it keeps them (wry#1747); then takes a
-# picture of the window. Writes geometry.json, title-bar.png and app.log to
-# OUT, and a table to the step summary.
+# picture of the window, brought to the front at the screen's top left so
+# that it is all on screen (a runner's screen can be narrower than the
+# window opens). Writes geometry.json, title-bar.png and app.log to OUT, and
+# a table to the step summary.
 #
 #   .github/scripts/macos-title-bar.sh APP OUT
 set -euo pipefail
@@ -61,7 +63,18 @@ done
 # Let the connection page load and draw: wry places the buttons as it draws.
 sleep 3
 geometry >"$out/shown.tsv"
-osascript -e "tell application \"System Events\" to set size of window 1 of (first process whose unix id is $pid) to {1000, 700}"
+osascript - "$pid" <<'EOF'
+on run argv
+  set pid to (item 1 of argv) as integer
+  tell application "System Events"
+    tell (first process whose unix id is pid)
+      set frontmost to true
+      set position of window 1 to {0, 40}
+      set size of window 1 to {1000, 700}
+    end tell
+  end tell
+end run
+EOF
 sleep 2
 geometry >"$out/resized.tsv"
 read -r x y w h < <(awk -F'\t' '$1 == "window" { print $2, $3, $4, $5 }' "$out/resized.tsv")
@@ -85,7 +98,7 @@ for name in ("shown", "resized"):
         continue
     buttons = {key: {"x": b[0] - window[0], "y": b[1] - window[1], "width": b[2], "height": b[3],
                      "centreY": b[1] - window[1] + b[3] / 2} for key, b in found.items()}
-    report[name] = {"window": {"width": window[2], "height": window[3]}, "buttons": buttons,
+    report[name] = {"window": {"x": window[0], "y": window[1], "width": window[2], "height": window[3]}, "buttons": buttons,
                     "zoomRight": buttons["zoom"]["x"] + buttons["zoom"]["width"]}
     centre = buttons["close"]["centreY"]
     if abs(centre - 24) > 1:
@@ -94,12 +107,12 @@ for name in ("shown", "resized"):
         problems.append(f"{name}: the buttons are not close, minimize, zoom from the left")
 json.dump({"report": report, "problems": problems}, open(os.path.join(out, "geometry.json"), "w"), indent=2)
 lines = ["### Window buttons over the toolbar (YN-90)", "",
-         "| When | Window | Close x, centre y | Minimize x | Zoom x, right edge | Button size |", "|---|---|---|---|---|---|"]
+         "| When | Window, at | Close x, centre y | Minimize x | Zoom x, right edge | Button size |", "|---|---|---|---|---|---|"]
 for name, r in report.items():
     b = r["buttons"]
-    lines.append(f"| {name} | {r['window']['width']:g}×{r['window']['height']:g} | {b['close']['x']:g}, {b['close']['centreY']:g} "
+    lines.append(f"| {name} | {r['window']['width']:g}×{r['window']['height']:g}, {r['window']['x']:g},{r['window']['y']:g} | {b['close']['x']:g}, {b['close']['centreY']:g} "
                  f"| {b['minimize']['x']:g} | {b['zoom']['x']:g}, {r['zoomRight']:g} | {b['close']['width']:g}×{b['close']['height']:g} |")
-lines += ["", "Points from the window's top left, as the Accessibility API reports them."]
+lines += ["", "Points from the window's top left (the window's own place: from the screen's), as the Accessibility API reports them."]
 summary = os.environ.get("GITHUB_STEP_SUMMARY")
 if summary:
     with open(summary, "a") as f:
