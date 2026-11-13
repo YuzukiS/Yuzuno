@@ -121,3 +121,21 @@ test("an Ask put off alone goes to the end of Needs you; with a live Ask in its 
   assert.deepEqual(deck.needs.map((g) => g.topic), ["a"]);
   assert.deepEqual(deck.counts, { needs: 1, deferred: 0, doing: 0, replied: 0, done: 0 });
 });
+
+test("a report or status bound to a task follows its task: in progress while it goes on, done once it is over; Asks as before (YN-86 §2.2, §3.4)", () => {
+  // Read, or out of date, while its task goes on: still in progress.
+  assert.equal(deckGroup("report", false, "open"), "doing");
+  assert.equal(deckGroup("status", false, "open"), "doing");
+  assert.equal(deckGroup("stale", true, "open"), "doing");
+  // Its task over: done, even a report not read yet (Core archives it once it is).
+  assert.equal(deckGroup("report", true, "ended"), "done");
+  assert.equal(deckGroup("status", false, "ended"), "done");
+  // An Ask is the user's to answer whatever its task; answered, it waits for its owner; new in the visit, in progress.
+  assert.equal(deckGroup("ask", true, "ended"), "needs");
+  assert.equal(deckGroup("deferred", true, "open"), "needs");
+  assert.equal(deckGroup("replied", false, "ended"), "doing");
+  assert.equal(deckGroup("late", true, "ended"), "doing");
+  // Bound to nothing: as before.
+  assert.equal(deckGroup("report", false, null), "done");
+  assert.equal(deckGroup("stale", true), "done");
+});

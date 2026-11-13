@@ -1,0 +1,85 @@
+/* A card bound to a task (YN-86 S2b): who answers for it, in one line at the
+   card's foot under a dashed rule. It wraps between its parts, never inside
+   a name or an action; the state alone is cut, its tip saying it whole. */
+.home-card-responsible {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  min-width: 0;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-card-responsible-who {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.home-card-responsible-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.home-card-responsible-name strong {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.home-card-responsible-state {
+  display: inline-block;
+  max-width: 24em;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--home-soft);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.home-card-responsible-none {
+  font-style: italic;
+}
+/* The task's key, a chip that opens the task. */
+.home-card-task {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.home-card-responsible-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 2px;
+  margin-left: auto;
+}
+.home-card-responsible-actions .quiet-button {
+  min-height: 28px;
+  white-space: nowrap;
+}
+.home-card-task:focus-visible,
+.home-card-responsible-actions .quiet-button:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 1px;
+}
+/* Its task is over: a report waiting to be read in Done, or a card archived with it. */
+.home-task-ended {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+  white-space: nowrap;
+}

@@ -302,6 +302,10 @@ export function AskReply({
   const { answer, resend, busy, error, receipt, kept } = useReply(context, section.key);
   const ownerOpen =
     section.owner.state === "active" && context.agents.some((a) => a.id === section.owner.agentId);
+  // An ask on a card bound to a task goes to whoever answers for the card (YN-86 §3.3), while they are open in
+  // the Project; else to its author. The user can pick another all the same.
+  const responsible = section.card?.responsible?.agentId;
+  const recipient = responsible && context.agents.some((a) => a.id === responsible) ? responsible : ownerOpen ? section.owner.agentId : "";
   // Kept once the Workspace is known: another one may hold the same project
   // and key (T-195).
   const slot = outboxKey(context.workspaceId, context.projectId, section.key);
@@ -313,7 +317,7 @@ export function AskReply({
   const [restored, setRestored] = useState(() => !!draft?.at && !!draft.text.trim());
   const [onlyHere, setOnlyHere] = useState(false);
   const [target, setTarget] = useState(
-    () => (draft?.text.trim() && draft.agentId) || kept?.agentId || (ownerOpen ? section.owner.agentId : ""),
+    () => (draft?.text.trim() && draft.agentId) || kept?.agentId || recipient,
   );
   // The Workspace arrived after this was drawn: its draft, unless one is being written.
   const [shownSlot, setShownSlot] = useState(slot);
@@ -602,7 +606,7 @@ export function AskReply({
         onChange={pickTarget}
         disabled={context.readOnly || busy}
       />
-      {!ownerOpen && (
+      {!recipient && (
         <p className="home-note">
           {t.chooseAskRecipient(section.owner.name, section.owner.state === "active" ? t.askNotInProject : t.askOwnerState(section.owner.state))}
         </p>

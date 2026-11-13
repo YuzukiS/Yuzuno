@@ -9,6 +9,7 @@ import { AskReply } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
+import { CardResponsible } from "./CardResponsible";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, readBefore, repliedThenUpdated, sectionDomId, unreadChange } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
@@ -236,6 +237,12 @@ export const SectionCard = memo(function SectionCard({
   // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
   const [replyOpened, setReplyOpened] = useState(false);
   const replyButton = useRef<HTMLButtonElement>(null);
+  const toggleReply = () => {
+    setReplyOpened(true);
+    setReplying((open) => !open);
+  };
+  // Bound to a task (YN-86 S2b): who answers for it takes the byline's place at its foot.
+  const bound = section.card ?? null;
   // New or Updated since the user last read it (YN-86: marked seen, or a report opened whole); Seen is still offered
   // until they mark this version seen, which is what puts a report into History.
   const changed = unreadChange(section);
@@ -474,11 +481,13 @@ export const SectionCard = memo(function SectionCard({
         </span>
         {heading}
         <span className="home-section-meta">
-          <span className="home-owner">
-            {sub ? t.by : ""}
-            {section.owner.name}
-            {section.owner.state !== "active" && t.ownerState(section.owner.state)}
-          </span>
+          {!bound && (
+            <span className="home-owner">
+              {sub ? t.by : ""}
+              {section.owner.name}
+              {section.owner.state !== "active" && t.ownerState(section.owner.state)}
+            </span>
+          )}
           <Tip content={<TipText title={absolute(section.updatedAt, time)} />}>
             <span>{relative(section.updatedAt, language)}</span>
           </Tip>
@@ -494,7 +503,7 @@ export const SectionCard = memo(function SectionCard({
             {reportWords.openReport}
           </button>
         )}
-        {replyable && (
+        {replyable && !bound && (
           <Tip content={<TipText title={t.replyTitle(section.owner.name)} />}>
             <button
               type="button"
@@ -502,10 +511,7 @@ export const SectionCard = memo(function SectionCard({
               ref={replyButton}
               aria-expanded={replying}
               aria-label={t.replyLabel(section.title)}
-              onClick={() => {
-                setReplyOpened(true);
-                setReplying((open) => !open);
-              }}
+              onClick={toggleReply}
             >
               <MessageSquareReply size={13} />
               {t.reply}
@@ -628,6 +634,14 @@ export const SectionCard = memo(function SectionCard({
         </p>
       )}
       </div>
+      {bound && (
+        <CardResponsible
+          section={section}
+          card={bound}
+          readOnly={readOnly}
+          reply={replyable ? { open: replying, onToggle: toggleReply, button: replyButton } : null}
+        />
+      )}
       {replyable && replying && (
         <CardReply
           section={section}

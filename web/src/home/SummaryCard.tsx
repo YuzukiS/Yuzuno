@@ -28,6 +28,8 @@ import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
 import { unmaintained } from "./card-summary";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
+import { CardResponsible } from "./CardResponsible";
+import { taskEnded } from "./card-responsible";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
 import { BriefDensity } from "./home-density";
@@ -109,6 +111,13 @@ export const SummaryCard = memo(function SummaryCard({
   // Opened by the user here, not kept from before; closed, focus goes back to Reply (T-19 HM:S7).
   const [replyOpened, setReplyOpened] = useState(false);
   const replyButton = useRef<HTMLButtonElement>(null);
+  const toggleReply = () => {
+    setReplyOpened(true);
+    setReplying((value) => !value);
+  };
+  // Bound to a task (YN-86 S2b): who answers for it takes the byline's place at its foot, with its Reply.
+  const bound = section.card ?? null;
+  const ended = taskEnded(bound);
   const [seeing, setSeeing] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => rememberSeenBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
@@ -182,8 +191,16 @@ export const SummaryCard = memo(function SummaryCard({
             </span>
           </Tip>
         )}
+        {/* Its task is over (YN-86 §3.4): archived with it, or a report that waits in Done until it is read. */}
+        {ended && (section.history ? (
+          <span className="home-task-ended">{home.taskArchived}</span>
+        ) : (
+          <Tip content={<TipText body={home.taskEndedTitle} />}>
+            <span className="home-task-ended">{home.taskEnded}</span>
+          </Tip>
+        ))}
         <span className="home-summary-actions">
-          {replyable && (
+          {replyable && !bound && (
             <Tip content={<TipText title={home.replyTitle(section.owner.name)} />} describe={false}>
               <button
                 type="button"
@@ -191,10 +208,7 @@ export const SummaryCard = memo(function SummaryCard({
                 ref={replyButton}
                 aria-expanded={replying}
                 aria-label={home.replyLabel(section.title)}
-                onClick={() => {
-                  setReplyOpened(true);
-                  setReplying((value) => !value);
-                }}
+                onClick={toggleReply}
               >
                 <MessageSquareReply size={14} />
               </button>
@@ -242,12 +256,15 @@ export const SummaryCard = memo(function SummaryCard({
       {content.files.length > 0 && <CardFiles section={section} projectId={projectId} files={content.files} onReport={report ? open : null} agents={agents} />}
       <footer className="home-summary-foot">
         <span className="home-summary-byline">
-          {/* A sub-topic is labelled with its own author, as before (T-197). */}
-          <span className="home-owner">
-            {sub ? home.by : ""}
-            {section.owner.name}
-            {section.owner.state !== "active" && home.ownerState(section.owner.state)}
-          </span>
+          {/* A sub-topic is labelled with its own author, as before (T-197); a card bound to a task says who
+              answers for it instead, below. */}
+          {!bound && (
+            <span className="home-owner">
+              {sub ? home.by : ""}
+              {section.owner.name}
+              {section.owner.state !== "active" && home.ownerState(section.owner.state)}
+            </span>
+          )}
           {status && section.status ? (
             <DataAsOf status={section.status} stale={stale} />
           ) : (
@@ -263,6 +280,14 @@ export const SummaryCard = memo(function SummaryCard({
           </button>
         )}
       </footer>
+      {bound && (
+        <CardResponsible
+          section={section}
+          card={bound}
+          readOnly={readOnly}
+          reply={replyable ? { open: replying, onToggle: toggleReply, button: replyButton } : null}
+        />
+      )}
       {replyable && replying && (
         <CardReply
           section={section}
