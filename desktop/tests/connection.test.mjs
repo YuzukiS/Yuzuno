@@ -254,6 +254,59 @@ test('a system frame or an older shell keeps the window controls hidden', async 
   }
 });
 
+// YN-90: on macOS the system's own window buttons stand over the top band.
+test('on macOS the top band moves the window under the system buttons, and a double click does what the system setting says', async () => {
+  const frame = fakeWindow(true);
+  let doubleClick = 'zoom';
+  const dom = await mount(async (command) => (command === 'desktop_title_bar' ? { inset: 71, doubleClick } : idle()), frame);
+  try {
+    const document = dom.window.document;
+    assert.equal(document.querySelector('.window-controls').hidden, true, 'the system draws the window buttons');
+    const press = (type, target, clientY, detail, clientX = 300) => target.dispatchEvent(
+      new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX, clientY, detail }));
+    const wordmark = document.querySelector('.wordmark');
+    press('mousedown', wordmark, 40, 1);
+    press('mousedown', document.querySelector('main'), 400, 1);
+    press('mousedown', document.querySelector('#core-url'), 40, 1);
+    assert.deepEqual(frame.calls, ['startDragging'], 'the band only, and not its controls');
+    frame.calls.length = 0;
+    // A double click: the second press is released where it began.
+    const double = async (movedBy = 0) => {
+      press('mousedown', wordmark, 40, 1);
+      press('mousedown', wordmark, 40, 2);
+      press('mouseup', wordmark, 40, 2, 300 + movedBy);
+      await settle();
+    };
+    await double();
+    doubleClick = 'minimize';
+    await double();
+    doubleClick = 'none';
+    await double();
+    doubleClick = 'zoom';
+    await double(6);
+    assert.deepEqual(frame.calls, [
+      'startDragging', 'toggleMaximize',
+      'startDragging', 'minimize',
+      'startDragging',
+      'startDragging',
+    ], 'zoom, minimize, nothing, and nothing once the pointer moved');
+  } finally { dom.window.close(); }
+});
+
+test('a Mac shell without the title bar command leaves the page as it is', async () => {
+  const frame = fakeWindow(true);
+  const dom = await mount(async (command) => {
+    if (command === 'desktop_title_bar') throw 'Command desktop_title_bar not found';
+    return idle();
+  }, frame);
+  try {
+    dom.window.document.querySelector('.wordmark').dispatchEvent(
+      new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientY: 40, detail: 1 }));
+    assert.deepEqual(frame.calls, []);
+    assert.equal(dom.window.document.querySelector('.window-controls').hidden, true);
+  } finally { dom.window.close(); }
+});
+
 // T-195: the named Workspaces this computer keeps. One entry may start a
 // Core; the rest are addresses. Saved is not reachable, and a list that
 // could not be read is not an empty list.

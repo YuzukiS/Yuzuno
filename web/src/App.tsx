@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type CSSProperties,
 } from "react";
 import { ringAgain, settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
@@ -199,7 +200,7 @@ import { InputReading } from "./input-reading";
 import { ConversationWindow, ConversationRows } from "./ConversationWindow";
 import { HistoryEntry } from "./HistoryEntry";
 import { ConversationMetadata } from "./ConversationMetadata";
-import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
+import { moveWindow, useWindowFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
 import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
@@ -561,8 +562,9 @@ export function App() {
   const [phoneInspector, setPhoneInspector] = useState(false);
   const phoneBack = useRef<HTMLButtonElement>(null);
   const listShown = phone && phoneList;
-  // Without a system frame (Windows desktop), the toolbar is the title bar.
-  const frame = useCustomFrame();
+  // On the desktop the toolbar is the title bar: on Windows without a system
+  // frame, on macOS under the system's own window buttons (YN-90).
+  const frame = useWindowFrame();
   const [homeOpen, setHomeOpen] = useState(false);
   // A conversation fades in as it opens from Home or another Agent's takes its
   // place (T-19 M6: SH:M11, C01). A phone's list and conversation are push and
@@ -3477,7 +3479,8 @@ export function App() {
         </div>
       )}
       <header
-        className={`toolbar${frame ? " window-frame" : ""}`}
+        className={`toolbar${frame ? " window-frame" : ""}${frame?.kind === "overlay" ? " title-bar-overlay" : ""}`}
+        style={frame?.kind === "overlay" ? ({ "--title-bar-inset": `${frame.inset}px` } as CSSProperties) : undefined}
         lang={langTag(language)}
         onMouseDown={(event) => moveWindow(frame, event)}
       >
@@ -3569,7 +3572,7 @@ export function App() {
           </button>
           </Tip>
         </div>
-        {frame && <WindowControls frame={frame} />}
+        {frame?.kind === "controls" && <WindowControls frame={frame.window} />}
       </header>
       <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />

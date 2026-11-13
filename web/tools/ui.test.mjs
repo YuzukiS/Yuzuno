@@ -109,6 +109,8 @@ async function openPage({
   failTurnResponseOnce = false,
   url,
   nativeWindow,
+  // The desktop shell's commands (window.__TAURI__.core.invoke).
+  nativeInvoke,
   beforeLoad,
   liveJobs,
   liveCI,
@@ -333,7 +335,11 @@ async function openPage({
   };
   if (appearance) window.localStorage.setItem("yuzuno.appearance", JSON.stringify(appearance));
   for (const [key, value] of Object.entries(stored)) window.localStorage.setItem(key, value);
-  if (nativeWindow) window.__TAURI__ = { window: { getCurrentWindow: () => nativeWindow } };
+  if (nativeWindow || nativeInvoke)
+    window.__TAURI__ = {
+      ...(nativeWindow && { window: { getCurrentWindow: () => nativeWindow } }),
+      ...(nativeInvoke && { core: { invoke: nativeInvoke } }),
+    };
   beforeLoad?.(window);
   bundleScript.runInContext(dom.getInternalVMContext());
   // Wait for the fixture detail, not a fixed delay that races React effects
@@ -3380,6 +3386,106 @@ test("without a system frame the toolbar moves the window and carries its own wi
       await pause();
       assert.equal(!!other.document.querySelector('[aria-label="Window"]'), false, "system frame, older shell or browser: no second set of controls");
     } finally { other.close(); }
+  }
+});
+
+// YN-90: on macOS the system frame stays, its title bar over the page, and the
+// system's own window buttons stand at the toolbar's leading end.
+test("on macOS the toolbar leaves the system's window buttons their room, none in full screen, and moves the window", async () => {
+  const calls = [];
+  const record = (name) => async () => { calls.push(name); };
+  const mac = {
+    isDecorated: async () => true,
+    isMaximized: async () => false,
+    minimize: record("minimize"),
+    toggleMaximize: record("toggleMaximize"),
+    close: record("close"),
+    startDragging: record("startDragging"),
+  };
+  let bar = { inset: 71.5, doubleClick: "zoom" };
+  const nativeInvoke = async (command) => {
+    if (command === "desktop_title_bar") return bar;
+    throw new Error(`command ${command} not found`);
+  };
+  const page = await mount({ nativeWindow: mac, nativeInvoke });
+  try {
+    await pause();
+    const toolbar = page.document.querySelector(".toolbar");
+    assert.ok(toolbar.classList.contains("title-bar-overlay"));
+    assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
+    assert.equal(!!toolbar.querySelector('[aria-label="Window"]'), false, "the system draws the window buttons");
+    const resize = async () => { page.window.dispatchEvent(new page.window.Event("resize")); await pause(); };
+    bar = { ...bar, inset: 0 };
+    await resize();
+    assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "0px", "full screen: the buttons are hidden");
+    bar = { ...bar, inset: 71.5 };
+    await resize();
+    assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
+    const press = (type, target, detail = 1, clientX = 300) => target.dispatchEvent(
+      new page.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail, clientX, clientY: 20 }));
+    press("mousedown", toolbar.querySelector(".workspace-name"));
+    press("mousedown", toolbar.querySelector('[aria-label="Settings and updates"]'));
+    press("mousedown", toolbar.querySelector(".catchup-nav"));
+    assert.deepEqual(calls, ["startDragging"], "buttons keep their own clicks");
+    calls.length = 0;
+    // A double click acts when its second press is released where it began.
+    const double = async (movedBy = 0) => {
+      press("mousedown", toolbar, 1);
+      press("mousedown", toolbar, 2);
+      press("mouseup", toolbar, 2, 300 + movedBy);
+      await pause();
+    };
+    await double();
+    bar = { ...bar, doubleClick: "minimize" };
+    await double();
+    bar = { ...bar, doubleClick: "none" };
+    await double();
+    bar = { ...bar, doubleClick: "zoom" };
+    await double(6);
+    assert.deepEqual(calls, [
+      "startDragging", "toggleMaximize",
+      "startDragging", "minimize",
+      "startDragging",
+      "startDragging",
+    ], "zoom, minimize, nothing, and nothing once the pointer moved");
+    assert.equal(page.calls.filter((r) => r.init.method === "POST").length, 0);
+  } finally { page.close(); }
+});
+
+test("a browser, another system or an older shell keeps the toolbar as it is", async () => {
+  const calls = [];
+  const record = (name) => async () => { calls.push(name); };
+  const mac = {
+    isDecorated: async () => true,
+    isMaximized: async () => false,
+    minimize: record("minimize"),
+    toggleMaximize: record("toggleMaximize"),
+    close: record("close"),
+    startDragging: record("startDragging"),
+  };
+  const answers = [
+    async () => null, // Linux
+    async () => { throw new Error("command desktop_title_bar not found"); }, // an older shell
+    async () => ({ inset: "71", doubleClick: "zoom" }), // not this shape
+    async () => ({ inset: 71, doubleClick: "fill" }),
+  ];
+  const cases = [
+    ...answers.map((answer) => ({ nativeWindow: mac, nativeInvoke: (command) => (command === "desktop_title_bar" ? answer() : Promise.reject(new Error("no"))) })),
+    { nativeWindow: mac }, // a shell without commands for this page
+    {}, // a browser
+  ];
+  for (const options of cases) {
+    const page = await mount(options);
+    try {
+      await pause();
+      const toolbar = page.document.querySelector(".toolbar");
+      assert.equal(toolbar.classList.contains("title-bar-overlay"), false);
+      assert.equal(toolbar.classList.contains("window-frame"), false);
+      assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "");
+      toolbar.querySelector(".workspace-name").dispatchEvent(
+        new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+      assert.deepEqual(calls, [], "the toolbar does not move the window");
+    } finally { page.close(); }
   }
 });
 

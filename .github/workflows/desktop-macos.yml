@@ -2,12 +2,13 @@
 # standard GitHub-hosted runners, one per architecture: Apple silicon (arm64)
 # and Intel (x86_64). Each runs the desktop tests and checks what it packed:
 # - A pull request that changes desktop/, the script or this workflow builds
-#   and tests it. Nothing is uploaded; the checksums and build.json are in
-#   the run's log and summary.
+#   and tests it. Nothing is uploaded; the checksums, build.json and where
+#   the window's buttons stand are in the run's log and summary.
 # - Run on request (workflow_dispatch) for the current head of main, after
 #   the CI workflow has passed on that commit's push to main, it is a
 #   candidate: per architecture, the disk image, the app as a ZIP,
-#   build.json and SHA256SUMS, one artifact kept 14 days. Never a Release.
+#   build.json and SHA256SUMS, with a picture of its window and where its
+#   buttons stand, one artifact kept 14 days. Never a Release.
 #
 # The app is signed ad hoc and not notarized: there is no Developer ID, and
 # this workflow uses no secret. See desktop/README.md.
@@ -22,6 +23,7 @@ on:
       - .github/workflows/desktop-macos.yml
       - .github/scripts/hosted-guard.sh
       - .github/scripts/disk-precheck.sh
+      - .github/scripts/macos-title-bar.sh
   workflow_dispatch:
 
 # Read-only: actions: read only to look up the CI run of a candidate's commit.
@@ -112,6 +114,13 @@ jobs:
           export SOURCE_COMMIT
           scripts/desktop-macos.sh --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$RUNNER_TEMP/out" --test
 
+      # The window has no title bar row: the system's window buttons stand
+      # over the toolbar, at its middle (YN-90). Opens the app just built and
+      # reads where they are through the Accessibility API, which the runner
+      # image grants to bash and osascript, with a picture of the window.
+      - name: Window buttons over the toolbar
+        run: .github/scripts/macos-title-bar.sh "$RUNNER_TEMP/out/Yuzuno.app" "$RUNNER_TEMP/title-bar"
+
       # What was packed: the executable is this architecture's only, and
       # the ZIP and the disk image (mounted read-only) hold that same
       # executable; the image also holds the Applications link to drag to.
@@ -181,6 +190,8 @@ jobs:
             ${{ runner.temp }}/out/Yuzuno.app.zip
             ${{ runner.temp }}/out/build.json
             ${{ runner.temp }}/out/SHA256SUMS
+            ${{ runner.temp }}/title-bar/title-bar.png
+            ${{ runner.temp }}/title-bar/geometry.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

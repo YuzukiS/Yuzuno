@@ -12,6 +12,9 @@ mod entries;
 mod health;
 mod notification_text;
 mod notify;
+// The window buttons stand over the toolbar on macOS only.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod title_bar;
 mod update;
 
 use connection::{
@@ -39,15 +42,18 @@ use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 /// What the toolbar needs to act as a title bar without a system frame:
-/// move, minimize, maximize/restore, close, and read the frame state.
-/// Granted to the embedded connection page and the selected Core only.
-const WINDOW_FRAME: [&str; 6] = [
+/// move, minimize, maximize/restore, close, and read the frame state; on
+/// macOS, where the system's buttons stand over it (YN-90), how much room
+/// they take and what a double click does. Granted to the embedded
+/// connection page and the selected Core only.
+const WINDOW_FRAME: [&str; 7] = [
     "core:window:allow-is-decorated",
     "core:window:allow-is-maximized",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "allow-desktop-title-bar",
 ];
 
 /// A link the workspace window does not open itself (a new window, or a page
@@ -1000,7 +1006,8 @@ fn main() {
             notify::desktop_notifications,
             notify::desktop_notify,
             notify::desktop_notifications_request,
-            badge::desktop_badge
+            badge::desktop_badge,
+            title_bar::desktop_title_bar
         ])
         .setup(move |app| {
             // An update's installer restarts this app with its launch
@@ -1090,7 +1097,8 @@ fn main() {
                     .visible(false)
                     // On Windows the workspace toolbar is the title bar: no
                     // system frame, but the shadow and resize edges remain.
-                    // Elsewhere the system frame stays.
+                    // On macOS the frame stays, its title bar laid over the
+                    // toolbar below; on Linux the system frame stays as is.
                     .decorations(!cfg!(windows))
                     .shadow(true)
                     .background_color(tauri::window::Color(250, 248, 244, 255))
@@ -1103,6 +1111,19 @@ fn main() {
                     .disable_drag_drop_handler();
             #[cfg(not(target_os = "macos"))]
             let builder = builder.menu(menu);
+            // macOS (YN-90): no title bar row. The title bar is transparent
+            // over the page, without its title, and the system's window
+            // buttons stand at the toolbar's leading end, in its middle; the
+            // page leaves them room (`desktop_title_bar`). Tauri requires
+            // `decorations(true)` for `traffic_light_position`.
+            #[cfg(target_os = "macos")]
+            let builder = builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(
+                    title_bar::LIGHTS_X,
+                    title_bar::LIGHTS_Y,
+                ));
             let builder = builder
                 // A page other than the selected workspace (the connection
                 // page, or another origin) takes the taskbar badge off; the

@@ -274,31 +274,69 @@ async function init() {
 void init();
 
 // Without a system frame (Windows), this page's top band moves the window and
-// its own buttons minimize, maximize and close it. An older shell, or one that
-// kept the frame, leaves them hidden.
+// its own buttons minimize, maximize and close it. On macOS the system's own
+// window buttons stand over this band (YN-90): the band moves the window, and
+// a double click does what the user's system setting says. An older shell, or
+// one that kept its own title bar, leaves the page as it is.
 const frame = window.__TAURI__?.window?.getCurrentWindow?.();
 const controls = document.querySelector('.window-controls');
 const MOVE_BAND = 72;
+const BAND_CONTROL = 'button, a, input, label, select, textarea';
+const DOUBLE_CLICKS = new Set(['zoom', 'minimize', 'none']);
+
+// What the macOS shell reports ({ inset, doubleClick }); null for any other
+// shell, a refusal, or an answer of another shape.
+async function titleBar() {
+  if (!invoke) return null;
+  try {
+    const bar = await invoke('desktop_title_bar');
+    return bar && typeof bar.inset === 'number' && DOUBLE_CLICKS.has(bar.doubleClick) ? bar : null;
+  } catch {
+    return null;
+  }
+}
+
+function inBand(event) {
+  return event.button === 0 && event.clientY <= MOVE_BAND && !event.target.closest(BAND_CONTROL);
+}
 
 async function initFrame() {
   if (!frame) return;
+  let decorated;
   try {
-    if (await frame.isDecorated()) return;
+    decorated = await frame.isDecorated();
   } catch {
     return;
   }
-  controls.hidden = false;
-  controls.addEventListener('click', (event) => {
-    const action = event.target.closest('[data-window]')?.dataset.window;
-    if (action === 'minimize') void frame.minimize();
-    else if (action === 'maximize') void frame.toggleMaximize();
-    else if (action === 'close') void frame.close();
-  });
+  if (!decorated) {
+    controls.hidden = false;
+    controls.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-window]')?.dataset.window;
+      if (action === 'minimize') void frame.minimize();
+      else if (action === 'maximize') void frame.toggleMaximize();
+      else if (action === 'close') void frame.close();
+    });
+    document.addEventListener('mousedown', (event) => {
+      if (!inBand(event)) return;
+      event.preventDefault();
+      void (event.detail === 2 ? frame.toggleMaximize() : frame.startDragging());
+    });
+    return;
+  }
+  if (!(await titleBar())) return;
+  // As the workspace toolbar: the second press of a double click acts when it
+  // is released where it began, reading the setting again then.
   document.addEventListener('mousedown', (event) => {
-    if (event.button !== 0 || event.clientY > MOVE_BAND) return;
-    if (event.target.closest('button, a, input, label, select, textarea')) return;
+    if (!inBand(event)) return;
     event.preventDefault();
-    void (event.detail === 2 ? frame.toggleMaximize() : frame.startDragging());
+    if (event.detail !== 2) return void frame.startDragging();
+    const { clientX, clientY } = event;
+    window.addEventListener('mouseup', async (up) => {
+      if (up.detail !== 2 || up.clientX !== clientX || up.clientY !== clientY || !inBand(up)) return;
+      const bar = await titleBar();
+      if (bar?.doubleClick === 'zoom') void frame.toggleMaximize();
+      else if (bar?.doubleClick === 'minimize') void frame.minimize();
+    }, { once: true, capture: true });
   });
 }
 

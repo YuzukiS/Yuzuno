@@ -1,6 +1,7 @@
-// The toolbar as a title bar (Windows desktop without a system frame), in a
-// real browser with a stand-in for the desktop window API. Production bundle,
-// no Core: the workspace API is answered here.
+// The toolbar as a title bar, in a real browser with a stand-in for the
+// desktop window API: on Windows without a system frame, and on macOS under
+// the system's own window buttons (YN-90). Production bundle, no Core: the
+// workspace API is answered here.
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
@@ -98,6 +99,96 @@ try {
       const closeHover = await page.getByRole("button", { name: "Close window" }).evaluate((el) => getComputedStyle(el).color);
       await page.locator(".toolbar").screenshot({ path: `${output}/toolbar-${theme}-${width}.png` });
       results.push({ theme, width, ...layout, closeHover });
+      await page.close();
+    }
+  // macOS (YN-90): the system frame stays and its window buttons stand over
+  // the toolbar's leading end; the shell reports where they end. The check
+  // keeps its own expectation of that room (INSET), as the shell would answer.
+  const INSET = 71;
+  for (const theme of ["light", "dark"])
+    for (const width of [1440, 940]) {
+      const page = await browser.newPage({ viewport: { width, height: 760 } });
+      await page.addInitScript(({ theme, inset }) => {
+        localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette: "garden" }));
+        window.EventSource = class { close() {} };
+        window.frameCalls = [];
+        window.titleBar = { inset, doubleClick: "zoom" };
+        const record = (name) => async () => { window.frameCalls.push(name); };
+        const drag = async () => {
+          window.frameCalls.push("startDragging");
+          const take = (event) => { event.stopPropagation(); event.preventDefault(); };
+          for (const type of ["mouseup", "click"]) window.addEventListener(type, take, { capture: true, once: true });
+        };
+        window.__TAURI__ = {
+          window: { getCurrentWindow: () => ({
+            isDecorated: async () => true,
+            isMaximized: async () => false,
+            minimize: record("minimize"),
+            toggleMaximize: record("toggleMaximize"),
+            close: record("close"),
+            startDragging: drag,
+          }) },
+          core: { invoke: async (command) => {
+            if (command === "desktop_title_bar") return window.titleBar;
+            throw new Error(`command ${command} not found`);
+          } },
+        };
+      }, { theme, inset: INSET });
+      await page.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        assert.equal(route.request().method(), "GET", `no writes: ${url.pathname}`);
+        if (url.pathname === "/api/workspace")
+          return route.fulfill({ json: { agents: [agent], runtime: { connected: true }, defaultCwd: "/fixture" } });
+        if (url.pathname === "/api/agents/a")
+          return route.fulfill({ json: { agent, pending: [], turns: [], artifacts: [], messageReceipts: [] } });
+        if (url.pathname.startsWith("/api/")) return route.fulfill({ json: {} });
+        const file = resolve(dist, `.${url.pathname === "/" ? "/index.html" : url.pathname}`);
+        return route.fulfill({
+          body: await readFile(file),
+          contentType: { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2" }[extname(file)],
+        });
+      });
+      await page.goto("https://yuzuno-window-frame.test/?shell=desktop");
+      await page.locator(".toolbar.title-bar-overlay").waitFor();
+      const measure = () => page.evaluate((inset) => {
+        const bar = document.querySelector(".toolbar");
+        const brand = document.querySelector(".toolbar-brand").getBoundingClientRect();
+        // Nothing the user can press may sit under the system's buttons.
+        const under = [...bar.querySelectorAll("button, a, input, select, textarea, summary, [role], [tabindex]")]
+          .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.left < inset; })
+          .map((el) => el.getAttribute("aria-label") || el.className);
+        return {
+          fits: bar.scrollWidth <= bar.clientWidth + 1,
+          page: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+          brandLeft: Math.round(brand.left),
+          under,
+          windowGroup: !!document.querySelector('[role="group"][aria-label="Window"]'),
+        };
+      }, INSET);
+      const layout = await measure();
+      const label = `mac ${theme} ${width}: ${JSON.stringify(layout)}`;
+      assert.ok(layout.fits && layout.page, label);
+      assert.equal(layout.brandLeft, INSET + 17, `${label}: the brand starts after the buttons and the toolbar's padding`);
+      assert.deepEqual(layout.under, [], label);
+      assert.equal(layout.windowGroup, false, `${label}: the system draws the window buttons`);
+      await page.locator(".toolbar").screenshot({ path: `${output}/toolbar-mac-${theme}-${width}.png` });
+      // Empty bar moves the window; a double click zooms, as the setting says.
+      const box = await page.locator(".workspace-name").boundingBox();
+      await page.mouse.click(box.x + 4, box.y + box.height / 2);
+      await page.mouse.dblclick(box.x + 4, box.y + box.height / 2);
+      await page.getByRole("button", { name: "Settings and updates" }).click();
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => window.frameCalls.includes("toggleMaximize"), null, { timeout: 3000 });
+      const calls = await page.evaluate(() => window.frameCalls);
+      assert.deepEqual(calls.filter((c) => c !== "startDragging"), ["toggleMaximize"], `${label}: ${calls}`);
+      // Full screen: the system hides the buttons, and the room goes.
+      await page.evaluate(() => { window.titleBar = { ...window.titleBar, inset: 0 }; });
+      await page.setViewportSize({ width, height: 761 });
+      await page.waitForFunction(() => document.querySelector(".toolbar").style.getPropertyValue("--title-bar-inset") === "0px", null, { timeout: 3000 });
+      const fullScreen = await measure();
+      assert.equal(fullScreen.brandLeft, 17, `mac ${theme} ${width} full screen: ${JSON.stringify(fullScreen)}`);
+      await page.locator(".toolbar").screenshot({ path: `${output}/toolbar-mac-${theme}-${width}-full-screen.png` });
+      results.push({ system: "macOS", theme, width, ...layout, calls, fullScreenBrandLeft: fullScreen.brandLeft });
       await page.close();
     }
   console.log(JSON.stringify({ passed: true, results }, null, 1));

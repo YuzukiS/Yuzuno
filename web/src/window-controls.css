@@ -20,3 +20,13 @@
   border-color: transparent !important;
   color: var(--coral) !important;
 }
+
+/* macOS (YN-90): the system's own window buttons stand over the toolbar's
+   leading end. The shell reports where they end, from the window's edge; the
+   brand starts that far in plus the toolbar's own padding, which is then the
+   gap after the buttons. No room in full screen, where the system hides them. */
+.toolbar.title-bar-overlay::before {
+  content: "";
+  flex: none;
+  width: var(--title-bar-inset, 0px);
+}
