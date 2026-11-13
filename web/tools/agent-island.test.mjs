@@ -171,6 +171,7 @@ test("an executor queued for a routing candidate has a pill of its own, from whe
 // YN-51 (the user's answers on Home, design/yn51-ring-wait): a turning ring
 // shows what it waits on, one of review > CI > Job > sub-agent > shell.
 const idle = (more = {}) => ({ turn: false, call: null, ...more });
+const at0 = at("2026-11-07T02:00:00Z");
 const kinds = (w) => (w ? [w.kind, ...w.also.map((a) => a.kind)] : []);
 
 test("a running Turn waits only on the call it is stopped on, a sub-agent or a shell", () => {
@@ -282,4 +283,18 @@ test("an executor at work with no Turn running rests, its pill the first that ho
   assert.deepEqual([ci.state, ci.stay, ci.wait.pr], ["idle", { kind: "waits", on: "ci" }, 688]);
   // A Turn running: working, whatever holds.
   assert.equal(exec(life("running", { resultAt: "2026-11-07T03:00:00Z" }), agent({ status: "working" })).state, "working");
+});
+
+test("an executor at rest whose pill says what it waits on doesn't say it again on line two (YN-92, mail 11854)", () => {
+  const jobs = waitOn(idle({ jobs: { active: 1, unknown: 0, name: "core-lib-tests" } }));
+  const at = (a, waiting, wait) => islandView({ agent: a, lifecycle: life("running"), executor: executorView({ agent: a, lifecycle: life("running"), waiting }),
+    statusLabel: "Ready", wait });
+  // Its unfinished Job is the pill's ("Awaits a Job"): line two has only what it said, then its clock.
+  const quiet = at(agent(), "Waiting · Job", jobs);
+  assert.deepEqual([quiet.stay, quiet.line], [{ kind: "waits", on: "job" }, { kind: "none" }]);
+  assert.deepEqual(quiet.clock, { kind: "live", from: at0, to: null });
+  assert.deepEqual(at(agent({ workSummary: { text: "Slice 2: evidence Job" } }), "Waiting · Job", jobs).line, { kind: "text", text: "Slice 2: evidence Job" });
+  // Only a Job to check: no wait, so no pill says it; line two still does.
+  const check = at(agent(), "Check job", null);
+  assert.deepEqual([check.stay, check.line], [{ kind: "between" }, { kind: "detail", detail: { kind: "waiting", label: "Check job" } }]);
 });

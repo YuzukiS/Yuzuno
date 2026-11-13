@@ -21,7 +21,8 @@
 //   line, never "Working"); the row's screen-reader text and the ring's
 //   label say it; line one never cut, line two only where a pill that
 //   stays takes its width (rail v11: one line, ending in "…"), and each such
-//   row is listed in the report;
+//   row is listed in the report; an executor at rest whose pill says its
+//   wait doesn't say it again on line two, which is its whole clock;
 // - every pill of a Turn ended is no wider than 排队 · 第 3 位 / Queued · 3
 //   in line, the widest pill a 240 px rail leaves line one room beside;
 // - under reduced motion nothing moves (the icon's fade included); with
@@ -258,6 +259,13 @@ async function run({ width, height, theme, lang, motion = false }) {
       assert.ok(!r.cut, `${tag}: ${id}'s line one is not cut`);
       assert.ok(!r.cutTwo || r.stay != null, `${tag}: ${id}'s line two is cut with no pill beside it: ${r.two}`);
       if (r.cutTwo) (report.lineTwoCut[tag] ??= []).push({ id, pill: r.pill, two: r.two });
+      // An executor at rest whose pill says its wait: line two doesn't say it again, only its
+      // clock here, whole (Dev Lead 2, YN-92 mail 11854).
+      if (AT_REST[id]?.[0] === "waits" && id.startsWith("yn")) {
+        assert.doesNotMatch(r.two ?? "", /等待中|Waiting/, `${tag}: ${id}'s line two says its wait again: ${r.two}`);
+        assert.match(r.two ?? "", /^\d+(时|h)\d+(分|m)$/, `${tag}: ${id}'s line two is its clock: ${r.two}`);
+        assert.ok(!r.cutTwo, `${tag}: ${id}'s clock is not cut`);
+      }
       const rest = AT_REST[id];
       // Its row's screen-reader text, after "Lead · " or "Executor · ".
       const said = r.said.replace(/^(Lead|Executor|负责人|执行者) · /, "");

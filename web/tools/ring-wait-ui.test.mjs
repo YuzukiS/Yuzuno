@@ -68,7 +68,7 @@ const agent = (id, extra = {}) => ({
 /** Core's three live reads, as this test answers them. */
 const reads = {
   "/jobs/live": { agents: { job: { active: 1, unknown: 0, name: "web-tests" }, asks: { active: 1, unknown: 0, name: "web-tests" },
-    check: { active: 1, unknown: 1 } } },
+    check: { active: 1, unknown: 1 }, ex: { active: 1, unknown: 0, name: "core-lib-tests" } } },
   "/ci/live": { agents: { lead: { running: 1, discovering: 0, check: 0 }, asks: { running: 1, discovering: 0, check: 0 } } },
   "/waits/live": { agents: { lead: { reviews: { running: 1, pr: 231, round: 2 } }, bg: { shells: 2 } } },
 };
@@ -95,6 +95,7 @@ function mount(storage = {}) {
     island: (id) => { const i = row(id)?.querySelector(":scope > .agent-island"); return i ? [i.dataset.state, i.dataset.stay ?? null] : null; },
     pill: (id) => row(id)?.querySelector(":scope > .agent-island .island-pill")?.textContent ?? null,
     spins: (id) => row(id)?.querySelectorAll(".r-spin").length ?? 0,
+    meta: (id) => row(id)?.querySelector(":scope > .agent-row-meta")?.textContent ?? null,
     wait: (id) => row(id)?.querySelector(".island-ringbox")?.getAttribute("data-wait") ?? null,
     icons: (id) => row(id)?.querySelectorAll(".island-ringbox .island-wait").length ?? 0,
     said: (id) => row(id)?.querySelector(".agent-select")?.getAttribute("aria-description") ?? "",
@@ -117,6 +118,10 @@ const rows = () => [
   { agent: agent("asks", { status: "waiting", pendingCount: 1 }), statusLabel: "Waiting", idle: false },
   { agent: agent("quiet"), statusLabel: "Ready", idle: true },
   { agent: agent("check"), statusLabel: "Ready", idle: true },
+  // An executor at work on its task, its Turn ended, its Job running (YN-92).
+  { agent: agent("ex", { kind: "executor", executor: { state: "running", agentId: "ex", dispatcher: { kind: "user" },
+    task: { id: "YN-30", title: "The nightly regression's time budget", shortName: "Nightly budget" },
+    dispatchedAt: new Date(Date.now() - 72.5 * 60_000).toISOString() } }), statusLabel: "Ready", idle: true },
 ];
 
 test("a ring at rest stays still for what its Agent left running: one icon in the grey ring, a pill, and the card says which", async () => {
@@ -124,7 +129,7 @@ test("a ring at rest stays still for what its Agent left running: one icon in th
   try {
     p.render(rows());
     p.window.refreshAll("w1");
-    await waitFor(() => p.wait("lead") === "review" && p.wait("job") === "job" && p.wait("bg") === "shell" && p.pill("check") != null, "the waits");
+    await waitFor(() => p.wait("lead") === "review" && p.wait("job") === "job" && p.wait("bg") === "shell" && p.wait("ex") === "job" && p.pill("check") != null, "the waits");
     // Its Turn ended (YN-92): the grey ring, still, the icon in it, and a pill that says it.
     for (const [id, wait, pill] of [["lead", "review", "Awaits review"], ["job", "job", "Awaits a Job"], ["bg", "shell", "Awaits a shell"]]) {
       assert.deepEqual(p.island(id), ["idle", "waits"], id);
@@ -150,6 +155,11 @@ test("a ring at rest stays still for what its Agent left running: one icon in th
     assert.match(p.said("job"), /^Waiting on a Job: web-tests/);
     assert.equal((await p.card("bg"))[1], "Waiting on 2 background shells");
     assert.match(p.said("bg"), /^Waiting on 2 background shells/);
+    // An executor at rest on its Job: the pill says it, so line two is only its clock,
+    // never "Waiting · Job" again (Dev Lead 2, YN-92 mail 11854).
+    assert.deepEqual([p.island("ex"), p.pill("ex"), p.icons("ex"), p.spins("ex")], [["idle", "waits"], "Awaits a Job", 1, 0]);
+    assert.equal(p.meta("ex"), "1h12m");
+    assert.match(p.said("ex"), /^Executor · Waiting on a Job: core-lib-tests, on /);
     // Only a Job whose outcome is unknown: at rest, the list's words in its pill, no icon.
     assert.deepEqual(p.island("check"), ["idle", "check"]);
     assert.deepEqual([p.ring("check"), p.spins("check"), p.icons("check"), p.pill("check")], ["idle", 0, 0, "Check job"]);
@@ -205,8 +215,9 @@ test("in Chinese the card and the row say it too", async () => {
   try {
     p.render(rows());
     p.window.refreshAll("w1");
-    await waitFor(() => p.wait("lead") === "review" && p.pill("check") != null, "the review");
-    assert.deepEqual(["lead", "job", "bg", "check"].map(p.pill), ["在等审查", "在等 Job", "在等 shell", "核对 Job"]);
+    await waitFor(() => p.wait("lead") === "review" && p.wait("ex") === "job" && p.pill("check") != null, "the review");
+    assert.deepEqual(["lead", "job", "bg", "check", "ex"].map(p.pill), ["在等审查", "在等 Job", "在等 shell", "核对 Job", "在等 Job"]);
+    assert.equal(p.meta("ex"), "1时12分", "its clock only, not 等待中 · Job again");
     const lead = await p.card("lead");
     assert.equal(lead[1], "在等审查：PR #231 第 2 轮", lead.join(" | "));
     assert.ok(lead.includes("另有：CI"), lead.join(" | "));

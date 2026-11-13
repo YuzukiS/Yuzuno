@@ -275,7 +275,10 @@ function executor(facts: IslandFacts, view: ExecutorView): Read {
             : view.detail?.kind === "blocked" ? { kind: "blocked" }
               : lifecycle?.resultAt ? { kind: "resultIn" }
                 : { kind: "between" };
-        return out("idle", live(view.started), line, stay);
+        // Its pill says what it waits on: line two doesn't say it again ("等待中 · Job"),
+        // only what it said, then its clock (Dev Lead 2, YN-92 mail 11854; T-43: a state is said once).
+        const rest = stay.kind === "waits" && view.detail?.kind === "waiting" ? first(blocked, summary) : line;
+        return out("idle", live(view.started), rest, stay);
       }
       return out("working", live(view.started), line);
     }

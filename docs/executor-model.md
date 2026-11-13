@@ -850,7 +850,8 @@ It never holds a key's value or an account's email.
     released or archiving (what an archiving one waits for is line two);
     otherwise grey. At work on its task with no Turn running, it is grey
     with a pill, the first that holds: what it left running (在等 Job
-    Awaits a Job, below); its PR's (审查中 In review, 等负责人 Lead's turn and
+    Awaits a Job, below; its line two then says only what it said and its
+    clock, not the wait again); its PR's (审查中 In review, 等负责人 Lead's turn and
     the others below); 受阻 Blocked, its task blocked; 已交结果 Result in, a
     result in on its own dispatch (`resultAt`); else 等下一轮 Between turns.
   - A standing Agent's: working while a Turn runs (compacting too); needs
