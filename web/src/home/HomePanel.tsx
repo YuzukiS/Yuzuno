@@ -26,6 +26,7 @@ import { DeckSizes } from "./card-sizes";
 import { deckPlace, orderDeck, type DeckPlace } from "./deck-order";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { deckGroup, groupDeck } from "./project-deck";
+import { cardTask } from "./card-responsible";
 import { projectUnseen } from "./unseen";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, relative } from "./format";
@@ -343,9 +344,11 @@ export function useProjectDeck(panel: ProjectPanel | null) {
   const ownPlaces = sections.map((section) => [section.key, deckPlace(section, now)] as const);
   const places: Map<string, DeckPlace> = sizes ? sizes.places(projectId, ownPlaces) : new Map(ownPlaces);
   const placeOf = (section: Section) => places.get(section.key) ?? deckPlace(section, now);
-  const ownGroups = sections.map((section) => [section.key, deckGroup(placeOf(section), unreadChange(section))] as const);
+  // A card bound to a task follows its task (YN-86 §2.2, §3.4).
+  const groupNow = (section: Section) => deckGroup(placeOf(section), unreadChange(section), cardTask(section.card));
+  const ownGroups = sections.map((section) => [section.key, groupNow(section)] as const);
   const held = sizes ? sizes.groups(projectId, ownGroups) : new Map(ownGroups);
-  const groupOf = (section: Section) => held.get(section.key) ?? deckGroup(placeOf(section), unreadChange(section));
+  const groupOf = (section: Section) => held.get(section.key) ?? groupNow(section);
   const groups = groupSections(sections);
   return { groups, ordered: orderDeck(groups, placeOf), placeOf, deck: groupDeck(groups, groupOf, placeOf) };
 }
@@ -462,17 +465,32 @@ export function ProjectDeck({
       notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   );
+  // A card archived with its task (YN-86 §3.4), in Done for its 30 days: as it was, with who did it and their
+  // session, and nothing more to answer, read or mark on it.
+  const archivedCard = (section: Section, topic?: string) => (
+    <SummaryCard
+      key={section.key}
+      section={section}
+      projectId={id}
+      workspaceId={workspaceId}
+      agents={agents}
+      topic={topic}
+      deck
+      readOnly
+      onSeen={seen}
+    />
+  );
   // A topic's cards together: a sub-topic whose topic has no section of its own stands as a card of its own;
   // several get a readable heading, never the bare key (T-173).
-  const topicBlock = (group: TopicGroup) =>
+  const blockOf = (make: (section: Section, topic?: string) => ReactNode) => (group: TopicGroup) =>
     !group.parent && group.subs.length === 1 ? (
       <div className="home-topic" key={group.topic} data-topic={group.topic}>
-        {card(group.subs[0])}
+        {make(group.subs[0])}
       </div>
     ) : (
       <div className="home-topic" key={group.topic} data-topic={group.topic}>
         {group.parent ? (
-          card(group.parent)
+          make(group.parent)
         ) : (
           // The topic's key as Agents write it, beside the name it is shown by.
           <Tip content={<TipText value={group.topic} />} align="start">
@@ -482,10 +500,11 @@ export function ProjectDeck({
           </Tip>
         )}
         {group.subs.length > 0 && (
-          <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
+          <div className="home-subs">{group.subs.map((sub) => make(sub, topicName(group.topic)))}</div>
         )}
       </div>
     );
+  const topicBlock = blockOf(card);
   const viewChanges = (request: PendingRequest) => () =>
     needs?.onNavigate({
       kind: "changes",
@@ -526,9 +545,28 @@ export function ProjectDeck({
   const executors = needs?.executors ?? [];
   const needsCount = groupedDeck.counts.needs + pending.length + executors.length;
   const doingCount = groupedDeck.counts.doing + groupedDeck.counts.replied;
-  const done = members(groupedDeck.done);
+  // Done also shows, as cards, what was archived with its task (YN-86 §3.4): each key's newest History entry, when
+  // that is its archiving and no section under its key is live. The rest of History stays in its list.
+  const liveKeys = new Set(live.map((s) => s.key));
+  const newestOfKey = new Set<string>();
+  const archived = panel.brief.history.filter((s) => {
+    if (newestOfKey.has(s.key)) return false;
+    newestOfKey.add(s.key);
+    return s.historyReason === "archived" && s.kind !== "ask" && !liveKeys.has(s.key);
+  });
+  // An archived card joins its topic in Done, as a report still waiting to be read there keeps its own.
+  const archivedTopics = new Map(groupSections(archived).map((group) => [group.topic, group]));
+  const doneGroups: TopicGroup[] = groupedDeck.done.map((group) => {
+    const gone = archivedTopics.get(group.topic);
+    if (!gone) return group;
+    archivedTopics.delete(group.topic);
+    return { topic: group.topic, parent: group.parent ?? gone.parent, subs: [...group.subs, ...gone.subs] };
+  });
+  doneGroups.push(...archivedTopics.values());
+  const doneCard = (section: Section, topic?: string) => (section.history ? archivedCard(section, topic) : card(section, topic));
+  const done = members(doneGroups);
   const newestDone = done.map((s) => s.updatedAt).sort().at(-1);
-  const history = panel.brief.history;
+  const history = panel.brief.history.filter((s) => !archived.includes(s));
   const empty = !needsCount && !groupedDeck.counts.deferred && !doingCount && !done.length && !history.length;
   return (
     <div className="project-deck">
@@ -601,7 +639,7 @@ export function ProjectDeck({
             {t.deckDone(done.length, newestDone ? relative(newestDone, language) : "", history.length)}
           </summary>
           <div ref={doneRef} className="home-brief">
-            {groupedDeck.done.map(topicBlock)}
+            {doneGroups.map(blockOf(doneCard))}
           </div>
           <History30
             sections={history}

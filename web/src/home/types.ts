@@ -121,6 +121,25 @@ export type Section = {
   historyReason?: "seen" | "removed" | "resolved" | "archived";
   /** History entries on Home: whether Home shows its source now (its owner may still edit Home). */
   currentSource?: boolean;
+  /** The task this section is the card of and who answers for it (YN-86 S2a), as Core reads them now; absent for
+   * a section that is no task's card, and from older Cores. */
+  card?: CardBinding;
+};
+
+/**
+ * A card's task and its responsible Agent (YN-86 §3.1, Core's cards.rs): the task's newest executor not yet
+ * released, else its assignee, else nobody. Read each time, never stored.
+ */
+export type CardBinding = {
+  /** `id` is the key the task has now (YN-90, T-12). */
+  task: { id: string; title: string; shortName?: string | null; status: string; archived: boolean };
+  responsible: {
+    agentId: string;
+    name: string;
+    kind: "executor" | "lead" | "agent";
+    /** An executor's lifecycle state; another Agent's status, or closed. */
+    state: string;
+  } | null;
 };
 
 export type BriefOutcome =

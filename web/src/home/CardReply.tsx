@@ -161,6 +161,10 @@ export function CardReply({
   const slot = cardReplySlot(workspaceId, projectId, section.key);
   const { draft, busy, error, sent } = useReplyState(slot);
   const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
+  // A card bound to a task goes to whoever answers for it (YN-86 §3.3), while they are open in the Project; else
+  // to its author. The user can pick another all the same.
+  const responsible = section.card?.responsible?.agentId;
+  const recipient = responsible && agents.some((a) => a.id === responsible) ? responsible : ownerOpen ? section.owner.agentId : "";
   // The card as this place shows it now, read when sent.
   const onScreen = useRef(section);
   onScreen.current = section;
@@ -173,7 +177,7 @@ export function CardReply({
         key: section.key,
         text: kept?.text ?? "",
         title: section.title,
-        agentId: kept?.agentId ?? (ownerOpen ? section.owner.agentId : ""),
+        agentId: kept?.agentId ?? recipient,
         at: new Date().toISOString(),
       },
     });
@@ -259,7 +263,7 @@ export function CardReply({
         )}
       </div>
       <TargetPicker agents={agents} value={target} onChange={(agentId) => change({ agentId })} disabled={busy} label={t.to} />
-      {!ownerOpen && (
+      {!recipient && (
         <p className="home-note">
           {t.chooseCardRecipient(section.owner.name, section.owner.state === "active" ? t.notInProject : t.ownerAway[section.owner.state])}
         </p>

@@ -31,6 +31,7 @@ import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
 import { cardContent, shownSize, type CardSize } from "./card-preview";
 import { SummaryCard } from "./SummaryCard";
 import { replyableIn } from "./CardReply";
+import { CardAgents } from "./card-responsible";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -647,6 +648,14 @@ export function Home({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentsKey, readOnly]);
   const noAgents = useMemo<Agent[]>(() => [], []);
+  // Every Agent by id, closed and archived ones too (YN-86 S2b): who answers for a card, in the Agent list's
+  // words, and the executor an archived card was done by. The same map while what a card shows of them is unchanged.
+  const cardAgentsKey = agents
+    .map((a) => [a.id, a.name, a.kind, a.status, a.closedAt, a.disconnectedAt, a.pendingCount, a.createdAt,
+      a.executor?.state, a.executor?.task?.id, a.executor?.dispatchedAt, a.executor?.position, a.executor?.route?.kind,
+      a.executor?.reason, a.executor?.blocked].join("\t"))
+    .join("\n");
+  const cardAgents = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [cardAgentsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const widgetLayout = useWidgetLayout(workspaceId);
   // The sizes the deck's cards are shown at in this visit (T-18).
   const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
@@ -846,6 +855,7 @@ export function Home({
     data?.needsYou.filter((item) => item.projectId === panel.project.id) || [];
   return (
     <HomeNavigation.Provider value={onNavigate}>
+    <CardAgents.Provider value={cardAgents}>
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
@@ -1048,6 +1058,7 @@ export function Home({
     </DeckSizes.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
+    </CardAgents.Provider>
     </HomeNavigation.Provider>
   );
 }

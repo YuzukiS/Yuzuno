@@ -19,8 +19,14 @@ export const groupRank = (group: DeckGroup) => DECK_GROUPS.indexOf(group);
  * version (Seen, or opened whole on its page); an Ask put off waits in Needs
  * you at the group's end; a card that arrived during this visit is in
  * progress.
+ *
+ * A report or status bound to a task (`task`, YN-86 §2.2 and §3.4) follows
+ * its task instead: in progress while the task goes on, even read or out of
+ * date; done once it is over, even unread (a report Core keeps live until it
+ * is read, and then archives). Asks are the user's to answer either way.
  */
-export function deckGroup(place: DeckPlace, unread: boolean): DeckGroup {
+export function deckGroup(place: DeckPlace, unread: boolean, task: "open" | "ended" | null = null): DeckGroup {
+  if (task && (place === "report" || place === "status" || place === "stale")) return task === "ended" ? "done" : "doing";
   switch (place) {
     case "ask":
     case "deferred":
