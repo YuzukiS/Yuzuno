@@ -27,3 +27,13 @@
 .project-leads .project-add-agent {
   margin-top: 10px;
 }
+/* The front desk (YN-86 §4.1): one of the saved leads, below them. */
+.project-front-desk {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.project-front-desk h4 {
+  margin: 0 0 4px;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}

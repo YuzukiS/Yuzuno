@@ -1,0 +1,104 @@
+/* A handoff trail (YN-86 §4.3, as Intercom's conversation events): one row
+   per event, a small round icon on a thin line, who did what to whom, why
+   below in small type, then its time and a link. Shared by a request and a
+   card (RoutingEvents.tsx). */
+.routing-events {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  container: routing-events / inline-size;
+}
+.routing-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: 2px 8px;
+  padding: 4px 0;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.routing-event::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: -4px;
+  left: 10px;
+  width: 1px;
+  background: var(--line);
+}
+.routing-event:last-child::before {
+  display: none;
+}
+.routing-event-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--home-soft);
+}
+.routing-event[data-kind="done"] .routing-event-icon {
+  color: var(--green, var(--ink));
+}
+.routing-event[data-state="failed"] .routing-event-icon {
+  color: var(--home-error-ink, var(--ink));
+}
+.routing-event-text {
+  min-width: 0;
+  padding-top: 2px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.routing-event-text b,
+.routing-event-actor {
+  color: var(--ink);
+}
+.routing-event-text b {
+  font-weight: 600;
+}
+.routing-event-text small {
+  display: block;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.routing-event time {
+  padding-top: 3px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.routing-event-link {
+  padding-top: 2px;
+}
+/* Narrow: the link goes under the text. */
+@container routing-events (max-width: 360px) {
+  .routing-event {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+  }
+  .routing-event-link {
+    grid-column: 2;
+    justify-self: start;
+    padding-left: 0;
+  }
+}
+/* A quiet text action, in a trail and on a request. */
+.talk-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  cursor: pointer;
+}
+.talk-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.talk-link:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

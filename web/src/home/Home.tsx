@@ -938,6 +938,7 @@ export function Home({
           onNavigate={onNavigate}
           onChanged={changed}
           onSeen={seen}
+          revision={revision}
           focus={report ? null : (pageFocus.current?.focus ?? null)}
           arrival={
             arrival && landed && project === arrival.origin.projectId && arrival.origin.key !== null

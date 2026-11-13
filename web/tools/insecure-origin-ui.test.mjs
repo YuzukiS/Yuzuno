@@ -145,6 +145,12 @@ async function mount({ copies = null } = {}) {
     if (/^\/api\/projects\/[^/]+\/brief\/reply$/.test(path))
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t10", error: null });
     if (/^\/api\/requests\/[^/]+\/respond$/.test(path)) return respond({ ok: true });
+    // Talking to the project (YN-86 §4.2): Mori is its front desk; what is said is kept as request R-1.
+    if (/^\/api\/projects\/[^/]+\/front-desk$/.test(path)) return respond({ version: 1, agentId: null, effectiveAgentId: "a" });
+    if (/^\/api\/projects\/[^/]+\/requests$/.test(path))
+      return respond(request.method === "POST"
+        ? { request: { n: 1 }, receipt: { input: request.body, status: "accepted", turnId: "t11", error: null } }
+        : { requests: [], hasMore: false });
     if (/^\/api\/agents\/\w\/(messages|turns)$/.test(path))
       return respond({ input: request.body, status: "queued", turnId: "t1", error: null });
     const detail = path.match(/^\/api\/agents\/(\w)$/);
@@ -196,6 +202,7 @@ async function choose(p, select, value) {
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const replies = (p) => p.posts(/\/brief\/reply$/);
+const requests = (p) => p.posts(/\/projects\/[^/]+\/requests$/);
 
 test("YN-36 over plain http on a LAN address, a written reply to an Ask is sent and shown as replied", async () => {
   const p = await mount();
@@ -218,7 +225,7 @@ test("YN-36 over plain http on a LAN address, a written reply to an Ask is sent 
   }
 });
 
-test("YN-36 over plain http, an option, a choice, a form and a reply to the project are sent too, each with its own id", async () => {
+test("YN-36 over plain http, an option, a choice, a form and what is said to the project are sent too, each with its own id", async () => {
   const p = await mount();
   try {
     p.button("Ship today", p.card("release")).click();
@@ -230,18 +237,16 @@ test("YN-36 over plain http, an option, a choice, a form and a reply to the proj
     p.card("scope").querySelector(".clarification footer .primary-button").click();
     await waitFor(() => replies(p).length === 3, () => `the form was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[2].body.form?.formId, "scope");
-    const panel = p.doc.querySelector('[data-project-home="p-app"]');
-    p.button("Reply to the project", panel).click();
-    await pause();
-    const reply = panel.querySelector(".home-project-reply");
-    await choose(p, reply.querySelector("select"), "b");
-    await type(p, reply.querySelector(".home-text-reply [data-composer-input]"), "Please tidy the notes");
-    p.button("Send", reply).click();
-    await waitFor(() => replies(p).length === 4, () => `the project reply was sent; the page says: ${JSON.stringify(p.alerts())}`);
-    assert.equal(replies(p)[3].body.text, "Please tidy the notes");
-    const ids = replies(p).map((r) => r.body.clientMessageId);
+    // What is said to the project goes to its front desk as a request (YN-86 §4.2).
+    const talk = p.doc.querySelector('[data-project-home="p-app"] .project-talk');
+    await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
+    await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
+    talk.querySelector(".project-talk-send").click();
+    await waitFor(() => requests(p).length === 1, () => `the request was sent; the page says: ${JSON.stringify(p.alerts())}`);
+    assert.equal(requests(p)[0].body.text, "Please tidy the notes");
+    const ids = [...replies(p), ...requests(p)].map((r) => r.body.clientMessageId);
     for (const id of ids) assert.match(id, uuid);
-    assert.equal(new Set(ids).size, 4, "a new id for each reply");
+    assert.equal(new Set(ids).size, 4, "a new id for each reply and the request");
     assert.deepEqual(p.alerts(), []);
     assert.deepEqual(p.errors, []);
   } finally {
@@ -298,8 +303,9 @@ test("YN-36 over plain http, a message from the conversation's composer is sent"
   const p = await mount();
   try {
     p.doc.querySelector('.agent-row[data-agent-id="a"] .agent-select').click();
-    await waitFor(() => p.doc.querySelector("[data-composer-input]"), "Mori's conversation is open");
-    const field = p.doc.querySelector("[data-composer-input]");
+    // The conversation's own composer, not the one Home's project page had.
+    await waitFor(() => p.doc.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori's conversation is open");
+    const field = p.doc.querySelector('[data-composer-input][aria-label="Message Mori"]');
     setComposerText(field, "Run the linter too.");
     await pause();
     p.doc.querySelector('[aria-label="Send message"]').click();

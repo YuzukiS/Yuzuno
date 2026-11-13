@@ -14,7 +14,7 @@ import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
 import { HomeDensity, RefreshHome } from "./home-tools";
 import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
-import { ProjectReply } from "./AskReply";
+import { ProjectTalk } from "./ProjectTalk";
 import { KeptCardReplies, referableHistory } from "./CardReply";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
@@ -32,7 +32,7 @@ const TEAM_BESIDE = 1100;
 
 /**
  * One Project's page on Home (YN-86 §2.2): its header and tools, its own
- * jumps, the reply to its team for now, its cards in three groups (what needs
+ * jumps, "Talk to the project" (§4.1), its cards in three groups (what needs
  * you, in progress, done) and the team and its running work beside them where
  * the page is wide enough. It shows the same Brief sections as its panel on
  * Home, never a copy; every card is read on its own page and answered in
@@ -53,6 +53,7 @@ export function ProjectHome({
   onSeen,
   focus = null,
   arrival = null,
+  revision = 0,
   onExit,
 }: {
   projectId: string;
@@ -76,6 +77,8 @@ export function ProjectHome({
   /** Where a reply's "Open on Home" landed on this page (T-9): the note in the card it answered, or above the
    * cards when that card is gone. */
   arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
+  /** Home's reads: "Talk to the project" reads its requests again with each. */
+  revision?: number;
   /** Back to the whole of Home. */
   onExit: () => void;
 }) {
@@ -285,13 +288,15 @@ export function ProjectHome({
           {seenError}
         </p>
       )}
-      <ProjectReply
+      <ProjectTalk
         projectId={id}
         projectName={panel.project.name}
         workspaceId={workspaceId}
-        agents={agents}
         readOnly={readOnly}
-        onSent={onChanged}
+        revision={revision}
+        leadCount={editorIds?.length ?? 0}
+        onCard={(key) => jumpTo(document.getElementById(sectionDomId(id, key)))}
+        onNavigate={onNavigate}
       />
       <div className="project-home-body">
         <div className="project-home-main">

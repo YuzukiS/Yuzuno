@@ -1071,6 +1071,8 @@ export function App() {
             homeRefresh.soon(250);
             asksRefresh.soon(250);
           }
+          // A Project's requests (YN-86 §4.2): read again with Home, whose page shows them.
+          else if (event.scope === "requests") homeRefresh.soon(250);
           else if (event.scope === "projects" || event.scope === "runtime")
             workspaceRefresh.soon(250);
           // An executor's lifecycle (T-36 S3): its row, Home, its task's card.

@@ -1,0 +1,566 @@
+/* "Talk to the project" (YN-86 §4.1, v8): the requests and the conversation
+   side by side, or one of them across the whole width. Colours and type are
+   Home's own (home.css). */
+.project-talk {
+  min-width: 0;
+  margin: 14px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+  overflow: hidden;
+}
+.project-talk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.project-talk-head h2 {
+  margin: 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-talk-desk {
+  min-width: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-talk-desk[data-missing] {
+  color: var(--home-attention-ink, var(--home-ink-2));
+}
+.project-talk-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.project-talk-tabs button {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  cursor: pointer;
+}
+.project-talk-tabs button[aria-selected="true"] {
+  background: var(--home-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The two sides: list beside detail as the task window has them
+   (collaboration.css .collab-task-layout), in its motion tokens. A side
+   that closes narrows to nothing (display: none could not move) and is
+   inert; the other takes the width. */
+.project-talk-columns {
+  display: grid;
+  height: 480px;
+  grid-template-columns: minmax(0, 46fr) minmax(0, 54fr);
+  transition: grid-template-columns var(--motion-medium) var(--ease-standard);
+}
+.project-talk[data-view="requests"] .project-talk-columns {
+  grid-template-columns: minmax(0, 100fr) minmax(0, 0fr);
+}
+.project-talk[data-view="chat"] .project-talk-columns {
+  grid-template-columns: minmax(0, 0fr) minmax(0, 100fr);
+}
+/* Not in a narrow window, whose two tabs switch in place. */
+.project-talk[data-narrow] .project-talk-columns {
+  transition: none;
+}
+.project-talk-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.project-talk-requests {
+  --talk-shift: -32px;
+  background: var(--paper);
+}
+/* The requests' own width decides how a card row lays out, not their
+   column's: a column closing narrows over its content, which keeps its
+   width and its layout. */
+.project-talk-requests > .project-talk-scroll {
+  container: talk-requests / inline-size;
+}
+.project-talk-chat {
+  --talk-shift: 32px;
+  border-left: 1px solid var(--line);
+}
+.project-talk:not([data-view="both"]) .project-talk-chat {
+  border-left-color: transparent;
+}
+/* A side's content comes in from its own side once its column has mostly
+   opened, and is gone before the column narrows, so its text is never seen
+   squeezed (collaboration.css collab-detail-in / -out, mirrored for the
+   left side); the narrow tabs switch as the task window's detail does
+   (collab-detail-switch). */
+.project-talk-side[data-motion="in"] > * {
+  animation: project-talk-in var(--motion-medium) var(--ease-standard) both;
+}
+.project-talk-side[data-motion="out"] > * {
+  /* At the width it had as it began to close (ProjectTalk.tsx): clipped by
+     its narrowing column, never re-wrapped. */
+  width: var(--talk-held, auto);
+  min-width: var(--talk-held, 0);
+  animation: project-talk-out var(--motion-exit-medium) var(--ease-exit) both;
+  pointer-events: none;
+}
+.project-talk-side[data-motion="switch"] > * {
+  animation: project-talk-switch var(--motion-small) var(--ease-standard) both;
+}
+@keyframes project-talk-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--talk-shift));
+  }
+  35% {
+    opacity: 0;
+  }
+}
+@keyframes project-talk-out {
+  55% {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--talk-shift));
+  }
+}
+@keyframes project-talk-switch {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-talk-columns {
+    transition: none;
+  }
+  .project-talk-side[data-motion] > * {
+    animation: none;
+  }
+}
+.project-talk-scroll {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: auto;
+}
+
+/* The requests. */
+.project-talk-requests-title {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-talk-requests-title span {
+  margin-left: 6px;
+  font-weight: 400;
+}
+.project-talk-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.project-talk-list > li {
+  min-width: 0;
+}
+.project-talk-done > summary {
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.project-talk-done[open] > summary {
+  margin-bottom: 8px;
+}
+.request-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+  overflow: hidden;
+}
+.request-card:focus {
+  outline: none;
+}
+.request-card[data-selected] {
+  border-color: var(--home-focus);
+  box-shadow: 0 0 0 1px var(--home-focus);
+}
+.request-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-card-title span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-card-title[data-untitled] span {
+  color: var(--home-ink-2);
+  font-weight: 400;
+}
+.request-card-title time {
+  flex: none;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 4px 12px 8px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-card-state,
+.request-card-count {
+  color: var(--home-ink-2);
+  white-space: nowrap;
+}
+.request-card-state[data-state="unconfirmed"] {
+  color: var(--home-error-ink, var(--ink));
+}
+.request-card-state[data-state="waiting"] {
+  color: var(--home-attention-ink, var(--ink));
+}
+.request-card-state[data-state="doing"] {
+  color: var(--ink);
+}
+.request-card-merged {
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 8px;
+  overflow: hidden;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  color: var(--home-ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-card-actions {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.request-card-wait {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-card-cards {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+.request-card-cards li + li {
+  border-top: 1px solid var(--line);
+}
+/* One card a request went to: its title keeps at least 120px; who and the
+   state give way first, each cut with an ellipsis. */
+.request-card-row {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) minmax(0, auto) minmax(0, auto) auto;
+  grid-template-areas: "dot title who state go";
+  align-items: center;
+  gap: 2px 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-card-row:hover:not(:disabled) {
+  background: var(--home-soft);
+}
+.request-card-row:disabled {
+  cursor: default;
+}
+.request-card-row .status-dot {
+  grid-area: dot;
+}
+.request-card-row > span:not(.status-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-card-row-title {
+  grid-area: title;
+  font-weight: 600;
+}
+.request-card-row-who {
+  grid-area: who;
+  color: var(--home-ink-2);
+}
+.request-card-row-state {
+  grid-area: state;
+  color: var(--home-ink-2);
+}
+.request-card-row-go {
+  grid-area: go;
+  color: var(--accent-ink, var(--ink));
+}
+/* A narrow requests list (a 940px window, a phone): each card in two lines. */
+@container talk-requests (max-width: 460px) {
+  .request-card-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "dot title go"
+      "dot who state";
+  }
+  .request-card-row-title {
+    min-width: 120px;
+  }
+}
+.request-card-trail {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--paper);
+}
+
+/* The conversation, the newest last. */
+.project-talk-thread {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.project-talk-earlier {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: center;
+  border: 0;
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.project-talk-mine {
+  display: grid;
+  justify-items: end;
+  justify-self: end;
+  gap: 2px;
+  min-width: 0;
+  max-width: 88%;
+  border-radius: 12px;
+}
+.project-talk-mine:focus {
+  outline: none;
+}
+.project-talk-bubble {
+  max-width: 100%;
+  min-width: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--input, var(--paper));
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.project-talk-meta,
+.project-talk-quote-ref {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 8px;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.project-talk-quote-ref {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-talk-unconfirmed {
+  color: var(--home-error-ink, var(--ink));
+}
+.project-talk-project {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  justify-self: start;
+  min-width: 0;
+  max-width: 88%;
+}
+.project-talk-who {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+  cursor: pointer;
+}
+.project-talk-project p {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.project-talk-project[data-looking] p {
+  color: var(--home-ink-2);
+}
+.project-talk-project small {
+  margin-left: 4px;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.project-talk-chip {
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+.project-talk-chip[data-on] {
+  border-color: var(--home-focus);
+}
+.project-talk-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.project-talk-line-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--home-surface);
+}
+.project-talk-line[data-line="done"] .project-talk-line-icon {
+  color: var(--green, var(--ink));
+}
+.project-talk-line-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.project-talk-line time {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.project-talk-compose {
+  display: grid;
+  flex: none;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+.project-talk-quoting {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-talk-quoting span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-talk-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+/* The field is Home's reply field (home.css .home-text-reply .home-composer). */
+.project-talk-field .home-composer {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input, var(--paper));
+  color: var(--ink);
+}
+.project-talk-field .home-composer:focus-within {
+  border-color: #9aac87;
+  box-shadow: 0 0 0 3px #82986310;
+}
+.project-talk-field .home-composer[data-readonly] {
+  opacity: 0.6;
+}
+.project-talk-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.project-talk-hint {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
