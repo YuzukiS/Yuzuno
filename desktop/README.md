@@ -145,7 +145,7 @@ On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the
 
 ## Native boundary
 
-Only the embedded local connection page receives the `connection_info`, `connect_core` and `start_core` commands. `start_core` takes only the address; what it runs in WSL is fixed by the saved Core's own earlier answer (see [Start Core from the app](#start-core-from-the-app-windows-wsl)). `build.rs` explicitly declares all commands through `AppManifest::commands`, and the `connection` capability contains no remote origins. The commands also check the current window URL. After a successful explicit Core selection, Tauri's dynamic capability API grants only `set_appearance`, the three desktop update commands (`desktop_update_status`, `desktop_update_check`, `desktop_update_install`), the system notification commands (`desktop_notifications`, `desktop_notify`, `desktop_notifications_request`), `desktop_badge` ([Taskbar badge](#taskbar-badge-windows)) and `desktop_title_bar` ([macOS title bar](#macos-title-bar), read-only: where the system's window buttons end and the user's double-click setting) to the selected origin (including its port) in the `main` WebView. The update commands take no URL, key or installer argument; each one re-checks that it was called from the `main` window on the currently selected Core. That command accepts only the `light`/`dark` enum and independently checks that the current window is `main` and its URL belongs to the currently selected Core or exact embedded connection page. Older origin grants cannot bypass that check after changing Core. The frontend cannot supply arbitrary colors or window operations. The remote workspace UI receives no filesystem, shell, process, generic window, or connection-selection native permissions. This follows [Tauri's application-command and capability model](https://v2.tauri.app/security/capabilities/).
+Only the embedded local connection page receives the `connection_info`, `connect_core` and `start_core` commands. `start_core` takes only the address; what it runs in WSL is fixed by the saved Core's own earlier answer (see [Start Core from the app](#start-core-from-the-app-windows-wsl)). `build.rs` explicitly declares all commands through `AppManifest::commands`, and the `connection` capability contains no remote origins. The commands also check the current window URL. After a successful explicit Core selection, Tauri's dynamic capability API grants only `set_appearance`, the three desktop update commands (`desktop_update_status`, `desktop_update_check`, `desktop_update_install`), the system notification commands (`desktop_notifications`, `desktop_notify`, `desktop_notifications_request`), `desktop_badge` ([Taskbar and dock badge](#taskbar-and-dock-badge-windows-macos)) and `desktop_title_bar` ([macOS title bar](#macos-title-bar), read-only: where the system's window buttons end and the user's double-click setting) to the selected origin (including its port) in the `main` WebView. The update commands take no URL, key or installer argument; each one re-checks that it was called from the `main` window on the currently selected Core. That command accepts only the `light`/`dark` enum and independently checks that the current window is `main` and its URL belongs to the currently selected Core or exact embedded connection page. Older origin grants cannot bypass that check after changing Core. The frontend cannot supply arbitrary colors or window operations. The remote workspace UI receives no filesystem, shell, process, generic window, or connection-selection native permissions. This follows [Tauri's application-command and capability model](https://v2.tauri.app/security/capabilities/).
 
 Connection health checks use maintained `reqwest` and `url` libraries, enforce a response-size limit, do not follow redirects, and ignore environment proxies. Main-window navigation is restricted to the selected Core and the embedded connection page, and the window opens no WebView popups.
 
@@ -159,16 +159,22 @@ In-app artifact previews remain part of the workspace GUI.
 
 The `lab-open-failure` Cargo feature makes links to a reserved `.invalid` host fail, so that notice can be checked in a real window. It is for lab builds only, never a release.
 
-## Taskbar badge (Windows)
+## Taskbar and dock badge (Windows, macOS)
 
-The taskbar button shows Home's "needs you" count, the number on Home's tab and in the window title, as a small speech bubble at its lower-right (YN-43): 1–9, then 9+, and nothing at 0.
+The app's taskbar button (Windows) or dock icon (macOS) shows Home's "needs you" count, the number on Home's tab and in the window title: 1–9, then 9+, and nothing at 0.
+
+- **Windows** puts it on the taskbar button as a small speech bubble at its lower-right (YN-43).
+- **macOS** puts it on the dock icon as the system's own red number (YN-94): not a bubble, and no picture or words of ours. It gives macOS the text `1`–`9` or `9+` through Tauri's `Window::set_badge_label`, and `None` takes it off.
+
+The rest holds on both:
 
 - The workspace page sends the count to `desktop_badge` when the count or the language changes. Only the selected Core's page in the `main` window may call it. The command refuses anything but a whole number from 0 to 100 000, and the languages `en` and `zh`.
-- The app sets the bubble with `ITaskbarList3::SetOverlayIcon`. Screen readers get the exact count, even when the bubble shows 9+: "3 items need you" or "3 项需要你处理".
-- The pictures are the approved files in [`icons/badge`](icons/badge/README.md), at the size for the window's display scale ([`src/badge_rules.rs`](src/badge_rules.rs)).
-- The bubble goes when the window leaves the selected workspace. It is set again after Explorer restarts (`TaskbarButtonCreated`) and when the window moves to a display with another scale.
-- It never flashes the button or asks for attention. Windows shows no overlay when the taskbar uses small buttons.
-- On other systems the command does nothing. A macOS dock badge would be separate work.
+- The text is 1–9 and then 9+ on both (`badge_rules::label`; `badge_rules::dock_label` is the dock's).
+- **Windows** sets the bubble with `ITaskbarList3::SetOverlayIcon`. Screen readers get the exact count, even when the bubble shows 9+: "3 items need you" or "3 项需要你处理".
+- The Windows pictures are the approved files in [`icons/badge`](icons/badge/README.md), at the size for the window's display scale ([`src/badge_rules.rs`](src/badge_rules.rs)). macOS uses no picture.
+- The badge goes when the window leaves the selected workspace, on both systems. On Windows it is set again after Explorer restarts (`TaskbarButtonCreated`) and when the window moves to a display with another scale.
+- It never flashes the button or asks for attention on Windows. Windows shows no overlay when the taskbar uses small buttons.
+- On other systems the command does nothing.
 
 ## Installer or portable ZIP (Windows)
 

@@ -1,11 +1,13 @@
-//! What the taskbar badge shows for Home's "needs you" count (YN-43), with
-//! no dependencies, so CI checks it without building the Windows app (as
-//! `health.rs`). `badge.rs` puts it on the taskbar.
+//! What the badge shows for Home's "needs you" count (YN-43, YN-94), with
+//! no dependencies, so CI checks it without building a desktop app (as
+//! `health.rs`). `badge.rs` puts it on the Windows taskbar and the macOS
+//! dock.
 //!
 //! The pictures are the ones the user approved (YN-43 S0): a soft speech
 //! bubble whose tail points up-left at the character, drawn for the small
 //! icon size at 100/125/150/200% (16, 20, 24 and 32 px), showing 1–9 and
-//! then 9+. Nothing is drawn at run time.
+//! then 9+. Nothing is drawn at run time. macOS uses no picture: the system
+//! draws its own red number, whose words `dock_label` gives.
 
 /// The largest count the desktop accepts from the page. Home never has this
 /// many; anything above it, below 0 or not a whole number is refused.
@@ -54,6 +56,17 @@ pub fn label(count: u32) -> Option<Label> {
         1..=9 => Some(Label::Digit(count as u8)),
         _ => Some(Label::NinePlus),
     }
+}
+
+/// What the macOS dock badge says: the same words as the bubble, 1–9 and
+/// then 9+; none at 0. The system draws them as its own red number, so this
+/// is the whole of the dock badge, with no picture of ours.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn dock_label(count: u32) -> Option<String> {
+    label(count).map(|label| match label {
+        Label::Digit(digit) => digit.to_string(),
+        Label::NinePlus => "9+".to_string(),
+    })
 }
 
 /// Which drawn size to use at a display scale (1.0 = 100%): the small icon
@@ -147,6 +160,15 @@ mod tests {
         for n in [10, 12, 100, MAX_COUNT as u32] {
             assert_eq!(label(n), Some(Label::NinePlus), "{n}");
         }
+    }
+
+    #[test]
+    fn the_dock_shows_a_digit_one_to_nine_and_nine_plus_above() {
+        assert_eq!(dock_label(0), None);
+        assert_eq!(dock_label(1).as_deref(), Some("1"));
+        assert_eq!(dock_label(9).as_deref(), Some("9"));
+        assert_eq!(dock_label(10).as_deref(), Some("9+"));
+        assert_eq!(dock_label(MAX_COUNT as u32).as_deref(), Some("9+"));
     }
 
     #[test]
