@@ -18,11 +18,13 @@ Standard library only; no network. Run: python3 desktop/tests/local_core_scripts
 """
 
 import base64
+import io
 import os
 import re
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
 import unittest
@@ -402,8 +404,17 @@ class StageScript(unittest.TestCase):
                 self.assertFalse(os.path.exists(stage))
 
     def test_an_unpack_from_stdin_as_the_desktop_runs_it(self):
-        with open(os.path.join(FIXTURES, "yuzuno-core-linux-x86_64.tar.gz"), "rb") as handle:
-            archive = handle.read()
+        # A small release-shaped archive, as the release tool packs one.
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.USTAR_FORMAT) as tar:
+            for name, data, mode in (
+                ("bin/yuzuno-update-helper", b"#!/bin/sh\nexit 1\n", 0o755),
+                ("manifest.json", b"{}\n", 0o600),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(data), mode
+                tar.addfile(info, io.BytesIO(data))
+        archive = buffer.getvalue()
         for interpreter in SHELLS:
             with self.subTest(sh=os.path.basename(interpreter)):
                 stage, _ = self.prepare(interpreter)

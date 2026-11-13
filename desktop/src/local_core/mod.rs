@@ -1377,8 +1377,6 @@ mod tests {
         }
     }
 
-    const KEY: &str = "RWQXn3oVt9P+xmpT3EVl2hZDT+iaEfmkbAHnmz6gpiRSHAf7FZYbFaUF";
-
     #[test]
     fn each_step_is_one_fixed_program_with_every_value_an_argument_of_its_own() {
         let steps = Steps::new("main-distro", "someone").unwrap();
@@ -1394,7 +1392,7 @@ mod tests {
         );
         let sha = "ab".repeat(32);
         assert_eq!(
-            steps.install(stage, root, &verified(), KEY).unwrap(),
+            steps.install(stage, root, &verified(), release::public_key()).unwrap(),
             with(&[
                 &format!("{stage}/bundle/bin/yuzuno-update-helper"),
                 "install",
@@ -1409,7 +1407,7 @@ mod tests {
                 "--repository",
                 "YuzukiS/Yuzuno",
                 "--public-key",
-                KEY,
+                release::public_key(),
             ])
         );
         let place = Place { install_dir: root.into(), data_dir: "/home/someone/.local/share/yuzuno-core-data".into(), port: 4318 };
@@ -1448,7 +1446,7 @@ mod tests {
         ] {
             let mut odd = verified();
             change(&mut odd);
-            assert_eq!(steps.install(stage, root, &odd, KEY).unwrap_err().code, "releaseInvalid");
+            assert_eq!(steps.install(stage, root, &odd, release::public_key()).unwrap_err().code, "releaseInvalid");
         }
         assert_eq!(steps.install(stage, root, &verified(), "RW key").unwrap_err().code, "releaseInvalid");
         let place = Place { install_dir: root.into(), data_dir: "/home/someone/data".into(), port: 4318 };

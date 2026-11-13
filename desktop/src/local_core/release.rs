@@ -405,14 +405,15 @@ mod tests {
     use serde_json::json;
 
     // Signed with a throwaway key made only for these tests (its secret was
-    // discarded); not the publisher's.
+    // discarded); not the publisher's. The verifier checks an archive only
+    // by its size and SHA-256, so the archive they sign is a text stand-in.
     const TEST_KEY: &str = include_str!("../../tests/fixtures/release/test-key.pub");
     const DESCRIPTOR: &[u8] = include_bytes!("../../tests/fixtures/release/yuzuno-core-linux-x86_64.json");
     const SIGNATURE: &str = include_str!("../../tests/fixtures/release/yuzuno-core-linux-x86_64.json.minisig");
     const LEGACY: &str = include_str!("../../tests/fixtures/release/yuzuno-core-linux-x86_64.json.legacy.minisig");
     const MAC_DESCRIPTOR: &[u8] = include_bytes!("../../tests/fixtures/release/yuzuno-core-macos-aarch64.json");
     const MAC_SIGNATURE: &str = include_str!("../../tests/fixtures/release/yuzuno-core-macos-aarch64.json.minisig");
-    const ARCHIVE: &[u8] = include_bytes!("../../tests/fixtures/release/yuzuno-core-linux-x86_64.tar.gz");
+    const ARCHIVE: &[u8] = include_bytes!("../../tests/fixtures/release/archive-stand-in.txt");
     const TAG: &str = "core-20991231-0a1b2c3";
 
     fn test_key() -> &'static str {
