@@ -28,6 +28,12 @@ impl Drop for Sshd {
     }
 }
 
+/// An `ssh` at `wrapper` that reads only the client configuration `config`.
+fn write_wrapper(wrapper: &str, config: &str) {
+    std::fs::write(wrapper, format!("#!/bin/sh\nexec ssh -F '{config}' \"$@\"\n")).unwrap();
+    std::fs::set_permissions(wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 fn run(program: &str, args: &[&str]) {
     let status = std::process::Command::new(program).args(args).status().unwrap();
     assert!(status.success(), "{program} {args:?}");
@@ -56,8 +62,7 @@ impl Sshd {
         std::fs::write(path("known_hosts"), format!("[127.0.0.1]:{port} {kind} {base64}\n")).unwrap();
         let closed = free_port();
         let wrapper = path("ssh");
-        std::fs::write(&wrapper, format!("#!/bin/sh\nexec ssh -F '{}' \"$@\"\n", path("ssh_config"))).unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_wrapper(&wrapper, &path("ssh_config"));
         let sshd = Self { dir, child, wrapper, port, closed };
         sshd.point_box_a(port);
         for _ in 0..100 {
@@ -72,6 +77,22 @@ impl Sshd {
     /// The client configuration, with `box-a` leading to `port`; `box-b`
     /// leads to this sshd and `box-down` to a closed port.
     fn point_box_a(&self, port: u16) {
+        std::fs::write(self.dir.path().join("ssh_config"), self.config(port)).unwrap();
+    }
+
+    /// Another `ssh`, named `name`, with a configuration file of its own
+    /// where `box-a` leads to `port`, otherwise as `wrapper`'s. Nothing
+    /// changes that file later.
+    fn wrapper_with_box_a(&self, name: &str, port: u16) -> String {
+        let path = |file: &str| self.dir.path().join(file).to_string_lossy().into_owned();
+        let config = path(&format!("{name}_config"));
+        std::fs::write(&config, self.config(port)).unwrap();
+        write_wrapper(&path(name), &config);
+        path(name)
+    }
+
+    /// The client configuration with `box-a` leading to `port`.
+    fn config(&self, port: u16) -> String {
         let path = |name: &str| self.dir.path().join(name).to_string_lossy().into_owned();
         let mut config = String::new();
         for (alias, port) in [("box-a", port), ("box-b", self.port), ("box-down", self.closed)] {
@@ -79,7 +100,7 @@ impl Sshd {
                 IdentityAgent none\n  UserKnownHostsFile {}\n  GlobalKnownHostsFile /dev/null\n",
                 path("client"), path("known_hosts"));
         }
-        std::fs::write(path("ssh_config"), config).unwrap();
+        config
     }
 
     /// Connections sshd has accepted so far.
@@ -312,9 +333,15 @@ async fn a_target_pointed_elsewhere_never_uses_its_old_connection() {
     assert_ne!(destination(&sshd.wrapper, "box-a").await.unwrap(), here);
     assert_eq!(kind(&hello(&sshd, Some(&mux), &box_a).await), "no answer");
     assert_eq!(kind(&hello(&sshd, None, &box_a).await), "no answer");
-    // Pointed back, the connection to where it leads again is used.
-    sshd.point_box_a(sshd.port);
-    assert!(answered(&hello(&sshd, Some(&mux), &box_a).await));
+    // Pointed back, the connection to where it leads again is used. The
+    // first configuration comes back as a file of its own, and the edited
+    // one stays as it is: the call through the mux above started a master
+    // for where that one leads, and the master reads it only once its own
+    // ssh runs, which may be after this. Edited back in place, a late master
+    // reached sshd, a third connection (YN-98).
+    let back = sshd.wrapper_with_box_a("back", sshd.port);
+    assert_eq!(destination(&back, "box-a").await.unwrap(), here);
+    assert!(answered(&hello_through(&back, Some(&mux), &box_a).await));
     assert_eq!(sshd.connections(), 2, "the old connection, never one made through the other configuration");
 }
 
