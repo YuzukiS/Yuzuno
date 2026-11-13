@@ -1040,6 +1040,7 @@ function Unassigned({
               className="project-suggestion-row"
               onSubmit={async (event) => {
                 event.preventDefault();
+                if (!name.trim() || overLimit(name, coreLimits.projectName)) return;
                 const created = await action.run(
                   `create:${group.key}`,
                   async () => {
@@ -1073,6 +1074,8 @@ function Unassigned({
                 <FolderPlus size={14} /> {t.create}
               </button>
             </form>
+            {/* Why Create waits, as each name field says it (YN-106 R1). */}
+            <FieldLength value={name} limit={coreLimits.projectName} />
             {activeProjects(projects).length > 0 && (
               <form
                 className="project-suggestion-row"

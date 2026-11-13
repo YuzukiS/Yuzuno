@@ -1043,6 +1043,26 @@ test("a project's name is counted in bytes as Core counts them: over 100, the pa
   }
 });
 
+test("a project made from a folder group says why Create waits when its name is over 100 bytes (YN-106)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    await openUnassigned(page);
+    const row = await waitFor(() => [...dialog.querySelectorAll(".project-suggestion")].find((s) => s.textContent.includes("/home/u/scratch")), "the scratch folder");
+    const input = row.querySelector(".project-suggestion-row input");
+    type(page, input, "项".repeat(34));
+    await waitFor(() => /^2 bytes too long: this field takes at most 100 bytes/.test(row.querySelector(".home-reply-length[data-over]")?.textContent ?? ""), "the note under the row");
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(button(page, "Create project", row).disabled, true);
+    input.form.requestSubmit();
+    await pause();
+    assert.equal(page.calls.filter((call) => call.url.endsWith("/api/projects") && call.method === "POST").length, 0, "nothing is created");
+  } finally {
+    page.close();
+  }
+});
+
 test("a Project's settings have no Home editors setting: its leads edit Home, which the Leads intro says in both languages (YN-2 S4)", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { a: { kind: "lead" } }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
   const language = async (value) => {
