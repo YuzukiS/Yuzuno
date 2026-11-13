@@ -411,9 +411,10 @@ fn form_answers(row: &sections::Row, reply: &FormReply, text: &str) -> Result<Va
             .find(|o| o["id"] == option).map(|o| o["label"].as_str().unwrap_or(option).to_owned());
         let value = &reply.answers[id];
         let wrong = || refused(format!("form_answers: the answer to `{id}` is not one this field takes"));
-        // The answer by label, and as its line says it.
+        // The answer by label, and as its line says it. Words of any length
+        // (YN-103): the reply they are in is at most MAX_REPLY bytes (`reply`).
         let (answer, said) = match (field["type"].as_str(), value) {
-            (Some("text"), Value::String(words)) if words.encode_utf16().count() <= 2000 && (!required || !words.trim().is_empty()) =>
+            (Some("text"), Value::String(words)) if !required || !words.trim().is_empty() =>
                 (json!(words), words.clone()),
             (Some("single"), Value::String(option)) if option.is_empty() && !required => (json!(""), String::new()),
             (Some("single"), Value::String(option)) => {

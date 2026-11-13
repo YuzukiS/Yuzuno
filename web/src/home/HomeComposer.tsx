@@ -40,8 +40,10 @@ export const HomeComposer = forwardRef<
     onSubmit: () => void;
     readOnly?: boolean;
     onEscape?: () => void;
+    /** More attributes of the field itself (PastedTextComposer). */
+    attributes?: Record<string, string>;
   }
->(function HomeComposer({ slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape }, ref) {
+>(function HomeComposer({ slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape, attributes }, ref) {
   const { sendKey } = useDevicePreferences();
   // The editor's own draft while the words are the ones it wrote, so it keeps
   // its blocks, numbers and cursor; words changed elsewhere (sent, written in
@@ -71,6 +73,7 @@ export const HomeComposer = forwardRef<
         readOnly={readOnly}
         slashCommands={false}
         sendKey={sendKey}
+        attributes={attributes}
         onSubmit={onSubmit}
         onChange={(draft) => {
           const next = replyWords(draft);

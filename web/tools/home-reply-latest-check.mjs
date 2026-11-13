@@ -187,14 +187,15 @@ try {
       // 1. A form asked again while the user answers.
       const form = card(page, "plan");
       await form.locator(".clarification label", { hasText: "Tuesday" }).click();
-      await form.locator(".clarification textarea").fill("After the docs land.");
+      // A text answer's field is the conversation's composer (YN-103).
+      await form.locator(".clarification [data-composer-input]").fill("After the docs land.");
       sections[0] = plan(2, [day([mon, fri]), extra, who]);
       await refresh(page, "plan", 2);
       await form.locator(".clarification-carried").first().waitFor({ timeout: 10_000 });
       assert.deepEqual(await fieldNotes(page, "Release day"), [t.dropped]);
       assert.deepEqual(await fieldNotes(page, "Who ships it"), [t.added]);
       assert.deepEqual(await fieldNotes(page, "Anything else"), []);
-      assert.equal(await form.locator(".clarification textarea").inputValue(), "After the docs land.");
+      assert.equal(await form.locator(".clarification [data-composer-input]").innerText(), "After the docs land.");
       const checked = await form.locator('.clarification input:checked').count();
       assert.equal(checked, 0, "nothing picked for the user");
       assert.match(await form.textContent(), t.carried);

@@ -399,7 +399,8 @@ async fn exchange(slot: &mut Option<Process>, validator: &Validator, spec: &Valu
         "the validator speaks another schema version"
     );
     match answer["ok"].as_bool() {
-        Some(true) if clarification.is_some() && answer["text"].as_str().is_some_and(|s| s.len() <= 100_000) =>
+        // A form's answers are one message: at most what a message takes.
+        Some(true) if clarification.is_some() && answer["text"].as_str().is_some_and(|s| s.len() <= crate::model::MAX_MESSAGE_TEXT) =>
             Ok(Checked::Answers { text: answer["text"].as_str().unwrap().into() }),
         Some(true) if answer["spec"].is_object() && answer["defaults"].is_array() => Ok(Checked::Accepted {
             spec: answer["spec"].take(),
@@ -1367,6 +1368,30 @@ mod tests {
         let validator = Arc::new(Validator::new(Some(path), node()));
         assert!(matches!(validator.check(&spec(None)).await, Ok(Checked::Accepted { .. })));
         assert!(Bundle::verify(&older.path, &older.manifest_sha256).is_ok());
+    }
+
+    /// YN-103: a form's text answer is as long as the message it goes in,
+    /// no longer 2,000 characters. Beside a result about as large as one
+    /// may be, answers whose message is exactly MAX_MESSAGE_TEXT bytes are
+    /// checked within one request, and the text is that message, whole.
+    #[tokio::test]
+    async fn form_answers_as_long_as_a_message_are_checked_beside_a_large_result() {
+        let validator = validator();
+        let rows: Vec<Value> = (0..100).map(|n| json!({"id":format!("r{n}"),"cells":{"a":"x".repeat(500),"b":"y".repeat(80)}})).collect();
+        let spec = json!({"root":"r","elements":{
+            "r":{"type":"Result","props":{"title":"Round 28","summary":"Answer once"},"children":["t","f"]},
+            "t":{"type":"Table","props":{"id":"t","title":"Findings","columns":[{"key":"a","label":"A"},{"key":"b","label":"B"}],"rows":rows}},
+            "f":{"type":"Clarification","props":{"id":"after","title":"After round 28","fields":[
+                {"id":"review","type":"text","label":"Codex review","required":false}]}}}});
+        assert!(spec.to_string().len() > 60_000, "{}", spec.to_string().len());
+        // As Core keeps it once published: with its display defaults.
+        let Ok(Checked::Accepted { spec, .. }) = validator.check(&spec).await else { panic!("the result is accepted") };
+        let answer = |review: &str| json!({"resultId":"result-1","formId":"after","answers":{"review":review}});
+        let empty = validator.check_answers(&spec, &answer("")).await.unwrap().len();
+        let review = "a".repeat(crate::model::MAX_MESSAGE_TEXT - empty);
+        let text = validator.check_answers(&spec, &answer(&review)).await.unwrap();
+        assert_eq!(text.len(), crate::model::MAX_MESSAGE_TEXT);
+        assert!(text.contains(&format!("\"review\": \"{review}\"")));
     }
 
     #[tokio::test]

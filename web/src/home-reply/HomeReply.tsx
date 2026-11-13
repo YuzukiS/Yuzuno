@@ -4,6 +4,7 @@ import { copyText } from "../clipboard";
 import { strings, useStrings } from "../i18n";
 import { loadFullItem, useFullItem } from "../item-payload";
 import { userText } from "../message-content";
+import { MessageContent } from "../MessageContent";
 import { usePhone } from "../phone-layout";
 import type { HomeReplyOrigin, NativeItem } from "../types";
 import { answerText, unanswered } from "./home-reply-model";
@@ -187,7 +188,10 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
                           {[field.answer].flat().map((label, n) => <li key={n}>{label}</li>)}
                         </ul>
                       ) : (
-                        <p>{field.answer}</p>
+                        // A long answer is one block, as a long message is (YN-103).
+                        <p>
+                          <MessageContent text={String(field.answer)} />
+                        </p>
                       )}
                     </dd>
                   </div>

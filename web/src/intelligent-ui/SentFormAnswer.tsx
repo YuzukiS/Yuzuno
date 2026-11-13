@@ -11,6 +11,7 @@ import {
   type ClarificationValues,
 } from "./clarification";
 import { readPublished } from "./TurnResults";
+import { MessageContent } from "../MessageContent";
 import "./clarification.css";
 
 const answerText = strings({
@@ -161,7 +162,10 @@ export function SentFormAnswer({
                     ))}
                   </ul>
                 ) : (
-                  <p>{String(value)}</p>
+                  // A long answer is one block, as a long message is (YN-103).
+                  <p>
+                    <MessageContent text={String(value)} />
+                  </p>
                 )}
               </dd>
             </div>

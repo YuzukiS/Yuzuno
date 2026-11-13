@@ -89,19 +89,32 @@ export function clarificationMessage(
   form: ClarificationProps,
   answers: ClarificationValues,
 ) {
-  const values = clarificationAnswers(form).parse(answers);
+  return clarificationText(resultId, form, clarificationAnswers(form).parse(answers) as ClarificationValues);
+}
+
+/** The message `answers` make (clarificationMessage) without checking them:
+ * what the form counts as they are written (YN-103), the same bytes once
+ * they are checked. Only the form's own fields, in its order. */
+export function clarificationText(
+  resultId: string,
+  form: ClarificationProps,
+  answers: ClarificationValues,
+) {
+  const values = Object.fromEntries(form.fields.map((field) => [field.id, answers[field.id]]));
   return `Answers to “${form.title}”:\n${JSON.stringify({ resultId, formId: form.id, answers: values }, null, 2)}`;
 }
 
 /** One schema for answer validation in both the browser and Core's validator.
- * Values contain stable option IDs, never labels parsed from display text. */
+ * Values contain stable option IDs, never labels parsed from display text.
+ * A text answer has no length of its own (YN-103): it goes as part of one
+ * message, and that message's limit is the one it has, in the bytes Core
+ * counts (a conversation's message, or a reply from Home). */
 export function clarificationAnswers(form: ClarificationProps) {
   const fields: Record<string, z.ZodType> = {};
   for (const field of form.fields) {
     if (field.type === "text") {
       fields[field.id] = z
         .string()
-        .max(2000, "Use at most 2,000 characters.")
         .refine(
           (value) => !field.required || !!value.trim(),
           "Enter an answer.",
@@ -223,7 +236,8 @@ export function carryClarification(
       continue;
     }
     if (field.type === "text") {
-      values[field.id] = (had as string).slice(0, 2000);
+      // Whole: never cut short as it is carried (YN-103).
+      values[field.id] = had as string;
       if (old && old.label !== field.label && answered(had)) notes.push({ field: field.id, kind: "reworded" });
       continue;
     }
@@ -279,12 +293,33 @@ export function readClarificationDraft(
     );
   return saved.values;
 }
+/**
+ * Where a draft's text answers have pasted blocks (YN-103), by field: UTF-16
+ * offsets, as a message's text blocks are. Only to draw them again as the
+ * conversation's composer folds them; the answers themselves are the whole
+ * text, and nothing of this is sent.
+ */
+export type ClarificationBlocks = Record<string, { id: string; start: number; end: number }[]>;
+
 export function saveClarificationDraft(
   storage: Pick<Storage, "setItem">,
   key: string,
   values: ClarificationValues,
+  blocks?: ClarificationBlocks,
 ) {
-  storage.setItem(key, JSON.stringify({ version: 1, values }));
+  const kept = blocks && Object.fromEntries(Object.entries(blocks).filter(([, list]) => list.length));
+  storage.setItem(key, JSON.stringify({ version: 1, values, ...(kept && Object.keys(kept).length ? { blocks: kept } : {}) }));
+}
+
+/** A saved draft's blocks, or none: never a reason not to restore it. */
+export function readClarificationBlocks(storage: Pick<Storage, "getItem">, key: string): ClarificationBlocks {
+  try {
+    const blocks = JSON.parse(storage.getItem(key) ?? "null")?.blocks;
+    if (!blocks || typeof blocks !== "object" || Array.isArray(blocks)) return {};
+    return Object.fromEntries(Object.entries(blocks).filter(([, list]) => Array.isArray(list))) as ClarificationBlocks;
+  } catch {
+    return {};
+  }
 }
 
 export const clarificationExample: ClarificationProps = {

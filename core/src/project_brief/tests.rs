@@ -1729,6 +1729,93 @@ async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothi
         "text":sent})));
 }
 
+/// An ask whose form takes a pasted review and a note (YN-103), and what
+/// Home sends for its answers (AskReply.tsx, formReply; home.rs,
+/// form_answers): each answer in its line, then by id as JSON.
+fn round_ask() -> Value {
+    let mut after = put("after", "ask");
+    after["ask"]["reply"] = json!({"form":{"id":"round","title":"After round 28","fields":[
+        {"id":"review","type":"text","label":"Codex review","required":false},
+        {"id":"note","type":"text","label":"Note","required":false}]}});
+    after
+}
+fn round_text(review: &str, note: &str) -> String {
+    let said = |words: &str| if words.is_empty() { "(no answer)".to_owned() } else { words.to_owned() };
+    format!("Answers to \u{201c}After round 28\u{201d}:\n- Codex review: {}\n- Note: {}\n\n{{\"formId\":\"round\",\"answers\":{{\"review\":{},\"note\":{}}}}}",
+        said(review), said(note), Value::from(review), Value::from(note))
+}
+fn round_reply(workspace: &str, text: &str, review: &str, id: &str) -> home::ReplyInput {
+    home::ReplyInput { key: Some("after".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: None,
+        version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.into()),
+        form: Some(serde_json::from_value(json!({"formId":"round","answers":{"review":review,"note":""}})).unwrap()) }
+}
+
+/// YN-103: a form's text answer is as long as the reply it is in may be, no
+/// longer 2,000 characters. A pasted review of 481 lines, with CRLF endings,
+/// tabs, quotes, a backslash and Chinese, goes to the Agent whole, is kept
+/// whole by label in the receipt's snapshot and, once delivered, by id on
+/// the ask.
+#[tokio::test]
+async fn a_form_reply_takes_a_long_pasted_answer_whole() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("s1", 0, vec![round_ask()])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let review: String = (1..=481).map(|n| format!("{n}\t\"评审\" 第 {n} 行：C:\\work\\round-28 ok\r\n")).collect();
+    assert!(review.encode_utf16().count() > 2000 && review.lines().count() == 481);
+    let text = round_text(&review, "");
+    let _ = home::reply(&ws, project.clone(), round_reply(&workspace, &text, &review, "f1")).await;
+    let message = ws.store.receipt("b", "f1").unwrap().expect("Core took the reply").input.text;
+    assert!(message.contains(&format!("\n{text}\n")), "the Agent reads the answers whole");
+    assert_eq!(sent_from(&ws, "b", "f1").1["form"]["fields"],
+        json!([{"id":"review","label":"Codex review","type":"text","answer":review},{"id":"note","label":"Note","type":"text","answer":""}]));
+    // Delivered: Home's retry of a send Core accepted marks the ask with the answers by id.
+    let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "after").unwrap().unwrap();
+    let digest = home::reply_digest(None, &text, round_reply(&workspace, &text, &review, "f2").form.as_ref());
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        origin: Some(json!({"kind":"home","projectId":project,"key":"after","version":1,"workspaceId":workspace,"reply":digest})),
+        input: crate::model::MessageInput { client_message_id: "f2".into(), text: home::compose_ask(&workspace, "Code", &project, &row, None, &text),
+            text_blocks: None, images: vec![], expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
+    home::reply(&ws, project.clone(), round_reply(&workspace, &text, &review, "f2")).await.unwrap();
+    let raw: String = ws.store.db.read().unwrap().query_row(
+        "SELECT reply_form FROM project_brief_sections WHERE project_id=?1 AND key='after' AND live=1", [&project], |r| r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), json!({"version":1,"formId":"round","answers":{"review":review,"note":""}}));
+}
+
+/// YN-103: the longest form reply Home may send, MAX_REPLY bytes, is taken,
+/// and the conversation still shows its snapshot: each answer is said twice
+/// in the reply and once in the snapshot. Here the answer is mostly ESC, as
+/// in a pasted terminal log, the character that costs most as JSON (6
+/// bytes, \u001b, beside its 1 in the line). One byte more sends nothing.
+#[tokio::test]
+async fn the_longest_form_reply_keeps_its_snapshot() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("s1", 0, vec![round_ask()])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    // Every byte but the review's own: an empty one's reply, without its "(no answer)".
+    let room = home::MAX_REPLY - (round_text("", "").len() - "(no answer)".len());
+    // ESC costs 1 + 6 bytes, a quote 1 + 2, a letter 1 + 1.
+    let mut esc = room / 7;
+    if room - 7 * esc == 1 {
+        esc -= 1;
+    }
+    let rest = room - 7 * esc;
+    let review = format!("{}{}{}", "\u{1b}".repeat(esc), "\"".repeat(rest % 2), "a".repeat((rest - 3 * (rest % 2)) / 2));
+    let text = round_text(&review, "");
+    assert_eq!(text.len(), home::MAX_REPLY);
+    let _ = home::reply(&ws, project.clone(), round_reply(&workspace, &text, &review, "f1")).await;
+    let (_, kept) = sent_from(&ws, "b", "f1");
+    assert_eq!(kept["form"]["fields"][0]["answer"], json!(review));
+    // Shown with it: within what Core shows of a snapshot (input_origin).
+    let mut turns = vec![json!({"id":"t1","items":[{"id":"i1","type":"userMessage","clientId":"f1","content":[{"type":"text","text":"x"}]}]})];
+    crate::input_origin::annotate(&ws.store.db.read().unwrap(), "b", &mut turns).unwrap();
+    assert_eq!(turns[0]["items"][0]["_yuzunoHome"]["snapshot"], kept);
+    // One byte more: refused before anything is recorded.
+    let error = home::reply(&ws, project.clone(), round_reply(&workspace, &format!("{text} "), &review, "f2")).await.unwrap_err();
+    assert!(error.to_string().starts_with("reply_too_long"), "{error}");
+    assert!(ws.store.receipt("b", "f2").unwrap().is_none());
+}
+
 // T-9: a reply's receipt names the section it answered by its identity on
 // Home, which is what tells that section's fate from another's later under
 // the same key. Asked again and resolved, an ask keeps its identity; a card

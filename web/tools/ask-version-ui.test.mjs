@@ -478,9 +478,8 @@ test("④ YN-38 a removed option leaves its field empty, never at another option
   page.render(section("form", 2, { form: strict }));
   f.radio("Core").click();
   await tick();
-  const when = page.document.querySelector(".clarification textarea");
-  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(when, "Friday");
-  when.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  // The text answer's field is the conversation's composer (YN-103).
+  setComposerText(page.document.querySelector(".clarification [data-composer-input]"), "Friday");
   await tick();
   // The owner asks again in place, while the user is answering.
   page.render(section("form", 3, { form: strictLater }));
