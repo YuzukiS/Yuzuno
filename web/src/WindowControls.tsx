@@ -95,9 +95,14 @@ export function useWindowFrame() {
       const n = ++asked;
       void readTitleBar().then((bar) => {
         if (!live || n !== asked) return;
+        // The shell sets the window's title bar when it makes the window:
+        // once it has reported its buttons, a later read that fails (an IPC
+        // hiccup) keeps the toolbar as it was rather than dropping their room.
         setFrame((current) =>
           !bar
-            ? null
+            ? current?.kind === "overlay"
+              ? current
+              : null
             : current?.kind === "overlay" && current.inset === bar.inset
               ? current
               : { kind: "overlay", window: win, inset: bar.inset },

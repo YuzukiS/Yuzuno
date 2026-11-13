@@ -3403,8 +3403,12 @@ test("on macOS the toolbar leaves the system's window buttons their room, none i
     startDragging: record("startDragging"),
   };
   let bar = { inset: 71.5, doubleClick: "zoom" };
+  let failNext = false;
   const nativeInvoke = async (command) => {
-    if (command === "desktop_title_bar") return bar;
+    if (command === "desktop_title_bar") {
+      if (failNext) { failNext = false; throw new Error("IPC unavailable"); }
+      return bar;
+    }
     throw new Error(`command ${command} not found`);
   };
   const page = await mount({ nativeWindow: mac, nativeInvoke });
@@ -3420,6 +3424,12 @@ test("on macOS the toolbar leaves the system's window buttons their room, none i
     assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "0px", "full screen: the buttons are hidden");
     bar = { ...bar, inset: 71.5 };
     await resize();
+    assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
+    // A read that fails once keeps the buttons' room: the window's title bar
+    // does not change while it is open.
+    failNext = true;
+    await resize();
+    assert.ok(toolbar.classList.contains("title-bar-overlay"), "a failed read keeps the title bar");
     assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
     const press = (type, target, detail = 1, clientX = 300) => target.dispatchEvent(
       new page.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail, clientX, clientY: 20 }));
