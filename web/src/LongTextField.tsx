@@ -81,6 +81,7 @@ export function LongTextField({
   error?: string;
   /** The editor's id, for a form that moves focus to it. */
   fieldId?: string;
+  /** The field's place: a task's form, unless another form draws it (long-text-field.css). */
   className?: string;
 }) {
   const t = useStrings(text);
@@ -93,7 +94,7 @@ export function LongTextField({
   const used = measured(value, limit);
   const over = used > limit.max;
   return (
-    <div className={`long-text-field ${className}`} ref={box}>
+    <div className={className ? `long-text-field ${className}` : "long-text-field"} ref={box}>
       <span>
         {label}
         {optional && <> <small>{optional}</small></>}

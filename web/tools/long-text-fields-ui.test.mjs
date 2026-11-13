@@ -30,10 +30,15 @@ try {
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {CollaborationBoard} from ${src("CollaborationBoard.tsx")};
+import {CodexReviewDialog} from ${src("CodexReview.tsx")};
+import {CodexGoalDialog} from ${src("CodexGoal.tsx")};
+import {PrOperations} from ${src("PrOperations.tsx")};
 import {coreLimits} from ${src("core-limits.ts")};
 window.coreLimits=coreLimits;
 const root=createRoot(document.getElementById('root'));
+const parts={CodexReviewDialog, CodexGoalDialog, PrOperations};
 window.renderBoard=props=>root.render(<CollaborationBoard {...props}/>);
+window.renderPart=(name, props)=>{const Part=parts[name]; root.render(<Part {...props}/>);};
 window.unmountBoard=()=>root.unmount();`,
   );
   const output = await build({
@@ -74,7 +79,7 @@ function pasted(bytes) {
 /** Exactly `bytes` UTF-8 bytes, nothing to trim. */
 const exactly = (bytes) => "长".repeat(Math.floor(bytes / 3)) + "a".repeat(bytes % 3);
 
-function mount() {
+function mount({ part, props, answer } = {}) {
   const fixture = outcomeFixture();
   const errors = [];
   const calls = [];
@@ -106,7 +111,11 @@ function mount() {
     const operation = route.startsWith("/api/collaboration/") ? route.slice("/api/collaboration/".length) : "";
     if (operation) calls.push({ operation, body });
     let data;
-    if (operation === "task_comment") data = { activity: { seq: 99 } };
+    const own = answer?.(route, init.method || "GET", body);
+    if (!operation && own !== undefined) {
+      calls.push({ operation: `${init.method || "GET"} ${route}`, body });
+      data = own;
+    } else if (operation === "task_comment") data = { activity: { seq: 99 } };
     else if (operation === "task_update") {
       const t = task(body.taskId);
       Object.assign(t, body.patch, { version: t.version + 1 });
@@ -118,14 +127,16 @@ function mount() {
     return { ok: !data.error, status: data.error ? 500 : 200, json: async () => structuredClone(data), text: async () => JSON.stringify(data) };
   };
   window.eval(bundle);
-  window.renderBoard({
-    open: true,
-    onOpenChange() {},
-    agents: fixture.agents,
-    projects: fixture.projects,
-    onOpenAgent() {},
-    revision: 0,
-  });
+  if (part) window.renderPart(part, props);
+  else
+    window.renderBoard({
+      open: true,
+      onOpenChange() {},
+      agents: fixture.agents,
+      projects: fixture.projects,
+      onOpenAgent() {},
+      revision: 0,
+    });
   const button = (name) =>
     [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === name);
   const page = {
@@ -181,6 +192,10 @@ function mount() {
     close() {
       window.unmountBoard();
       window.close();
+    },
+    /** The long field labelled `label`, in a dialog's portal as well. */
+    async editor(label) {
+      return until(() => page.field(label), `the ${label} field`);
     },
   };
   return page;
@@ -425,4 +440,176 @@ test("each long field's limit is the one Core checks", async (t) => {
     assert.equal(page.window.coreLimits[key].max, max, `${key} is Core's ${max}`);
     assert.equal(page.window.coreLimits[key].unit, "bytes", key);
   }
+});
+
+// The three dialogs' long fields (YN-106 PR 2): /review's instructions,
+// the Codex goal's objective and a PR's body.
+const agent = { id: "a", name: "Mori", harness: "codex", status: "idle", cwd: "/w", model: "m", color: "sage",
+  createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 0, reviewedSeq: 0, goal: "" };
+const goalAnswer = (route, method, body) => {
+  if (route !== "/api/agents/a/codex/goal") return undefined;
+  return method === "GET"
+    ? { state: "ready", reason: "", goal: null }
+    : { goal: { objective: body.objective, status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 } };
+};
+const prAnswer = (route, method) => {
+  if (route === "/api/pr-operations" && method === "GET") return { operations: [], repositories: [{ id: 7, fullName: "owner/repo" }], hasMore: false, nextBefore: null };
+  if (route === "/api/pr-operations" && method === "POST") return { id: "operation-1", status: "queued" };
+  return undefined;
+};
+const dialogs = [
+  {
+    name: "/review's instructions",
+    label: "Instructions",
+    limit: "reviewInstructions",
+    submit: "Start review",
+    sent: (page) => page.calls.filter((c) => c.operation === "POST /api/agents/a/codex/review").map((c) => c.body.target.instructions),
+    async open() {
+      const page = mount({ part: "CodexReviewDialog", props: { agent, open: true, onOpenChange() {}, onStarted() {} },
+        answer: (route) => (route === "/api/agents/a/codex/review" ? { accepted: true, turnId: "t2" } : undefined) });
+      await until(() => [...page.document.querySelectorAll('[role="radio"], input[type="radio"]')].length, "the review choices");
+      const custom = page.document.querySelector('input[type="radio"][value="custom"]');
+      custom.click();
+      await tick();
+      return page;
+    },
+  },
+  {
+    name: "the Codex goal's objective",
+    label: "Objective",
+    limit: "goalObjective",
+    submit: "Set and start",
+    sent: (page) => page.calls.filter((c) => c.operation === "POST /api/agents/a/codex/goal").map((c) => c.body.objective),
+    async open(initialObjective = "") {
+      const page = mount({ part: "CodexGoalDialog", props: { agent, open: true, initialObjective, onOpenChange() {}, onChanged() {} }, answer: goalAnswer });
+      await until(() => page.field("Objective"), "the goal read");
+      return page;
+    },
+  },
+  {
+    name: "a PR's body",
+    label: "PR body",
+    limit: "prBody",
+    submit: "Create or reuse PR",
+    sent: (page) => page.calls.filter((c) => c.operation === "POST /api/pr-operations").map((c) => c.body.body),
+    async open() {
+      const page = mount({ part: "PrOperations", props: { taskId: "T-1", disabled: false }, answer: prAnswer });
+      const repository = await until(() => page.document.querySelector('select[aria-label="PR repository"] option[value="7"]')?.parentElement, "the repositories");
+      Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(repository, "7");
+      repository.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      // The PR form's labels hold their input directly.
+      for (const [name, value] of [["Head branch", "feature"], ["PR title", "Ship it"]]) {
+        const input = [...page.document.querySelectorAll(".pr-operations label")].find((l) => l.textContent.startsWith(name)).querySelector("input");
+        Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, value);
+        input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      }
+      await tick();
+      return page;
+    },
+  },
+];
+const submitButton = (page, name) =>
+  [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(name) && !b.closest(".long-text-field"));
+
+test("a long paste in each dialog's long field folds into one block and goes whole", async (t) => {
+  for (const place of dialogs) {
+    const page = await place.open();
+    t.after(page.close);
+    const field = await page.editor(place.label);
+    // Within the limit in its own unit: a character is at least a byte.
+    const limit = page.window.coreLimits[place.limit];
+    const { text, deep } = pasted(Math.min(limit.max, 20_000));
+    await page.paste(field, text);
+    assert.equal(page.chips(field).length, 1, `${place.name}: the paste is one block`);
+    assert.ok(!page.box(field).textContent.includes(deep), `${place.name}: the whole text is not drawn`);
+    submitButton(page, place.submit).click();
+    const sent = await until(() => place.sent(page)[0], `${place.name} sent`);
+    // /review and the goal go trimmed; this paste has nothing to trim.
+    assert.ok(sent === text, `${place.name}: the paste goes byte for byte (${utf8(sent)} of ${utf8(text)} bytes)`);
+    assert.deepEqual(page.errors, [], place.name);
+  }
+});
+
+test("each dialog takes exactly Core's limit, in Core's unit; one over says so and sends nothing", async (t) => {
+  for (const place of dialogs) {
+    const page = await place.open();
+    t.after(page.close);
+    const field = await page.editor(place.label);
+    const limit = page.window.coreLimits[place.limit];
+    // Codex counts characters: "é" is one, and two bytes.
+    const exact = limit.unit === "chars" ? "é".repeat(limit.max) : exactly(limit.max);
+    const over = limit.unit === "chars" ? "é".repeat(limit.max + 1) : exactly(limit.max + 1);
+    await page.type(field, over);
+    const note = page.note(field);
+    assert.ok(note?.hasAttribute("data-over"), `${place.name}: the field says it is over`);
+    assert.match(note.textContent, limit.unit === "chars" ? /^1 character too long/ : /^1 byte too long/, place.name);
+    assert.equal(submitButton(page, place.submit).disabled, true, `${place.name}: its button waits`);
+    await page.key(field, { key: "Enter", ctrlKey: true });
+    await page.key(field, { key: "Enter" });
+    assert.deepEqual(place.sent(page), [], `${place.name}: nothing is sent`);
+    assert.equal(composerText(field).replace(/\n$/, ""), over, `${place.name}: what was written is kept`);
+    await page.type(field, exact);
+    assert.ok(!page.note(field)?.hasAttribute("data-over"), `${place.name}: at the limit, not over`);
+    submitButton(page, place.submit).click();
+    const sent = await until(() => place.sent(page)[0], `${place.name} sent at the limit`);
+    assert.equal(sent, exact, `${place.name}: Core's limit exactly`);
+    assert.deepEqual(page.errors, [], place.name);
+  }
+});
+
+test("Return starts a review as a message sends; in the goal and a PR's body it makes a new line", async (t) => {
+  const review = await dialogs[0].open();
+  t.after(review.close);
+  const instructions = await review.editor("Instructions");
+  await review.type(instructions, "Look at the error paths");
+  await review.key(instructions, { key: "Enter" });
+  assert.deepEqual(await until(() => dialogs[0].sent(review).length && dialogs[0].sent(review), "the review started"), ["Look at the error paths"]);
+  for (const place of dialogs.slice(1)) {
+    const page = await place.open();
+    t.after(page.close);
+    const field = await page.editor(place.label);
+    await page.type(field, "First line");
+    await page.key(field, { key: "Enter" });
+    assert.equal(composerText(field), "First line\n", `${place.name}: Return makes a new line`);
+    assert.deepEqual(place.sent(page), [], `${place.name}: and sends nothing`);
+    await page.key(field, { key: "Enter", ctrlKey: true });
+    const sent = await until(() => place.sent(page)[0], `${place.name}: Ctrl+Return sent it`);
+    assert.equal(sent.trimEnd(), "First line", place.name);
+  }
+});
+
+test("an objective that came with /goal longer than Codex takes says so at once and sets nothing", async (t) => {
+  const place = dialogs[1];
+  const page = await place.open("x".repeat(4_001));
+  t.after(page.close);
+  const field = await page.editor("Objective");
+  const note = await until(() => page.note(field), "the note");
+  assert.ok(note.hasAttribute("data-over"));
+  assert.match(note.textContent, /^1 character too long: this field takes at most 4,000 characters/);
+  assert.equal(submitButton(page, "Set and start").disabled, true, "Set and start waits, and says why beside it");
+  await page.key(field, { key: "Enter", ctrlKey: true });
+  assert.deepEqual(place.sent(page), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("each dialog's limit is the one Core checks, in Core's unit", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const rust = async (file) => readFile(path.join(root, "../core/src", file), "utf8");
+  const model = await rust("model.rs");
+  const goal = await rust("codex_goal.rs");
+  const pr = await rust("pr_operations/mod.rs");
+  const one = (source, pattern, what) => {
+    const found = [...source.matchAll(pattern)];
+    assert.equal(found.length, 1, `one Rust line for ${what}`);
+    return Number(found[0][1].replaceAll("_", ""));
+  };
+  const { coreLimits } = page.window;
+  assert.equal(coreLimits.reviewInstructions.max, one(model, /instructions\.len\(\) <= ([\d_]+)/g, "/review's instructions"));
+  assert.equal(coreLimits.reviewInstructions.unit, "bytes");
+  assert.equal(coreLimits.goalObjective.max, one(goal, /pub const MAX_OBJECTIVE_CHARS: usize = ([\d_]+);/g, "the goal's objective"));
+  assert.match(goal, /objective\.chars\(\)\.count\(\) <= MAX_OBJECTIVE_CHARS/, "Codex's limit is in characters");
+  assert.equal(coreLimits.goalObjective.unit, "chars");
+  assert.equal(coreLimits.prBody.max, one(pr, /self\.body\.len\(\) <= ([\d_]+)/g, "a PR's body"));
+  assert.equal(coreLimits.prBody.unit, "bytes");
 });

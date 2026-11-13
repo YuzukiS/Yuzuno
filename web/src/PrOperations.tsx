@@ -3,6 +3,8 @@ import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
 import "./pr-operations.css";
 import { randomId } from "./random-id";
+import { LongTextField } from "./LongTextField";
+import { coreLimits, overLimit } from "./core-limits";
 
 type Remote = {
   number: number;
@@ -359,6 +361,7 @@ export function PrOperations({
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (overLimit(form.body, coreLimits.prBody)) return;
           void mutate("/pr-operations", {
             taskId,
             action: form.action,
@@ -446,15 +449,18 @@ export function PrOperations({
               onChange={(e) => update("title", e.target.value)}
             />
           </label>
-          <label>
-            {t.prBody}
-            <textarea
-              rows={5}
-              value={form.body}
-              maxLength={60000}
-              onChange={(e) => update("body", e.target.value)}
-            />
-          </label>
+          {/* The conversation's composer (YN-106): a long paste folds into a
+              block and goes whole; Return makes a new line. */}
+          <LongTextField
+            slot={`task:${taskId}:pr-body`}
+            label={t.prBody}
+            value={form.body}
+            onChange={(body) => update("body", body)}
+            limit={coreLimits.prBody}
+            returnKey="newline"
+            readOnly={disabled || busy || !page}
+            className=""
+          />
           {form.action === "create" ? (
             <label className="pr-operation-draft">
               <input
@@ -489,6 +495,7 @@ export function PrOperations({
               !form.repositoryId ||
               !form.head.trim() ||
               !form.title.trim() ||
+              overLimit(form.body, coreLimits.prBody) ||
               (form.action === "update" && !form.number)
             }
           >

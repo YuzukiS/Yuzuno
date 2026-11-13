@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -53,6 +54,12 @@ function mount(handler) {
     pretendToBeVisual: true,
     virtualConsole: vc,
   });
+  // The PR body's editor (YN-106): JSDOM does no layout, and the composer
+  // measures text ranges and asks which keyboard sends.
+  dom.window.matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  dom.window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+  dom.window.Range.prototype.getClientRects ||= () => [];
+  dom.window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
   dom.window.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
@@ -122,11 +129,20 @@ async function waitFor(f) {
   }
   assert.fail("Expected UI state did not appear");
 }
-function field(p, name, value) {
-  const label = [...p.doc.querySelectorAll("label")].find((l) =>
+// The PR body is written in the conversation's composer (YN-106), under its
+// label as the other fields are.
+const labelled = (p, name) =>
+  [...p.doc.querySelectorAll("label, .long-text-field")].find((l) =>
     l.textContent.startsWith(name),
   );
+function field(p, name, value) {
+  const label = labelled(p, name);
   assert.ok(label, name);
+  const editor = label.querySelector("[data-composer-input]");
+  if (editor) {
+    setComposerText(editor, value);
+    return;
+  }
   const el = label.querySelector("input,textarea,select");
   const prototype =
     el.tagName === "SELECT"
@@ -353,8 +369,11 @@ const speak = (p, language) => {
   p.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   p.window.dispatchEvent(new p.window.StorageEvent("storage", { key: "yuzuno.language" }));
 };
-const valueOf = (p, name) =>
-  [...p.doc.querySelectorAll("label")].find((l) => l.textContent.startsWith(name))?.querySelector("input,textarea,select")?.value;
+const valueOf = (p, name) => {
+  const label = labelled(p, name);
+  const editor = label?.querySelector("[data-composer-input]");
+  return editor ? composerText(editor) : label?.querySelector("input,textarea,select")?.value;
+};
 test("operations follow a language change; the form, open history, a retried request and the notice stay, and nothing is asked again", async () => {
   let attempts = 0;
   const waiting = {

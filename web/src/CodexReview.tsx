@@ -4,6 +4,8 @@ import { errorText, post } from "./api";
 import { ChoiceChips } from "./ChoiceChips";
 import { Modal } from "./components";
 import type { Agent } from "./types";
+import { LongTextField } from "./LongTextField";
+import { coreLimits, overLimit } from "./core-limits";
 import "./remote.css";
 
 /** What Codex reviews: Codex's own `ReviewTarget`. */
@@ -58,7 +60,9 @@ export function CodexReviewDialog({ agent, open, onOpenChange, onStarted }: {
     type === "uncommittedChanges" ? { type }
       : type === "baseBranch" ? (branch.trim() ? { type, branch: branch.trim() } : null)
         : type === "commit" ? (sha.trim() ? { type, sha: sha.trim(), title: title.trim() || null } : null)
-          : instructions.trim() ? { type, instructions: instructions.trim() } : null;
+          // Within a message's length, as Core takes it (YN-106): longer starts nothing.
+          : instructions.trim() && !overLimit(instructions, coreLimits.reviewInstructions)
+            ? { type, instructions: instructions.trim() } : null;
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -103,10 +107,10 @@ export function CodexReviewDialog({ agent, open, onOpenChange, onStarted }: {
             </>
           )}
           {type === "custom" && (
-            <label>
-              Instructions
-              <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={4} required />
-            </label>
+            // The conversation's composer (YN-106): Return starts the review
+            // as it sends a message, a long paste folds into a block.
+            <LongTextField slot={`${agent.id}:review`} label="Instructions" value={instructions} onChange={setInstructions}
+              limit={coreLimits.reviewInstructions} returnKey="send" readOnly={busy} required className="" />
           )}
         </fieldset>
         {error && <p role="alert" className="remote-field-error">{error}</p>}
