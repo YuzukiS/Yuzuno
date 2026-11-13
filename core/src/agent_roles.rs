@@ -186,6 +186,8 @@ pub(crate) fn membership_changed(db: &Connection, agent: &str, now_in: Option<&s
     if let Some(led) = led.filter(|led| Some(led.as_str()) != now_in) {
         db.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead'", [agent])?;
         bump(db, &led)?;
+        // A front desk is one of the Project's leads (YN-86 §4.1).
+        crate::project_requests::lead_left(db, agent, &led)?;
     }
     Ok(())
 }
@@ -243,6 +245,8 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
     for agent in &current.lead_agent_ids {
         if !ids.contains(agent) {
             tx.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead' AND project_id=?2", params![agent, project])?;
+            // A front desk is one of the Project's leads (YN-86 §4.1).
+            crate::project_requests::lead_left(&tx, agent, project)?;
         }
     }
     for agent in &ids {

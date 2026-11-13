@@ -30,7 +30,8 @@ pub(crate) fn navigable(by: &str) -> bool {
 /// - `peer`, `reminder`: as `_yuzunoSource` marks it, or its Turn's first;
 /// - from its receipt's `origin`: sent from a client (`client`) as `you`, or
 ///   as `form` with answers to a form, `answer` to a native question; `home`,
-///   a reply from Home; `resume`, a Claude automatic continue;
+///   a reply from Home or a request or follow-up to a Project from its page
+///   there (`project_request`); `resume`, a Claude automatic continue;
 /// - `resume`, too: an automatic continue's client ID with its own row;
 /// - `native`: without a receipt, in a Claude Turn Claude says it started
 ///   itself (its origin neither `human` nor `outside`, a terminal's prompt);
@@ -79,7 +80,8 @@ pub(crate) fn annotate(db: &Connection, agent: &str, conversation: &mut [Value])
                     "client" if *form => "form",
                     "client" if *answer => "answer",
                     "client" => "you",
-                    "home" => "home",
+                    // The user's words to a Project, from its page on Home (YN-86 S3a).
+                    "home" | crate::project_requests::ORIGIN => "home",
                     "resume" => "resume",
                     _ => "unconfirmed",
                 },

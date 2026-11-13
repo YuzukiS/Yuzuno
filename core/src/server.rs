@@ -172,6 +172,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::cleanup_plans::router())
         .merge(crate::codex_usage::router())
         .merge(crate::project_brief::router())
+        .merge(crate::project_requests::router())
         .merge(crate::machine_load::router())
         .merge(crate::remote_service::router())
         .merge(crate::storage_overview::router())
