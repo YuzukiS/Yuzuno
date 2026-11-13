@@ -740,6 +740,45 @@ mod tests {
         assert!(!error.starts_with("read_only:"), "another Agent is not read-only: {error}");
     }
 
+    /// YN-86 S3a-2 (Dev Lead 2, seq 12103): a front desk at the read-only
+    /// level is not offered project_route and is refused it before anything
+    /// runs; nothing of its Project's request is routed or retitled.
+    #[tokio::test]
+    async fn a_read_only_front_desk_is_refused_project_route() {
+        let (_directory, ws) = fixture();
+        let project = ws.store.create_project("Code", Default::default()).unwrap().id;
+        ws.store.set_agent_project("agent-a", Some(&project)).unwrap();
+        let version = crate::agent_roles::get(&ws.store, &project).unwrap().version;
+        crate::agent_roles::save(&ws.store, &project, version, vec!["agent-a".into()]).unwrap();
+        ws.store.db.write().unwrap().execute(
+            "INSERT INTO project_requests(id,project_id,n,text,created_at,front_agent_id,message_id) VALUES('r1',?1,1,'hello','now','agent-a','m1')",
+            [&project]).unwrap();
+        assert_eq!(crate::project_requests::front_desk_of(&ws.store, &project).as_deref(), Some("agent-a"), "its only lead");
+        ws.store.set_permission_level("agent-a", Some(crate::permission_levels::READ_ONLY)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(ws.clone(), port);
+        let _server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let token = ws.store.collaboration_mcp_token("agent-a").unwrap();
+        let transport = StreamableHttpClientTransport::with_client(
+            reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+            StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/agent-a")).auth_header(token),
+        );
+        let desk = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
+        let listed = desk.list_all_tools().await.unwrap();
+        assert!(!listed.iter().any(|tool| tool.name == crate::project_requests::routes::TOOL), "not offered");
+        let route = json!({"request":"R-1","title":"Hello","note":"OK","routes":[{"kind":"existing","cardKey":"x","why":"same"}]});
+        let refused = desk.call_tool(CallToolRequestParams::new(crate::project_requests::routes::TOOL)
+            .with_arguments(route.as_object().unwrap().clone())).await.unwrap();
+        assert_eq!(refused.is_error, Some(true));
+        let error = refused.structured_content.unwrap()["error"].as_str().unwrap().to_owned();
+        assert!(error.starts_with("read_only:") && error.contains("project_route"), "{error}");
+        let db = ws.store.db.read().unwrap();
+        let routes: i64 = db.query_row("SELECT COUNT(*) FROM project_routes", [], |r| r.get(0)).unwrap();
+        let title: Option<String> = db.query_row("SELECT title FROM project_requests WHERE id='r1'", [], |r| r.get(0)).unwrap();
+        assert_eq!((routes, title), (0, None), "nothing routed or retitled");
+    }
+
     #[tokio::test]
     async fn an_agent_reads_a_reviews_summary_with_its_earlier_round_and_the_whole_record_when_it_asks() {
         let (_directory, ws) = fixture();

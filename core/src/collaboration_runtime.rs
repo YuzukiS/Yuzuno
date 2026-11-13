@@ -96,6 +96,11 @@ impl Workspace {
             return tokio::spawn(crate::machine_list::call(self.clone(), actor.map(str::to_owned), input))
                 .await.context("Listing the machines ended unexpectedly")?;
         }
+        if operation == crate::project_requests::routes::TOOL {
+            // Its steps are awaited in turn; a dropped request does not stop them.
+            return tokio::spawn(crate::project_requests::routes::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Routing a request ended unexpectedly")?;
+        }
         if operation == "executor_release" {
             // Its close is awaited in turn; a dropped request does not stop it.
             return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))

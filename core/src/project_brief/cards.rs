@@ -195,8 +195,10 @@ impl<'a> Cards<'a> {
     }
 
     /// `card` of web/src/home/types.ts: {task: {id, title, shortName,
-    /// status, archived}, responsible: {agentId, name, kind, state} | null}.
-    /// None for a section that is no task's card, whose JSON stays as it was.
+    /// status, archived}, responsible: {agentId, name, kind, state} | null,
+    /// handoffs?}: `handoffs` once a request was routed to it (YN-86 S3a-2,
+    /// project_requests::handoffs). None for a section that is no task's
+    /// card, whose JSON stays as it was.
     pub fn of(&mut self, row: &Row) -> Result<Option<Value>> {
         let Some(task) = self.binding(row)? else { return Ok(None) };
         if let Some(card) = self.tasks.get(&task) {
@@ -214,11 +216,15 @@ impl<'a> Cards<'a> {
         let data: Value = serde_json::from_str(&raw)?;
         let key = crate::collaboration_store::task_shown(self.db, task);
         let responsible = responsible(self.db, task)?.map(|who| who.json());
-        Ok(Some(json!({
+        let mut card = json!({
             "task":{"id":key,"title":data["title"],"shortName":data["shortName"],"status":data["status"],
                 "archived":!data["archivedAt"].is_null()},
             "responsible":responsible,
-        })))
+        });
+        if let Some(handoffs) = crate::project_requests::handoffs(self.db, task)? {
+            card["handoffs"] = handoffs;
+        }
+        Ok(Some(card))
     }
 }
 
@@ -230,7 +236,7 @@ pub(super) fn show(section: &mut Value, card: Option<Value>) {
 }
 
 /// Whether the task (internal ID) is over for its cards.
-pub(super) fn task_ended(db: &Connection, task: &str) -> Result<bool> {
+pub(crate) fn task_ended(db: &Connection, task: &str) -> Result<bool> {
     let row: Option<(Option<String>, bool)> = db
         .query_row(
             "SELECT json_extract(data,'$.status'),json_extract(data,'$.archivedAt') IS NOT NULL FROM collaboration_tasks WHERE id=?1",
@@ -281,4 +287,108 @@ pub(crate) fn task_closed(db: &Connection, task: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A section as a request's card (YN-86 §4.5): its identity on Home, key,
+/// title, whether it is live, and the task it is the card of (internal ID,
+/// read as `Cards::binding` reads it).
+pub(crate) struct Card {
+    pub identity: i64,
+    pub key: String,
+    pub title: String,
+    pub live: bool,
+    pub task: Option<String>,
+}
+
+fn card(db: &Connection, row: &Row) -> Result<Card> {
+    Ok(Card {
+        identity: row.identity,
+        key: row.key.clone(),
+        title: row.data["title"].as_str().unwrap_or_default().to_owned(),
+        live: row.live,
+        task: Cards::new(db).binding(row)?,
+    })
+}
+
+/// The live section `key` of `project`, as a card.
+pub(crate) fn live_card(db: &Connection, project: &str, key: &str) -> Result<Option<Card>> {
+    sections::live_key(db, project, key)?.map(|row| card(db, &row)).transpose()
+}
+
+/// The section with this identity on Home (`Row::identity`): the live one,
+/// else its newest entry history still keeps.
+pub(crate) fn card_by_identity(db: &Connection, project: &str, identity: i64) -> Result<Option<Card>> {
+    sections::by_identity(db, project, identity)?.map(|row| card(db, &row)).transpose()
+}
+
+/// Who answers for the task's card now (`responsible`), as a card shows them.
+pub(crate) fn responsible_json(db: &Connection, task: &str) -> Result<Option<Value>> {
+    Ok(responsible(db, task)?.map(|who| who.json()))
+}
+
+/// The Agent who answers for the task's card now (`responsible`).
+pub(crate) fn responsible_agent(db: &Connection, task: &str) -> Result<Option<String>> {
+    Ok(responsible(db, task)?.map(|who| who.agent))
+}
+
+/// The Asks of the task's cards in `project`, each once by its identity on
+/// Home: live, and those history keeps. Each says its section, title, state
+/// (open, replied or resolved) and since when it asks.
+pub(crate) fn asks_of(db: &Connection, project: &str, task: &str) -> Result<Vec<Value>> {
+    let cards = Cards::new(db);
+    let mut seen = std::collections::HashSet::new();
+    let mut asks = vec![];
+    for row in sections::live(db, project)?.into_iter().chain(sections::history(db, project)?) {
+        if row.kind != "ask" || !seen.insert(row.identity) || cards.binding(&row)?.as_deref() != Some(task) {
+            continue;
+        }
+        let state = if row.live { row.ask_state.clone().unwrap_or_else(|| "open".into()) } else { "resolved".into() };
+        asks.push(json!({"sectionId":row.identity,"key":row.key,"title":row.data["title"],"state":state,
+            "at":row.ask_since.clone().unwrap_or_else(|| row.updated_at.clone())}));
+    }
+    Ok(asks)
+}
+
+/// The card project_route puts for a task (YN-86 §4.2): the status section
+/// `key`, owned by `actor` (the front desk) and bound to `task` (internal
+/// ID), titled `title`, its body `lead` and a Live Reference to the task.
+/// Written by `actor`'s own brief_update, every rule of the Brief applying;
+/// it does not go stale while the task goes on (the longest validFor the
+/// contract allows). A live section `key` that is already this, the card a
+/// retry finds, is taken as it is. Its identity on Home.
+pub(crate) async fn put_card(ws: &Arc<Workspace>, actor: &str, project: &str, key: &str, title: &str, lead: &str, task: &str)
+    -> Result<i64> {
+    let (owner, place, wanted, bound) = (actor.to_owned(), project.to_owned(), key.to_owned(), task.to_owned());
+    let (version, found, task_key) = ws
+        .stored(move |store| {
+            let db = store.db.read()?;
+            let found = sections::live_key(&db, &place, &wanted)?
+                .map(|row| (row.identity, row.owner_id == owner && row.task_id.as_deref() == Some(bound.as_str())));
+            Ok((sections::brief_version(&db, &place)?, found, crate::collaboration_store::task_shown(&db, &bound)))
+        })
+        .await?;
+    match found {
+        Some((identity, true)) => return Ok(identity),
+        Some(_) => bail!("card_key_taken: the Brief already has a live section {key} that is not this task's card of yours; nothing was put"),
+        None => {}
+    }
+    let valid_for = limits()["validForMax"].as_i64().context("the Brief contract has no validForMax")?;
+    let input = json!({"requestId":format!("project-route-card:{task}:{version}"),"expectedVersion":version,"changes":[{
+        "op":"put","key":key,"kind":"status","title":title,"task":task_key,
+        "status":{"asOf":now(),"validFor":valid_for},
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{"summary":{"lead":"lead"}},"children":["lead","task"]},
+            "lead":{"type":"Markdown","props":{"text":lead}},
+            "task":{"type":"LiveRefs","props":{"items":[{"kind":"task","id":task_key}]}}}}}]});
+    if let Err(rejected) = super::update_tool(ws, actor, input).await? {
+        let problems: Vec<String> = rejected["problems"].as_array().into_iter().flatten()
+            .map(|problem| format!("{}: {}", problem["code"].as_str().unwrap_or("rejected"), problem["reason"].as_str().unwrap_or_default()))
+            .collect();
+        bail!("card_rejected: the Brief refused the card {key}: {}", problems.join("; "));
+    }
+    let (place, wanted) = (project.to_owned(), key.to_owned());
+    ws.stored(move |store| {
+        sections::live_key(&*store.db.read()?, &place, &wanted)?.map(|row| row.identity).context("the card left the Brief as it was put")
+    })
+    .await
 }

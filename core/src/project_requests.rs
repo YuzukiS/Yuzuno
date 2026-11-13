@@ -5,10 +5,16 @@
 //! Core's head, then the user's words as they are. A follow-up to a request
 //! is kept the same way and goes to whoever answers for the request. Core
 //! never reads or judges the words: what is a new request and what is a
-//! follow-up is the user's explicit choice. Routing a request to cards
-//! (project_route), its progress and a reassignment are S3a-2's.
+//! follow-up is the user's explicit choice. The front desk routes a request
+//! to cards with project_route (routes.rs, slice S3a-2); its progress is read
+//! from its cards' tasks (progress.rs), and the user reassigns a card
+//! (reassign.rs).
 mod front_desk;
+mod progress;
+mod reassign;
+pub(crate) mod routes;
 pub(crate) use front_desk::lead_left;
+pub(crate) use progress::handoffs;
 
 use crate::{
     collaboration_credentials::MessageNotSubmitted,
@@ -65,7 +71,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         DELETE FROM project_requests WHERE project_id NOT IN (SELECT id FROM projects);
         DELETE FROM project_request_replies WHERE request_id NOT IN (SELECT id FROM project_requests);",
     )?;
-    Ok(())
+    routes::migrate(db)
 }
 
 /// What the user said, as their page sends it.
@@ -121,8 +127,8 @@ fn check(words: &Words) -> Result<()> {
 /// What the front desk reads before a request's words.
 pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: i64) -> String {
     format!(
-        "Request R-{n} from the user to the project {project} (Workspace {workspace}, Project {project_id}); \
-         the user's words travel as they are:"
+        "Request R-{n} from the user to the project {project} (Workspace {workspace}, Project {project_id}). \
+         Route it with project_route; the user's words travel as they are:"
     )
 }
 
@@ -230,6 +236,12 @@ fn front_desk_now(db: &Connection, project: &str) -> Result<String> {
     })
 }
 
+/// Who the Project's requests go to now, as `front_desk::in_project` says.
+#[cfg(test)]
+pub(crate) fn front_desk_of(store: &crate::store::Store, project: &str) -> Option<String> {
+    front_desk::get(store, project).ok()?.effective_agent_id
+}
+
 /// One lock per Project for its requests and follow-ups: each takes the
 /// next number and sends before the next one does, so a message refused
 /// before it was sent leaves no number taken.
@@ -311,7 +323,10 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
     match sent {
         Ok(receipt) => {
             announce(ws, project);
-            let shown = ws.stored(move |store| view(&*store.db.read()?, request)).await?;
+            let shown = ws.stored({
+                let project = project.to_owned();
+                move |store| view(&*store.db.read()?, &project, request)
+            }).await?;
             Ok(json!({"request":shown,"receipt":receipt}))
         }
         Err(error) => {
@@ -336,12 +351,33 @@ fn forget_request(db: &Connection, id: &str, agent: &str, client: &str) -> Resul
     Ok(())
 }
 
-/// Who a follow-up goes to (YN-86 §4.4): once the request is routed, its
-/// cards' responsible Agents; until then the front desk, as it is now.
-/// No request is routed before S3a-2 brings project_route, so here it is
-/// always the front desk.
-fn follow_up_to(db: &Connection, project: &str) -> Result<Vec<String>> {
-    Ok(vec![front_desk_now(db, project)?])
+/// Who a follow-up goes to (YN-86 §4.4): once the request is routed, each
+/// open Agent that answers for one of its cards now (cards.rs: the task's
+/// newest executor not yet released, else its assignee), in the order its
+/// routes came, but an executor still waiting for its slot, which takes no
+/// message before it starts (executor_slots.rs); until then, or when none
+/// of its cards has such an Agent, the front desk as it is now.
+fn follow_up_to(db: &Connection, project: &str, request: &str) -> Result<Vec<String>> {
+    let mut to: Vec<String> = Vec::new();
+    for task in progress::routed_tasks(db, request)? {
+        let Some(agent) = crate::project_brief::responsible_agent(db, &task)? else { continue };
+        let open: bool = db
+            .query_row(
+                "SELECT json_extract(data,'$.agent.closedAt') IS NULL
+                    AND NOT EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting') FROM agents WHERE id=?1",
+                [&agent],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if open && !to.contains(&agent) {
+            to.push(agent);
+        }
+    }
+    if to.is_empty() {
+        to.push(front_desk_now(db, project)?);
+    }
+    Ok(to)
 }
 
 /// `POST /api/projects/{id}/requests/{n}/replies` (YN-86 §4.4): the user's
@@ -372,7 +408,7 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
             return Ok((place, request, found));
         }
         refuse_archived(&place)?;
-        let to = follow_up_to(&tx, &id)?;
+        let to = follow_up_to(&tx, &id, &request.id)?;
         let m: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_request_replies WHERE request_id=?1", [&request.id], |r| r.get(0))?;
         let reply = Reply { n: m, text: said.text, text_blocks: said.text_blocks, at: crate::model::now(), message_id: said.client_message_id, delivered_to: to };
         tx.execute(
@@ -467,8 +503,10 @@ fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
 
 /// A request as the Project's page reads it: the user's words and blocks as
 /// kept, its title once the front desk gave it one, its message's delivery,
-/// and its follow-ups, oldest first.
-fn view(db: &Connection, request: Request) -> Result<Value> {
+/// and its follow-ups, oldest first; then what routing made of it
+/// (progress.rs): the front desk's notes, its routes, its cards and their
+/// progress, and Core's lines for the conversation.
+fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
     let replies = db
         .prepare_cached(&format!("SELECT {REPLY} FROM project_request_replies WHERE request_id=?1 ORDER BY n"))?
         .query_map([&request.id], reply_row)?
@@ -476,11 +514,13 @@ fn view(db: &Connection, request: Request) -> Result<Value> {
         .into_iter()
         .map(|reply| reply_view(db, &request.id, reply))
         .collect::<Result<Vec<_>>>()?;
-    Ok(json!({
+    let mut shown = json!({
         "id":request.id,"n":request.n,"text":request.text,"textBlocks":request.text_blocks,"title":request.title,
-        "createdAt":request.created_at,"state":request.state,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
+        "createdAt":request.created_at,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
-    }))
+    });
+    progress::show(db, project, &request.id, request.n, &mut shown)?;
+    Ok(shown)
 }
 
 /// `GET /api/projects/{id}/requests?before=&limit=`: the Project's requests,
@@ -495,18 +535,20 @@ pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: O
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let more = rows.len() > limit;
     rows.truncate(limit);
-    let requests = rows.into_iter().map(|request| view(db, request)).collect::<Result<Vec<_>>>()?;
+    let requests = rows.into_iter().map(|request| view(db, project, request)).collect::<Result<Vec<_>>>()?;
     Ok(json!({"requests":requests,"hasMore":more}))
 }
 
 /// The user's routes: on Core's own port and on the phone entry, as the rest
-/// of Home. No Agent tool reads or writes them, and an Agent's credential
-/// (any Authorization header) is refused.
+/// of Home. No Agent tool reads or writes them (the front desk routes with
+/// project_route, routes.rs), and an Agent's credential (any Authorization
+/// header) is refused: a card's reassignment is the user's alone.
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/projects/{id}/front-desk", get(get_front_desk).put(put_front_desk))
         .route("/api/projects/{id}/requests", get(list).post(post_request))
         .route("/api/projects/{id}/requests/{n}/replies", post(post_reply))
+        .route("/api/projects/{id}/cards/{section}/reassign", post(post_reassign))
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
 
@@ -543,6 +585,11 @@ async fn list(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(qu
 
 async fn post_request(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(words): Json<Words>) -> ApiResult<Json<Value>> {
     Ok(Json(submit(&ws, &id, words).await?))
+}
+
+async fn post_reassign(State(ws): State<Arc<Workspace>>, Path((id, section)): Path<(String, i64)>, Json(input): Json<reassign::Reassign>)
+    -> ApiResult<Json<Value>> {
+    Ok(Json(reassign::reassign(&ws, &id, section, input).await?))
 }
 
 async fn post_reply(State(ws): State<Arc<Workspace>>, Path((id, n)): Path<(String, i64)>, Json(words): Json<Words>) -> ApiResult<Json<Value>> {
