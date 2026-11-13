@@ -27,19 +27,19 @@ geometry() {
 on run argv
   set pid to (item 1 of argv) as integer
   tell application "System Events"
-    set w to window 1 of (first process whose unix id is pid)
-    set {wx, wy} to position of w
-    set {ww, wh} to size of w
-    set out to "window" & tab & wx & tab & wy & tab & ww & tab & wh
-    repeat with b in (buttons of w)
-      set r to ""
+    set theWindow to window 1 of (first process whose unix id is pid)
+    set {windowLeft, windowTop} to position of theWindow
+    set {windowWidth, windowHeight} to size of theWindow
+    set out to "window" & tab & windowLeft & tab & windowTop & tab & windowWidth & tab & windowHeight
+    repeat with theButton in (buttons of theWindow)
+      set theRole to ""
       try
-        set r to subrole of b
+        set theRole to subrole of theButton
       end try
-      if r is in {"AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"} then
-        set {bx, by} to position of b
-        set {bw, bh} to size of b
-        set out to out & linefeed & r & tab & bx & tab & by & tab & bw & tab & bh
+      if theRole is in {"AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton"} then
+        set {buttonLeft, buttonTop} to position of theButton
+        set {buttonWidth, buttonHeight} to size of theButton
+        set out to out & linefeed & theRole & tab & buttonLeft & tab & buttonTop & tab & buttonWidth & tab & buttonHeight
       end if
     end repeat
     return out
