@@ -488,11 +488,15 @@ test('cancelling is offered only in the first four steps', async () => {
     await settle();
     const cancel = document.querySelector('#progress-cancel');
     for (const phase of ['release', 'download', 'verify', 'copy']) {
-      pending.channel.onmessage({ phase });
+      pending.channel.onmessage(phase === 'copy' ? { phase, done: 8_600_000, total: 34_400_000 } : { phase });
       assert.equal(cancel.textContent, 'Cancel install', phase);
       assert.equal(cancel.disabled, false, phase);
       assert.equal(visible(document.querySelector('#progress-hint')), true, phase);
     }
+    // Copying in reports its bytes as downloading does.
+    const copy = document.querySelector('#steps li[data-phase="copy"]');
+    assert.match(copy.textContent, /8\.6 \/ 34\.4 MB/);
+    assert.equal(copy.querySelector('.bar span').style.width, '25%');
     for (const phase of ['register', 'start', 'open']) {
       pending.channel.onmessage({ phase });
       assert.equal(cancel.disabled, true, phase);
@@ -564,6 +568,36 @@ test('an install that fails after it is registered keeps the installation, and t
     assert.equal(calls.filter((call) => call.command === 'local_core_install').length, 1, 'not installed over it');
     assert.equal(visible(document.querySelector('#pane-check')), true);
   } finally { dom.window.close(); }
+});
+
+test('the cases the app names have their own words; any other follows the step it stopped at', async () => {
+  const cases = [
+    [[], { code: 'busy', message: 'Core is already being started.' }, /Another start or installation is under way/, /Nothing was changed/],
+    [[], { code: 'notInstallable', message: 'Required: port (Port 4400 is in use).' }, /cannot be installed here yet/, /Nothing was changed/],
+    [['release', 'download', 'verify', 'copy', 'register'], { code: 'tooOld', message: 'The release has no install command. The temporary folder was removed.' },
+      /cannot be installed from the app yet/, /Nothing was installed/],
+    [['release', 'download', 'verify', 'copy', 'register', 'start'], { code: 'starting', message: 'Core did not answer within 120 s.' },
+      /did not answer within two minutes/, /may still be starting/],
+    [['release', 'download', 'verify'], { code: 'verifyFailed', message: 'The archive checksum does not match.' },
+      /did not pass the signature or checksum check/, /only in memory/],
+  ];
+  for (const [phases, error, body, cleaned] of cases) {
+    const { pending, invoke } = installCase();
+    const dom = await mount(invoke);
+    try {
+      const document = dom.window.document;
+      document.querySelector('#install-button').click();
+      await settle();
+      document.querySelector('#go').click();
+      await settle();
+      for (const phase of phases) pending.channel.onmessage({ phase });
+      pending.reject(error);
+      await settle();
+      assert.match(document.querySelector('#problem-body').textContent, body, error.code);
+      assert.match(document.querySelector('#problem-cleaned').textContent, cleaned, error.code);
+      assert.equal(document.querySelector('#problem-detail').textContent, `${error.code}: ${error.message}`);
+    } finally { dom.window.close(); }
+  }
 });
 
 test('a check that is not installable offers no install, and says how to fix each required item', async () => {

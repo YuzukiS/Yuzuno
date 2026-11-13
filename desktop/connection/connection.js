@@ -392,32 +392,37 @@ function drawProgressPane() {
     mark.textContent = state === 'done' ? '✓' : state === 'failed' ? '!' : '';
     const text = document.createElement('span');
     text.append(stepLabel(phase));
-    const detail = progress.details[phase];
-    if (phase === 'download' && progress.total > 0 && index <= reached) {
+    // Downloading and copying in report bytes; the bar is drawn while the
+    // step is under way.
+    const bytes = progress.bytes[phase];
+    if (bytes && bytes.total > 0) {
       text.append(Object.assign(document.createElement('span'), {
         className: 'step-detail',
-        textContent: t('downloaded', { done: megabytes(progress.done), total: megabytes(progress.total) }),
+        textContent: t('downloaded', { done: megabytes(bytes.done), total: megabytes(bytes.total) }),
       }));
       if (state === 'doing') {
         const bar = document.createElement('div');
         bar.className = 'bar';
         const fill = document.createElement('span');
-        fill.style.width = `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%`;
+        fill.style.width = `${Math.min(100, Math.round((bytes.done / bytes.total) * 100))}%`;
         bar.append(fill);
         text.append(bar);
       }
-    } else if (detail) {
-      text.append(Object.assign(document.createElement('span'), { className: 'step-detail', textContent: detail }));
     }
+    const detail = progress.details[phase];
+    if (detail) text.append(Object.assign(document.createElement('span'), { className: 'step-detail', textContent: detail }));
     item.append(mark, text);
     steps.append(item);
   });
   $('#problem').hidden = !problem;
   if (problem) {
+    // The step it stopped at says what happened and what was cleaned up,
+    // unless the app named a case of its own (local_core/mod.rs lists them).
     const phase = problem.phase ?? 'none';
+    const own = (kind) => (problem.code && WORDS.en?.[`${kind}.${problem.code}`] !== undefined ? `${kind}.${problem.code}` : `${kind}.${phase}`);
     $('#problem-title').textContent = t(problem.cancelled ? 'cancelledTitle' : 'failTitle');
-    $('#problem-body').textContent = t(`fail.${phase}`, { distro: targetLabel(local.target) });
-    $('#problem-cleaned').textContent = t(`cleaned.${phase}`);
+    $('#problem-body').textContent = t(own('fail'), { distro: targetLabel(local.target) });
+    $('#problem-cleaned').textContent = t(own('cleaned'));
     $('#problem-detail').textContent = problem.code ? `${problem.code}: ${problem.message}` : problem.message;
   }
   const cancel = $('#progress-cancel');
@@ -795,7 +800,7 @@ async function install(values) {
   local.view = 'progress';
   local.problem = null;
   local.cancelling = false;
-  local.progress = { phase: null, done: 0, total: 0, details: {}, finished: false };
+  local.progress = { phase: null, bytes: {}, details: {}, finished: false };
   if (!Channel) {
     local.problem = { phase: null, code: 'noChannel', message: 'This app cannot send install progress to this page.', cancelled: false };
     drawPanel();
@@ -809,10 +814,8 @@ async function install(values) {
     // Steps only go forward.
     if (now < before) return;
     local.progress.phase = progress.phase;
-    if (progress.phase === 'download' && typeof progress.done === 'number') {
-      local.progress.done = progress.done;
-      if (typeof progress.total === 'number') local.progress.total = progress.total;
-    }
+    if (typeof progress.done === 'number' && typeof progress.total === 'number')
+      local.progress.bytes[progress.phase] = { done: progress.done, total: progress.total };
     if (typeof progress.detail === 'string') local.progress.details[progress.phase] = progress.detail;
     drawPanel();
   };
