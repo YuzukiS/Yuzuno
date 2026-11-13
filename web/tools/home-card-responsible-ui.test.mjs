@@ -68,7 +68,7 @@ const section = (key, kind, title, version, by, extra = {}) => ({ id: ids[key], 
   history: false, ...extra });
 const read = (version) => ({ seen: { version, at: ago(10) } });
 /** What the page handed over, as plain data of this realm: its objects are the jsdom window's. */
-const plain = (value) => JSON.parse(JSON.stringify(value));
+const realm = (value) => JSON.parse(JSON.stringify(value));
 
 // Two tasks: YN-7 goes on with its executor x; YN-5 is done, its executor z released since.
 const buildTask = { id: "YN-7", title: "Build the page", shortName: "Build page", status: "doing", archived: false };
@@ -187,10 +187,10 @@ test("a card bound to a task says who answers for it at its foot, in the rail's 
   assert.equal(key.getAttribute("aria-label"), "Open task YN-7");
   key.click();
   strip.querySelector(".home-card-reassign").click();
-  assert.deepEqual(plain(p.opened), [{ taskId: "YN-7" }, { taskId: "YN-7" }]);
+  assert.deepEqual(realm(p.opened), [{ taskId: "YN-7" }, { taskId: "YN-7" }]);
   // Open session: the executor's conversation (App opens an executor on its Overview first).
   strip.querySelector(".home-card-session").click();
-  assert.deepEqual(plain(p.window.navigated), [{ kind: "agent", agentId: "x" }]);
+  assert.deepEqual(realm(p.window.navigated), [{ kind: "agent", agentId: "x" }]);
   assert.equal(strip.querySelector(".home-card-session").getAttribute("aria-label"), "Open YN-7 · Build page's session");
   // A card with no task is as before: its author's byline and the Reply in its head; no line.
   const plain = p.card("plain");
@@ -258,7 +258,7 @@ test("a card whose task is done is in Done: a report not read yet with its tag, 
   assert.deepEqual([...p.strip("design").querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["Open session"], "no reply to an archived card");
   assert.equal(design.querySelector(".home-seen"), null, "nothing to mark seen");
   p.strip("design").querySelector(".home-card-session").click();
-  assert.deepEqual(plain(p.window.navigated), [{ kind: "agent", agentId: "z" }], "the released executor's session");
+  assert.deepEqual(realm(p.window.navigated), [{ kind: "agent", agentId: "z" }], "the released executor's session");
   assert.deepEqual(p.errors, []);
 });
 
