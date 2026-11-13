@@ -350,7 +350,7 @@ test("only the very version linked is shown, live or in History; otherwise the v
   assert.equal(report.querySelector(".report-article"), null);
   await page.press(report, "Show the project on Home");
   await until(() => !page.report(), "the report closed");
-  await until(() => page.document.getElementById("home-project-p1")?.hasAttribute("data-home-highlight"), "the project shown");
+  await until(() => page.document.querySelector('[data-project-home="p1"]'), "the Project's page shown");
   page.close();
 
   // Its project is not on Home.

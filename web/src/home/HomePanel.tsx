@@ -702,6 +702,7 @@ export function HomePanel({
       readOnly={readOnly}
       onSeen={seen}
       onChanged={onChanged}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   ) : (
     <SummaryCard
@@ -713,6 +714,7 @@ export function HomePanel({
       deck={false}
       readOnly={readOnly}
       onSeen={seen}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   );
   const uncapped = more || (reveal > 0 && reveal !== handled.cap);
