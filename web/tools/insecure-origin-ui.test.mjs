@@ -160,7 +160,10 @@ async function mount({ copies = null } = {}) {
     w.eval(bundle);
     await waitFor(() => button("Home") && /Mori/.test(doc.querySelector(".agent-list")?.textContent || ""), "the workspace is read");
     button("Home").click();
-    await waitFor(() => doc.querySelector("[data-home-project]"), "Home read its panels");
+    await waitFor(() => doc.querySelector('[data-glance-project="p-app"]'), "Home read its projects");
+    // The project's page, where its cards, its approval and its reply are (YN-86).
+    doc.querySelector('[data-glance-project="p-app"] .project-glance-open').click();
+    await waitFor(() => doc.querySelector('[data-project-home="p-app"]'), "App's page");
   } catch (error) {
     w.close();
     throw error;
@@ -227,7 +230,7 @@ test("YN-36 over plain http, an option, a choice, a form and a reply to the proj
     p.card("scope").querySelector(".clarification footer .primary-button").click();
     await waitFor(() => replies(p).length === 3, () => `the form was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[2].body.form?.formId, "scope");
-    const panel = p.doc.querySelector('[data-home-project="p-app"]');
+    const panel = p.doc.querySelector('[data-project-home="p-app"]');
     p.button("Reply to the project", panel).click();
     await pause();
     const reply = panel.querySelector(".home-project-reply");
@@ -249,7 +252,7 @@ test("YN-36 over plain http, an option, a choice, a form and a reply to the proj
 test("YN-36 over plain http, an approval on Home is answered", async () => {
   const p = await mount();
   try {
-    const panel = p.doc.querySelector('[data-home-project="p-app"]');
+    const panel = p.doc.querySelector('[data-project-home="p-app"]');
     p.button("Allow once", panel).click();
     await waitFor(() => p.posts(/\/api\/requests\/r-1\/respond$/).length === 1, "the approval was sent");
     assert.deepEqual(p.posts(/\/respond$/)[0].body, { response: { decision: "accept" } });
