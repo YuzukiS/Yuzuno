@@ -4,7 +4,8 @@
 //! the macOS dock icon. Only the selected Core's workspace page may set it
 //! (the T-188 rule), and it sends the count only when it changes.
 //!
-//! Windows draws an overlay at the lower-right of the button. Tauri's own
+//! Windows chooses where the overlay goes: over the icon's top-right corner
+//! on Windows 11, at the lower-right on Windows 10. Tauri's own
 //! `set_overlay_icon` takes no words for screen readers, so this calls
 //! ITaskbarList3::SetOverlayIcon itself. Windows forgets overlays when
 //! Explorer restarts and then sends TaskbarButtonCreated; the last badge is

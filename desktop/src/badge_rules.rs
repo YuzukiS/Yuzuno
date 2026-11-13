@@ -3,11 +3,13 @@
 //! `health.rs`). `badge.rs` puts it on the Windows taskbar and the macOS
 //! dock.
 //!
-//! The pictures are the ones the user approved (YN-43 S0): a soft speech
-//! bubble whose tail points up-left at the character, drawn for the small
-//! icon size at 100/125/150/200% (16, 20, 24 and 32 px), showing 1–9 and
-//! then 9+. Nothing is drawn at run time. macOS uses no picture: the system
-//! draws its own red number, whose words `dock_label` gives.
+//! The pictures are the soft speech bubble the user approved (YN-43 S0),
+//! turned upside down (the digits stay upright) so that its tail points
+//! down-left at the character from the top-right corner where Windows 11
+//! puts it (YN-101). They are drawn for the small icon size at
+//! 100/125/150/200% (16, 20, 24 and 32 px), showing 1–9 and then 9+.
+//! Nothing is drawn at run time. macOS uses no picture: the system draws its
+//! own red number, whose words `dock_label` gives.
 
 /// The largest count the desktop accepts from the page. Home never has this
 /// many; anything above it, below 0 or not a whole number is refused.
