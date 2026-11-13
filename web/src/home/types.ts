@@ -118,7 +118,7 @@ export type Section = {
    * absent when it was accepted as sent, and from older Cores. */
   repairs?: { code: string; path: string; reason: string }[];
   /** History entries on Home: why it is history. */
-  historyReason?: "seen" | "removed" | "resolved";
+  historyReason?: "seen" | "removed" | "resolved" | "archived";
   /** History entries on Home: whether Home shows its source now (its owner may still edit Home). */
   currentSource?: boolean;
 };

@@ -368,6 +368,9 @@ test("on Home, a resolved, removed or seen section is said from its own record, 
       above(page, "You replied to version 3. Its author removed this card from Home.")],
     ["seen", homeData([], [ended(section, "plan", 30, 1, "seen")]), reportReply, (page) =>
       above(page, "You replied to version 1. This card is now under History on this project.")],
+    // YN-86 S2a: archived with its task, never said as removed by its author.
+    ["archived", homeData([], [ended(section, "plan", 30, 1, "archived")]), reportReply, (page) =>
+      above(page, "You replied to version 1. This card was archived when its task ended; it is under History on this project.")],
     // A seen card its owner writes again is the same section on Home.
     ["seen, written again", homeData([section("plan", 30, 2)]), reportReply, (page) => {
       assert.equal(note(page).textContent, "You replied to version 1 of this card. It has changed since; this is version 2, not the one you answered.Back to your reply");

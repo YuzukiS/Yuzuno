@@ -118,7 +118,7 @@ async fn seen(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(inp
 async fn opened(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<sections::Opened>) -> ApiResult<Json<Value>> {
     let project = id.clone();
     let marked = ws.stored(move |store| sections::mark_opened(store, &project, &input)).await?;
-    if marked["recorded"] == true {
+    if marked["recorded"] == true || marked["archived"] == true {
         super::announce(&ws, Some(&id));
     }
     Ok(Json(marked))

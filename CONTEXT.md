@@ -65,6 +65,11 @@ _Avoid_：card、dashboard、summary
 **Section Owner（节负责人）**：创建某节、也是唯一有权修改它的 Agent；用户对该节的回复默认发给它。owner 被关闭或删除时，归属转给 Brief Steward；没有 Brief Steward 时，由项目内的 Agent 领取。
 _Avoid_：author、最后作者
 
+**Card（卡片）**：绑定到一个 Shared Task 的 Section（YN-86）。由 Project 的负责人（lead）明确绑定；子主题跟着主题节的任务走。任务完成、取消或归档时，卡片收入历史，用户还没读的 report 和还没解决的 ask 除外。没有绑定任务的节不是卡片。
+_Avoid_：从 Live Reference 推断出的绑定
+
+**Card Responsible（卡片负责人）**：此刻为某张卡片负责的 Agent，每次读取时由 Core 从任务算出：该任务最新派发、还没释放的执行者；没有就是任务的 Assignee；都没有就空缺。同一任务换了执行者，负责人跟着换。当前执行者可以在自己卡片的主题下写 report 和 status 子主题。它与 Section Owner 分别表达：owner 写这一节，负责人做这张卡的事；卡片的回复默认发给负责人。
+
 **Brief Steward（简报管理者）**：Project 可以选择指定的一个 Agent，有权合并、拆分和重组其他 Agents 写的 Section，并在 Section Owner 离开时接管其节。
 
 **Seen（看过）**：用户在 Home 上明确标记已看到某节当前版本（或整份 Project Brief）的行为。不根据停留时间推断，与会话的已读分别记录；之后又有变化的节会再次提示。

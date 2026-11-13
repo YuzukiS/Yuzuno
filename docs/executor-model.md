@@ -93,6 +93,12 @@ is Ask-only there.
   own older sections (a report or status it wrote while it edited Home), and
   send `noChange`. It can't write, edit or claim a report or status, or turn
   one into an Ask; such a change is refused with `ask_only`.
+- **A card's executor** (YN-86 S2a, docs/home-v1.md): a lead may bind a
+  section to a task (`task`). That task's current executor (its newest one
+  not yet released) may also put, edit and patch report and status
+  sub-topics under that card's topic, which are its own. The same write
+  anywhere else, or once it is no longer the current executor, is refused
+  with `not_card_responsible`. An executor never binds a section itself.
 - **What a former editor wrote.** A member that edited Home before and isn't
   a lead now becomes Ask-only. Its report and status leave Home's main view
   for the team sections, unread marks as they were; it can remove them.

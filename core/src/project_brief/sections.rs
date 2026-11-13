@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 const COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq)";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id";
 
 #[derive(Clone, Debug)]
 pub(super) struct Row {
@@ -34,6 +34,9 @@ pub(super) struct Row {
     /// The section's identity on Home: the row's own seq, or the seq of the
     /// report it continues (see update.rs, put after a Seen).
     pub identity: i64,
+    /// The task this section is the card of, by its own `task` (YN-86 S2a):
+    /// its internal ID. See cards.rs for the bindings read from elsewhere.
+    pub task_id: Option<String>,
 }
 
 impl Row {
@@ -57,7 +60,7 @@ fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Resu
 /// SQLite extracts these, so a large body is never read into Core.
 const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
 json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq)";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id";
 
 fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
     let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
@@ -83,6 +86,7 @@ fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl ru
                 history_reason: r.get(16)?,
                 history_at: r.get(17)?,
                 identity: r.get(18)?,
+                task_id: r.get(19)?,
             },
             r.get::<_, String>(8)?,
         ))
@@ -118,6 +122,20 @@ pub(super) fn live_keys(db: &Connection, project: &str, keys: &[String]) -> Resu
 
 pub(super) fn live_key(db: &Connection, project: &str, key: &str) -> Result<Option<Row>> {
     Ok(read(db, "project_id=?1 AND key=?2 AND live=1", params![project, key])?.pop())
+}
+
+/// The live sections bound to `task` (internal ID) by their own `task`,
+/// and the sub-topics with none of their own under a live section that is
+/// (YN-86 S2a): what its end archives (cards::task_closed).
+pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
+    read(
+        db,
+        "live=1 AND (task_id=?1 OR (task_id IS NULL AND instr(key,'/')>0 AND EXISTS(
+            SELECT 1 FROM project_brief_sections p WHERE p.project_id=project_brief_sections.project_id
+            AND p.key=substr(project_brief_sections.key,1,instr(project_brief_sections.key,'/')-1) AND p.live=1 AND p.task_id=?1)))
+         ORDER BY seq",
+        [task],
+    )
 }
 
 /// Seen reports, removed and resolved sections of the last 30 days, newest first.
@@ -229,7 +247,9 @@ pub(super) struct Opened {
 /// section that is no longer a live report records nothing, and is never
 /// recorded as the version that is live. The same version again changes
 /// nothing. It changes no section, version, Seen mark, ask, task or the
-/// Brief's version, and puts nothing into history. `recorded` says whether
+/// Brief's version, and puts nothing into history, but for a report whose
+/// card's task has ended (YN-86 S2a): that one goes into history as
+/// archived, and the answer says `archived: true`. `recorded` says whether
 /// this call recorded a newer version.
 pub(super) fn mark_opened(store: &Store, project: &str, opened: &Opened) -> Result<Value> {
     // Read before the writer is held: it reads the database itself.
@@ -265,8 +285,21 @@ pub(super) fn mark_opened(store: &Store, project: &str, opened: &Opened) -> Resu
         params![project, row.identity],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    // A report its task's end left for the user to read (YN-86 S2a): read
+    // now, it goes into history as that end archived the rest of its card.
+    let ended = match super::cards::explicit(&tx, &row)? {
+        Some(task) => super::cards::task_ended(&tx, &task)?,
+        None => false,
+    };
+    if ended {
+        super::cards::archive(&tx, &row, &now())?;
+    }
     tx.commit()?;
-    Ok(json!({"projectId":project,"sectionId":row.identity,"key":row.key,"version":version,"at":at,"recorded":changed == 1}))
+    let mut answer = json!({"projectId":project,"sectionId":row.identity,"key":row.key,"version":version,"at":at,"recorded":changed == 1});
+    if ended {
+        answer["archived"] = json!(true);
+    }
+    Ok(answer)
 }
 
 /// A section's owner as it is now; the name from when it last wrote if the
@@ -457,6 +490,10 @@ pub(super) fn ending_note(db: &Connection, project: &str, key: &str, owner: &str
         )),
         "removed" => Some(format!(" You removed it at {at}.")),
         "resolved" => Some(format!(" You resolved this ask at {at}.")),
+        "archived" => Some(format!(
+            " The task this section is the card of ended (done, cancelled or archived), so it left the live Brief at {at}; \
+             put it again under this key to write a new section."
+        )),
         _ => None,
     }))
 }
