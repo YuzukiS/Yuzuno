@@ -35,7 +35,8 @@ const ask = (extra = {}) => ({
 });
 
 test("a project's new count is Core's, less the Asks the user answered and their owner did not change (YN-3)", () => {
-  const replied = (extra = {}) => ask({ key: "replied", ask: { question: "Ship?", state: "replied", repliedAt: at(20), replyText: "yes", reply: { freeText: true } }, ...extra });
+  const replied = (extra = {}) =>
+    ask({ key: "replied", updatedAt: at(10), ask: { question: "Ship?", state: "replied", repliedAt: at(5), replyText: "yes", reply: { freeText: true } }, ...extra });
   // Answered at this version, its owner has not touched it since: not new.
   assert.equal(projectUnseen(panel([replied()], 2)), 1);
   // Its owner changed it after the reply: new again.

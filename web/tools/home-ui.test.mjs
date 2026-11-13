@@ -3892,7 +3892,7 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(p.doc.querySelector("[data-home-project]"), null, "its panel is not drawn too");
     assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
     assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "2 need you");
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
     // The three groups, cards in the group their place and read state put them.
     const deck = (name) => p.doc.querySelector(`[aria-labelledby="home-project-p-app-${name}"]`);

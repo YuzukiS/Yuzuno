@@ -403,11 +403,13 @@ export function ProjectDeck({
   const referable = useMemo(() => referableHistory(panel.brief.history, live.map((s) => s.key)), [panel.brief.history, live]);
   // The grids this component lays out: the panel's one deck, or a Project page's groups.
   const deckRef = useRef<HTMLDivElement>(null);
+  const staleRef = useRef<HTMLDivElement>(null);
   const needsRef = useRef<HTMLDivElement>(null);
   const laterRef = useRef<HTMLDivElement>(null);
   const doingRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef<HTMLDivElement>(null);
   useDeckPacking(deckRef, deckItems, deckCard);
+  useDeckPacking(staleRef, deckItems, deckCard);
   useDeckPacking(needsRef, deckItems, deckCard);
   useDeckPacking(laterRef, deckItems, deckCard);
   useDeckPacking(doingRef, deckItems, deckCard);
@@ -499,7 +501,7 @@ export function ProjectDeck({
               // Closed at each visit; a jump to a card in it opens it (card-fold.tsx unfoldAround).
               <details className="home-out-of-date">
                 <summary>{t.outOfDate(staleStatus.length, newestStale ? absolute(newestStale, time) : "")}</summary>
-                <div className="home-brief-sub">
+                <div ref={staleRef} className="home-brief-sub">
                   {deckStale.map(topicBlock)}
                 </div>
               </details>

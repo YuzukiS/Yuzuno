@@ -74,7 +74,7 @@ test("open, put-off and answered Asks, current and out-of-date statuses, read an
   assert.deepEqual(keys(deck.deferred), ["ask-later"]);
   assert.deepEqual(keys(deck.replied), ["ask-answered"]);
   assert.deepEqual(keys(deck.doing), ["status-now", "report-new"]);
-  assert.deepEqual(keys(deck.done), ["status-old", "report-read"]);
+  assert.deepEqual(keys(deck.done), ["report-read", "status-old"]);
   assert.deepEqual(deck.counts, { needs: 1, deferred: 1, doing: 2, replied: 1, done: 2 });
   // Every card is in exactly one group.
   assert.deepEqual(
