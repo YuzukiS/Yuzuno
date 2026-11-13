@@ -375,7 +375,9 @@ test("New agent follows a language change from another window, what was typed an
   await pick(page, "Model", "haiku");
   await pick(page, "Permissions", "default");
   const chosen = (labels) => ({
-    name: page.document.querySelector('input[maxlength="60"]').value,
+    // The name field by its label in either language: it has no maxLength
+    // since YN-106 (an Agent's name is counted in Core's bytes).
+    name: [...page.document.querySelectorAll("label")].find((l) => /^(Name|名称)/.test(l.textContent.trim()))?.querySelector("input").value,
     folder: page.document.querySelector(".input-with-icon input").value,
     harness: picked(page, labels.harness),
     model: picked(page, labels.model),
