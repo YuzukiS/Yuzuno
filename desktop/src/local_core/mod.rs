@@ -970,6 +970,7 @@ async fn install(
     send(Progress::phase("release"));
     let client = release::Client::new()?;
     let found = release::choose(&client.releases(&mut receiver).await?, WSL_PLATFORM)?;
+    send(Progress { detail: Some(found.tag.clone()), ..Progress::phase("release") });
     let descriptor = client.download(&found.descriptor, release::SMALL_WAIT, &mut receiver, &mut |_| {}).await?;
     let signature = client.download(&found.signature, release::SMALL_WAIT, &mut receiver, &mut |_| {}).await?;
     let signature = String::from_utf8(signature).map_err(|_| Error::new("signature", "The release signature cannot be read."))?;
@@ -1442,7 +1443,7 @@ mod tests {
         let root = "/home/someone/.local/share/yuzuno-core";
         for change in [
             (|v: &mut release::Verified| v.manifest_sha256 = "x; rm".into()) as fn(&mut release::Verified),
-            |v| v.tag = "core-a b".into(),
+            |v: &mut release::Verified| v.tag = "core-a b".into(),
         ] {
             let mut odd = verified();
             change(&mut odd);

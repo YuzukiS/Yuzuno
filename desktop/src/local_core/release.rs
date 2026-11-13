@@ -309,7 +309,7 @@ impl Client {
         mut response: updater_http::Response,
         limit: u64,
         cancel: &mut watch::Receiver<bool>,
-        progress: &mut dyn FnMut(u64),
+        progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<Vec<u8>, Error> {
         let too_large = || Error::new("releaseInvalid", "GitHub sent more than this app downloads.");
         if response.content_length().is_some_and(|length| length > limit) {
@@ -358,7 +358,7 @@ impl Client {
         asset: &Asset,
         wait: Duration,
         cancel: &mut watch::Receiver<bool>,
-        progress: &mut dyn FnMut(u64),
+        progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<Vec<u8>, Error> {
         let response = self.get(&asset.url, "application/octet-stream", wait).await?;
         let body = Self::body(response, asset.size, cancel, progress).await?;
@@ -599,7 +599,8 @@ mod tests {
         for tag in ["core-20261113-b870c92", "core-1.2_3"] {
             assert!(tag_ok(tag), "{tag}");
         }
-        for tag in ["core-", "desktop-0.4.0", "core-x y", "core-a/b", "core-$(x)", &format!("core-{}", "1".repeat(100))] {
+        let long = format!("core-{}", "1".repeat(100));
+        for tag in ["core-", "desktop-0.4.0", "core-x y", "core-a/b", "core-$(x)", long.as_str()] {
             assert!(!tag_ok(tag), "{tag}");
         }
     }
