@@ -67,14 +67,6 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
-  /** A reply to the project as a whole. */
-  const send = (agentId: string, text: string) =>
-    run(false, async () => {
-      const value = await sendReply(slot, projectId, { key, agentId, text });
-      setReceipt(value);
-      onSent();
-      return value;
-    });
   /**
    * A reply to an ask, to the version in `reply` (YN-38: always the one on
    * screen). Refused because that is no longer the ask's latest version, it
@@ -132,7 +124,7 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
       setBusy(false);
     }
   }
-  return { send, answer, resend, busy, error, receipt, kept };
+  return { answer, resend, busy, error, receipt, kept };
 }
 
 export function TargetPicker({
@@ -760,48 +752,6 @@ export function AskReply({
       />
       {onlyHere && <p className="home-note">{t.askDraftOnlyHere}</p>}
       {busy && <p className="home-note" role="status">{t.sending}</p>}
-      {error && <p className="inline-error" role="alert">{error}</p>}
-    </div>
-  );
-}
-
-/**
- * A reply to the project as a whole. Without a Brief Steward (slice 1) the
- * user picks which of the project's Agents gets it.
- */
-export function ProjectReply(context: ReplyContext & { projectName: string }) {
-  const t = useStrings(homeText);
-  const { send, busy, error, receipt, kept } = useReply(context);
-  const [target, setTarget] = useState(kept?.agentId || "");
-  const [words, setWords] = useState<ReplyWords>({ text: kept?.text || "" });
-  const [open, setOpen] = useState(!!kept);
-  if (!context.agents.length) return null;
-  if (!open)
-    return (
-      <button type="button" className="quiet-button home-project-reply-open" onClick={() => setOpen(true)} disabled={context.readOnly}>
-        <MessageSquareReply size={13} />
-        {t.replyToProject}
-      </button>
-    );
-  return (
-    <div className="home-project-reply">
-      <TargetPicker agents={context.agents} value={target} onChange={setTarget} disabled={context.readOnly || busy} />
-      {kept && <p className="home-note">{t.notConfirmed}</p>}
-      <TextReply
-        slot={outboxKey(context.workspaceId, context.projectId)}
-        label={t.replyField(context.projectName)}
-        placeholder={t.projectMessage}
-        words={words}
-        onWords={setWords}
-        disabled={context.readOnly || !target}
-        busy={busy}
-        onSend={(value) => send(target, value).then(() => setWords({ text: "" }))}
-      />
-      {receipt && !error && (
-        <p className="home-note" role="status">
-          {t.sentToAgent(context.agents.find((a) => a.id === target)?.name || t.theAgent)}
-        </p>
-      )}
       {error && <p className="inline-error" role="alert">{error}</p>}
     </div>
   );

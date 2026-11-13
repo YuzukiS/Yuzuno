@@ -189,6 +189,12 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: replyStatus, turnId: "t10", error: null });
     }
     if (/\/api\/requests\/[^/]+\/respond$/.test(url)) return respond({ ok: true });
+    // Talking to a project (YN-86 §4.2): b is its front desk; what is said is kept as request R-1.
+    if (/\/api\/projects\/[^/]+\/front-desk$/.test(url)) return respond({ version: 1, agentId: "b", effectiveAgentId: "b" });
+    if (/\/api\/projects\/[^/]+\/requests$/.test(url))
+      return respond(request.method === "POST"
+        ? { request: { n: 1 }, receipt: { input: request.body, status: "accepted", turnId: "t11", error: null } }
+        : { requests: [], hasMore: false });
     if (url.endsWith("/api/collaboration/github_repositories"))
       return respond({ repositories: request.body?.projectId === "p-app" ? linked : [], links: [] });
     if (url.endsWith("/api/projects/p-app/repo-activity"))
@@ -700,19 +706,17 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     assert.equal(choice.choice, "plan-b");
     assert.equal(choice.text, "");
     assert.notEqual(choice.clientMessageId, first.body.clientMessageId);
-    // A project-level reply goes to the Agent the user picks, without a key.
-    const app = p.panel("p-app");
-    p.button("Reply to the project", app).click();
-    await pause();
-    const reply = app.querySelector(".home-project-reply");
-    await choose(p, reply.querySelector("select"), "b");
-    await type(p, replyField(reply), "Please tidy the notes");
-    p.button("Send", reply).click();
-    await waitFor(() => p.posts(/\/brief\/reply$/).length === 4, "the project reply was sent");
-    const project = p.posts(/\/brief\/reply$/)[3].body;
-    assert.equal("key" in project, false);
-    assert.equal(project.agentId, "b");
+    // What is said to the project is a request to its front desk (YN-86 §4.2): no Agent to pick, no key.
+    const talk = p.panel("p-app").querySelector(".project-talk");
+    await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
+    await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
+    talk.querySelector(".project-talk-send").click();
+    await waitFor(() => p.posts(/\/requests$/).length === 1, "the request was sent");
+    const [{ url, body: project }] = p.posts(/\/requests$/);
+    assert.match(url, /\/api\/projects\/p-app\/requests$/);
+    assert.deepEqual(Object.keys(project).sort(), ["clientMessageId", "text", "workspaceId"]);
     assert.equal(project.text, "Please tidy the notes");
+    assert.notEqual(project.clientMessageId, first.body.clientMessageId);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

@@ -12,9 +12,10 @@ import { composerText, composerView, setComposerText } from "./composer-driver.m
 
 // YN-91: a long reply from Home goes to the Agent whole. A field that stops
 // at 20,000 characters cut a longer paste short without a word, and 8,000
-// Chinese characters (24,000 bytes) were refused by Core. The real card,
-// ask and project replies, with Core answered here; nothing is sent but
-// what a test sends on purpose.
+// Chinese characters (24,000 bytes) were refused by Core. The real card and
+// ask replies and what is said to a project (YN-86 §4.2: a request, under
+// the same limit), with Core answered here; nothing is sent but what a test
+// sends on purpose.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -27,7 +28,8 @@ try {
     `import React from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
-import {AskReply, ProjectReply} from ${JSON.stringify(path.join(root, "src/home/AskReply.tsx"))};
+import {AskReply} from ${JSON.stringify(path.join(root, "src/home/AskReply.tsx"))};
+import {ProjectTalk} from ${JSON.stringify(path.join(root, "src/home/ProjectTalk.tsx"))};
 import {CardReply} from ${JSON.stringify(path.join(root, "src/home/CardReply.tsx"))};
 import {HOME_REPLY_MAX_BYTES, utf8Bytes} from ${JSON.stringify(path.join(root, "src/home/reply-limit.tsx"))};
 import {draftFromTextBlocks, draftTextBlocks} from ${JSON.stringify(path.join(root, "src/message-content.ts"))};
@@ -37,7 +39,7 @@ window.drafts={draftFromTextBlocks, draftTextBlocks, draftText};
 const root=createRoot(document.getElementById('root'));
 window.renderCard=(props)=>flushSync(()=>root.render(<CardReply {...props}/>));
 window.renderAsk=(props)=>flushSync(()=>root.render(<AskReply {...props}/>));
-window.renderProject=(props)=>flushSync(()=>root.render(<ProjectReply {...props}/>));`,
+window.renderProject=(props)=>flushSync(()=>root.render(<ProjectTalk {...props}/>));`,
   );
   const result = await build({
     root,
@@ -69,6 +71,8 @@ const report = { ...base, key: "notes", kind: "report", title: "Notes", version:
 const ask = { ...base, key: "words", kind: "ask", title: "Anything before we ship?", version: 1,
   ask: { question: "Anything before we ship?", state: "open", reply: { freeText: true } } };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+/** A reply sent to Core: a card's or an ask's, or what is said to a project (a request). */
+const replied = (post) => post.url.endsWith("/brief/reply") || post.url.endsWith("/requests");
 
 function mount({ lang = "en", storage = {} } = {}) {
   const errors = [];
@@ -87,11 +91,16 @@ function mount({ lang = "en", storage = {} } = {}) {
   window.crypto.randomUUID ??= () => `id-${posts.length}-${Math.random().toString(16).slice(2)}`;
   window.fetch = async (url, init = {}) => {
     const sent = init.body ? JSON.parse(init.body) : null;
-    posts.push({ url: String(url), method: init.method || "GET", body: sent });
+    const method = init.method || "GET";
+    // What a project's page reads: its front desk and its requests (none yet).
+    const read = method === "GET" && /\/front-desk$/.test(String(url)) ? { version: 1, agentId: "mori", effectiveAgentId: "mori" }
+      : method === "GET" && /\/requests$/.test(String(url)) ? { requests: [], hasMore: false } : null;
+    if (!read) posts.push({ url: String(url), method, body: sent });
+    const receipt = { input: { text: sent?.text ?? "", clientMessageId: sent?.clientMessageId ?? "" },
+      status: "accepted", turnId: "mori-t2", error: null };
     return {
       ok: true, status: 200,
-      json: async () => ({ input: { text: sent?.text ?? "", clientMessageId: sent?.clientMessageId ?? "" },
-        status: "accepted", turnId: "mori-t2", error: null }),
+      json: async () => read ?? (/\/requests$/.test(String(url)) ? { request: { n: 1 }, receipt } : receipt),
       text: async () => "",
     };
   };
@@ -103,17 +112,13 @@ function mount({ lang = "en", storage = {} } = {}) {
     card: () => window.renderCard({ section: report, projectId: "p1", workspaceId: "ws", agents, opened: true, onClose: () => { closed.n++; } }),
     ask: () => window.renderAsk({ section: ask, ...context }),
     project: async () => {
-      window.renderProject({ ...context, projectName: "Yuzuno app" });
-      document.querySelector(".home-project-reply-open").click();
-      await tick();
-      const select = document.querySelector(".home-project-reply select");
-      select.value = "mori";
-      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+      window.renderProject({ projectId: "p1", projectName: "Yuzuno app", workspaceId: "ws", readOnly: false, revision: 0,
+        leadCount: 1, onCard: () => {}, onNavigate: () => {} });
       await tick();
     },
   };
   // The reply's writing field: a plain one, or the composer's.
-  const field = () => document.querySelector(".home-text-reply textarea, .home-text-reply [data-composer-input]");
+  const field = () => document.querySelector(":is(.home-text-reply, .project-talk-field) :is(textarea, [data-composer-input])");
   const type = async (text) => {
     const area = field();
     if (area.matches("textarea")) {
@@ -124,10 +129,10 @@ function mount({ lang = "en", storage = {} } = {}) {
   };
   const send = async () => {
     const before = posts.length;
-    document.querySelector(".home-text-reply button[type=submit]").click();
+    submit().click();
     for (let i = 0; i < 40 && posts.length === before; i++) await tick();
     await tick();
-    return posts.slice(before).filter((p) => p.url.endsWith("/brief/reply")).map((p) => p.body);
+    return posts.slice(before).filter(replied).map((p) => p.body);
   };
   const note = () => document.querySelector(".home-reply-length");
   /** Pasted into the reply's field, as the clipboard gives it. */
@@ -145,11 +150,11 @@ function mount({ lang = "en", storage = {} } = {}) {
     view.dispatch({ changes: { from: view.state.doc.length, insert: text }, selection: { anchor: view.state.doc.length + text.length } });
     await tick();
   };
-  const chips = () => [...document.querySelectorAll(".home-text-reply .pasted-text-chip")];
+  const chips = () => [...document.querySelectorAll(":is(.home-text-reply, .project-talk-field) .pasted-text-chip")];
   const button = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
   const stored = () => Object.fromEntries(Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i))
     .map((key) => [key, window.localStorage.getItem(key)]));
-  const submit = () => document.querySelector(".home-text-reply button[type=submit]");
+  const submit = () => document.querySelector(":is(.home-text-reply, .project-talk-compose) button[type=submit]");
   return { window, document, errors, posts, shapes, field, type, send, note, submit, paste, append, chips, button, stored, closed, close: () => window.close() };
 }
 
@@ -231,7 +236,7 @@ test("a reply over the limit says how far over and why, sends nothing and keeps 
       page.field().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
       page.field().closest("form").requestSubmit();
       await tick();
-      assert.equal(page.posts.filter((p) => p.url.endsWith("/brief/reply")).length, 0, `${shape}/${lang}: nothing sent`);
+      assert.equal(page.posts.filter(replied).length, 0, `${shape}/${lang}: nothing sent`);
       // The words are kept as written, the field whole.
       const kept = page.field().matches("textarea") ? page.field().value : null;
       if (kept !== null) assert.ok(kept === over, `${shape}/${lang}: the field keeps all ${over.length} characters`);
@@ -242,6 +247,10 @@ test("a reply over the limit says how far over and why, sends nothing and keeps 
       if (shape === "ask") {
         const saved = JSON.parse(page.window.localStorage.getItem("yuzuno.home-ask-drafts.v1") || "{}");
         assert.ok(Object.values(saved).some((draft) => draft.text === over), "the ask's draft is kept in this browser");
+      }
+      if (shape === "project") {
+        const saved = JSON.parse(page.window.localStorage.getItem("yuzuno.project-talk-drafts.v1") || "{}");
+        assert.ok(Object.values(saved).some((draft) => draft.text === over), "what is said to the project is kept in this browser");
       }
       // Shortened to the limit, it goes.
       await page.type(ofBytes(most));

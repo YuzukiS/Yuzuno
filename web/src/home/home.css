@@ -1451,8 +1451,7 @@ ul.home-widget {
   padding-top: 10px;
   border-top: 1px dashed var(--line);
 }
-.home-ask-reply,
-.home-project-reply {
+.home-ask-reply {
   display: flex;
   flex-direction: column;
   gap: 8px;

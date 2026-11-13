@@ -3,7 +3,9 @@ import { LoaderCircle, X } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Avatar } from "./components";
 import { strings, useStrings } from "./i18n";
+import { readFrontDesk, saveFrontDesk, type FrontDesk } from "./home/project-talk-api";
 import { projectName } from "./projects";
+import { ChoiceCards } from "./SettingsChoices";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Agent, Project } from "./types";
 import "./project-leads.css";
@@ -36,6 +38,13 @@ const text = strings({
   fromProject: (project: string) => ` · from ${project}`,
   add: "Add",
   moveNote: "Moving an agent changes only where it is listed. Its folder, conversation and read state stay the same.",
+  frontDesk: "Front desk",
+  frontDeskHelp: "What you say to this Project on its page goes to its front desk first, shown there as “the project”; it passes your words on to the right lead or a new card. One of the saved leads.",
+  frontDeskOnly: "The only lead: the front desk without choosing.",
+  frontDeskChosen: "Chosen as the front desk.",
+  frontDeskNone: "No front desk yet: with several leads, choose one before you can talk to the project.",
+  frontDeskNoLead: "Save a lead first: the front desk is one of the leads.",
+  frontDeskSaving: "Saving the front desk…",
 }, {
   members: "Agent",
   intro: "负责人为这个 Project 的任务负责：派发执行者、编辑 Home、写交接文档。其他 Agent 只能提问。你在这个 Project 里新建或加入的 Agent 就是负责人；你不必设置，也可以在这里移除负责人。执行者不会成为负责人。",
@@ -57,6 +66,13 @@ const text = strings({
   fromProject: (project) => ` · 来自 ${project}`,
   add: "添加",
   moveNote: "移动 Agent 只改变它列在哪里。它的文件夹、会话和已读状态保持不变。",
+  frontDesk: "前台",
+  frontDeskHelp: "你在项目页上对项目说的话先送到前台，界面上显示为「项目」，由它转给合适的负责人或新开卡片。从已保存的负责人里选一位。",
+  frontDeskOnly: "只有一位负责人，不用选就是前台。",
+  frontDeskChosen: "已选为前台。",
+  frontDeskNone: "还没有前台：有几位负责人时，先选一位才能对项目说话。",
+  frontDeskNoLead: "先保存一位负责人：前台从负责人里选。",
+  frontDeskSaving: "正在保存前台…",
 });
 
 /** The answer as this component reads it: a list, even from an answer without one. */
@@ -236,6 +252,7 @@ export function ProjectMembers({ project, agents, projects, disabled, onChanged 
         <p className="project-leads-hint">{ids.length === 0 ? t.none : t.some(ids.length)}</p>
       )}
       {saved && error && <p className="inline-error" role="alert">{error}</p>}
+      {saved && <FrontDeskChoice projectId={projectId} leads={saved.leadAgentIds} members={members} disabled={disabled} />}
       {(error || (!inBar && changed)) && (
         <div className="project-leads-actions">
           {!inBar && changed && (
@@ -277,5 +294,69 @@ export function ProjectMembers({ project, agents, projects, disabled, onChanged 
       {moveError && <p className="inline-error" role="alert">{moveError}</p>}
       <p className="project-note">{t.moveNote}</p>
     </fieldset>
+  );
+}
+
+/** A Project's front desk (YN-86 §4.1): one of its saved leads, chosen here
+ * and saved at once against the version read, as Core's own leads rule has
+ * it (no Agent tool sets it). With one lead and none chosen, that lead is
+ * it; with several, none until chosen. Read again when the saved leads
+ * change, since Core clears a front desk that stops leading. */
+function FrontDeskChoice({ projectId, leads, members, disabled }: {
+  projectId: string;
+  leads: string[];
+  members: Agent[];
+  disabled: boolean;
+}) {
+  const t = useStrings(text);
+  const [desk, setDesk] = useState<FrontDesk | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
+  const leadKey = leads.join("\n");
+  useEffect(() => {
+    const controller = new AbortController();
+    readFrontDesk(projectId, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setDesk(value); })
+      .catch((e) => { if (!controller.signal.aborted) setError(errorText(e)); });
+    return () => controller.abort();
+  }, [projectId, leadKey, reload]);
+  const choices = leads
+    .map((id) => members.find((agent) => agent.id === id))
+    .filter((agent): agent is Agent => !!agent && !agent.closedAt);
+  async function choose(agentId: string) {
+    if (!desk || saving || disabled || agentId === desk.agentId) return;
+    setSaving(true);
+    setError("");
+    try {
+      setDesk(await saveFrontDesk(projectId, desk.version, agentId));
+    } catch (e) {
+      setError(errorText(e));
+      setReload((n) => n + 1);
+    } finally {
+      setSaving(false);
+    }
+  }
+  const note = (id: string) =>
+    desk?.agentId === id ? t.frontDeskChosen : desk?.effectiveAgentId === id ? t.frontDeskOnly : undefined;
+  return (
+    <div className="project-front-desk" data-front-desk={desk?.effectiveAgentId ?? ""}>
+      <h4>{t.frontDesk}</h4>
+      <p className="appearance-help">{t.frontDeskHelp}</p>
+      {choices.length === 0 ? (
+        <p className="project-leads-hint">{t.frontDeskNoLead}</p>
+      ) : desk ? (
+        <ChoiceCards
+          name={`front-desk-${projectId}`}
+          value={desk.effectiveAgentId ?? ""}
+          choices={choices.map((agent) => ({ value: agent.id, label: agent.name, note: note(agent.id) }))}
+          onChange={(id) => void choose(id)}
+          className="project-front-desk-choice"
+        />
+      ) : null}
+      {desk && !desk.effectiveAgentId && choices.length > 0 && <p className="project-leads-hint">{t.frontDeskNone}</p>}
+      {saving && <p className="project-leads-hint" role="status">{t.frontDeskSaving}</p>}
+      {error && <p className="inline-error" role="alert">{error}</p>}
+    </div>
   );
 }
