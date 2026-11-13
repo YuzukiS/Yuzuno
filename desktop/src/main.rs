@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// The taskbar badge does its drawing on Windows only.
-#[cfg_attr(not(windows), allow(dead_code))]
+// The badge uses the system's own taskbar button (Windows) or dock icon
+// (macOS).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod badge;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod badge_rules;
@@ -718,8 +719,9 @@ async fn open_core(
                 .permission("allow-desktop-notifications-request"),
             )
             .map_err(|e| format!("Could not enable system notifications: {e}"))?;
-        // Home's count on the taskbar button (YN-43), likewise from the
-        // selected workspace only (the command checks the origin again).
+        // Home's count on the taskbar button or dock icon (YN-43, YN-94),
+        // likewise from the selected workspace only (the command checks the
+        // origin again).
         window
             .add_capability(
                 CapabilityBuilder::new(format!(
@@ -1126,8 +1128,9 @@ fn main() {
                 ));
             let builder = builder
                 // A page other than the selected workspace (the connection
-                // page, or another origin) takes the taskbar badge off; the
-                // workspace page sets it again when it loads (YN-43).
+                // page, or another origin) takes the badge off the taskbar
+                // button or dock icon; the workspace page sets it again when
+                // it loads (YN-43).
                 .on_page_load(|window, payload| {
                     if !matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
                         return;

@@ -1,6 +1,7 @@
-//! Home's "needs you" count on the Windows taskbar button (YN-43): the
-//! approved bubble (`badge_rules`) as the button's overlay icon, with words
-//! for screen readers. Only the selected Core's workspace page may set it
+//! Home's "needs you" count on the desktop icon (YN-43, YN-94): the
+//! approved bubble (`badge_rules`) as the Windows taskbar button's overlay
+//! icon, with words for screen readers, and the system's own red number on
+//! the macOS dock icon. Only the selected Core's workspace page may set it
 //! (the T-188 rule), and it sends the count only when it changes.
 //!
 //! Windows draws an overlay at the lower-right of the button. Tauri's own
@@ -8,9 +9,15 @@
 //! ITaskbarList3::SetOverlayIcon itself. Windows forgets overlays when
 //! Explorer restarts and then sends TaskbarButtonCreated; the last badge is
 //! set again then, and when the window moves to a display with another
-//! scale. The badge goes when the window leaves the selected workspace.
+//! scale.
+//!
+//! macOS draws the count itself, as the red number on the dock icon, through
+//! Tauri's `Window::set_badge_label`; `badge_rules::dock_label` says its
+//! words (1–9, then 9+), all of it, since no picture of ours is used there.
+//!
+//! The badge goes when the window leaves the selected workspace, on both.
 //! Nothing flashes or asks for attention. Other systems accept the count and
-//! show nothing; a macOS dock badge is later work.
+//! show nothing.
 
 use crate::{badge_rules, connection, ConnectionState};
 use std::sync::Mutex;
@@ -81,7 +88,16 @@ fn show(window: &WebviewWindow, shown: Option<Shown>) {
     }
     #[cfg(windows)]
     win::apply_later(window);
-    #[cfg(not(windows))]
+    // The system draws its own red number on the dock icon; none takes it
+    // off. It has no words of its own to set for screen readers.
+    #[cfg(target_os = "macos")]
+    {
+        let label = shown.and_then(|s| badge_rules::dock_label(s.count));
+        if let Err(error) = window.set_badge_label(label) {
+            eprintln!("Unable to set the dock badge: {error}");
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = window;
 }
 

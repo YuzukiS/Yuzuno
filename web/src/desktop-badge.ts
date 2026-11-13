@@ -1,10 +1,11 @@
 /**
- * Home's "needs you" count on the desktop app's taskbar button (YN-43):
- * the same count as Home's tab and the window title, handed to the desktop
- * shell's `desktop_badge` command with the language of its words for
- * screen readers. Windows shows the badge; the desktop app on other systems
- * takes the count and shows nothing. Outside the desktop app there is no
- * command, and nothing is sent.
+ * Home's "needs you" count on the desktop app's taskbar button or dock icon
+ * (YN-43, YN-94): the same count as Home's tab and the window title, handed
+ * to the desktop shell's `desktop_badge` command with the language of its
+ * words for screen readers. Windows shows a bubble on the taskbar button;
+ * macOS shows the system's own red number on the dock icon; the desktop app
+ * on other systems takes the count and shows nothing. Outside the desktop
+ * app there is no command, and nothing is sent.
  *
  * A count is sent only when it or the language changes. An older desktop
  * app has no such command; its refusal is ignored, and nothing else
