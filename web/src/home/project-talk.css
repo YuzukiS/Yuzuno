@@ -85,6 +85,11 @@
 .project-talk-requests {
   --talk-shift: -32px;
   background: var(--paper);
+}
+/* The requests' own width decides how a card row lays out, not their
+   column's: a column closing narrows over its content, which keeps its
+   width and its layout. */
+.project-talk-requests > .project-talk-scroll {
   container: talk-requests / inline-size;
 }
 .project-talk-chat {
@@ -336,7 +341,7 @@
   grid-area: go;
   color: var(--accent-ink, var(--ink));
 }
-/* A narrow requests side (a 940px window, a phone): each card in two lines. */
+/* A narrow requests list (a 940px window, a phone): each card in two lines. */
 @container talk-requests (max-width: 460px) {
   .request-card-row {
     grid-template-columns: auto minmax(0, 1fr) auto;

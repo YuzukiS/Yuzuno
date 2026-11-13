@@ -385,8 +385,13 @@ async function check(run) {
           const opacity = (name) => Number(getComputedStyle(content(name)).opacity);
           // The content's own width: a side closing keeps it as it began, its column clipping it (no re-wrap).
           const inner = (name) => Math.round(content(name).getBoundingClientRect().width);
+          // Card rows of the requests laid out in two lines: a closing side keeps its layout too.
+          const twoLines = [...side("requests").querySelectorAll(".request-card-row")].filter((row) => {
+            const title = row.querySelector(".request-card-row-title").getBoundingClientRect();
+            return row.querySelector(".request-card-row-who").getBoundingClientRect().top >= title.bottom - 2;
+          }).length;
           return { requests: Math.round(side("requests").getBoundingClientRect().width), chat: Math.round(side("chat").getBoundingClientRect().width),
-            requestsOpacity: opacity("requests"), chatOpacity: opacity("chat"), requestsInner: inner("requests"), chatInner: inner("chat") };
+            requestsOpacity: opacity("requests"), chatOpacity: opacity("chat"), requestsInner: inner("requests"), chatInner: inner("chat"), twoLines };
         }, ms);
         const file = `frames/${run.name}-both-to-${to}-${step}.png`;
         await talk.screenshot({ path: join(output, file) });
@@ -404,6 +409,9 @@ async function check(run) {
       for (const [name, frame] of [["quarter", quarter], ["middle", middle]])
         assert.ok(Math.abs(frame[`${gone}Inner`] - start[`${gone}Inner`]) <= 1 || frame[`${gone}Opacity`] <= 0.1,
           `the closing side's content at the ${name}: ${JSON.stringify({ start, frame })}`);
+      if (gone === "requests")
+        for (const frame of [quarter, middle])
+          assert.ok(frame.twoLines === start.twoLines || frame.requestsOpacity <= 0.1, `the requests keep their rows' layout: ${JSON.stringify({ start, frame })}`);
       const staying = to === "requests" ? "requestsOpacity" : "chatOpacity";
       assert.ok([start, middle, end].every((f) => f[staying] === 1), `the side staying open is never faded: ${JSON.stringify([start, middle, end])}`);
       pass(`frames of Both → ${to}`, { frames: report.frames.slice(-4).map((f) => f.file) });
