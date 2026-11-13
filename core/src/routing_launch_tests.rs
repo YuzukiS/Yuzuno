@@ -200,9 +200,17 @@ async fn a_claude_swap_binding_resolves_at_each_start_and_never_to_another_accou
 
     set_list(list(1, "org-1"));
     let launch = ws.claude_launch("cl").await.unwrap();
+    // YUZUNO_CSWAP_REAL_MEMORY: the launcher names the real auto memory folder (YN-93).
+    assert_eq!(launch.env.iter().map(|(n, v)| (n.as_str(), v.expose().to_string())).collect::<Vec<_>>(),
+        [("YUZUNO_CSWAP_PYTHON", python.display().to_string()), ("YUZUNO_CSWAP_ACCOUNT", "2".to_string()),
+         ("YUZUNO_CSWAP_REAL_MEMORY", "1".to_string())]);
+    assert_eq!(launch.executable.as_deref(), Some(dir.path().join("runtime").join("cswap-claude").as_path()));
+    // At the read-only level it cannot write, so Core does not ask for that folder.
+    ws.store.set_permission_level("cl", Some(crate::permission_levels::READ_ONLY)).unwrap();
+    let launch = ws.claude_launch("cl").await.unwrap();
     assert_eq!(launch.env.iter().map(|(n, v)| (n.as_str(), v.expose().to_string())).collect::<Vec<_>>(),
         [("YUZUNO_CSWAP_PYTHON", python.display().to_string()), ("YUZUNO_CSWAP_ACCOUNT", "2".to_string())]);
-    assert_eq!(launch.executable.as_deref(), Some(dir.path().join("runtime").join("cswap-claude").as_path()));
+    ws.store.set_permission_level("cl", None).unwrap();
     // The same account is now the host's default login: the plain host login, not cswap run.
     set_list(list(2, "org-1"));
     let launch = ws.claude_launch("cl").await.unwrap();

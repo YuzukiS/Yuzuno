@@ -162,6 +162,87 @@ def main():
     assert!(!none.status.success() && none.stdout.is_empty());
 }
 
+/// YN-93: claude-swap shares chat history by linking a profile's `projects/`
+/// to `~/.claude/projects`, so Claude's auto memory folder there has its real
+/// path elsewhere, and Claude Code asks before every memory write through the
+/// link. When Core asks for it (not at the read-only level), the launcher
+/// names the real folder as `autoMemoryDirectory`; otherwise it adds nothing.
+/// Synthetic profiles, a stub claude_swap and a stub claude.
+#[test]
+fn the_launcher_names_the_real_memory_folder_when_projects_is_a_link() {
+    let Some(python) = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|dir| dir.join("python3")).find(|p| p.is_file()) else {
+        eprintln!("skipped: no python3 on PATH");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let d = &fs::canonicalize(tmp.path()).unwrap();
+    fs::create_dir_all(d.join("pkg/claude_swap")).unwrap();
+    fs::write(d.join("pkg/claude_swap/__init__.py"), "").unwrap();
+    fs::write(d.join("pkg/claude_swap/cli.py"), r#"import os, sys
+def main():
+    claude = os.environ["STUB_CLAUDE"]
+    os.execvpe(claude, [claude, *sys.argv[5:]], dict(os.environ, CLAUDE_CONFIG_DIR=os.environ["STUB_PROFILE"]))
+"#).unwrap();
+    let claude = script(d, "claude", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_DIR/args\"\nprintf '%s' \"${YUZUNO_CSWAP_REAL_MEMORY-unset}\" > \"$STUB_DIR/flag\"\n");
+    let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtimes/claude/cswap-claude");
+    // The shared history folder; a profile linking to it; one with its own.
+    let shared = d.join("home/.claude/projects");
+    fs::create_dir_all(&shared).unwrap();
+    let linked = d.join("sessions/2-person");
+    fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(&shared, linked.join("projects")).unwrap();
+    let own = d.join("sessions/3-person");
+    fs::create_dir_all(own.join("projects")).unwrap();
+    // A profile whose settings already choose a memory folder: left to them.
+    let chosen = d.join("sessions/4-person");
+    fs::create_dir_all(&chosen).unwrap();
+    std::os::unix::fs::symlink(&shared, chosen.join("projects")).unwrap();
+    fs::write(chosen.join("settings.json"), r#"{"autoMemoryDirectory": "~/notes"}"#).unwrap();
+    // A repository, a folder in it, and a linked worktree of it, by Git's own files.
+    let repo = d.join("repo.main");
+    let worktree = d.join("wt");
+    fs::create_dir_all(repo.join(".git/worktrees/wt")).unwrap();
+    fs::create_dir_all(repo.join("src/inner")).unwrap();
+    fs::create_dir_all(&worktree).unwrap();
+    fs::write(repo.join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+    fs::write(repo.join(".git/worktrees/wt/gitdir"), format!("{}\n", worktree.join(".git").display())).unwrap();
+    fs::write(worktree.join(".git"), format!("gitdir: {}\n", repo.join(".git/worktrees/wt").display())).unwrap();
+    let run = |profile: &Path, cwd: &Path, asked: bool, args: &[&str]| -> (Vec<String>, String) {
+        let mut command = std::process::Command::new(&launcher);
+        command.args(args).current_dir(cwd).env("YUZUNO_CSWAP_PYTHON", &python).env("YUZUNO_CSWAP_ACCOUNT", "2")
+            .env("PYTHONPATH", d.join("pkg")).env("STUB_DIR", d).env("STUB_CLAUDE", &claude).env("STUB_PROFILE", profile)
+            .env_remove("YUZUNO_CSWAP_REAL_MEMORY").env_remove("CLAUDE_CODE_PROJECT_DIR_NAME")
+            .env_remove("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE").env_remove("CLAUDE_CODE_REMOTE_MEMORY_DIR");
+        if asked {
+            command.env("YUZUNO_CSWAP_REAL_MEMORY", "1");
+        }
+        let out = command.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let args = fs::read_to_string(d.join("args")).unwrap().lines().map(str::to_owned).collect();
+        (args, fs::read_to_string(d.join("flag")).unwrap())
+    };
+    // Claude's folder name for the repository (Claude Code 2.1.318): every
+    // character but a-z, A-Z and 0-9 becomes '-'.
+    let name: String = fs::canonicalize(&repo).unwrap().to_str().unwrap().chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let real = fs::canonicalize(&shared).unwrap().join(&name).join("memory");
+    for cwd in [worktree.clone(), repo.join("src/inner"), repo.clone()] {
+        let (args, flag) = run(&linked, &cwd, true, &["--print", "hi"]);
+        assert_eq!(args.first().map(String::as_str), Some("--settings"), "from {}: {args:?}", cwd.display());
+        let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+        assert_eq!(settings, serde_json::json!({"autoMemoryDirectory": real.to_str().unwrap()}), "from {}", cwd.display());
+        assert_eq!(args[2..], ["--print", "hi"]);
+        assert_eq!(flag, "unset", "Core's request is not passed on to Claude");
+    }
+    // Its own projects/ (no link), the read-only level (Core does not ask), a
+    // memory folder the settings already choose, and settings Claude is
+    // already given: Claude's arguments stay as they were.
+    for (profile, asked, args) in [(&own, true, &["--print", "hi"][..]), (&linked, false, &["--print", "hi"]),
+        (&chosen, true, &["--print", "hi"]), (&linked, true, &["--settings", "{}", "--print", "hi"])] {
+        assert_eq!(run(profile, &worktree, asked, args).0, args, "{} asked={asked}", profile.display());
+    }
+}
+
 /// The routes: on Core's own port and on the phone entry (YN-79), refusing an
 /// Agent's credential on both; the command and the homes are checked as they
 /// are saved.
