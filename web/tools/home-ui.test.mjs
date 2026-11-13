@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { hoverTip, readTip } from "./tip-dom.mjs";
-import { composerText } from "./composer-driver.mjs";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
@@ -237,6 +237,12 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
   };
 }
 async function type(p, element, value) {
+  // A reply's field is the conversation's composer (YN-91).
+  if (element.matches("[data-composer-input]")) {
+    setComposerText(element, value);
+    await pause();
+    return;
+  }
   const proto = element.tagName === "TEXTAREA" ? p.w.HTMLTextAreaElement.prototype : p.w.HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, "value").set.call(element, value);
   element.dispatchEvent(new p.w.Event("input", { bubbles: true }));
@@ -248,6 +254,8 @@ async function choose(p, select, value) {
   await pause();
 }
 const card = (p, projectId, key) => p.doc.getElementById(`home-section-${projectId}-${key}`);
+/** A reply's field under `root` (YN-91: the conversation's composer), or null. */
+const replyField = (root) => root?.querySelector(".home-text-reply [data-composer-input]") ?? null;
 // A report or status is read on its page, opened from its card (T-18, Lead 2270).
 async function openReport(p, projectId, key) {
   card(p, projectId, key).querySelector(".home-report-open").click();
@@ -629,7 +637,7 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     const release = card(p, "p-app", "release");
     assert.equal(release.querySelector(".home-reply-target select").value, "a", "the owner is the default recipient");
     // The first send fails; it goes again only as it was, reusing its client id.
-    await type(p, release.querySelector("textarea"), "Ship it after the docs fix");
+    await type(p, replyField(release), "Ship it after the docs fix");
     p.button("Send", release).click();
     await waitFor(() => release.querySelector('[role="alert"]'), "the failure is shown");
     p.button("Retry previous reply", release).click();
@@ -663,7 +671,7 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     await pause();
     const reply = app.querySelector(".home-project-reply");
     await choose(p, reply.querySelector("select"), "b");
-    await type(p, reply.querySelector("textarea"), "Please tidy the notes");
+    await type(p, replyField(reply), "Please tidy the notes");
     p.button("Send", reply).click();
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 4, "the project reply was sent");
     const project = p.posts(/\/brief\/reply$/)[3].body;
@@ -817,7 +825,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     const scope = () => card(p, "p-app", "scope");
     const deck = () => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
     const order = deck();
-    await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
+    await type(p, replyField(release()), "Ship it after the docs fix");
     p.button("Send", release()).click();
     // Core has it: the answer card at once, as a fresh visit shows it, with nothing held for the card it was.
     await waitFor(() => release().classList.contains("is-answer"), "an answer card as soon as Core has the reply");
@@ -848,9 +856,9 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.match(release().querySelector(".home-answer-update").textContent, /after your reply.*Shipping once the docs fix lands\./s);
     // Reply again: opened, it takes its row; sent, it closes back to the answer card with the new reply.
     p.button("Reply again", release()).click();
-    await waitFor(() => release().querySelector(".home-card-body textarea"), "the reply field, on the card");
+    await waitFor(() => release().querySelector(".home-card-body .home-text-reply [data-composer-input]"), "the reply field, on the card");
     assert.ok(release().classList.contains("is-open"));
-    await type(p, release().querySelector(".home-card-body textarea"), "Ship it tomorrow instead");
+    await type(p, release().querySelector(".home-card-body .home-text-reply [data-composer-input]"), "Ship it tomorrow instead");
     p.button("Send", release().querySelector(".home-card-body")).click();
     await waitFor(() => !release().classList.contains("is-open") && /Ship it tomorrow instead$/.test(release().querySelector(".home-answer-reply").textContent),
       "Reply again: closed back to the answer card, the new reply on it");
@@ -900,7 +908,7 @@ test("YN-28 an answer card its owner then resolves keeps the answer card's heigh
   };
   try {
     const release = () => card(p, "p-app", "release");
-    await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
+    await type(p, replyField(release()), "Ship it after the docs fix");
     p.button("Send", release()).click();
     await waitFor(() => release().classList.contains("is-answer"), "the answer card");
     assert.equal(release().style.minHeight, "", "the user's own reply: no height held for the card it was (YN-21)");
@@ -1352,7 +1360,7 @@ test("a jump from Needs you opens a collapsed card to show its approval or Ask (
     needs(/Ship today\?/).click();
     await waitFor(() => release.hasAttribute("data-home-highlight"), "the Ask is highlighted");
     assert.equal(fold(release).getAttribute("aria-expanded"), "true", "the Ask's own card opened");
-    assert.ok(release.querySelector("textarea"), "its reply is in view");
+    assert.ok(replyField(release), "its reply is in view");
     assert.equal(p.posts(/\/brief\/(reply|seen)$|\/respond$/).length, 0, "jumping answers nothing");
   } finally {
     p.close();
@@ -1363,7 +1371,7 @@ test("a collapsed Ask keeps what was typed in it, and folding sends nothing (T-1
   const p = await mount();
   try {
     const release = card(p, "p-app", "release");
-    const field = release.querySelector("textarea");
+    const field = replyField(release);
     assert.ok(field, "the Ask has a reply field");
     await type(p, field, "Only after the docs land.");
     fold(release).click();
@@ -1372,7 +1380,7 @@ test("a collapsed Ask keeps what was typed in it, and folding sends nothing (T-1
     assert.equal(release.querySelector(".home-kind").textContent, "Ask", "the header still says it is an Ask");
     fold(release).click();
     await pause();
-    assert.equal(release.querySelector("textarea").value, "Only after the docs land.");
+    assert.equal(composerText(replyField(release)), "Only after the docs land.");
     assert.equal(p.posts(/\/brief\/(reply|seen)$/).length, 0);
   } finally {
     p.close();
@@ -1693,7 +1701,7 @@ test("YN-38 a report card's reply goes to its latest version: the one on screen,
     assert.match(replyBox(notes).textContent, /Reply to “Notes” · version 2/);
     assert.equal(replyBox(notes).querySelector("select").value, "a", "to its author");
     assert.equal(p.posts(/\/brief\/reply$/).length, 0, "opening sends nothing");
-    await type(p, replyBox(notes).querySelector("textarea"), "Please add the numbers");
+    await type(p, replyField(replyBox(notes)), "Please add the numbers");
     // The author writes version 3 while the user writes: the reply follows it.
     const app = p.state.home.projects[0];
     Object.assign(app.brief.sections[1], { version: 3, title: "Notes, revised" });
@@ -1703,7 +1711,7 @@ test("YN-38 a report card's reply goes to its latest version: the one on screen,
     assert.match(box.textContent, /Reply to “Notes, revised” · version 3/);
     assert.doesNotMatch(box.textContent, /changed this card|still refers|Refer it/);
     assert.equal(p.button("Refer it to version 3", box), undefined, "no step to move it");
-    assert.equal(box.querySelector("textarea").value, "Please add the numbers", "the draft stays");
+    assert.equal(composerText(replyField(box)), "Please add the numbers", "the draft stays");
     p.button("Send", box).click();
     await waitFor(() => /Sent to Mori, referring to version 3/.test(box.textContent), "sent to version 3");
     const [first] = p.posts(/\/brief\/reply$/);
@@ -1711,10 +1719,10 @@ test("YN-38 a report card's reply goes to its latest version: the one on screen,
     assert.deepEqual([first.body.key, first.body.version, first.body.title, first.body.agentId, first.body.text],
       ["notes", 3, "Notes, revised", "a", "Please add the numbers"]);
     assert.match(first.body.clientMessageId, uuid);
-    assert.equal(box.querySelector("textarea").value, "");
+    assert.equal(composerText(replyField(box)), "");
     // Core has version 4 before Home reads it: Core refuses version 3, Home
     // reads the card again, and the reply goes to version 4.
-    await type(p, box.querySelector("textarea"), "And the units, please");
+    await type(p, replyField(box), "And the units, please");
     Object.assign(app.brief.sections[1], { version: 4, title: "Notes, third pass" });
     const homeReads = p.calls.filter((c) => c.url.endsWith("/api/home")).length;
     p.button("Send", box).click();
@@ -1742,7 +1750,7 @@ test("a card reply keeps its id and version through a lost answer and a reload; 
     p.button("Reply", review).click();
     await waitFor(() => !!replyBox(review), "the reply opens");
     assert.equal(replyBox(review).querySelector("select").value, "b", "a sub card's own author");
-    const area = replyBox(review).querySelector("textarea");
+    const area = replyField(replyBox(review));
     await type(p, area, "Which branch?");
     // Composing with an IME: Enter only ends the composition.
     area.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, isComposing: true, bubbles: true }));
@@ -1760,7 +1768,7 @@ test("a card reply keeps its id and version through a lost answer and a reload; 
     const review = card(again, "p-app", "notes/review");
     await waitFor(() => !!replyBox(review), "the unconfirmed reply opens again after a reload");
     const box = replyBox(review);
-    assert.equal(box.querySelector("textarea").value, "Which branch?");
+    assert.equal(composerText(replyField(box)), "Which branch?");
     assert.match(box.textContent, /earlier reply here was not confirmed/);
     again.button("Send", box).click();
     again.button("Send", box).click();
@@ -1779,12 +1787,12 @@ test("a card reply keeps its id and version through a lost answer and a reload; 
     const metrics = card(older, "p-res", "metrics");
     older.button("Reply", metrics).click();
     await waitFor(() => !!replyBox(metrics), "a status card takes a reply too");
-    await type(older, replyBox(metrics).querySelector("textarea"), "Is this still running?");
+    await type(older, replyField(replyBox(metrics)), "Is this still running?");
     older.button("Send", replyBox(metrics)).click();
     await waitFor(() => !!replyBox(metrics).querySelector('[role="alert"]'), "the older Core's refusal is shown");
     assert.match(replyBox(metrics).querySelector('[role="alert"]').textContent, /can't bind a reply to a card version yet, so nothing was sent/);
     assert.equal(older.posts(/\/brief\/reply$/).length, 1, "never sent again without its reference");
-    assert.equal(replyBox(metrics).querySelector("textarea").value, "Is this still running?");
+    assert.equal(composerText(replyField(replyBox(metrics))), "Is this still running?");
     assert.equal(older.w.localStorage.getItem("yuzuno.home-outbox.v1"), null);
   } finally {
     older.close();
@@ -1802,7 +1810,7 @@ test("an author who left waits for an explicit recipient; a card that leaves Hom
     const box = replyBox(notes);
     assert.equal(box.querySelector("select").value, "", "no recipient chosen for the user");
     assert.match(box.textContent, /Kai is closed; choose who should get this reply/);
-    await type(p, box.querySelector("textarea"), "Who owns this now?");
+    await type(p, replyField(box), "Who owns this now?");
     assert.equal(p.button("Send", box).disabled, true, "nothing to send to yet");
     await choose(p, box.querySelector("select"), "b");
     assert.equal(p.button("Send", box).disabled, false);
@@ -1838,14 +1846,14 @@ test("a pinned report takes the same reply as its card: one draft, and one send 
     await waitFor(() => !!replyBox(pinned()), "the reply opens in the widget");
     assert.match(replyBox(pinned()).textContent, /Reply to “Notes” · version 2/);
     assert.equal(replyBox(pinned()).querySelector("select").value, "a", "to the card's author");
-    await type(p, replyBox(pinned()).querySelector("textarea"), "From the widget");
+    await type(p, replyField(replyBox(pinned())), "From the widget");
     // The card shows the same reply, not a second one.
     const notes = card(p, "p-app", "notes");
     p.button("Reply", notes).click();
     await waitFor(() => !!replyBox(notes), "the card's reply opens");
-    assert.equal(replyBox(notes).querySelector("textarea").value, "From the widget");
-    await type(p, replyBox(notes).querySelector("textarea"), "From the card");
-    assert.equal(replyBox(pinned()).querySelector("textarea").value, "From the card", "one draft in both places");
+    assert.equal(composerText(replyField(replyBox(notes))), "From the widget");
+    await type(p, replyField(replyBox(notes)), "From the card");
+    assert.equal(composerText(replyField(replyBox(pinned()))), "From the card", "one draft in both places");
     // Both places send in the same moment: one request.
     p.button("Send", replyBox(notes)).click();
     p.button("Send", replyBox(pinned())).click();
@@ -1889,13 +1897,13 @@ test("a report marked seen takes a reply from History at its version; removed en
       "only each key's newest seen report, while no card under its key is live");
     // No reply control of any kind on an entry that can't take one.
     for (const entry of entries.slice(1))
-      assert.equal(entry.querySelector("textarea, select, .home-ask-reply, .home-ask-options, .clarification, .home-card-reply"), null, entry.textContent);
+      assert.equal(entry.querySelector("textarea, select, [data-composer-input], .home-ask-reply, .home-ask-options, .clarification, .home-card-reply"), null, entry.textContent);
     assert.equal(p.button("Ship today", history), undefined, "an earlier version of a live ask offers no option");
     p.button("Reply", entries[0]).click();
     await waitFor(() => !!replyBox(entries[0]), "the reply opens in History");
     assert.match(replyBox(entries[0]).textContent, /Reply to “Weekly” · version 3/);
     assert.equal(replyBox(entries[0]).querySelector("select").value, "b");
-    await type(p, replyBox(entries[0]).querySelector("textarea"), "Can this stay weekly?");
+    await type(p, replyField(replyBox(entries[0])), "Can this stay weekly?");
     p.button("Send", replyBox(entries[0])).click();
     await waitFor(() => /Sent to Hana, referring to version 3/.test(replyBox(entries[0]).textContent), "sent");
     const [post] = p.posts(/\/brief\/reply$/);
@@ -1913,7 +1921,7 @@ test("a reply begun on a card the user then marks seen stays sendable, at that v
     const review = card(p, "p-app", "notes/review");
     p.button("Reply", review).click();
     await waitFor(() => !!replyBox(review), "the reply opens");
-    await type(p, replyBox(review).querySelector("textarea"), "Before I mark it seen");
+    await type(p, replyField(replyBox(review)), "Before I mark it seen");
     // Core keeps a report the user marks seen in History, at that version.
     const app = p.state.home.projects[0].brief;
     const shown = app.sections.find((s) => s.key === "notes/review");
@@ -1924,7 +1932,7 @@ test("a reply begun on a card the user then marks seen stays sendable, at that v
     const kept = p.panel("p-app").querySelector(".home-kept-reply");
     assert.ok(!!kept, "the reply is kept in the project");
     assert.match(kept.textContent, /Your reply to “Review notes” is kept: that card is now in History, marked seen/);
-    assert.equal(replyBox(kept).querySelector("textarea").value, "Before I mark it seen");
+    assert.equal(composerText(replyField(replyBox(kept))), "Before I mark it seen");
     p.button("Send", replyBox(kept)).click();
     await waitFor(() => /Sent to Hana, referring to version 1/.test(replyBox(kept).textContent), "sent from the kept reply");
     const [post] = p.posts(/\/brief\/reply$/);
@@ -1958,7 +1966,7 @@ async function pinWithReply(p, text) {
   p.button("Reply", widget).click();
   await waitFor(() => !!replyBox(widget), "the reply opens in the widget");
   await choose(p, replyBox(widget).querySelector("select"), "b");
-  await type(p, replyBox(widget).querySelector("textarea"), text);
+  await type(p, replyField(replyBox(widget)), text);
   return widget;
 }
 /** Core's reading once the user marked Notes seen (elsewhere: on another device, or its page). */
@@ -1974,14 +1982,14 @@ test("a pinned report marked seen keeps its reply: the same field, text, focus a
   const p = await mount({ home: pinnedNotes() });
   try {
     const widget = await pinWithReply(p, "Before it is seen");
-    const box = replyBox(widget), field = box.querySelector("textarea");
+    const box = replyBox(widget), field = replyField(box);
     field.focus();
     assert.equal(p.doc.activeElement === field, true);
     notesSeen(p);
     await waitFor(() => /Marked seen/.test(widget.textContent), "the widget says it is marked seen");
     assert.equal(p.doc.querySelector(".home-widget-column article[data-pin-widget]") === widget, true, "the same widget");
-    assert.equal(replyBox(widget) === box && box.querySelector("textarea") === field, true, "the same reply and field");
-    assert.equal(field.value, "Before it is seen");
+    assert.equal(replyBox(widget) === box && replyField(box) === field, true, "the same reply and field");
+    assert.equal(composerText(field), "Before it is seen");
     assert.equal(p.doc.activeElement === field, true, "focus stays in the field");
     assert.equal(box.querySelector("select").value, "b", "the recipient the user chose");
     assert.match(box.textContent, /Reply to “Notes” · version 2/);
@@ -2200,7 +2208,7 @@ test("Home's repository card follows a language change; the repository stays as 
 const ASK_DRAFTS = "yuzuno.home-ask-drafts.v1";
 const askDrafts = (p) => JSON.parse(p.w.localStorage.getItem(ASK_DRAFTS) || "{}");
 const releaseSlot = (workspace = "ws-home") => JSON.stringify([workspace, "p-app", "release"]);
-const askField = (p) => card(p, "p-app", "release").querySelector(".home-ask-reply textarea");
+const askField = (p) => replyField(card(p, "p-app", "release")?.querySelector(".home-ask-reply"));
 
 test("an Ask's unsent reply is kept across a reload with its recipient and version; a delivery clears only what it sent (T-182)", async () => {
   let stored;
@@ -2225,7 +2233,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
   const again = await mount({ storage: stored, replyAnswer: (body) => (body.key === "release" ? held.then(() => null) : null) });
   try {
     const release = card(again, "p-app", "release");
-    assert.equal(askField(again).value, "Only after the docs land.", "the text is back after a reload");
+    assert.equal(composerText(askField(again)), "Only after the docs land.", "the text is back after a reload");
     assert.equal(release.querySelector(".home-reply-target select").value, "b", "and its recipient");
     assert.match(release.textContent, /Kept from before, not sent yet: your reply to this ask\./);
     again.button("Send", release.querySelector(".home-text-reply")).click();
@@ -2243,7 +2251,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     assert.match(card(again, "p-app", "release").textContent, /A reply you wrote here is kept, not sent: Reply again to see it\./);
     again.button("Reply again", card(again, "p-app", "release")).click();
     await pause();
-    assert.equal(askField(again).value, "Only after the docs land. And the changelog.");
+    assert.equal(composerText(askField(again)), "Only after the docs land. And the changelog.");
     again.button("Send", card(again, "p-app", "release").querySelector(".home-text-reply")).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 2, "the second reply is sent");
     await waitFor(() => again.w.localStorage.getItem(ASK_DRAFTS) === null, "a delivered reply leaves no draft");
@@ -2275,7 +2283,7 @@ test("YN-38 an Ask asked again while the user writes keeps the words and sends t
     await reask(4, "Ship the release on Monday?");
     const release = () => card(p, "p-app", "release");
     assert.doesNotMatch(release().textContent, /began this reply on version|Refer it to/);
-    assert.equal(askField(p).value, "Ship after QA.", "the text stays");
+    assert.equal(composerText(askField(p)), "Ship after QA.", "the text stays");
     const send = () => p.button("Send", release().querySelector(".home-text-reply"));
     assert.equal(send().disabled, false, "no step before it can be sent");
     assert.equal(p.button("Refer it to version 4", release()), undefined);
@@ -2363,17 +2371,17 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
   const draft = (text, agentId = "a") => JSON.stringify({ key: "release", text, version: 3, agentId, at: new Date().toISOString() });
   const other = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot("ws-other")]: JSON.parse(draft("For the other Workspace.")) }) } });
   try {
-    assert.equal(askField(other).value, "", "another Workspace's draft is not shown here");
+    assert.equal(composerText(askField(other)), "", "another Workspace's draft is not shown here");
   } finally {
     other.close();
   }
   const late = await mount({ holdWorkspace: true, storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("Kept for this Workspace.", "b")) }) } });
   try {
-    assert.equal(askField(late).value, "", "nothing is shown before the Workspace is known");
+    assert.equal(composerText(askField(late)), "", "nothing is shown before the Workspace is known");
     late.releaseWorkspace();
     // Home reads itself again for the Workspace now known, and its panels are
     // not drawn until that read lands: not there yet is "not yet", not an error.
-    await waitFor(() => card(late, "p-app", "release")?.querySelector(".home-ask-reply textarea")?.value === "Kept for this Workspace.",
+    await waitFor(() => card(late, "p-app", "release")?.querySelector(".home-ask-reply [data-composer-input]") && composerText(card(late, "p-app", "release").querySelector(".home-ask-reply [data-composer-input]")) === "Kept for this Workspace.",
       "its own draft shows once it is read");
     assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to this ask\./);
     assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
@@ -2384,7 +2392,7 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
   const gone = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("For an Agent who left.", "gone")) }) } });
   try {
     const release = card(gone, "p-app", "release");
-    assert.equal(askField(gone).value, "For an Agent who left.");
+    assert.equal(composerText(askField(gone)), "For an Agent who left.");
     assert.equal(release.querySelector(".home-reply-target select").value, "", "no recipient is chosen for the user");
     assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, true);
     assert.equal(gone.button("Ship today", release).disabled, true, "nor does an option send it anywhere");
@@ -2402,7 +2410,7 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
       return set.call(this, key, value);
     };
     await type(refused, askField(refused), "Kept only here.");
-    assert.equal(askField(refused).value, "Kept only here.");
+    assert.equal(composerText(askField(refused)), "Kept only here.");
     assert.match(card(refused, "p-app", "release").textContent, /This browser didn't keep the draft: it is only in this window\./);
     assert.deepEqual(refused.errors, []);
   } finally {
@@ -3476,8 +3484,8 @@ test("YN-3 Enter sends a reply from Home as the composer's Return does: from an 
   const replies = () => p.posts(/\/brief\/reply$/);
   try {
     const release = () => card(p, "p-app", "release");
-    await waitFor(() => release()?.querySelector("textarea"), "the Ask's reply field");
-    const field = release().querySelector("textarea");
+    await waitFor(() => replyField(release()), "the Ask's reply field");
+    const field = replyField(release());
     await type(p, field, "Ship it after the docs fix");
     enter(field, { isComposing: true });
     enter(field, { shiftKey: true });
@@ -3491,15 +3499,15 @@ test("YN-3 Enter sends a reply from Home as the composer's Return does: from an 
     tokenizer.querySelector(".home-fold").click();
     await waitFor(() => p.button("Reply again", tokenizer), "Reply again");
     p.button("Reply again", tokenizer).click();
-    await waitFor(() => tokenizer.querySelector("textarea"), "the field again");
-    await type(p, tokenizer.querySelector("textarea"), "Switch after the rebuild");
-    enter(tokenizer.querySelector("textarea"));
+    await waitFor(() => replyField(tokenizer), "the field again");
+    await type(p, replyField(tokenizer), "Switch after the rebuild");
+    enter(replyField(tokenizer));
     await waitFor(() => replies().length === 2, "Enter sends the reply again");
     // A report's Reply.
     const notes = card(p, "p-app", "notes");
     notes.querySelector(".home-reply-open").click();
-    await waitFor(() => notes.querySelector(".home-card-reply textarea"), "the report's reply field");
-    const reply = notes.querySelector(".home-card-reply textarea");
+    await waitFor(() => replyField(notes.querySelector(".home-card-reply")), "the report's reply field");
+    const reply = replyField(notes.querySelector(".home-card-reply"));
     await type(p, reply, "Thanks");
     enter(reply, { isComposing: true });
     await pause(150);

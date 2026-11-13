@@ -1059,7 +1059,7 @@ try {
     assert.equal(await slot.getAttribute("data-widget-size"), "small");
     // A reply being written in the widget, the focus in it.
     await widget.locator(".home-reply-open").click();
-    const field = widget.locator(".home-card-reply textarea");
+    const field = widget.locator(".home-card-reply [data-composer-input]");
     await field.fill("Keep the queue at 40.");
     await field.focus();
     await widget.evaluate((el) => { el.dataset.probe = "same"; });
@@ -1068,7 +1068,8 @@ try {
       same: await widget.getAttribute("data-probe"),
       size: await slot.getAttribute("data-widget-size"),
       full: await slot.evaluate((el) => el.classList.contains("is-full")),
-      draft: await field.inputValue(),
+      // The reply's composer (YN-91) holds the draft as its lines.
+      draft: await field.evaluate((el) => [...el.querySelectorAll(".cm-line")].map((line) => line.textContent).join("\n")),
       focused: await field.evaluate((el) => el === document.activeElement),
       unnamed: await widget.evaluate((el) => (el.classList.contains("is-unnamed") ? 1 : 0)),
     });

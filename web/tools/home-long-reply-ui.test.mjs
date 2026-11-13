@@ -8,7 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFile } from "node:fs/promises";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { setComposerText } from "./composer-driver.mjs";
+import { composerText, composerView, setComposerText } from "./composer-driver.mjs";
 
 // YN-91: a long reply from Home goes to the Agent whole. A field that stops
 // at 20,000 characters cut a longer paste short without a word, and 8,000
@@ -30,7 +30,10 @@ import {createRoot} from 'react-dom/client';
 import {AskReply, ProjectReply} from ${JSON.stringify(path.join(root, "src/home/AskReply.tsx"))};
 import {CardReply} from ${JSON.stringify(path.join(root, "src/home/CardReply.tsx"))};
 import {HOME_REPLY_MAX_BYTES, utf8Bytes} from ${JSON.stringify(path.join(root, "src/home/reply-limit.tsx"))};
+import {draftFromTextBlocks, draftTextBlocks} from ${JSON.stringify(path.join(root, "src/message-content.ts"))};
+import {draftText} from ${JSON.stringify(path.join(root, "src/composer-draft.ts"))};
 window.replyLimit={HOME_REPLY_MAX_BYTES, utf8Bytes};
+window.drafts={draftFromTextBlocks, draftTextBlocks, draftText};
 const root=createRoot(document.getElementById('root'));
 window.renderCard=(props)=>flushSync(()=>root.render(<CardReply {...props}/>));
 window.renderAsk=(props)=>flushSync(()=>root.render(<AskReply {...props}/>));
@@ -67,7 +70,7 @@ const ask = { ...base, key: "words", kind: "ask", title: "Anything before we shi
   ask: { question: "Anything before we ship?", state: "open", reply: { freeText: true } } };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 
-function mount({ lang = "en" } = {}) {
+function mount({ lang = "en", storage = {} } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -75,6 +78,10 @@ function mount({ lang = "en" } = {}) {
     url: "https://home-long-reply.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
   });
   const { window } = dom;
+  // JSDOM does no layout: CodeMirror measures text ranges (ui-test-bundle.mjs does the same).
+  window.Range.prototype.getClientRects ||= () => [];
+  window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
+  for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
   const posts = [];
   window.crypto.randomUUID ??= () => `id-${posts.length}-${Math.random().toString(16).slice(2)}`;
@@ -91,8 +98,9 @@ function mount({ lang = "en" } = {}) {
   window.eval(bundle);
   const document = window.document;
   const context = { projectId: "p1", workspaceId: "ws", agents, readOnly: false, onSent: () => {} };
+  const closed = { n: 0 };
   const shapes = {
-    card: () => window.renderCard({ section: report, projectId: "p1", workspaceId: "ws", agents, opened: true }),
+    card: () => window.renderCard({ section: report, projectId: "p1", workspaceId: "ws", agents, opened: true, onClose: () => { closed.n++; } }),
     ask: () => window.renderAsk({ section: ask, ...context }),
     project: async () => {
       window.renderProject({ ...context, projectName: "Yuzuno app" });
@@ -122,8 +130,27 @@ function mount({ lang = "en" } = {}) {
     return posts.slice(before).filter((p) => p.url.endsWith("/brief/reply")).map((p) => p.body);
   };
   const note = () => document.querySelector(".home-reply-length");
+  /** Pasted into the reply's field, as the clipboard gives it. */
+  const paste = async (text) => {
+    const area = field();
+    area.focus();
+    const event = new window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: (kind) => (kind === "text/plain" ? text : "") } });
+    area.dispatchEvent(event);
+    await tick();
+  };
+  /** Words added at the end of what the field holds. */
+  const append = async (text) => {
+    const view = composerView(field());
+    view.dispatch({ changes: { from: view.state.doc.length, insert: text }, selection: { anchor: view.state.doc.length + text.length } });
+    await tick();
+  };
+  const chips = () => [...document.querySelectorAll(".home-text-reply .pasted-text-chip")];
+  const button = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+  const stored = () => Object.fromEntries(Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i))
+    .map((key) => [key, window.localStorage.getItem(key)]));
   const submit = () => document.querySelector(".home-text-reply button[type=submit]");
-  return { window, document, errors, posts, shapes, field, type, send, note, submit, close: () => window.close() };
+  return { window, document, errors, posts, shapes, field, type, send, note, submit, paste, append, chips, button, stored, closed, close: () => window.close() };
 }
 
 test("no Home reply field cuts a long paste short", async (t) => {
@@ -225,4 +252,151 @@ test("a reply over the limit says how far over and why, sends nothing and keeps 
       assert.deepEqual(page.errors, []);
     }
   }
+});
+
+// YN-91: Home's reply fields are the conversation's composer. A long paste
+// folds into a block that opens to be read and edited, or is removed, as it
+// does there; the Agent gets the whole text, as from the conversation.
+const words = {
+  en: { label: /^Pasted\slog\S* · 651 lines\. View and edit$/, title: "Pasted text #1", full: "Full pasted text", save: "Save changes", remove: "Remove block" },
+  zh: { label: /^Pasted\slog\S* · 651 行。查看并编辑$/, title: "粘贴的文本 #1", full: "完整的粘贴文本", save: "保存更改", remove: "移除此块" },
+};
+const dialogTitle = (page) => page.document.querySelector('[role="dialog"] h2')?.textContent ?? null;
+const source = (page, lang) => page.document.querySelector(`[role="dialog"] textarea[aria-label="${words[lang].full}"]`);
+async function setSource(page, area, text) {
+  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(area, text);
+  area.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
+}
+
+test("a long paste in every Home reply folds into a block that opens, is edited or removed, and goes to the Agent whole", async (t) => {
+  for (const shape of ["card", "ask", "project"]) {
+    for (const lang of ["en", "zh"]) {
+      const w = words[lang];
+      const page = mount({ lang });
+      t.after(page.close);
+      await page.shapes[shape]();
+      await tick();
+      await page.type("Before ");
+      await page.paste(LONG);
+      assert.equal(page.chips().length, 1, `${shape}/${lang}: the paste is one block`);
+      assert.match(page.chips()[0].getAttribute("aria-label"), w.label);
+      assert.equal(composerText(page.field()), "Before \ufffc", "the field holds the block, not the text");
+      await page.append(" after");
+      // Opened: the whole paste, to read and edit.
+      page.chips()[0].click();
+      await tick();
+      assert.equal(dialogTitle(page), w.title, `${shape}/${lang}: the block's dialog`);
+      assert.ok(source(page, lang)?.value === LONG, `${shape}/${lang}: the whole paste, ${LONG.length} characters`);
+      await setSource(page, source(page, lang), `${LONG}\nEdited.`);
+      page.button(w.save).click();
+      await tick();
+      assert.ok(!page.document.querySelector('[role="dialog"]'), "saved and closed");
+      assert.equal(page.chips().length, 1, "still one block");
+      assert.equal(page.posts.length, 0, `${shape}/${lang}: opening and editing send nothing`);
+      // Sent: the words around it and the block's text, whole.
+      const sent = await page.send();
+      assert.equal(sent.length, 1);
+      assert.ok(sent[0].text === `Before ${LONG}\nEdited. after`, `${shape}/${lang}: the whole reply (${sent[0].text.length} characters)`);
+      assert.equal(page.chips().length, 0, `${shape}/${lang}: the field is empty once sent`);
+      // An Ask answered shows the reply in its place; Reply again brings the field back.
+      if (shape === "ask") {
+        page.document.querySelector(".home-ask-replied button").click();
+        await tick();
+      }
+      // Removed: the block goes, and nothing of it is sent.
+      await page.type("Only this");
+      await page.paste(LONG);
+      page.chips()[0].click();
+      await tick();
+      page.button(w.remove).click();
+      await tick();
+      assert.equal(page.chips().length, 0, `${shape}/${lang}: the block is removed`);
+      assert.equal(composerText(page.field()), "Only this");
+      const second = await page.send();
+      assert.ok(second[0]?.text === "Only this", `${shape}/${lang}: only the words left`);
+      assert.deepEqual(page.errors, []);
+    }
+  }
+});
+
+test("a reply's blocks are kept with its draft and come back as blocks after a reload", async (t) => {
+  for (const shape of ["card", "ask"]) {
+    const page = mount();
+    t.after(page.close);
+    await page.shapes[shape]();
+    await tick();
+    await page.type("Note: ");
+    await page.paste(LONG);
+    await page.append(" — see above.");
+    const store = shape === "card" ? "yuzuno.home-card-drafts.v1" : "yuzuno.home-ask-drafts.v1";
+    const [kept] = Object.values(JSON.parse(page.stored()[store]));
+    // The draft's text is the whole reply, as before; its blocks say where the paste is in it.
+    assert.ok(kept.text === `Note: ${LONG} — see above.`, `${shape}: the whole text is kept`);
+    assert.deepEqual(kept.blocks.map(({ start, end }) => [start, end]), [[6, 6 + LONG.length]], `${shape}: where its block is`);
+    const again = mount({ storage: page.stored() });
+    t.after(again.close);
+    await again.shapes[shape]();
+    await tick();
+    assert.equal(again.chips().length, 1, `${shape}: the block is back`);
+    assert.equal(composerText(again.field()), "Note: \ufffc — see above.");
+    again.chips()[0].click();
+    await tick();
+    assert.ok(source(again, "en")?.value === LONG, `${shape}: with its whole text`);
+    again.document.querySelector('[role="dialog"] button[aria-label="Close dialog"]')?.click();
+    await tick();
+    const sent = await again.send();
+    assert.ok(sent[0]?.text === `Note: ${LONG} — see above.`, `${shape}: sent whole`);
+    assert.deepEqual(again.errors, []);
+  }
+});
+
+test("a draft kept before blocks, or with blocks that don't fit its text, comes back as its text", async (t) => {
+  const draft = (blocks) => JSON.stringify({ [JSON.stringify(["ws", "p1", "notes", "card"])]:
+    { key: "notes", text: `Note: ${LONG}`, title: "Notes", agentId: "mori", at: new Date().toISOString(), ...(blocks ? { blocks } : {}) } });
+  for (const [what, blocks] of [["no blocks", null], ["past its end", [{ id: "x", start: 6, end: LONG.length + 99 }]],
+    ["out of order", [{ id: "x", start: 10, end: 20 }, { id: "y", start: 5, end: 8 }]], ["the same id twice", [{ id: "x", start: 1, end: 2 }, { id: "x", start: 3, end: 4 }]]]) {
+    const page = mount({ storage: { "yuzuno.home-card-drafts.v1": draft(blocks) } });
+    t.after(page.close);
+    await page.shapes.card();
+    await tick();
+    assert.equal(page.chips().length, 0, `${what}: no block made up`);
+    assert.ok(composerText(page.field()) === `Note: ${LONG}`, `${what}: the text whole`);
+    assert.deepEqual(page.errors, []);
+  }
+});
+
+test("Home keeps a paste's place in its text as the conversation marks it on a message", (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { draftFromTextBlocks, draftTextBlocks, draftText } = page.window.drafts;
+  const text = `a${LONG}b${CHINESE}c`;
+  const blocks = [{ id: "one", start: 1, end: 1 + LONG.length }, { id: "two", start: 2 + LONG.length, end: 2 + LONG.length + CHINESE.length }];
+  const draft = draftFromTextBlocks(text, blocks);
+  // Read across the window's realm as plain data.
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.equal(draftText(draft), text);
+  assert.deepEqual(plain(draftTextBlocks(draft)), blocks);
+  assert.deepEqual(plain(draft.parts.filter((p) => p.kind === "paste").map((p) => [p.id, p.number])), [["one", 1], ["two", 2]]);
+  assert.equal(draft.nextNumber, 3);
+});
+
+// Escape in a card's reply closes it, as before the composer; Escape that ends
+// an input method's composition (a Chinese one, say) only ends it.
+test("Escape closes a card's reply, but not while an input method composes", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  await page.shapes.card();
+  await tick();
+  await page.type("长回复");
+  const escape = (init = {}) =>
+    page.field().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true, ...init }));
+  escape({ isComposing: true });
+  escape({ keyCode: 229 });
+  await tick();
+  assert.equal(page.closed.n, 0, "an input method's Escape leaves the reply open");
+  escape();
+  await tick();
+  assert.equal(page.closed.n, 1, "Escape closes the reply");
+  assert.deepEqual(page.errors, []);
 });

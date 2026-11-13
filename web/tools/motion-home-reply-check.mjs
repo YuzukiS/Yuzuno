@@ -127,7 +127,8 @@ function pageHelpers() {
   };
   window.__focused = () => {
     const el = document.activeElement;
-    return el ? { tag: el.tagName, text: el.textContent.trim().slice(0, 40), label: el.getAttribute("aria-label"),
+    // A reply's text field: the conversation's composer since YN-91, a textarea before it.
+    return el ? { tag: el.tagName, field: el.matches("textarea, [data-composer-input]"), text: el.textContent.trim().slice(0, 40), label: el.getAttribute("aria-label"),
       className: typeof el.className === "string" ? el.className : "", inCard: el.closest("[data-section-key]")?.dataset.sectionKey ?? null,
       inPinned: !!el.closest(".home-pinned"), inWidget: el.closest(".home-widget-slot")?.dataset.widget ?? null,
       shown: el.checkVisibility?.() ?? null } : null;
@@ -227,7 +228,7 @@ for (const run of runs) {
     const opened = record("Reply pressed", await press(`${NOTES} .home-reply-open`, `${NOTES} .home-card-reply`));
     const inReply = await focused();
     ok(`${tag}: Reply pressed on a report: the reply fades in over small (at once under reduced motion), and its text takes focus (${inReply?.tag} ${inReply?.label})`,
-      came(opened, reduced) && inReply?.tag === "TEXTAREA" && inReply.inCard === "notes", { first: opened?.slice(0, 3), focus: inReply });
+      came(opened, reduced) && inReply?.field && inReply.inCard === "notes", { first: opened?.slice(0, 3), focus: inReply });
     await page.locator(`${NOTES} .home-card-reply-head .icon-button`).click();
     await page.waitForTimeout(150);
     const afterClose = await focused();
@@ -257,7 +258,7 @@ for (const run of runs) {
       await page.locator(`${PIN} .home-pinned-head .home-fold`).click();
       await page.locator(`${PIN}.is-collapsed`).waitFor({ timeout: 5000 });
       if (how === "Escape") {
-        await page.locator(`${PIN} .home-card-reply textarea`).click();
+        await page.locator(`${PIN} .home-card-reply [data-composer-input]`).click();
         await page.keyboard.press("Escape");
       } else await page.locator(`${PIN} .home-card-reply-head .icon-button`).click();
       await page.waitForTimeout(150);
@@ -280,7 +281,7 @@ for (const run of runs) {
     const inWidget = record("Reply pressed on a pinned summary card", await press(`${DIGEST} .home-reply-open`, `${DIGEST} .home-card-reply`));
     const widgetFocus = await focused();
     ok(`${tag}: Reply pressed on a pinned summary card: the reply fades in over small (at once under reduced motion), and its text takes focus (${widgetFocus?.tag})`,
-      came(inWidget, reduced) && widgetFocus?.tag === "TEXTAREA" && widgetFocus.inWidget === "pin:p1:13:digest", { first: inWidget?.slice(0, 3), focus: widgetFocus });
+      came(inWidget, reduced) && widgetFocus?.field && widgetFocus.inWidget === "pin:p1:13:digest", { first: inWidget?.slice(0, 3), focus: widgetFocus });
     await page.locator(`${DIGEST} .home-card-reply-head .icon-button`).click();
     await page.waitForTimeout(150);
     const widgetClose = await focused();
@@ -303,15 +304,15 @@ for (const run of runs) {
     // did not close it, its ✕ does first.)
     if (await page.locator(`${NOTES} .home-card-reply`).count()) await page.locator(`${NOTES} .home-card-reply-head .icon-button`).click();
     await press(`${NOTES} .home-reply-open`, `${NOTES} .home-card-reply`, 12);
-    await page.locator(`${NOTES} .home-card-reply textarea`).fill("A draft kept for later.");
+    await page.locator(`${NOTES} .home-card-reply [data-composer-input]`).fill("A draft kept for later.");
     await page.waitForTimeout(300);
     const kept = record("kept after a reload", await reloadWatching(`${NOTES} .home-card-reply`));
     const keptFocus = await focused();
     ok(`${tag}: a reply kept from before, open again after a reload, shows as it is: no fade from its first frame, and its text does not take focus (${keptFocus?.tag})`,
-      still(kept) && !(keptFocus?.tag === "TEXTAREA" && keptFocus.inCard === "notes"), { kept: kept?.slice(0, 3), focus: keptFocus });
+      still(kept) && !(keptFocus?.field && keptFocus.inCard === "notes"), { kept: kept?.slice(0, 3), focus: keptFocus });
 
     // An Ask answered from this window (HM:A3).
-    await page.locator(`${PLAIN} .home-text-reply textarea`).fill("Ship it after the export review.");
+    await page.locator(`${PLAIN} .home-text-reply [data-composer-input]`).fill("Ship it after the export review.");
     const sent = record("Ask reply sent", await press(`${PLAIN} .home-text-reply button[type=submit]`, `${PLAIN} .home-ask-replied`, 60));
     await page.locator(`${PLAIN} .home-ask-replied`).waitFor({ timeout: 5000 });
     const onReplied = await focused();
@@ -320,7 +321,7 @@ for (const run of runs) {
     const again = record("Reply again", await press(`${PLAIN} .home-ask-replied button`, `${PLAIN} .home-ask-reply`, 40));
     const inAgain = await focused();
     ok(`${tag}: Reply again: the reply comes back, fades in over small (at once under reduced motion), and its text takes focus (${inAgain?.tag})`,
-      came(again, reduced) && inAgain?.tag === "TEXTAREA" && inAgain.inCard === "plain", { first: again?.slice(0, 3), focus: inAgain });
+      came(again, reduced) && inAgain?.field && inAgain.inCard === "plain", { first: again?.slice(0, 3), focus: inAgain });
     // Home opened again with the Ask replied in Core's record.
     const loaded = record("replied on opening", await reloadWatching(`${PLAIN} .home-ask-replied`));
     const loadedFocus = await focused();

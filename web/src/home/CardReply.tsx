@@ -4,7 +4,7 @@ import { errorText, HttpError, shortcutModifier } from "../api";
 import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
-import { returnKey, returnSends, useDevicePreferences } from "../device-preferences";
+import { returnSends, useDevicePreferences } from "../device-preferences";
 import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
@@ -12,6 +12,9 @@ import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, outbox
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
+import { HomeComposer } from "./HomeComposer";
+import type { ComposerHandle } from "../PastedTextComposer";
+import type { TextBlock } from "../message-content";
 import type { ProjectPanel, Section } from "./types";
 import { Tip, TipText } from "../Tip";
 
@@ -33,7 +36,10 @@ import { Tip, TipText } from "../Tip";
 
 export type CardDraft = {
   key: string;
+  /** The whole reply, as it is sent. */
   text: string;
+  /** Where its paste blocks are in `text` (YN-91, HomeComposer). */
+  blocks?: TextBlock[];
   /** The card's title when last written in, said if the card leaves Home. */
   title: string;
   agentId: string;
@@ -173,13 +179,13 @@ export function CardReply({
     });
   });
   const root = useRef<HTMLDivElement>(null);
-  const field = useRef<HTMLTextAreaElement>(null);
+  const field = useRef<ComposerHandle>(null);
   const shown = !!draft;
   useSurfaceIn(root, shown, "small", opened);
   useLayoutEffect(() => {
     if (!shown || !opened) return;
     root.current?.scrollIntoView?.({ block: "nearest" });
-    field.current?.focus({ preventScroll: true });
+    field.current?.focus();
     // Only as it comes in.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown]);
@@ -229,7 +235,7 @@ export function CardReply({
       update(slot, {
         busy: false,
         sent: { status: receipt.status, to: named, version: to.version },
-        draft: { ...rest, text: "", title: to.title || shown.title, at: new Date().toISOString() },
+        draft: { ...rest, text: "", blocks: undefined, title: to.title || shown.title, at: new Date().toISOString() },
       });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
@@ -268,24 +274,16 @@ export function CardReply({
           void send();
         }}
       >
-        <textarea
+        {/* Return sends as it does from the conversation's composer (YN-3), whose field this is (YN-91). */}
+        <HomeComposer
           ref={field}
-          aria-label={t.replyField(section.title)}
-          value={draft.text}
-          rows={2}
+          slot={slot}
+          label={t.replyField(section.title)}
           placeholder={t.replyFor(name)}
-          onChange={(event) => change({ text: event.target.value })}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
-            // Return sends as it does from the conversation's composer (YN-3, device-preferences.ts returnKey).
-            if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
-              event.preventDefault();
-              void send();
-            } else if (event.key === "Escape" && onClose) {
-              event.preventDefault();
-              onClose();
-            }
-          }}
+          words={{ text: draft.text, blocks: draft.blocks }}
+          onWords={(words) => change({ text: words.text, blocks: words.blocks })}
+          onSubmit={() => void send()}
+          onEscape={onClose}
         />
         <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
           <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim() || replyTooLong(draft.text)}>

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 import { checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
@@ -268,7 +269,7 @@ test("Back, Escape and the browser's Back close the report, and focus returns to
   opener.click();
   const report = await until(page.report, "the report again");
   await page.press(report.querySelector(".report-actions"), "Reply");
-  const field = await until(() => report.querySelector("textarea"), "the reply field");
+  const field = await until(() => report.querySelector(".home-card-reply [data-composer-input]"), "the reply field");
   field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await tick();
   assert.ok(page.report(), "Escape in the reply field leaves the report open");
@@ -390,9 +391,8 @@ test("Seen on the report marks the version shown; Back then focuses its project,
   // A reply being written on the page (T-174) stays through its Seen: the version
   // seen is still one a reply can refer to (T-18, Lead 2655).
   await page.press(report.querySelector(".report-actions"), "Reply");
-  const field = await until(() => report.querySelector(".home-card-reply textarea"), "the reply field");
-  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(field, "Kept through Seen");
-  field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  const field = await until(() => report.querySelector(".home-card-reply [data-composer-input]"), "the reply field");
+  setComposerText(field, "Kept through Seen");
   await tick();
   current = homeData([], [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]);
   await page.press(report.querySelector(".report-actions"), "Seen");
@@ -400,8 +400,8 @@ test("Seen on the report marks the version shown; Back then focuses its project,
   assert.equal(seen.url, "/api/projects/p1/brief/seen");
   assert.deepEqual(JSON.parse(seen.body), { sections: [{ key: "eval", version: 3 }] });
   await until(() => notice(page) === "You marked this report seen; it is in History.", "the History note");
-  assert.equal(report.querySelector(".home-card-reply textarea") === field, true, "the same reply field");
-  assert.equal(field.value, "Kept through Seen");
+  assert.equal(report.querySelector(".home-card-reply [data-composer-input]") === field, true, "the same reply field");
+  assert.equal(composerText(field), "Kept through Seen");
   assert.equal(page.button(report.querySelector(".report-actions"), "Reply")?.getAttribute("aria-expanded"), "true", "Reply stays, open");
   report.querySelector(".report-back").click();
   await until(() => !page.report(), "closed");

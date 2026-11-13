@@ -232,13 +232,15 @@ try {
       const controls = [...(await reachable(page, "development/ship")), ...(await reachable(page, "ops/deploy")), ...(await reachable(page, "development/merge-queue"))];
       report.cases.push({ case: label, state: "controls", controls });
       assert.ok(controls.length >= 6 && controls.every((c) => c.reached), `${label}: sub-card controls reached ${JSON.stringify(controls)}`);
-      const draft = card(page, "development/ship").locator("textarea").first();
+      // The Ask's reply field: the conversation's composer (YN-91).
+      const draft = card(page, "development/ship").locator(".home-text-reply [data-composer-input]").first();
       await draft.fill("Ship after the batch CI");
       await card(page, "development/ship").locator(".home-fold").click();
       await card(page, "development/ship").locator(".home-fold").click();
-      assert.equal(await draft.inputValue(), "Ship after the batch CI", `${label}: the Ask's draft outlives a fold`);
+      assert.equal(await draft.evaluate((el) => [...el.querySelectorAll(".cm-line")].map((line) => line.textContent).join("\n")),
+        "Ship after the batch CI", `${label}: the Ask's draft outlives a fold`);
       await card(page, "ops/deploy").locator(".home-reply-open").click();
-      await card(page, "ops/deploy").locator("textarea").first().waitFor({ timeout: 5000 });
+      await card(page, "ops/deploy").locator(".home-text-reply [data-composer-input]").first().waitFor({ timeout: 5000 });
       assert.deepEqual(report.writes.filter((w) => w.case === label), [], `${label}: folding, drafting and opening Reply write nothing`);
       // Seen on a sub-card: the one write.
       await card(page, "ops/backup").locator(".home-seen").click();

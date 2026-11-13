@@ -1248,7 +1248,7 @@ ul.home-widget {
 /* An Ask always takes its row, so answering it never moves the deck (Dev 7's
    v12); a report's reply being written takes it too, and gives it back when
    sent or put away. The deck does not animate. */
-.home-brief .home-section:is(.kind-ask, :has(.home-card-reply, .home-ask textarea)) {
+.home-brief .home-section:is(.kind-ask, :has(.home-card-reply, .home-ask textarea, .home-ask .home-composer)) {
   grid-column: 1 / -1;
 }
 /* An answer card, closed, is a small card (YN-3): the deck packs it with the
@@ -1625,15 +1625,34 @@ ul.home-widget {
   align-items: flex-end;
   gap: 8px;
 }
-.home-text-reply textarea {
+/* A reply's field (YN-91): the conversation's composer, a long paste folded
+   into a block, drawn as the two-line field it took the place of. It grows
+   with its words to ten lines, then scrolls inside. */
+.home-text-reply .home-composer {
   flex: 1;
   min-width: 0;
-  resize: vertical;
-  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--input, var(--paper));
   color: var(--ink);
+}
+.home-text-reply .home-composer:focus-within {
+  border-color: #9aac87;
+  box-shadow: 0 0 0 3px #82986310;
+}
+.home-text-reply .home-composer[data-readonly] {
+  opacity: 0.6;
+}
+.home-composer .pasted-text-composer .cm-editor {
+  font-size: inherit;
+}
+.home-composer .pasted-text-composer .cm-scroller {
+  line-height: 1.5;
+  max-height: min(calc(10 * 1.5em + 12px), 40dvh);
+}
+.home-composer .pasted-text-composer .cm-content {
+  min-height: calc(2 * 1.5em);
+  padding: 6px 8px;
 }
 .home-ask-replied {
   display: flex;
