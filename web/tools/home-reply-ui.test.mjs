@@ -33,7 +33,14 @@ const root=createRoot(document.getElementById('root'));
 const handoff={agents:()=>window.fixtureAgents,send:(source,agentId)=>{window.actions.push(['handoff',source,agentId]);return true;}};
 const links={open:(origin,from)=>window.actions.push(['open',origin,from])};
 window.renderTurn=(turn,agent,withLinks=true)=>flushSync(()=>root.render(<HandoffContext.Provider value={handoff}><HomeReplyLinks.Provider value={withLinks?links:null}><Turn turn={turn} index={0} agent={agent} onFile={()=>{}}/></HomeReplyLinks.Provider></HandoffContext.Provider>));
-window.renderHome=(arrival)=>root.render(<Home workspaceId="ws-1" revision={0} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} arrival={arrival} onBackToReply={(link)=>window.actions.push(['back',link])}/>);`,
+// A Project's page opens as the app opens it (YN-86): its id, and a jump to the card named.
+function Shell({arrival}){
+  const [project,setProject]=React.useState(null);
+  const [jump,setJump]=React.useState(null);
+  return <Home workspaceId="ws-1" revision={0} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} arrival={arrival} onBackToReply={(link)=>window.actions.push(['back',link])}
+    project={project} jumpTo={jump} onOpenProject={(id,key)=>{setProject(id);setJump((j)=>({projectId:id,sectionKey:key,n:(j?.n??0)+1}));}} onCloseProject={()=>setProject(null)}/>;
+}
+window.renderHome=(arrival)=>root.render(<Shell arrival={arrival}/>);`,
   );
   const result = await build({
     root,
@@ -73,6 +80,8 @@ function mount({ phone = false, respond } = {}) {
   window.matchMedia = (query) => ({ matches: phone && query === PHONE, media: query, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   window.HTMLElement.prototype.scrollIntoView = function () {};
+  // jsdom has no element scrolling; a Project's page starts at its top (Home.tsx).
+  window.HTMLElement.prototype.scrollTo = function () {};
   Object.defineProperty(window.navigator, "clipboard", { value: { writeText: async (text) => { copied.push(text); } } });
   window.actions = [];
   window.fixtureAgents = [{ ...agent, id: "b", name: "Bo" }];
@@ -318,7 +327,8 @@ const reportReply = { ...identity("plan", 1), sectionId: 30, snapshot: snapshot(
 async function arrive(data, origin, n = 1) {
   const page = mount({ respond: (url) => ({ body: url === "/api/home" ? data : url === "/api/machine-load" ? machine : { repositories: [], links: [] } }) });
   page.window.renderHome({ origin, back, n });
-  await until(() => page.document.querySelector(".home-panel"), "Home read");
+  // Its project's page (YN-86), or, its project gone, the whole of Home saying so.
+  await until(() => page.document.querySelector(".project-home, .home-projects > .home-reply-arrival"), "Home read");
   await tick(40);
   return page;
 }
@@ -341,7 +351,7 @@ async function arrivals(cases) {
 }
 const above = (page, said) => {
   assert.equal(note(page)?.textContent, said);
-  assert.ok(note(page).parentElement.classList.contains("home-panel-content"), "above the project's cards");
+  assert.ok(note(page).parentElement.classList.contains("project-home-main"), "above the project's cards");
 };
 
 test("on Home, the same section later says which version was answered, in its card, with the way back", async (t) => {
@@ -431,14 +441,14 @@ test("on Home, a reply that names no section is told only by its very version", 
 });
 
 // R1 839f91d1: a section kept out of view (its author no longer a content
-// editor) is in the project's closed team details.
+// editor) is in the project page's closed "Cards from the team" (YN-86).
 test("on Home, the section answered in the team area is shown: its details open, its card unfolded and focused, again on each opening", async (t) => {
   const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
-  const details = (page) => page.document.querySelector(".home-team-details");
+  const details = (page) => page.document.querySelector(".project-team-written");
   await arrivals([
     ["same version", team(3), askReply, (page) => {
       assert.equal(details(page).open, true, "the team details hold it: open");
-      assert.ok(!page.document.querySelector(".home-panel").classList.contains("is-collapsed"), "its project opened");
+      assert.ok(details(page).closest(".project-team").open, "and the team's area around them");
       assert.equal(note(page), null);
       assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
     }],
@@ -467,7 +477,7 @@ test("on Home, another section under the key in the team area is not opened as t
   await arrivals([
     ["key written anew, kept out of view", homeData([section("other", 40, 1)], [], [ask("plan", 31, 2)]), reportReply, (page) => {
       above(page, "You replied to version 1. Home can't tell whether this card is the one you answered; under this name it is version 2 now.Back to your reply");
-      assert.equal(page.document.querySelector(".home-team-details").open, false, "the team details stay closed");
+      assert.equal(page.document.querySelector(".project-team-written").open, false, "the team details stay closed");
       assert.notEqual(page.document.activeElement, cardOf(page, "plan"));
     }],
   ]);
@@ -477,7 +487,7 @@ test("on Home, a reply to the whole Brief opens its project; a project Home no l
   const whole = await arrive(homeData([section("other", 40, 1)]), projectOrigin);
   t.after(whole.close);
   assert.equal(note(whole), null);
-  assert.ok(whole.document.querySelector(".home-panel").hasAttribute("data-home-highlight"), "its project is shown");
+  assert.ok(whole.document.querySelector('.project-home[data-project-home="p1"]').hasAttribute("data-home-highlight"), "its project's page is shown");
   const gone = await arrive(homeData([]), { ...askReply, projectId: "p-gone" });
   t.after(gone.close);
   assert.equal(note(gone).textContent, "The project this reply was about is not on Home now.");

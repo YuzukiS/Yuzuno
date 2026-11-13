@@ -1,5 +1,5 @@
 // Home's own motion rows left to T-51 (T-19 HM:H2, H3, H7, H15, S11), in jsdom: Refresh says it is busy while the read
-// it asked for is on its way; the error banner floats in its own slot and leaves; a moved panel's arrow keeps the focus
+// it asked for is on its way; the error banner floats in its own slot and leaves; a moved project's arrow keeps the focus
 // as the order saves and as a refused order puts it back; a reply's project gone, the note saying so is brought into
 // view and settles; a kept reply's Copy text says it copied, or that it could not. jsdom lays nothing out and plays
 // nothing; the overlay, the fades and A4's held height are the Chromium check's (home-motion-check.mjs).
@@ -28,7 +28,14 @@ import {Home} from ${JSON.stringify(path.join(web, "src/home/Home.tsx"))};
 import {cardReplySlot} from ${JSON.stringify(path.join(web, "src/home/CardReply.tsx"))};
 window.cardReplySlot=cardReplySlot;
 const root=createRoot(document.getElementById('root'));
-window.renderHome=(workspaceId,revision=0,arrival=null)=>root.render(<Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} arrival={arrival} onBackToReply={()=>{}} onNavigate={()=>{}} onChanged={()=>{}}/>);`,
+// A Project's page opens as the app opens it (YN-86): its id, and a jump to the card named.
+function Shell({workspaceId,revision,arrival,start}){
+  const [project,setProject]=React.useState(start);
+  const [jump,setJump]=React.useState(null);
+  return <Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} arrival={arrival} onBackToReply={()=>{}} onNavigate={()=>{}} onChanged={()=>{}}
+    project={project} jumpTo={jump} onOpenProject={(id,key)=>{setProject(id);setJump((j)=>({projectId:id,sectionKey:key,n:(j?.n??0)+1}));}} onCloseProject={()=>setProject(null)}/>;
+}
+window.renderHome=(workspaceId,revision=0,arrival=null,project=null)=>root.render(<Shell workspaceId={workspaceId} revision={revision} arrival={arrival} start={project}/>);`,
   );
   const result = await build({
     root: web, configFile: false, logLevel: "silent", plugins: [react()],
@@ -75,6 +82,8 @@ function mount(answer) {
   w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   const scrolls = [];
   w.HTMLElement.prototype.scrollIntoView = function (options) { scrolls.push({ el: this, options }); };
+  // jsdom has no element scrolling; a Project's page starts at its top (Home.tsx).
+  w.HTMLElement.prototype.scrollTo = function () {};
   w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   w.fetch = async (url, init = {}) => {
     const value = await answer(String(url), init);
@@ -100,7 +109,7 @@ test("Refresh says it is busy, its icon turning, while the read it asked for is 
     p.w.renderHome("ws");
     await until(() => reads.length === 1, "the first read");
     reads[0](home());
-    await until(() => p.doc.querySelector(".home-panel"), "the panels");
+    await until(() => p.doc.querySelector("[data-glance-project]"), "the projects");
     assert.equal(refresh(p).hasAttribute("aria-busy"), false, "not busy before");
     refresh(p).click();
     await until(() => reads.length === 2, "the read Refresh asked for");
@@ -175,7 +184,7 @@ test("as the next read answers, the banner that leaves is the one that showed, o
   } finally { p.close(); }
 });
 
-test("a moved panel's arrow keeps the focus while the order saves, after, and as a refused order puts it back; unavailable arrows say so and stay focusable (T-19 HM:H7)", async () => {
+test("a moved project's arrow keeps the focus while the order saves, after, and as a refused order puts it back; unavailable arrows say so and stay focusable (T-19 HM:H7)", async () => {
   let order = ["p1", "p2"];
   const saves = [];
   const p = mount((url, init) => {
@@ -187,15 +196,15 @@ test("a moved panel's arrow keeps the focus while the order saves, after, and as
   const arrow = (id, dir) => p.doc.querySelector(`[aria-label="Move ${names[id]} ${dir}"]`);
   try {
     p.w.renderHome("ws");
-    await until(() => p.doc.querySelectorAll(".home-panel").length === 2, "two panels");
+    await until(() => p.doc.querySelectorAll("[data-glance-project]").length === 2, "two projects");
     [...p.doc.querySelectorAll(".home-header-tools button")].find((b) => b.textContent.includes("Reorder")).click();
     await until(() => arrow("p1", "down"), "the arrows");
-    assert.equal(arrow("p1", "up").getAttribute("aria-disabled"), "true", "the top panel's Up says it is unavailable");
+    assert.equal(arrow("p1", "up").getAttribute("aria-disabled"), "true", "the top project's Up says it is unavailable");
     assert.equal(arrow("p1", "up").disabled, false, "and stays focusable");
     arrow("p1", "down").focus();
     arrow("p1", "down").click();
     await until(() => saves.length === 1, "the order sent");
-    assert.equal(p.doc.activeElement, arrow("p1", "down"), "focus stays on the arrow pressed as its panel moves");
+    assert.equal(p.doc.activeElement, arrow("p1", "down"), "focus stays on the arrow pressed as its project moves");
     assert.equal([...p.doc.querySelectorAll(".home-reorder button")].every((b) => b.getAttribute("aria-disabled") === "true" && !b.disabled), true,
       "while it saves every arrow is unavailable, none disabled");
     arrow("p1", "down").click();
@@ -204,13 +213,13 @@ test("a moved panel's arrow keeps the focus while the order saves, after, and as
     saves[0].resolve({});
     await until(() => arrow("p1", "down").getAttribute("aria-disabled") === "true" && !arrow("p2", "down").hasAttribute("aria-disabled"), "the order saved");
     assert.equal(p.doc.activeElement, arrow("p1", "down"), "and after, now at the end");
-    // Up again, refused: the panels go back, the focus with its arrow.
+    // Up again, refused: the projects go back, the focus with its arrow.
     arrow("p1", "up").focus();
     arrow("p1", "up").click();
     await until(() => saves.length === 2, "the second order sent");
     saves[1].resolve({ status: 409, body: { error: "the order changed" } });
     await until(() => p.doc.querySelector(".home-error-banner"), "the refusal said");
-    assert.deepEqual([...p.doc.querySelectorAll(".home-panel")].map((el) => el.dataset.homeProject), ["p2", "p1"], "the order put back");
+    assert.deepEqual([...p.doc.querySelectorAll("[data-glance-project]")].map((el) => el.dataset.glanceProject), ["p2", "p1"], "the order put back");
     assert.equal(p.doc.activeElement, arrow("p1", "up"), "the focus with the arrow pressed");
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
@@ -222,8 +231,8 @@ test("a reply's project no longer on Home: the note saying so is brought into vi
     const arrival = { origin: { projectId: "p-gone", key: "card-x", version: 2, workspaceId: "ws" },
       back: { workspaceId: "ws", agentId: "a", turnId: "t1", itemId: "i1" }, n: 1 };
     p.w.renderHome("ws", 0, arrival);
-    await until(() => p.doc.querySelector(".home-main > .home-reply-arrival"), "the note");
-    const note = p.doc.querySelector(".home-main > .home-reply-arrival");
+    await until(() => p.doc.querySelector(".home-projects > .home-reply-arrival"), "the note");
+    const note = p.doc.querySelector(".home-projects > .home-reply-arrival");
     assert.match(note.textContent, /not on Home/);
     assert.equal(await came(() => note.hasAttribute("data-home-highlight")), true, "the note settles");
     const scrolled = p.scrolls.find((s) => s.el === note);
@@ -243,7 +252,8 @@ test("a kept reply's Copy text says it copied, or that it could not (T-19 HM:S11
       p.w.localStorage.setItem("yuzuno.home-card-drafts.v1", JSON.stringify({
         [slot]: { key: "card-gone", text: "Keep the old export", version: 2, title: "Old card", agentId: "a", at: new Date().toISOString() },
       }));
-      p.w.renderHome("ws");
+      // Kept on its project's page (YN-86), where its card was.
+      p.w.renderHome("ws", 0, null, "p1");
       await until(() => p.doc.querySelector(".home-kept-reply"), "the kept reply");
       const button = [...p.doc.querySelectorAll(".home-kept-reply button")].find((b) => b.textContent.includes("Copy text"));
       assert.equal(!!button, true, "Copy text");

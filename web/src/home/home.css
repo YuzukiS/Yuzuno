@@ -33,16 +33,16 @@
   /* The whole pane; the layout below follows its width, not the window's. */
   container: home / inline-size;
 }
-/* One column: Needs you first, on its own; then My widgets; then the
-   projects, full width. */
+/* One column (YN-86 §2.1): what needs you, answered here; then each
+   project at a glance (project-glance.css); then My widgets, Yuzuno's own
+   watch over its machines and the cards pinned. */
 .home-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    "overview"
     "needs"
-    "widgets"
-    "main";
+    "projects"
+    "widgets";
   row-gap: 18px;
   align-items: start;
 }
@@ -50,8 +50,10 @@
   grid-area: needs;
   min-width: 0;
 }
-.home-main {
-  grid-area: main;
+.home-projects {
+  grid-area: projects;
+  display: grid;
+  gap: 10px;
   min-width: 0;
 }
 .home-needs-area:empty {
@@ -465,31 +467,69 @@
   margin: 0;
 }
 
-/* Needs you: one fixed-height row however many items it holds. */
+/* Needs you (YN-86 §2.1, the user's A): its heading, then each open Ask
+   and approval as its own card, answered here, the project it is in above
+   it; then what is answered elsewhere (a question, an executor's matter) as
+   one row of links that scrolls inside it and never widens Home. */
 .home-needs-you {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 56px;
-  margin-bottom: 14px;
-  padding: 0 4px 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--home-surface);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 .home-needs-you h2 {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  flex: none;
-  font-size: calc(11px + var(--font-adjust, 3px));
+  font-size: calc(12px + var(--font-adjust, 3px));
   font-weight: 600;
 }
-/* Folding (T-115) put the list in the card's body, which is the row's flex item: it takes the room beside the
-   heading and no more, so the list scrolls inside it and never widens Home on a narrow pane. */
+.home-needs-note {
+  margin-left: auto;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+  color: var(--home-ink-2);
+}
 .home-needs-you > .home-card-body {
-  flex: 1;
+  display: grid;
+  gap: 10px;
   min-width: 0;
+}
+/* Each card at the deck's width rules (T-18): an Ask takes its row, as on its project's page. */
+.home-needs-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  container: deck / inline-size;
+}
+.home-needs-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 10px;
+  scroll-margin: 24px;
+}
+.home-needs-card:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.home-needs-from {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-needs-from .project-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
 }
 .home-needs-list {
   display: flex;
@@ -938,60 +978,6 @@ button.home-remote-check {
   }
 }
 
-/* Project panels */
-/* A project is its heading and its cards on the page, not one more box
- * around them; a rule sets each project apart from the one above. */
-.home-panels {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-/* Every project has the same room above it, so a reorder moves no card
-   inside its panel; only the rule is drawn from the second on. */
-.home-panel {
-  padding-top: 10px;
-  border-top: 1px solid transparent;
-}
-.home-panel + .home-panel {
-  border-top-color: var(--line);
-}
-.home-reorder-note {
-  margin-bottom: 10px;
-}
-.home-panel {
-  scroll-margin: 16px;
-}
-.home-panel-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  min-height: 40px;
-  padding: 2px 0;
-}
-/* The project's name lines up with its cards; its hover still has room. */
-.home-panel-toggle {
-  margin-left: -6px;
-}
-.home-panel-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 6px;
-  border-radius: 6px;
-  text-align: left;
-}
-.home-panel-toggle:hover {
-  background: var(--home-soft);
-}
-.home-panel-toggle h2 {
-  font-size: calc(13px + var(--font-adjust, 3px));
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .home-agent-counts {
   display: flex;
   flex-wrap: wrap;
@@ -1035,24 +1021,14 @@ button.home-remote-check {
   color: var(--home-error-ink);
   border-color: var(--home-error);
 }
-.home-quiet {
-  color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
-}
 .home-reorder {
   display: flex;
   gap: 2px;
 }
-/* As a disabled button looks, while it keeps its focus (HomePanel.tsx). */
+/* As a disabled button looks, while it keeps its focus (ProjectGlance.tsx). */
 .home-reorder [aria-disabled="true"] {
   opacity: 0.45;
   cursor: default;
-}
-/* A project's content is its deck's container: the deck's columns follow
-   its own width (T-18, Dev 7's v12). */
-.home-panel-content {
-  padding: 0 0 4px;
-  container: deck / inline-size;
 }
 .home-widgets {
   display: flex;
@@ -1275,40 +1251,6 @@ ul.home-widget {
   font-size: calc(10px + var(--font-adjust, 3px));
   font-weight: 600;
 }
-.home-brief .home-out-of-date {
-  grid-column: 1 / -1;
-}
-.home-out-of-date > summary {
-  width: fit-content;
-  padding: 6px 12px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
-  color: var(--home-ink-2);
-  font-size: calc(10px + var(--font-adjust, 3px));
-  font-weight: 600;
-  cursor: pointer;
-}
-.home-out-of-date > summary:focus-visible {
-  outline: 2px solid var(--home-focus);
-  outline-offset: 2px;
-}
-.home-brief-sub {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 16px;
-  padding-top: 12px;
-}
-@container deck (min-width: 560px) {
-  .home-brief-sub {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@container deck (min-width: 1248px) {
-  .home-brief-sub {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
 /* With no holes, in order (deck-pack.ts): each card's span from its size and
    the cells it takes, where its grid's columns are known; else the spans
    above. A large card with nothing beside its second row takes one. */
@@ -1323,16 +1265,6 @@ ul.home-widget {
   }
 }
 
-/* Below the top ranks, about 600 px of body; "Show more" lifts it. */
-.home-brief.is-capped {
-  max-height: 600px;
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
-}
-.home-more {
-  margin-top: 6px;
-}
 .home-brief-empty {
   padding: 6px 0;
 }
@@ -1831,17 +1763,6 @@ ul.home-widget {
   flex-basis: 100%;
   margin: 0;
 }
-.home-panel-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 12px;
-}
-.home-panel-foot .home-project-reply {
-  flex: 1;
-  min-width: 260px;
-}
 .home-history {
   margin-top: 12px;
   font-size: calc(10px + var(--font-adjust, 3px));
@@ -1939,29 +1860,12 @@ ul.home-widget {
   .home-header {
     margin-bottom: 10px;
   }
-  .home-needs-you {
-    padding-left: 8px;
-    gap: 8px;
-  }
-  .home-needs-you h2 {
-    font-size: 0;
-    gap: 4px;
-  }
-  .home-needs-you h2 .nav-count {
-    font-size: calc(9px + var(--font-adjust, 3px));
+  .home-needs-note {
+    margin-left: 0;
+    flex-basis: 100%;
   }
   .home-needs-item {
     max-width: 220px;
-  }
-  .home-panel-head {
-    gap: 4px 8px;
-    padding: 2px 0;
-  }
-  .home-panel-chips {
-    margin-left: 0;
-  }
-  .home-panel-content {
-    padding: 0 0 4px;
   }
   .home-section {
     padding: 10px;
@@ -1976,9 +1880,6 @@ ul.home-widget {
   .home-text-reply {
     flex-direction: column;
     align-items: stretch;
-  }
-  .home-panel-foot .home-project-reply {
-    min-width: 0;
   }
 }
 
@@ -2005,13 +1906,6 @@ ul.home-widget {
 }
 .home-card-head + .home-card-body {
   margin-top: 5px;
-}
-.home-card-count {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--home-soft);
-  font-size: calc(9px + var(--font-adjust, 3px));
-  font-variant-numeric: tabular-nums;
 }
 .home-section.is-collapsed .home-section-head,
 .home-pinned.is-collapsed .home-pinned-head {

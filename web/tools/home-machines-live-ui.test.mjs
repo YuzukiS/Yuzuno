@@ -180,7 +180,7 @@ async function mount({ preview = false, rows = [], loadMode = "ok", mode = "ok" 
   }
   button("Home").click();
   if (preview) await waitFor(() => doc.querySelector(".home-remote-row"), "the preview's machine rows");
-  else await waitFor(() => doc.querySelector("[data-home-project]"), "Home read its panels");
+  else await waitFor(() => doc.querySelector("[data-glance-project]"), "Home read its projects");
   const remote = () => doc.querySelector(".home-remote-machines");
   return {
     w, doc, calls, errors, logged, pending, state,

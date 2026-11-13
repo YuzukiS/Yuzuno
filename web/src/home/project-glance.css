@@ -1,0 +1,235 @@
+/* Each project at a glance on the whole of Home (ProjectGlance.tsx, YN-86
+ * §2.1): one card a project, two to a row where Home is 900 px wide or more,
+ * else one; a quiet project is one line. Colours are Home's own (home.css). */
+.project-glance-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.project-glance-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.project-glance-count,
+.project-glance-note {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+  color: var(--home-ink-2);
+}
+.project-glance-note {
+  margin-left: auto;
+}
+.project-glance-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@container home (min-width: 900px) {
+  .project-glance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.project-glance {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+  cursor: pointer;
+  scroll-margin: 16px;
+}
+.project-glance:hover {
+  background: color-mix(in srgb, var(--home-soft) 55%, var(--home-surface));
+}
+.project-glance .project-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.project-glance-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.project-glance h3 {
+  min-width: 0;
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What the project says now: at most two lines, where it came from after it. */
+.project-glance-line {
+  min-width: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.project-glance-line > :is(.brief-markdown, p) {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* A lead's status reads as the glance's own line, not at a body's reading size (.prose). */
+.project-glance-line .brief-markdown {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+.project-glance-line .brief-markdown > * {
+  margin: 0;
+  display: inline;
+}
+.project-glance-source,
+.project-glance-none {
+  color: var(--home-ink-2);
+}
+.project-glance-source {
+  display: block;
+  margin-top: 2px;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-glance-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.project-glance-facts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.project-glance-facts > .is-error {
+  color: var(--home-error-ink);
+}
+.project-glance-recent {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 0 0;
+  border-top: 1px dashed var(--line);
+  list-style: none;
+}
+.project-glance-recent li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.project-glance-recent button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  text-align: left;
+}
+.project-glance-recent button:hover {
+  background: var(--home-soft);
+}
+.project-glance-card {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-glance-new {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--home-new);
+  transform: translateY(-1px);
+}
+.project-glance-recent time {
+  flex: none;
+  margin-left: auto;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.project-glance-open {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: var(--home-new);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.project-glance-open:hover {
+  background: var(--home-soft);
+}
+/* A quiet project: its name, when it last changed, and the way in, on one line. */
+.project-glance.is-quiet {
+  grid-template-columns: auto minmax(0, auto) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+.project-glance-quiet {
+  min-width: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-glance .home-reorder {
+  flex: none;
+}
+/* A quiet project's arrows and its way in keep the row's end, with or without the arrows. */
+.project-glance.is-quiet > .home-reorder {
+  grid-column: -3 / -2;
+}
+.project-glance.is-quiet > .project-glance-open {
+  grid-column: -2 / -1;
+}
+.project-glance-head > .home-reorder {
+  margin-left: 4px;
+}
+.project-glance-head > .home-panel-chips {
+  margin-left: auto;
+}
+@media (max-width: 520px) {
+  .project-glance {
+    padding: 10px 12px 8px;
+  }
+  .project-glance-note {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+  .project-glance.is-quiet {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+  .project-glance.is-quiet .project-glance-quiet {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}

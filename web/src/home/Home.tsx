@@ -8,24 +8,22 @@ import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link"
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
-import { keepUnchanged, projectDomId, requestDomId, sectionDomId, widgetsDomId } from "./brief-layout";
+import { keepUnchanged, projectDomId, sectionDomId, widgetsDomId } from "./brief-layout";
 import { markOpened, markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
-import { HomePanel } from "./HomePanel";
+import { ProjectGlance } from "./ProjectGlance";
 import { ProjectHome } from "./ProjectHome";
 import { HomeDensity, RefreshHome } from "./home-tools";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
 import { arrangeWidgets, HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { askKey, HomeJumps, latestReport, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
-import type { OpenedMark } from "./return-overview";
-import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou, needsYouKey } from "./NeedsYou";
 import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
-import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
+import type { HomeData, NeedsYouItem, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
 import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
 import { cardContent, shownSize, type CardSize } from "./card-preview";
@@ -76,18 +74,16 @@ function leaveReportEntry(open: OpenReport | null) {
   history.replaceState(Object.keys(rest).length ? rest : null, "", here());
 }
 
-/** No report opened here yet (YN-86): the same array while none is. */
-const NO_MARKS: OpenedMark[] = [];
-
 const reducedMotion = () =>
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Home: what needs you across projects, then My widgets (this machine's
- * load and the sections the user pinned), then one panel per Project in
- * Project Priority. It reads Core's facts and the Agents' Briefs; it never
- * mounts a conversation.
+ * Home: what needs you across projects, answered in place, then each
+ * project at a glance in Project Priority, then My widgets (this machine's
+ * load and the sections the user pinned); or one Project's page (YN-86).
+ * It reads Core's facts and the Agents' Briefs; it never mounts a
+ * conversation.
  */
 export function Home({
   revision,
@@ -207,21 +203,25 @@ export function Home({
   const [reordering, setReordering] = useState(false);
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const [saving, setSaving] = useState(false);
-  // Panels the needs-you row jumped to, shown whole for this visit.
-  const [reveal, setReveal] = useState<{ n: number; projects: Record<string, number> }>({ n: 0, projects: {} });
-  // The Needs you area's landing mark, from the return overview (T-19).
+  // Each jump Home makes to a place on itself, numbered: the effect below takes the newest.
+  const [reveal, setReveal] = useState(0);
+  // Where Needs you's last jump landed (T-19): its mark, until the next.
   const needsSettled = useRef<(() => void) | null>(null);
   useEffect(() => () => needsSettled.current?.(), []);
-  /** Needs you, or one of its items, scrolled to, focused and marked once it
-   * has landed; a folded card opens to show it (T-115). */
-  const showNeeds = useRef((key: string | null) => {
+  /** Needs you, or one of its items (an Ask's card, an approval, a row),
+   * scrolled to, focused and marked once it has landed; a folded card opens
+   * to show it (T-115). `within`: a jump from Home's own bar (YN-86), which
+   * scrolls Home's scroller only, clear of the bar. */
+  const showNeeds = useRef((key: string | null, within = false) => {
     const area = document.getElementById("home-current-needs");
     const item = key ? [...(area?.querySelectorAll<HTMLElement>("[data-needs-you]") ?? [])].find((el) => el.dataset.needsYou === key) : null;
-    const target = item ?? area;
+    // An Ask is its card, as on its project's page.
+    const target = item?.querySelector<HTMLElement>(":scope > [data-section-key]") ?? item ?? area;
     if (!target) return;
     const smooth = !reducedMotion();
     const show = () => {
-      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center", inline: "center" });
+      if (within) scrollWithinHome(target, "center", smooth);
+      else target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center", inline: "center" });
       target.focus({ preventScroll: true });
       needsSettled.current?.();
       needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
@@ -302,10 +302,6 @@ export function Home({
     },
     [reload, workspaceId],
   );
-  // The report versions the user opened whole here (YN-86): Core keeps each
-  // one; this Workspace's held overview takes them out of its changes.
-  const [openedHere, setOpenedHere] = useState<{ workspaceId: string; marks: OpenedMark[] }>({ workspaceId, marks: [] });
-  const openedMarks = openedHere.workspaceId === workspaceId ? openedHere.marks : NO_MARKS;
   /** Records that the report page showed this very version of a live report whole (ReportPage says when). */
   const opened = useCallback(
     async (projectId: string, section: Section) => {
@@ -317,10 +313,6 @@ export function Home({
       // Its blocks as shown are the read version's only once Core has that very version.
       if (record.sectionId === sectionId && record.version === section.version)
         rememberSeenBlocks(workspaceId, projectId, section, section.version);
-      setOpenedHere((was) => ({
-        workspaceId,
-        marks: [...(was.workspaceId === workspaceId ? was.marks : []), { projectId, sectionId, version: record.version }],
-      }));
       reload();
     },
     [reload, workspaceId],
@@ -379,20 +371,11 @@ export function Home({
         projects.find((p) => p.id === id)?.name ||
         shellText(language).unknownProject
       : shellText(language).noProject;
-  /** Shows the project's panel whole, then scrolls to and focuses the target in it. */
-  function revealIn(projectId: string, target: () => HTMLElement | null, within = false) {
-    jumpToEl(() => target() || document.getElementById(projectDomId(projectId)), "center", within, projectId);
-  }
   /** Scrolls Home (or the Project page on it) to a target, once, and focuses it. */
-  function jumpToEl(
-    target: () => HTMLElement | null,
-    block: ScrollLogicalPosition = "center",
-    within = false,
-    showProject?: string,
-  ) {
-    const n = reveal.n + 1;
+  function jumpToEl(target: () => HTMLElement | null, block: ScrollLogicalPosition = "center", within = false) {
+    const n = reveal + 1;
     pendingJump.current = { target, n, block, within };
-    setReveal({ n, projects: showProject ? { ...reveal.projects, [showProject]: n } : reveal.projects });
+    setReveal(n);
   }
   // A Project's page replaces Home's panes in the same scroller: entering it starts at its top, and coming
   // back returns to where the reader was in the whole of Home (YN-86).
@@ -412,10 +395,11 @@ export function Home({
     // Only entering or leaving a Project's page moves the page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
-  // A reply's "Open on Home" (T-9): once Home has read, to the section it
-  // answered while Home shows that very section, else to its project; once
-  // per opening. What has become of that version is said from what Home
-  // reads now, never decided before, and never of another section.
+  // A reply's "Open on Home" (T-9): once Home has read, to its project's page
+  // (YN-86), at the section it answered while Home shows that very section,
+  // else at the page's top; once per opening. What has become of that
+  // version is said there, from what Home reads now, never decided before,
+  // and never of another section.
   const arrived = useRef(0);
   const replyPanel = arrival && data ? data.projects.find((p) => p.project.id === arrival.origin.projectId) : undefined;
   const landed = arrival && data ? arrivalOf(arrival.origin, replyPanel) : null;
@@ -429,6 +413,7 @@ export function Home({
       />
     );
   jumpToItem.current = (item) => jump(item);
+  /** Where an item of Needs you is answered: its card in Needs you, its conversation, or its project's page. */
   function jump(item: NeedsYouItem, within = false) {
     // A question is answered in its conversation (T-42), and an executor's
     // result is released from its own (T-36 S3).
@@ -436,25 +421,23 @@ export function Home({
       onNavigate({ kind: "agent", agentId: item.agentId });
       return;
     }
-    const panel = item.projectId ? panels.find((p) => p.project.id === item.projectId) : undefined;
-    if (!panel) {
-      // An approval from an Agent outside any project lives in its conversation.
-      if (item.kind === "approval" && item.requestId)
-        onNavigate({ kind: "request", agentId: item.agentId, requestId: item.requestId });
+    const panel = item.projectId ? data?.projects.find((p) => p.project.id === item.projectId) : undefined;
+    const onCard =
+      item.kind === "approval"
+        ? !!panel?.pending.some((request) => request.id === item.requestId)
+        : !!panel?.brief.sections.some((section) => section.kind === "ask" && section.key === item.sectionKey);
+    if (onCard) {
+      showNeeds.current(needsYouKey(item), within);
       return;
     }
-    revealIn(panel.project.id, () =>
-      item.kind === "approval" && item.requestId
-        ? document.getElementById(requestDomId(item.requestId))
-        : item.sectionKey
-          ? document.getElementById(sectionDomId(panel.project.id, item.sectionKey))
-          : null,
-      within,
-    );
+    // An approval from an Agent outside any project lives in its conversation.
+    if (item.kind === "approval" && item.requestId) onNavigate({ kind: "request", agentId: item.agentId, requestId: item.requestId });
+    // An Ask Home's read does not have on any card: its project's page, at it.
+    else if (panel && item.sectionKey) onOpenProject?.(panel.project.id, item.sectionKey);
   }
   useEffect(() => {
     const jumpTo = pendingJump.current;
-    if (!jumpTo || jumpTo.n !== reveal.n) return;
+    if (!jumpTo || jumpTo.n !== reveal) return;
     pendingJump.current = null;
     const target = jumpTo.target();
     if (!target) return;
@@ -497,14 +480,13 @@ export function Home({
     arrived.current = arrival.n;
     const { projectId, key } = arrival.origin;
     if (landed.kind === "gone") {
-      // No panel to go to: the note saying so, below the overview and Needs you and often out of view, is brought
-      // into view (nearest) and settles (T-19 HM:H15).
-      const n = reveal.n + 1;
-      pendingJump.current = { target: () => document.querySelector<HTMLElement>(".home-main > .home-reply-arrival"), n, block: "nearest" };
-      setReveal({ n, projects: reveal.projects });
+      // No page to go to: the note saying so, above the projects and often out of view, is brought into view
+      // (nearest) and settles (T-19 HM:H15).
+      jumpToEl(() => document.querySelector<HTMLElement>(".home-projects > .home-reply-arrival"), "nearest");
       return;
     }
-    revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
+    // Its project's page, at the very section answered, else at its top; the page says what became of it.
+    onOpenProject?.(projectId, key !== null && sameSectionLive(landed) ? key : undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrival, data, report]);
   const shownReport = useRef(report);
@@ -605,8 +587,10 @@ export function Home({
       incomingReport.fromAddress ? "replace" : "push",
     );
   }, [incomingReport]);
-  // Back on Home: focus where the report was opened from, with a short ring;
-  // its project's heading when that is gone (the card marked seen, say).
+  // Back on Home: focus where the report was opened from (a card, the bar's
+  // Latest report), with a short ring; when that is gone (the card marked
+  // seen, say), its project: Open project on the whole of Home, the heading
+  // of its page.
   useEffect(() => {
     if (report) return;
     const back = returnTo.current;
@@ -614,11 +598,13 @@ export function Home({
     if (!back) return;
     const target = back.from?.isConnected
       ? back.from
-      : document.getElementById(projectDomId(back.projectId))?.querySelector<HTMLElement>(".home-panel-head > button");
+      : (document.getElementById(projectDomId(back.projectId))?.querySelector<HTMLElement>(".project-glance-open") ??
+        [...document.querySelectorAll<HTMLElement>(".project-home")].find((page) => page.dataset.projectHome === back.projectId)
+          ?.querySelector<HTMLElement>(".project-home-head h1"));
     if (!target) return;
     if (!back.from?.isConnected) target.scrollIntoView({ block: "center" });
     target.focus({ preventScroll: true });
-    const card = target.closest<HTMLElement>(".home-section, .home-panel") ?? target;
+    const card = target.closest<HTMLElement>(".home-section, .project-glance") ?? target;
     card.setAttribute("data-report-return", "");
     const timer = setTimeout(() => card.removeAttribute("data-report-return"), 1200);
     return () => {
@@ -840,19 +826,29 @@ export function Home({
     lastAsk.current = askKey(item);
     jump(item, true);
   };
-  const toReport = () => {
+  // Its cards are on its project's page: the report opens over Home, and Back returns to the bar (YN-86 §2.1).
+  const toReport = (from: HTMLElement) => {
     if (!latest) return;
-    const { projectId, section } = latest;
-    revealIn(projectId, () => document.getElementById(sectionDomId(projectId, section.key)), true);
+    openReport({ workspaceId, ...linkTo(latest.projectId, latest.section) }, null, from);
   };
-  const toWidgets = () => {
-    const n = reveal.n + 1;
-    pendingJump.current = { target: () => document.getElementById(widgetsDomId), n, block: "start", within: true };
-    setReveal({ n, projects: reveal.projects });
-  };
+  const toWidgets = () => jumpToEl(() => document.getElementById(widgetsDomId), "start", true);
   const projectAgents = (id: string) => byProject.get(id) || noAgents;
-  const needsFor = (panel: ProjectPanel) =>
-    data?.needsYou.filter((item) => item.projectId === panel.project.id) || [];
+  // A Project's page takes its jump once no report is open over it, so the card it names is shown and focused, never
+  // under the report; Core's next read or the browser's Back clearing the jump leaves the one already taken.
+  const pageFocus = useRef<{ project: string; focus: { key?: string; n: number } } | null>(null);
+  if (project && projectFocus) pageFocus.current = { project, focus: projectFocus };
+  else if (pageFocus.current?.project !== project) pageFocus.current = null;
+  // The page shown named again (its name on the rail pressed once more, S1a's P3): a report open over it closes,
+  // as its Back closes it, and the jump lands once it has gone. Entering another page is not this.
+  const focusAsked = useRef({ project, n: projectFocus?.n });
+  useEffect(() => {
+    const was = focusAsked.current;
+    focusAsked.current = { project, n: projectFocus?.n };
+    if (!projectFocus || was.project !== project || was.n === projectFocus.n || !shownReport.current) return;
+    closeReportNow.current(() => {});
+    // Only a new jump for the same page asks this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, projectFocus?.n]);
   return (
     <HomeNavigation.Provider value={onNavigate}>
     <CardAgents.Provider value={cardAgents}>
@@ -897,7 +893,7 @@ export function Home({
       {!project && data && (
         <HomeJumps
           asks={asks.length}
-          report={latest && { title: latest.section.title, projectName: latest.projectName }}
+          report={latest && { title: latest.section.title, projectName: latest.projectName, opens: true }}
           widgets={widgetsOnShow}
           onAsk={toAsk}
           onReport={toReport}
@@ -942,27 +938,48 @@ export function Home({
           onNavigate={onNavigate}
           onChanged={changed}
           onSeen={seen}
-          focus={projectFocus}
+          focus={report ? null : (pageFocus.current?.focus ?? null)}
+          arrival={
+            arrival && landed && project === arrival.origin.projectId && arrival.origin.key !== null
+              ? {
+                  key: arrival.origin.key,
+                  inCard: landed.kind === "changed",
+                  note: landedNote(
+                    (arrival.origin.snapshot?.sectionKind ??
+                      [...(projectPanel?.brief.sections ?? []), ...(projectPanel?.brief.teamSections ?? [])].find((s) => s.key === arrival.origin.key)?.kind) === "ask",
+                  ),
+                }
+              : null
+          }
           onExit={() => onCloseProject?.()}
         />
       ) : (
-        // Needs you first, on its own; then My widgets, two columns where
-        // the pane is wide; then the projects.
+        // What needs you, answered here; then each project at a glance; then My widgets (YN-86 §2.1).
         <div className="home-layout">
-          <HomeReturnOverview
-            key={readOnly ? "preview" : workspaceId}
-            data={data}
-            readFailed={readFailed}
-            opened={openedMarks}
-            onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
-            onNeedsYou={() => showNeeds.current(null)}
-            onNavigate={onNavigate}
-          />
           <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>
             <NeedsYou
               items={data.needsYou}
+              data={data}
+              workspaceId={workspaceId}
+              visit={visit}
+              agentsOf={projectAgents}
+              readOnly={readOnly}
               projectName={projectName}
               onJump={jump}
+              onSeen={seen}
+              onChanged={changed}
+              onNavigate={onNavigate}
+            />
+          </div>
+          <div className="home-projects">
+            {landed?.kind === "gone" && landedNote(false)}
+            {reordering && <p className="home-note home-reorder-note">{t.reorderNote}</p>}
+            <ProjectGlance
+              panels={panels}
+              needsYou={data.needsYou}
+              agentsOf={projectAgents}
+              reorder={reordering ? { busy: saving, move: (index, by) => void move(index, by) } : null}
+              onOpen={(projectId, sectionKey) => onOpenProject?.(projectId, sectionKey)}
             />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}
@@ -972,54 +989,6 @@ export function Home({
             onChange={layout ? widgetLayout.change : undefined}
             onResetSizes={layout ? resetSizes : undefined}
           />
-          <div className="home-main">
-            {landed?.kind === "gone" && landedNote(false)}
-            {reordering && (
-              <p className="home-note home-reorder-note">{t.reorderNote}</p>
-            )}
-            {panels.length === 0 ? (
-              <p className="home-note home-empty">{t.noProjects}</p>
-            ) : (
-              <div className="home-panels">
-                {panels.map((panel, index) => (
-                  <HomePanel
-                    key={panel.project.id}
-                    panel={panel}
-                    rank={index}
-                    workspaceId={workspaceId}
-                    agents={projectAgents(panel.project.id)}
-                    needsYou={needsFor(panel)}
-                    readOnly={readOnly}
-                    reveal={reveal.projects[panel.project.id] || 0}
-                    arrival={
-                      arrival && landed && panel.project.id === arrival.origin.projectId && arrival.origin.key !== null
-                        ? {
-                            key: arrival.origin.key,
-                            inCard: landed.kind === "changed",
-                            note: landedNote(
-                              (arrival.origin.snapshot?.sectionKind ??
-                                panel.brief.sections.find((s) => s.key === arrival.origin.key)?.kind) === "ask",
-                            ),
-                          }
-                        : null
-                    }
-                    reorder={
-                      reordering
-                        ? {
-                            busy: saving,
-                            onUp: index > 0 ? () => void move(index, -1) : undefined,
-                            onDown: index < panels.length - 1 ? () => void move(index, 1) : undefined,
-                          }
-                        : null
-                    }
-                    onNavigate={onNavigate}
-                    onChanged={changed}
-                    onSeen={seen}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       )}
     </div>
