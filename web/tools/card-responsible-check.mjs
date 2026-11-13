@@ -223,6 +223,7 @@ async function check(run) {
     const archived = card("release");
     await archived.scrollIntoViewIfNeeded();
     assert.equal((await archived.locator(".home-task-ended").innerText()).trim(), w.ended);
+    assert.equal(await archived.locator(".home-changed").count(), 0, "an archived card is never New");
     assert.equal((await archived.locator(".home-card-responsible-name strong").innerText()).trim(), "YN-88 · 发布");
     assert.equal((await archived.locator(".home-card-responsible-state").innerText()).trim(), w.archived);
     assert.equal(await archived.locator(".home-card-reassign").count(), 0);

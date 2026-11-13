@@ -99,8 +99,9 @@ export const SummaryCard = memo(function SummaryCard({
     ? shownSize(section, content, widget?.chosen ?? null, sizes && sizable(section) ? (computed) => sizes.held(projectId, section.id!, computed) : undefined)
     : { size: null, source: null, own: null };
   // New or Updated since the user last read it (YN-86: marked seen, or a report opened whole); Seen stays offered
-  // until they mark this version seen, which is what puts a report into History.
-  const changed = unreadChange(section);
+  // until they mark this version seen, which is what puts a report into History. A card archived with its task
+  // (YN-86 §3.4) has nothing left to read: never New.
+  const changed = section.historyReason !== "archived" && unreadChange(section);
   const seenable = changedSinceSeen(section);
   const stale = !!section.status?.stale;
   const orphaned = unmaintained(section);
