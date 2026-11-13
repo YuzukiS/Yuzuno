@@ -17,6 +17,7 @@ import {
 } from "../intelligent-ui/clarification";
 import { relative } from "./format";
 import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
+import { replyRecipient } from "./card-responsible";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
@@ -292,12 +293,9 @@ export function AskReply({
   const ask = section.ask!;
   const reply = ask.reply;
   const { answer, resend, busy, error, receipt, kept } = useReply(context, section.key);
-  const ownerOpen =
-    section.owner.state === "active" && context.agents.some((a) => a.id === section.owner.agentId);
   // An ask on a card bound to a task goes to whoever answers for the card (YN-86 §3.3), while they are open in
   // the Project; else to its author. The user can pick another all the same.
-  const responsible = section.card?.responsible?.agentId;
-  const recipient = responsible && context.agents.some((a) => a.id === responsible) ? responsible : ownerOpen ? section.owner.agentId : "";
+  const recipient = replyRecipient(section, context.agents);
   // Kept once the Workspace is known: another one may hold the same project
   // and key (T-195).
   const slot = outboxKey(context.workspaceId, context.projectId, section.key);

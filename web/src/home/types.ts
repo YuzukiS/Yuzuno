@@ -140,6 +140,15 @@ export type CardBinding = {
     /** An executor's lifecycle state; another Agent's status, or closed. */
     state: string;
   } | null;
+  /** Where the card came from (YN-86 S3a-2, project_requests::handoffs): the requests routed to it, each once, and
+   * its routes and reassignments, oldest first. Never the user's words. Absent until a request was routed to it. */
+  handoffs?: CardHandoffs;
+};
+
+export type CardHandoffs = {
+  /** `merged`: joined to the card by an existing route; `messageId` finds the request's words. */
+  requests: { n: number; title: string | null; at: string; merged: boolean; messageId: string }[];
+  events: import("./project-talk-api").RouteEvent[];
 };
 
 export type BriefOutcome =

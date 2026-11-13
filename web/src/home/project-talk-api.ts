@@ -180,3 +180,18 @@ export function resendKept(projectId: string, workspaceId: string, kept: { text:
     clientMessageId: kept.messageId,
   });
 }
+
+/** Who takes a card on its reassignment (reassign.rs): an open member of the Project, or a new executor from a template. */
+export type ReassignTo = { agentId: string } | { executor: { templateId: string } };
+
+/** What a reassignment answers: the route it recorded, and the earlier executor's release, if there was one to make. */
+export type Reassigned = { route: RouteEvent; released: { agentId: string; note: string } | null };
+
+/**
+ * The user's reassignment of a card (YN-86 §4.2, §4.3): Core dispatches the
+ * card's task to its new responsible Agent first, then releases the earlier
+ * executor (archiving first, never cut off). The same client ID again is the
+ * same reassignment: a release that failed is made then.
+ */
+export const reassignCard = (projectId: string, sectionId: number, input: { workspaceId: string; to: ReassignTo; why?: string; clientRequestId: string }) =>
+  post<Reassigned>(`${base(projectId)}/cards/${sectionId}/reassign`, input);

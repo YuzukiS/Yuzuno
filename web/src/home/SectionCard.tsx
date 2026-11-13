@@ -640,6 +640,7 @@ export const SectionCard = memo(function SectionCard({
           card={bound}
           readOnly={readOnly}
           reply={replyable ? { open: replying, onToggle: toggleReply, button: replyButton } : null}
+          place={{ projectId, workspaceId, agents }}
         />
       )}
       {replyable && replying && (

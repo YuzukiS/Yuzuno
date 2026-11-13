@@ -15,6 +15,9 @@ import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./Hom
 import { HomeDensity, RefreshHome } from "./home-tools";
 import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
 import { ProjectTalk } from "./ProjectTalk";
+import type { ProjectRequest } from "./project-talk-api";
+import { ProjectTalkLink, type TalkLink } from "./talk-link";
+import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
@@ -91,6 +94,15 @@ export function ProjectHome({
   const [seenError, setSeenError] = useState("");
   const lastAsk = useRef<string | null>(null);
   const id = panel?.project.id ?? projectId;
+  // "Talk to the project" and the cards share its requests; a card's "See words" asks it to show one (YN-86 §4.5).
+  const [talkRequests, setTalkRequests] = useState<readonly ProjectRequest[]>([]);
+  const [reveal, setReveal] = useState<{ n: number; seq: number } | null>(null);
+  const talkLink = useMemo<TalkLink>(
+    () => ({ requests: talkRequests, reveal: (n) => setReveal((was) => ({ n, seq: (was?.seq ?? 0) + 1 })), showCard }),
+    // showCard reads the page when called.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [talkRequests, id],
+  );
   const sections = panel?.brief.sections ?? [];
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
   const executors = needsYou.filter((item) => item.kind === "executor");
@@ -124,6 +136,13 @@ export function ProjectHome({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  /** A card a request went to: shown on the page; where it is no longer here (archived longer ago than Home keeps
+   * it, R1 56f63019 P3), its task, which keeps its result. */
+  function showCard(key: string | null, task?: string | null) {
+    const card = key ? document.getElementById(sectionDomId(id, key)) : null;
+    if (card) jumpTo(card);
+    else if (task) openTask(task);
+  }
   /** Scrolls to `target`, opens the card or fold that holds it, and settles once it has landed. */
   function jumpTo(target: HTMLElement | null, block: ScrollLogicalPosition = "center") {
     if (!target) return;
@@ -245,6 +264,7 @@ export function ProjectHome({
     </>
   );
   return (
+    <ProjectTalkLink.Provider value={talkLink}>
     <div className="project-home" data-project-home={id} ref={root}>
       <header className="home-header project-home-head">
         {/* Where focus returns from a report whose card has left the page (Home.tsx). */}
@@ -295,8 +315,10 @@ export function ProjectHome({
         readOnly={readOnly}
         revision={revision}
         leadCount={editorIds?.length ?? 0}
-        onCard={(key) => jumpTo(document.getElementById(sectionDomId(id, key)))}
+        onCard={showCard}
         onNavigate={onNavigate}
+        reveal={reveal}
+        onRequests={setTalkRequests}
       />
       <div className="project-home-body">
         <div className="project-home-main">
@@ -335,5 +357,6 @@ export function ProjectHome({
         )}
       </div>
     </div>
+    </ProjectTalkLink.Provider>
   );
 }

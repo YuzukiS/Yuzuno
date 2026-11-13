@@ -12,6 +12,8 @@
 //    words and paste blocks stay inside their bubble; a card row's title
 //    keeps at least 120px, its row in two lines in a narrow requests side;
 //  - selection links the two sides, and a card's row shows that card;
+//  - a card's source line (S3b-2) is one line inside its card, its details too,
+//    with none of the user's words; See words → shows them in the conversation;
 //  - nothing is sent but the reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-talk-check.mjs
 import assert from "node:assert/strict";
@@ -26,7 +28,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(join(output, "frames"), { recursive: true });
-const report = { task: "YN-96", slice: "YN-86 S3b-1", runs: [], frames: [], posts: [], unexpected: [], errors: [] };
+const report = { task: "YN-96", slice: "YN-86 S3b", runs: [], frames: [], posts: [], unexpected: [], errors: [] };
 const HOST = "localhost:47396";
 const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -75,6 +77,18 @@ const home = () => ({
   }],
 });
 const desk = { agentId: "l", name: "lead-1" };
+// Where the cards came from (S3b-2): R-5 made yn-91, R-4 was joined to yn-92. Never the user's words.
+const R5_TITLE = "设置页重新排版、文案改口语，手机上也要好用（一个特意写长的标题，用来检查单行省略号）";
+sections[0].card.handoffs = {
+  requests: [{ n: 5, title: R5_TITLE, at: at(40), merged: false, messageId: "m5" }, { n: 4, title: "导出支持 CSV", at: at(60), merged: true, messageId: "m4" }],
+  events: [{ kind: "card", index: 0, request: 5, at: at(39), state: "done", why: "有明确终点的设计", by: desk, to: { agentId: "t", name: agents[1].name },
+    task: "YN-91", cardKey: "yn-91", sectionId: ids["yn-91"], title: sections[0].title }],
+};
+sections[1].card.handoffs = {
+  requests: [{ n: 4, title: "导出支持 CSV", at: at(60), merged: true, messageId: "m4" }],
+  events: [{ kind: "existing", index: 0, request: 4, at: at(59), state: "done", why: "和 09:40 的需求是同一件事的补充", by: desk,
+    to: { agentId: "x", name: agents[2].name }, task: "YN-92", cardKey: "yn-92", sectionId: ids["yn-92"] }],
+};
 const LONG_WORD = `https://example.test/${"a-very-long-path-segment/".repeat(12)}end`;
 const PASTE = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行：机器卡搬进项目页的一条要求`).join("\n");
 const TYPED = "把机器卡也搬进项目页，具体要求贴在下面：\n";
@@ -347,6 +361,50 @@ async function check(run) {
       return card && card.top < innerHeight && card.bottom > 0;
     }, null, { timeout: 5000 });
     pass("a request's card row shows that card on the page");
+
+    // S3b-2: the card says where it came from in one line, cut, never wider than the card; its details stay inside it
+    // and carry no words of the user's; See words → goes back to them in the conversation.
+    const sourced = page.locator('.project-home [data-section-key="yn-91"]').first();
+    const source = sourced.locator(".card-source").first();
+    await source.scrollIntoViewIfNeeded();
+    const inside = () => source.evaluate((el) => {
+      const frame = el.closest(".home-section").getBoundingClientRect();
+      const line = el.querySelector(".card-source-text");
+      const over = [...el.querySelectorAll("*")].map((part) => part.getBoundingClientRect())
+        .filter((box) => box.width && (box.right > frame.right + 1 || box.left < frame.left - 1)).length;
+      const box = line.getBoundingClientRect();
+      return { over, cut: line.scrollWidth > line.clientWidth + 1, oneLine: box.height < 1.5 * (Number.parseFloat(getComputedStyle(line).lineHeight) || 20),
+        page: document.scrollingElement.scrollWidth, window: innerWidth };
+    });
+    let fitSource = await inside();
+    assert.ok(fitSource.over === 0 && fitSource.oneLine && fitSource.cut && fitSource.page <= fitSource.window + 1, `the source line: ${JSON.stringify(fitSource)}`);
+    await source.locator(".card-source-line").click();
+    await source.locator(".card-source-detail").waitFor({ timeout: 5000 });
+    fitSource = await inside();
+    assert.ok(fitSource.over === 0 && fitSource.page <= fitSource.window + 1, `the source's details: ${JSON.stringify(fitSource)}`);
+    assert.ok(!(await sourced.innerText()).includes("参考 https://example.test"), "no words of the user's on the card");
+    await shot("card-source", sourced);
+    await source.locator(".card-source-requests .talk-link").first().click();
+    // The words were on the page already: wait for the request to be selected, and the page's scroll to land.
+    await page.locator('.request-card[data-request="5"][data-selected]').waitFor({ timeout: 5000 });
+    await settled();
+    await page.waitForFunction(() => {
+      const talk = document.querySelector(".project-talk").getBoundingClientRect();
+      const words = document.querySelector('.project-talk-mine[data-words="5"]').getBoundingClientRect();
+      const side = document.querySelector(".project-talk-chat .project-talk-scroll").getBoundingClientRect();
+      return talk.top >= -1 && talk.top < innerHeight && words.top < side.bottom && words.bottom > side.top;
+    }, null, { timeout: 5000 }).catch(() => {});
+    const back = await page.evaluate(() => {
+      const words = document.querySelector('.project-talk-mine[data-words="5"]').getBoundingClientRect();
+      const side = document.querySelector(".project-talk-chat .project-talk-scroll").getBoundingClientRect();
+      const talk = document.querySelector(".project-talk").getBoundingClientRect();
+      return { words: [words.top, words.bottom], side: [side.top, side.bottom], talk: [talk.top, talk.bottom], window: innerHeight,
+        selected: !!document.querySelector('.request-card[data-request="5"][data-selected]'), view: document.querySelector(".project-talk").dataset.view };
+    });
+    assert.ok(back.selected && back.view !== "requests", `the request selected, its words shown: ${JSON.stringify(back)}`);
+    assert.ok(back.words[0] < back.side[1] && back.words[1] > back.side[0], `the words in view in the conversation: ${JSON.stringify(back)}`);
+    assert.ok(back.talk[0] < back.window && back.talk[1] > 0, `the talk brought into view: ${JSON.stringify(back)}`);
+    pass("a card's source line stays inside the card, its details carry no words, and See words → shows them", { source: fitSource, back });
     await shot("page", page.locator("body"));
   } finally {
     await context.close();

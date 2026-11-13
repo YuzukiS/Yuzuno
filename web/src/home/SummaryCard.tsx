@@ -287,6 +287,7 @@ export const SummaryCard = memo(function SummaryCard({
           card={bound}
           readOnly={readOnly}
           reply={replyable ? { open: replying, onToggle: toggleReply, button: replyButton } : null}
+          place={{ projectId, workspaceId, agents }}
         />
       )}
       {replyable && replying && (

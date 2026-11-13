@@ -1,0 +1,80 @@
+/* Where a card came from (YN-86 §4.3, CardSource.tsx): one muted line above
+   who answers for it, cut to its width; its details on demand. */
+.card-source {
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.card-source-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.card-source-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-source-more {
+  flex: none;
+  color: var(--accent-ink, var(--ink));
+}
+.card-source-detail {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--home-soft);
+}
+.card-source-requests,
+.card-source-others {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card-source-requests li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 8px;
+}
+.card-source-request {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-source-request small {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  color: var(--home-ink-2);
+}
+.card-source-requests time {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.card-source-others .talk-link {
+  max-width: 100%;
+  overflow: hidden;
+  padding-left: 0;
+  text-overflow: ellipsis;
+}
