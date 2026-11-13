@@ -26,7 +26,8 @@
 //   in line, the widest pill a 240 px rail leaves line one room beside;
 // - under reduced motion nothing moves (the icon's fade included); with
 //   motion the arc turns and the icon fades in once, then stays still.
-// Screenshots for the user, each with its card open on the busiest row.
+// Screenshots for the user: the whole list, and the list with the busiest
+// row's card open.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/ring-wait-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -367,6 +368,11 @@ async function run({ width, height, theme, lang, motion = false }) {
       report.screenshots.push(name);
     };
     await page.mouse.move(0, 0);
+    // The whole list in one picture, its first row (the lead) at the top: a
+    // window tall enough for every row (the checks above ran at its own size).
+    await page.setViewportSize({ width, height: 1800 });
+    await rowOf("lead").scrollIntoViewIfNeeded();
+    await frames();
     await shot(`${tag}-list.png`, list);
     const card = (await openCard("yn12")).box;
     const listBox = await list.boundingBox();
