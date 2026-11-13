@@ -1303,6 +1303,7 @@ mod tests {
             Ok(output) => output,
             Err(wsl::Failure::NoWsl) => panic!("no System32\\wsl.exe"),
             Err(wsl::Failure::Run(message)) => panic!("{message}"),
+            Err(wsl::Failure::Cancelled) => panic!("listing was stopped"),
         };
         let targets = wsl_targets(output.success, &output.stdout, &output.stderr);
         println!("real wsl list: {}", serde_json::to_string(&targets).unwrap());
