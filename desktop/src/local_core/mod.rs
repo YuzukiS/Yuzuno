@@ -9,6 +9,7 @@
 //! WSL 2 distribution (`wsl.rs`); the Mac app answers `comingSoon` until
 //! YN-108 connects its own; elsewhere `unsupported`.
 
+pub mod auto_start;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod check_rules;
 #[cfg(windows)]

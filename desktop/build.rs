@@ -11,6 +11,7 @@ fn main() {
             "start_core",
             "local_core_targets",
             "local_core_check",
+            "local_core_auto_start",
             "set_appearance",
             "desktop_update_status",
             "desktop_update_check",

@@ -35,6 +35,11 @@ pub const ENTRY_LIMIT: usize = 16;
 pub const NAME_LIMIT: usize = 60;
 /// The longest `workspaceId` kept, as a Core's health answer may be large.
 pub const WORKSPACE_LIMIT: usize = 64;
+/// Whether the connection page starts this computer's confirmed Core by
+/// itself when the app opens and that Core does not answer (YN-107 design
+/// section 6, part 4): what a record without `autoStartLocalCore` means, and
+/// so what every record an older app wrote means.
+pub const AUTO_START_DEFAULT: bool = true;
 /// How many addresses this remembers the Workspace of once their entry is
 /// gone. Reaching it refuses the change rather than forgetting the oldest:
 /// dropping one would quietly give back the address whose stored data this
@@ -90,6 +95,9 @@ pub enum Saved {
         selected: Option<String>,
         /// Addresses with no entry whose Workspace is still remembered.
         remembered: Vec<Remembered>,
+        /// `autoStartLocalCore`: kept as it was read, and written back with
+        /// every change to the list.
+        auto_start: bool,
     },
     /// A record that cannot be used, and why. It is left exactly as it is.
     Unusable(String),
@@ -107,6 +115,17 @@ impl Saved {
         match self {
             Saved::Entries { remembered, .. } => remembered,
             _ => &[],
+        }
+    }
+
+    /// Whether the app may start this computer's confirmed Core by itself
+    /// when it opens. A first launch has nothing to start, and a record that
+    /// cannot be used is written over by nothing, so neither has a choice of
+    /// its own: both answer the default.
+    pub fn auto_start(&self) -> bool {
+        match self {
+            Saved::Entries { auto_start, .. } => *auto_start,
+            Saved::Never | Saved::Unusable(_) => AUTO_START_DEFAULT,
         }
     }
 
@@ -388,7 +407,7 @@ pub fn read(bytes: &[u8]) -> Saved {
                     let selected = Some(entry.id.clone());
                     // The one-address record had nowhere to remember an
                     // address it no longer listed, so there is none to read.
-                    Saved::Entries { entries: vec![entry], selected, remembered: Vec::new() }
+                    Saved::Entries { entries: vec![entry], selected, remembered: Vec::new(), auto_start: AUTO_START_DEFAULT }
                 }
             }
             // Kept apart from "it is not a saved Workspace record" on
@@ -447,6 +466,13 @@ pub fn read(bytes: &[u8]) -> Saved {
             }
         }
     }
+    // Absent means the default; anything but true or false is not a value
+    // this app wrote, and is not quietly read as one.
+    let auto_start = match record.get("autoStartLocalCore") {
+        None | Some(Value::Null) => AUTO_START_DEFAULT,
+        Some(Value::Bool(on)) => *on,
+        Some(_) => return Saved::Unusable("it is not a saved Workspace record".into()),
+    };
     // A remembered address is something saved, so this is no first launch.
     if entries.is_empty() && remembered.is_empty() {
         return Saved::Never;
@@ -456,13 +482,15 @@ pub fn read(bytes: &[u8]) -> Saved {
         .and_then(Value::as_str)
         .filter(|id| entries.iter().any(|entry| entry.id == *id))
         .map(str::to_owned);
-    Saved::Entries { entries, selected, remembered }
+    Saved::Entries { entries, selected, remembered, auto_start }
 }
 
 /// The record to write. `Err` when it would not read back: writing one would
 /// make the next read refuse, and a refused read must never be replaced by a
-/// list built from it.
-pub fn record(entries: &[Entry], selected: Option<&str>, remembered: &[Remembered]) -> Result<String, String> {
+/// list built from it. `auto_start` is written as given: a caller changing
+/// the list passes what it read ([`Saved::auto_start`]), so no change to the
+/// list turns it back to the default.
+pub fn record(entries: &[Entry], selected: Option<&str>, remembered: &[Remembered], auto_start: bool) -> Result<String, String> {
     if entries.len() > ENTRY_LIMIT {
         return Err(format!("this app keeps up to {ENTRY_LIMIT} Workspaces"));
     }
@@ -505,6 +533,7 @@ pub fn record(entries: &[Entry], selected: Option<&str>, remembered: &[Remembere
         "entries": listed,
         "selected": selected,
         "remembered": known,
+        "autoStartLocalCore": auto_start,
     })
     .to_string();
     if text.len() > LIMIT {
@@ -545,7 +574,7 @@ mod tests {
     }
 
     fn saved(entries: &[Entry], selected: Option<&str>) -> Saved {
-        read(record(entries, selected, &[]).unwrap().as_bytes())
+        read(record(entries, selected, &[], AUTO_START_DEFAULT).unwrap().as_bytes())
     }
 
     fn known(address: &str, workspace: &str) -> Remembered {
@@ -656,7 +685,7 @@ mod tests {
             entry("core-1", "Home", "http://127.0.0.1:4317", None, Some(start_for("http://127.0.0.1:4317", "w-one"))),
             entry("core-2", "Studio", "http://127.0.0.1:4318", None, Some(start_for("http://127.0.0.1:4318", "w-two"))),
         ];
-        assert_eq!(record(&two, None, &[]).unwrap_err(), "only one Workspace may start a Core");
+        assert_eq!(record(&two, None, &[], AUTO_START_DEFAULT).unwrap_err(), "only one Workspace may start a Core");
         // And a record that already holds two is not guessed at.
         let written = format!(
             r#"{{"version":1,"entries":[{{"id":"a","name":"A","url":"http://127.0.0.1:4317/","start":{}}},{{"id":"b","name":"B","url":"http://127.0.0.1:4318/","start":{}}}]}}"#,
@@ -723,15 +752,15 @@ mod tests {
         // put on disk once something is being saved.
         for bad in ["", &"w".repeat(WORKSPACE_LIMIT + 1)] {
             let entries = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some(bad), None)];
-            let refused = record(&entries, Some("core-1"), &[]).unwrap_err();
+            let refused = record(&entries, Some("core-1"), &[], AUTO_START_DEFAULT).unwrap_err();
             assert!(refused.contains("could not read back"), "{refused}");
         }
         // A name beyond what the reader takes is refused the same way.
         let long = vec![entry("core-1", &"n".repeat(NAME_LIMIT + 1), "http://127.0.0.1:4317", None, None)];
-        assert!(record(&long, None, &[]).unwrap_err().contains("could not read back"));
+        assert!(record(&long, None, &[], AUTO_START_DEFAULT).unwrap_err().contains("could not read back"));
         // And what it does accept still writes.
         let fine = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), None)];
-        assert!(record(&fine, Some("core-1"), &[]).is_ok());
+        assert!(record(&fine, Some("core-1"), &[], AUTO_START_DEFAULT).is_ok());
     }
 
     #[test]
@@ -744,7 +773,7 @@ mod tests {
         let after = remembering(&before, &[]);
         assert_eq!(after, vec![known("http://127.0.0.1:4317", "w-one")]);
         // And the address still answers as bound, with no entry listed.
-        let saved = read(record(&[], None, &after).unwrap().as_bytes());
+        let saved = read(record(&[], None, &after, AUTO_START_DEFAULT).unwrap().as_bytes());
         assert_eq!(saved.entries(), &[]);
         assert_eq!(saved.workspace_for(&core("http://127.0.0.1:4317")), Some("w-one"));
         // A remembered address is not a first launch: saying Never here would
@@ -757,7 +786,7 @@ mod tests {
         // Remove, then connect a different Workspace at the same address.
         // Without the remembered binding this opened and was recorded.
         let before = saved(&[entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), None)], Some("core-1"));
-        let after = read(record(&[], None, &remembering(&before, &[])).unwrap().as_bytes());
+        let after = read(record(&[], None, &remembering(&before, &[]), AUTO_START_DEFAULT).unwrap().as_bytes());
         let address = core("http://127.0.0.1:4317");
         assert_eq!(opening(after.workspace_for(&address), "w-two"), Opening::Changed);
         // The one that was there still opens, and an answer that cannot be
@@ -782,7 +811,7 @@ mod tests {
         let same = vec![known("http://127.0.0.1:4317", "w-two")];
         // Writing both is refused: the two could disagree about which
         // Workspace is there, and nothing may choose between them.
-        assert!(record(&entries, Some("core-1"), &same).unwrap_err().contains("both listed and remembered"));
+        assert!(record(&entries, Some("core-1"), &same, AUTO_START_DEFAULT).unwrap_err().contains("both listed and remembered"));
         // Reading such a record refuses it rather than preferring one.
         let both = br#"{"version":1,"entries":[{"id":"core-1","name":"Home","url":"http://127.0.0.1:4317/","workspaceId":"w-one"}],"selected":"core-1","remembered":[{"url":"http://127.0.0.1:4317/","workspaceId":"w-two"}]}"#;
         assert_eq!(
@@ -790,7 +819,7 @@ mod tests {
             Saved::Unusable("it remembers a Workspace for an address it also lists".into())
         );
         // An entry taking a remembered address takes the record with it.
-        let before = read(record(&[], None, &same).unwrap().as_bytes());
+        let before = read(record(&[], None, &same, AUTO_START_DEFAULT).unwrap().as_bytes());
         assert_eq!(remembering(&before, &entries), vec![]);
     }
 
@@ -804,7 +833,7 @@ mod tests {
         assert_eq!(forgetting(&two, &core("http://127.0.0.1:4319")), None);
         // Afterwards the address is unknown again -- which is the whole
         // effect. Nothing stored for it was reached by this.
-        let saved = read(record(&[], None, &left).unwrap().as_bytes());
+        let saved = read(record(&[], None, &left, AUTO_START_DEFAULT).unwrap().as_bytes());
         assert_eq!(saved.workspace_for(&core("http://127.0.0.1:4317")), None);
     }
 
@@ -813,10 +842,10 @@ mod tests {
         let full: Vec<Remembered> = (0..REMEMBERED_LIMIT)
             .map(|n| known(&format!("http://127.0.0.1:{}", 4000 + n), &format!("w-{n}")))
             .collect();
-        assert!(record(&[], None, &full).is_ok(), "the limit itself fits");
+        assert!(record(&[], None, &full, AUTO_START_DEFAULT).is_ok(), "the limit itself fits");
         let mut over = full.clone();
         over.push(known("http://127.0.0.1:9999", "w-over"));
-        let refused = record(&[], None, &over).unwrap_err();
+        let refused = record(&[], None, &over, AUTO_START_DEFAULT).unwrap_err();
         assert!(refused.contains(&REMEMBERED_LIMIT.to_string()), "{refused}");
         // Refused, not evicted: dropping the oldest would hand back an
         // address whose stored data it was keeping apart.
@@ -827,7 +856,7 @@ mod tests {
         let mut again = full.clone();
         again[0] = known("http://127.0.0.1:4000", "w-moved");
         assert_eq!(again.len(), REMEMBERED_LIMIT);
-        assert!(record(&[], None, &again).is_ok());
+        assert!(record(&[], None, &again, AUTO_START_DEFAULT).is_ok());
     }
 
     #[test]
@@ -888,8 +917,57 @@ mod tests {
                 )
             })
             .collect();
-        let text = record(&full, Some("core-0"), &[]).expect("within what read accepts");
+        let text = record(&full, Some("core-0"), &[], AUTO_START_DEFAULT).expect("within what read accepts");
         assert!(text.len() <= LIMIT);
-        assert_eq!(read(text.as_bytes()), Saved::Entries { entries: full, selected: Some("core-0".into()), remembered: Vec::new() });
+        assert_eq!(read(text.as_bytes()), Saved::Entries { entries: full, selected: Some("core-0".into()), remembered: Vec::new(), auto_start: true });
+    }
+
+    // YN-111: the shared switch for starting this computer's confirmed Core
+    // when the app opens (YN-107 design section 6, part 4).
+    #[test]
+    fn starting_by_itself_is_on_unless_the_record_says_otherwise() {
+        let listed = r#"{"version":1,"entries":[{"id":"core-1","name":"Home","url":"http://127.0.0.1:4317/"}]}"#;
+        assert!(read(listed.as_bytes()).auto_start(), "a record without the key, as older apps write it");
+        let old = br#"{"coreUrl":"http://127.0.0.1:4317"}"#;
+        assert!(read(old).auto_start(), "the one-address record");
+        assert!(Saved::Never.auto_start());
+        let off = r#"{"version":1,"entries":[{"id":"core-1","name":"Home","url":"http://127.0.0.1:4317/"}],"autoStartLocalCore":false}"#;
+        assert!(!read(off.as_bytes()).auto_start());
+        let null = r#"{"version":1,"entries":[{"id":"core-1","name":"Home","url":"http://127.0.0.1:4317/"}],"autoStartLocalCore":null}"#;
+        assert!(read(null.as_bytes()).auto_start());
+    }
+
+    #[test]
+    fn a_switch_this_app_did_not_write_is_not_read_as_one() {
+        for value in [r#""false""#, "0", "[]", "{}"] {
+            let text = format!(
+                r#"{{"version":1,"entries":[{{"id":"core-1","name":"Home","url":"http://127.0.0.1:4317/"}}],"autoStartLocalCore":{value}}}"#
+            );
+            assert_eq!(read(text.as_bytes()), Saved::Unusable("it is not a saved Workspace record".into()), "{value}");
+        }
+    }
+
+    #[test]
+    fn the_switch_is_written_back_with_every_change_to_the_list() {
+        let start = StartProfile { confirmed: true, ..start_for("http://127.0.0.1:4317", "w-one") };
+        let home = entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), Some(start));
+        for on in [false, true] {
+            let before = read(record(&[home.clone()], Some("core-1"), &[], on).unwrap().as_bytes());
+            assert_eq!(before.auto_start(), on);
+            // Renaming, adding and removing write the list with what was read.
+            let mut renamed = before.entries().to_vec();
+            renamed[0].name = "Studio".into();
+            let after = read(record(&renamed, Some("core-1"), before.remembered(), before.auto_start()).unwrap().as_bytes());
+            assert_eq!(after.auto_start(), on, "a rename keeps it");
+            let mut more = after.entries().to_vec();
+            more.push(entry("core-2", "Other", "http://127.0.0.1:4318", Some("w-two"), None));
+            let after = read(record(&more, Some("core-2"), after.remembered(), after.auto_start()).unwrap().as_bytes());
+            assert_eq!(after.auto_start(), on, "a new entry keeps it");
+            let fewer = vec![after.entries()[1].clone()];
+            let remembered = remembering(&after, &fewer);
+            let after = read(record(&fewer, None, &remembered, after.auto_start()).unwrap().as_bytes());
+            assert_eq!(after.auto_start(), on, "removing the entry that may start keeps it");
+            assert_eq!(after.remembered().len(), 1);
+        }
     }
 }
