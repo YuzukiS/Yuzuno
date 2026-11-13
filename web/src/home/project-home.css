@@ -7,6 +7,11 @@
 }
 .project-home-head h1 {
   gap: 10px;
+  border-radius: 6px;
+}
+/* Focused only by code, when a report's card has left the page: its short ring says so (report.css). */
+.project-home-head h1:focus:not([data-report-return]) {
+  outline: none;
 }
 .project-home-head .project-dot {
   width: 11px;

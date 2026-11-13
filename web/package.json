@@ -19,7 +19,6 @@
     "test:codex-fork": "node tools/codex-fork-ui.test.mjs",
     "test:session-import:browser": "node tools/session-import-browser.mjs",
     "test:home-motion:browser": "node tools/home-motion-check.mjs",
-    "test:home-stale-note:browser": "node tools/home-stale-note-check.mjs",
     "format": "prettier --write src tools vite.config.ts package.json tsconfig.json index.html"
   },
   "dependencies": {

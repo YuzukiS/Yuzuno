@@ -94,7 +94,7 @@ function useReservedHeight(content: string, collapsed: boolean) {
  * to it from the height it had just before (surface.ts collapseFrom). Drawn
  * inside the card, it reads that height before React changes the card, as
  * each new `collapse` comes; it plays before the frame is painted, once the
- * deck has packed the card: HomePanel's layout effect, after the card's, when
+ * deck has packed the card: ProjectDeck's layout effect, after the card's, when
  * Core's read changed it, else here (Reply again closes it by its own state).
  * Anything held for the card it was is let go first.
  */

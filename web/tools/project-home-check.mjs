@@ -1,12 +1,18 @@
-// YN-86 S1a in Chromium, every API answered here (no Core, no daily
+// YN-86 S1a and S1b in Chromium, every API answered here (no Core, no daily
 // configuration), through the production build:
+//  - the whole of Home (S1b): Needs you with the Ask and the approval as
+//    cards and the executor as a row, each project at a glance (a quiet one
+//    on one line, two to a row where Home is 900 px wide), no return
+//    overview; Latest report opens the report page, and Back returns the
+//    focus to that jump, the glance no longer counting it new;
 //  - a Project's name on the rail opens its page; the arrow before it only
 //    folds the group, and Tab goes arrow, name, +;
 //  - the page's three groups: Needs you, In progress (cards stay put for the
 //    visit), and Done, closed at first, with the 30-day history inside;
 //  - an unread report opened from its card comes back with New gone and the
 //    card in the same place and the same group;
-//  - a Project's page from the address, at 1440, 940 and a phone (390);
+//  - on a phone (390), the whole of Home from the address and a project's
+//    page from its glance; 1440, 940 and Chinese at 1440 otherwise;
 //  - nothing is wider than the window, and nothing is sent but the reads and
 //    the opened receipt.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-home-check.mjs
@@ -34,10 +40,12 @@ const agents = [
   { ...base, id: "l", name: "lead-1", kind: "lead" },
   { ...base, id: "t", name: "YN-90 · 设计", kind: "executor", projectId: "p-dev", executor: { state: "running", task: { id: "YN-90", title: "Settings layout", shortName: "设置页排版" } } },
   { ...base, id: "n", name: "notes-1", kind: "lead", projectId: "p-notes" },
+  { ...base, id: "s", name: "site-1", kind: "lead", projectId: "p-site" },
 ];
 const projects = [
   { id: "p-dev", name: "Yuzuno dev", defaultDirs: {}, createdAt: "", updatedAt: "" },
   { id: "p-notes", name: "Field notes", defaultDirs: {}, createdAt: "", updatedAt: "" },
+  { id: "p-site", name: "Personal site", defaultDirs: {}, createdAt: "", updatedAt: "" },
 ];
 const owner = (agentId, name) => ({ agentId, name, state: "active" });
 const node = (type, props, children) => (children ? { type, props, children } : { type, props });
@@ -71,7 +79,7 @@ const history = [section("kept", "report", "Kept report", spec(["a"], { a: md("F
 })];
 const home = () => ({
   generatedAt: at(0),
-  order: ["p-dev", "p-notes"],
+  order: ["p-dev", "p-notes", "p-site"],
   needsYou: [
     { kind: "ask", projectId: "p-dev", agentId: "l", agentName: "lead-1", sectionKey: "q1", title: "Ship the settings page this week?", since: at(30) },
     { kind: "approval", projectId: "p-dev", agentId: "t", agentName: "YN-90 · 设计", requestId: "r-1", title: "Run the build", since: at(10) },
@@ -93,11 +101,34 @@ const home = () => ({
       errors: [], pending: [], jobs: [], unseen: 0, missing: [],
       brief: {
         version: 2, history: [],
-        sections: [section("weekly", "report", "Weekly notes", spec(["a"], { a: md("Read.") }), { owner: owner("n", "notes-1"), updatedAt: at(400), seen: { version: 2, at: at(300) } })],
+        sections: [
+          section("weekly", "report", "Weekly notes", spec(["a"], { a: md("Read.") }), { owner: owner("n", "notes-1"), updatedAt: at(400), seen: { version: 2, at: at(300) } }),
+          // The report updated last on Home: the bar's Latest report opens it (S1b).
+          section("field-log", "report", "Field log", spec(["a", "b"], { a: md("Three sites logged this week."), b: md("The fourth waits for the rain to stop.") }), {
+            owner: owner("n", "notes-1"), updatedAt: at(5),
+          }),
+        ],
+      },
+    },
+    {
+      // Nothing for the user and nothing at work: one line.
+      project: { id: "p-site", name: "Personal site" },
+      agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
+      contentEditors: { version: 1, editorAgentIds: ["s"] },
+      errors: [], pending: [], jobs: [], unseen: 0, missing: [],
+      brief: {
+        version: 1, history: [],
+        sections: [section("about", "report", "About page", spec(["a"], { a: md("Live.") }), { owner: owner("s", "site-1"), updatedAt: at(3 * 24 * 60), seen: { version: 2, at: at(60) } })],
       },
     },
   ],
 });
+/** Core's count of what each project has the user not read: marked seen, or a report opened whole (YN-86). */
+const withUnseen = (value) => {
+  for (const panel of value.projects)
+    panel.unseen = panel.brief.sections.filter((s) => Math.max(s.seen?.version ?? 0, s.opened?.version ?? 0) < s.version).length;
+  return value;
+};
 const state = { home: home() };
 const findSection = (projectId, key) =>
   state.home.projects.find((panel) => panel.project.id === projectId)?.brief.sections.find((section) => section.key === key)
@@ -122,8 +153,9 @@ try {
 }
 assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
-assert.deepEqual(report.posts, [], "nothing but reads and the opened receipt");
-assert.deepEqual(report.opened.map((entry) => entry.run).sort(), runs.map((run) => run.name).sort(), "one report opened per run");
+assert.deepEqual(report.posts, [], "nothing but reads and the opened receipts");
+for (const run of runs)
+  assert.deepEqual(report.opened.filter((entry) => entry.run === run.name).map((entry) => entry.body.key), ["field-log", "design"], `${run.name}: each report opened once`);
 console.log(`project-home-check: ${report.runs.length} runs, ${report.runs.reduce((n, run) => n + run.checks.length, 0)} checks`);
 
 async function check(run) {
@@ -158,7 +190,9 @@ async function check(run) {
     if (path === "/api/workspace") {
       return route.fulfill({ json: { workspace: { id: "ws-project" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     }
-    if (path === "/api/home") return route.fulfill({ json: state.home });
+    if (path === "/api/home") return route.fulfill({ json: withUnseen(state.home) });
+    // Linked repositories are read with a POST (home-api.ts readLinkedRepositories): none here.
+    if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method === "POST" && /^\/api\/projects\/([^/]+)\/brief\/opened$/.test(path)) {
       const body = JSON.parse(request.postData() || "{}");
       const projectId = path.match(/^\/api\/projects\/([^/]+)\/brief\/opened$/)[1];
@@ -205,14 +239,79 @@ async function check(run) {
   };
   const projectPage = () => page.locator('[data-project-home="p-dev"]');
   const card = (key) => page.locator(`#home-section-p-dev-${key}`);
+  /** Nothing wider than the window: the page, Home's own scroller, and each of the given boxes within Home. */
+  const noOverflow = async (boxes) => {
+    const widths = await page.evaluate((selector) => {
+      const view = document.querySelector(".home-view");
+      const edge = view.getBoundingClientRect().right;
+      const over = [...document.querySelectorAll(selector)].filter((el) => el.getBoundingClientRect().right > edge + 1 || el.scrollWidth > el.clientWidth + 1)
+        .map((el) => `${el.className}: ${Math.round(el.getBoundingClientRect().right)} > ${Math.round(edge)} / ${el.scrollWidth} > ${el.clientWidth}`);
+      return { page: document.scrollingElement.scrollWidth, window: innerWidth, view: view.scrollWidth, viewBox: view.clientWidth, over };
+    }, boxes);
+    assert.ok(widths.page <= widths.window + 1, JSON.stringify(widths));
+    assert.ok(widths.view <= widths.viewBox + 1, JSON.stringify(widths));
+    assert.deepEqual(widths.over, [], JSON.stringify(widths));
+    return widths;
+  };
   try {
     if (run.phone) {
-      // The address names the Project's page, as a link from elsewhere does.
-      await page.goto(`http://${HOST}/#/home?w=ws-project&p=p-dev`);
+      // The address names Home, as a link from elsewhere does.
+      await page.goto(`http://${HOST}/#/home?w=ws-project`);
     } else {
       await page.goto(`http://${HOST}/`);
       await page.locator(".catchup-nav:not(.collab-nav)").first().click();
-      await page.locator('[data-home-project="p-dev"]').waitFor({ timeout: 15_000 });
+    }
+    // The whole of Home (S1b, YN-86 §2.1).
+    await page.locator('[data-glance-project="p-dev"]').waitFor({ timeout: 15_000 });
+    await page.waitForFunction(() => document.querySelectorAll("[data-needs-you]").length === 3, null, { timeout: 15_000 });
+    assert.equal(await page.locator(".home-return-overview, .home-panel").count(), 0, "no return overview, no project panel");
+    const needs = await page.locator("[data-needs-you]").evaluateAll((els) => els.map((el) => [el.dataset.needsYou, el.classList.contains("home-needs-card") ? "card" : "row"]));
+    assert.deepEqual(needs, [["ask:p-dev:q1", "card"], ["approval:r-1", "card"], ["executor:t:delivering", "row"]]);
+    assert.equal(await page.locator('[data-needs-you="ask:p-dev:q1"] [data-section-key="q1"] .home-ask').count(), 1, "the Ask answered in place");
+    const glance = await page.locator("[data-glance-project]").evaluateAll((els) => els.map((el) => [el.dataset.glanceProject, el.classList.contains("is-quiet")]));
+    assert.deepEqual(glance, [["p-dev", false], ["p-notes", false], ["p-site", true]]);
+    const layout = await page.evaluate(() => {
+      const view = document.querySelector(".home-view");
+      const style = getComputedStyle(view);
+      const inner = view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const columns = getComputedStyle(document.querySelector(".project-glance-grid")).gridTemplateColumns.split(" ").length;
+      const order = [...document.querySelector(".home-layout").children].map((el) => el.className);
+      // Each part starts at Home's left edge and takes its whole width.
+      const edges = [".home-needs-you", ".project-glance-list", ".home-widget-column"].map((selector) => {
+        const box = document.querySelector(selector).getBoundingClientRect();
+        return [selector, Math.round(box.left), Math.round(box.width)];
+      });
+      return { inner: Math.round(inner), columns, order, edges };
+    });
+    assert.deepEqual(layout.order, ["home-needs-area", "home-projects", "home-widget-column"]);
+    for (const [selector, left, width] of layout.edges) {
+      assert.ok(Math.abs(left - layout.edges[0][1]) <= 1, `${selector} starts where Needs you does: ${JSON.stringify(layout.edges)}`);
+      assert.ok(Math.abs(width - layout.edges[0][2]) <= 1, `${selector} is as wide: ${JSON.stringify(layout.edges)}`);
+    }
+    assert.equal(layout.columns, layout.inner >= 900 ? 2 : 1, `two to a row from 900 px: ${JSON.stringify(layout)}`);
+    if (run.name.endsWith("1440")) assert.equal(layout.columns, 2);
+    if (run.phone) assert.equal(layout.columns, 1);
+    const homeWidths = await noOverflow(".home-needs-card, .project-glance, .home-widget-column");
+    await shot("home");
+    // Each project at a glance, scrolled into view in Home's own scroller.
+    await page.locator(".project-glance-list").evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await shot("home-projects");
+    pass("the whole of Home: Needs you's cards and row, each project at a glance, no overview; nothing wider than the window", { needs, glance, layout, homeWidths });
+    // Latest report: its page over Home; Back returns to the jump, the glance counting it read.
+    assert.equal(await page.locator('[data-glance-project="p-notes"] .home-chip.is-new').count(), 1);
+    await page.locator('.home-jumps [data-jump="report"]').click();
+    await page.locator(".home-report .report-head h1").waitFor({ timeout: 15_000 });
+    assert.equal((await page.locator(".home-report .report-head h1").innerText()).trim(), "Field log");
+    for (let i = 0; i < 80 && !report.opened.some((entry) => entry.run === run.name && entry.body.key === "field-log"); i++) await page.waitForTimeout(100);
+    await page.locator(".home-report .report-back").click();
+    await page.waitForFunction(() => !document.querySelector(".home-report"), null, { timeout: 10_000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset?.jump ?? null), "report", "the focus is back on Latest report");
+    await page.waitForFunction(() => !document.querySelector('[data-glance-project="p-notes"] .home-chip.is-new'), null, { timeout: 10_000 });
+    pass("Latest report opens its page; Back returns the focus to the jump; its project no longer counts it new");
+    if (run.phone) {
+      // On a phone, a project's page from its glance.
+      await page.locator('[data-glance-project="p-dev"] .project-glance-open').click();
+    } else {
       // The rail's heading is two controls: arrow, name, +; the name opens the page.
       const head = page.locator('.project-group[data-group="p-dev"] .project-group-head');
       const fold = page.locator('.project-group[data-group="p-dev"] .project-group-fold');
@@ -240,9 +339,7 @@ async function check(run) {
     await page.waitForFunction(() => document.querySelectorAll("[data-section-key]").length >= 4, null, { timeout: 15_000 });
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
-    const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth, view: document.querySelector(".home-view")?.scrollWidth }));
-    assert.ok(widths.page <= widths.window + 1, JSON.stringify(widths));
-    assert.ok(widths.view <= widths.window + 1, JSON.stringify(widths));
+    await noOverflow(".project-home-head, .project-deck-group");
     // The three groups, in order, Done closed.
     const titles = await page.locator(".project-deck-title, .project-deck-done > summary").evaluateAll((els) => els.map((el) => el.textContent.trim()));
     assert.match(titles[0], w.needs);
@@ -263,8 +360,9 @@ async function check(run) {
     await unread.locator(".home-report-open").click();
     await page.locator(".home-report .report-head h1").waitFor({ timeout: 15_000 });
     // The page records what it showed whole; wait for the receipt, then go Back.
-    for (let i = 0; i < 80 && !report.opened.some((entry) => entry.run === run.name); i++) await page.waitForTimeout(100);
-    assert.equal(report.opened.filter((entry) => entry.run === run.name).length, 1, "the report page records the version it showed");
+    const designOpened = () => report.opened.filter((entry) => entry.run === run.name && entry.body.key === "design");
+    for (let i = 0; i < 80 && !designOpened().length; i++) await page.waitForTimeout(100);
+    assert.equal(designOpened().length, 1, "the report page records the version it showed");
     await page.locator(".home-report .report-back").click();
     await projectPage().waitFor({ timeout: 15_000 });
     await page.waitForFunction(() => !document.querySelector("#home-section-p-dev-design .home-changed"), null, { timeout: 10_000 });

@@ -74,11 +74,14 @@ export const askKey = (item: NeedsYouItem) => JSON.stringify([item.projectId, it
 
 /**
  * Home's own jumps (YN-86): to the Asks waiting for the user, the report
- * updated last and My widgets, from wherever Home is scrolled to. It stays at
- * the top of Home's own scroller, under nothing of the app's, and goes with
- * Home when a report covers it. Each jump is the user's own press; nothing
- * here scrolls on its own. With nothing to go to, a jump says why and does
- * nothing. Its measured height is what Home keeps clear above a target.
+ * updated last and My widgets, from wherever Home is scrolled to. On the
+ * whole of Home, whose cards are on their projects' pages, the report opens
+ * as its page over Home (`report.opens`); on a Project's page it is a card
+ * there to go to. It stays at the top of Home's own scroller, under nothing
+ * of the app's, and goes with Home when a report covers it. Each jump is the
+ * user's own press; nothing here scrolls on its own. With nothing to go to,
+ * a jump says why and does nothing. Its measured height is what Home keeps
+ * clear above a target.
  */
 export function HomeJumps({
   asks,
@@ -89,12 +92,13 @@ export function HomeJumps({
   onWidgets,
 }: {
   asks: number;
-  report: { title: string; projectName: string } | null;
+  report: { title: string; projectName: string; opens?: boolean } | null;
   /** Widgets on show in My widgets, as arranged: a hidden one is not counted.
    * Absent on a Project's page, which has no My widgets (YN-86). */
   widgets?: number;
   onAsk: () => void;
-  onReport: () => void;
+  /** With the button pressed, which a report opened over Home gives the focus back to. */
+  onReport: (from: HTMLElement) => void;
   onWidgets?: () => void;
 }) {
   const t = useStrings(homeText);
@@ -130,7 +134,7 @@ export function HomeJumps({
       <Jump
         icon={<FileText size={14} />}
         label={t.jumpReport}
-        help={report ? t.jumpReportHelp(report.title, report.projectName) : t.jumpReportNone}
+        help={report ? (report.opens ? t.jumpReportOpenHelp : t.jumpReportHelp)(report.title, report.projectName) : t.jumpReportNone}
         enabled={!!report}
         onPress={onReport}
         kind="report"
@@ -167,7 +171,7 @@ function Jump({
   name?: string;
   help: string;
   enabled: boolean;
-  onPress: () => void;
+  onPress: (from: HTMLElement) => void;
   kind: string;
 }) {
   return (
@@ -180,8 +184,8 @@ function Jump({
         aria-disabled={enabled ? undefined : true}
         // Why it has nothing to go to, said to assistive technology while no tip shows.
         aria-description={enabled ? undefined : help}
-        onClick={() => {
-          if (enabled) onPress();
+        onClick={(event) => {
+          if (enabled) onPress(event.currentTarget);
         }}
       >
         {icon}

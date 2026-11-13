@@ -32,7 +32,16 @@ const root=createRoot(document.getElementById('root'));
 const links={href:()=>null,open:(link)=>window.actions.push(['open',link]),
   reportHref:(link)=>reportLinkHref('https://report.test/',{workspaceId:'ws-1',...link}),
   openReport:(link,from)=>window.actions.push(['report',link,from])};
-const home=(report,revision,workspaceId,visit,arrival)=><MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])} onOpenProject={(id,key)=>window.actions.push(['project',id,key])} report={report} visit={visit} arrival={arrival}/></MessageLinks.Provider>;
+// A Project's page, where its cards are (YN-86): p1's unless a test starts on the whole of Home (startProject null);
+// opening one is recorded, and opens it as the app does, at the card named.
+function Shell({report,revision,workspaceId,visit,arrival}){
+  const [project,setProject]=React.useState(window.startProject===undefined?'p1':window.startProject);
+  const [jump,setJump]=React.useState(null);
+  return <MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} onBackToReply={(link)=>window.actions.push(['back',link])}
+    project={project} jumpTo={jump} onCloseProject={()=>setProject(null)}
+    onOpenProject={(id,key)=>{window.actions.push(['project',id,key]);setProject(id);setJump((j)=>({projectId:id,sectionKey:key,n:(j?.n??0)+1}));}} report={report} visit={visit} arrival={arrival}/></MessageLinks.Provider>;
+}
+const home=(report,revision,workspaceId,visit,arrival)=><Shell report={report} revision={revision} workspaceId={workspaceId} visit={visit} arrival={arrival}/>;
 // visit: bumped on each explicit way to Home (App's goHome); arrival: a reply's Open on Home.
 window.renderHome=(report=null,revision=0,workspaceId='ws-1',visit=0,arrival=null)=>root.render(home(report,revision,workspaceId,visit,arrival));
 // Drawn before returning: what the first frame shows.
@@ -112,6 +121,8 @@ function mount(read, answer = () => undefined) {
   window.matchMedia = (query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   window.HTMLElement.prototype.scrollIntoView = function () {};
+  // jsdom has no element scrolling; a Project's page starts at its top (Home.tsx).
+  window.HTMLElement.prototype.scrollTo = function () {};
   Object.defineProperty(window.navigator, "clipboard", { value: { writeText: async (text) => { copied.push(text); } } });
   window.actions = [];
   window.fetch = async (url, init = {}) => {
@@ -138,10 +149,11 @@ function mount(read, answer = () => undefined) {
   };
   return { window, document, errors, requests, copied, report, card, button, press, close: () => window.close() };
 }
-async function openHome(read, incoming = null, answer) {
+async function openHome(read, incoming = null, answer, project = "p1") {
   const page = mount(read, answer);
+  page.window.startProject = project;
   page.window.renderHome(incoming);
-  await until(() => page.document.querySelector(".home-panel"), "Home read");
+  await until(() => page.document.querySelector(".project-home, .home-layout"), "Home read");
   await tick(40);
   return page;
 }
@@ -349,8 +361,8 @@ test("only the very version linked is shown, live or in History; otherwise the v
   assert.ok(page.button(report, "Open version 4 (in History)"));
   page.close();
 
-  // Another section under the key now: never shown as the one linked.
-  page = await openHome(() => homeData([section("eval", 8, 3)]), { link: linkTo(3), back: null, fromAddress: false, n: 1 });
+  // Another section under the key now: never shown as the one linked. Over the whole of Home, it shows its project's page.
+  page = await openHome(() => homeData([section("eval", 8, 3)]), { link: linkTo(3), back: null, fromAddress: false, n: 1 }, undefined, null);
   report = await until(page.report, "the report");
   assert.match(notice(page), /^Home has no report it can tell is the one linked/);
   assert.equal(report.querySelector(".report-article"), null);
@@ -358,6 +370,7 @@ test("only the very version linked is shown, live or in History; otherwise the v
   await until(() => !page.report(), "the report closed");
   await until(() => page.window.actions.some(([kind]) => kind === "project"), "the Project's page opened");
   assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions.find(([kind]) => kind === "project"))), ["project", "p1", "eval"]);
+  await until(() => page.document.querySelector('[data-project-home="p1"]'), "on the Project's page");
   page.close();
 
   // Its project is not on Home.
@@ -389,7 +402,7 @@ test("a version arriving while the report is read keeps the version on screen, n
   assert.deepEqual(page.errors, []);
 });
 
-test("Seen on the report marks the version shown; Back then focuses its project, the card having moved to History", async (t) => {
+test("Seen on the report marks the version shown; Back then focuses its project's page, the card having moved to History", async (t) => {
   let current = homeData([section("eval", 7, 3)]);
   const page = await openHome(() => current);
   t.after(page.close);
@@ -414,8 +427,8 @@ test("Seen on the report marks the version shown; Back then focuses its project,
   await until(() => !page.report(), "closed");
   await tick();
   assert.equal(page.card("eval"), null, "the card left for History");
-  const head = page.document.querySelector("#home-project-p1 .home-panel-head > button");
-  assert.equal(page.document.activeElement, head, "focus falls back to its project");
+  const head = page.document.querySelector('[data-project-home="p1"] .project-home-head h1');
+  assert.ok(page.document.activeElement === head, "focus falls back to its project's page");
   assert.deepEqual(page.errors, []);
 });
 

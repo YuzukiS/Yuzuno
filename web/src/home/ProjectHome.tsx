@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Eye, LoaderCircle, Settings } from "lucide-react";
 import { errorText } from "../api";
 import { lifecycleText } from "../executor-lifecycle";
@@ -15,6 +15,7 @@ import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./Hom
 import { HomeDensity, RefreshHome } from "./home-tools";
 import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
 import { ProjectReply } from "./AskReply";
+import { KeptCardReplies, referableHistory } from "./CardReply";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
 import { projectUnseen } from "./unseen";
@@ -51,6 +52,7 @@ export function ProjectHome({
   onChanged,
   onSeen,
   focus = null,
+  arrival = null,
   onExit,
 }: {
   projectId: string;
@@ -71,6 +73,9 @@ export function ProjectHome({
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
   /** A card to show, or the top of the page: another jump is another `n`. */
   focus?: { key?: string; n: number } | null;
+  /** Where a reply's "Open on Home" landed on this page (T-9): the note in the card it answered, or above the
+   * cards when that card is gone. */
+  arrival?: { key: string; inCard: boolean; note: ReactNode } | null;
   /** Back to the whole of Home. */
   onExit: () => void;
 }) {
@@ -92,6 +97,9 @@ export function ProjectHome({
   const unseen = panel ? projectUnseen(panel) : 0;
   const changed = sections.filter(changedSinceSeen).length;
   const asks = waitingAsks(needsYou);
+  // Live sections, shown or kept out of view, and the History entries a reply may still refer to (T-174).
+  const live = useMemo(() => [...sections, ...(panel?.brief.teamSections ?? [])], [sections, panel?.brief.teamSections]);
+  const referable = useMemo(() => referableHistory(panel?.brief.history ?? [], live.map((s) => s.key)), [panel?.brief.history, live]);
   // The live report updated last on this project, as Home's jump goes to it.
   const latest = useMemo(() => {
     let found: { section: Section; at: number } | null = null;
@@ -169,6 +177,7 @@ export function ProjectHome({
       editorIds?.includes(agent.id) ? 0 : agent.kind === "lead" ? 1 : agent.executor ? 3 : 2;
     return rank(a) - rank(b) || a.name.localeCompare(b.name);
   });
+  const notice = (section: Section) => (arrival?.inCard && arrival.key === section.key ? arrival.note : undefined);
   const taskLine = (agent: Agent) => {
     const task = agent.executor?.task;
     const name = task ? `${task.id} · ${task.shortName || task.title}` : t.noTask;
@@ -212,6 +221,7 @@ export function ProjectHome({
                 readOnly={readOnly}
                 onSeen={(marks) => onSeen(id, marks)}
                 onChanged={onChanged}
+                notice={notice(section)}
               />
             ) : (
               <SummaryCard
@@ -223,6 +233,7 @@ export function ProjectHome({
                 deck={false}
                 readOnly={readOnly}
                 onSeen={(marks) => onSeen(id, marks)}
+                notice={notice(section)}
               />
             ),
           )}
@@ -233,7 +244,8 @@ export function ProjectHome({
   return (
     <div className="project-home" data-project-home={id} ref={root}>
       <header className="home-header project-home-head">
-        <h1>
+        {/* Where focus returns from a report whose card has left the page (Home.tsx). */}
+        <h1 tabIndex={-1}>
           <span className="project-dot" style={{ background: projectColour(id) }} aria-hidden />
           {panel.project.name}
           <span className="home-panel-chips">
@@ -283,6 +295,7 @@ export function ProjectHome({
       />
       <div className="project-home-body">
         <div className="project-home-main">
+          {arrival && !arrival.inCard && arrival.note}
           <ProjectDeck
             panel={panel}
             workspaceId={workspaceId}
@@ -290,9 +303,19 @@ export function ProjectHome({
             readOnly={readOnly}
             onSeen={onSeen}
             onChanged={onChanged}
-            grouped
+            arrival={arrival}
             needs={{ pending: panel.pending, executors, onNavigate }}
           />
+          {/* Replies begun on cards no longer live here: kept, and sent only to their own card (T-174). */}
+          {!readOnly && (
+            <KeptCardReplies
+              projectId={id}
+              workspaceId={workspaceId}
+              agents={agents}
+              cardKeys={live.filter((s) => s.kind !== "ask").map((s) => s.key)}
+              referable={referable}
+            />
+          )}
         </div>
         {wide ? (
           <aside className="project-team" aria-label={t.teamAndRun}>

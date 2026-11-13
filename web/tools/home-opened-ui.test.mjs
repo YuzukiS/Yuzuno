@@ -27,7 +27,15 @@ import {Home} from ${JSON.stringify(path.join(root, "src/home/Home.tsx"))};
 import {MessageLinks, reportLinkHref} from ${JSON.stringify(path.join(root, "src/deep-link.ts"))};
 const root=createRoot(document.getElementById('root'));
 const links={href:()=>null,open:()=>{},reportHref:(link)=>reportLinkHref('https://opened.test/',{workspaceId:'ws-1',...link}),openReport:()=>{}};
-window.renderHome=({report=null,revision=0,workspaceId='ws-1',readOnly=false}={})=>root.render(<MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={readOnly} onNavigate={()=>{}} onChanged={()=>{}} report={report} visit={0}/></MessageLinks.Provider>);`,
+// A Project's page, where its cards are (YN-86): p1's unless a test starts on the whole of Home (startProject null),
+// opened as the app opens it, at the card named.
+function Shell({report,revision,workspaceId,readOnly}){
+  const [project,setProject]=React.useState(window.startProject===undefined?'p1':window.startProject);
+  const [jump,setJump]=React.useState(null);
+  return <MessageLinks.Provider value={links}><Home workspaceId={workspaceId} revision={revision} jobsRevision={0} agents={[]} projects={[]} readOnly={readOnly} onNavigate={()=>{}} onChanged={()=>{}} report={report} visit={0}
+    project={project} jumpTo={jump} onOpenProject={(id,key)=>{setProject(id);setJump((j)=>({projectId:id,sectionKey:key,n:(j?.n??0)+1}));}} onCloseProject={()=>setProject(null)}/></MessageLinks.Provider>;
+}
+window.renderHome=({report=null,revision=0,workspaceId='ws-1',readOnly=false}={})=>root.render(<Shell report={report} revision={revision} workspaceId={workspaceId} readOnly={readOnly}/>);`,
   );
   const result = await build({
     root,
@@ -137,7 +145,7 @@ function mount(state, { visible = true } = {}) {
   window.eval(bundle);
   const document = window.document;
   const page = () => document.querySelector(".home-report");
-  const card = (key) => document.querySelector(`.home-view .home-panel [data-section-key="${key}"]`);
+  const card = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
   const receipts = () => requests.filter((r) => r.method === "POST" && r.url.endsWith("/brief/opened"));
   const reads = () => requests.filter((r) => r.url === "/api/home").length;
   const jump = (kind) => document.querySelector(`.home-jumps [data-jump="${kind}"]`);
@@ -150,10 +158,11 @@ function mount(state, { visible = true } = {}) {
     close: () => window.close(),
   };
 }
-async function openHome(state, options, render = {}) {
+async function openHome(state, options, render = {}, project = "p1") {
   const p = mount(state, options);
+  p.window.startProject = project;
   p.window.renderHome(render);
-  await until(() => p.document.querySelector(".home-panel"), "Home read");
+  await until(() => p.document.querySelector(".project-home, .home-layout [data-glance-project]"), "Home read");
   await tick(40);
   return p;
 }
@@ -170,7 +179,7 @@ test("a live report its page drew whole is recorded once at that version, apart 
   const p = await openHome(state);
   t.after(p.close);
   assert.equal(mark(p.card("eval")), "New");
-  assert.equal(p.document.querySelector(".home-panel .home-chip.is-new")?.textContent, "2 new");
+  assert.equal(p.document.querySelector(".project-home-head .home-chip.is-new")?.textContent, "2 new");
   assert.equal(p.receipts().length, 0, "nothing is sent by Home showing the card");
   const shown = await openReport(p, "eval");
   await until(() => p.receipts().length === 1, "the receipt");
@@ -186,10 +195,10 @@ test("a live report its page drew whole is recorded once at that version, apart 
   shown.querySelector(".report-back").click();
   await until(() => !p.page(), "back on Home");
   // On Home in its place, not New, still offered Seen; the count follows Core's.
-  assert.deepEqual([...p.document.querySelectorAll(".home-panel [data-section-key]")].map((el) => el.dataset.sectionKey), ["eval", "other"]);
+  assert.deepEqual([...p.document.querySelectorAll(".project-home [data-section-key]")].map((el) => el.dataset.sectionKey), ["eval", "other"]);
   assert.equal(mark(p.card("eval")), null);
   assert.ok(p.card("eval").querySelector(".home-seen"), "Seen stays on the card: it is what puts a report into History");
-  assert.equal(p.document.querySelector(".home-panel .home-chip.is-new")?.textContent, "1 new");
+  assert.equal(p.document.querySelector(".project-home-head .home-chip.is-new")?.textContent, "1 new");
   assert.deepEqual(writes(p).map((r) => r.url), ["/api/projects/p1/brief/opened"], "nothing marked seen");
   // Its next version is Updated, and opening it records that one.
   state.projects[0].sections[0] = report("eval", 7, 4);
@@ -314,7 +323,7 @@ test("a receipt Core refuses is said on the page, never sent again from it, and 
   assert.deepEqual(p.errors, []);
 });
 
-test("an answer for a Workspace no longer shown changes nothing there, and the held overview drops only what was opened here", async (t) => {
+test("an answer for a Workspace no longer shown changes nothing there; on the whole of Home, a report opened from it counts as read once Core has it", async (t) => {
   // Opened in ws-1, its answer held; ws-2 is shown when it comes.
   {
     const state = one([report("eval", 7, 3)]);
@@ -337,26 +346,26 @@ test("an answer for a Workspace no longer shown changes nothing there, and the h
     const kept = [...Array(p.window.localStorage.length).keys()].map((i) => p.window.localStorage.key(i));
     assert.deepEqual(kept.filter((key) => key.startsWith("yuzuno.home-seen-blocks")), [], "nothing of it kept as read on this device");
   }
-  // The overview held at Home's first read: what is opened here leaves its changes; the rest stays as held.
+  // The whole of Home (YN-86 §2.1): the report updated last opens from the bar; its project's glance counts it read
+  // once Core's next read has the receipt, and the other report stays new.
   {
-    const state = one([report("eval", 7, 3), report("other", 8, 1)]);
-    const p = await openHome(state);
+    const state = one([report("eval", 7, 3, { updatedAt: "2026-11-10T01:30:00Z" }), report("other", 8, 1)]);
+    const p = await openHome(state, undefined, {}, null);
     t.after(p.close);
-    const tile = () => p.document.querySelector(".home-return-tile strong")?.textContent;
-    assert.equal(tile(), "2 cards");
-    // A change elsewhere comes with the next read; the held reading stays as it was.
-    state.projects[0].sections[1] = report("other", 8, 2);
-    await openReport(p, "eval");
+    const chip = () => p.document.querySelector('[data-glance-project="p1"] .home-chip.is-new')?.textContent;
+    assert.equal(chip(), "2 new");
+    p.jump("report").click();
+    await until(() => p.page()?.querySelector(".report-head h1")?.textContent === "About eval", "the report updated last");
     await until(() => p.receipts().length === 1, "the receipt");
     p.page().querySelector(".report-back").click();
     await until(() => !p.page(), "back on Home");
-    await until(() => tile() === "1 card", "the opened report leaves the held changes");
-    const refresh = p.document.querySelector(".home-return-refresh");
-    assert.equal(refresh.disabled, false, "the other card's newer version is a new reading, offered, not taken in by itself");
+    await until(() => chip() === "1 new", "the glance counts it read");
+    assert.deepEqual(writes(p).map((r) => r.url), ["/api/projects/p1/brief/opened"], "nothing marked seen");
+    assert.deepEqual(p.errors, []);
   }
 });
 
-test("Home's jumps stay above its cards and go to the next open Ask, the report updated last and My widgets, scrolling only Home", async (t) => {
+test("Home's jumps stay above Needs you and the projects: the next open Ask in Needs you, the report updated last opened as its page with the focus back on the jump, and My widgets; scrolling only Home", async (t) => {
   const state = {
     projects: [
       { id: "p1", name: "atlas-notes", sections: [ask("decide", 11), report("old", 7, 2, { updatedAt: "2026-11-09T08:00:00Z" }), ask("paging", 12)] },
@@ -368,30 +377,37 @@ test("Home's jumps stay above its cards and go to the next open Ask, the report 
       { kind: "ask", projectId: "p1", agentId: "a", agentName: "Mori", sectionKey: "paging", title: "Ask paging", since: "2026-11-10T00:20:00Z" },
     ],
   };
-  const p = await openHome(state);
+  const p = await openHome(state, undefined, {}, null);
   t.after(p.close);
   const bar = p.document.querySelector(".home-view > .home-jumps");
   assert.ok(bar, "in Home's own scroller, not the app's toolbar");
   assert.equal(bar.getAttribute("aria-label"), "Jump to");
   assert.deepEqual([...bar.querySelectorAll("button")].map((b) => b.textContent), ["Asks2", "Latest report", "My widgets1"]);
   assert.equal(p.jump("asks").getAttribute("aria-label"), "Asks waiting for you: 2", "Asks only, not the approval");
+  assert.equal(p.jump("report").getAttribute("aria-description"), null, "it has a report to open");
   const focused = () => p.document.activeElement;
   const scrolledHome = () => p.scrolls.at(-1)?.how === "to" && p.scrolls.at(-1).el === p.document.querySelector(".home-view");
-  // The p2 panel folded by hand: the report jump opens it to its card.
-  p.document.querySelector("#home-project-p2 .home-panel-toggle").click();
-  await until(() => p.document.querySelector("#home-project-p2.is-collapsed"), "p2 folded");
-  p.jump("report").click();
-  await until(() => focused()?.dataset?.sectionKey === "fresh", "the report updated last, focused");
-  assert.equal(p.document.querySelector("#home-project-p2.is-collapsed"), null, "its project opened to show it");
-  assert.ok(scrolledHome(), "Home's own scroller moved, nothing around it");
-  assert.equal(p.scrolls.filter((s) => s.how === "intoView").length, 0);
-  // Asks: the first, the next, then the first again.
-  const scrolls = p.scrolls.length;
+  // Asks: the first, the next, then the first again, each its card in Needs you.
   for (const key of ["decide", "paging", "decide"]) {
     p.jump("asks").click();
-    await until(() => focused()?.dataset?.sectionKey === key, `the Ask ${key}`);
+    await until(() => focused()?.dataset?.sectionKey === key && focused().closest(".home-needs-you"), `the Ask ${key}`);
   }
-  assert.ok(p.scrolls.length >= scrolls + 3 && scrolledHome());
+  assert.ok(scrolledHome(), "Home's own scroller moved, nothing around it");
+  assert.equal(p.scrolls.filter((s) => s.how === "intoView").length, 0);
+  // The report updated last: its card is on its project's page, so the bar opens its page over Home.
+  const jump = p.jump("report");
+  jump.click();
+  const shown = await until(() => p.page()?.querySelector(".report-head h1") && p.page(), "the report updated last");
+  assert.equal(shown.querySelector(".report-head h1").textContent, "About fresh");
+  const view = p.document.querySelector(".home-view");
+  assert.ok(view.hasAttribute("inert") && view.contains(bar), "the bar goes with Home under the report");
+  // Back: Home as it was, the focus on the jump that opened it.
+  shown.querySelector(".report-back").click();
+  await until(() => !p.page(), "back on Home");
+  await tick();
+  assert.ok(focused() === jump, "the focus is back on Latest report");
+  assert.ok(jump.hasAttribute("data-report-return"), "with the short ring");
+  assert.ok(p.document.querySelector(".home-layout [data-glance-project]"), "still the whole of Home");
   p.jump("widgets").click();
   await until(() => focused()?.id === "home-widgets", "My widgets");
   // Each jump is a press: a later read moves nothing.
@@ -399,10 +415,6 @@ test("Home's jumps stay above its cards and go to the next open Ask, the report 
   p.window.renderHome({ revision: 1 });
   await tick(80);
   assert.equal(p.scrolls.length, count, "nothing scrolls by itself");
-  // Under a report, Home and its bar are out of reach.
-  await openReport(p, "old");
-  const view = p.document.querySelector(".home-view");
-  assert.ok(view.hasAttribute("inert") && view.contains(bar), "the bar goes with Home under the report");
   assert.deepEqual(p.errors, []);
 });
 
@@ -411,8 +423,9 @@ test("a jump with nothing to go to says why and does nothing: no open Ask, no re
     status: { asOf: "2026-11-10T01:00:00Z", validFor: 86400, stale: false } }] }] });
   t.after(p.close);
   p.window.localStorage.setItem("yuzuno.homeWidgets.ws-1", JSON.stringify({ order: ["machines"], hidden: ["machines"], pins: [] }));
+  p.window.startProject = null;
   p.window.renderHome();
-  await until(() => p.document.querySelector(".home-panel"), "Home read");
+  await until(() => p.document.querySelector(".home-layout [data-glance-project]"), "Home read");
   await tick(40);
   for (const [kind, why] of [["asks", "No Ask is waiting for you. Approvals and questions are in Needs you."], ["report", "No report on Home yet."],
     ["widgets", "No widgets on show. Organize in My widgets shows hidden ones."]]) {
