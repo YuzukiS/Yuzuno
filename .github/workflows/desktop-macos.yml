@@ -118,8 +118,10 @@ jobs:
       # over the toolbar, at its middle (YN-90). Opens the app just built and
       # reads where they are through the Accessibility API, which the runner
       # image grants to bash and osascript, with a picture of the window.
+      # Written inside out/, so that a candidate's artifact keeps out/ as its
+      # root and holds these in title-bar/.
       - name: Window buttons over the toolbar
-        run: .github/scripts/macos-title-bar.sh "$RUNNER_TEMP/out/Yuzuno.app" "$RUNNER_TEMP/title-bar"
+        run: .github/scripts/macos-title-bar.sh "$RUNNER_TEMP/out/Yuzuno.app" "$RUNNER_TEMP/out/title-bar"
 
       # What was packed: the executable is this architecture's only, and
       # the ZIP and the disk image (mounted read-only) hold that same
@@ -190,8 +192,8 @@ jobs:
             ${{ runner.temp }}/out/Yuzuno.app.zip
             ${{ runner.temp }}/out/build.json
             ${{ runner.temp }}/out/SHA256SUMS
-            ${{ runner.temp }}/title-bar/title-bar.png
-            ${{ runner.temp }}/title-bar/geometry.json
+            ${{ runner.temp }}/out/title-bar/title-bar.png
+            ${{ runner.temp }}/out/title-bar/geometry.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
