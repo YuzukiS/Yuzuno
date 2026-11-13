@@ -8,6 +8,8 @@ import {
   validateClarification,
   clarificationAnswerLabel,
   clarificationDraftKey,
+  clarificationMessage,
+  carryClarification,
   readClarificationDraft,
   saveClarificationDraft,
 } from "../src/intelligent-ui/clarification.ts";
@@ -65,7 +67,6 @@ test("answers validate required text, choices and optional empties without parsi
   );
   for (const patch of [
     { directory: "  " },
-    { directory: "a".repeat(2001) },
     { theme: "Dark" },
     { checks: ["unknown"] },
     { checks: ["keyboard", "keyboard"] },
@@ -80,6 +81,22 @@ test("answers validate required text, choices and optional empties without parsi
   assert.equal(clarificationAnswers(changed).safeParse(values).success, true);
   changed.fields[2].required = true;
   assert.ok(validateClarification(changed, { ...values, checks: [] }).checks);
+});
+// YN-103: a text answer has no length of its own: it goes in one message,
+// whose limit the form counts and Core checks. A pasted review of 481
+// lines is an answer, whole, and carried whole to a newer form.
+test("a long pasted text answer is valid and carried whole", () => {
+  const form = clarificationExample;
+  const review = Array.from({ length: 481 }, (_, n) => `${n + 1}\t"评审" 第 ${n + 1} 行：C:\\work ok\r\n`).join("");
+  assert.ok(review.length > 2000);
+  const values = { ...initialClarificationValues(form), directory: review };
+  assert.deepEqual(validateClarification(form, values), {});
+  assert.equal(clarificationAnswers(form).parse(values).directory, review);
+  const message = clarificationMessage("result-1", form, values);
+  assert.equal(JSON.parse(message.slice(message.indexOf("\n") + 1)).answers.directory, review);
+  const newer = structuredClone(form);
+  newer.fields[1].label = "Theme";
+  assert.equal(carryClarification(form, newer, values).values.directory, review);
 });
 test("incomplete drafts restore independently by source/result/form without image or composer writes", () => {
   const data = new Map();

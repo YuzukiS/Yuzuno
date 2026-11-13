@@ -94,14 +94,16 @@ export function clarificationMessage(
 }
 
 /** One schema for answer validation in both the browser and Core's validator.
- * Values contain stable option IDs, never labels parsed from display text. */
+ * Values contain stable option IDs, never labels parsed from display text.
+ * A text answer has no length of its own (YN-103): it goes as part of one
+ * message, and that message's limit is the one it has, in the bytes Core
+ * counts (a conversation's message, or a reply from Home). */
 export function clarificationAnswers(form: ClarificationProps) {
   const fields: Record<string, z.ZodType> = {};
   for (const field of form.fields) {
     if (field.type === "text") {
       fields[field.id] = z
         .string()
-        .max(2000, "Use at most 2,000 characters.")
         .refine(
           (value) => !field.required || !!value.trim(),
           "Enter an answer.",
@@ -223,7 +225,8 @@ export function carryClarification(
       continue;
     }
     if (field.type === "text") {
-      values[field.id] = (had as string).slice(0, 2000);
+      // Whole: never cut short as it is carried (YN-103).
+      values[field.id] = had as string;
       if (old && old.label !== field.label && answered(had)) notes.push({ field: field.id, kind: "reworded" });
       continue;
     }

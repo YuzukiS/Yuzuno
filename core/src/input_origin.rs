@@ -13,8 +13,11 @@ use std::collections::{HashMap, HashSet};
 /// The format of a Home reply's snapshot (T-9), `origin.home` on its
 /// receipt (project_brief::home, snapshot).
 pub(crate) const HOME_FORMAT: u64 = 1;
-/// Larger than any snapshot Core writes: a reply is at most 20,000 bytes, a
-/// question 500 characters, and a form's answers are in the reply's text.
+/// Larger than any snapshot Core writes: a reply is at most MAX_REPLY
+/// (92,000) bytes and a question 500 characters; a form's answers are in the
+/// reply's text, where each is said twice, so the snapshot's one copy of them
+/// is smaller than that text (project_brief tests,
+/// the_longest_form_reply_keeps_its_snapshot).
 const HOME_MAX_BYTES: usize = 128 * 1024;
 
 /// `_yuzunoInput` values Core confirmed the person wrote.
