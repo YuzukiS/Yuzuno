@@ -97,6 +97,7 @@
   background: transparent;
   color: inherit;
   text-align: left;
+  text-decoration: none;
   cursor: pointer;
   transition: color var(--motion-micro) var(--ease-standard);
 }

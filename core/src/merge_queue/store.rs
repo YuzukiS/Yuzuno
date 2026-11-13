@@ -1361,7 +1361,16 @@ impl Store {
                     None => {}
                 }
                 if e["state"] == "merged" && announce_as.is_none() {
-                    let running = f.main_ci.as_ref().is_some_and(|run| run["status"] != "completed");
+                    let found = f.main_ci.clone();
+                    let running = found.as_ref().is_some_and(|run| run["status"] != "completed");
+                    // Keep the run being followed while it goes, so the
+                    // read-only CI projection can name and link it (YN-97).
+                    // A concluded or absent run leaves nothing to follow.
+                    e["merge"]["mainRun"] = match found.as_ref().filter(|_| running) {
+                        Some(run) => json!({"run":run["id"],"attempt":run["run_attempt"],"status":run["status"],
+                            "url":run["html_url"],"observedAt":now()}),
+                        None => Value::Null,
+                    };
                     match f.main_ci.filter(|run| run["status"] == "completed") {
                         Some(run) => {
                             let conclusion = run["conclusion"].as_str().unwrap_or("").to_owned();

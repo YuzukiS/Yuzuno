@@ -353,7 +353,12 @@ Once every check holds, the entry merges, one merge at a time per repository:
 5. Core follows main's push CI on the merge commit. Green ends the entry at
    `done`. Red ends it at `done` with the failure recorded, and pauses the
    repository's queue. The next entry does not wait for this run; only a red
-   result stops it.
+   result stops it. This follow-up is a wait of the Agent that released the
+   head: while it lasts, Core's read-only CI projection (`/api/ci/live`, and
+   the conversation's GitHub Actions dock) counts it as that Agent waiting
+   for CI, with no subscription, table change or extra mail; a release by the
+   user counts for no Agent. A queue whose own follow is overdue, stale or
+   failing shows as a check, not a wait, just as a stale watch does.
 
 While a run is still going, an entry waits and checks again later, at most
 every 10 minutes, and at least every 2 minutes while a CI run on its head or
