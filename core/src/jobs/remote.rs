@@ -56,6 +56,9 @@ pub(super) const SLOTS: i64 = 2;
 pub(super) const MAX_JOBS_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
 /// Windows' mode: its Job Object holds every declared limit.
 const STRICT: &str = "strict";
+/// The mode every attempt on a Mac runs in, whatever its machine saved
+/// (YN-104): macOS holds no limit, so strict would refuse every start there.
+const LIMITED: &str = "limited";
 /// An SSH attempt's mode when its machine has none (registered before limits,
 /// or set back to it), or when an older Core reserved it: resources are
 /// recorded, nothing is held, and its request carries no limits (digest v1),
@@ -470,6 +473,25 @@ pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     job["remote"] = json!({"digest": digest(&spec(job)), "prebound": {"at": now(), "request": "v3"}});
 }
 
+/// An SSH attempt whose machine named macOS at its hello runs in the limited
+/// mode, whatever mode it was bound with (YN-104): macOS has no cgroup, so
+/// strict would refuse every start there and record-only holds the same
+/// nothing. Called while nothing has been sent (remote_note). The mode it was
+/// bound with stays beside it (limitModeSaved), as the machine's own setting
+/// does, and its digest is that of the request now sent. Only the mode may
+/// differ: a recorded digest that is not this request's in the mode it was
+/// bound with (a prebound request changed since) is left as it is, and
+/// launch refuses that start as before.
+fn run_limited_on_a_mac(job: &mut Value) {
+    let saved = job["executor"]["limitMode"].as_str().unwrap_or(LEGACY).to_owned();
+    if saved == LIMITED || job["remote"]["digest"].as_str() != Some(digest(&spec(job)).as_str()) {
+        return;
+    }
+    job["executor"]["limitModeSaved"] = json!(saved);
+    job["executor"]["limitMode"] = json!(LIMITED);
+    job["remote"]["digest"] = json!(digest(&spec(job)));
+}
+
 /// The request digest, encoded without ambiguity exactly as the helper
 /// does; the helper refuses a start whose command does not match it. A spec
 /// with limits is v2 and binds them too; one with frozen inputs or declared
@@ -635,6 +657,13 @@ fn limits_said(job: &Value, started: &Value) -> String {
     if !scoped && job["remote"]["platform"] == "Darwin" {
         said.push_str("; macOS holds no CPU or RAM limit (it has no cgroup): they are reserved for this Core's admission and recorded only");
     }
+    // Bound strict or record-only, it runs limited on a Mac (run_limited_on_a_mac).
+    if let Some(saved) = job["executor"]["limitModeSaved"].as_str() {
+        let saved = if saved == LEGACY { "record-only" } else { saved };
+        said.push_str(&format!(
+            "; it runs in the limited mode, as every attempt on macOS does: {}'s saved mode ({saved}) applies on Linux only",
+            machine_name(job)));
+    }
     // limited holds nothing in a scope of a user manager that may stop; the
     // helper's own caveat says when that, not a missing controller, is why.
     let unlingering = limits["caveats"].as_array().is_some_and(|caveats| {
@@ -792,6 +821,29 @@ impl Store {
         )?;
         Ok(q.query_row([machine_id], |r| r.get::<_, String>(0)).optional()?)
     }
+    /// The platform each SSH machine's newest attempt was started on, by the
+    /// machine and the SSH destination the attempt was accepted for (YN-104):
+    /// what the Machines page shows a machine as when no check says
+    /// (machines::known_platform).
+    pub(crate) fn attempt_platforms(&self) -> Result<std::collections::HashMap<(String, String), String>> {
+        let db = self.db.read()?;
+        let mut q = db.prepare(
+            "SELECT json_extract(data,'$.executor.machineId'), json_extract(data,'$.machine.target'),
+                    json_extract(data,'$.remote.platform') FROM local_jobs
+             WHERE json_extract(data,'$.executor.kind')='ssh' AND json_extract(data,'$.remote.platform') IS NOT NULL
+             ORDER BY seq DESC",
+        )?;
+        let rows = q.query_map([], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut newest = std::collections::HashMap::new();
+        for row in rows {
+            if let (Some(id), Some(target), platform) = row? {
+                newest.entry((id, target)).or_insert(platform);
+            }
+        }
+        Ok(newest)
+    }
     /// Take a slot on the job's machine for this queued remote job, or say
     /// why it waits. The attempt is bound to its slot before it is started.
     pub(super) fn reserve_remote(&self, id: &str) -> Result<Option<Value>> {
@@ -900,6 +952,9 @@ impl Store {
                 if job["capabilities"]["platform"] != told["platform"] {
                     job["capabilities"] = told;
                 }
+            }
+            if job["remote"]["platform"] == "Darwin" && job["remote"]["startSentAt"].is_null() {
+                run_limited_on_a_mac(&mut job);
             }
         }
         if let Some(reason) = reason.filter(|_| job["status"] == "starting") {
@@ -1220,12 +1275,15 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
         }
         // Bound at submit with the machine's mode then (prebind): a mode
         // changed since is neither applied by recomputing what was bound nor
-        // ignored by running as bound.
+        // ignored by running as bound. The machine's setting is compared with
+        // the one the job was bound with: on a Mac that runs limited
+        // (run_limited_on_a_mac), the one it keeps beside.
         let mode = registered.limit_mode.as_deref().unwrap_or(LEGACY);
-        if job["remote"]["prebound"].is_object() && job["executor"]["limitMode"].as_str() != Some(mode) {
+        let bound = job["executor"]["limitModeSaved"].as_str().or(job["executor"]["limitMode"].as_str());
+        if job["remote"]["prebound"].is_object() && bound != Some(mode) {
             return not_started(ws, &job, format!(
                 "Not started: {name}'s limits mode changed from {} to {mode} after this job was submitted, and its request was bound with the mode it had then; nothing was sent there. Submit it again to run it in the {mode} mode",
-                job["executor"]["limitMode"].as_str().unwrap_or(LEGACY))).await;
+                bound.unwrap_or(LEGACY))).await;
         }
     }
     let mut job = job;

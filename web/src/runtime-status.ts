@@ -227,6 +227,8 @@ const words = strings({
   limitedHelp: "Checked when a Job starts.",
   recordOnly: "Record only",
   recordOnlyHelp: "Saved before Job limits: nothing is held there.",
+  macLimited: "Managed · limits recorded only (macOS)",
+  macLimitedHelp: "macOS can't enforce CPU or RAM; Jobs run and say so.",
   unknownTime: "at a time it doesn't say",
   fromRegistry: (host: string | null) => (host ? `downloaded from ${host}` : "downloaded from its registry"),
   fromRelease: (release: string | null) => (release ? `copied from release ${release}` : "copied from another release"),
@@ -336,6 +338,8 @@ const words = strings({
   limitedHelp: "在 Job 启动时检查。",
   recordOnly: "只做记录",
   recordOnlyHelp: "在有 Job 限制之前保存：那里不强制任何限制。",
+  macLimited: "托管 · 只记录限制（macOS）",
+  macLimitedHelp: "macOS 限不住 CPU 和内存；Job 照常运行并说明。",
   unknownTime: "未注明的时间",
   fromRegistry: (host) => (host ? `从 ${host} 下载` : "从其 registry 下载"),
   fromRelease: (release) => (release ? `从发布 ${release} 复制` : "从另一个发布复制"),
@@ -469,6 +473,8 @@ function jobsFact(machine: WorkspaceMachine, budget: RuntimeRead["budget"], w: W
     // Core names no kind for a host that can't run them: its reason is shown, not guessed at.
     return fact("unknown", w.notConfirmed, budget.error);
   }
+  // A Mac's Jobs run limited whatever it saved: macOS holds no limit (YN-104).
+  if (machine.platform === "Darwin") return fact("yes", w.macLimited, w.macLimitedHelp);
   if (machine.limitMode === "strict") return fact("yes", w.strict, w.strictHelp);
   if (machine.limitMode === "limited") return fact("yes", w.limited, w.limitedHelp);
   return fact("yes", w.recordOnly, w.recordOnlyHelp);

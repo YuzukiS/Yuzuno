@@ -266,6 +266,26 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
   page.close();
 });
 
+// YN-104: a Mac's Jobs run limited whatever it saved; the row says so, in English and Chinese.
+test("a Mac's managed Jobs say limits are only recorded there, whatever mode it saved", async () => {
+  const answers = core();
+  answers["/api/machines"] = { machines: [
+    { id: "local", name: "Core host", kind: "local", defaultCwd: "/work", lastCheck: null },
+    { id: "mini", name: "Mac mini", kind: "ssh", target: "mac-mini", defaultCwd: "/Users/me", limitMode: "strict", platform: "Darwin", lastCheck: null },
+  ] };
+  const page = mount(answers);
+  page.window.show();
+  await tick();
+  assert.equal(page.facts(page.machine("Mac mini").querySelector("dl"))["Managed Jobs"],
+    "Yes · Managed · limits recorded only (macOS) · macOS can't enforce CPU or RAM; Jobs run and say so.");
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  await tick();
+  assert.equal(page.facts(page.machine("Mac mini").querySelector("dl"))["托管 Job"],
+    "是 · 托管 · 只记录限制（macOS） · macOS 限不住 CPU 和内存；Job 照常运行并说明。");
+  page.close();
+});
+
 test("on the Core host a signed-out Claude Code is found and signed out; one that can't run is found but not usable", async () => {
   // Core's check counts both as not found; its sign-in is what tells them apart.
   const hint = "Claude Code on host-a is not logged in: run claude login";

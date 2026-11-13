@@ -53,6 +53,11 @@ export interface WorkspaceMachine {
   maxJobs?: number;
   budget?: { cpuMillis: number; memoryMiB: number };
   limitMode?: "strict" | "limited";
+  /** What it runs on as Core last learnt it (SSH only, YN-104): its newest
+   * check that reached it, else its newest Job's at its current address;
+   * null when neither has. "Darwin" is a Mac, whose Jobs always run limited
+   * whatever limitMode says: macOS can't hold a limit. */
+  platform?: string | null;
   /** Its Agents are kept contained there: no Codex Agent runs on it. */
   contained?: boolean;
   /** The most recent manual check, shared with the Machines page. */

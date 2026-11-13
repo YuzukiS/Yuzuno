@@ -21,6 +21,10 @@ const MAX_JOBS = 64;
 type Field = "name" | "target" | "folder" | "codex" | "maxJobs" | "cpu" | "memory" | "mode";
 type Mode = "strict" | "limited" | "legacy";
 
+/** A Mac, as Core last learnt it (YN-104): macOS holds no limit, so its Jobs
+ * run limited whatever mode it saved, and its page offers no other. */
+const isMac = (machine: WorkspaceMachine) => machine.platform === "Darwin";
+
 /** The fields as Core saved them, written as the fields show them. */
 const savedOf = (machine: WorkspaceMachine): Record<Field, string> => ({
   name: machine.name,
@@ -31,7 +35,8 @@ const savedOf = (machine: WorkspaceMachine): Record<Field, string> => ({
   cpu: machine.budget ? String(machine.budget.cpuMillis / 1000) : "",
   memory: machine.budget ? String(machine.budget.memoryMiB) : "",
   // A machine saved before limits has no mode: it holds none ("legacy").
-  mode: machine.limitMode ?? "legacy",
+  // A Mac shows the mode its Jobs run in; what it saved is kept, unsent.
+  mode: isMac(machine) ? "limited" : machine.limitMode ?? "legacy",
 });
 
 /** The machine's connection and Jobs settings and its executor limit, each
@@ -54,7 +59,9 @@ export function MachineSettings({ machine, language, onSaved }: {
     setEdits((current) => Object.fromEntries(Object.entries(current).filter(([field, value]) => value !== saved[field as Field])));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedKey]);
-  const value = (field: Field) => edits[field] ?? saved[field];
+  const mac = isMac(machine);
+  // A mode chosen before Core learnt it is a Mac is not one to save.
+  const value = (field: Field) => (mac && field === "mode" ? saved.mode : edits[field] ?? saved[field]);
   const set = (field: Field) => (next: string) => setEdits((current) => ({ ...current, [field]: next }));
   const changed = (field: Field) => value(field).trim() !== saved[field];
   const fields: Field[] = ["name", "target", "folder", "codex", "maxJobs", "cpu", "memory", "mode"];
@@ -187,18 +194,22 @@ export function MachineSettings({ machine, language, onSaved }: {
             <input type="number" min="64" step="1" value={value("memory")} onChange={(e) => set("memory")(e.target.value)} placeholder={t.noBudget} />
           </label>
         </div>
-        <p className="appearance-help">{t.memoryHint}</p>
-        <p className="machine-settings-label">{t.mode}</p>
+        <p className="appearance-help">{mac ? t.macBudgetHint : t.memoryHint}</p>
+        <p className="machine-settings-label">{mac ? t.macMode : t.mode}</p>
         <ChoiceCards<Mode>
           name={`machine-limit-mode-${machine.id}`}
           value={mode}
-          choices={[
+          choices={mac ? [
+            { value: "limited", label: t.limitedName, note: t.macLimitedNote },
+          ] : [
             { value: "strict", label: t.strictName, note: t.strictNote },
             { value: "limited", label: t.limitedName, note: t.limitedNote },
             { value: "legacy", label: t.legacyName, note: t.legacyHint },
           ]}
           onChange={(next) => set("mode")(next)}
         />
+        {/* Not known yet: whatever is chosen, a Mac runs limited. */}
+        {machine.platform == null && <p className="appearance-help">{t.macNote} {t.checkToShow}</p>}
         {limit.limit ? (
           <>
             <SettingsSlider name={`machine-executors-${machine.id}`} label={lt.title} value={shownSlots ?? limit.preset} min={1} max={limit.max}

@@ -85,6 +85,17 @@ pub struct MachineCheck {
     pub default_folder: Option<FolderCheck>,
 }
 
+/// What an SSH machine runs on, as Core last learnt it (YN-104): its newest
+/// check when that reached it, else what the newest Job attempt at its
+/// current SSH destination was told at hello (Store::attempt_platforms); None
+/// before either. Read only for the Machines page, never saved with the
+/// machine: whether an attempt runs as on a Mac is decided at its own hello.
+pub fn known_platform(machine: &RemoteMachine, check: Option<&MachineCheck>,
+    attempts: &HashMap<(String, String), String>) -> Option<String> {
+    check.filter(|check| check.reachable).and_then(|check| check.host.as_ref()).map(|host| host.platform.clone())
+        .or_else(|| attempts.get(&(machine.id.clone(), machine.target.clone())).cloned())
+}
+
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS machine_checks(
@@ -448,6 +459,28 @@ fn upsert_check(db: &Connection, check: &MachineCheck, started_ms: i64) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the Machines page shows a machine as (YN-104): its check when that
+    /// reached it, else its newest attempt at its current address, else
+    /// nothing; an attempt at an address it no longer has says nothing of it.
+    #[test]
+    fn a_machines_platform_is_its_checks_else_its_newest_attempts_at_its_address() {
+        let machine = RemoteMachine { id: "m1".into(), target: "mac-mini".into(), ..Default::default() };
+        let attempts = HashMap::from([
+            (("m1".to_owned(), "mac-mini".to_owned()), "Darwin".to_owned()),
+            (("m1".to_owned(), "old-box".to_owned()), "Linux".to_owned()),
+        ]);
+        assert_eq!(known_platform(&machine, None, &attempts).as_deref(), Some("Darwin"));
+        let moved = RemoteMachine { target: "new-box".into(), ..machine.clone() };
+        assert_eq!(known_platform(&moved, None, &attempts), None);
+        let reached = MachineCheck { machine_id: "m1".into(), started_at: "s".into(), checked_at: "c".into(), duration_ms: 1,
+            reachable: true, error: None, harnesses: vec![], default_folder: None,
+            host: Some(HostFacts { hostname: "box".into(), platform: "Linux".into(), home: "/home/u".into() }) };
+        assert_eq!(known_platform(&machine, Some(&reached), &attempts).as_deref(), Some("Linux"));
+        let unreached = MachineCheck { reachable: false, host: None, error: Some("refused".into()), ..reached.clone() };
+        assert_eq!(known_platform(&machine, Some(&unreached), &attempts).as_deref(), Some("Darwin"));
+        assert_eq!(known_platform(&moved, Some(&unreached), &HashMap::new()), None);
+    }
 
     /// A stand-in `claude` that answers `auth status --json` with this script.
     fn fake_claude(dir: &Path, name: &str, body: &str) -> String {
