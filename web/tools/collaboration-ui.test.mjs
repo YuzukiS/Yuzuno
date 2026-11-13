@@ -8,6 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { tipOf, noTipOf } from "./tip-dom.mjs";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 // An in-memory component bundle: no live Core, browsers, or web/dist writes.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -168,15 +169,22 @@ function button(page, text) {
     (node) => node.textContent.trim() === text,
   );
 }
+// A long field is the conversation's composer (YN-106): its editor, under
+// its label as a textarea was.
 function field(page, label) {
-  return [...page.document.querySelectorAll("label")]
+  return [...page.document.querySelectorAll("label, .long-text-field")]
     .find((node) =>
       node.querySelector("span")?.textContent.trim().startsWith(label),
     )
-    ?.querySelector("input,textarea,select");
+    ?.querySelector("input,textarea,select,[data-composer-input]");
 }
 async function value(page, element, text) {
   assert.ok(element, `input exists for ${text}`);
+  if (element.hasAttribute("data-composer-input")) {
+    setComposerText(element, text);
+    await tick();
+    return;
+  }
   const prototype =
     element.tagName === "TEXTAREA"
       ? page.window.HTMLTextAreaElement.prototype
@@ -1618,7 +1626,7 @@ test("an update in the same Workspace keeps a note being written (T-17)", async 
     page.render({ workspaceId: "ws-1", revision: 1 });
     await waitFor(() => reads > before, "the task read again");
     await tick();
-    assert.equal(field(page, "Add a note").value, "A note half written");
+    assert.equal(composerText(field(page, "Add a note")), "A note half written");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();

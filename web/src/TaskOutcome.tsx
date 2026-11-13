@@ -39,6 +39,8 @@ import {
 import "./task-outcome.css";
 import { randomId } from "./random-id";
 import { Tip, TipText } from "./Tip";
+import { LongTextField } from "./LongTextField";
+import { coreLimits, overLimit } from "./core-limits";
 
 type Text = ReturnType<typeof outcomeText>;
 type Tab = "summary" | "evidence" | "versions";
@@ -58,15 +60,35 @@ const date = (value?: string | null) =>
     : "";
 const tabs: Tab[] = ["summary", "evidence", "versions"];
 
+/** A criterion's report field, for a form that moves focus to it. */
+export const reportFieldId = (criterion: string) => `outcome-report-${criterion}`;
+
+/** The first criterion whose report is empty: Core requires one (YN-106). */
+export const firstBlankReport = (report?: OutcomeReport) =>
+  report?.criteria.find((criterion) => !criterion.report.trim())?.id;
+
+/** Whether a report's text is longer than Core takes (result_outcome.rs). */
+export const outcomeTooLong = (report?: OutcomeReport) =>
+  !!report &&
+  (report.criteria.some((criterion) => overLimit(criterion.report, coreLimits.criterionReport)) ||
+    overLimit(report.remaining ?? "", coreLimits.outcomeRemaining) ||
+    overLimit(report.nextStep ?? "", coreLimits.outcomeNextStep));
+
 /** Optional author statements use the existing result submission transaction. */
 export function TaskOutcomeEditor({
   value,
   onChange,
   agents,
+  readOnly = false,
+  blankReport = "",
 }: {
   value?: OutcomeReport;
   onChange: (value: OutcomeReport | undefined) => void;
   agents: { id: string; name: string }[];
+  /** While the result is being saved. */
+  readOnly?: boolean;
+  /** The criterion whose empty report kept the result from being saved. */
+  blankReport?: string;
 }) {
   const t = useStrings(outcomeText);
   if (!value)
@@ -119,16 +141,18 @@ export function TaskOutcomeEditor({
               <option value="not_met">{t.notMet}</option>
             </select>
           </label>
-          <label className="collab-field">
-            <span>{t.criterionReport}</span>
-            <textarea
-              required
-              rows={2}
-              maxLength={2000}
-              value={criterion.report}
-              onChange={(e) => update(criterion.id, { report: e.target.value })}
-            />
-          </label>
+          <LongTextField
+            slot={`outcome:${criterion.id}:report`}
+            fieldId={reportFieldId(criterion.id)}
+            label={t.criterionReport}
+            value={criterion.report}
+            onChange={(report) => update(criterion.id, { report })}
+            limit={coreLimits.criterionReport}
+            returnKey="newline"
+            readOnly={readOnly}
+            required
+            error={blankReport === criterion.id ? t.reportNeeded : ""}
+          />
           {!!criterion.records?.length && (
             <div className="outcome-editor-artifacts">
               {criterion.records.map((cited, n) => (
@@ -212,15 +236,15 @@ export function TaskOutcomeEditor({
       >
         {t.addCriterion}
       </button>
-      <label className="collab-field">
-        <span>{t.remainingLabel}</span>
-        <textarea
-          rows={2}
-          maxLength={2000}
-          value={value.remaining || ""}
-          onChange={(e) => onChange({ ...value, remaining: e.target.value })}
-        />
-      </label>
+      <LongTextField
+        slot="outcome:remaining"
+        label={t.remainingLabel}
+        value={value.remaining || ""}
+        onChange={(remaining) => onChange({ ...value, remaining })}
+        limit={coreLimits.outcomeRemaining}
+        returnKey="newline"
+        readOnly={readOnly}
+      />
       <label className="collab-field">
         <span>{t.suggestedPerson}</span>
         <select
@@ -243,15 +267,15 @@ export function TaskOutcomeEditor({
           ))}
         </select>
       </label>
-      <label className="collab-field">
-        <span>{t.nextStep}</span>
-        <textarea
-          rows={2}
-          maxLength={2000}
-          value={value.nextStep || ""}
-          onChange={(e) => onChange({ ...value, nextStep: e.target.value })}
-        />
-      </label>
+      <LongTextField
+        slot="outcome:next-step"
+        label={t.nextStep}
+        value={value.nextStep || ""}
+        onChange={(nextStep) => onChange({ ...value, nextStep })}
+        limit={coreLimits.outcomeNextStep}
+        returnKey="newline"
+        readOnly={readOnly}
+      />
       <button
         type="button"
         className="text-button"
