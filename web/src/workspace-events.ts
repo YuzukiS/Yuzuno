@@ -63,6 +63,13 @@ export interface AgentProgressEvent {
   lastSeq?: number | null;
   agent?: Agent;
 }
+/** An executor's temporary-directory measurement was written (YN-78 S2c):
+ * its revision only; the Overview showing it reads it again. */
+export interface AgentTempUsageEvent {
+  type: "agent.tempUsage";
+  agentId: string;
+  revision: number;
+}
 export interface WorkspaceChangedEvent {
   type: "workspace.changed";
   scope: "collaboration" | "projects" | "machines" | "runtime" | string;
@@ -89,6 +96,7 @@ export type WorkspaceEvent =
   | DetailEvent
   | AgentChangedEvent
   | AgentProgressEvent
+  | AgentTempUsageEvent
   | WorkspaceChangedEvent
   | ResetEvent
   | ResumedEvent
@@ -120,6 +128,12 @@ export function parseWorkspaceEvent(data: unknown): WorkspaceEvent {
     case "agent.codexUsage":
       return agentId && value.usage && isSeq(value.usage.revision)
         ? value as Extract<WorkspaceEvent, { type: "agent.codexUsage" }>
+        : { type: "heartbeat" };
+    case "agent.tempUsage":
+      // Only the Overview showing this executor reads it again; one that
+      // doesn't parse changes nothing else.
+      return agentId && isSeq(value.revision)
+        ? { type: "agent.tempUsage", agentId, revision: value.revision }
         : { type: "heartbeat" };
     case "agent.delta":
       return agentId &&

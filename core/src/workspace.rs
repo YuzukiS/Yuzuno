@@ -94,6 +94,8 @@ pub struct Workspace {
     pub(crate) cleanup: crate::cleanup_plans::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
+    /// OpenCode executors' temporary-directory measurements (YN-78 S2c).
+    pub(crate) temp_usage: crate::executor_temp_usage::State,
     pub(crate) delivery: crate::delivery::State,
     pub(crate) merge_queue: crate::merge_queue::State,
     pub admission: Arc<crate::updates::admission::Admission>,
@@ -183,6 +185,7 @@ impl Workspace {
             cleanup: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
+            temp_usage: Default::default(),
             codex_context: Default::default(),
             codex_mcp: Default::default(),
             codex_diff: Default::default(),

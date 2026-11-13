@@ -15,6 +15,7 @@ mod executor_release;
 mod executor_slots;
 mod executor_start;
 mod executor_temp;
+mod executor_temp_usage;
 pub mod appearance_preset;
 pub mod background_shells;
 pub mod backlog;

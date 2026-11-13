@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, errorText } from "./api";
 import { strings, useLanguage } from "./i18n";
-import { lifecycleText, type ExecutorLifecycle } from "./executor-lifecycle";
+import { lifecycleText, type ExecutorLifecycle, type TempUsage } from "./executor-lifecycle";
 import { elapsedText } from "./executor-display";
 import { useMinute } from "./live-executors";
 import type { Agent } from "./types";
@@ -88,6 +88,21 @@ const text = strings({
   report: "Final report",
   reported: (at: string) => `Handed in ${at}`,
   noReport: "No result handed in yet.",
+  // YN-78 S2c: its own temporary directory's latest measurement.
+  temp: "Temporary files",
+  tempUsed: (used: string, line: string) => `${used} of the ${line} soft line`,
+  tempNotMeasured: "not measured yet",
+  tempUnknown: (why: string) => `unknown: ${why}`,
+  tempAt: (at: string) => `last measured ${at}`,
+  tempLast: (used: string, at: string) => `last count ${used}, ${at}`,
+  tempOver: "At the soft line: a notice only. Nothing is cleaned up, paused or refused.",
+  tempWhy: {
+    busy: "another measurement was still running", timeout: "it took more than 2 seconds", entries: "more than 20,000 entries",
+    path: "a path longer than 4096 bytes", depth: "folders more than 32 deep", handles: "too many folders open at once",
+    changed: "it changed while it was read", mount: "a mount inside can't be ruled out", device: "another file system inside",
+    error: "something in it couldn't be read", overflow: "too large to count", unavailable: "no longer this executor's directory",
+  } as Record<string, string>,
+  tempWhyOther: "Core couldn't count it",
 }, {
   tabs: "这个执行者的会话",
   tab: { overview: "概览", conversation: "会话" },
@@ -139,9 +154,33 @@ const text = strings({
   report: "收尾报告",
   reported: (at) => `提交于 ${at}`,
   noReport: "还没有提交结果。",
+  temp: "临时文件占用",
+  tempUsed: (used, line) => `${used} / ${line} 软提示线`,
+  tempNotMeasured: "未测",
+  tempUnknown: (why) => `未知：${why}`,
+  tempAt: (at) => `上次测量 ${at}`,
+  tempLast: (used, at) => `上次成功 ${used}（${at}）`,
+  tempOver: "已到软提示线：只是提示，不会清理、暂停或拒绝任何工作。",
+  tempWhy: {
+    busy: "另一次测量还在进行", timeout: "超过 2 秒", entries: "超过 20,000 项", path: "路径超过 4096 字节",
+    depth: "目录超过 32 层", handles: "同时打开的目录太多", changed: "读取时发生了变化", mount: "无法排除里面有挂载",
+    device: "里面有别的文件系统", error: "里面有内容读不出", overflow: "大到无法计数", unavailable: "已不是这个执行者的目录",
+  },
+  tempWhyOther: "Core 没能计数",
 });
 
 const short = (sha?: string | null) => (sha ? sha.slice(0, 8) : "");
+/** Bytes in binary units, as the soft line is set: 2 GiB. */
+const size = (bytes: number) => {
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes, unit = "B";
+  for (const next of units) {
+    if (value < 1024) break;
+    value /= 1024;
+    unit = next;
+  }
+  return unit === "B" ? `${bytes} B` : `${Number.isInteger(value) ? value : value.toFixed(1)} ${unit}`;
+};
 const when = (iso: string | null | undefined, language: string) => {
   const at = iso ? new Date(iso) : null;
   return at && !Number.isNaN(at.getTime()) ? at.toLocaleString(language, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
@@ -170,6 +209,33 @@ function stepRef(step: Step, t: ReturnType<typeof text>): string {
     case "ask": return t.ask[s("state")] ?? "";
     default: return "";
   }
+}
+
+/**
+ * Its own temporary directory's latest measurement (YN-78 S2c): a byte
+ * count against the 2 GiB soft line only from a complete walk; otherwise
+ * unknown and why, with the last count apart and its own time. None read is
+ * "not measured yet", never 0; an older Core sends none. Reaching the line
+ * is a notice only.
+ */
+function TempUsageLine({ usage, t, language }: { usage: TempUsage | null; t: ReturnType<typeof text>; language: string }) {
+  const measured = usage?.state === "measured" && typeof usage.bytes === "number";
+  const state = !usage ? "none" : !measured ? "unknown" : usage.over ? "over" : "ok";
+  return (
+    <p className="executor-overview-temp" data-state={state}>
+      <strong>{t.temp}</strong>
+      <span className="v">
+        {!usage ? t.tempNotMeasured
+          : measured ? t.tempUsed(size(usage.bytes!), size(usage.limitBytes))
+            : t.tempUnknown(t.tempWhy[usage.reason ?? ""] ?? t.tempWhyOther)}
+      </span>
+      {usage && <span className="note">{t.tempAt(when(usage.at, language))}</span>}
+      {usage && !measured && usage.lastMeasured && (
+        <span className="note">{t.tempLast(size(usage.lastMeasured.bytes), when(usage.lastMeasured.at, language))}</span>
+      )}
+      {measured && usage!.over && <span className="over">{t.tempOver}</span>}
+    </p>
+  );
 }
 
 /**
@@ -259,7 +325,10 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
     const controller = new AbortController();
     setError(null);
     api<ExecutorOverviewData>(`/agents/${encodeURIComponent(agent.id)}/executor`, { signal: controller.signal })
-      .then(setData)
+      // A reply after this read was replaced or left (YN-78 S2c) writes nothing.
+      .then((answer) => {
+        if (!controller.signal.aborted) setData(answer);
+      })
       .catch((e: unknown) => {
         if (!controller.signal.aborted) setError(errorText(e));
       });
@@ -282,6 +351,7 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
   const pair = redGreen(data.steps, data.jobs);
   const others = pair ? data.jobs.filter((job) => job.id !== pair.red.id && job.id !== pair.green.id) : data.jobs;
   const m = data.materials;
+  const temp = life.tempDir?.path ? life.tempDir : null;
   return (
     <section className="executor-overview" id="executor-overview" role="tabpanel" aria-labelledby="executor-tab-overview">
       <header className="executor-overview-head">
@@ -294,6 +364,7 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
           {data.task && <button type="button" className="chip link" onClick={() => onOpenTask(data.task!.id)}>{t.openTask}</button>}
         </div>
       </header>
+      {temp && <TempUsageLine usage={temp.usage ?? null} t={t} language={language} />}
       {/* The approvals it asked for on Home (T-43 S4), each answered in place. */}
       {asks}
       {/* Its requests' own cards say Needs you; a question it asked to be

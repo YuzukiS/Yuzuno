@@ -366,6 +366,10 @@ export function App() {
   const [mergeQueueRevision, mergeQueueRefresh] = useRefreshTrigger();
   // Only for the Home tab's count of open Asks while Home is closed.
   const [asksRevision, asksRefresh] = useRefreshTrigger();
+  // The executor whose Overview shows now, and its temporary directory's
+  // measurements (YN-78 S2c): only that Overview reads again for them.
+  const [tempUsageRevision, setTempUsageRevision] = useState(0);
+  const overviewAgent = useRef<string | null>(null);
   // The shared Appearance preset, for a device that follows it (T-194).
   const [presetRevision, presetRefresh] = useRefreshTrigger();
   const [loading, setLoading] = useState(!previewMode);
@@ -966,6 +970,10 @@ export function App() {
             live.sync.refetch();
           }
           return;
+        case "agent.tempUsage":
+          // Never Home, the board or the list: only the Overview showing it.
+          if (event.agentId === overviewAgent.current) setTempUsageRevision((n) => n + 1);
+          return;
         case "agent.progress": {
           // Its Items went out already; only its rail entry changes.
           const listed = event.agent;
@@ -1390,6 +1398,7 @@ export function App() {
   const pending = currentDetail?.pending || [];
   // An executor's Overview, while it is the tab chosen (T-43 S3).
   const overviewShown = !!agent && !homeOpen && overviewFirst(agent.id);
+  overviewAgent.current = overviewShown ? agent.id : null;
   // Choosing its Conversation again puts it back where it was read: where it
   // was left before this tab, or a reading position kept from earlier.
   function chooseExecutorTab(tab: ExecutorPaneTab) {
@@ -4442,7 +4451,7 @@ export function App() {
             {overviewShown && (
               <ExecutorOverview
                 agent={agent}
-                revision={`${boardRevision}:${jobsRevision}:${mergeQueueRevision}:${asksRevision}`}
+                revision={`${boardRevision}:${jobsRevision}:${mergeQueueRevision}:${asksRevision}:${tempUsageRevision}`}
                 asks={gateAsks}
                 // The same cards as in its Conversation, shown here instead while this tab is.
                 requests={pending.length ? pending.map((request) => (

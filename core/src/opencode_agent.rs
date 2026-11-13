@@ -152,6 +152,9 @@ pub(crate) struct Started {
     /// What Core's answers to its permission requests decide by, for an
     /// executor at Auto-approve whose start prepared them (YN-78 S4b-2).
     pub auto: Option<auto::Context>,
+    /// The temporary directory this start gave the process, as verified then
+    /// (YN-78 S2c); none when it was given none.
+    pub temp: Option<crate::executor_temp::Given>,
 }
 
 /// One Agent's live OpenCode process and the session it drives there.
@@ -186,6 +189,9 @@ pub(crate) struct Connection {
     /// S4b-2): set from the connection's start, for an executor at
     /// Auto-approve; its requests then never become the user's.
     pub(crate) auto: Option<Arc<auto::Auto>>,
+    /// The temporary directory its process was started with (YN-78 S2c):
+    /// the only one measured after its Turns, never one a record names later.
+    pub(crate) temp: Option<crate::executor_temp::Given>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -232,7 +238,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default(), auto: None }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default(), auto: None, temp: None }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -744,7 +750,7 @@ impl Workspace {
         Ok(agent)
     }
 
-    fn opencode_current(&self, id: &str, generation: u64) -> Option<Connection> {
+    pub(crate) fn opencode_current(&self, id: &str, generation: u64) -> Option<Connection> {
         self.opencodes.lock().unwrap().get(id).filter(|c| c.generation == generation).cloned()
     }
 
@@ -889,7 +895,8 @@ impl Workspace {
         // lets it work alone (YN-78 S2a), created under the Workspace's root
         // gate (S2b-1). Only then do TMPDIR, TMP and TEMP name it; a refusal
         // leaves today's environment and keeps its reason.
-        launch.temp_dir = crate::executor_temp::ensure_at_start_gated(self, id).await?;
+        let temp = crate::executor_temp::ensure_at_start_gated(self, id).await?;
+        launch.temp_dir = temp.as_ref().map(|given| given.path.clone());
         // A local executor at Auto-approve starts with Core's own answers, its
         // rules and their instructions together, or not at all (YN-78 S4b-2).
         let prepared = if auto::eligible(level.as_deref(), kind) {
@@ -919,7 +926,7 @@ impl Workspace {
         let var = move |name: &str| given.iter().find(|(set, _)| *set == name).map(|(_, value)| value.clone()).or_else(|| std::env::var_os(name));
         let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, var,
             std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
-        Ok(Started { server, files, auto })
+        Ok(Started { server, files, auto, temp })
     }
 
     /// Wires a started process to the Agent: its session (created on the
@@ -927,7 +934,7 @@ impl Workspace {
     /// is in `opencodes`, `started` is its only owner: an error below drops
     /// it, which ends its process group.
     async fn opencode_attach(self: &Arc<Self>, id: &str, d: &AgentDetail, started: Started) -> Result<Connection> {
-        let Started { server, files, auto: context } = started;
+        let Started { server, files, auto: context, temp } = started;
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
@@ -954,6 +961,7 @@ impl Workspace {
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let mut c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
+        c.temp = temp;
         // Its engine before anything of it is read: the snapshot's requests and
         // every event's go to Core, never to the user's queue (YN-78 S4b-2).
         if let Some(context) = context {
@@ -1215,12 +1223,14 @@ impl Workspace {
         let (ws, agent) = (self.clone(), id.to_owned());
         let handled = crate::db::blocking(move || {
             let _owned = owned;
-            ws.opencode_event(&agent, generation, &event);
-            Ok(())
+            let mut ended = Vec::new();
+            ws.opencode_event(&agent, generation, &event, &mut ended);
+            Ok(ended)
         });
-        if let Err(error) = handled.await {
+        let mut ended = handled.await.unwrap_or_else(|error| {
             eprintln!("Workspace OpenCode event not handled: {error}");
-        }
+            Vec::new()
+        });
         // An answer's model this connection didn't list: read the catalog
         // again, off the event stream.
         if let Some(c) = self.opencode_current(id, generation) {
@@ -1229,9 +1239,17 @@ impl Workspace {
                 tokio::spawn(async move { ws.opencode_context_window(&id, &c, model).await });
             }
         }
+        // The newest main-session Turn this event ended live, its end now
+        // committed: one measurement of the executor's temporary directory,
+        // in the background (YN-78 S2c).
+        if let Some(turn) = ended.pop() {
+            self.temp_usage_after_turn(id, generation, turn).await;
+        }
     }
 
-    fn opencode_event(&self, id: &str, generation: u64, event: &Value) {
+    /// One event applied. `ended` gets the main-session Turns it ended live,
+    /// once their end is committed (`ended_live`); nothing when the write fails.
+    fn opencode_event(&self, id: &str, generation: u64, event: &Value, ended: &mut Vec<String>) {
         // A test's own event whose application panics, for what reading the stream does then (YN-48).
         #[cfg(test)]
         if event["type"] == "yuzuno.test.panic" {
@@ -1320,12 +1338,15 @@ impl Workspace {
                         measure(d, &c, &one["data"]["info"]);
                     }
                 }
-                ended_live(d, &running, seen);
+                *ended = ended_live(d, &running, seen);
                 refresh_status(d);
             }).map(drop))
         };
         match written {
-            Err(error) => eprintln!("Workspace OpenCode event not recorded: {error:#}"),
+            Err(error) => {
+                ended.clear();
+                eprintln!("Workspace OpenCode event not recorded: {error:#}");
+            }
             // A finished answer's cost, for an executor on a routing key (YN-34 S2a).
             Ok(()) => for one in applied.iter().filter(|one| type_of(one) == "message.updated") {
                 crate::routing_readings::count(&self.store, id, crate::routing_readings::opencode_spend(&one["data"]["info"]), "opencode");
@@ -3059,11 +3080,18 @@ fn running_ids(d: &AgentDetail) -> Vec<String> {
 /// end, as Claude's and Codex's Turns do (conversation_time): its footer
 /// then says how long it ran, from `_yuzunoStartedAt`, and when it was done
 /// (YN-48). A whole read that finds a Turn ended records nothing, since it
-/// does not say when that was.
-fn ended_live(d: &mut AgentDetail, running: &[String], at: i64) {
+/// does not say when that was. Returns the Turns whose end it recorded now,
+/// for the first time (YN-78 S2c).
+fn ended_live(d: &mut AgentDetail, running: &[String], at: i64) -> Vec<String> {
+    let mut ended = Vec::new();
     for turn in d.turns.iter_mut().filter(|t| t["id"].as_str().is_some_and(|id| running.iter().any(|r| r == id))) {
+        let first = turn["_yuzunoCompletedAt"].is_null();
         crate::conversation_time::mark_turn_completed(turn, at);
+        if first && !turn["_yuzunoCompletedAt"].is_null() {
+            ended.extend(turn["id"].as_str().map(str::to_owned));
+        }
     }
+    ended
 }
 
 fn running(d: &mut AgentDetail) -> Option<&mut Value> {

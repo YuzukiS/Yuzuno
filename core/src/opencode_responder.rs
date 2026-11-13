@@ -1094,8 +1094,8 @@ fn remaining(until: Instant) -> Option<Duration> {
 }
 
 /// Core's one bound on blocking file-system decisions, shared by every
-/// connection of every Agent.
-fn global_fs() -> Arc<Semaphore> {
+/// connection of every Agent, and by its background measurements (YN-78 S2c).
+pub(crate) fn global_fs() -> Arc<Semaphore> {
     use std::sync::OnceLock;
     static GLOBAL: OnceLock<Arc<Semaphore>> = OnceLock::new();
     GLOBAL.get_or_init(|| Arc::new(Semaphore::new(FS_GLOBAL))).clone()
@@ -1105,7 +1105,13 @@ fn global_fs() -> Arc<Semaphore> {
 /// decision does, within `deadline`. None when the deadline came first; the
 /// work keeps its permit until it really ends, and no other is started for it.
 pub(crate) async fn bounded_fs<T: Send + 'static>(deadline: Instant, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    let permit = timeout_at(deadline, global_fs().acquire_owned()).await.ok()?.ok()?;
+    bounded_fs_on(global_fs(), deadline, work).await
+}
+
+/// `bounded_fs` under one of `global`'s permits: Core's own set, or a test's.
+pub(crate) async fn bounded_fs_on<T: Send + 'static>(global: Arc<Semaphore>, deadline: Instant,
+    work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let permit = timeout_at(deadline, global.acquire_owned()).await.ok()?.ok()?;
     let handle = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         work()
