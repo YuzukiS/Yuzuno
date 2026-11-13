@@ -103,6 +103,10 @@
   animation: project-talk-in var(--motion-medium) var(--ease-standard) both;
 }
 .project-talk-side[data-motion="out"] > * {
+  /* At the width it had as it began to close (ProjectTalk.tsx): clipped by
+     its narrowing column, never re-wrapped. */
+  width: var(--talk-held, auto);
+  min-width: var(--talk-held, 0);
   animation: project-talk-out var(--motion-exit-medium) var(--ease-exit) both;
   pointer-events: none;
 }

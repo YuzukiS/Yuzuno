@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
 import type { ComposerHandle } from "../PastedTextComposer";
@@ -205,6 +205,19 @@ export function ProjectTalk({
   const shown = shownView(view, narrow);
   // A side opening or closing moves its content as it goes; the window crossing the narrow line does not.
   const [motion, setMotion] = useState<Record<Side, Motion>>({ requests: null, chat: null });
+  // A side that closes keeps its content at the width it had as it began to: its column narrows over it, clipping
+  // it, so its text is never seen squeezed or re-wrapped (§4.1; Dev Lead 2, seq 12212). Measured before the change.
+  const requestsSide = useRef<HTMLDivElement>(null);
+  const chatSide = useRef<HTMLDivElement>(null);
+  const widths = useRef<Record<Side, number>>({ requests: 0, chat: 0 });
+  const [held, setHeld] = useState<Record<Side, number | null>>({ requests: null, chat: null });
+  const changeView = (next: TalkView) => {
+    widths.current = {
+      requests: requestsSide.current?.getBoundingClientRect().width ?? 0,
+      chat: chatSide.current?.getBoundingClientRect().width ?? 0,
+    };
+    setView(next);
+  };
   const last = useRef({ shown, narrow });
   useLayoutEffect(() => {
     const was = last.current;
@@ -212,6 +225,7 @@ export function ProjectTalk({
     if (was.shown === shown && was.narrow === narrow) return;
     if (was.narrow !== narrow) {
       setMotion({ requests: null, chat: null });
+      setHeld({ requests: null, chat: null });
       return;
     }
     const next = (side: Side, before: Motion): Motion => {
@@ -220,10 +234,18 @@ export function ProjectTalk({
       if (narrow) return open ? "switch" : null;
       return open ? "in" : "out";
     };
-    setMotion((before) => ({ requests: next("requests", before.requests), chat: next("chat", before.chat) }));
+    const now = { requests: next("requests", motion.requests), chat: next("chat", motion.chat) };
+    setMotion(now);
+    setHeld({
+      requests: now.requests === "out" ? widths.current.requests || null : null,
+      chat: now.chat === "out" ? widths.current.chat || null : null,
+    });
+    // `motion` is read as this render has it; the effect runs only when what is shown changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown, narrow]);
+  const heldStyle = (side: Side) => (held[side] ? ({ "--talk-held": `${held[side]}px` } as CSSProperties) : undefined);
   const choose = (next: TalkView) => {
-    setView(next);
+    changeView(next);
     saveView(workspaceId, projectId, next);
   };
   const tabs: TalkView[] = narrow ? ["requests", "chat"] : ["requests", "both", "chat"];
@@ -260,7 +282,7 @@ export function ProjectTalk({
     setSelected(n);
     if (groups.done.some((r) => r.n === n)) setDoneOpen(true);
     const moved = !sideOpen(shown, "requests");
-    if (moved) setView("requests");
+    if (moved) changeView("requests");
     pending.current = { side: "requests", n, moved };
   }
   /** Shows the user's own words of a request in the conversation, from its title. */
@@ -269,7 +291,7 @@ export function ProjectTalk({
     const words = items.find((item) => item.kind === "mine" && item.request.n === n);
     if (words && words.at < cut) setShowEarlier(true);
     const moved = !sideOpen(shown, "chat");
-    if (moved) setView("chat");
+    if (moved) changeView("chat");
     pending.current = { side: "chat", n, moved };
   }
   useEffect(() => {
@@ -344,7 +366,7 @@ export function ProjectTalk({
   }
   function followUp(n: number) {
     write({ quote: n });
-    if (!sideOpen(shown, "chat")) setView("chat");
+    if (!sideOpen(shown, "chat")) changeView("chat");
     requestAnimationFrame(() => composer.current?.focusEnd());
   }
   // A request or follow-up Core keeps that did not reach its Agent: sent again as it was.
@@ -575,6 +597,8 @@ export function ProjectTalk({
         <div
           id={listId}
           className="project-talk-side project-talk-requests"
+          ref={requestsSide}
+          style={heldStyle("requests")}
           role="tabpanel"
           aria-label={t.requests}
           inert={!open.requests}
@@ -599,6 +623,8 @@ export function ProjectTalk({
         <div
           id={chatId}
           className="project-talk-side project-talk-chat"
+          ref={chatSide}
+          style={heldStyle("chat")}
           role="tabpanel"
           aria-label={t.tabChat}
           inert={!open.chat}

@@ -381,9 +381,12 @@ async function check(run) {
             else animation.currentTime = Math.min(ms, animation.effect.getComputedTiming().endTime);
           }
           const side = (name) => document.querySelector(`.project-talk-${name}`);
-          const opacity = (name) => Number(getComputedStyle(side(name).querySelector(".project-talk-scroll")).opacity);
+          const content = (name) => side(name).querySelector(".project-talk-scroll");
+          const opacity = (name) => Number(getComputedStyle(content(name)).opacity);
+          // The content's own width: a side closing keeps it as it began, its column clipping it (no re-wrap).
+          const inner = (name) => Math.round(content(name).getBoundingClientRect().width);
           return { requests: Math.round(side("requests").getBoundingClientRect().width), chat: Math.round(side("chat").getBoundingClientRect().width),
-            requestsOpacity: opacity("requests"), chatOpacity: opacity("chat") };
+            requestsOpacity: opacity("requests"), chatOpacity: opacity("chat"), requestsInner: inner("requests"), chatInner: inner("chat") };
         }, ms);
         const file = `frames/${run.name}-both-to-${to}-${step}.png`;
         await talk.screenshot({ path: join(output, file) });
@@ -394,6 +397,13 @@ async function check(run) {
       assert.ok(start[growing] < middle[growing] && middle[growing] < end[growing], `the chosen side widens: ${JSON.stringify([start, middle, end])}`);
       const closing = to === "requests" ? "chatOpacity" : "requestsOpacity";
       assert.ok(start[closing] > 0.9 && middle[closing] < 0.05, `the closing side's content is gone by the middle: ${JSON.stringify([start, middle])}`);
+      // The side closing is never seen squeezed: its content keeps the width it began with, or is all but gone
+      // (opacity at most 0.1), at the quarter and the middle (Dev Lead 2, seq 12212).
+      const quarter = report.frames.at(-3).widths;
+      const gone = to === "requests" ? "chat" : "requests";
+      for (const [name, frame] of [["quarter", quarter], ["middle", middle]])
+        assert.ok(Math.abs(frame[`${gone}Inner`] - start[`${gone}Inner`]) <= 1 || frame[`${gone}Opacity`] <= 0.1,
+          `the closing side's content at the ${name}: ${JSON.stringify({ start, frame })}`);
       const staying = to === "requests" ? "requestsOpacity" : "chatOpacity";
       assert.ok([start, middle, end].every((f) => f[staying] === 1), `the side staying open is never faded: ${JSON.stringify([start, middle, end])}`);
       pass(`frames of Both → ${to}`, { frames: report.frames.slice(-4).map((f) => f.file) });
