@@ -114,7 +114,7 @@ export type WaitFacts = {
  * and shells.
  */
 export function waitOn(f: WaitFacts): IslandWait | null {
-  type Found = Omit<IslandWait, "kind" | "also">;
+  type Found = Omit<IslandWait, "kind" | "left" | "also">;
   const found: Partial<Record<WaitKind, Found>> = {};
   if (f.turn) {
     if (f.call) found[f.call.kind] = { count: 1, label: f.call.label };
