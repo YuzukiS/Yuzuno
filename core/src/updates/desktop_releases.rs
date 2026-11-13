@@ -4,10 +4,14 @@
 //! built into it, and that the signed version is the announced one, so Core
 //! only carries bytes here and decides nothing about trust. It reads the
 //! project's fixed `desktop-<version>` Releases with this host's
-//! GitHub login and serves exactly two things for a known target: a Tauri
+//! GitHub login, or without one when gh is missing or not signed in
+//! (public_github), and serves exactly two things for a known target: a Tauri
 //! updater manifest whose installer URL points back at this Core, and that
 //! release's installer. No caller chooses a repository, URL or file.
-use super::controller::Controller;
+use super::{
+    controller::Controller,
+    public_github::{PublicGithub, Route},
+};
 use crate::github::client::Client;
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
@@ -28,6 +32,8 @@ const INSTALLER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub struct DesktopReleases {
     pub(crate) client: Client,
+    /// Used only when gh is missing or not signed in (YN-110).
+    pub(crate) public: PublicGithub,
     /// One installer transfer at a time.
     transfers: Semaphore,
 }
@@ -36,6 +42,7 @@ impl Default for DesktopReleases {
     fn default() -> Self {
         Self {
             client: Client::default(),
+            public: PublicGithub::default(),
             transfers: Semaphore::new(1),
         }
     }
@@ -162,13 +169,14 @@ fn scratch_root(controller: &Controller) -> Result<std::path::PathBuf> {
 }
 
 impl DesktopReleases {
-    async fn releases(&self) -> Result<Value> {
+    /// Each manifest or installer is one operation with its own route.
+    fn route(&self) -> Route<'_> {
+        Route::new(&self.client, &self.public)
+    }
+
+    async fn releases(route: &mut Route<'_>) -> Result<Value> {
         // Boxed: the client's futures are large, and callers may run on a small stack.
-        Box::pin(
-            self.client
-                .get(&format!("repos/{REPOSITORY}/releases?per_page=100")),
-        )
-        .await
+        Box::pin(route.get(&format!("repos/{REPOSITORY}/releases?per_page=100"))).await
     }
 
     /// The updater manifest for `target`, pointing at this Core for the
@@ -181,12 +189,13 @@ impl DesktopReleases {
     ) -> Result<Value> {
         let target = known_target(target)?;
         let origin = loopback_origin(host)?;
-        let release = select(&self.releases().await?, target, None)?;
+        let mut route = self.route();
+        let release = select(&Self::releases(&mut route).await?, target, None)?;
         let scratch = tempfile::Builder::new()
             .prefix("desktop-signature-")
             .tempdir_in(scratch_root(controller)?)?;
         let path = scratch.path().join("installer.sig");
-        Box::pin(self.client.download(
+        Box::pin(route.download(
             &format!("repos/{REPOSITORY}/releases/assets/{}", release.signature.0),
             &path,
             release.signature.1,
@@ -225,14 +234,15 @@ impl DesktopReleases {
         let _transfer = self.transfers.try_acquire().map_err(|_| {
             anyhow::anyhow!("Another desktop installer is being transferred; try again shortly")
         })?;
-        let release = select(&self.releases().await?, target, Some(tag))?;
+        let mut route = self.route();
+        let release = select(&Self::releases(&mut route).await?, target, Some(tag))?;
         let file = tempfile::Builder::new()
             .prefix("desktop-installer-")
             .tempfile_in(scratch_root(controller)?)?;
         // The GitHub client creates the file itself.
         let path = file.path().to_owned();
         std::fs::remove_file(&path)?;
-        Box::pin(self.client.download(
+        Box::pin(route.download(
             &format!("repos/{REPOSITORY}/releases/assets/{}", release.installer.0),
             &path,
             release.installer.1,
@@ -326,6 +336,7 @@ else: raise AssertionError(endpoint)
                 deadline: Duration::from_secs(10),
                 ..Default::default()
             },
+            public: PublicGithub::default(),
             transfers: Semaphore::new(1),
         };
         (dir, controller, releases)
@@ -379,6 +390,38 @@ else: raise AssertionError(endpoint)
                 .await
                 .is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn without_gh_the_relay_reads_the_public_releases() {
+        use crate::updates::public_github::stand_in::{self, Answer};
+        let (dir, controller, mut releases) = fixture(false);
+        releases.client.program = dir.path().join("no-gh").to_string_lossy().into();
+        let github = stand_in::serve(|path, _| match path {
+            "/repos/YuzukiS/Yuzuno/releases?per_page=100" => Answer::ok(json!([
+                release("desktop-0.2.0", "2026-10-15T00:00:00Z", json!([
+                    {"id":21,"name":"yuzuno-desktop-windows-x86_64-setup.exe","state":"uploaded","size":INSTALLER.len()},
+                    {"id":22,"name":"yuzuno-desktop-windows-x86_64-setup.exe.sig","state":"uploaded","size":SIGNATURE.len()}])),
+            ]).to_string()),
+            "/repos/YuzukiS/Yuzuno/releases/assets/21" => Answer::ok(INSTALLER),
+            "/repos/YuzukiS/Yuzuno/releases/assets/22" => Answer::ok(SIGNATURE),
+            _ => Answer::status(404),
+        });
+        releases.public = github.reader(&[]);
+        let manifest = releases
+            .manifest(&controller, "windows-x86_64", "127.0.0.1:4495")
+            .await
+            .unwrap();
+        assert_eq!(manifest["version"], "0.2.0");
+        assert_eq!(manifest["platforms"]["windows-x86_64"]["signature"], SIGNATURE);
+        let (file, size) = releases
+            .installer(&controller, "windows-x86_64", "desktop-0.2.0")
+            .await
+            .unwrap();
+        assert_eq!((std::fs::read(file.path()).unwrap(), size), (INSTALLER.to_vec(), INSTALLER.len() as u64));
+        let requests = github.requests();
+        assert_eq!(requests.len(), 4, "{requests:?}");
+        assert!(requests.iter().all(|head| head.starts_with("GET /repos/YuzukiS/Yuzuno/releases")), "{requests:?}");
     }
 
     #[tokio::test]

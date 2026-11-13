@@ -51,7 +51,7 @@ The Claude Code and Agent SDK versions checked with a release are listed in [the
   - **Jobs also need its `cpu`, `memory` and `pids` controllers.** `cat "/sys/fs/cgroup$(systemctl --user show --property=ControlGroup --value)/cgroup.controllers"` must list all three. Without them Core refuses every local Job ("User manager requires cgroup v2 cpu, memory and pids controllers"); Agents and the rest still work.
   - On an Ubuntu 22.04.5 host (systemd 249) the user manager had only `memory pids`. Delegating `cpu` to it is a system setting that an administrator makes; see [systemd's cgroup delegation](https://systemd.io/CGROUP_DELEGATION/). Yuzuno has not been checked on a host where that setting was changed.
 - **Claude Code** (`claude`) and/or **Codex** (`codex`), installed and signed in as the same user that runs Core.
-- **`gh`**, signed in (`gh auth login`), for the download, updates and GitHub features. `YuzukiS/Yuzuno` is public, so `gh` needs a sign-in to a GitHub account but no access to the repository. Installing with an account that has no access to it has not been tried yet ([where the repository is named](public-readiness.md#where-the-repository-is-named)).
+- **`gh`**, signed in (`gh auth login`), for the download below and GitHub features. `YuzukiS/Yuzuno` is public, so `gh` needs a sign-in to a GitHub account but no access to the repository. Updates also work without `gh` or its sign-in: they then read the public releases without one ([where releases come from](workspace-updates.md#where-releases-come-from)). Installing with an account that has no access to it has not been tried yet ([where the repository is named](public-readiness.md#where-the-repository-is-named)).
 - **`minisign`**, to verify the download. Use your distribution's package if available, or the [official release](https://github.com/jedisct1/minisign/releases). The tested Ubuntu Base 22.04.5 apt indexes did not provide it; that lab used the upstream static Linux binary, as recorded in [the acceptance notes](../acceptance/t88/README.md#disposable-ubuntu-rootfs-rootfs-labpy).
 
 ## Install
@@ -318,7 +318,7 @@ Core keeps what it applied in `remote-access.json` in the Workspace data folder,
 
 ## Update
 
-Settings → Updates checks the publisher's releases, downloads and verifies one, prepares it while you keep working, and applies it when Agents are idle. It needs `release-source.json` and a signed-in `gh`. See [Managed Workspace updates](workspace-updates.md). Updates do not change the native CLIs or the desktop app. The desktop app updates separately; [Updates and platform support](updates-and-platforms.md) says which part updates how, and what is released.
+Settings → Updates checks the publisher's releases, downloads and verifies one, prepares it while you keep working, and applies it when Agents are idle. It needs `release-source.json`. It reads GitHub through the host's `gh`, or, when `gh` is not installed or not signed in, the public releases without a sign-in ([where releases come from](workspace-updates.md#where-releases-come-from)). See [Managed Workspace updates](workspace-updates.md). Updates do not change the native CLIs or the desktop app. The desktop app updates separately; [Updates and platform support](updates-and-platforms.md) says which part updates how, and what is released.
 
 ## Uninstall
 
