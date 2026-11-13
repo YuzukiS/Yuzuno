@@ -78,7 +78,9 @@ async function open({ width, height, touch, lang }) {
   await page.addInitScript(({ lang }) => {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
+    // The conversation open: chosen per Workspace (T-195), this fixture's is "ws".
     localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+    localStorage.setItem("yuzuno.selected.ws", JSON.stringify("a"));
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
   }, { lang });
   await page.route("**/*", async (route) => {
@@ -126,15 +128,21 @@ async function conversationForm(page) {
   try {
     await form.waitFor({ timeout: 4_000 });
   } catch {
-    if (await page.locator(".phone-back").count()) await page.locator(".phone-back").first().click();
+    // A phone shows one pane: back to the list first, unless it is the list.
+    if ((await page.locator(".phone-back").count()) && !(await page.locator(".app.phone-list").count()))
+      await page.locator(".phone-back").first().click();
     await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').first().click();
     await form.waitFor({ timeout: 10_000 });
   }
   return form;
 }
+/** Home's ask form, on its project's page (YN-86: the whole of Home shows each project at a glance). */
 async function homeForm(page) {
   await page.locator(".toolbar-nav .catchup-nav").first().click();
-  const card = page.locator('[data-section-key="after"]').first();
+  const open = page.locator('[data-glance-project="p1"] .project-glance-open').first();
+  await open.waitFor({ timeout: 10_000 });
+  await open.click();
+  const card = page.locator('[data-project-home="p1"] [data-section-key="after"]').first();
   await card.waitFor({ timeout: 10_000 });
   const form = card.locator(".clarification");
   await form.waitFor({ timeout: 10_000 });
