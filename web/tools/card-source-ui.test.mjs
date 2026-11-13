@@ -129,7 +129,7 @@ const requests = () => [
     state: "done", progress: { cards: 1, ended: 1 }, lines: [] },
 ];
 
-function mount({ language, refuse = 0 } = {}) {
+function mount({ language, refuse = 0, unread = null } = {}) {
   const errors = [];
   const calls = [];
   const opened = [];
@@ -155,7 +155,10 @@ function mount({ language, refuse = 0 } = {}) {
     const answer = (value, status = 200) => ({ ok: status < 400, status, json: async () => structuredClone(value), text: async () => JSON.stringify(value) });
     if (call.url === "/api/home") return answer(homeData());
     if (call.url.endsWith("/front-desk")) return answer({ version: 1, agentId: "a", effectiveAgentId: "a" });
-    if (method === "GET" && /\/requests(\?|$)/.test(call.url)) return answer({ requests: requests(), hasMore: false });
+    // `unread`: a request not on the first page, whose older page Core cannot give.
+    if (method === "GET" && /\/requests\?before=/.test(call.url) && unread) return answer({ error: "connection lost" }, 503);
+    if (method === "GET" && /\/requests(\?|$)/.test(call.url))
+      return answer({ requests: requests().filter((r) => r.n !== unread), hasMore: !!unread });
     if (call.url === "/api/executor-templates")
       return answer({ available: [{ template: { id: "design", label: "Design", whenToChoose: "A design with an end" }, source: "workspace" }] });
     if (/\/cards\/\d+\/reassign$/.test(call.url)) {
@@ -317,6 +320,27 @@ test("a card no longer on the page opens its task instead, from its request's ro
   // A card on the page is shown, not its task.
   p.document.querySelector('.request-card[data-request="3"] .request-card-row').click();
   assert.equal(p.opened.length, 2);
+  assert.deepEqual(p.errors, []);
+});
+
+test("See words for a request not read yet reads the page before it once; a page that fails is said and not asked again (#924 R1 7db7e3a9)", async (t) => {
+  const p = mount({ unread: 4 });
+  t.after(p.close);
+  p.window.renderHome({ agents, projects });
+  await until(() => p.cardOf("yn-7") && p.document.querySelector('.request-card[data-request="3"]'), "the page without R-4");
+  assert.equal(p.document.querySelector('.request-card[data-request="4"]'), null);
+  p.source("yn-7").querySelector(".card-source-line").click();
+  await tick();
+  p.button("Show your words for “Export CSV” in the conversation").click();
+  await until(() => p.document.querySelector('.project-talk-compose [role="alert"]'), "the failed read is said");
+  // Long enough for a loop to have asked many times.
+  await tick(400);
+  const older = p.calls.filter((c) => /\/requests\?before=/.test(c.url));
+  assert.equal(older.length, 1, `one read of the older page: ${older.length}`);
+  // The next ask is a new one: it tries again, once.
+  p.button("Show your words for “Export CSV” in the conversation").click();
+  await tick(400);
+  assert.equal(p.calls.filter((c) => /\/requests\?before=/.test(c.url)).length, 2);
   assert.deepEqual(p.errors, []);
 });
 

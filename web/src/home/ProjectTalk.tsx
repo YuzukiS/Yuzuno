@@ -193,7 +193,8 @@ export function ProjectTalk({
   }, [page, older]);
   const hasMore = older ? older.hasMore : !!page?.hasMore;
   const [readingOlder, setReadingOlder] = useState(false);
-  async function readOlder() {
+  /** Reads the page of requests before those read; `onFailed` runs, if it fails, before reading is said to be over. */
+  async function readOlder(onFailed?: () => void) {
     const lowest = Math.min(...requests.map((r) => r.n));
     if (!Number.isFinite(lowest)) return;
     setReadingOlder(true);
@@ -202,6 +203,7 @@ export function ProjectTalk({
       setOlder((was) => ({ requests: [...(was?.requests ?? []), ...value.requests], hasMore: value.hasMore }));
     } catch (e) {
       setLoadError(errorText(e));
+      onFailed?.();
     } finally {
       setReadingOlder(false);
     }
@@ -312,12 +314,14 @@ export function ProjectTalk({
     if (sideOpen(shown, "requests")) pending.current.push({ side: "requests", n, moved: false });
     pending.current = pending.current.map((want) => ({ ...want, instant: true }));
   }
-  // A card asked for a request not read yet: older pages are read until it is there, or there are none.
+  // A card asked for a request not read yet: older pages are read until it is there, or there are none. A read that
+  // fails ends this ask, its error shown; the next "See words" asks again (#924 R1 7db7e3a9).
   const revealed = useRef(0);
   useEffect(() => {
     if (!reveal || revealed.current === reveal.seq || !page) return;
     if (!byN.has(reveal.n) && hasMore) {
-      if (!readingOlder) void readOlder();
+      const seq = reveal.seq;
+      if (!readingOlder) void readOlder(() => (revealed.current = seq));
       return;
     }
     revealed.current = reveal.seq;
