@@ -1,16 +1,25 @@
-"""Tests for the desktop's read-only WSL check (desktop/src/local_core/check.sh,
-YN-107 design 4.3), run under a fake HOME and a PATH of stand-ins.
+"""Tests for the desktop's scripts for WSL (YN-107), run under a fake HOME:
 
-Each case runs the script as the desktop does (`sh -s -- <install> <data>`,
-the script on stdin), under every POSIX shell found here (dash and bash: a
-distribution's /bin/sh is either), and checks what it printed and that
-nothing changed in HOME, TMPDIR or the working folder.
+- the read-only check (desktop/src/local_core/check.sh, design 4.3), under a
+  PATH of stand-ins: what it printed, and that nothing changed in HOME,
+  TMPDIR or the working folder;
+- the temporary folder of an installation (desktop/src/local_core/stage.sh,
+  design 4.5): what it makes, that it removes only a folder named as it
+  names one, holding its marker and belonging to this account, and an
+  unpack from stdin into it as the desktop runs one;
+- the built-in Core release key (desktop/core-release.pub): the key the
+  documentation publishes.
+
+Each script runs as the desktop runs it (`sh -s -- …`, the script on stdin),
+under every POSIX shell found here (dash and bash: a distribution's /bin/sh
+is either).
 
 Standard library only; no network. Run: python3 desktop/tests/local_core_scripts.py
 """
 
 import base64
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -19,9 +28,14 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "..", "src", "local_core", "check.sh")
+DESKTOP = os.path.join(HERE, "..")
+SCRIPT = os.path.join(DESKTOP, "src", "local_core", "check.sh")
 with open(SCRIPT, "rb") as _script:
     SCRIPT_BYTES = _script.read()
+STAGE = os.path.join(DESKTOP, "src", "local_core", "stage.sh")
+with open(STAGE, "rb") as _script:
+    STAGE_BYTES = _script.read()
+FIXTURES = os.path.join(HERE, "fixtures", "release")
 
 # Every key the script prints; check_rules.rs reads them.
 KEYS = [
@@ -320,6 +334,185 @@ class CheckScript(unittest.TestCase):
         for sh, printed, _ in self.each_shell("default", "default"):
             with self.subTest(sh=sh):
                 self.assertEqual((printed["env.source"], printed["env.note"]), ("inherited", "failed"))
+
+
+STAGE_NAME = re.compile(r"^\.yuzuno-core-install\.[A-Za-z0-9]{8}$")
+MARKER = ".yuzuno-desktop-stage"
+
+
+class StageScript(unittest.TestCase):
+    """stage.sh, as the desktop runs it: `sh -s -- prepare <installDir>` and
+    `sh -s -- clean <stage>`, the script on stdin, with the system's tools."""
+
+    def setUp(self):
+        self.assertTrue(SHELLS, "no dash or bash here")
+        self.base = tempfile.mkdtemp(prefix="yn107-stage-")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.home = os.path.join(self.base, "home", "someone")
+        self.share = os.path.join(self.home, ".local", "share")
+        self.root = os.path.join(self.share, "yuzuno-core")
+        os.makedirs(self.home)
+
+    def run_stage(self, interpreter, *arguments):
+        done = subprocess.run(
+            [interpreter, "-s", "--", *arguments],
+            input=STAGE_BYTES,
+            capture_output=True,
+            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "TMPDIR": self.base},
+            cwd=self.home,
+            timeout=60,
+        )
+        printed = dict(line.partition("=")[::2] for line in done.stdout.decode().splitlines())
+        return done.returncode, printed
+
+    def prepare(self, interpreter):
+        code, printed = self.run_stage(interpreter, "prepare", self.root)
+        self.assertEqual(code, 0, printed)
+        return printed["stage"], printed
+
+    def fake_stage(self, name, marker=True, age=0):
+        """A folder as stage.sh makes one (or not quite), `age` seconds old."""
+        path = os.path.join(self.share, name)
+        os.makedirs(os.path.join(path, "bundle", "bin"))
+        with open(os.path.join(path, "bundle", "bin", "file"), "w") as handle:
+            handle.write("x")
+        if marker:
+            open(os.path.join(path, MARKER), "w").close()
+        if age:
+            past = time.time() - age
+            os.utime(path, (past, past))
+        return path
+
+    def test_prepare_makes_a_private_folder_beside_the_install_folder(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                stage, printed = self.prepare(interpreter)
+                self.assertEqual(os.path.dirname(stage), self.share)
+                self.assertRegex(os.path.basename(stage), STAGE_NAME)
+                self.assertEqual(printed["swept"], "0")
+                self.assertEqual(sorted(os.listdir(stage)), sorted(["bundle", MARKER]))
+                self.assertEqual(os.listdir(os.path.join(stage, "bundle")), [])
+                self.assertEqual(stat.S_IMODE(os.lstat(stage).st_mode), 0o700)
+                # The missing parents were made, private (XDG's 0700).
+                self.assertEqual(stat.S_IMODE(os.lstat(self.share).st_mode), 0o700)
+                # Nothing at the install folder itself: install makes it.
+                self.assertFalse(os.path.exists(self.root))
+                code, printed = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual((code, printed), (0, {"removed": stage}))
+                self.assertFalse(os.path.exists(stage))
+
+    def test_an_unpack_from_stdin_as_the_desktop_runs_it(self):
+        with open(os.path.join(FIXTURES, "yuzuno-core-linux-x86_64.tar.gz"), "rb") as handle:
+            archive = handle.read()
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                stage, _ = self.prepare(interpreter)
+                # The arguments after `wsl.exe … --exec` (local_core/mod.rs, Steps::unpack).
+                done = subprocess.run(
+                    ["/usr/bin/env", "tar", "-xzf", "-", "-C", f"{stage}/bundle"],
+                    input=archive,
+                    capture_output=True,
+                    env={"HOME": self.home, "PATH": "/usr/bin:/bin"},
+                    cwd=self.home,
+                    timeout=60,
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                bundle = os.path.join(stage, "bundle")
+                self.assertEqual(sorted(os.listdir(bundle)), ["bin", "manifest.json"])
+                self.assertTrue(os.access(os.path.join(bundle, "bin", "yuzuno-update-helper"), os.X_OK))
+                code, _ = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual(code, 0)
+                self.assertFalse(os.path.exists(stage))
+
+    def test_clean_removes_nothing_but_a_marked_folder_of_its_own_name(self):
+        os.makedirs(self.share)
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                kept = [
+                    self.fake_stage("other.Ab3dEf9h"),
+                    self.fake_stage(".yuzuno-core-install.Ab3dEf9"),
+                    self.fake_stage(".yuzuno-core-install.Ab3d-f9h"),
+                    self.fake_stage(".yuzuno-core-install.NoMarker", marker=False),
+                ]
+                linked = self.fake_stage(".yuzuno-core-install.LinkedTo")
+                os.symlink(linked, os.path.join(self.share, ".yuzuno-core-install.ALinkHer"))
+                marker_link = self.fake_stage(".yuzuno-core-install.MarkLink", marker=False)
+                os.symlink(os.path.join(linked, MARKER), os.path.join(marker_link, MARKER))
+                for path in kept + [
+                    os.path.join(self.share, ".yuzuno-core-install.ALinkHer"),
+                    marker_link,
+                    os.path.join(self.share, "x", "..", ".yuzuno-core-install.LinkedTo"),
+                    os.path.join(self.share, ".", ".yuzuno-core-install.LinkedTo"),
+                    "relative/.yuzuno-core-install.LinkedTo",
+                    "/.yuzuno-core-install.LinkedTo",
+                ]:
+                    code, printed = self.run_stage(interpreter, "clean", path)
+                    self.assertEqual(code, 1, path)
+                    self.assertIn("nothing was removed", printed["error"])
+                for path in kept + [linked, marker_link]:
+                    self.assertTrue(os.path.isdir(path), path)
+                self.assertTrue(os.path.exists(os.path.join(linked, "bundle", "bin", "file")))
+                shutil.rmtree(self.share)
+                os.makedirs(self.share)
+
+    def test_clean_leaves_another_accounts_folder(self):
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+            self.skipTest("needs sudo without a password to give a folder to another account")
+        os.makedirs(self.share)
+        stage = self.fake_stage(".yuzuno-core-install.NotMine1")
+        subprocess.run(["sudo", "-n", "chown", "0:0", stage], check=True)
+        self.addCleanup(subprocess.run, ["sudo", "-n", "rm", "-rf", "--", stage])
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                code, printed = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual(code, 1, printed)
+                self.assertTrue(os.path.isdir(stage))
+
+    def test_prepare_sweeps_only_old_marked_folders_of_its_own_name(self):
+        os.makedirs(self.share)
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                old = self.fake_stage(".yuzuno-core-install.OldOne01", age=61 * 60)
+                young = self.fake_stage(".yuzuno-core-install.Young001", age=50 * 60)
+                unmarked = self.fake_stage(".yuzuno-core-install.OldOne02", marker=False, age=61 * 60)
+                named = self.fake_stage("yuzuno-core-install.OldOne03", age=61 * 60)
+                target = self.fake_stage("elsewhere", age=61 * 60)
+                link = os.path.join(self.share, ".yuzuno-core-install.OldLink1")
+                os.symlink(target, link)
+                past = time.time() - 61 * 60
+                os.utime(link, (past, past), follow_symlinks=False)
+                stage, printed = self.prepare(interpreter)
+                self.assertEqual(printed["swept"], "1")
+                self.assertFalse(os.path.exists(old))
+                for path in (young, unmarked, named, target, stage):
+                    self.assertTrue(os.path.isdir(path), path)
+                self.assertTrue(os.path.islink(link))
+                self.assertTrue(os.path.exists(os.path.join(target, MARKER)))
+                shutil.rmtree(self.share)
+                os.makedirs(self.share)
+
+    def test_prepare_refuses_a_folder_it_cannot_put_one_beside(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                for root in ("/yuzuno-core", "relative/core", f"{self.home}/../core", f"{self.home}//core", f"{self.home}/core/"):
+                    code, printed = self.run_stage(interpreter, "prepare", root)
+                    self.assertEqual(code, 1, root)
+                    self.assertIn("error", printed)
+                code, printed = self.run_stage(interpreter, "remove", self.root)
+                self.assertEqual((code, printed["error"]), (1, "Unknown step: remove"))
+                self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+
+
+class ReleaseKey(unittest.TestCase):
+    def test_the_built_in_key_is_the_published_one(self):
+        with open(os.path.join(DESKTOP, "core-release.pub")) as handle:
+            built_in = handle.read()
+        with open(os.path.join(DESKTOP, "..", "docs", "independent-core.md")) as handle:
+            published = re.findall(r"^\s*KEY=(RW[A-Za-z0-9+/=]+)$", handle.read(), re.M)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(built_in, published[0] + "\n")
+        with open(os.path.join(FIXTURES, "test-key.pub")) as handle:
+            self.assertNotEqual(handle.read().strip(), published[0], "the tests' throwaway key is not the publisher's")
 
 
 if __name__ == "__main__":

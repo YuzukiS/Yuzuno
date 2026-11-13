@@ -1,6 +1,6 @@
 {
   "identifier": "connection",
-  "description": "Only the embedded connection page may choose and check a Core URL, name and remove the workspaces saved here, forget which workspace was at an address it no longer lists, start the saved Core in WSL, and list the WSL distributions and check one of them read-only before Core is installed there. It may also move, minimize, maximize and close its frameless window, and on macOS read where the system's window buttons end over it and what a double click on its top band does. Nothing here clears what a web view stored for an address.",
+  "description": "Only the embedded connection page may choose and check a Core URL, name and remove the workspaces saved here, forget which workspace was at an address it no longer lists, start the saved Core in WSL, list the WSL distributions and check one of them read-only, install the latest signed Core release there and start it, start an installation the check found, and cancel an installation until its release is unpacked. It may also move, minimize, maximize and close its frameless window, and on macOS read where the system's window buttons end over it and what a double click on its top band does. Nothing here clears what a web view stored for an address.",
   "local": true,
   "windows": [
     "main"
@@ -14,6 +14,9 @@
     "allow-start-core",
     "allow-local-core-targets",
     "allow-local-core-check",
+    "allow-local-core-install",
+    "allow-local-core-start",
+    "allow-local-core-cancel",
     "allow-set-appearance",
     "allow-desktop-title-bar",
     "core:window:allow-is-decorated",
