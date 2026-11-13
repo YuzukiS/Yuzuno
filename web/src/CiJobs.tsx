@@ -575,20 +575,23 @@ export function ConversationCi({
     >
       {/* The merge queue's own follow-up of main's push CI (YN-97): a wait of
           the Agent that released the PR, read from the queue's records. */}
-      {queue.map((q) => (
-        <WorkDockItem
-          key={`queue:${q.entryId}`}
-          className="conversation-job"
-          status={q.state === "running" ? "running" : q.state === "waitingForRun" ? "pending" : "unknown"}
-          state={q.state === "running" ? t.labels.running : q.state === "waitingForRun" ? t.labels.pending : t.labels.unknown}
-          name={t.queueMainCi(q.number)}
-          sub={q.state === "check" ? t.queueCheck : q.run ? t.queueRun(q.run.id, q.run.status) : t.queueNoRun}
-          detail={`${q.repository} · ${q.mainSha.slice(0, 8)}${q.taskRef ? ` · ${q.taskRef}` : ""}`}
-          when={q.checkedAt ? t.queueChecked(new Date(q.checkedAt).toLocaleTimeString()) : null}
-          href={q.state === "running" ? q.run?.url : undefined}
-          onOpen={() => openQueue(q.entryId)}
-        />
-      ))}
+      {queue.map((q) => {
+        const says = q.state === "check" ? t.queueCheck : q.run ? t.queueRun(q.run.id, q.run.status) : t.queueNoRun;
+        return (
+          <WorkDockItem
+            key={`queue:${q.entryId}`}
+            className="conversation-job"
+            status={q.state === "running" ? "running" : q.state === "waitingForRun" ? "pending" : "unknown"}
+            state={q.state === "running" ? t.labels.running : q.state === "waitingForRun" ? t.labels.pending : t.labels.unknown}
+            name={t.queueMainCi(q.number)}
+            sub={says}
+            detail={`${says} · ${q.repository} · ${q.mainSha.slice(0, 8)}${q.taskRef ? ` · ${q.taskRef}` : ""}`}
+            when={q.checkedAt ? t.queueChecked(new Date(q.checkedAt).toLocaleTimeString()) : null}
+            href={q.state === "running" ? q.run?.url : undefined}
+            onOpen={() => openQueue(q.entryId)}
+          />
+        );
+      })}
       {runs.map((r) => (
         <WorkDockItem
           key={r.id}

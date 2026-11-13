@@ -547,7 +547,7 @@ export function WorkDockItem({
     }
     setOpen(next);
   };
-  const label = [name, state, sub, detail, when].filter(Boolean).join(" · ");
+  const label = [name, state, detail, when].filter(Boolean).join(" · ");
   const inside = (
     <>
       <span className="work-dock-node" aria-hidden="true" ref={node}>
