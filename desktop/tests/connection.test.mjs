@@ -241,8 +241,9 @@ test('when the app opens and its confirmed Core does not answer, it is started o
 
 test('the app says it is starting by itself while it does', async () => {
   let finish;
+  const entry = { id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: true };
   const dom = await mount(async (command) => {
-    if (command === 'connection_info') return { ...saved, autoConnect: true };
+    if (command === 'connection_info') return { ...saved, autoConnect: true, saved: [entry], selected: 'core-1' };
     if (command === 'local_core_targets') return wslTargets;
     if (command === 'connect_core') throw offline;
     if (command === 'start_core') return new Promise((resolve) => { finish = resolve; });
