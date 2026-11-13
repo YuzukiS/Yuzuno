@@ -2419,7 +2419,7 @@ test("YN-38 an Ask's form asked again while the user answers: the answers that s
       .querySelectorAll(".clarification-carried p")].map((n) => n.textContent);
     radio("Tuesday").click();
     await pause();
-    await type(p, planCard().querySelector(".clarification textarea"), "After the docs land.");
+    await type(p, planCard().querySelector(".clarification [data-composer-input]"), "After the docs land.");
     // Mori asks again: Tuesday is gone, Friday and a required field are new.
     const sections = p.state.home.projects[0].brief.sections;
     sections[sections.length - 1] = plan(2, [day([mon, fri]), notesField, { id: "who", type: "single", label: "Who ships it", required: true, options: [{ id: "mori", label: "Mori" }, { id: "hana", label: "Hana" }] }]);
@@ -2429,7 +2429,7 @@ test("YN-38 an Ask's form asked again while the user answers: the answers that s
     assert.deepEqual(fieldNotes("Release day"), ["No longer offered: “Tuesday”. Choose again."]);
     assert.deepEqual(fieldNotes("Who ships it"), ["New since you began answering."]);
     assert.deepEqual(fieldNotes("Anything else"), [], "an answer that still fits is kept, unsaid");
-    assert.equal(planCard().querySelector(".clarification textarea").value, "After the docs land.");
+    assert.equal(composerText(planCard().querySelector(".clarification [data-composer-input]")), "After the docs land.");
     assert.ok(!radio("Monday").checked && !radio("Friday").checked, "no day picked for the user");
     assert.match(planCard().textContent, /This ask is now version 2\. Your answers are kept where they still fit/);
     assert.doesNotMatch(planCard().textContent, /Refer it to|began this reply on version/);

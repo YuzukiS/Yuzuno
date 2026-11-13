@@ -106,6 +106,50 @@
 .clarification-field textarea[aria-invalid="true"] {
   border-color: var(--red, #b34e48);
 }
+/* A text answer's field (YN-103): the conversation's composer, drawn as the
+   two-row field it took the place of. It grows with its words to ten lines,
+   then scrolls inside; a long paste is one block in it. */
+.clarification-field .home-composer {
+  box-sizing: border-box;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.clarification-field .home-composer:focus-within {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+.clarification-field .home-composer .cm-content:focus-visible {
+  outline: none;
+}
+.clarification-field .home-composer:has([aria-invalid="true"]) {
+  border-color: var(--red, #b34e48);
+}
+.clarification-field .home-composer[data-readonly] .cm-content {
+  color: var(--muted);
+}
+.clarification-field .pasted-text-composer .cm-editor {
+  font-size: inherit;
+}
+.clarification-field .pasted-text-composer .cm-scroller {
+  line-height: 1.55;
+  max-height: min(calc(10 * 1.55em + 1.3rem), 40dvh);
+}
+.clarification-field .pasted-text-composer .cm-content {
+  min-height: calc(2 * 1.55em);
+  padding: 0.65rem 0.75rem;
+}
+/* How long the message the answers make is, near or over its limit. */
+.clarification .home-reply-length {
+  margin: 0;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.clarification .home-reply-length:not([data-over]) {
+  color: var(--muted);
+}
 .clarification-error {
   color: var(--red, #b34e48);
   font-size: 0.85em;

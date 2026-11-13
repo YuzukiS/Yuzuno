@@ -89,7 +89,18 @@ export function clarificationMessage(
   form: ClarificationProps,
   answers: ClarificationValues,
 ) {
-  const values = clarificationAnswers(form).parse(answers);
+  return clarificationText(resultId, form, clarificationAnswers(form).parse(answers) as ClarificationValues);
+}
+
+/** The message `answers` make (clarificationMessage) without checking them:
+ * what the form counts as they are written (YN-103), the same bytes once
+ * they are checked. Only the form's own fields, in its order. */
+export function clarificationText(
+  resultId: string,
+  form: ClarificationProps,
+  answers: ClarificationValues,
+) {
+  const values = Object.fromEntries(form.fields.map((field) => [field.id, answers[field.id]]));
   return `Answers to “${form.title}”:\n${JSON.stringify({ resultId, formId: form.id, answers: values }, null, 2)}`;
 }
 
@@ -282,12 +293,33 @@ export function readClarificationDraft(
     );
   return saved.values;
 }
+/**
+ * Where a draft's text answers have pasted blocks (YN-103), by field: UTF-16
+ * offsets, as a message's text blocks are. Only to draw them again as the
+ * conversation's composer folds them; the answers themselves are the whole
+ * text, and nothing of this is sent.
+ */
+export type ClarificationBlocks = Record<string, { id: string; start: number; end: number }[]>;
+
 export function saveClarificationDraft(
   storage: Pick<Storage, "setItem">,
   key: string,
   values: ClarificationValues,
+  blocks?: ClarificationBlocks,
 ) {
-  storage.setItem(key, JSON.stringify({ version: 1, values }));
+  const kept = blocks && Object.fromEntries(Object.entries(blocks).filter(([, list]) => list.length));
+  storage.setItem(key, JSON.stringify({ version: 1, values, ...(kept && Object.keys(kept).length ? { blocks: kept } : {}) }));
+}
+
+/** A saved draft's blocks, or none: never a reason not to restore it. */
+export function readClarificationBlocks(storage: Pick<Storage, "getItem">, key: string): ClarificationBlocks {
+  try {
+    const blocks = JSON.parse(storage.getItem(key) ?? "null")?.blocks;
+    if (!blocks || typeof blocks !== "object" || Array.isArray(blocks)) return {};
+    return Object.fromEntries(Object.entries(blocks).filter(([, list]) => Array.isArray(list))) as ClarificationBlocks;
+  } catch {
+    return {};
+  }
 }
 
 export const clarificationExample: ClarificationProps = {

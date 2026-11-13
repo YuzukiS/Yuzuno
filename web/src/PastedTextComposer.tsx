@@ -77,6 +77,9 @@ type Props = {
   onImages?: (files: File[]) => void;
   /** Which key sends (device-preferences.ts); unset, as `auto`. */
   sendKey?: SendKey;
+  /** More attributes of the field itself (YN-103): a form's text answer
+   * gives its id, description and whether it is required or invalid. */
+  attributes?: Record<string, string>;
 };
 
 // The paste block's own words (T-189); the pasted text is never translated.
@@ -200,6 +203,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
       EditorState.readOnly.of(!!callbacks.current.readOnly),
       EditorView.editable.of(!callbacks.current.readOnly),
       EditorView.contentAttributes.of({
+        ...callbacks.current.attributes,
         "aria-label": callbacks.current.label,
         "aria-multiline": "true",
         "data-composer-input": "true",
@@ -473,7 +477,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
       view.current?.dispatch({
         effects: options.current.reconfigure(configure()),
       });
-    }, [props.label, props.placeholder, props.readOnly, props.slashCommands, t]);
+    }, [props.label, props.placeholder, props.readOnly, props.slashCommands, t, JSON.stringify(props.attributes ?? null)]);
     useImperativeHandle(ref, () => ({
       focus: () => view.current?.focus(),
       focusEnd() {

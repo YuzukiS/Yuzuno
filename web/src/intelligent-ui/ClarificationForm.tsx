@@ -4,16 +4,23 @@ import {
   carryClarification,
   clarificationDraftKey,
   initialClarificationValues,
+  readClarificationBlocks,
   readClarificationDraft,
   saveClarificationDraft,
   validateClarification,
   type CarryNote,
+  type ClarificationBlocks,
   type ClarificationErrors,
   type ClarificationProps,
   type ClarificationValues,
 } from "./clarification";
 import "./clarification.css";
 import { strings, useStrings } from "../i18n";
+import { HomeComposer, type ReplyWords } from "../home/HomeComposer";
+import { ReplyLength } from "../home/reply-limit";
+import { shouldFoldPaste } from "../composer-draft";
+
+const bytes = (n: number) => n.toLocaleString("en-US");
 
 // The form's own words in the interface language (T-189). The questions,
 // options, defaults, answers, the Agent's name, Core's and the browser's
@@ -39,6 +46,11 @@ const formText = strings({
   reworded: "Reworded after you answered. Check your answer.",
   added: "New since you began answering.",
   gone: (label: string) => `No longer asked: “${label}”. That answer won't be sent.`,
+  // How long the message the answers make is (YN-103), in the bytes Core counts.
+  bytesLeft: (left: number, most: number) =>
+    `${bytes(left)} ${left === 1 ? "byte" : "bytes"} left: these answers go as one message of at most ${bytes(most)} bytes in UTF-8, where a Chinese character is 3.`,
+  tooLong: (over: number, most: number) =>
+    `${bytes(over)} ${over === 1 ? "byte" : "bytes"} too long to send: these answers go as one message of at most ${bytes(most)} bytes in UTF-8, where a Chinese character is 3. Shorten them to send; what you wrote is kept.`,
 }, {
   sent: (agent) => `答案已发送给 ${agent}。`,
   queued: (agent) => `已发送 · 等待 ${agent} 确认。`,
@@ -59,6 +71,9 @@ const formText = strings({
   reworded: "你回答之后措辞有改动。请检查你的答案。",
   added: "你开始回答之后新加的问题。",
   gone: (label) => `不再询问：“${label}”。那个答案不会发送。`,
+  bytesLeft: (left, most) => `还能输入 ${bytes(left)} 字节：这些答案作为一条消息发送，最多 ${bytes(most)} 字节（UTF-8，一个汉字 3 字节）。`,
+  tooLong: (over, most) =>
+    `超出 ${bytes(over)} 字节，发不出去：这些答案作为一条消息发送，最多 ${bytes(most)} 字节（UTF-8，一个汉字 3 字节）。删减后才能发送，已写的内容不会丢。`,
 });
 // Said when shown, so it follows a language change; other storage errors
 // are the browser's own words.
@@ -109,6 +124,16 @@ type Props = {
   basis?: ClarificationProps | null;
   /** With `carry`: the answers were carried to `form` in this window. */
   onCarry?: () => void;
+  /**
+   * The message these answers make, in the bytes Core counts, and the most
+   * it takes (YN-103): a conversation's message, or a reply from Home. Near
+   * it the form says how much is left; over it, by how much, and sends
+   * nothing. A text answer itself has no limit, so nothing is cut short.
+   */
+  measure?: (values: ClarificationValues) => { bytes: number; max: number };
+  /** An answer was changed here: chosen, cleared or written (YN-103: a text
+   * answer's field is an editor, which has no change event to listen to). */
+  onEdit?: () => void;
 };
 export function Clarification(props: Props) {
   return <Form key={`${props.identity}:${props.form.id}`} {...props} />;
@@ -125,6 +150,8 @@ function Form({
   carry = false,
   basis = null,
   onCarry,
+  measure,
+  onEdit,
 }: Props) {
   const domId = useId();
   const key = draftIdentity && clarificationDraftKey(draftIdentity, form);
@@ -149,15 +176,40 @@ function Form({
     }
     return { values: readClarificationDraft(localStorage, to, form), notes: [], carried: false };
   };
-  const [initial] = useState((): Read & { error: string } => {
-    if (!key) return { values: initialClarificationValues(form), error: "", notes: [], carried: false };
+  // Where the answers saved under `to` have pasted blocks (YN-103).
+  const readBlocks = (to: string): ClarificationBlocks => {
     try {
-      return { ...read(key), error: "" };
+      return readClarificationBlocks(localStorage, to);
+    } catch {
+      return {};
+    }
+  };
+  const [initial] = useState((): Read & { error: string; blocks: ClarificationBlocks } => {
+    if (!key) return { values: initialClarificationValues(form), error: "", notes: [], carried: false, blocks: {} };
+    try {
+      return { ...read(key), error: "", blocks: readBlocks(key) };
     } catch (error) {
-      return { values: initialClarificationValues(form), error: String(error), notes: [], carried: false };
+      return { values: initialClarificationValues(form), error: String(error), notes: [], carried: false, blocks: {} };
     }
   });
-  const [values, setValues] = useState(initial.values);
+  const [values, setShownValues] = useState(initial.values);
+  // A text answer's pasted blocks, as its field folds them: drawn again
+  // with the draft, never sent (the answer is the whole text).
+  const [blocks, setShownBlocks] = useState(initial.blocks);
+  // The answers and blocks as last set, ahead of the render that shows them
+  // (YN-103): a text answer's editor reports its words outside React's own
+  // events, so a choice or a submit straight after them builds on these,
+  // never on a render that does not have them yet.
+  const latest = useRef(initial.values);
+  const latestBlocks = useRef(initial.blocks);
+  const setValues = (next: ClarificationValues) => {
+    latest.current = next;
+    setShownValues(next);
+  };
+  const setBlocks = (next: ClarificationBlocks) => {
+    latestBlocks.current = next;
+    setShownBlocks(next);
+  };
   const [notes, setNotes] = useState(initial.notes);
   const [storageError, setStorageError] = useState(initial.error);
   const [errors, setErrors] = useState<ClarificationErrors>({});
@@ -189,11 +241,12 @@ function Form({
     belongTo.current = key;
     if (!sameForm) generation.current += 1;
     try {
-      if (keep) saveClarificationDraft(localStorage, key, values);
+      if (keep) saveClarificationDraft(localStorage, key, latest.current, latestBlocks.current);
       else {
         typed.current = false;
         const found = read(key);
         setValues(found.values);
+        setBlocks(readBlocks(key));
         setNotes(found.notes);
         setErrors({});
       }
@@ -215,7 +268,7 @@ function Form({
   useEffect(() => {
     if (!initial.carried || !key) return;
     try {
-      saveClarificationDraft(localStorage, key, initial.values);
+      saveClarificationDraft(localStorage, key, initial.values, initial.blocks);
     } catch {
       setStorageError(ONLY_HERE);
     }
@@ -230,7 +283,7 @@ function Form({
     if (before.shape === shape) return;
     shown.current = { shape, form };
     if (!carry) return;
-    const next = carryClarification(before.form, form, values);
+    const next = carryClarification(before.form, form, latest.current);
     setValues(next.values);
     // What an earlier change said stays until its field is answered again.
     const same = (a: CarryNote, b: CarryNote) =>
@@ -247,7 +300,7 @@ function Form({
     setFailure("");
     if (key)
       try {
-        saveClarificationDraft(localStorage, key, next.values);
+        saveClarificationDraft(localStorage, key, next.values, latestBlocks.current);
       } catch {
         setStorageError(ONLY_HERE);
       }
@@ -267,6 +320,9 @@ function Form({
   const uncertain = status === "uncertain" || status === "unknown";
   const submitted = sending || queued || accepted || uncertain;
   const disabled = busy || submitted || !!blockedReason || !onSubmit;
+  // The message these answers make, as they are written (YN-103).
+  const size = !submitted && measure ? measure(values) : null;
+  const tooLong = !!size && size.bytes > size.max;
   const t = useStrings(formText);
   const notice = accepted
     ? t.sent(agentName)
@@ -278,27 +334,47 @@ function Form({
           ? ""
           : blockedReason || delivery?.error || failure;
 
-  function change(id: string, value: string | string[]) {
-    const next = { ...values, [id]: value };
+  function change(id: string, value: string | string[], fieldBlocks?: ClarificationBlocks[string]) {
+    const next = { ...latest.current, [id]: value };
+    const nextBlocks = fieldBlocks ? { ...latestBlocks.current, [id]: fieldBlocks } : latestBlocks.current;
     setValues(next);
+    if (fieldBlocks) setBlocks(nextBlocks);
     setErrors((previous) => ({ ...previous, [id]: "" }));
     // Answered again: what changed under it has been seen to.
     setNotes((kept) => kept.filter((note) => note.field !== id));
     setFailure("");
     typed.current = true;
+    onEdit?.();
     // Nothing is written while there is no Workspace to attribute this to.
     // The answers stay on screen, and reach disk as soon as there is one.
     if (!key) return;
     try {
-      saveClarificationDraft(localStorage, key, next);
+      saveClarificationDraft(localStorage, key, next, nextBlocks);
       setStorageError("");
     } catch {
       setStorageError(ONLY_HERE);
     }
   }
+  /** A text answer as its field draws it: with the blocks it folded here.
+   * Sent answers this window did not write (another window's, or read back
+   * after a reload) fold whole when long, as a long message does. */
+  function words(id: string, value: unknown): ReplyWords {
+    const text = typeof value === "string" ? value : "";
+    if (!submitted || !delivery?.values || values[id] === value) {
+      const own = blocks[id];
+      return own?.length ? { text, blocks: own } : { text };
+    }
+    return shouldFoldPaste(text) ? { text, blocks: [{ id: `sent-${id}`, start: 0, end: text.length }] } : { text };
+  }
   async function submit() {
     if (!onSubmit || disabled || inFlight.current || composing.current) return;
-    const problems = validateClarification(form, values);
+    const answers = latest.current;
+    // Too long to go as one message: said beside the button, nothing sent.
+    if (measure) {
+      const { bytes, max } = measure(answers);
+      if (bytes > max) return;
+    }
+    const problems = validateClarification(form, answers);
     setErrors(problems);
     const first = Object.keys(problems)[0];
     if (first) {
@@ -317,7 +393,7 @@ function Form({
     setFailure("");
     try {
       // Capture exactly the values the user explicitly submitted.
-      await onSubmit(structuredClone(values));
+      await onSubmit(structuredClone(answers));
       if (generation.current === from) setNotes([]);
     } catch (error) {
       if (generation.current === from)
@@ -373,7 +449,9 @@ function Form({
           return (
             <fieldset
               key={field.id}
-              disabled={disabled}
+              // A text answer's field is read-only instead: its blocks stay
+              // buttons that open the whole text, sent or not (YN-103).
+              disabled={disabled && field.type !== "text"}
               className="clarification-field"
             >
               <legend>
@@ -400,17 +478,24 @@ function Form({
                 </div>
               )}
               {field.type === "text" ? (
-                <textarea
-                  id={fieldId}
-                  value={String(value || "")}
-                  aria-label={field.label}
-                  aria-required={field.required}
-                  aria-invalid={!!errors[field.id]}
-                  aria-describedby={describedBy}
-                  placeholder={field.placeholder}
-                  rows={2}
-                  maxLength={2000}
-                  onChange={(event) => change(field.id, event.target.value)}
+                // The conversation's composer (YN-103): a long paste folds
+                // into a block and the answer is the whole text; Return
+                // submits as this device sends a message, never while an
+                // input method composes; Shift+Return makes a new line.
+                <HomeComposer
+                  slot={fieldId}
+                  label={field.label}
+                  placeholder={field.placeholder ?? ""}
+                  words={words(field.id, value)}
+                  onWords={(next) => change(field.id, next.text, next.blocks ?? [])}
+                  onSubmit={() => void submit()}
+                  readOnly={disabled}
+                  attributes={{
+                    id: fieldId,
+                    "aria-required": String(field.required),
+                    "aria-invalid": String(!!errors[field.id]),
+                    "aria-describedby": describedBy,
+                  }}
                 />
               ) : (
                 <div className="clarification-options">
@@ -473,6 +558,7 @@ function Form({
           );
         })}
         {errors.form && <p role="alert">{errors.form}</p>}
+        {size && <ReplyLength bytes={size.bytes} max={size.max} words={{ left: t.bytesLeft, over: t.tooLong }} />}
         {storageError && (
           <p role="alert" className="clarification-error">
             {storageError === ONLY_HERE ? t.onlyHere : storageError}
@@ -483,7 +569,7 @@ function Form({
           <button
             type="button"
             className="primary-button"
-            disabled={disabled}
+            disabled={disabled || tooLong}
             onClick={() => void submit()}
           >
             {busy || sending ? (

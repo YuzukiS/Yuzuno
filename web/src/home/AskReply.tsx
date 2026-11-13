@@ -19,7 +19,7 @@ import { relative } from "./format";
 import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
-import { ReplyLength, replyTooLong } from "./reply-limit";
+import { HOME_REPLY_MAX_BYTES, ReplyLength, replyTooLong, utf8Bytes } from "./reply-limit";
 import { HomeComposer, type ReplyWords } from "./HomeComposer";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
@@ -239,6 +239,14 @@ function TextReply({
  * also go beside it (T-9) for Core to keep the answers by label. */
 function formReply(form: ClarificationProps, values: ClarificationValues) {
   const answers = clarificationAnswers(form).parse(values) as ClarificationValues;
+  return { text: formReplyText(form, answers), form: { formId: form.id, answers } };
+}
+
+/** The text a form reply sends (formReply) without checking its answers:
+ * what the form counts as they are written (YN-103), the same bytes once
+ * they are checked. Only the form's own fields, in its order. */
+function formReplyText(form: ClarificationProps, values: ClarificationValues) {
+  const answers = Object.fromEntries(form.fields.map((field) => [field.id, values[field.id]]));
   const lines = form.fields.map((field) => {
     const value = answers[field.id];
     const shown =
@@ -249,8 +257,7 @@ function formReply(form: ClarificationProps, values: ClarificationValues) {
             .join(", ");
     return `- ${field.label}: ${shown || "(no answer)"}`;
   });
-  const text = `Answers to “${form.title}”:\n${lines.join("\n")}\n\n${JSON.stringify({ formId: form.id, answers })}`;
-  return { text, form: { formId: form.id, answers } };
+  return `Answers to “${form.title}”:\n${lines.join("\n")}\n\n${JSON.stringify({ formId: form.id, answers })}`;
 }
 
 /**
@@ -408,8 +415,9 @@ export function AskReply({
   // Written in or sent from this form as it is mounted, even if this browser
   // could not keep that.
   const formTouched = useRef(false);
-  function formChanged(target: EventTarget) {
-    if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
+  // Every change of an answer, its text field's too (YN-103), as the form says it.
+  function formChanged() {
+    if (!form) return;
     formTouched.current = true;
     // Kept once per version and form, not on every keystroke.
     if (formBegun?.version === section.version && JSON.stringify(formBegun.form) === JSON.stringify(form)) return;
@@ -591,15 +599,7 @@ export function AskReply({
       </div>
     );
   return (
-    <div
-      ref={replyUi}
-      className="home-ask-reply"
-      onChangeCapture={(event) => formChanged(event.target)}
-      onClickCapture={(event) => {
-        // Clearing a choice changes the answers too.
-        if ((event.target as HTMLElement).closest?.(".clarification-options button")) formChanged(event.target);
-      }}
-    >
+    <div ref={replyUi} className="home-ask-reply">
       <TargetPicker
         agents={context.agents}
         value={target}
@@ -711,6 +711,9 @@ export function AskReply({
                   : undefined
           }
           optionView={cleanupOptionView(cleanup, language)}
+          onEdit={formChanged}
+          // A reply from Home, counted as Core counts it (YN-103).
+          measure={(values) => ({ bytes: utf8Bytes(formReplyText(form, values)), max: HOME_REPLY_MAX_BYTES })}
           // Its delivery is that of the version it answered.
           delivery={answeredHere && receipt ? { status: receipt.status, error: receipt.error } : undefined}
           onSubmit={context.readOnly ? undefined : async (values) => {

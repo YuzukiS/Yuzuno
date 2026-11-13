@@ -3,7 +3,8 @@ import { strings, useStrings } from "../i18n";
 import type { AgentDetail, MessageInput, MessageReceipt } from "../types";
 import type { OutgoingMessage } from "../useConversationSend";
 import { Clarification } from "./ClarificationForm";
-import { clarificationMessage, type ClarificationProps } from "./clarification";
+import { clarificationMessage, clarificationText, type ClarificationProps } from "./clarification";
+import { MESSAGE_MAX_BYTES, utf8Bytes } from "../home/reply-limit";
 import { useResult } from "./ResultContext";
 
 type Host = {
@@ -85,6 +86,12 @@ export function PublishedClarification({ form }: { form: ClarificationProps }) {
         }
       }
       onCheck={host?.refresh}
+      // One message of the conversation, counted as Core counts it (YN-103).
+      measure={
+        resultId
+          ? (values) => ({ bytes: utf8Bytes(clarificationText(resultId, form, values)), max: MESSAGE_MAX_BYTES })
+          : undefined
+      }
       onSubmit={
         host && resultId && agent
           ? async (answers) => {

@@ -8,6 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "../target/t38/unit");
@@ -63,11 +64,19 @@ function mount() {
   );
   const { window } = dom;
   window.structuredClone = structuredClone;
+  // JSDOM does no layout: the text field's editor measures text ranges.
+  window.Range.prototype.getClientRects ||= () => [];
+  window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
   window.eval(bundle);
+  // The text answer's field: the conversation's composer (YN-103).
+  const field = () => window.document.querySelector(".clarification [data-composer-input]");
   return {
     window,
     document: window.document,
     errors,
+    field,
+    text: () => composerText(field()),
+    type: (text) => setComposerText(field(), text),
     close: () => window.close(),
     // A form is shown for one source in one Workspace, and saves its unsent
     // answers under both (T-195); a test that needs another Workspace, or no
@@ -99,12 +108,7 @@ test("explicit submit sends the exact values once, rejected delivery preserves d
   try {
     page.render({ onSubmit: submit });
     await tick();
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(
-      page.window.HTMLTextAreaElement.prototype,
-      "value",
-    ).set.call(input, "中文项目");
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.type("中文项目");
     page.document.querySelector('input[value="keyboard"]').click();
     await tick();
     page.button("Submit answers").click();
@@ -118,17 +122,17 @@ test("explicit submit sends the exact values once, rejected delivery preserves d
     });
     release();
     await tick();
-    assert.equal(page.document.querySelector("textarea").value, "中文项目");
+    assert.equal(page.text(), "中文项目");
     assert.match(page.document.body.textContent, /Native rejected/);
     page.render({ identity: "b:other", onSubmit: submit });
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "/home/me/project",
     );
     page.render({ onSubmit: submit });
     await tick();
-    assert.equal(page.document.querySelector("textarea").value, "中文项目");
+    assert.equal(page.text(), "中文项目");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -138,11 +142,7 @@ test("explicit submit sends the exact values once, rejected delivery preserves d
 // share an id, so a key of the source alone handed each the other's answers.
 test("the same form source in two Workspaces keeps two sets of unsent answers", async () => {
   const page = mount();
-  const type = (text) => {
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, text);
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  };
+  const type = (text) => page.type(text);
   const submit = async () => {};
   try {
     page.render({ onSubmit: submit });
@@ -153,7 +153,7 @@ test("the same form source in two Workspaces keeps two sets of unsent answers", 
     page.render({ draftIdentity: JSON.stringify(["ws-other", "a:result1"]), onSubmit: submit });
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "/home/me/project",
       "the other Workspace sees the form as it was published, not these answers",
     );
@@ -161,7 +161,7 @@ test("the same form source in two Workspaces keeps two sets of unsent answers", 
     await tick();
     page.render({ onSubmit: submit });
     await tick();
-    assert.equal(page.document.querySelector("textarea").value, "written here");
+    assert.equal(page.text(), "written here");
     const keys = Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.clarification.v1:"));
     assert.equal(keys.length, 2, "one saved draft each, apart");
     assert.deepEqual(page.errors, []);
@@ -178,9 +178,7 @@ test("answers typed before this window knows its Workspace are kept, reach disk 
     // attributed to, so nothing is read or written for it.
     page.render({ draftIdentity: null, onSubmit: submit });
     await tick();
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "typed before the Workspace was known");
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.type("typed before the Workspace was known");
     await tick();
     assert.deepEqual(
       Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.clarification.v1:")),
@@ -192,7 +190,7 @@ test("answers typed before this window knows its Workspace are kept, reach disk 
     page.render({ onSubmit: submit });
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "typed before the Workspace was known",
       "what was typed is not thrown away",
     );
@@ -221,9 +219,7 @@ test("a submission made before the Workspace was known still settles when it arr
       // No Workspace yet: the form is shown and can be answered.
       page.render({ draftIdentity: null, onSubmit: submit });
       await tick();
-      const input = page.document.querySelector("textarea");
-      Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "answered before it was known");
-      input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      page.type("answered before it was known");
       page.document.querySelector('input[value="keyboard"]').click();
       await tick();
       page.button("Submit answers").click();
@@ -234,7 +230,7 @@ test("a submission made before the Workspace was known still settles when it arr
       await tick();
       assert.ok(page.button("Sending answers…"), `${outcome}: still sending, this is the same form`);
       assert.equal(
-        page.document.querySelector("textarea").value,
+        page.text(),
         "answered before it was known",
         `${outcome}: the answers are kept`,
       );
@@ -264,14 +260,14 @@ test("learning the Workspace reads its own saved answers when nothing was typed"
     page.render({ draftIdentity: null });
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "/home/me/project",
       "with no Workspace, no Workspace's saved answers",
     );
     page.render({});
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "saved earlier",
       "and once it is known, its own are read -- nothing typed, nothing to keep",
     );
@@ -288,9 +284,7 @@ test("a refusal from the Workspace before this one is not shown here, and leaves
   try {
     page.render({ onSubmit: submit });
     await tick();
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "answered here");
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.type("answered here");
     page.document.querySelector('input[value="keyboard"]').click();
     await tick();
     page.button("Submit answers").click();
@@ -300,7 +294,7 @@ test("a refusal from the Workspace before this one is not shown here, and leaves
     page.render({ draftIdentity: JSON.stringify(["ws-other", "a:result1"]), onSubmit: submit });
     await tick();
     assert.equal(
-      page.document.querySelector("textarea").value,
+      page.text(),
       "/home/me/project",
       "this Workspace's form is its own",
     );
@@ -339,7 +333,7 @@ test("IME does not submit, Escape stays inside the form, and uncertain receipts 
       },
     });
     await tick();
-    const input = page.document.querySelector("textarea");
+    const input = page.field();
     input.dispatchEvent(
       new page.window.CompositionEvent("compositionstart", { bubbles: true }),
     );
@@ -387,9 +381,7 @@ test("the form's own words follow a language change; the answers stay and nothin
   try {
     page.render({ onSubmit: async (values) => void sent.push(values) });
     await tick();
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "/work/中文");
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.type("/work/中文");
     await tick();
     speak("zh-Hans");
     await tick();
@@ -397,7 +389,7 @@ test("the form's own words follow a language change; the answers stay and nothin
     for (const words of ["Working directory必填", "Preview theme必填", "你的答案会在此会话中发给 Mori。"]) assert.ok(text.includes(words), words);
     assert.ok(text.includes("Light") && text.includes("Dark"), "the options as written");
     assert.ok(page.button("提交答案"));
-    assert.equal(page.document.querySelector("textarea").value, "/work/中文", "the answer stays");
+    assert.equal(page.text(), "/work/中文", "the answer stays");
     assert.deepEqual(sent, [], "nothing is sent by the change");
     page.render({ delivery: { status: "queued", input: {}, values: {} } });
     await tick();
@@ -429,9 +421,7 @@ test("answers carried to a Workspace that can't be saved say so in the interface
     speak("zh-Hans");
     page.render({ draftIdentity: null, onSubmit: async () => {} });
     await tick();
-    const input = page.document.querySelector("textarea");
-    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "typed before the Workspace was known");
-    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.type("typed before the Workspace was known");
     await tick();
     // The browser refuses to save when the Workspace becomes known.
     page.window.Storage.prototype.setItem = function () {
@@ -441,7 +431,7 @@ test("answers carried to a Workspace that can't be saved say so in the interface
     await tick();
     const note = () => page.document.querySelector(".clarification-error")?.textContent;
     assert.equal(note(), "这份草稿只在此窗口中。在答案发送之前，请保持它打开。");
-    assert.equal(page.document.querySelector("textarea").value, "typed before the Workspace was known", "what was typed stays");
+    assert.equal(page.text(), "typed before the Workspace was known", "what was typed stays");
     page.window.Storage.prototype.setItem = setItem;
     speak("en");
     await tick();
@@ -477,7 +467,7 @@ test("a receipt locks the form and shows what was sent; only accepted reads as s
       assert.equal(submit.textContent, want.label, `${status}: its label`);
       assert.ok(submit.querySelector(`svg.${want.icon}`), `${status}: its icon (${submit.innerHTML.slice(0, 120)})`);
       assert.equal(submit.disabled, true, `${status}: locked`);
-      assert.equal(page.document.querySelector("textarea, input[type=text]").value, values.directory, `${status}: the answers sent are shown`);
+      assert.equal(page.text(), values.directory, `${status}: the answers sent are shown`);
       assert.equal(notice, want.notice, `${status}: what it says`);
       assert.equal(!!page.button("Check delivery"), want.check, `${status}: Check delivery`);
     }

@@ -10,8 +10,14 @@ import { homeText } from "./home-text";
  * too long says so here and is not sent.
  */
 export const HOME_REPLY_MAX_BYTES = 92_000;
-/** From this many bytes on, the reply says how many are left. */
-const NEAR = HOME_REPLY_MAX_BYTES * 0.9;
+/**
+ * The longest message a conversation takes, in UTF-8 bytes: Core's limit
+ * (core/src/model.rs MAX_MESSAGE_TEXT, which says the same number). A form's
+ * answers in a conversation go as one such message (YN-103).
+ */
+export const MESSAGE_MAX_BYTES = 100_000;
+/** From this share of the limit on, a note says how many bytes are left. */
+const NEAR = 0.9;
 
 /** `text`'s length in UTF-8, as Rust's `str::len` and `TextEncoder` count it. */
 export function utf8Bytes(text: string) {
@@ -32,16 +38,31 @@ export function utf8Bytes(text: string) {
 export const replyBytes = (text: string) => utf8Bytes(text.trim());
 export const replyTooLong = (text: string) => replyBytes(text) > HOME_REPLY_MAX_BYTES;
 
+/** What a length note says: how much is left, or how far over and why. */
+export type LengthWords = {
+  left: (left: number, most: number) => string;
+  over: (over: number, most: number) => string;
+};
+
 /** How much a long reply can still take, or how far over it is and why it
- * is not sent; nothing while it is far from the limit. */
-export function ReplyLength({ text }: { text: string }) {
+ * is not sent; nothing while it is far from the limit. Without `bytes`, a
+ * reply from Home's `text`; with them, any message counted as Core counts
+ * it, against its `max` and in its own `words` (a form's answers, YN-103). */
+export function ReplyLength({ text = "", bytes, max = HOME_REPLY_MAX_BYTES, words }: {
+  text?: string;
+  bytes?: number;
+  max?: number;
+  words?: LengthWords;
+}) {
   const t = useStrings(homeText);
-  const bytes = replyBytes(text);
-  if (bytes < NEAR) return null;
-  const over = bytes - HOME_REPLY_MAX_BYTES;
+  const used = bytes ?? replyBytes(text);
+  if (used < max * NEAR) return null;
+  const over = used - max;
+  const say = words ?? { left: t.replyBytesLeft, over: t.replyTooLong };
   return (
     <p className={over > 0 ? "inline-error home-reply-length" : "home-note home-reply-length"} role="status" data-over={over > 0 ? "" : undefined}>
-      {over > 0 ? t.replyTooLong(over, HOME_REPLY_MAX_BYTES) : t.replyBytesLeft(-over, HOME_REPLY_MAX_BYTES)}
+      {/* At the limit exactly: 0 left, never -0. */}
+      {over > 0 ? say.over(over, max) : say.left(max - used, max)}
     </p>
   );
 }
