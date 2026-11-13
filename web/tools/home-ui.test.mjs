@@ -1507,8 +1507,8 @@ test("a report or status pins to the widget column: the same section, its source
   const notes = () => home.projects[0].brief.sections.find((s) => s.key === "notes");
   const p = await mount({ home });
   try {
-    const column = p.doc.querySelector(".home-widget-column");
-    const pinned = () => column.querySelector(".home-pinned");
+    let column = p.doc.querySelector(".home-widget-column");
+    const pinned = () => column?.querySelector(".home-pinned");
     const refresh = async (until, what) => {
       p.doc.querySelector('[aria-label="Refresh Home"]').click();
       await waitFor(until, what);
@@ -1558,10 +1558,15 @@ test("a report or status pins to the widget column: the same section, its source
     await refresh(() => /Round 2 notes/.test(pinned()?.textContent || ""), "the new version shows");
     assert.equal(pinned().querySelector(".home-pinned-head h2").textContent, "Notes, round 2");
     assert.equal(JSON.stringify(layout()), saved, "an update leaves the layout as it was");
-    // Back to the source: its project shows it, highlighted.
+    // Back to the source: its Project's page opens at it, highlighted (YN-86 §2.4).
     p.button("Open in App", pinned()).click();
+    await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "the Project's page opens from the pin");
     await waitFor(() => card(p, "p-app", "notes").hasAttribute("data-home-highlight"), "the source is highlighted");
-    assert.ok(p.scrolled.includes(card(p, "p-app", "notes")));
+    assert.equal(p.w.location.hash, "#/home?w=ws-home&p=p-app", "the page is in the address");
+    // Back to the whole of Home for the rest of the test; the pin stays as it was.
+    p.w.history.back();
+    await waitFor(() => p.doc.querySelector(".home-layout") && p.doc.querySelector(".home-widget-column .home-pinned"), "back on Home with the pin");
+    column = p.doc.querySelector(".home-widget-column");
     // The user marks the report seen: it leaves the live Brief for history
     // (Core keeps its id); the pin shows it as last written, said to be seen.
     const app = home.projects[0].brief;
@@ -3863,7 +3868,15 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
 // is built from Core's fixture, the arrow folds without opening it, Back
 // returns to the whole of Home, and an address opens it directly.
 test("a Project's name on the rail opens its page; the arrow only folds; Back returns to Home (YN-86)", async () => {
-  const p = await mount();
+  const home = homeFixture();
+  const app = home.projects.find((panel) => panel.project.id === "p-app");
+  // A read report in a topic of its own: it is Done, while a read report whose sub-topic is unread stays with it.
+  app.brief.sections.push(section("reviewed", "report", "Reviewed", 1, owner("a", "Mori"), { seen: { version: 1, at: at(30) } }));
+  // More than its card shows: the unread report keeps its own page.
+  const review = app.brief.sections.find((s) => s.key === "notes/review");
+  review.body.elements.body.children = ["text", "more"];
+  review.body.elements.more = { type: "Markdown", props: { text: "A second paragraph the card leaves to its page." } };
+  const p = await mount({ home });
   try {
     const group = p.doc.querySelector('.project-group[data-group="p-app"]');
     assert.ok(group, "the rail groups App");
@@ -3899,14 +3912,17 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.match(deck("needs").querySelector(".project-deck-title").textContent, /^Needs you2/);
     assert.ok(p.doc.getElementById("home-section-p-app-release"), "the open Ask is in Needs you");
     assert.ok(p.doc.getElementById("home-section-p-app-budget"), "so is the other one");
-    assert.match(deck("doing").querySelector(".project-deck-title").textContent, /^In progress1/);
+    // A topic stands where its most urgent card does: the read report of "notes" stays with its unread sub-topic.
+    assert.match(deck("doing").querySelector(".project-deck-title").textContent, /^In progress2/);
     assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes/review")), "the unread report is in progress");
+    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes")), "so is the read report of its topic");
     const done = p.doc.querySelector(".project-deck-done");
     assert.equal(done.open, false, "Done is closed at first");
     assert.match(done.querySelector("summary").textContent, /^Done · 1 card · latest .* · 30-day history 1$/);
     done.querySelector("summary").click();
     await waitFor(() => done.open, "Done opens");
-    assert.ok(done.contains(p.doc.getElementById("home-section-p-app-notes")), "the read report is done");
+    assert.ok(done.contains(p.doc.getElementById("home-section-p-app-reviewed")), "the read report of its own topic is done");
+    assert.ok(!done.contains(p.doc.getElementById("home-section-p-app-notes")), "the read report kept with its unread topic is not");
     // A report opens over the page and closes back onto it, the card where it was.
     const card = p.doc.getElementById("home-section-p-app-notes/review");
     card.querySelector(".home-report-open").click();
