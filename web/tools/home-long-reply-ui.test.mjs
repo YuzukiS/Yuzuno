@@ -98,8 +98,9 @@ function mount({ lang = "en", storage = {} } = {}) {
   window.eval(bundle);
   const document = window.document;
   const context = { projectId: "p1", workspaceId: "ws", agents, readOnly: false, onSent: () => {} };
+  const closed = { n: 0 };
   const shapes = {
-    card: () => window.renderCard({ section: report, projectId: "p1", workspaceId: "ws", agents, opened: true }),
+    card: () => window.renderCard({ section: report, projectId: "p1", workspaceId: "ws", agents, opened: true, onClose: () => { closed.n++; } }),
     ask: () => window.renderAsk({ section: ask, ...context }),
     project: async () => {
       window.renderProject({ ...context, projectName: "Yuzuno app" });
@@ -149,7 +150,7 @@ function mount({ lang = "en", storage = {} } = {}) {
   const stored = () => Object.fromEntries(Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i))
     .map((key) => [key, window.localStorage.getItem(key)]));
   const submit = () => document.querySelector(".home-text-reply button[type=submit]");
-  return { window, document, errors, posts, shapes, field, type, send, note, submit, paste, append, chips, button, stored, close: () => window.close() };
+  return { window, document, errors, posts, shapes, field, type, send, note, submit, paste, append, chips, button, stored, closed, close: () => window.close() };
 }
 
 test("no Home reply field cuts a long paste short", async (t) => {
@@ -378,4 +379,24 @@ test("Home keeps a paste's place in its text as the conversation marks it on a m
   assert.deepEqual(plain(draftTextBlocks(draft)), blocks);
   assert.deepEqual(plain(draft.parts.filter((p) => p.kind === "paste").map((p) => [p.id, p.number])), [["one", 1], ["two", 2]]);
   assert.equal(draft.nextNumber, 3);
+});
+
+// Escape in a card's reply closes it, as before the composer; Escape that ends
+// an input method's composition (a Chinese one, say) only ends it.
+test("Escape closes a card's reply, but not while an input method composes", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  await page.shapes.card();
+  await tick();
+  await page.type("长回复");
+  const escape = (init = {}) =>
+    page.field().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true, ...init }));
+  escape({ isComposing: true });
+  escape({ keyCode: 229 });
+  await tick();
+  assert.equal(page.closed.n, 0, "an input method's Escape leaves the reply open");
+  escape();
+  await tick();
+  assert.equal(page.closed.n, 1, "Escape closes the reply");
+  assert.deepEqual(page.errors, []);
 });

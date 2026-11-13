@@ -54,8 +54,10 @@ export const HomeComposer = forwardRef<
       className="home-composer"
       data-readonly={readOnly ? "" : undefined}
       onKeyDown={(event) => {
-        // Not a block's dialog (a portal: in React's tree, not this one's), nor a tip the editor closed.
+        // Not a block's dialog (a portal: in React's tree, not this one's), nor a tip the editor closed, nor an
+        // input method's own Escape, which ends its composition (isComposing, or Safari's 229).
         if (event.key !== "Escape" || !onEscape || event.defaultPrevented || !event.currentTarget.contains(event.target as Node)) return;
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         event.preventDefault();
         onEscape();
       }}
