@@ -170,6 +170,39 @@ async fn only_the_cards_current_executor_writes_sub_topics_under_its_card() {
     assert!(call(&ws, "b", input("b3", 5, vec![put("page/more", "status")])).await.is_err(), "a released executor is closed");
 }
 
+/// The exception lets a card's executor write its own sub-topics, never
+/// change a lead's: the lead's page/lead-note under the same card is
+/// refused to its put, edit and patch alike with not_owner, its owner and
+/// version as they were, while the executor still writes a sub-topic of
+/// its own beside it.
+#[tokio::test]
+async fn a_cards_executor_never_changes_a_leads_sub_topic_under_its_card() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Design the page");
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    accept(&ws, "a", input("a1", 0, vec![bound("page", "status", &task), put("page/lead-note", "status")])).await;
+    let note = || sections::live_key(&ws.store.db.read().unwrap(), &project, "page/lead-note").unwrap().expect("a live section");
+    let before = note();
+    assert_eq!((before.owner_id.as_str(), before.version, version(&ws, &project)), ("a", 1, 1));
+
+    let text = json!({"type":"Markdown","props":{"text":"Mine now."}});
+    let changes = [
+        ("c-put", put("page/lead-note", "status")),
+        ("c-edit", json!({"op":"edit","key":"page/lead-note","elements":{"note":text}})),
+        ("c-patch", json!({"op":"patch","key":"page/lead-note","patch":[{"op":"replace","path":"/elements/note/props/text","value":"Mine now."}]})),
+    ];
+    for (request, change) in changes {
+        let refused = reject(&ws, "c", input(request, 1, vec![change])).await;
+        assert_eq!((codes(&refused), refused["problems"][0]["path"].clone()), (vec!["not_owner".to_owned()], json!("changes[0].key")), "{request}: {refused}");
+        let after = note();
+        assert_eq!((after.owner_id.as_str(), after.version, after.seq, version(&ws, &project)), ("a", 1, before.seq, 1), "{request} changed nothing");
+    }
+    // It is refused as the owner rule refuses anyone, not as an Ask-only member.
+    accept(&ws, "c", input("c-own", 1, vec![put("page/result", "report")])).await;
+    assert_eq!(note().owner_id, "a");
+}
+
 /// When its task is done, a card and the sub-topics under it leave the live
 /// Brief as archived: a status, and a report read in its current version.
 /// A report the user has not read stays until they open it; an unresolved
