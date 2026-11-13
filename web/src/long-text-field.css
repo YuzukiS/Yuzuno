@@ -52,3 +52,47 @@
 .long-text-error {
   color: var(--red, #b34e48);
 }
+/* In a dialog's form (styles.css .create-form, remote.css .remote-create):
+   labelled as the dialog's other fields are, drawn as its inputs. */
+.create-form .long-text-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 16px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 500;
+  color: #889a76;
+}
+.remote-create .long-text-field {
+  color: var(--text-secondary);
+}
+.create-form .long-text-field .home-composer {
+  border-radius: 5px;
+  background: #fffffb;
+}
+.remote-create .long-text-field .home-composer {
+  background: var(--input);
+}
+.create-form .long-text-field .pasted-text-composer .cm-editor {
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+.create-form .long-text-field .pasted-text-composer .cm-content {
+  padding: 10px 11px;
+}
+/* In a task's PR form (pr-operations.css). */
+.pr-operations .long-text-field {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.pr-operations .long-text-field .home-composer {
+  border-radius: 6px;
+  background: var(--paper);
+}
+.pr-operations .long-text-field .pasted-text-composer .cm-editor {
+  font-size: inherit;
+}
+.pr-operations .long-text-field .pasted-text-composer .cm-content {
+  padding: 7px 9px;
+}

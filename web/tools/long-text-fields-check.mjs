@@ -9,6 +9,10 @@
 //   - A comment sent carries the paste whole.
 //   - A comment longer than Core takes (16,384 bytes) says how far over and
 //     holds Add note.
+//   - A PR's body, the Codex goal's objective and /review's instructions
+//     fold a paste into one block that fits their form; in the goal's
+//     dialog the block opens its own dialog over it, to read and edit the
+//     whole text, and closes back to the goal (PR 2).
 // On a 1440px desktop window in English and a 390px phone in Chinese.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/long-text-fields-check.mjs
 import assert from "node:assert/strict";
@@ -41,10 +45,11 @@ assert.ok(utf8(LONG) < 16_384 && utf8(SHORTER) < 4_000 && utf8(OVER) > 16_384);
 const words = {
   en: { newTask: "New task", description: "Description", result: "Result summary", addResult: "Add result", addReport: "Add itemized author report",
     addItem: "Add item", report: "What the author reports", remaining: "What remains", give: "Give to agent", note: "A note", edit: "Edit task",
-    progress: "Latest progress", comment: "Add a note", addNote: "Add note", over: /^[\d,]+ bytes too long: this field takes at most 16,384 bytes/ },
+    progress: "Latest progress", comment: "Add a note", addNote: "Add note", over: /^[\d,]+ bytes too long: this field takes at most 16,384 bytes/,
+    linkPr: "Link a PR or Issue", prBody: "PR body", saveBlock: "Save changes" },
   zh: { newTask: "新建任务", description: "描述", result: "结果摘要", addResult: "添加结果", addReport: "添加逐项作者报告", addItem: "添加项目",
     report: "作者报告的情况", remaining: "还缺什么", give: "交给 Agent", note: "备注", edit: "编辑任务", progress: "最新进展", comment: "添加备注",
-    addNote: "添加备注", over: /^超出 [\d,]+ 字节：这一栏最多 16,384 字节/ },
+    addNote: "添加备注", over: /^超出 [\d,]+ 字节：这一栏最多 16,384 字节/, linkPr: "链接 PR 或 Issue", prBody: "PR 正文", saveBlock: "保存更改" },
 };
 
 const agent = { id: "a", name: "Mori", goal: "", cwd: "/w", model: "m", color: "green", status: "idle", createdAt: "", updatedAt: "",
@@ -59,6 +64,10 @@ const gets = {
   "/api/workspace": { workspace: { id: "fixture" }, agents: [agent], projects: [{ id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" }],
     runtime: { connected: true }, defaultCwd: "/w" },
   "/api/agents/a": { agent, pending: [], artifacts: [], turns: [] },
+  // PR 2: the task's PR form, and this Codex Agent's own goal (none yet).
+  "/api/pr-operations": { operations: [], repositories: [{ id: 7, fullName: "owner/repo" }], hasMore: false, nextBefore: null },
+  "/api/agents/a/codex/goal": { state: "ready", reason: "", goal: null },
+  "/api/agents/a/codex/skills": { skills: [] },
 };
 // The board's reads, as it asks Core (CollaborationBoard.tsx `call`).
 const reads = {
@@ -87,6 +96,9 @@ async function open({ width, height, touch, lang }) {
     window.EventSource = class { addEventListener() {} close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
+    // The conversation open: chosen per Workspace (T-195), this fixture's is "fixture".
+    localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+    localStorage.setItem("yuzuno.selected.fixture", JSON.stringify("a"));
   }, { lang });
   await page.route("**/*", async (route) => {
     const request = route.request();
@@ -191,6 +203,23 @@ async function foldsAndFits(page, label, text, view, shot) {
   await shoot(target.locator("xpath=ancestor::form[1]"), `${shot}-${view.name}`);
   return { [label]: reach };
 }
+/** Sends `/goal` or `/review` from the conversation's composer: Yuzuno opens its dialog, nothing is sent. */
+async function command(page, text) {
+  await page.goto(`https://${HOST}/`);
+  const composer = page.locator(".composer [data-composer-input]").first();
+  try {
+    await composer.waitFor({ timeout: 4_000 });
+  } catch {
+    // A phone shows one pane: the Agent's row opens its conversation.
+    await page.locator(".agent-row .agent-select").first().click();
+    await composer.waitFor({ timeout: 10_000 });
+  }
+  await composer.fill(text);
+  await page.locator(".send-button").first().click();
+  const dialog = page.locator('[role="dialog"]').first();
+  await dialog.waitFor({ timeout: 10_000 });
+  return dialog;
+}
 async function openTask(page) {
   await page.locator(".collab-task-card, [data-task-id='T-1']").first().click();
   await page.locator(".collab-task-actions").first().waitFor({ timeout: 10_000 });
@@ -257,6 +286,34 @@ try {
         await page.waitForTimeout(300);
         assert.equal(writes.length, count, "nothing sent");
         return { note: await note.textContent() };
+      });
+      await check(`${view.name}: a PR's body folds a 481-line paste into one block that fits`, async () => {
+        await button(page, w.linkPr).click();
+        return foldsAndFits(page, w.prBody, LONG, view, "pr-body");
+      });
+      await check(`${view.name}: the Codex goal's objective folds a paste into one block that opens over the goal and closes back to it`, async () => {
+        const dialog = await command(page, "/goal");
+        const shown = await foldsAndFits(page, "Objective", SHORTER, view, "goal");
+        const objective = field(page, "Objective");
+        await objective.locator(".pasted-text-chip").first().click();
+        const source = page.locator("textarea.pasted-text-source");
+        await source.waitFor({ timeout: 5_000 });
+        assert.equal((await source.inputValue()).replaceAll("\r\n", "\n"), SHORTER.replaceAll("\r\n", "\n"), "the block opens with its whole text");
+        assert.equal(await page.locator('[role="dialog"]').count(), 2, "the block's dialog is over the goal's");
+        await shoot(page.locator('[role="dialog"]').last(), `goal-block-open-${view.name}`);
+        await source.press("End");
+        await source.type(" edited");
+        await button(page, w.saveBlock).click();
+        await source.waitFor({ state: "detached", timeout: 5_000 });
+        assert.equal(await page.locator('[role="dialog"]').count(), 1, "back to the goal's dialog");
+        assert.ok(await dialog.isVisible(), "the goal's dialog stays open");
+        assert.equal(await objective.locator(".pasted-text-chip").count(), 1, "still one block");
+        return shown;
+      });
+      await check(`${view.name}: /review's instructions fold a 481-line paste into one block that fits`, async () => {
+        const dialog = await command(page, "/review");
+        await dialog.locator('input[type="radio"][value="custom"]').check({ force: true });
+        return foldsAndFits(page, "Instructions", LONG, view, "review");
       });
     } finally {
       report.writes.push(...writes.map((write) => ({ view: view.name, operation: write.operation, bytes: utf8(write.body.body ?? "") })));

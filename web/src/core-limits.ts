@@ -33,6 +33,12 @@ export const coreLimits = {
   outcomeRemaining: bytes(8000, false),
   /** result_outcome.rs: `("nextStep", …)`. */
   outcomeNextStep: bytes(4000, false),
+  /** core/src/model.rs, ReviewTarget::checked: custom instructions, trimmed there too. */
+  reviewInstructions: bytes(100_000),
+  /** core/src/codex_goal.rs `MAX_OBJECTIVE_CHARS`: Codex's own limit, in characters, trimmed there too. */
+  goalObjective: { max: 4_000, unit: "chars", trim: true },
+  /** core/src/pr_operations/mod.rs: a PR's body, sent as written. */
+  prBody: bytes(60_000, false),
 } satisfies Record<string, CoreLimit>;
 
 /** `text` as Core counts it against `limit`. */

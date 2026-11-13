@@ -6766,7 +6766,8 @@ test("a Codex Agent's /goal shows Codex's goal, and only the user's own Set and 
     // Words after /goal are the objective, set only on Set goal.
     composer = await sendDraft(page, "/goal  Ship the parser ");
     await until(() => goalButton(page, "Set and start"), "the goal dialog");
-    assert.equal(goalDialog(page).querySelector("textarea").value, "Ship the parser");
+    // The objective is written in the conversation's composer (YN-106).
+    assert.equal(composerText(goalDialog(page).querySelector("[data-composer-input]")), "Ship the parser");
     assert.deepEqual(stub.changes, [], "nothing set before the user confirms");
     goalButton(page, "Set and start").click();
     await until(() => stub.changes.length === 1 && /Active/.test(goalDialog(page).textContent), "Codex's goal shown");
@@ -6776,8 +6777,8 @@ test("a Codex Agent's /goal shows Codex's goal, and only the user's own Set and 
     // /goal pause is the CLI's own word, not an objective.
     await closeModal(page);
     await sendDraft(page, "/goal pause");
-    await until(() => goalDialog(page)?.querySelector("textarea"), "the goal dialog");
-    assert.equal(goalDialog(page).querySelector("textarea").value, "");
+    await until(() => goalDialog(page)?.querySelector("[data-composer-input]"), "the goal dialog");
+    assert.equal(composerText(goalDialog(page).querySelector("[data-composer-input]")), "");
     assert.deepEqual(posts(page).filter((u) => !u.endsWith("/codex/goal")), [], "no /messages, no /turns, no task");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
@@ -6845,7 +6846,7 @@ test("a replacement whose old goal was cleared but whose new one was not set sho
     await until(() => /原目标已清除/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the partial outcome, as Core says it");
     await until(() => /No goal is set/.test(goalDialog(page).textContent), "Codex's goal as it now is, read again");
     assert.doesNotMatch(goalDialog(page).textContent, /Ship the parser/, "the cleared goal is not shown as current");
-    assert.equal(goalDialog(page).querySelector("textarea").value, "Write the docs", "the objective is kept to set again");
+    assert.equal(composerText(goalDialog(page).querySelector("[data-composer-input]")), "Write the docs", "the objective is kept to set again");
     assert.ok(goalButton(page, "Set and start"), "set, not replace, now that Codex has none");
     assert.deepEqual(changes, [{ action: "set", objective: "Write the docs", replace: true }], "nothing cleared or set again by itself");
     assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");

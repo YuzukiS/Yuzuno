@@ -4,6 +4,8 @@ import { HttpError, api, errorText, post } from "./api";
 import { formatElapsed } from "./activity-time";
 import { Modal } from "./components";
 import type { Agent } from "./types";
+import { LongTextField } from "./LongTextField";
+import { coreLimits, overLimit } from "./core-limits";
 import "./remote.css";
 import "./session-import.css";
 
@@ -34,9 +36,6 @@ const notes: Record<string, string> = {
   old_protocol: "This Agent's Codex has no goals.",
   harness: "Goals are Codex's own.",
 };
-/** Codex's CLI limit on an objective. */
-const MAX_OBJECTIVE = 4000;
-
 /**
  * `/goal` (T-29): this Codex Agent's own goal, as Codex's CLI shows it,
  * read when this opens and on Refresh only; opening it or typing an
@@ -73,6 +72,9 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
   const goal = view?.state === "ready" ? view.goal : null;
   const unfinished = !!goal && goal.status !== "complete";
   const text = objective.trim();
+  // Codex's own limit, in characters (core-limits.ts): a longer objective,
+  // even one that came with /goal, says so and sets nothing.
+  const tooLong = overLimit(objective, coreLimits.goalObjective);
 
   async function change(body: GoalChange, done: string) {
     if (busy) return;
@@ -96,7 +98,7 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
   }
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!text || [...text].length > MAX_OBJECTIVE) return;
+    if (!text || tooLong) return;
     void change({ action: "set", objective: text, replace: unfinished },
       `Codex ${unfinished ? "replaced" : "set"} its goal and works toward it on its own: in a new turn if this conversation was idle, else in the running turn.`);
   }
@@ -145,10 +147,10 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
                 </button>
               </div>
             )}
-            <label>
-              {unfinished ? "New objective (replaces this goal)" : "Objective"}
-              <textarea value={objective} onChange={(e) => setObjective(e.target.value)} rows={3} maxLength={MAX_OBJECTIVE} />
-            </label>
+            {/* The conversation's composer (YN-106): Return makes a new line,
+                for typing an objective starts nothing; Ctrl/⌘+Return sets it. */}
+            <LongTextField slot={`${agent.id}:goal`} label={unfinished ? "New objective (replaces this goal)" : "Objective"}
+              value={objective} onChange={setObjective} limit={coreLimits.goalObjective} returnKey="newline" readOnly={busy} className="" />
             <p className="remote-field-note">
               Set and start makes it Codex's active goal: Codex works toward it on its own, in a new turn if this conversation
               is idle, else in the running turn. Pause and Clear only stop new work toward it; a running turn continues.
@@ -159,7 +161,7 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
         <div className="modal-actions">
           <button type="button" className="secondary-button" disabled={busy} onClick={() => onOpenChange(false)}>Close</button>
           {view?.state === "ready" && (
-            <button className="primary-button" disabled={busy || !text}>
+            <button className="primary-button" disabled={busy || !text || tooLong}>
               {busy ? <LoaderCircle size={15} className="spin" /> : <Goal size={15} />}
               {unfinished ? "Replace and start" : "Set and start"}
             </button>
