@@ -51,13 +51,27 @@ impl Config {
             );
         }
         let config: Self = serde_json::from_reader(File::open(path)?)?;
-        ensure!(
-            crate::github::client::parse(&config.repository, false)?.repo == config.repository,
-            "Configure a GitHub owner/repo, not a URL"
-        );
-        PublicKey::from_base64(&config.public_key).context("Invalid release signing public key")?;
+        validate_source(&config.repository, &config.public_key)?;
         Ok(config)
     }
+}
+
+/// Whether `repository` and `public_key` can be a release source, as Core
+/// checks `release-source.json`: a GitHub owner/repo and a minisign public
+/// key.
+pub fn validate_source(repository: &str, public_key: &str) -> Result<()> {
+    ensure!(
+        crate::github::client::parse(repository, false)?.repo == repository,
+        "Configure a GitHub owner/repo, not a URL"
+    );
+    PublicKey::from_base64(public_key).context("Invalid release signing public key")?;
+    Ok(())
+}
+
+/// Reads this installation's `release-source.json` as Core does when it
+/// starts.
+pub(super) fn read_source(layout: &Layout) -> Result<()> {
+    Config::read(layout).map(|_| ())
 }
 
 #[derive(Clone, Deserialize, Serialize)]

@@ -897,3 +897,29 @@ async fn a_core_that_cannot_start_names_its_release_and_launch_directory() {
     let message = format!("{:#}", super::helper::launch(&f.layout, &op, &candidate).unwrap_err());
     assert!(message.starts_with("Cannot start packaged Core b") && message.contains(&format!("{} is missing", op.launch.cwd.display())), "{message}");
 }
+
+/// The desktop app reads an installation's files to find a Core it can start
+/// (YN-107): `current.json`'s `releaseId`, and `updates/launch.json`'s
+/// `port`, `workspaceId` and `dataDir`. A change here must change the
+/// desktop's parsing too.
+#[test]
+fn the_files_the_desktop_app_reads_keep_their_names_and_fields() {
+    use super::start;
+    assert_eq!((start::RECORD, start::ENTRY), ("launch.json", "start"));
+    let record = start::Record {
+        port: 4317,
+        data_dir: "/home/u/.local/share/yuzuno-core-data".into(),
+        cwd: "/home/u".into(),
+        codex: "codex".into(),
+        workspace_id: "workspace-1".into(),
+        environment: Default::default(),
+        recorded_at: "2026-11-13T00:00:00Z".into(),
+    };
+    let record = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        (&record["port"], &record["workspaceId"], &record["dataDir"]),
+        (&json!(4317), &json!("workspace-1"), &json!("/home/u/.local/share/yuzuno-core-data"))
+    );
+    let current = serde_json::to_value(ReleaseRef { release_id: "core-a".into(), manifest_sha256: "0".repeat(64) }).unwrap();
+    assert_eq!(current["releaseId"], "core-a");
+}
