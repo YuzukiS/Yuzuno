@@ -6,7 +6,7 @@
 //  - Done, opened, shows the card archived with its task, with who did it;
 //  - at 1440 and a phone (390), English and Chinese: nothing is wider than
 //    the window, and every line stays inside its card;
-//  - nothing is sent but the reads.
+//  - nothing is sent but the reads (the linked repositories' list is a read sent as POST).
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/card-responsible-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -132,6 +132,8 @@ async function check(run) {
       return route.fulfill({ json: { workspace: { id: "ws-cards" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     }
     if (path === "/api/home") return route.fulfill({ json: home() });
+    // A list read, though sent as POST (home-api.ts readLinkedRepositories): no repositories linked here.
+    if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
       if (/^\/api\/agents\/\w\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
       report.posts.push({ run: run.name, method, path });
@@ -149,7 +151,6 @@ async function check(run) {
         gpus: null, jobs: [],
       },
       "/api/machine-live": { machines: [] },
-      "/api/collaboration/github_repositories": { repositories: [], links: [] },
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -217,7 +218,7 @@ async function check(run) {
     pass("an Ask on the card replies to its responsible executor by default");
     // Done, opened: the report waiting to be read and the card archived with its task, with who did it.
     const done = page.locator(".project-deck-done");
-    await done.locator("> summary").click();
+    await page.locator(".project-deck-done > summary").click();
     await page.waitForFunction(() => document.querySelector(".project-deck-done")?.open);
     const archived = card("release");
     await archived.scrollIntoViewIfNeeded();
