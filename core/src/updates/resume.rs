@@ -293,7 +293,7 @@ impl Workspace {
         let input = MessageInput { client_message_id: client.clone(), text: text(op), text_blocks: None,
             images: vec![], expected_turn_id: None, question: None, clarification: None };
         let origin = json!({"kind":ORIGIN,"operationId":op.id,"releaseId":op.release_id,"phase":op.phase});
-        let sent = self.send_message_guarded(agent, input, Vec::new(), Some(origin), move |d| guard(d, &target, &newest)).await;
+        let sent = Box::pin(self.send_message_guarded(agent, input, Vec::new(), Some(origin), move |d| guard(d, &target, &newest))).await;
         let to = match sent {
             Ok(receipt) => Some(from_receipt(&receipt)),
             Err(error) => match refused(&error) {

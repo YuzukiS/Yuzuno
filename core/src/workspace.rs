@@ -1758,7 +1758,10 @@ impl Workspace {
     /// (`codex_skills`): typed `skill` items after its text, kept on its
     /// receipt beside the input.
     pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
-        self.send_message_guarded(id, input, skills, origin, |_| Ok(())).await
+        // Boxed: the send's state is large, and a caller's future (a Home
+        // reply's, inside a test's block_on) would otherwise hold it on the
+        // stack, one level deeper than before the guard (YN-131).
+        Box::pin(self.send_message_guarded(id, input, skills, origin, |_| Ok(()))).await
     }
 
     /// `send_message_from` with one more check, `guard`: it reads the Agent
