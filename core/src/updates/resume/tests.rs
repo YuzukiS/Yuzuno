@@ -163,7 +163,13 @@ async fn closed_disconnected_and_released_agents_are_skipped() {
         end(&ws, &op, Phase::Complete, true);
         match case {
             "closed" => { ws.close_agent("a").await.unwrap(); }
-            "disconnected" => { ws.disconnect_agent("a").await.unwrap(); }
+            // As a user's disconnect leaves it (the fake cannot answer the
+            // background-terminal check `disconnect_agent` asks first).
+            "disconnected" => {
+                ws.store.update("a", "test/disconnected", &json!({}), |d| {
+                    d.agent.disconnected_at = Some(crate::model::now());
+                }).unwrap();
+            }
             _ => {
                 ws.store.db.write().unwrap().execute("INSERT INTO executor_archiving(agent_id,released_by,since,reason)
                     VALUES('a','lead',?1,'Done')", [crate::model::now()]).unwrap();
