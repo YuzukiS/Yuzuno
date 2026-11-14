@@ -1,4 +1,9 @@
-//! Codex, Claude and OpenCode input images. Opaque, agent-scoped immutable files; no caller paths.
+//! Codex, Claude and OpenCode input images. Opaque, owner-scoped immutable
+//! files; no caller paths. An Agent's own (`input-images/<agentId>`) are the
+//! ones a message to it carries. What the user attaches on Home goes first to
+//! its Project's (`home-images/<projectId>`, YN-134): who receives a message
+//! from Home is known only when Core sends it, and then `adopt` copies each
+//! image to that Agent's own under the same ID (both are content-addressed).
 //! The existing browser boundary protects these routes. Images never enter SQLite,
 //! SSE or draft JSON. Upload decoding and reads run off the async workers.
 use crate::{model::Agent, workspace::Workspace};
@@ -25,8 +30,16 @@ use tower::ServiceExt;
 pub const MAX_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_IMAGES: usize = 8;
 const MAX_TOTAL: u64 = 40 * 1024 * 1024;
+/// What one owner's folder holds at most, an Agent's or a Project's.
+const MAX_SAVED: u64 = 256 * 1024 * 1024;
+/// Room kept beside an image for its thumbnail, at most this size.
+const THUMB_MAX: usize = 1024 * 1024;
+/// The data folder's folder of Projects' images written on Home.
+const HOME_DIR: &str = "home-images";
 // Serialize uploads before buffering or decoding, bounding concurrent memory and quota races.
 static UPLOAD: OnceLock<Arc<Semaphore>> = OnceLock::new();
+// One copy to an Agent at a time: bounds memory and the recipient's quota check.
+static ADOPTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,24 +50,38 @@ pub struct UploadedImage {
     pub bytes: usize,
 }
 
+/// Whether Agents of `harness` take images: Codex, Claude and OpenCode.
+pub fn takes_images(harness: &str) -> bool {
+    matches!(harness, "codex" | "claude" | "opencode")
+}
 pub fn supported(agent: &Agent) -> Result<()> {
-    ensure!(matches!(agent.harness.as_str(), "codex" | "claude" | "opencode"),
+    ensure!(takes_images(&agent.harness),
         "Images are supported by Codex, Claude and OpenCode Agents.");
     Ok(())
 }
-fn safe_agent(agent: &str) -> Result<()> {
+/// An owner's ID, an Agent's or a Project's, as a single plain folder name.
+fn safe_owner(owner: &str) -> Result<()> {
     ensure!(
-        !agent.is_empty()
-            && agent.len() <= 100
-            && agent
+        !owner.is_empty()
+            && owner.len() <= 100
+            && owner
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-'),
         "Invalid image owner"
     );
     Ok(())
 }
-pub fn image_path(root: &FsPath, agent: &str, id: &str) -> Result<PathBuf> {
-    safe_agent(agent)?;
+fn agent_dir(root: &FsPath, agent: &str) -> Result<PathBuf> {
+    safe_owner(agent)?;
+    Ok(root.join("input-images").join(agent))
+}
+/// A Project's images written on Home, before any is sent: `home-images/<projectId>`.
+pub fn home_dir(root: &FsPath, project: &str) -> Result<PathBuf> {
+    safe_owner(project)?;
+    Ok(root.join(HOME_DIR).join(project))
+}
+/// The image `id` in the owner folder `dir`: a SHA-256 and a known extension.
+fn image_in(dir: &FsPath, id: &str) -> Result<PathBuf> {
     let (hash, ext) = id.split_once('.').context("Invalid image reference")?;
     ensure!(
         hash.len() == 64
@@ -64,7 +91,13 @@ pub fn image_path(root: &FsPath, agent: &str, id: &str) -> Result<PathBuf> {
             && ["png", "jpg", "webp"].contains(&ext),
         "Invalid image reference"
     );
-    Ok(root.join("input-images").join(agent).join(id))
+    Ok(dir.join(id))
+}
+pub fn image_path(root: &FsPath, agent: &str, id: &str) -> Result<PathBuf> {
+    image_in(&agent_dir(root, agent)?, id)
+}
+fn thumb_of(path: &FsPath, id: &str) -> PathBuf {
+    path.with_file_name(format!("{id}.thumb.png"))
 }
 fn bounded_read(path: &FsPath, max: usize) -> Result<Vec<u8>> {
     use std::io::Read;
@@ -81,6 +114,8 @@ fn bounded_read(path: &FsPath, max: usize) -> Result<Vec<u8>> {
     ensure!(bytes.len() <= max, "Saved image exceeds 10 MiB");
     Ok(bytes)
 }
+/// Writes `bytes` to `path` unless it is there. The names are
+/// content-addressed, so one written meanwhile by another copy is this one.
 fn save_new(path: &FsPath, bytes: &[u8]) -> Result<()> {
     if path.exists() {
         return Ok(());
@@ -88,11 +123,28 @@ fn save_new(path: &FsPath, bytes: &[u8]) -> Result<()> {
     let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
-    file.persist_noclobber(path)?;
+    match file.persist_noclobber(path) {
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        done => done.map(|_| ()).map_err(Into::into),
+    }
+}
+/// Whether the owner folder `dir` has room for an image of `bytes` and its
+/// thumbnail; `full` says whose folder is full.
+fn room(dir: &FsPath, bytes: usize, full: &str) -> Result<()> {
+    let used: u64 = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum();
+    ensure!(used + bytes as u64 + THUMB_MAX as u64 <= MAX_SAVED, "{full}");
     Ok(())
 }
 fn upload(root: &FsPath, agent: &str, bytes: &[u8]) -> Result<UploadedImage> {
-    safe_agent(agent)?;
+    upload_in(&agent_dir(root, agent)?, bytes, "This Agent's saved images reached the 256 MiB limit")
+}
+/// Checks and keeps one uploaded image in the owner folder `dir`, with its
+/// thumbnail; `full` is what a full folder says.
+fn upload_in(dir: &FsPath, bytes: &[u8], full: &str) -> Result<UploadedImage> {
     ensure!(
         !bytes.is_empty() && bytes.len() <= MAX_BYTES,
         "Each image must be between 1 byte and 10 MiB"
@@ -127,31 +179,20 @@ fn upload(root: &FsPath, agent: &str, bytes: &[u8]) -> Result<UploadedImage> {
         .decode()
         .context("Image is damaged or exceeds the decoding memory limit")?;
     let id = format!("{:x}.{ext}", Sha256::digest(bytes));
-    let path = image_path(root, agent, &id)?;
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    let path = image_in(dir, &id)?;
+    std::fs::create_dir_all(dir)?;
     if !path.exists() {
-        let used: u64 = std::fs::read_dir(path.parent().unwrap())?
-            .filter_map(|e| e.ok())
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum();
-        ensure!(
-            used + bytes.len() as u64 + 1024 * 1024 <= 256 * 1024 * 1024,
-            "This Agent's saved images reached the 256 MiB limit"
-        );
+        room(dir, bytes.len(), full)?;
     }
     let mut thumb = Cursor::new(Vec::new());
     image
         .thumbnail(width.min(320), height.min(320))
         .write_to(&mut thumb, ImageFormat::Png)?;
     ensure!(
-        thumb.get_ref().len() <= 1024 * 1024,
+        thumb.get_ref().len() <= THUMB_MAX,
         "Image thumbnail is too large"
     );
-    save_new(
-        &path.with_file_name(format!("{id}.thumb.png")),
-        thumb.get_ref(),
-    )?;
+    save_new(&thumb_of(&path, &id), thumb.get_ref())?;
     save_new(&path, bytes)?;
     Ok(UploadedImage {
         id,
@@ -171,11 +212,7 @@ pub async fn upload_route(
     let info = ws.stored(move |store| store.agent(&owner)).await?;
     crate::model::ensure_agent_open(&info)?;
     supported(&info)?;
-    let slot = UPLOAD
-        .get_or_init(|| Arc::new(Semaphore::new(1)))
-        .clone()
-        .try_acquire_owned()
-        .context("Another image is being saved. Try again shortly")?;
+    let slot = upload_slot()?;
     let bytes = to_bytes(request.into_body(), MAX_BYTES)
         .await
         .context("Image exceeds the 10 MiB upload limit")?;
@@ -184,6 +221,46 @@ pub async fn upload_route(
         tokio::task::spawn_blocking(move || {
             let _slot = slot;
             upload(&root, &agent, &bytes)
+        })
+        .await??,
+    ))
+}
+fn upload_slot() -> Result<tokio::sync::OwnedSemaphorePermit> {
+    UPLOAD
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+        .try_acquire_owned()
+        .context("Another image is being saved. Try again shortly")
+}
+/// `POST /api/projects/{id}/images` (YN-134): an image the user attaches on
+/// Home, kept in the Project's folder until a message takes it (`adopt`).
+/// Only for a Project that is not archived. Registered with the user's
+/// Project routes (`project_requests::router`), which refuse any Agent
+/// credential: what is written on Home is the user's.
+pub async fn home_upload_route(
+    State(ws): State<Arc<Workspace>>,
+    Path(project): Path<String>,
+    request: Request,
+) -> Result<Json<UploadedImage>, crate::server::ApiError> {
+    let _permit = ws.admission.enter_work()?;
+    let dir = home_dir(&ws.data_dir, &project)?;
+    let id = project.clone();
+    ws.stored(move |store| {
+        let (name, archived) = crate::projects::project_labels(&*store.db.read()?)?
+            .remove(&id)
+            .context("project_not_found: Project does not exist")?;
+        ensure!(!archived, "project_archived: {name} is archived; unarchive it to attach images");
+        Ok(())
+    })
+    .await?;
+    let slot = upload_slot()?;
+    let bytes = to_bytes(request.into_body(), MAX_BYTES)
+        .await
+        .context("Image exceeds the 10 MiB upload limit")?;
+    Ok(Json(
+        tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            upload_in(&dir, &bytes, "This Project's images written on Home reached the 256 MiB limit")
         })
         .await??,
     ))
@@ -201,19 +278,31 @@ pub async fn read_route(
 ) -> Result<Response, crate::server::ApiError> {
     let owner = agent.clone();
     ws.stored(move |store| store.agent(&owner)).await?; // Same live/archived Agent access boundary as other payloads.
-    let path = image_path(&ws.data_dir, &agent, &id)?;
-    let mime = if query.thumb || id.ends_with(".png") {
+    serve(image_path(&ws.data_dir, &agent, &id)?, &id, query.thumb, request).await
+}
+/// `GET /api/projects/{id}/images/{imageId}?thumb=true` (YN-134): an image
+/// in the Project's folder, as `read_route` serves an Agent's. An archived
+/// Project's are still read, as its requests are.
+pub async fn home_read_route(
+    State(ws): State<Arc<Workspace>>,
+    Path((project, id)): Path<(String, String)>,
+    Query(query): Query<ImageQuery>,
+    request: Request,
+) -> Result<Response, crate::server::ApiError> {
+    let path = image_in(&home_dir(&ws.data_dir, &project)?, &id)?;
+    ws.stored(move |store| crate::projects::ensure_exists(&*store.db.read()?, &project)).await?;
+    serve(path, &id, query.thumb, request).await
+}
+/// Streams a saved image, or its thumbnail.
+async fn serve(path: PathBuf, id: &str, thumb: bool, request: Request) -> Result<Response, crate::server::ApiError> {
+    let mime = if thumb || id.ends_with(".png") {
         "image/png"
     } else if id.ends_with(".jpg") {
         "image/jpeg"
     } else {
         "image/webp"
     };
-    let path = if query.thumb {
-        path.with_file_name(format!("{id}.thumb.png"))
-    } else {
-        path
-    };
+    let path = if thumb { thumb_of(&path, id) } else { path };
     let meta = tokio::fs::symlink_metadata(&path)
         .await
         .context("Saved image is missing; attach it again")?;
@@ -240,6 +329,16 @@ fn each_owned(
     root: &FsPath,
     agent: &str,
     images: &[String],
+    use_image: impl FnMut(&str, &FsPath, &[u8]) -> Result<()>,
+) -> Result<()> {
+    each_in(&agent_dir(root, agent)?, images, use_image)
+}
+
+/// Checks a message's images in the owner folder `dir`, one at a time: there,
+/// unchanged since upload, and within the per-message count and total.
+fn each_in(
+    dir: &FsPath,
+    images: &[String],
     mut use_image: impl FnMut(&str, &FsPath, &[u8]) -> Result<()>,
 ) -> Result<()> {
     ensure!(
@@ -250,7 +349,7 @@ fn each_owned(
     let mut unique = std::collections::HashSet::new();
     for id in images {
         ensure!(unique.insert(id), "Duplicate image reference");
-        let path = image_path(root, agent, id)?;
+        let path = image_in(dir, id)?;
         let bytes = bounded_read(&path, MAX_BYTES)?;
         total += bytes.len() as u64;
         ensure!(
@@ -264,6 +363,36 @@ fn each_owned(
         use_image(id, &path, &bytes)?;
     }
     Ok(())
+}
+
+/// Checks the images a message from Home names (YN-134), before anything is
+/// kept or sent: each in the Project's folder, unchanged since upload, and
+/// within the per-message count and total. Blocking.
+pub fn check_home(root: &FsPath, project: &str, images: &[String]) -> Result<()> {
+    each_in(&home_dir(root, project)?, images, |_, _, _| Ok(()))
+}
+
+/// Copies the images a message from Home names (YN-134) from the Project's
+/// folder to `agent`'s own, once its recipient is known, each under the same
+/// ID with its thumbnail; checked as `check_home` checks them. One the Agent
+/// already has is left as it is; for any other, the Agent's own 256 MiB must
+/// have room. Called again, it copies nothing twice, so a retry is the same.
+/// Blocking.
+pub fn adopt(root: &FsPath, project: &str, agent: &str, images: &[String]) -> Result<()> {
+    let to = agent_dir(root, agent)?;
+    let _one = ADOPTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    each_in(&home_dir(root, project)?, images, |id, path, bytes| {
+        let target = image_in(&to, id)?;
+        if target.exists() {
+            return Ok(());
+        }
+        let thumb = bounded_read(&thumb_of(path, id), THUMB_MAX)?;
+        std::fs::create_dir_all(&to)?;
+        room(&to, bytes.len(), "The receiving Agent's saved images reached the 256 MiB limit")?;
+        // As an upload writes them: the thumbnail first, so an image there has one.
+        save_new(&thumb_of(&target, id), &thumb)?;
+        save_new(&target, bytes)
+    })
 }
 
 pub fn native_input(root: &FsPath, agent: &str, text: &str, images: &[String]) -> Result<Value> {
@@ -573,3 +702,7 @@ mod tests {
         assert!(check_model(&[json!({"model":"m"})], "unknown").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "input_images_home_tests.rs"]
+mod home_tests;
