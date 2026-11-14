@@ -1,5 +1,6 @@
 //! `project_route` (YN-86 §4.2, §4.3; slice S3a-2): the front desk routes
-//! the user's request R-n to cards, as one recorded step. Only the Project's
+//! the user's request R-n to cards, or answers it in its note with no card
+//! (YN-136), as one recorded step. Only the Project's
 //! front desk calls it (front_desk.rs: the lead the user chose, else the
 //! only lead), and it does nothing the front desk could not do itself: each
 //! route is the front desk's own task_create, task_dispatch, brief_update and
@@ -21,10 +22,11 @@ use std::sync::Arc;
 
 pub(crate) const TOOL: &str = "project_route";
 
-/// Route kinds: a new card, an existing card, and the user's reassignment
-/// of a card (reassign.rs).
+/// Route kinds: a new card, an existing card, the front desk's answer with
+/// no card (YN-136), and the user's reassignment of a card (reassign.rs).
 pub(super) const CARD: &str = "card";
 pub(super) const EXISTING: &str = "existing";
+pub(super) const ANSWER: &str = "answer";
 pub(super) const REASSIGN: &str = "reassign";
 
 /// Route states: recorded and not finished, finished, and stopped by an
@@ -84,13 +86,13 @@ pub(crate) fn tool_definition() -> Value {
     let line = |what: &str| json!({"type":"string","minLength":1,"maxLength":MAX_LINE,"description":what});
     json!({
         "name":TOOL,
-        "description":"For your Project's front desk only: route the user's request R-n to cards, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card: a status section you own, keyed by the task's key in lowercase and bound to it. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins a live card bound to a task; its words go to the Agent answering for it.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
+        "description":"For your Project's front desk only: route the user's request R-n to cards, or answer it, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card: a status section you own, keyed by the task's key in lowercase and bound to it. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins a live card bound to a task; its words go to the Agent answering for it;\n- answer: no task, no card: your note is the whole answer, and the request shows as answered. Only for a question you answer now in one or two sentences from what you already know (a state, a result, where something is). Never for work (code, a fix, research, design, a review, a release) or a choice the user must make: route those to cards. When unsure, make a card.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["request","title","note","routes"],"properties":{
             "request":{"type":"string","description":"R-12, as Core's message names the request."},
             "title":line("A short phrase, like a task title, saying what the request is; not the user's words, not where it goes. The user knows the request by it."),
             "note":line("Your reply in the user's conversation, one or two short sentences."),
             "routes":{"type":"array","minItems":1,"maxItems":MAX_ROUTES,"items":{"type":"object","additionalProperties":false,"required":["kind","why"],"properties":{
-                "kind":{"type":"string","enum":[CARD,EXISTING]},
+                "kind":{"type":"string","enum":[CARD,EXISTING,ANSWER]},
                 "why":line("Why this route: shown with it to the user and sent to who takes it."),
                 "title":line("card: the new task's and card's title; at most 300 bytes in UTF-8, as a task's title."),
                 "shortName":{"type":"string","minLength":1,"maxLength":crate::collaboration_store::SHORT_NAME_CHARS,"description":"card: the task's short name, as task_create's."},
@@ -279,7 +281,8 @@ fn route(index: usize, given: &Value) -> Result<Value> {
     let fields: &[&str] = match kind {
         CARD => &["kind", "why", "title", "shortName", "executor", "agentId", "materials", "body"],
         EXISTING => &["kind", "why", "cardKey"],
-        _ => bail!("invalid_input: {at}kind is card or existing"),
+        ANSWER => &["kind", "why"],
+        _ => bail!("invalid_input: {at}kind is card, existing or answer"),
     };
     if let Some(key) = object.keys().find(|key| !fields.contains(&key.as_str())) {
         bail!("invalid_input: {at}{key} is not a field of a {kind} route");
@@ -287,6 +290,10 @@ fn route(index: usize, given: &Value) -> Result<Value> {
     // Required of every route: a new card says why it was made, and a
     // request joined to a card says why it is the same matter (§4.4).
     let why = line(given, "why", &at)?;
+    // An answer is the call's note (YN-136); why says why it needs no card.
+    if kind == ANSWER {
+        return Ok(json!({"kind":kind,"why":why}));
+    }
     if kind == EXISTING {
         let key = given.get("cardKey").and_then(Value::as_str).map(str::trim).filter(|key| !key.is_empty())
             .with_context(|| format!("invalid_input: {at}cardKey names the card, its section's key"))?;
@@ -542,6 +549,8 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value
     for row in &ctx.todo {
         let outcome = match row.kind.as_str() {
             CARD => card(&ws, &actor, &ctx, row).await,
+            // Recorded is answered: no task, card, Brief write or message.
+            ANSWER => Ok(()),
             _ => existing(&ws, &actor, &ctx, row).await,
         };
         let (id, error) = (row.id.clone(), outcome.err().map(|error| format!("{error:#}")));

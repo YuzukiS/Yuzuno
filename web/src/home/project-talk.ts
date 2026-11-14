@@ -46,8 +46,11 @@ export function saveView(workspaceId: string, projectId: string, view: TalkView)
   if (workspaceId) saveDeviceValue(viewKey(workspaceId, projectId), view);
 }
 
-/** A request's state word (§4.3): not confirmed delivered, waiting for the front desk, in progress, done. */
-export type RequestState = "unconfirmed" | "waiting" | "doing" | "done";
+/** A request's state word (§4.3): not confirmed delivered, waiting for the front desk, in progress, done, or answered with no card (YN-136). */
+export type RequestState = "unconfirmed" | "waiting" | "doing" | "done" | "answered";
+
+/** A request nothing more is coming for: every card's task ended, or answered with no card. */
+export const settled = (request: ProjectRequest) => request.state === "done" || request.state === "answered";
 
 export const requestState = (request: ProjectRequest): RequestState =>
   !delivered(request.delivery) ? "unconfirmed" : request.state;
@@ -72,13 +75,13 @@ export function lastActivity(request: ProjectRequest) {
   );
 }
 
-/** The requests list (§4.1): those going on first, by latest activity; the done ones apart, the same way. */
+/** The requests list (§4.1): those going on first, by latest activity; the settled ones (done or answered) apart, the same way. */
 export function requestGroups(requests: readonly ProjectRequest[]) {
   const order = (list: ProjectRequest[]) =>
     list.sort((a, b) => lastActivity(b) - lastActivity(a) || b.n - a.n);
   return {
-    open: order(requests.filter((r) => r.state !== "done")),
-    done: order(requests.filter((r) => r.state === "done")),
+    open: order(requests.filter((r) => !settled(r))),
+    done: order(requests.filter(settled)),
   };
 }
 
@@ -159,7 +162,7 @@ export function conversation(requests: readonly ProjectRequest[]): TalkItem[] {
  * request's words. Everything earlier is folded until asked for.
  */
 export function earlierBefore(requests: readonly ProjectRequest[]) {
-  const going = requests.filter((r) => r.state !== "done");
+  const going = requests.filter((r) => !settled(r));
   const from = going.length ? going : requests;
   if (!from.length) return 0;
   const times = from.map((r) => time(r.createdAt));

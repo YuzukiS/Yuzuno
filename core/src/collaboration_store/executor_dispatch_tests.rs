@@ -1200,4 +1200,82 @@ mod routing {
         assert_eq!((born.harness.as_str(), born.model.as_str(), born.settings.reasoning_effort.as_deref()),
             ("codex", "gpt-test", Some("high")), "its app-server gets the candidate's effort");
     }
+
+    /// YN-139: a candidate with a machine condition. `auto` chooses it only where
+    /// it holds, this Core host, so the dispatch keeps it here rather than choosing
+    /// a machine after routing, waiting or not. On a machine its condition leaves
+    /// out it stands in for none, and an executor waiting there for none other is
+    /// released.
+    #[test]
+    fn a_machine_condition_keeps_an_auto_dispatch_here_and_stands_in_nowhere_it_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        // `auto` would choose the Mac: it has the more spare memory.
+        store.add_machine(&crate::remote::RemoteMachine {
+            id: "lab-mac".into(), name: "Lab Mac".into(), target: "tester@192.0.2.10".into(),
+            budget: Some(crate::remote::MachineBudget { cpu_millis: 4000, memory_mib: 16384 }), ..Default::default()
+        }).unwrap();
+        store.db.write().unwrap().execute("INSERT INTO local_job_settings(id,data) VALUES(1,?1)",
+            [json!({"cpuMillis":2000,"memoryMiB":4096,"swapMiB":0}).to_string()]).unwrap();
+        let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+            ("lab-mac".into(), "/srv/lab/project".into())])).unwrap().id;
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer"}]));
+        let on = |machines: &[&str], conditions: Vec<Value>, harness: &str, model: &str| {
+            let mut all = vec![json!({"kind": "machine", "machines": machines})];
+            all.extend(conditions);
+            json!({"id": format!("c-{harness}-{}", machines.join("-")), "enabled": true, "harness": harness, "model": model,
+                "credential": {"kind": "login"}, "conditions": all})
+        };
+        let save = |candidates: Vec<Value>| {
+            let version = store.routing_policy().unwrap().version;
+            store.save_routing_policy(version, json!({"enabled": true, "whenNone": "wait", "candidates": candidates})).unwrap().unwrap();
+        };
+        let to = |title: &str, machine: &str| {
+            let mut input = dispatch(&task(&store, title, Some(&p), None), title);
+            input["executor"]["machineId"] = json!(machine);
+            input
+        };
+        let chosen_by_auto = |request: &str| -> bool {
+            store.db.read().unwrap().query_row("SELECT choice_json IS NOT NULL FROM executor_dispatches WHERE request_id=?1", [request],
+                |r| r.get(0)).unwrap()
+        };
+
+        // Here only: `auto` takes it, and it stays here.
+        save(vec![on(&["local"], vec![], "claude", "opus")]);
+        let plan = routed(&store, to("auto-here", "auto"), false);
+        let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
+        assert_eq!((plan.machine.as_str(), plan.template.harness(), route["chosen"].clone()), ("local", "claude", json!("c-claude-local")), "{route}");
+        assert!(!chosen_by_auto("auto-here"), "routing fixed the machine, so `auto` chose none");
+        // None holds now (its quota unread): it waits here, its stand-in's machine fixed too.
+        save(vec![on(&["local"], vec![json!({"kind": "quota", "weekLeftPct": 10})], "claude", "opus")]);
+        let waits = routed(&store, to("auto-waits", "auto"), false);
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((waits.machine.as_str(), waits.template.harness(), route["waiting"].clone()), ("local", "claude", json!(true)), "{route}");
+        assert!(!chosen_by_auto("auto-waits"));
+        // Without a machine condition `auto` still chooses after routing, as before.
+        save(vec![json!({"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"}, "conditions": []})]);
+        let anywhere = routed(&store, to("auto-anywhere", "auto"), false);
+        assert_eq!(anywhere.machine, "lab-mac", "the machine `auto` chose");
+        assert!(chosen_by_auto("auto-anywhere"));
+
+        // On the Mac: the one for here only is passed over, saying why, and doesn't stand in; the Mac's
+        // Codex, unread, does, and the executor waits there.
+        save(vec![on(&["local"], vec![], "claude", "opus"), on(&["lab-mac"], vec![json!({"kind": "quota", "weekLeftPct": 10})], "codex", "gpt-test")]);
+        let mac = routed(&store, to("on-mac", "lab-mac"), false);
+        let route = route_of(&store, &mac.dispatch.agent_id).unwrap();
+        assert_eq!((mac.machine.as_str(), mac.template.harness(), route["waiting"].clone()), ("lab-mac", "codex", json!(true)), "{route}");
+        assert_eq!((route["candidates"][0]["reasons"][0]["code"].clone(), route["candidates"][0]["reasons"][0]["params"]["machine"].clone()),
+            (json!("otherMachine"), json!("lab-mac")), "{route}");
+        // Waiting on the Mac with only the one for here left: none it could be given, so released; here, it waits.
+        let release = |machine: &str| {
+            let policy = store.routing_policy().unwrap().policy;
+            let waiting = crate::routing_policy::dispatch::WaitingExecutor { agent: "a-waiting".into(), harness: "claude".into(),
+                machine: machine.into(), project: None, route: json!({"waiting": true}), unstarted: true, unavailable: vec![] };
+            crate::routing_policy::dispatch::release_reason(&policy, &waiting).map(|r| r["code"].clone())
+        };
+        save(vec![on(&["local"], vec![], "claude", "opus")]);
+        assert_eq!((release("lab-mac"), release("local")), (Some(json!("noCandidate")), None));
+        save(vec![on(&["local", "lab-mac"], vec![], "claude", "opus")]);
+        assert_eq!(release("lab-mac"), None, "it names the Mac too");
+    }
 }

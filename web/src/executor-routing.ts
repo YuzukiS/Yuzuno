@@ -19,7 +19,9 @@ export type Condition =
   | { kind: "timeWindow"; inside: boolean; schedule: Schedule; minMinutesLeft?: number }
   /** The share of the week left: Claude and Codex have no 5-hour quota now (YN-60). */
   | { kind: "quota"; weekLeftPct?: number }
-  | { kind: "dailyApiCap"; usd: number };
+  | { kind: "dailyApiCap"; usd: number }
+  /** The machines it may run on (YN-139): "local" for this Core host, else a registered machine's id. */
+  | { kind: "machine"; machines: string[] };
 /** A condition of a kind this version doesn't know: shown, kept, never edited. */
 export type AnyCondition = Condition | ({ kind: string } & Record<string, unknown>);
 export interface Candidate {
@@ -46,7 +48,12 @@ export interface PolicyView { version: number; policy: Policy; updatedAt?: strin
 /** The kinds of work a candidate takes (YN-70, YN-84 S1): its own module, re-exported here as the page had them. */
 export { TIERS, tiersOf, type Tier } from "./routing-tiers";
 
-export const isKnown = (c: AnyCondition): c is Condition => c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap";
+export const isKnown = (c: AnyCondition): c is Condition =>
+  c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap" || c.kind === "machine";
+/** This Core host, as a machine condition names it (YN-139). */
+export const LOCAL_MACHINE = "local";
+/** A machine a machine condition can name: its id and its name in the Machines list (SSH machines only). */
+export interface NamedMachine { id: string; name: string }
 export const emptyPolicy = (): Policy => ({ enabled: false, candidates: [], whenNone: "wait" });
 
 /** The view as this client reads it: lists and switches even from an answer without them. */

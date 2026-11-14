@@ -23,6 +23,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("workspace.sqlite-journal", "databaseJournal"),
     ("workspace.lock", "lock"),
     ("input-images", "inputImages"),
+    ("home-images", "homeImages"),
     ("brief-attachments", "briefAttachments"),
     ("pr-reviews", "reviews"),
     ("jobs", "jobs"),

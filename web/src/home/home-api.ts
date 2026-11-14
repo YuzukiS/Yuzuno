@@ -2,9 +2,9 @@
  * Home's reads and writes (interfaces.md §3). Core owns every fact here; the
  * client only sends what the user explicitly did, with the versions it showed.
  */
-import { api, errorText, HttpError, post } from "../api";
+import { api, errorText, HttpError, post, remove } from "../api";
 import type { MessageReceipt } from "../types";
-import type { HomeData, MachineLive, MachineLoad, Section } from "./types";
+import type { HomeData, MachineLive, MachineLoad, RefreshCadence, Section, SectionRefresh } from "./types";
 import { randomId } from "../random-id";
 
 const project = (id: string) => `/projects/${encodeURIComponent(id)}/brief`;
@@ -108,6 +108,48 @@ export const readLinkedRepositories = (projectId: string, signal?: AbortSignal) 
     body: JSON.stringify({ projectId }),
     signal,
   });
+
+/** A user's change of a card's refresh schedule (YN-113 §6.3): only what they changed, against the version the
+ * page read; Core answers with the schedule as it is now, or refuses with a version conflict. */
+export type RefreshChangeInput = {
+  version: number;
+  cadence?: RefreshCadence;
+  zone?: string;
+  instruction?: string;
+  enabled?: boolean;
+};
+
+export const changeRefresh = (projectId: string, identity: number, input: RefreshChangeInput) =>
+  api<SectionRefresh>(`${project(projectId)}/refreshes/${identity}`, { method: "PUT", body: JSON.stringify(input) });
+
+/** Removes a card's schedule; the card stays as a report that does not refresh itself. */
+export const removeRefresh = (projectId: string, identity: number) =>
+  remove<{ projectId: string; identity: number; removed: boolean }>(`${project(projectId)}/refreshes/${identity}`);
+
+/** Refreshes once now, outside the cadence; the same requestId again changes nothing. */
+export const refreshNow = (projectId: string, identity: number, requestId: string) =>
+  post<SectionRefresh>(`${project(projectId)}/refreshes/${identity}/now`, { requestId });
+
+/** One issue Core keeps of a refreshed card, without its body. */
+export type RefreshIssue = {
+  version: number;
+  at: string;
+  title: string;
+  /** The issue's conclusion in one line, at most 200 characters. */
+  lead: string | null;
+  live: boolean;
+  historyReason?: string;
+};
+
+export const readRefreshIssues = (projectId: string, identity: number, signal?: AbortSignal) =>
+  api<{ projectId: string; identity: number; key: string; versions: RefreshIssue[] }>(
+    `${project(projectId)}/refreshes/${identity}/versions`,
+    { signal },
+  );
+
+/** One past issue whole, as Home shows a section; its attachments are read by version. */
+export const readRefreshIssue = (projectId: string, identity: number, version: number, signal?: AbortSignal) =>
+  api<Section>(`${project(projectId)}/refreshes/${identity}/versions/${version}`, { signal });
 
 // Replies keep their client id until Core gives a final answer, including
 // across a reload, as the composer's outbox does (useConversationSend.ts).

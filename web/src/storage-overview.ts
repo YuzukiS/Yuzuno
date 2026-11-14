@@ -37,6 +37,7 @@ export const entryLabels: Record<string, string> = {
   databaseJournal: "Database rollback journal",
   lock: "Workspace lock",
   inputImages: "Images sent to Agents",
+  homeImages: "Images written on Home",
   briefAttachments: "Brief attachments",
   reviews: "Code review sources",
   jobs: "Job records and output logs",

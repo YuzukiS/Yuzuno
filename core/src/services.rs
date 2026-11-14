@@ -751,9 +751,12 @@ impl Workspace {
     /// Deletes a project. Its services go with it (their rows by cascade), so
     /// whatever is open for them ends too, once the project is gone. The gate
     /// is held throughout: none of them opens meanwhile. A project that cannot
-    /// be deleted keeps its services as they are.
+    /// be deleted keeps its services as they are. Its images written on Home
+    /// (input_images.rs, YN-134) are removed once it is gone, as far as Core
+    /// can: a folder that cannot be removed is only logged.
     pub async fn delete_project(&self, project: &str) -> Result<()> {
         let _gate = self.services.gate.lock().await;
+        let images = crate::input_images::home_dir(&self.data_dir, project);
         let project = project.to_owned();
         let ids = self.stored(move |s| {
             let ids: Vec<String> = s.services(&project)?.into_iter().map(|service| service.id).collect();
@@ -764,6 +767,15 @@ impl Workspace {
             self.services.forget(&id);
         }
         self.projects_changed();
+        if let Ok(dir) = images {
+            let removed = tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {error}", dir.display())),
+                _ => Ok(()),
+            }).await;
+            if let Err(error) = removed.map_err(|error| error.to_string()).and_then(|done| done) {
+                eprintln!("A deleted Project's images written on Home were not removed: {error}");
+            }
+        }
         Ok(())
     }
 

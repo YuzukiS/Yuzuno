@@ -124,6 +124,74 @@ export type Section = {
   /** The task this section is the card of and who answers for it (YN-86 S2a), as Core reads them now; absent for
    * a section that is no task's card, and from older Cores. */
   card?: CardBinding;
+  /** A report that refreshes itself (YN-113 R2, R3): Core's schedule for it, on the one entry Home shows of its
+   * identity. Absent from older Cores and for every card without one. */
+  refresh?: SectionRefresh;
+};
+
+/** Why something did not happen, in Core's words for both languages (YN-113 §3.5). */
+export type RefreshReason = { code: string; message: string; messageZh: string };
+
+/** When a report refreshes itself: every day at `at`; every `hours` hours from `at` (00:00 when left out); every
+ * week on `days` (1 is Monday) at `at`. */
+export type RefreshCadence = { every: "day" | "hours" | "week"; at?: string; hours?: number; days?: number[] };
+
+/** The last slot sent: `sent` until its Turn ends, then refreshed, failed or skipped (a newer slot came first). */
+export type RefreshRun = {
+  slot: string;
+  /** Earlier slots this run makes up for. */
+  missed: number;
+  state: "sent" | "refreshed" | "failed" | "skipped";
+  reason?: RefreshReason;
+  agentId?: string;
+  clientId?: string;
+  turnId?: string;
+  sentAt?: string;
+  endedAt?: string;
+  /** The user's "refresh now" it was, by its requestId. */
+  manual?: string;
+};
+
+/** A slot due that was not sent: what it waits for (busy, offline, approval, or a send Core refused). */
+export type RefreshWaiting = {
+  slot: string;
+  missed: number;
+  reason: "busy" | "offline" | "approval" | "refused";
+  agentId: string;
+  agentName?: string | null;
+  since: string;
+  error?: string;
+  manual?: string;
+};
+
+/** One of the last ten runs, drawn as a dot in the schedule panel. */
+export type RefreshRecent = { slot: string; state: string; missed: number; reason?: RefreshReason };
+
+/** A card's schedule as Core reads it now (GET /api/home's section.refresh, YN-113 §6.2). */
+export type SectionRefresh = {
+  version: number;
+  cadence: RefreshCadence;
+  /** `local` (the Core host's clock) or `UTC`. */
+  zone: string;
+  utcOffset: string;
+  instruction: string;
+  enabled: boolean;
+  /** Why it is paused, in Core's words; null while it is on. */
+  pausedReason: RefreshReason | null;
+  /** The Turns it starts in a week. */
+  weeklyRuns: number;
+  nextAt: string | null;
+  lastSlot: string | null;
+  run: RefreshRun | null;
+  recent: RefreshRecent[];
+  /** Failures in a row. */
+  failures: number;
+  waiting: RefreshWaiting | null;
+  /** The past issues Core keeps (30 days), for the card's link and the report page's list. */
+  versions: number;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
 };
 
 /**

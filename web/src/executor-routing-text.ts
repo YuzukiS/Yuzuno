@@ -1,7 +1,7 @@
 /** Executor routing's words (YN-49 S4a), in English and Chinese, and what
  * a candidate, a condition or a schedule is called in a line; and what keeps a
  * candidate from being saved, as YN-34 S3a's check refuses it. */
-import { DEEPSEEK_PEAK, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type PresetId, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, LOCAL_MACHINE, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type NamedMachine, type PresetId, type Schedule, type Slot } from "./executor-routing";
 import { strings } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
 
@@ -58,6 +58,10 @@ export const text = strings({
   chipSkip: "Skipped when a reading is unavailable",
   chipPass: "Counted as met when a reading is unavailable",
   chipUnknownKind: (kind: string) => `A condition this version can't show (${kind})`,
+  // YN-139: a machine condition's chip, its machines joined.
+  chipMachines: (names: string) => `${names} only`,
+  chipThisHost: "This host",
+  machineJoin: ", ",
   utc: "UTC",
   local: "Core host time",
   days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
@@ -116,6 +120,7 @@ export const text = strings({
   addTime: "Time window",
   addQuota: "Subscription left",
   addCap: "Daily spend",
+  addMachine: "Only on these machines",
   removeCondition: "Remove this condition",
   timeWindow: "Time window",
   insideOption: "Within these hours",
@@ -136,6 +141,10 @@ export const text = strings({
   week: "This week left at least",
   cap: "Daily spend",
   capOwn: "This candidate, at most $ a day",
+  machines: "Machines",
+  machineHere: "This Core host",
+  machineGone: (id: string) => `${id} (removed, or not read)`,
+  machineQuotaNote: "On another machine, a subscription-left condition still reads this host's account.",
   unknown: "When a reading is unavailable",
   skip: "Skip this candidate",
   pass: "Count it as met",
@@ -168,6 +177,7 @@ export const text = strings({
   slotNoDay: (n: number) => `Period ${n} needs a day.`,
   slotBad: (n: number) => `Period ${n} starts and ends at the same time.`,
   minBad: "1 to 1440 minutes.",
+  machinesEmpty: "Choose at least one machine.",
   // Below the list.
   add: "Add a candidate",
   max: (n: number) => `At most ${n} candidates.`,
@@ -239,6 +249,10 @@ export const text = strings({
   chipSkip: "读不到时跳过",
   chipPass: "读不到时当作满足",
   chipUnknownKind: (kind) => `这个版本显示不了的条件（${kind}）`,
+  // 机器名以拉丁字母开头时留一个空格：「只在 Mac mini」「只在这台主机」。
+  chipMachines: (names) => `只在${/^[\x21-\x7e]/.test(names) ? " " : ""}${names}`,
+  chipThisHost: "这台主机",
+  machineJoin: "、",
   utc: "UTC",
   local: "Core 主机时间",
   days: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
@@ -294,6 +308,7 @@ export const text = strings({
   addTime: "时间窗口",
   addQuota: "订阅额度",
   addCap: "每日花费",
+  addMachine: "只在这些机器上跑",
   removeCondition: "删除这个条件",
   timeWindow: "时间窗口",
   insideOption: "在这些时段内",
@@ -314,6 +329,10 @@ export const text = strings({
   week: "本周至少剩",
   cap: "每日花费",
   capOwn: "这一项每天最多 $",
+  machines: "机器",
+  machineHere: "这台 Core 主机",
+  machineGone: (id) => `${id}（已移除或未读到）`,
+  machineQuotaNote: "在别的机器上，订阅额度条件读的仍是这台主机的账号。",
   unknown: "读不到读数时",
   skip: "跳过这一项",
   pass: "当作满足",
@@ -342,6 +361,7 @@ export const text = strings({
   slotNoDay: (n) => `时段 ${n} 要选至少一天。`,
   slotBad: (n) => `时段 ${n} 的开始和结束是同一时间。`,
   minBad: "1 到 1440 分钟。",
+  machinesEmpty: "选至少一台机器。",
   add: "添加候选",
   max: (n) => `最多 ${n} 项。`,
   presets: "预设：",
@@ -380,10 +400,20 @@ export function scheduleWords(schedule: Schedule, t: Text): string {
   return `${zoneWords(schedule, t)} ${slotWords(slot, t)}${schedule.slots.length > 1 ? t.moreSlots(schedule.slots.length - 1) : ""}`;
 }
 
-export function chipText(c: AnyCondition, t: Text): string {
+/** A machine a machine condition names, by its name: this Core host, a listed machine's name, else its id (YN-139). */
+export const machineWord = (id: string, t: Text, machines: readonly NamedMachine[] | null) =>
+  id === LOCAL_MACHINE ? t.chipThisHost : machines?.find((m) => m.id === id)?.name || id;
+
+/** A condition in a few words, for its chip; a machine condition names its machines from `machines` when listed. */
+export function chipText(c: AnyCondition, t: Text, machines: readonly NamedMachine[] | null = null): string {
   if (!isKnown(c)) return t.chipUnknownKind(c.kind);
   if (c.kind === "quota") return t.chipQuota(c.weekLeftPct) || t.quota;
   if (c.kind === "dailyApiCap") return t.chipCap(c.usd);
+  if (c.kind === "machine") {
+    // This Core host first, then the others as saved.
+    const ids = [...c.machines.filter((id) => id === LOCAL_MACHINE), ...c.machines.filter((id) => id !== LOCAL_MACHINE)];
+    return ids.length ? t.chipMachines(ids.map((id) => machineWord(id, t, machines)).join(t.machineJoin)) : t.addMachine;
+  }
   if (sameSchedule(c.schedule, DEEPSEEK_PEAK)) return c.inside ? t.chipPeakOn : t.chipPeakOff(c.minMinutesLeft);
   return (c.inside ? t.chipInside : t.chipOutside)(scheduleWords(c.schedule, t), c.minMinutesLeft);
 }
@@ -432,6 +462,7 @@ export function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, acc
     const at = String(i);
     if (cond.kind === "quota" && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
     if (cond.kind === "dailyApiCap" && !usdFits(cond.usd)) list.push({ at, text: t.capBad });
+    if (cond.kind === "machine" && !cond.machines.length) list.push({ at, text: t.machinesEmpty });
     if (cond.kind === "timeWindow") {
       if (!cond.schedule.slots.length) list.push({ at, text: t.slotsEmpty });
       cond.schedule.slots.forEach((s, n) => {

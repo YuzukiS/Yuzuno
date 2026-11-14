@@ -1,4 +1,4 @@
-import { CircleCheck, Forward, GitMerge, MessageSquare, SquarePlus } from "lucide-react";
+import { CircleCheck, Forward, GitMerge, MessageSquare, MessageSquareReply, SquarePlus } from "lucide-react";
 import { useLanguage } from "../i18n";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
@@ -14,7 +14,7 @@ import "./routing-events.css";
  */
 export type TrailEvent = {
   id: string;
-  kind: "card" | "existing" | "reassign" | "note" | "done";
+  kind: "card" | "existing" | "answer" | "reassign" | "note" | "done";
   at: string | null;
   /** The user, for a reassignment; else the project (its front desk). */
   byUser?: boolean;
@@ -72,7 +72,7 @@ export function requestTrail(request: ProjectRequest): TrailEvent[] {
   return events.sort((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
 }
 
-const ICONS = { card: SquarePlus, existing: GitMerge, reassign: Forward, note: MessageSquare, done: CircleCheck };
+const ICONS = { card: SquarePlus, existing: GitMerge, answer: MessageSquareReply, reassign: Forward, note: MessageSquare, done: CircleCheck };
 
 export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard?: ShowCard }) {
   const language = useLanguage();
@@ -86,7 +86,10 @@ export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard
           event.kind === "card" ? t.opened(event.title ?? "")
             : event.kind === "existing" ? t.joined(event.title ?? "")
               : event.kind === "reassign" ? t.reassigned(event.title ?? "")
-                : null;
+                : event.kind === "answer" ? t.answered(event.why ?? "")
+                  : null;
+        // An answer says its why on its own line; the others below it.
+        const why = event.kind === "answer" ? "" : event.why ?? "";
         return (
           <li key={event.id} className="routing-event" data-kind={event.kind} data-state={event.state}>
             <span className="routing-event-icon" aria-hidden="true">
@@ -112,9 +115,9 @@ export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard
                   {event.state === "pending" && <span className="routing-event-state"> · {t.pending}</span>}
                 </>
               )}
-              {(event.why || event.from || event.state === "failed") && (
+              {(why || event.from || event.state === "failed") && (
                 <small>
-                  {[event.from ? t.from(event.from) : "", event.why ?? "", event.state === "failed" ? t.failed(event.error ?? "") : ""]
+                  {[event.from ? t.from(event.from) : "", why, event.state === "failed" ? t.failed(event.error ?? "") : ""]
                     .filter(Boolean)
                     .join(" · ")}
                 </small>

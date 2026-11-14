@@ -38,6 +38,7 @@ const overview = () => ({
   dataDir: DATA_DIR,
   entries: [
     { name: "claude-runtime", what: "claudeRuntime", kind: "folder", backup: "excluded", backupReason: "A cache of the Claude runtime, which Core rebuilds" },
+    { name: "home-images", what: "homeImages", kind: "folder", backup: "copied", backupReason: null },
     { name: "input-images", what: "inputImages", kind: "folder", backup: "copied", backupReason: null },
     { name: "jobs", what: "jobs", kind: "folder", backup: "copied", backupReason: null },
     { name: "my-private-notes", what: "unknown", kind: "folder", backup: "notCopied", backupReason: null },
@@ -132,6 +133,7 @@ test("opening it only reads: this device by group and Core's overview once, with
   assert.match(p.text(), /This browser does not report how much it keeps for this site\./);
   assert.deepEqual(p.zeros(), [], "nothing unknown is shown as 0");
   assert.match(p.row("input-images"), /^Images sent to Agentssize unknown.*A Workspace backup copies files from here; its manifest lists which/);
+  assert.match(p.row("home-images"), /^Images written on Homesize unknown.*A Workspace backup copies files from here; its manifest lists which/);
   assert.match(p.row("workspace.sqlite"), /In a Workspace backup, as a consistent copy/);
   assert.match(p.row("my-private-notes"), /^Not made by this Coresize unknown.*Not in a backup/);
   assert.match(p.row("claude-runtime"), /Not in a backup: A cache of the Claude runtime, which Core rebuilds/);

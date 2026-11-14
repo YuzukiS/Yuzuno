@@ -94,7 +94,7 @@ const CATALOGS = {
 /** Core as S1 and S3 answer it. `put` decides a save's answer; the default keeps it. `lists` answers a tool's list
  * instead of CATALOGS: `(harness, n)` with n its nth ask, giving `[status, body]` or nothing for the default.
  * `keys` null and `accounts` null answer 403, as off Core's own address; `*FailAt` makes that read number fail. */
-function core({ view = savedView(), put, lists, keys = KEYS, accounts = true, homes = [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }], keysFailAt = 0, accountsFailAt = 0 } = {}) {
+function core({ view = savedView(), put, lists, keys = KEYS, accounts = true, homes = [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }], keysFailAt = 0, accountsFailAt = 0, machines = null } = {}) {
   const state = { view, asked: { claude: 0, codex: 0, opencode: 0 }, keys: keys && clone(keys), keyReads: 0, accountReads: 0 };
   return { state, route(url, method, body) {
     const u = new URL(url, "http://isolated.test");
@@ -128,6 +128,8 @@ function core({ view = savedView(), put, lists, keys = KEYS, accounts = true, ho
       { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: "fixture-alias-label" },
       { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "other@example.test" },
     ] }, codexHomes: clone(homes) }];
+    // The Machines list (YN-139), only when the test gives one: else unread, as when it can't be read.
+    if (p === "/api/machines" && method === "GET" && machines) return [200, { machines: clone(machines) }];
     return [404, { error: `not answered: ${method} ${p}` }];
   } };
 }
@@ -754,4 +756,73 @@ test("a Codex account the read lists without is called missing, with what to fix
   await tick();
   assert.match(card(page, "cx").querySelector(".routing-edit").textContent, /The Codex account work isn't listed: add it under Accounts & keys, or choose another\./);
   assert.deepEqual(page.errors, []);
+});
+
+// YN-139: a machine condition, for a candidate on a machine's own login. Machines as Core lists them: this Core
+// host's own row, and an SSH machine with a synthetic id.
+const MACHINES = [
+  { id: "local", name: "This Core host", kind: "local", defaultCwd: "/home/fixture" },
+  { id: "mac-0001", name: "Mac mini", kind: "ssh", target: "tester@192.0.2.10", defaultCwd: "/Users/fixture" },
+];
+const machineChoices = (page, id) => [...card(page, id).querySelectorAll(".routing-machine-choices label")]
+  .map((label) => [label.textContent.trim(), label.querySelector("input").checked]);
+const onTheMac = (machines) => savedView({ policy: { ...savedView().policy, candidates: [clone(cl), { id: "mac", enabled: true, harness: "claude", model: "opus",
+  credential: { kind: "login" }, conditions: [{ kind: "machine", machines }], unknown: "skip" }] } });
+
+test("a login candidate's machines: only a login offers it, none chosen holds the save, and a machine chosen is saved by id", async () => {
+  const page = mount(core({ machines: MACHINES }));
+  await opened(page);
+  await until(() => page.calls.some((c) => c.url.endsWith("/machines")), "the Machines list asked for");
+  // A pool and an API key run on this Core host only: neither offers it.
+  for (const id of ["ds", "cl"]) {
+    button(page, `Edit ${id === "ds" ? "OpenCode · deepseek-flash · API" : "Claude Code · opus"}`).click();
+    await until(() => card(page, id).querySelector(".routing-edit"), `${id}'s editor`);
+    assert.equal(button(page, "Only on these machines", card(page, id)), undefined, `${id}: not offered`);
+  }
+  button(page, "Add a candidate").click();
+  await until(() => cards(page).length === 3 && cards(page)[2].querySelector(".routing-edit"), "the new candidate's editor");
+  const id = cards(page)[2].dataset.cand;
+  button(page, "Only on these machines", card(page, id)).click();
+  await tick();
+  assert.equal(button(page, "Only on these machines", card(page, id)), undefined, "one machine condition at most");
+  assert.deepEqual(machineChoices(page, id), [["This Core host", false], ["Mac mini", false]], "this Core host once, then each SSH machine by name");
+  assert.match(card(page, id).querySelector(".routing-machines").textContent, /On another machine, a subscription-left condition still reads this host's account\./);
+  assert.equal(card(page, id).querySelector(".routing-cond-error")?.textContent, "Choose at least one machine.");
+  assert.match(bar(page).textContent, /Correct the marked block to save/);
+  assert.equal(button(page, "Save", bar(page)).disabled, true, "held while none is chosen");
+  [...card(page, id).querySelectorAll(".routing-machine-choices label")].find((l) => l.textContent.includes("Mac mini")).querySelector("input").click();
+  await tick();
+  assert.deepEqual(machineChoices(page, id), [["This Core host", false], ["Mac mini", true]]);
+  assert.deepEqual(chips(card(page, id)), ["Mac mini only"]);
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.policy.candidates[2], { id, enabled: true, harness: "claude", model: "sonnet", credential: { kind: "login" },
+    conditions: [{ kind: "machine", machines: ["mac-0001"] }], unknown: "skip" });
+  assert.deepEqual(page.errors, []);
+});
+
+test("a machine condition's chip in either language, and its machines by id while the Machines list can't be read", async () => {
+  const en = mount(core({ view: onTheMac(["mac-0001", "local"]), machines: MACHINES }));
+  await opened(en);
+  await until(() => chips(card(en, "mac"))[0] === "This host, Mac mini only", "the chip with the machines' names");
+  const zh = mount(core({ view: onTheMac(["mac-0001"]), machines: MACHINES }), "zh-Hans");
+  await opened(zh);
+  await until(() => chips(card(zh, "mac"))[0] === "只在 Mac mini", "the Chinese chip");
+  const both = mount(core({ view: onTheMac(["local", "mac-0001"]), machines: MACHINES }), "zh-Hans");
+  await opened(both);
+  await until(() => chips(card(both, "mac"))[0] === "只在这台主机、Mac mini", "this host first, in Chinese");
+  button(both, "编辑 Claude Code · opus", card(both, "mac")).click();
+  await until(() => card(both, "mac").querySelector(".routing-machines"), "its editor");
+  assert.deepEqual(machineChoices(both, "mac"), [["这台 Core 主机", true], ["Mac mini", true]]);
+  assert.match(card(both, "mac").querySelector(".routing-machines").textContent, /在别的机器上，订阅额度条件读的仍是这台主机的账号。/);
+
+  // Unread: the saved machine by its id, still chosen, and this Core host offered.
+  const unread = mount(core({ view: onTheMac(["mac-0001"]) }));
+  await opened(unread);
+  assert.deepEqual(chips(card(unread, "mac")), ["mac-0001 only"], "its id, as saved");
+  button(unread, "Edit Claude Code · opus", card(unread, "mac")).click();
+  await until(() => card(unread, "mac").querySelector(".routing-machines"), "its editor");
+  assert.deepEqual(machineChoices(unread, "mac"), [["This Core host", false], ["mac-0001 (removed, or not read)", true]]);
+  assert.equal(card(unread, "mac").querySelector(".routing-fix"), null, "a machine it can't name is no problem to fix");
+  for (const page of [en, zh, both, unread]) assert.deepEqual(page.errors, []);
 });

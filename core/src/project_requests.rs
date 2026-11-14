@@ -128,7 +128,7 @@ fn check(words: &Words) -> Result<()> {
 pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: i64) -> String {
     format!(
         "Request R-{n} from the user to the project {project} (Workspace {workspace}, Project {project_id}). \
-         Route it with project_route; the user's words travel as they are:"
+         Route or answer it with project_route; the user's words travel as they are:"
     )
 }
 
@@ -544,10 +544,13 @@ pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: O
 /// The user's routes: on Core's own port and on the phone entry, as the rest
 /// of Home. No Agent tool reads or writes them (the front desk routes with
 /// project_route, routes.rs), and an Agent's credential (any Authorization
-/// header) is refused: a card's reassignment is the user's alone.
+/// header) is refused: a card's reassignment is the user's alone, and so are
+/// the images written on Home (input_images.rs, YN-134).
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/projects/{id}/front-desk", get(get_front_desk).put(put_front_desk))
+        .route("/api/projects/{id}/images", post(crate::input_images::home_upload_route))
+        .route("/api/projects/{id}/images/{image_id}", get(crate::input_images::home_read_route))
         .route("/api/projects/{id}/requests", get(list).post(post_request))
         .route("/api/projects/{id}/requests/{n}/replies", post(post_reply))
         .route("/api/projects/{id}/cards/{section}/reassign", post(post_reassign))

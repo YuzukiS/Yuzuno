@@ -24,7 +24,7 @@ export type Delivery = MessageReceipt["status"] | null;
 
 /** One route of a request, or the user's reassignment of one of its cards (routes.rs `json`). */
 export type RouteEvent = {
-  kind: "card" | "existing" | "reassign";
+  kind: "card" | "existing" | "answer" | "reassign";
   index: number | null;
   /** The request it routed, by number; null for a reassignment. */
   request: number | null;
@@ -85,7 +85,8 @@ export type ProjectRequest = {
   notes: { note: string; by: RouteAgent; at: string }[];
   routes: RouteEvent[];
   cards: RequestCard[];
-  state: "waiting" | "doing" | "done";
+  /** answered (YN-136): no card, the front desk answered it in its note, and nothing was said since. */
+  state: "waiting" | "doing" | "done" | "answered";
   progress: { cards: number; ended: number };
   lines: RequestLine[];
 };

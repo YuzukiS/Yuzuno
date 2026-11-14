@@ -5,8 +5,9 @@
 //!
 //! The first enabled candidate whose harness can run on the machine and keeps
 //! the executor's permission level (YN-56), that serves the executor's tier
-//! (YN-70), whose credential is available and whose conditions all hold is
-//! chosen. A reading
+//! (YN-70), that may run on the machine (its credential, and its machine
+//! conditions, YN-139), whose credential is available and whose conditions all
+//! hold is chosen. A reading
 //! that is missing, stale or unknown makes its condition unknown, and the
 //! candidate's `unknown` rule decides: `skip` (the default) or `pass`.
 //!
@@ -56,6 +57,21 @@ pub(crate) fn serves(candidate: &Value, tier: Option<&str>) -> bool {
         None => true,
         Some(tiers) => tiers.iter().any(|t| t == tier),
     }
+}
+
+/// Whether `candidate` may run on `machine` by its machine conditions (YN-139):
+/// each `{kind: "machine", machines}` it has lists that machine. None (no machine
+/// named, `auto`, a preview) is this Core host, `local`. One with no machine
+/// condition may run on any machine its credential can.
+pub(crate) fn machine_allows(candidate: &Value, machine: Option<&str>) -> bool {
+    let machine = machine.unwrap_or("local");
+    candidate["conditions"].as_array().into_iter().flatten().filter(|c| c["kind"] == "machine")
+        .all(|c| c["machines"].as_array().is_some_and(|list| list.iter().any(|m| m == machine)))
+}
+
+/// Whether `candidate` has a machine condition (YN-139).
+pub(crate) fn has_machine_condition(candidate: &Value) -> bool {
+    candidate["conditions"].as_array().into_iter().flatten().any(|c| c["kind"] == "machine")
 }
 
 /// A tier's name in each language.
@@ -253,6 +269,8 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
                 Check::Holds
             }
         }
+        // Where it may run was read in `decide`, before its credential (YN-139).
+        "machine" => Check::Holds,
         _ => Check::Unknown(reason("unknownCondition", "A condition this Core does not know", "这个 Core 不认识的条件")),
     }
 }
@@ -352,6 +370,11 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
     let host_only = kind != "login" || harness == "opencode";
     if host_only && inputs.machine.is_some_and(|m| m != "local") {
         return ("skipped", vec![reason("hostOnly", "It runs on this Core host only", "它只能在 Core 所在的这台主机上跑")], None, None, None);
+    }
+    // YN-139: a machine condition that leaves the executor's machine out; no machine is this Core host.
+    if !machine_allows(candidate, inputs.machine) {
+        return ("skipped", vec![with(reason("otherMachine", "It runs only on the machines its condition names", "它只在条件里选的机器上跑"),
+            json!({"params": {"machine": inputs.machine}}))], None, None, None);
     }
     let unknown_pass = candidate["unknown"] == "pass";
     let mut unknowns = Vec::new();
