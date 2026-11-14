@@ -186,8 +186,10 @@ async fn links_by_id_survive_a_rename_and_old_records_keep_the_name_they_had() {
         json!({"requestId":"task","title":"Train","assigneeAgentId":"worker","projectId":project})).unwrap();
     let task_id = task["task"]["id"].as_str().unwrap().to_owned();
     store.collaboration_call(Some("worker"), "peer_send", json!({"requestId":"before","toAgentId":"lead","body":"Started"})).unwrap();
-    store.db.write().unwrap().execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('job-1',NULL,'worker','queued',?1)",
-        [json!({"name":"train","agent":{"name":"Agent worker"}}).to_string()]).unwrap();
+    // A live Job of the worker's, filed under that task, with the name it had.
+    let internal: String = store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    store.db.write().unwrap().execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('job-1',?1,'worker','queued',?2)",
+        rusqlite::params![internal, json!({"name":"train","agent":{"name":"Agent worker"}}).to_string()]).unwrap();
 
     let app = crate::server::router(ws.clone(), dir.path().join("assets"));
     let (status, _) = local(&app, "PATCH", "/api/agents/worker", Some(json!({"name":"Trainer"}))).await;
