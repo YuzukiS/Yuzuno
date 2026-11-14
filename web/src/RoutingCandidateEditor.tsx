@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { errorText } from "./api";
-import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, LOCAL_MACHINE, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type NamedMachine, type Schedule, type Slot } from "./executor-routing";
 import { TIER_CHOICES, tierChoiceOf, withTierChoice } from "./routing-tiers";
 import { chipText, providerName, type Text } from "./executor-routing-text";
 import { useLanguage } from "./i18n";
@@ -46,10 +46,12 @@ const credentialOf = (value: string): Credential =>
     : value.startsWith("key:") ? { kind: "apiKey", keyId: value.slice(4) }
       : value.startsWith("home:") ? { kind: "codexHome", id: value.slice(5) } : { kind: "login" };
 
-export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refusedCondition, onManageKeys, onEdit, onRemove, onClose }: {
+export function CandidateEditor({ c, t, keys, keysRead, accounts, machines, issues, refusedCondition, onManageKeys, onEdit, onRemove, onClose }: {
   c: Candidate; t: Text; keys: RoutingKey[];
   /** Whether the Workspace's keys were read here: a key is added from a candidate only then (YN-57 S3). */
   keysRead: boolean;
+  /** The SSH machines a machine condition can name (YN-139); null while the Machines list isn't read. */
+  machines: readonly NamedMachine[] | null;
   accounts: AccountsView | null; issues: { at: string; text: string }[]; refusedCondition?: number;
   /** Opens Accounts & keys, where these are managed (YN-84 S2). */
   onManageKeys?: () => void;
@@ -183,8 +185,8 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
         <ul className="routing-conds">
           {c.conditions.map((cond, i) => (
             <li key={i} className={`routing-cond${refusedCondition === i ? " is-refused" : ""}`}>
-              <ConditionEditor cond={cond} n={i} t={t} onChange={(next) => setConditions((list) => list.map((x, k) => (k === i ? next : x)))} />
-              <button type="button" className="icon-button routing-cond-remove" aria-label={`${t.removeCondition} (${chipText(cond, t)})`}
+              <ConditionEditor cond={cond} n={i} t={t} machines={machines} onChange={(next) => setConditions((list) => list.map((x, k) => (k === i ? next : x)))} />
+              <button type="button" className="icon-button routing-cond-remove" aria-label={`${t.removeCondition} (${chipText(cond, t, machines)})`}
                 onClick={() => setConditions((list) => list.filter((_, k) => k !== i))}><X size={14} /></button>
               {issues.filter((p) => p.at === String(i)).map((p) => <span key={p.text} className="inline-error routing-cond-error">{p.text}</span>)}
             </li>
@@ -194,6 +196,9 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           {!has("timeWindow") && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "timeWindow", inside: false, schedule: DEEPSEEK_PEAK, minMinutesLeft: 30 }])}><Plus size={13} /> {t.addTime}</button>}
           {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
           {!has("dailyApiCap") && api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "dailyApiCap", usd: 5 }])}><Plus size={13} /> {t.addCap}</button>}
+          {/* YN-139: only a login runs on another machine; an account pool, an API key and OpenCode run on this Core host only. */}
+          {!has("machine") && c.credential.kind === "login" && c.harness !== "opencode" && <button type="button" className="quiet-button"
+            onClick={() => setConditions((l) => [...l, { kind: "machine", machines: [] }])}><Plus size={13} /> {t.addMachine}</button>}
         </div>
       </div>
       {/* YN-84 S1: one choice — strong only, fast only, or both; both is no list, as before. */}
@@ -229,8 +234,29 @@ const numberOrUnset = (value: string) => (value === "" ? undefined : Number(valu
 const toField = (to: string) => (to === "24:00" ? "00:00" : to);
 const fromField = (value: string) => (value === "00:00" ? "24:00" : value);
 
-function ConditionEditor({ cond, n, t, onChange }: { cond: AnyCondition; n: number; t: Text; onChange: (next: AnyCondition) => void }) {
+function ConditionEditor({ cond, n, t, machines, onChange }: {
+  cond: AnyCondition; n: number; t: Text; machines: readonly NamedMachine[] | null; onChange: (next: AnyCondition) => void;
+}) {
   if (!isKnown(cond)) return <span className="routing-cond-kind">{t.chipUnknownKind(cond.kind)}</span>;
+  if (cond.kind === "machine") {
+    // This Core host, each listed SSH machine, then any it names that isn't listed (removed, or the list unread).
+    const listed = [{ id: LOCAL_MACHINE, name: t.machineHere }, ...(machines ?? [])];
+    const choices = [...listed, ...cond.machines.filter((id) => !listed.some((m) => m.id === id)).map((id) => ({ id, name: t.machineGone(id) }))];
+    const toggle = (id: string) => onChange({ ...cond, machines: cond.machines.includes(id) ? cond.machines.filter((m) => m !== id) : [...cond.machines, id] });
+    return (
+      <div className="routing-machines">
+        <b className="routing-cond-kind">{t.machines}</b>
+        <span className="routing-machine-choices" role="group" aria-label={`${t.machines} ${n + 1}`}>
+          {choices.map((m) => (
+            <label key={m.id} className="routing-inline-field">
+              <input type="checkbox" checked={cond.machines.includes(m.id)} onChange={() => toggle(m.id)} /> {m.name}
+            </label>
+          ))}
+        </span>
+        <p className="settings-row-meta">{t.machineQuotaNote}</p>
+      </div>
+    );
+  }
   if (cond.kind === "quota") {
     const set = (value: string) => {
       const next: Condition = { ...cond };
