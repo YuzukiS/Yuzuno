@@ -104,7 +104,15 @@ async fn update_pause_is_one_original_turn_steer_while_ordinary_mail_stays_fence
     assert!(ws.admission.enter_completion().is_ok());
     finish(&ws, "original-turn");
     assert_eq!(ws.update_pause_status(&op).unwrap()[0]["idle"], true);
-    assert!(ws.admission.try_seal(&op.id).unwrap());
+    // The finished turn's events are written by a permit holder that drops
+    // as it goes (updates/control.rs flushes them the same way before it
+    // seals); on a loaded runner one can still be in flight here, so wait
+    // for the seal it allows, bounded (core-macos 43571813132, YN-147).
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !ws.admission.try_seal(&op.id).unwrap() {
+        assert!(std::time::Instant::now() < until, "admission never sealed after the turn ended");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     ws.admission.reopen(&op.id).unwrap();
     ws.close_agent("a").await.unwrap();
 }
