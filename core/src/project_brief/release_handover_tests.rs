@@ -20,7 +20,7 @@ async fn a_released_executors_ask_is_its_dispatchers_to_answer_and_resolve() {
     let workspace = ws.store.workspace_id().unwrap();
     // A Home that still showed the executor as the owner.
     let reply = home::ReplyInput { key: Some("question".into()), agent_id: "c".into(), text: String::new(), client_message_id: "r1".into(),
-        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None };
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None, images: vec![] };
     home::reply(&ws, project.clone(), reply).await.unwrap_or_else(|error| panic!("the reply goes to the dispatcher: {error}"));
     assert!(ws.store.receipt("a", "r1").unwrap().is_some(), "the reply reaches the dispatcher");
     assert!(ws.store.receipt("c", "r1").unwrap().is_none(), "not the released executor");
@@ -77,7 +77,7 @@ async fn a_closed_dispatcher_is_handed_nothing_and_an_open_one_both() {
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |id: &str, shown: i64| home::ReplyInput { key: Some("c-ask".into()), agent_id: "c".into(), text: String::new(),
         client_message_id: id.into(), choice: Some("left".into()), version: None, title: None, ask_version: Some(shown),
-        workspace_id: Some(workspace.clone()), form: None };
+        workspace_id: Some(workspace.clone()), form: None, images: vec![] };
     let refused = home::reply(&ws, project.clone(), reply("r1", 1)).await.is_err();
     assert!(refused, "a reply no open Agent owns is refused");
     assert!(ws.store.receipt("d", "r1").unwrap().is_none() && ws.store.receipt("c", "r1").unwrap().is_none(), "and goes nowhere");
