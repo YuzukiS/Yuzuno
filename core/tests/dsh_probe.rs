@@ -167,6 +167,12 @@ async fn a_real_dsh_agent_talks_stops_resumes_after_a_restart_and_goes() {
     println!("probe: resumed; the model got {after} messages, {before} before the restart");
     assert!(after > before, "the resumed session carries its history");
 
+    // No Turn but those sent: what dsh says as a session opens makes none.
+    let shown: Vec<String> = d.turns.iter().map(|t| t["id"].as_str().unwrap_or_default().to_owned()).collect();
+    println!("probe: Turns {shown:?}");
+    assert_eq!(shown, [hello.clone(), sleeping.clone(), again.clone()]);
+    assert!(d.turns.iter().filter_map(|t| t["items"][0]["clientId"].as_str()).eq(["p1", "p2", "p3"]), "each bound to its receipt");
+
     // 5. Closed: dsh and what it started end. Deleted: its folder goes.
     ws.close_agent(&id).await.unwrap();
     assert!(holding(&home).is_empty(), "nothing of its dsh is left");

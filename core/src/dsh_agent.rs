@@ -252,15 +252,25 @@ fn end_of(params: &Value) -> (&'static str, Option<String>) {
     }
 }
 
-/// One `session/update` read into `turn` of `d` at `at` (§3.4).
-fn apply(d: &mut AgentDetail, turn: &str, update: &Value, at: chrono::DateTime<chrono::Utc>) {
+/// The updates that become Items of a Turn (§3.4); the others (plans,
+/// commands, modes, the session's own notes) change no Turn.
+fn itemized(update: &Value) -> bool {
+    matches!(update["sessionUpdate"].as_str(), Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update"))
+}
+
+/// One `session/update` read into `turn` of `d` at `at` (§3.4): its Items,
+/// or the context it reports (with no Turn, for the newest one).
+fn apply(d: &mut AgentDetail, turn: Option<&str>, update: &Value, at: chrono::DateTime<chrono::Utc>) {
     let kind = update["sessionUpdate"].as_str().unwrap_or_default();
     if kind == "usage_update" {
+        let newest = d.turns.last().and_then(|t| t["id"].as_str()).unwrap_or_default().to_owned();
         if let (Some(used), Some(size)) = (update["used"].as_u64(), update["size"].as_u64()) {
-            d.context_usage = ContextUsage::measured(used, size, turn, at);
+            d.context_usage = ContextUsage::measured(used, size, turn.unwrap_or(&newest), at);
         }
         return;
     }
+    let Some(turn) = turn.filter(|_| itemized(update)) else { return };
+    delivered(d, turn);
     let entry = d.turn_at(turn, at);
     if !entry["items"].is_array() {
         entry["items"] = json!([]);
@@ -306,6 +316,21 @@ fn apply(d: &mut AgentDetail, turn: &str, update: &Value, at: chrono::DateTime<c
         }
         // Plans, commands, modes and the session's own notes change no Item.
         _ => {}
+    }
+}
+
+/// dsh took the Turn's prompt (an update for it, or its answer): its user
+/// message carries the client ID it was sent under, as a Codex, Claude or
+/// OpenCode one does once delivered, which binds its receipt (T-120). A
+/// prompt dsh refused, or never answered, gets none.
+fn delivered(d: &mut AgentDetail, turn: &str) {
+    let input = format!("{turn}:input");
+    let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn) else { return };
+    let Some(client) = entry["_dshClient"].as_str().map(str::to_owned) else { return };
+    if let Some(item) = entry["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["id"] == input.as_str())) {
+        if item["clientId"].is_null() {
+            item["clientId"] = client.into();
+        }
     }
 }
 
@@ -682,9 +707,12 @@ impl Workspace {
     /// One `session/update`, journaled as dsh sent it and read into the Turn
     /// its open prompt runs, else into the connection's native Turn.
     async fn dsh_update(&self, id: &str, c: &Connection, mut message: Value) {
+        let shown = itemized(&message["params"]["update"]);
         let (turn, native) = match c.prompt.lock().unwrap().clone() {
-            Some(turn) => (turn, false),
-            None => (c.native.lock().unwrap().get_or_insert_with(|| format!("native-{}", uuid::Uuid::new_v4())).clone(), true),
+            Some(turn) => (Some(turn), false),
+            None if shown => (Some(c.native.lock().unwrap().get_or_insert_with(|| format!("native-{}", uuid::Uuid::new_v4())).clone()), true),
+            // Nothing of a Turn: journaled, and the context it may report kept.
+            None => (None, false),
         };
         let owned = self.owner(id).await;
         if self.dsh_current(id, c.generation).is_none() {
@@ -692,11 +720,12 @@ impl Workspace {
         }
         let (agent, params) = (id.to_owned(), message["params"].take());
         let update = params["update"].clone();
-        let written = self.stored_owned(owned, move |store| store.record_event(&agent, "dsh/update", &params, Sel::Turns(vec![turn.clone()]), move |d| {
+        let sel = turn.clone().map_or(Sel::Open, |turn| Sel::Turns(vec![turn]));
+        let written = self.stored_owned(owned, move |store| store.record_event(&agent, "dsh/update", &params, sel, move |d| {
             let at = chrono::Utc::now();
-            apply(d, &turn, &update, at);
-            if native {
-                let entry = d.turn_at(&turn, at);
+            apply(d, turn.as_deref(), &update, at);
+            if let (true, Some(turn)) = (native, &turn) {
+                let entry = d.turn_at(turn, at);
                 entry["status"] = "completed".into();
                 entry["_dshNative"] = true.into();
                 crate::conversation_time::mark_turn_completed(entry, at.timestamp_millis());
@@ -761,6 +790,7 @@ impl Workspace {
             if !matches!(entry["status"].as_str(), Some("inProgress" | "outcomeUnknown")) {
                 return;
             }
+            let answered = !stop.is_null();
             entry["status"] = status.into();
             match error {
                 Some(message) => entry["error"] = json!({"message": message}),
@@ -771,6 +801,9 @@ impl Workspace {
             }
             settle_tools(entry);
             crate::conversation_time::mark_turn_completed(entry, chrono::Utc::now().timestamp_millis());
+            if answered {
+                delivered(d, &turn);
+            }
             refresh_status(d);
         }).map(drop)).await;
         if let Err(error) = written {
@@ -864,6 +897,9 @@ impl Workspace {
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
+            if let Some(client) = &client {
+                entry["_dshClient"] = client.clone().into();
+            }
             entry["items"] = json!([{"id": format!("{requested}:input"), "type": "userMessage", "content": [{"type": "text", "text": words}]}]);
             let started = entry["_yuzunoStartedAt"].as_i64();
             crate::conversation_time::stamp_message(&mut entry["items"][0], started, "core");

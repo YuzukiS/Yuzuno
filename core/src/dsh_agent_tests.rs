@@ -245,13 +245,14 @@ async fn a_new_dsh_agent_keeps_its_level_and_key_and_starts_with_its_model_and_e
 #[tokio::test]
 async fn a_turn_reads_dshs_updates_into_items_and_ends_with_its_answer() {
     let lab = Lab::new();
-    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({"commandsUpdate": true}), json!({}));
     let receipt = lab.send("c1", "hello").await.unwrap();
     assert_eq!(receipt.status, "accepted");
     let turn = lab.turn_ended(receipt.turn_id.as_deref().unwrap()).await;
     assert_eq!(turn["status"], "completed");
     assert_eq!(turn["stopReason"], "end_turn");
     assert_eq!(item(&turn, "userMessage")[0]["content"][0]["text"], "hello");
+    assert_eq!(item(&turn, "userMessage")[0]["clientId"], "c1", "delivered: bound to its receipt");
     assert_eq!(item(&turn, "reasoning")[0]["summary"], json!(["thinking"]));
     assert_eq!(item(&turn, "agentMessage")[0]["text"], "reply: hello");
     let d = lab.ws.store.detail(ID).unwrap();
@@ -272,6 +273,17 @@ async fn a_turn_reads_dshs_updates_into_items_and_ends_with_its_answer() {
     assert_eq!((&read["name"], &read["input"], &read["output"], &read["status"]),
         (&json!("read"), &json!({"path": "a.txt"}), &json!("no such file"), &json!("failed")));
     assert_eq!(item(&turn, "agentMessage")[0]["text"], "done");
+
+    // What dsh says with no prompt open is a Turn of its own, done; what makes no Item (the
+    // commands it lists as each session opens) makes no Turn.
+    let later = lab.send("c3", "LATER").await.unwrap();
+    assert_eq!(lab.turn_ended(later.turn_id.as_deref().unwrap()).await["status"], "completed");
+    let d = lab.until("its own message", |d| d.turns.iter().any(|t| t["_dshNative"] == true)).await;
+    let native: Vec<&Value> = d.turns.iter().filter(|t| t["_dshNative"] == true).collect();
+    assert_eq!(native.len(), 1, "{:?}", d.turns.iter().map(|t| &t["id"]).collect::<Vec<_>>());
+    assert_eq!((&native[0]["status"], &item(native[0], "agentMessage")[0]["text"]), (&json!("completed"), &json!("on my own")));
+    assert_eq!(d.agent.status, "idle");
+    assert_eq!(d.turns.len(), 4, "hello, TOOL, LATER and dsh's own");
     lab.ws.close_agent(ID).await.unwrap();
 }
 

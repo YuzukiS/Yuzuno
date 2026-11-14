@@ -18,7 +18,9 @@ config refers to `$defs.configN`), cut down to the rows Core writes.
 ACP is JSON-RPC 2.0, one object per line. `initialize`, `session/new` and
 `session/close` answer as rc.3 does; an unknown method gets rc.3's -32601.
 `session/resume` of a session ID it is given answers with its options, as
-`session/new` does (resumed sessions are logged, kind `resumed`), and
+`session/new` does (resumed sessions are logged, kind `resumed`); after
+either, with `commandsUpdate`, it sends an `available_commands_update`, as
+ACP agents do; and
 `session/set_config_option` sets an option's current value (logged, kind
 `set`), refusing a value the option does not list. A `session/prompt` whose
 text holds one of these words runs that scene:
@@ -27,6 +29,8 @@ text holds one of these words runs that scene:
   SLEEP   answers only after session/cancel, with stopReason `cancelled`
   EXIT    writes "fixture: exiting" on stderr and exits 3 without answering
   NOISE   writes a line that is not JSON
+  LATER   answers end_turn, then 0.3 s later sends a message of its own, as
+          dsh does once a background task ends (no prompt open)
   TOOL    three tool calls, each started then finished: `bash` (its output
           and exit code in rawOutput), `mcp__yuzuno__peers_list` (a text
           content block) and `read` (failed), then a message and end_turn
@@ -50,6 +54,7 @@ A test may leave $DSH_HOME/fixture.json before the start, an object of:
   ignoreStdin   keeps running after its stdin ends
   ignoreTerm    ignores SIGTERM
   child         starts `sleep 300`, which stays in its process group
+  commandsUpdate  sends available_commands_update as each session opens
 It appends what it saw to $DSH_HOME/fixture-log.jsonl: per run its argv,
 working directory, the DSH_*/DEEPSEEK_* variable names it was given, the
 values of DSH_HOME, DSH_PERMISSION_MODE, DSH_TELEMETRY_DISABLED and
@@ -362,9 +367,13 @@ def serve():
         elif method == "session/new":
             sessions += 1
             send({"id": mid, "result": {"sessionId": "ses-%d" % sessions, "configOptions": CONFIG_OPTIONS}})
+            if CONTROL.get("commandsUpdate"):
+                update("ses-%d" % sessions, {"sessionUpdate": "available_commands_update", "availableCommands": []})
         elif method == "session/resume":
             log({"kind": "resumed", "sessionId": params.get("sessionId")})
             send({"id": mid, "result": {"configOptions": CONFIG_OPTIONS}})
+            if CONTROL.get("commandsUpdate"):
+                update(params.get("sessionId"), {"sessionUpdate": "available_commands_update", "availableCommands": []})
         elif method == "session/set_config_option":
             option = next((o for o in CONFIG_OPTIONS if o["id"] == params.get("configId")), None)
             values = [] if option is None else listed(option["options"])
@@ -400,6 +409,11 @@ def serve():
                 sys.stderr.write("fixture: exiting\n")
                 sys.stderr.flush()
                 sys.exit(3)
+            elif "LATER" in text:
+                send({"id": mid, "result": {"stopReason": "end_turn"}})
+                time.sleep(0.3)
+                update(session, {"sessionUpdate": "agent_message_chunk", "messageId": "m-later",
+                                 "content": {"type": "text", "text": "on my own"}})
             elif "TOOL" in text:
                 for call, title, kind, raw in (("call-b", "bash", "execute", {"command": "ls"}),
                                                ("call-m", "mcp__yuzuno__peers_list", "other", {}),
