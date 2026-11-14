@@ -24,6 +24,7 @@ const text = strings({
   states: { chosen: "Would choose", skipped: "Skipped", unknown: "Unknown", failed: "Start failed", notTried: "Not reached", off: "Off" } as Record<CandidateState, string>,
   accountStates: { pick: "Would use", ok: "Enough", low: "Not enough", unknown: "No reading" } as Record<string, string>,
   what: { weekLeft: "Week left", spendToday: "Spent today" } as Record<string, string>,
+  resets: (t: string) => `resets ${t}`,
   justNow: "just now",
   minAgo: (n: number) => `${n} min ago`,
   hAgo: (n: number) => `${n} h ago`,
@@ -57,6 +58,7 @@ const text = strings({
   states: { chosen: "会选这个", skipped: "跳过", unknown: "未知", failed: "启动失败", notTried: "没轮到", off: "已停用" },
   accountStates: { pick: "会用这个", ok: "够用", low: "不够", unknown: "读不到" },
   what: { weekLeft: "本周剩", spendToday: "今日已花" },
+  resets: (t) => `${t} 重置`,
   justNow: "刚刚",
   minAgo: (n) => `${n} 分钟前`,
   hAgo: (n) => `${n} 小时前`,
@@ -176,6 +178,7 @@ export function NowCard({ record, policy, names, colourOf, changed, error, unava
 /** A candidate's state now, its reasons and readings, inside its card. */
 export function CandidateLive({ live }: { live: RouteCandidate | undefined }) {
   const language = useLanguage();
+  const time = useTimeDisplay();
   const t = text(language);
   if (!live) return null;
   const why = live.reasons.map((r) => reasonWords(r, language)).join(language === "zh-Hans" ? "；" : "; ");
@@ -190,6 +193,13 @@ export function CandidateLive({ live }: { live: RouteCandidate | undefined }) {
           {live.accounts.map((a) => (
             <li key={a.fingerprint} className={a.state === "pick" ? "is-pick" : ""}>
               <span className="routing-live-account">{t.account(a.number)}</span>
+              {/* YN-150: what the choice read, from the account's own row; a record
+                  from before carries it as a reading instead, shown below. */}
+              {a.weekLeftPct != null && !(byAccount.get(String(a.number)) ?? []).some((r) => r.what === "weekLeft") && (
+                <span className="routing-reading">{t.what.weekLeft} <b>{a.weekLeftPct}%</b>
+                  <span className="routing-meter" aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, a.weekLeftPct))}%` }} /></span></span>
+              )}
+              {a.resetsAt && <span className="routing-reading">{t.resets(clock(time).format(Date.parse(a.resetsAt)))}</span>}
               <Readings list={byAccount.get(String(a.number)) ?? []} t={t} />
               <span className={`settings-tag${a.state === "low" ? " is-error" : ""}`}>{t.accountStates[a.state]}</span>
             </li>

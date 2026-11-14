@@ -269,3 +269,22 @@ test("a choice released to start without routing says so, with Core's words, not
   assert.deepEqual(await what(mount(core({ choices }))), ["T-909 · Dev → started without routing", released.message]);
   assert.deepEqual(await what(mount(core({ choices }), "zh-Hans")), ["T-909 · Dev → 未经路由启动", released.messageZh]);
 });
+
+test("a pool's account rows show the week left and the reset time its reading knew (YN-150)", async () => {
+  const at = "2026-11-10T07:00:00+00:00";
+  const when = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(at));
+  const accounts = [
+    { number: 1, fingerprint: "a1b2c3d4e5f60718", state: "low", weekLeftPct: 12, resetsAt: at },
+    { number: 2, fingerprint: "0f1e2d3c4b5a6978", state: "pick", weekLeftPct: 34, resetsAt: at },
+  ];
+  const evaluated = () => [200, record({ candidates: record().candidates.map((c) => c.id === "cl" ? { ...c, readings: [], accounts } : c) })];
+  for (const [language, account, left, reset] of [["en", "Account #2", "Week left 34%", `resets ${when}`], ["zh-Hans", "账号 #2", "本周剩 34%", `${when} 重置`]]) {
+    const page = mount(core({ evaluate: evaluated }), language);
+    await until(() => q(page, ".routing-now"), `the now card (${language})`);
+    const row = card(page, "cl").querySelectorAll(".routing-live-accounts li")[1];
+    assert.deepEqual([...row.querySelectorAll(".routing-live-account, .routing-reading, .settings-tag")].map((x) => x.textContent.trim()),
+      [account, left, reset, language === "en" ? "Would use" : "会用这个"], language);
+    assert.equal(row.querySelector(".routing-meter i").style.width, "34%", "the meter follows the week left");
+    assert.deepEqual(page.errors, []);
+  }
+});
