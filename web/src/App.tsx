@@ -109,7 +109,7 @@ import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { useColumnHold } from "./useColumnHold";
+import { useReadingHold } from "./useReadingHold";
 import { MessageLinks, agentLinkHref, homeLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
@@ -935,8 +935,9 @@ export function App() {
     return () => observer.disconnect();
   }, [measureLatest]);
   // The column changing width under the reader, as the work dock comes or
-  // goes on a wide pane, keeps what they are reading where it is (YN-114).
-  useColumnHold(scroller, stickToBottom);
+  // goes on a wide pane, or what is below them folding away near the end,
+  // keeps what they are reading where it is (YN-114).
+  useReadingHold(scroller, stickToBottom);
   const fileReturn = useRef<{
     agentId: string;
     scrollTop: number;
