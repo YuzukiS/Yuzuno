@@ -1,13 +1,15 @@
 import type { ComposerDraft } from "./composer-draft.ts";
 
-export type DraftImage = {
+/** An image Core saved for a message: its content-addressed ID, as it came. */
+export type SavedImage = {
   id: string;
-  agentId: string;
   name: string;
   width: number;
   height: number;
   bytes: number;
 };
+/** An image in an Agent's draft, saved to that Agent's own images. */
+export type DraftImage = SavedImage & { agentId: string };
 export const imageIdPattern = /^[a-f0-9]{64}\.(png|jpg|webp)$/;
 
 /** Forked native history keeps the original owner's path. Extract only our
@@ -49,7 +51,7 @@ export function clipboardImages(data: DataTransfer | null): File[] {
 /** What can be checked before any image is read: how many, and their types. */
 export function validateImageChoice(
   files: readonly File[],
-  current: readonly DraftImage[],
+  current: readonly { bytes: number }[],
 ) {
   if (files.length + current.length > MAX_IMAGES)
     throw new Error("Attach at most 8 images per message.");
@@ -59,7 +61,7 @@ export function validateImageChoice(
 }
 export function validateImageFiles(
   files: readonly File[],
-  current: readonly DraftImage[],
+  current: readonly { bytes: number }[],
 ) {
   validateImageChoice(files, current);
   for (const file of files) {
