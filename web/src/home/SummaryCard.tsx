@@ -33,7 +33,7 @@ import { CardResponsible } from "./CardResponsible";
 import { taskEnded } from "./card-responsible";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
-import { BriefDensity } from "./home-density";
+import { BriefDensity } from "./brief/density";
 import { homeText } from "./home-text";
 import { useReportOpen } from "./report/report-open";
 import { DataAsOf, PinButton } from "./SectionCard";
