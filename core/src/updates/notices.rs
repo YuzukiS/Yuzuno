@@ -9,9 +9,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 mod store;
-// They need the running Core's process identity, which only Linux reads so
-// far (state.rs; YN-108 M2a).
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod tests;
 
 fn active_turn(detail: &AgentDetail) -> Option<&str> {

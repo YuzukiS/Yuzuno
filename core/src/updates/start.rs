@@ -1167,8 +1167,6 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     pub(in crate::updates) fn held(outcome: &Value) -> Held {
         Held(outcome["pid"].as_u64().and_then(|pid| state::ProcessIdentity::read(pid as u32).ok()))
     }
-    /// Needs the process identity, which only Linux reads so far (YN-108 M2a).
-    #[cfg(target_os = "linux")]
     pub(in crate::updates) fn alive(core: &Held) -> bool {
         core.0.as_ref().is_some_and(state::ProcessIdentity::alive)
     }
