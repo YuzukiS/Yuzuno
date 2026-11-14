@@ -160,8 +160,10 @@ fn the_message_is_cores_lead_then_the_instruction_and_its_id_fits() {
     let plain = refresh::message("Daily", "Digest", KEY, "11-14 08:00 UTC", 0, None, INSTRUCTION);
     assert!(!plain.contains("错过") && !plain.contains("preference"));
     // Core's project IDs are UUIDs; a message ID is at most 100 bytes.
-    let id = refresh::client_id("6f9d1c2e-3b4a-4c5d-8e7f-0a1b2c3d4e5f", i64::MAX, at("2026-11-14T08:00:00Z"));
+    let id = refresh::client_id("6f9d1c2e-3b4a-4c5d-8e7f-0a1b2c3d4e5f", i64::MAX, at("2026-11-14T08:00:00Z"), false);
     assert!(id.len() <= 100 && id.ends_with("-20261114T0800Z"), "{id}");
+    let now = refresh::client_id("6f9d1c2e-3b4a-4c5d-8e7f-0a1b2c3d4e5f", i64::MAX, at("2026-11-14T08:03:12Z"), true);
+    assert!(now.len() <= 100 && now.ends_with("-now-20261114T080312Z"), "{now}");
 }
 
 fn accept(section: &Value) -> Result<Value, Value> {
@@ -481,6 +483,10 @@ async fn a_card_whose_owner_no_longer_leads_left_or_was_removed_pauses_and_nothi
         json!({"requestId":"remove","expectedVersion":expected,"changes":[{"op":"remove","key":KEY}]})).await.unwrap();
     assert!(removed.is_ok(), "{removed:?}");
     ended(&ws, "a", "completed", None);
+    // Its refresh goes with it (R2, design §5).
+    assert!(refresh::one(&ws.store.db.read().unwrap(), &project, identity).unwrap().is_none());
+    // One a Core before R2 left behind pauses, saying why.
+    make(&ws, &project, identity, json!({"every":"day","at":"08:00"}), "2026-11-13T09:00:00Z");
     refresh::tick(&ws, &send, at("2026-11-14T08:03:00Z")).await.unwrap();
     assert_eq!(paused(), Some("card_removed".to_owned()));
     assert!(sends(&log).is_empty(), "nothing went to an owner that may no longer take it");
