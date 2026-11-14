@@ -183,7 +183,7 @@ fn target(job: &Value) -> Value {
     let requested = job["target"]["requested"].clone();
     json!({"kind": kind, "machineId": id, "machineName": name,
         "hostId": job["remote"]["hostId"], "requested": requested,
-        "coreHost": !remote(job) || job["executor"]["kind"] == "windows",
+        "coreHost": !remote(job) || matches!(job["executor"]["kind"].as_str(), Some("windows" | "mac")),
         "submittingAgentMachine": job["agentMachine"],
         "note": if remote(job) { "Ran on that machine; Core records what its helper reported" }
             else { "Ran on this Core's host in its own systemd scope" }})
@@ -539,6 +539,7 @@ fn where_ran(t: &Value) -> String {
     match t["kind"].as_str() {
         Some("local") => format!("this Core's host {name} (machine {})", md(&t["machineId"])),
         Some("windows") => format!("Windows on this Core's PC, {name}"),
+        Some("mac") => format!("this Core's Mac, {name}"),
         _ => format!("SSH machine {name} ({}{})", md(&t["machineId"]),
             t["hostId"].as_str().map(|h| format!(", host {}", hex(&json!(h.chars().take(12).collect::<String>())))).unwrap_or_default()),
     }

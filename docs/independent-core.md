@@ -23,7 +23,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 |---|---|---|
 | Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks, and the public core.13's first Claude start, which downloads the Agent SDK (no sign-in). Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 and the public core.13, each with registration, Core and UI file serving, restart and data-preserving reinstall; no real login, Claude start, browser rendering or systemd Jobs in that rootfs. |
 | Core on Linux aarch64 | Planned | No package yet. |
-| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, and the release's helper installs, starts and stops a managed Core there ([on macOS](#install-start-and-stop-on-macos)), but local Jobs are refused and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
+| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, and the release's helper installs, starts and stops a managed Core there ([on macOS](#install-start-and-stop-on-macos)); Jobs on its own host run in limited mode (limits declared only), and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
 | Core on Windows | Unavailable | On Windows, run Core in WSL2. |
 | Core as a systemd service | Planned | Start it as shown below; see the note there. |
 | Browser on the Core host | Tested | Chromium. |
@@ -359,7 +359,7 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 A macOS Core is being built (YN-108). Remote Codex Agents on a Mac (over SSH) already work, but that is not a macOS Core. Today:
 
 - **Tests:** Core and its tests build on Apple silicon, and CI runs the tests there on every change to Core (`.github/workflows/core-macos.yml`).
-- **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither, so they are refused there. Jobs on registered machines work.
+- **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither. A macOS Core runs them on This Mac in limited mode instead, as on a Mac over SSH: their CPU and RAM queue and are recorded, nothing enforces them, and runs of stages, checkpoints and guardGit are refused ([macOS Core](macos-core.md)). It needs the Xcode Command Line Tools. Jobs on registered machines work.
 - **Managed updates:** identify the running Core through libproc on macOS (`core/src/updates/state.rs`), but there is no macOS package to update to yet.
 - **Start and stop:** through the release's helper, [as above](#install-start-and-stop-on-macos).
 - **Packages:** release packaging and signing build Linux x86_64 only (`tools/build-core-artifact.py`, `tools/package-release.py`).
