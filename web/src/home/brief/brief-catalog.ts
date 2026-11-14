@@ -22,6 +22,7 @@ export type Point = [number | string, number | null];
 export type Series = { name: string; points: Point[] };
 export type GroupProps = Props<"Group">;
 export type ColumnsProps = Props<"Columns">;
+export type TabsProps = Props<"Tabs">;
 export type MarkdownProps = Props<"Markdown">;
 export type MathProps = Props<"Math">;
 export type ChecklistProps = Props<"Checklist">;
@@ -67,6 +68,7 @@ export const BRIEF_COMPONENTS = [
   "BriefBody",
   "Group",
   "Columns",
+  "Tabs",
   "Markdown",
   "Math",
   "Checklist",

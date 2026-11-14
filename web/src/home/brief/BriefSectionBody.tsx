@@ -26,6 +26,7 @@ import { BriefButton, BriefCalc, type Press } from "./Calc";
 import { BriefDiagram } from "./Diagram";
 import { BriefFigure } from "./Figure";
 import { BriefSteps, BriefTimeline } from "./Steps";
+import { BriefTabs, TAB_PAGES, tabPages } from "./Tabs";
 import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
 import { useSectionStore } from "./brief-state";
 import { useBriefDensity } from "../home-density";
@@ -65,7 +66,7 @@ class PartBoundary extends Component<{ children: ReactNode }, { failed: boolean 
  */
 export type BodyDrawn = "drawn" | "fallback" | "failed";
 /** Blocks that only lay others out: drawing them shows none of the body's content. */
-const LAYOUT_PARTS = new Set(["BriefBody", "Group", "Columns"]);
+const LAYOUT_PARTS = new Set(["BriefBody", "Group", "Columns", "Tabs"]);
 /** How many of one body's content blocks are drawn and still shown: each counts itself while it stands. */
 type Tally = { shown: number };
 const DrawTally = createContext<Tally | null>(null);
@@ -178,6 +179,7 @@ const registry: ComponentRegistry = {
   BriefBody: part(({ children }: { children?: ReactNode }) => <div className="brief-root">{children}</div>),
   Group: part(BriefGroup),
   Columns: part(BriefColumns),
+  Tabs: part(BriefTabs),
   Markdown: part(BriefMarkdown),
   Math: part(BriefMath),
   Checklist: part(BriefChecklist),
@@ -304,6 +306,7 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
   const shownOnly = only?.join("\n");
   const spec = useMemo(() => {
     if (!isBriefSpec(section.body)) return null;
+    const stored = section.body.elements;
     // A chart's data is asked for by its element id, which json-render does
     // not pass to components; give it to charts as a prop. Titles an Agent
     // may leave out get the contract's display defaults, should Core have
@@ -329,6 +332,8 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
           return [key, { ...node, props: { ...node.props, title: "Table" } }];
         // A research desk reads its numbers and keeps its selection by its id (T-9).
         if (node?.type === "ResearchDesk") return [key, { ...node, props: { ...node.props, elementKey: key } }];
+        // A Tabs names its pages on its tabs (YN-113 R6), from its own children's Groups.
+        if (node?.type === "Tabs") return [key, { ...node, props: { ...node.props, [TAB_PAGES]: tabPages(stored, key) } }];
         if (!CHART_TYPES.has(node?.type)) return [key, node];
         return [key, { ...node, props: { title: "Chart", ...node.props, elementKey: key } }];
       }),

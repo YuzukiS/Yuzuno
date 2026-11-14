@@ -2149,3 +2149,101 @@ test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens
   await until(() => /Step 1 of 2/.test(steps().textContent), "Back from the clamped step");
   assert.deepEqual(page.errors, []);
 });
+
+/** The contract's tabs example (YN-113 R6) with a third page, Policy. */
+const digest = (window) => {
+  const put = JSON.parse(JSON.stringify(window.examples.tabs));
+  put.body.elements.more.children.push("policy");
+  put.body.elements.policy = { type: "Group", props: { title: "Policy" }, children: ["rule"] };
+  put.body.elements.rule = { type: "Markdown", props: { text: "A transit data rule takes effect." } };
+  return put;
+};
+
+test("YN-113 R6 Tabs: one tab per page as the WAI-ARIA pattern has it; arrows round the ends, Home and End; every page drawn, one shown", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, digest(window));
+  window.renderSection(section, PROJECT);
+  const list = document.querySelector('.brief-tabs > [role="tablist"]');
+  assert.equal(list.getAttribute("aria-label"), "Categories");
+  const tabs = [...list.querySelectorAll('[role="tab"]')];
+  const panels = [...document.querySelectorAll('.brief-tabs > [role="tabpanel"]')];
+  assert.deepEqual(tabs.map((tab) => tab.textContent), ["News", "Papers", "Policy"], "each tab is its page's title");
+  assert.equal(panels.length, 3);
+  tabs.forEach((tab, at) => {
+    assert.equal(tab.getAttribute("aria-controls"), panels[at].id);
+    assert.equal(panels[at].getAttribute("aria-labelledby"), tab.id);
+    assert.equal(tab.type, "button");
+  });
+  const shown = () => tabs.map((tab, at) => [tab.getAttribute("aria-selected"), tab.tabIndex, panels[at].hidden]);
+  const only = (at) => tabs.map((_, i) => (i === at ? ["true", 0, false] : ["false", -1, true]));
+  assert.deepEqual(shown(), only(0), "the first page shows first; only its tab is in the Tab order");
+  assert.match(panels[0].textContent, /An open model reaches 1\.0/);
+  assert.match(panels[1].textContent, /Sparse attention at 1M tokens/, "a hidden page is drawn, only hidden");
+  assert.equal(panels[1].querySelector(".brief-group > h4").textContent, "Papers", "its title stays in the page, for the stylesheet to leave to the tab");
+  tabs[0].focus();
+  for (const [name, at] of [["ArrowRight", 1], ["ArrowRight", 2], ["ArrowRight", 0], ["ArrowLeft", 2], ["Home", 0], ["End", 2], ["ArrowLeft", 1]]) {
+    key(window, document.activeElement, name);
+    await until(() => tabs[at].getAttribute("aria-selected") === "true", name);
+    assert.deepEqual(shown(), only(at), name);
+    assert.equal(document.activeElement, tabs[at], `${name} moves the focus with the page`);
+  }
+  // Other keys are left to the page: Tab leaves the row, Enter does nothing more.
+  assert.equal(key(window, tabs[1], "Tab"), true, "not prevented");
+  tabs[0].click();
+  await until(() => tabs[0].getAttribute("aria-selected") === "true", "a click");
+  assert.deepEqual(shown(), only(0));
+  // The same version drawn again keeps the page open; the next version starts at the first page again.
+  tabs[2].click();
+  await until(() => tabs[2].getAttribute("aria-selected") === "true", "Policy");
+  window.renderSection({ ...section }, PROJECT);
+  assert.equal(document.querySelectorAll('[role="tab"]')[2].getAttribute("aria-selected"), "true");
+  window.renderSection({ ...section, version: 4 }, PROJECT);
+  await until(() => document.querySelectorAll('[role="tab"]')[0].getAttribute("aria-selected") === "true", "the next version");
+  assert.equal(document.querySelectorAll('[role="tabpanel"]:not([hidden])').length, 1);
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-113 R6 Tabs: a page counts its one Collection's items on its tab; no label is Pages, in the interface language; the card never draws it; copied, each page is a section", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, digest(window));
+  // A Collection (YN-113 R5) is drawn by its own renderer; its count is read from the body as Core keeps it.
+  const elements = section.body.elements;
+  const counted = {
+    ...section,
+    body: {
+      ...section.body,
+      elements: {
+        ...elements,
+        more: { ...elements.more, props: { id: "more" } },
+        papers: { ...elements.papers, children: ["reading", "list"] },
+        list: { type: "Collection", props: { id: "list", layout: "list", items: Array.from({ length: 14 }, (_, i) => ({ id: `i${i}`, title: `Paper ${i}` })) } },
+        policy: { ...elements.policy, children: ["rule", "list2", "list3"] },
+        list2: { type: "Collection", props: { id: "list2", items: [{ id: "a", title: "A" }, { id: "b", title: "B" }] } },
+        list3: { type: "Collection", props: { id: "list3", items: [{ id: "c", title: "C" }, { id: "d", title: "D" }] } },
+      },
+    },
+  };
+  window.renderSection(counted, PROJECT);
+  const tabs = () => [...document.querySelectorAll('[role="tab"]')];
+  assert.deepEqual(tabs().map((tab) => [tab.firstChild.textContent, tab.querySelector(".brief-tab-count")?.textContent ?? null]),
+    [["News", null], ["Papers", "14"], ["Policy", null]], "one Collection counts; two do not add up");
+  assert.equal(document.querySelector('[role="tablist"]').getAttribute("aria-label"), "Pages");
+  window.chooseLanguage("zh-Hans");
+  window.renderSection({ ...counted }, PROJECT);
+  assert.equal(document.querySelector('[role="tablist"]').getAttribute("aria-label"), "分页");
+  assert.deepEqual(tabs().map((tab) => tab.firstChild.textContent), ["News", "Papers", "Policy"], "titles stay as written");
+  window.chooseLanguage("en");
+  // Home's card shows the summary only: the lead, never the tabs.
+  window.renderCard(section, PROJECT);
+  assert.match(document.body.textContent, /Three stories and two new papers worth reading today\./);
+  assert.equal(document.querySelector('[role="tablist"], [role="tabpanel"]'), null, "the card draws no Tabs");
+  // Copy report: each page a section under its title, every page whatever was open.
+  const copied = window.sectionMarkdown(section, "en", { clock: "h24", timeZone: "UTC" });
+  assert.match(copied, /## News\n\n- An open model reaches 1\.0[^\n]*\n- A chip export rule[^\n]*\n- A city opens its transit data\.\n\n## Papers\n\n[\s\S]*Sparse attention at 1M tokens[\s\S]*\n\n## Policy\n\nA transit data rule takes effect\.\n$/);
+  assert.ok(!/Categories|Pages/.test(copied), "the row of tabs is not copied");
+});

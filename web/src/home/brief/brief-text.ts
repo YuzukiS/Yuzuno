@@ -142,6 +142,8 @@ export const briefText = strings({
   stepNext: "Next",
   stepsLabel: "Steps",
   timelineState: { done: "Done", now: "Now", next: "Planned" } as Record<"done" | "now" | "next", string>,
+  // Tabs (YN-113 R6): the row of tabs, when its author gave it no label.
+  tabs: "Pages",
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -258,6 +260,7 @@ export const briefText = strings({
   stepNext: "下一步",
   stepsLabel: "步骤",
   timelineState: { done: "已完成", now: "进行中", next: "计划" },
+  tabs: "分页",
 });
 
 /**

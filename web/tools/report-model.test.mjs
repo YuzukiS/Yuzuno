@@ -121,3 +121,14 @@ test("YN-16 a summary's visual may be a Group of inputs, the card's live figure"
   assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, size: "wide" });
   assert.equal(summaryOf(report({ type: "Group", props: {}, children: ["note"] })), null, "a Group of no input is no figure");
 });
+
+test("YN-113 R6 a Tabs is a part of the page's outline by its label; its figures are found under it", () => {
+  const tabs = (props) => section("digest", 7, 1, ["answer", "more"], {}, {
+    body: { root: "body", elements: { ...elements, body: { type: "BriefBody", props: {}, children: ["answer", "more"] }, more: { type: "Tabs", props, children: ["method", "evidence"] } } },
+  });
+  const labelled = tabs({ id: "more", label: "Categories" });
+  assert.deepEqual(outlineOf(labelled, partsOf(labelled).flow), [{ id: "more", title: "Categories" }]);
+  assert.deepEqual(figuresOf(labelled, partsOf(labelled).flow).map((entry) => [entry.id, entry.title]), [["more", "Loss by step"], ["more", "Runs"]]);
+  const bare = tabs({ id: "more" });
+  assert.deepEqual(outlineOf(bare, partsOf(bare).flow), [], "without a label it has no name of its own to list");
+});
