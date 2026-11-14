@@ -14,6 +14,7 @@ fn main() {
             "local_core_install",
             "local_core_start",
             "local_core_cancel",
+            "local_core_auto_start",
             "set_appearance",
             "desktop_update_status",
             "desktop_update_check",

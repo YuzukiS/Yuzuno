@@ -142,14 +142,17 @@ fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
 
 /// Written whole, then renamed over the old record, so a crash leaves one or
 /// the other. Failing to save only means the next launch asks again.
+/// `auto_start` is the record's own switch: callers changing the list pass
+/// what they read, and only `local_core_auto_start` changes it.
 fn write_entries(
     app: &AppHandle,
     entries: &[entries::Entry],
     selected: Option<&str>,
     remembered: &[entries::Remembered],
+    auto_start: bool,
 ) -> Result<(), String> {
     let path = saved_core_file(app).ok_or("this app has no data folder to keep it in")?;
-    let text = entries::record(entries, selected, remembered)?;
+    let text = entries::record(entries, selected, remembered, auto_start)?;
     let staged = path.with_extension("json.new");
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(&path))
         .and_then(|()| std::fs::write(&staged, text))
@@ -211,7 +214,7 @@ fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: 
         list[at].start = None;
     }
     let remembered = entries::remembering(&saved, &list);
-    if let Err(error) = write_entries(app, &list, Some(&id), &remembered) {
+    if let Err(error) = write_entries(app, &list, Some(&id), &remembered, saved.auto_start()) {
         eprintln!("Unable to remember the workspace for the next launch: {error}");
     }
 }
@@ -238,7 +241,7 @@ fn remember_start(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
     };
     list[at].start = start.filter(|start| start.core == *core).cloned();
     let remembered = entries::remembering(&saved, &list);
-    if let Err(error) = write_entries(app, &list, selected.as_deref(), &remembered) {
+    if let Err(error) = write_entries(app, &list, selected.as_deref(), &remembered, saved.auto_start()) {
         eprintln!("Unable to remember the start profile: {error}");
     }
 }
@@ -268,6 +271,13 @@ struct ConnectionInfo {
     start_distro: Option<String>,
     /// This computer's start entry has accepted that installation before.
     start_confirmed: bool,
+    /// Which local Core back end starts the shown Core: `"wsl"` on Windows,
+    /// `"macos"` once YN-108 connects the Mac's; `None` when there is no
+    /// start this app can run here (YN-107 design section 6, part 1).
+    start_platform: Option<&'static str>,
+    /// Whether the page starts that Core by itself, once, when the app opens
+    /// and it does not answer, if this computer has confirmed it.
+    auto_start_local_core: bool,
     /// The Workspaces saved here, and which one was last opened. Saved is
     /// not reachable: this says what is written down, never that any of it
     /// answers. `savedError` says the list could not be read, which is not
@@ -366,6 +376,12 @@ fn require_connection_page(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// The local Core back end that would run `start`: only the Windows app
+/// starts a Core so far, in WSL.
+fn start_platform(_start: &StartProfile) -> Option<&'static str> {
+    cfg!(windows).then_some("wsl")
+}
+
 #[tauri::command]
 fn connection_info(
     window: WebviewWindow,
@@ -396,7 +412,9 @@ fn connection_info(
     Ok(ConnectionInfo {
         core_url,
         start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
+        start_platform: shown.as_ref().and_then(start_platform),
         start_confirmed: shown.is_some_and(|start| start.confirmed),
+        auto_start_local_core: saved.auto_start(),
         error: startup
             .as_ref()
             .err()
@@ -478,13 +496,15 @@ fn forget_address(window: WebviewWindow, url: String) -> Result<ConnectionInfo, 
         entries::Saved::Entries { selected, .. } => selected.clone(),
         _ => None,
     };
-    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered, saved.auto_start())
         .map_err(|error| format!("This computer could not save the change ({error}). What is remembered is as it was."))?;
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url: String::new(),
         start_distro: None,
+        start_platform: None,
         start_confirmed: false,
+        auto_start_local_core: saved.auto_start(),
         error: None,
         auto_connect: false,
         saved: saved.entries().iter().map(SavedEntry::of).collect(),
@@ -519,13 +539,15 @@ fn change_entries(
     change(&mut list)?;
     let selected = selected.filter(|id| list.iter().any(|kept| kept.id == *id));
     let remembered = entries::remembering(&saved, &list);
-    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered, saved.auto_start())
         .map_err(|error| format!("This computer could not save the change ({error}). The list is as it was."))?;
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url: String::new(),
         start_distro: None,
+        start_platform: None,
         start_confirmed: false,
+        auto_start_local_core: saved.auto_start(),
         error: None,
         auto_connect: false,
         saved: saved.entries().iter().map(SavedEntry::of).collect(),
@@ -1020,6 +1042,7 @@ fn main() {
             local_core::local_core_install,
             local_core::local_core_start,
             local_core::local_core_cancel,
+            local_core::auto_start::local_core_auto_start,
             update::desktop_update_status,
             update::desktop_update_check,
             update::desktop_update_install,

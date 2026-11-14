@@ -23,6 +23,7 @@
 //! `cancelled`, `copyFailed`, `tooOld`, `installFailed`, `recorded`,
 //! `startFailed`, `starting`, `openFailed`.
 
+pub mod auto_start;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod check_rules;
 #[cfg_attr(not(windows), allow(dead_code))]
