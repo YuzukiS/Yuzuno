@@ -612,6 +612,36 @@ fn departed(state: &str) -> &'static str {
 struct Planned {
     owner: String,
     open_ask: bool,
+    /// Its own `task` names a task (YN-86 S2a).
+    bound: bool,
+}
+
+/// The topics that count toward MAX_TOPICS (YN-136): all but those whose
+/// own section is bound to a task. A task's card leaves the Brief with its
+/// task (cards.rs task_closed), so the limit keeps to the topics a lead
+/// keeps by hand.
+fn counted_topics(planned: &BTreeMap<String, Planned>) -> BTreeSet<&str> {
+    planned.keys().map(|key| topic(key)).filter(|top| !planned.get(*top).is_some_and(|p| p.bound)).collect()
+}
+
+/// Why planning `entry` at `key` is refused for the topic limit: it makes
+/// more topics count than before, and more than MAX_TOPICS. A change that
+/// adds none is never refused, so a Brief a remove left above the limit
+/// (a card's section removed under its sub-topics) takes everything else.
+fn topic_limit(planned: &BTreeMap<String, Planned>, key: &str, entry: &Planned) -> Option<String> {
+    let before = counted_topics(planned).len();
+    let unbinds = planned.get(key).is_some_and(|p| p.bound) && !entry.bound;
+    let mut next = planned.clone();
+    next.insert(key.into(), entry.clone());
+    let after = counted_topics(&next).len();
+    (after > before && after > MAX_TOPICS).then(|| {
+        if unbinds {
+            format!("Unbinding {key} makes its topic count among the {MAX_TOPICS} topics not bound to a task, and the Brief has {before}; remove one first.")
+        } else {
+            format!("The Brief already has {before} topics not bound to a task; put this under an existing topic, or remove one. \
+                     A task's card (a section a lead binds with task) does not count.")
+        }
+    })
 }
 
 /// The owner, sub-topic, claim and per-Brief limit rules, applied to the
@@ -623,7 +653,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
     let live = sections::live(db, &ctx.project)?;
     let mut planned: BTreeMap<String, Planned> = live
         .iter()
-        .map(|row| (row.key.clone(), Planned { owner: row.owner_id.clone(), open_ask: row.unresolved_ask() }))
+        .map(|row| (row.key.clone(), Planned { owner: row.owner_id.clone(), open_ask: row.unresolved_ask(), bound: row.task_id.is_some() }))
         .collect();
     let rows: BTreeMap<&str, &Row> = live.iter().map(|row| (row.key.as_str(), row)).collect();
     let mut owners = Owners::default();
@@ -727,12 +757,6 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                     Some(_) => {}
                     None => {
                         let top = topic(key);
-                        let topics: BTreeSet<&str> = planned.keys().map(|k| topic(k)).collect();
-                        if !topics.contains(top) && topics.len() >= MAX_TOPICS {
-                            problems.push(problem("topic_limit", format!("{at}.key"),
-                                format!("The Brief already has {MAX_TOPICS} topics; put this under an existing topic, or remove one."), "limits"));
-                            continue;
-                        }
                         let prefix = format!("{top}/");
                         if key.contains('/') && planned.keys().filter(|k| k.starts_with(&prefix)).count() >= MAX_SUBTOPICS {
                             problems.push(problem("topic_limit", format!("{at}.key"),
@@ -740,6 +764,18 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                             continue;
                         }
                     }
+                }
+                // A put without task keeps the binding it has (apply);
+                // a new key has none.
+                let bound = match &change.task {
+                    Some(task) => task.is_some(),
+                    None => existing.as_ref().is_some_and(|p| p.bound),
+                };
+                let entry = Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask", bound };
+                if let Some(why) = topic_limit(&planned, key, &entry) {
+                    let field = if existing.is_some() { "task" } else { "key" };
+                    problems.push(problem("topic_limit", format!("{at}.{field}"), why, "limits"));
+                    continue;
                 }
                 // An executor's gate (T-43 S4): its own task's, at a gate step.
                 let gate = &change.section["ask"]["gate"];
@@ -750,17 +786,26 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         continue;
                     }
                 }
-                planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
+                planned.insert(key.into(), entry);
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s
-            // (`patched`'s).
+            // (`patched`'s). An edit's task binds or unbinds the section.
             Op::Edit | Op::Patch => match &existing {
                 None => problems.push(problem("not_found", format!("{at}.key"), match gone()? {
                     note if note.is_empty() => format!("No live section has key {key}; create it with put."),
                     note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
                 }, "sections")),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
-                Some(_) => {}
+                Some(p) => {
+                    if let Some(task) = &change.task {
+                        let entry = Planned { bound: task.is_some(), ..p.clone() };
+                        if let Some(why) = topic_limit(&planned, key, &entry) {
+                            problems.push(problem("topic_limit", format!("{at}.task"), why, "limits"));
+                            continue;
+                        }
+                        planned.insert(key.into(), entry);
+                    }
+                }
             },
             Op::Resolve => match &existing {
                 None => problems.push(missing()?),

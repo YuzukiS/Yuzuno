@@ -415,3 +415,56 @@ async fn a_released_executors_sub_topics_stay_on_its_card() {
     }
     assert_eq!((owner("design/result").as_deref(), owner("build/result").as_deref()), (Some("a"), Some("c")));
 }
+
+/// YN-136: a task's card does not count toward the Brief's 12 topics. With
+/// 12 topics not bound to a task, a lead still puts a card and its executor
+/// a sub-topic under it, while a 13th topic not bound to a task (or a
+/// sub-topic that would start one) is refused with topic_limit.
+#[tokio::test]
+async fn a_tasks_card_does_not_count_toward_the_topic_limit() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Design the page");
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    let topics: Vec<Value> = (0..MAX_TOPICS).map(|n| put(&format!("t{n}"), "status")).collect();
+    accept(&ws, "a", input("a1", 0, topics)).await;
+
+    accept(&ws, "a", input("a2", 1, vec![bound("yn-1", "status", &task)])).await;
+    assert_eq!(card(&brief(&ws, "a"), "yn-1")["task"]["id"], json!(task));
+    for (request, key) in [("a3", "t12"), ("a4", "t12/part")] {
+        let refused = reject(&ws, "a", input(request, 2, vec![put(key, "status")])).await;
+        assert_eq!((codes(&refused), refused["problems"][0]["path"].clone()), (vec!["topic_limit".to_owned()], json!("changes[0].key")), "{key}");
+        assert!(refused["problems"][0]["reason"].as_str().unwrap().contains("not bound to a task"), "{refused}");
+    }
+    accept(&ws, "c", input("c1", 2, vec![put("yn-1/result", "report")])).await;
+    // A put of the card without task keeps it bound, so it adds no topic.
+    accept(&ws, "a", input("a5", 3, vec![put("yn-1", "status")])).await;
+    assert_eq!(card(&brief(&ws, "a"), "yn-1")["task"]["id"], json!(task));
+}
+
+/// Unbinding a card makes its topic count again: at the limit it is refused
+/// with topic_limit and the section stays its task's card; once a topic not
+/// bound to a task is removed, the same unbinding is accepted.
+#[tokio::test]
+async fn unbinding_a_card_at_the_limit_is_refused() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Design the page");
+    let mut changes: Vec<Value> = (0..MAX_TOPICS).map(|n| put(&format!("t{n}"), "status")).collect();
+    changes.push(bound("yn-1", "status", &task));
+    accept(&ws, "a", input("a1", 0, changes)).await;
+
+    let unbind = json!({"op":"edit","key":"yn-1","task":null});
+    let mut put_unbound = put("yn-1", "status");
+    put_unbound["task"] = Value::Null;
+    for (request, change) in [("a2", unbind.clone()), ("a3", put_unbound)] {
+        let refused = reject(&ws, "a", input(request, 1, vec![change])).await;
+        assert_eq!((codes(&refused), refused["problems"][0]["path"].clone()), (vec!["topic_limit".to_owned()], json!("changes[0].task")), "{request}");
+        assert!(refused["problems"][0]["reason"].as_str().unwrap().contains("Unbinding yn-1"), "{refused}");
+        assert_eq!(card(&brief(&ws, "a"), "yn-1")["task"]["id"], json!(task), "{request}: still the task's card");
+    }
+    assert_eq!(version(&ws, &project), 1, "nothing was written");
+
+    accept(&ws, "a", input("a4", 1, vec![op("remove", "t0"), unbind])).await;
+    assert!(section(&brief(&ws, "a"), "yn-1").get("card").is_none(), "unbound");
+}
