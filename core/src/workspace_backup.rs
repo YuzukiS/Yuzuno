@@ -62,7 +62,7 @@ const CREDENTIALS: &str = "collaboration.mcp.agent.*";
 
 /// Folders Core keeps its own files in; what is copied from each is chosen
 /// by the database copy (`Named`).
-pub(crate) const INCLUDED: &[&str] = &["input-images", "home-images", "brief-attachments", "pr-reviews", "jobs"];
+pub(crate) const INCLUDED: &[&str] = &["input-images", "home-images", "input-files", "home-files", "brief-attachments", "pr-reviews", "jobs"];
 /// Names in the Workspace folder left out, with the reason the manifest gives.
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("workspace.lock", "The lock of the Core using the Workspace"),
@@ -514,10 +514,9 @@ impl Named {
     /// folders) belongs in the backup, or why not.
     fn decide(&self, folder: &str, entry: &str) -> Result<(), &'static str> {
         let named = match folder {
-            "input-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
-            "input-images" => self.agents.contains(entry),
-            "home-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
-            "home-images" => self.projects.contains(entry),
+            "input-images" | "home-images" | "input-files" | "home-files" if entry.starts_with(".tmp") => return Err(TEMPORARY),
+            "input-images" | "input-files" => self.agents.contains(entry),
+            "home-images" | "home-files" => self.projects.contains(entry),
             "brief-attachments" if entry.starts_with(".tmp-") => return Err(TEMPORARY),
             "brief-attachments" => self.attachments.contains(entry),
             "pr-reviews" if self.running_reviews.contains(entry) => return Err(RUNNING_REVIEW),
@@ -531,7 +530,7 @@ impl Named {
     /// Why a name inside a kept entry is left out, if it is.
     fn skip(folder: &str, name: &str) -> Option<&'static str> {
         match folder {
-            "input-images" | "home-images" if name.starts_with(".tmp") => Some(TEMPORARY),
+            "input-images" | "home-images" | "input-files" | "home-files" if name.starts_with(".tmp") => Some(TEMPORARY),
             "pr-reviews" if name == "objects.git" => Some(REVIEW_CACHE),
             _ => None,
         }
