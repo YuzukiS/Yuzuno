@@ -29,6 +29,8 @@ export const newAgentText = strings({
   namePlaceholder: "Mikan, Mori, or something entirely you",
   harness: "Harness",
   experimental: "Experimental",
+  /** Where Yuzuno's OpenCode support stops: Core's `opencode::VERIFIED` (YN-119). */
+  openCodeName: "OpenCode (stops at 2.2.5)",
   defaultHarness: (source: string, harness: string) => `${source}: ${harness} for new Agents.`,
   whereToWork: "Where to work",
   local: "Local",
@@ -187,6 +189,7 @@ export const newAgentText = strings({
   name: "名称",
   namePlaceholder: "Mikan、Mori，或完全属于你的名字",
   experimental: "实验性",
+  openCodeName: "OpenCode（停在 2.2.5）",
   defaultHarness: (source, harness) => `${source}：新 Agent 使用 ${harness}。`,
   whereToWork: "工作位置",
   local: "本地",

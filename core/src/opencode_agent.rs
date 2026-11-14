@@ -578,7 +578,7 @@ pub(crate) fn compaction_blocks(d: &AgentDetail, what: &str) -> Option<String> {
 /// provider with where it gets its access, the model OpenCode runs with none
 /// chosen, and which OpenCode it is.
 pub(crate) async fn catalog_of(server: &Server, models: &[ModelChoice]) -> Value {
-    // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+    // Which OpenCode it runs, and, as a note, when that is newer than the one support stops at (T-32, YN-119).
     let version = server.version();
     let mut native = json!({"version":version,"verified":opencode::VERIFIED});
     if opencode::newer_than_verified(version) {

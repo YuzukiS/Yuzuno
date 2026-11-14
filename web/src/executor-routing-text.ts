@@ -155,6 +155,8 @@ export const text = strings({
   fixIt: (title: string) => `Needs a fix: edit ${title}`,
   modelSpaces: "A model is one name, without spaces.",
   modelOpencode: "An OpenCode model is <provider>/<model>, such as deepseek/deepseek-flash.",
+  /** A candidate's harness choice; where Yuzuno's OpenCode support stops is Core's `opencode::VERIFIED` (YN-119). */
+  harnessOption: (harness: Harness) => (harness === "opencode" ? "OpenCode (stops at 2.2.5)" : harnessName[harness]),
   keyNeeded: (id: string) => `The key ${id} isn't added yet: add it under Accounts & keys, or choose another.`,
   homeNeeded: (id: string) => `The Codex account ${id} isn't listed: add it under Accounts & keys, or choose another.`,
   labelTooLong: "A name is at most 60 characters.",
@@ -328,6 +330,7 @@ export const text = strings({
   fixIt: (title) => `需要修改：编辑 ${title}`,
   modelSpaces: "模型是一个名字，不带空格。",
   modelOpencode: "OpenCode 的模型写成 <提供方>/<模型>，例如 deepseek/deepseek-flash。",
+  harnessOption: (harness) => (harness === "opencode" ? "OpenCode（停在 2.2.5）" : harnessName[harness]),
   keyNeeded: (id) => `还没有 key ${id}：在「账号与密钥」里添加，或换一个。`,
   homeNeeded: (id) => `Codex 账号 ${id} 不在列表里：在「账号与密钥」里添加，或换一个。`,
   labelTooLong: "名称最多 60 个字。",

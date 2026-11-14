@@ -748,7 +748,8 @@ async fn the_version_an_agents_database_was_made_with_is_kept_and_a_newer_one_is
     assert_eq!(lab.detail().agent.opencode_version.as_deref(), Some("2.9.1"), "kept with its session");
     assert_eq!(lab.detail().agent.opencode_major.as_deref(), Some("2"), "with the major Core parsed from it");
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
-    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "newer than the verified 2.2.5"}));
+    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "OpenCode support stops at 2.2.5: this release \
+        is unverified, and problems with it are not fixed; to be safe, install 2.2.5 with npm i -g @opencode/cli@2.2.5"}));
     let Lab { dir, ws } = lab;
     drop(ws);
     // A later start, with the verified release: the version it was made with stays; nothing is noted.
