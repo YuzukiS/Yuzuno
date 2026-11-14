@@ -35,6 +35,15 @@ standard GitHub-hosted macos-26 runner. Only push to main and pull_request
 trigger it, for the same Core paths; its token reads contents only; no
 secret, upload, general cache or other runner, and the Cargo cache is saved
 only from main, as in CI.
+
+.github/workflows/dsh-contract.yml (YN-126) runs the dsh contract probe once
+a day on GitHub-hosted ubuntu-24.04. Only schedule, workflow_dispatch and
+pull_request trigger it, the last only for the probe, the runner check and
+the workflow itself, so it never runs for (or holds up) any other pull
+request. Its token reads contents only; no secret, model key, upload, cache
+or other runner. It installs npm's latest and next of @deepseek-ai/dsh into
+$RUNNER_TEMP only, without install scripts, and no step's failure is
+ignored.
 """
 from pathlib import Path
 import os
@@ -53,6 +62,7 @@ RELEASE_INPUTS = ROOT / '.github/workflows/release-inputs.yml'
 DESKTOP_MACOS = ROOT / '.github/workflows/desktop-macos.yml'
 IOS = ROOT / '.github/workflows/ios.yml'
 CORE_MACOS = ROOT / '.github/workflows/core-macos.yml'
+DSH_CONTRACT = ROOT / '.github/workflows/dsh-contract.yml'
 JOB = re.compile(r'^  ([A-Za-z0-9_-]+):\s*$')
 
 
@@ -359,6 +369,60 @@ def core_macos_problems(text):
     return found
 
 
+# The only changes that run the dsh contract probe on a pull request.
+DSH_CONTRACT_PATHS = ['tools/dsh_contract_probe.py', '.github/scripts/hosted-guard.sh',
+                      '.github/workflows/dsh-contract.yml']
+DSH_INSTALL = 'npm install --prefix "$RUNNER_TEMP/dsh" '
+
+
+def dsh_contract_problems(text):
+    lines = code_lines(text)
+    found = []
+    body = '\n'.join(lines)
+    top = lines[:lines.index('jobs:')]
+    triggers = [key for key, _ in section(top, 'on')]
+    if triggers != ['schedule', 'workflow_dispatch', 'pull_request']:
+        found.append(f'triggers are {triggers}, not schedule, workflow_dispatch and pull_request')
+    elif sorted(trigger_paths(top, 'pull_request')) != sorted(DSH_CONTRACT_PATHS) or 'paths-ignore' in body:
+        found.append('pull_request does not watch only the probe, the runner check and this workflow')
+    if sorted(section(top, 'permissions')) != [('contents', 'read')]:
+        found.append('the top-level permissions are not contents: read only')
+    for pattern, what in [(r'pull_request_target|workflow_run', 'a privileged trigger'),
+                          (r'secrets\.', 'a secret'),
+                          (r'\b(DEEPSEEK|ANTHROPIC)_', 'a model key or endpoint'),
+                          (r':\s*write\b', 'a write permission'),
+                          (r'self-hosted', 'a self-hosted label'),
+                          (r'upload-artifact|upload-pages-artifact|actions/cache|rust-cache@', 'an upload or cache'),
+                          (r'continue-on-error', 'a step whose failure is ignored')]:
+        if re.search(pattern, body):
+            found.append(f'it uses {what}')
+    found += unpinned(lines)
+    all_jobs = jobs(lines)
+    if len(all_jobs) != 1:
+        found.append(f'{len(all_jobs)} jobs, not one')
+    for name, job in all_jobs.items():
+        found += runner_problems(name, job)
+        joined = '\n'.join(job)
+        tags = re.findall(r'^        tag: \[(.*)\]$', joined, re.M)
+        if tags != ['latest, next']:
+            found.append(f'job {name} probes {tags}, not latest and next')
+        steps = steps_of(job)
+        checkout = next((step for step in steps if 'actions/checkout@' in step), None)
+        if checkout is None or 'persist-credentials: false' not in checkout:
+            found.append(f'job {name} keeps the checkout credentials')
+        if (joined.count('actions/setup-node@') != joined.count('package-manager-cache: false')
+                or re.search(r'^\s+cache(-dependency-path)?:', joined, re.M)):
+            found.append(f'job {name} may cache npm packages')
+        installs = [i for i, step in enumerate(steps) if 'npm install' in step or 'npm i ' in step]
+        if (len(installs) != 1 or DSH_INSTALL not in steps[installs[0]] or '--ignore-scripts' not in steps[installs[0]]
+                or re.search(r'\s(-g|--global)\b', steps[installs[0]])):
+            found.append(f'job {name} does not install dsh into $RUNNER_TEMP only, without install scripts')
+        probe = [i for i, step in enumerate(steps) if 'python3 tools/dsh_contract_probe.py --dsh "$RUNNER_TEMP/dsh/' in step]
+        if len(probe) != 1 or (installs and installs[0] > probe[0]):
+            found.append(f'job {name} does not run the contract probe on the installed dsh')
+    return found
+
+
 class PublicCi(unittest.TestCase):
     def test_the_public_workflow_keeps_the_rules(self):
         self.assertEqual(problems(workflow().read_text()), [])
@@ -508,6 +572,42 @@ class PublicCi(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotEqual(text, good, 'the fixture edit did not apply')
                 self.assertTrue(any(message in problem for problem in core_macos_problems(text)), core_macos_problems(text))
+
+    def test_the_dsh_contract_workflow_keeps_its_rules(self):
+        self.assertEqual(dsh_contract_problems(DSH_CONTRACT.read_text()), [])
+
+    def test_each_broken_dsh_contract_rule_is_reported(self):
+        good = DSH_CONTRACT.read_text()
+        probe = '      - name: Contract probe\n'
+        cases = {
+            'a push trigger': (good.replace('  workflow_dispatch:\n', '  workflow_dispatch:\n  push:\n', 1), 'triggers'),
+            'pull_request_target': (good.replace('  pull_request:\n', '  pull_request_target:\n', 1), 'triggers'),
+            'every pull request': (good.replace('    paths:\n      - tools/dsh_contract_probe.py\n', '    paths:\n      - \'**\'\n', 1), 'watch only'),
+            'paths ignored instead': (good.replace('    paths:\n', '    paths-ignore:\n', 1), 'watch only'),
+            'a write permission': (good.replace('  contents: read', '  contents: write', 1), 'permissions'),
+            'a wider token': (good.replace('  contents: read\n', '  contents: read\n  actions: read\n', 1), 'permissions'),
+            'a secret': (good.replace('          TAG: ${{ matrix.tag }}\n', '          TAG: ${{ matrix.tag }}\n          X: ${{ secrets.X }}\n', 1), 'a secret'),
+            'a model key': (good.replace('          TAG: ${{ matrix.tag }}\n', '          TAG: ${{ matrix.tag }}\n          DEEPSEEK_API_KEY: x\n', 1), 'a model key'),
+            'another hosted image': (good.replace('runs-on: ubuntu-24.04', 'runs-on: ubuntu-latest', 1), 'not ubuntu-24.04'),
+            'a self-hosted runner': (good.replace('runs-on: ubuntu-24.04', 'runs-on: [self-hosted, linux]', 1), 'self-hosted'),
+            'an upload': (good.replace(probe, '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n' + probe, 1), 'an upload or cache'),
+            'a general cache': (good.replace(probe, '      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n' + probe, 1), 'an upload or cache'),
+            'an npm cache': (good.replace('package-manager-cache: false', 'cache: npm', 1), 'npm packages'),
+            'a failure ignored': (good.replace(probe, probe + '        continue-on-error: true\n', 1), 'failure is ignored'),
+            'one tag only': (good.replace('tag: [latest, next]', 'tag: [latest]', 1), 'not latest and next'),
+            'a global install': (good.replace('npm install --prefix "$RUNNER_TEMP/dsh"', 'npm install -g', 1), 'into $RUNNER_TEMP only'),
+            'another folder': (good.replace('npm install --prefix "$RUNNER_TEMP/dsh"', 'npm install --prefix "$HOME/dsh"', 1), 'into $RUNNER_TEMP only'),
+            'install scripts run': (good.replace(' --ignore-scripts', '', 1), 'without install scripts'),
+            'a second install': (good.replace(probe, '      - run: npm install -g @deepseek-ai/dsh@latest\n' + probe, 1), 'into $RUNNER_TEMP only'),
+            'no probe': (good.replace('python3 tools/dsh_contract_probe.py', 'python3 tools/other.py', 1), 'contract probe'),
+            'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
+            'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
+            'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
+        }
+        for label, (text, message) in cases.items():
+            with self.subTest(label):
+                self.assertNotEqual(text, good, 'the fixture edit did not apply')
+                self.assertTrue(any(message in problem for problem in dsh_contract_problems(text)), dsh_contract_problems(text))
 
     def test_the_guard_refuses_any_runner_but_a_github_hosted_one(self):
         for environment, code in [('self-hosted', 1), ('', 1), ('github-hosted', 0)]:
