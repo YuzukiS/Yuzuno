@@ -1,7 +1,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
-import type { ComposerHandle } from "../PastedTextComposer";
+import { ImageAttachments } from "../ImageAttachments";
 import { useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
 import type { TextBlock } from "../message-content";
@@ -10,7 +10,9 @@ import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import { CardAgents } from "./card-responsible";
 import { absolute, duration, relative } from "./format";
-import { HomeComposer, type ReplyWords } from "./HomeComposer";
+import { HomeComposer, type HomeComposerHandle, type ReplyWords } from "./HomeComposer";
+import { olderCoreImages } from "./home-api";
+import { homeImageUrl, takesImages, validHomeImages, type HomeImage } from "./home-images";
 import type { HomeTarget } from "./home-navigation";
 import { scrollWithinHome } from "./HomeJumps";
 import { draftStore } from "./reply-drafts";
@@ -55,9 +57,19 @@ type Side = "requests" | "chat";
 /** How a side's content comes or goes (§4.1): in or out beside the other, or the narrow tabs' switch. */
 type Motion = "in" | "out" | "switch" | null;
 
-/** What the user is writing to the project, kept in this browser until sent, as a card's reply is (CardReply.tsx). */
-type Draft = { text: string; blocks?: TextBlock[]; quote?: number; at: string };
+/** What the user is writing to the project, kept in this browser until sent, as a card's reply is (CardReply.tsx);
+ * with the images attached (YN-134), by their place in the Project's images. */
+type Draft = { text: string; blocks?: TextBlock[]; images?: HomeImage[]; quote?: number; at: string };
 const drafts = draftStore<Draft>("yuzuno.project-talk-drafts.v1");
+
+/** A kept draft as read back: images that are not what this page keeps are left out. */
+function loadDraft(slot: string): Draft {
+  const kept = drafts.load()[slot];
+  if (!kept) return { text: "", at: "" };
+  if (kept.images === undefined || validHomeImages(kept.images)) return kept;
+  const { images: _dropped, ...rest } = kept;
+  return rest;
+}
 
 /** The words as they are sent: trimmed, as every reply is (reply-limit.tsx), their pasted blocks moved with them. */
 function trimmed(words: ReplyWords): { text: string; textBlocks?: TextBlock[] } {
@@ -163,7 +175,7 @@ export function ProjectTalk({
   const grid = useRef<HTMLDivElement>(null);
   const requestsScroll = useRef<HTMLDivElement>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
-  const composer = useRef<ComposerHandle>(null);
+  const composer = useRef<HomeComposerHandle>(null);
   const requestRefs = useRef(new Map<number, HTMLDivElement>());
   const wordRefs = useRef(new Map<number, HTMLLIElement>());
 
@@ -359,20 +371,21 @@ export function ProjectTalk({
 
   // What the user writes: one draft per project, a follow-up when it quotes a request.
   const draftSlot = talkSlot(workspaceId, projectId);
-  const [draft, setDraft] = useState<Draft>(() => drafts.load()[draftSlot] ?? { text: "", at: "" });
+  const [draft, setDraft] = useState<Draft>(() => loadDraft(draftSlot));
   // The request quoted, by its number: one not among those read (an older one, kept with the draft) is still that request.
   const quote = draft.quote !== undefined ? { n: draft.quote, title: titleOrNumber(draft.quote) } : null;
-  const words: ReplyWords = { text: draft.text, ...(draft.blocks ? { blocks: draft.blocks } : {}) };
+  const words: ReplyWords = { text: draft.text, ...(draft.blocks ? { blocks: draft.blocks } : {}), ...(draft.images?.length ? { images: draft.images } : {}) };
   const write = (next: Partial<Draft>) =>
     setDraft((was) => {
       const value: Draft = { ...was, ...next, at: new Date().toISOString() };
-      drafts.save(draftSlot, value.text.trim() || value.quote !== undefined ? value : null);
+      drafts.save(draftSlot, value.text.trim() || value.images?.length || value.quote !== undefined ? value : null);
       return value;
     });
   const sendSlot = talkSlot(workspaceId, projectId, quote?.n);
-  const outgoing = trimmed(words);
+  const images = draft.images ?? [];
+  const outgoing = { ...trimmed(words), ...(images.length ? { images: images.map((image) => image.id) } : {}) };
   const kept = pendingWords(sendSlot);
-  const unanswered = !!kept && kept.text === outgoing.text;
+  const unanswered = !!kept && kept.text === outgoing.text && JSON.stringify(kept.images ?? []) === JSON.stringify(outgoing.images ?? []);
   // Words Core keeps by now, listed with their own delivery, are no longer this page's to send.
   useEffect(() => {
     const ids = new Set(requests.flatMap((r) => [r.messageId, ...r.replies.map((reply) => reply.messageId)]));
@@ -382,11 +395,16 @@ export function ProjectTalk({
     }
   }, [requests, workspaceId, projectId]);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [sendError, setSendError] = useState("");
   const deskId = desk?.effectiveAgentId ?? null;
   const deskName = deskId ? agents.get(deskId)?.name || t.someone : "";
   const blocked = !quote && !deskId;
-  const canSend = !readOnly && !busy && !blocked && !!outgoing.text && !replyTooLong(words.text);
+  // Who takes a new request is known here; a follow-up's Agents only Core knows, and it refuses for them (YN-134 D14).
+  const deskAgent = deskId ? agents.get(deskId) : undefined;
+  const refusal = !quote && deskAgent && !takesImages(deskAgent.harness) ? t.deskNoImages(deskName) : null;
+  const canSend =
+    !readOnly && !busy && !blocked && !uploading && !(images.length && refusal) && !!outgoing.text && !replyTooLong(words.text);
   async function send() {
     if (!canSend) return;
     setBusy(true);
@@ -399,7 +417,11 @@ export function ProjectTalk({
       toBottom.current = true;
       setReads((n) => n + 1);
     } catch (e) {
-      setSendError(errorText(e));
+      // An older Core refused the images before reading anything: nothing was sent, and the draft stays.
+      if (olderCoreImages(e)) {
+        forgetWords(sendSlot);
+        setSendError(t.olderCoreImages);
+      } else setSendError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -456,6 +478,15 @@ export function ProjectTalk({
       )}
     </span>
   );
+  /** The images a request or follow-up took (YN-134), to open, or mark up into what is written now. */
+  const sentImages = (ids: readonly string[], provenance: string) =>
+    ids.length > 0 && (
+      <ImageAttachments
+        images={ids.map((id) => ({ id }))}
+        imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)}
+        onAnnotate={readOnly ? undefined : (image) => composer.current?.markUp?.(image, provenance)}
+      />
+    );
   function item(entry: TalkItem) {
     const { request } = entry;
     const n = request.n;
@@ -474,6 +505,7 @@ export function ProjectTalk({
           >
             <div className="project-talk-bubble">
               <MessageContent text={request.text} blocks={request.textBlocks ?? undefined} />
+              {sentImages(request.images, `an image in your request R-${n} to ${projectName}`)}
             </div>
             <span className="project-talk-meta">
               {when(request.createdAt)}
@@ -515,6 +547,7 @@ export function ProjectTalk({
             <span className="project-talk-quote-ref">{t.followUpOf(titleOf(request))}</span>
             <div className="project-talk-bubble">
               <MessageContent text={reply.text} blocks={reply.textBlocks ?? undefined} />
+              {sentImages(reply.images, `an image in your follow-up to request R-${n} to ${projectName}`)}
             </div>
             <span className="project-talk-meta">
               {when(reply.at)}
@@ -707,10 +740,12 @@ export function ProjectTalk({
                 label={quote ? t.followUpLabel(quote.title) : t.field(projectName)}
                 placeholder={quote ? t.followUpPlaceholder : t.placeholder(projectName)}
                 words={words}
-                onWords={(next) => write({ text: next.text, blocks: next.blocks })}
+                onWords={(next) => write({ text: next.text, blocks: next.blocks, images: next.images })}
                 onSubmit={() => void send()}
                 readOnly={readOnly || blocked}
                 onEscape={quote ? () => write({ quote: undefined }) : undefined}
+                attach={readOnly ? undefined : { projectId, refusal }}
+                onUploading={setUploading}
               />
               <button type="submit" className="primary-button project-talk-send" aria-label={t.send} disabled={!canSend}>
                 {busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
