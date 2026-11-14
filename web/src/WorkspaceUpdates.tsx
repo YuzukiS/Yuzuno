@@ -55,6 +55,7 @@ import {
   updateInProgress,
   updateIntentKey,
   updateLabel,
+  updateResumeRows,
   updateStatusFresh,
   updateStepLabel,
   updateSteps,
@@ -588,6 +589,8 @@ export function WorkspaceUpdates({
   // An earlier outcome stays out of the way of the update now in hand.
   const finished =
     operation && !active && !step && operation.phase !== "prepared" ? operation : null;
+  // Who the finished update continued, and who it did not (YN-131).
+  const resumeRows = finished ? updateResumeRows(status, language) : [];
   const checkButton = (
     <button
       className="quiet-button"
@@ -906,6 +909,20 @@ export function WorkspaceUpdates({
                       </span>
                     </p>
                     {finished.error && <p className="updates-error">{finished.error}</p>}
+                  </div>
+                )}
+                {!!resumeRows.length && (
+                  <div className="update-card-part">
+                    <p className="update-card-label">{t.resume.label}</p>
+                    <ul className="updates-blockers" aria-label={t.resume.label}>
+                      {resumeRows.map((row, i) => (
+                        <li key={`${row.agentId}-${i}`} className={`is-${row.state}`}>
+                          <span className="updates-blocker-dot" />
+                          <strong>{row.name}</strong>
+                          <span>{row.text}</span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
                 {active && operation?.error && (

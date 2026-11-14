@@ -74,6 +74,10 @@ export const turnWords = strings({
   stop: "Stop",
   changeModel: "Change model",
   reminder: "Yuzuno reminder",
+  // Core's own continues (YN-131): after an update, and after a Claude usage
+  // limit resets (T-94). A label, not a sentence.
+  afterUpdate: "Yuzuno · continued after update",
+  afterUsageLimit: "Yuzuno · continued after usage limit",
   you: "You",
   // Reading by your inputs (T-6).
   yourInput: (n: number | null): string => (n ? `YOUR INPUT ${n}` : "YOUR INPUT"),
@@ -180,6 +184,8 @@ export const turnWords = strings({
   stop: "停止",
   changeModel: "换模型",
   reminder: "Yuzuno 提醒",
+  afterUpdate: "Yuzuno · 更新后继续",
+  afterUsageLimit: "Yuzuno · 额度自动继续",
   you: "你",
   yourInput: (n) => (n ? `你的输入 ${n}` : "你的输入"),
   earlierInput: "较早的输入 · 来源未记录",

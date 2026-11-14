@@ -4131,6 +4131,38 @@ test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays
   } finally { page.close(); }
 });
 
+test("Yuzuno's own continues carry their own labels, not “You” (YN-131)", async () => {
+  const user = (id, text, by) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [
+    { id: "t-update", status: "completed", items: [
+      user("u-update", "[Yuzuno · continue after update] Workspace update core.34 has ended.", "update"), reply("r-update", "Continued."),
+    ] },
+    { id: "t-limit", status: "completed", items: [
+      user("u-limit", "The usage limit reset; continue the turn.", "resume"), reply("r-limit", "Continued."),
+    ] },
+  ];
+  const english = await mount({ extraTurns });
+  try {
+    await pause(); await pause();
+    const label = (id) => english.document.querySelector(`[data-item-id="${id}"] .message-label`).textContent.replace(/\s+/g, " ").trim();
+    assert.match(label("u-update"), /^Yuzuno · continued after update/);
+    assert.match(label("u-limit"), /^Yuzuno · continued after usage limit/);
+    assert.ok(english.document.querySelector('[data-item-id="u-update"] .message-label .you-avatar svg'), "an icon, not the user's avatar");
+    assert.equal(english.document.querySelector('[data-item-id="u-update"] .message-label .you-avatar').textContent.trim(), "", "no “Y”");
+    assert.equal(english.document.querySelector("#turn-t-update .input-divider"), null, "not read as your input");
+    assert.deepEqual(english.errors, []);
+  } finally { english.close(); }
+  const chinese = await mount({ extraTurns, stored: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    await pause(); await pause();
+    const label = (id) => chinese.document.querySelector(`[data-item-id="${id}"] .message-label`).textContent.replace(/\s+/g, " ").trim();
+    assert.match(label("u-update"), /^Yuzuno · 更新后继续/);
+    assert.match(label("u-limit"), /^Yuzuno · 额度自动继续/);
+    assert.deepEqual(chinese.errors, []);
+  } finally { chinese.close(); }
+});
+
 test("a link to folded mail opens its fold, which stays open once the link has led there (T-6)", async () => {
   const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
   const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
