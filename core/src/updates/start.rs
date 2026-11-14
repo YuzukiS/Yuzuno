@@ -1038,6 +1038,13 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     #[test]
     fn the_installed_release_starts_detached_with_the_recorded_launch() {
+        // A bound for a run that hangs, not a time the stand-in must keep:
+        // the values of Budget::default(), the wait a real start has. A cold
+        // Python on a loaded macOS runner took more than QUICK's 20 s to
+        // answer /api/health and the start came back `starting` (core-macos
+        // 43562579022, YN-147). `a_core_that_exits_or_is_slow_is_said_as_such`
+        // covers that result with its own 1 s wait.
+        const READY: Budget = Budget { lock: Duration::from_secs(120), ready: Duration::from_secs(120) };
         let install = install();
         let notes = stand_in(&install, "");
         let port = free_port();
@@ -1048,7 +1055,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             _ => None,
         };
         record(&install.layout, &install.running, &launch, WORKSPACE, environment).unwrap();
-        let outcome = start(&install.layout.root, port, WORKSPACE, QUICK);
+        let outcome = start(&install.layout.root, port, WORKSPACE, READY);
         let _stop = started(&outcome);
         assert_eq!(outcome["state"], "started", "{outcome}");
         assert_eq!(outcome["releaseId"], "a");
@@ -1069,7 +1076,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         // A listed variable the Core did not have is not passed on.
         assert_eq!(seen[0]["env"]["YUZUNO_REMOTE_PORT"], Value::Null);
         // A second start finds it running and starts nothing.
-        assert_eq!(start(&install.layout.root, port, WORKSPACE, QUICK)["state"], "running");
+        assert_eq!(start(&install.layout.root, port, WORKSPACE, READY)["state"], "running");
         assert_eq!(starts_seen(&notes).len(), 1);
     }
 
