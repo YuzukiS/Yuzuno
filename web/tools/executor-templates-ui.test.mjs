@@ -575,7 +575,7 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, keeping 
     const options = [...field(page, "Runs with").options].map((o) => o.value);
     assert.deepEqual(options, enabled ? ["", "claude", "codex", "opencode"] : ["", "claude", "codex"], String(enabled));
     if (enabled) {
-      assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
+      assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode (stops at 2.2.5, experimental)", "marked experimental (YN-27), with where its support stops (YN-127)");
       await type(page, "Runs with", "opencode");
       assert.equal(field(page, "Model").placeholder, "Its own configuration’s model", "a model is its own unless named (YN-34 S1c)");
       // OpenCode keeps no level here: only the defaults, its own configuration, can be chosen.
@@ -616,7 +616,7 @@ test("OpenCode is marked experimental in a Chinese page's harness choice too (YN
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
   await openTemplate(page, "A");
-  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
+  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（停在 2.2.5，实验性）");
   assert.deepEqual(page.errors, []);
 });
 
