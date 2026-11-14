@@ -408,6 +408,10 @@ impl Situation {
         self.running.as_ref().is_some_and(|names| names.iter().any(|name| name == distro))
     }
 
+    fn is_default(&self, distro: &str) -> bool {
+        self.default.as_deref() == Some(distro)
+    }
+
     /// Rule R1: a stopped distribution may not be started when it is not the
     /// default one and another distribution runs (or that cannot be read).
     /// A distribution that already runs is not started again by this.
@@ -573,7 +577,7 @@ async fn check_target(window: &WebviewWindow, target: &Target) -> Result<Check, 
     let mut guard = Guard::open(&situation, &target.id).await?;
     let report = guarded(&mut guard, run_check(target, "default", "default")).await?;
     let port = free_port(window).await;
-    Ok(build_check(&target.id, &report, port, target.is_default))
+    Ok(build_check(&target.id, &report, port, situation.is_default(&target.id)))
 }
 
 /// Runs the read-only check in `target` for these folders (`default`, or
@@ -1221,7 +1225,7 @@ async fn install(
     // The folders and port as they are now: the same check, for these.
     port_free(window, place.port).await?;
     let report = guarded(&mut guard, run_check(target, &place.install_dir, &place.data_dir)).await?;
-    let now = build_check(&target.id, &report, Port::Free(place.port), target.is_default);
+    let now = build_check(&target.id, &report, Port::Free(place.port), situation.is_default(&target.id));
     if now.user != checked.user || now.home != checked.home {
         return Err(Error::new("checkChanged", "The distribution's account changed since it was checked. Check it again."));
     }
