@@ -349,8 +349,9 @@ export function AgentManagement({
                       {working ? t.interrupted : t.rest}
                     </strong>
                     <p>{t.kept(agent.name)}</p>
-                    {working && (agent.harness === "claude" || agent.harness === "opencode") && (
-                      <p>{t.unconfirmedStop(agent.harness === "claude" ? "Claude" : "OpenCode")}</p>
+                    {/* DeepSeek Harness's stop is confirmed as Claude's is (YN-119 §3.5). */}
+                    {working && (agent.harness === "claude" || agent.harness === "opencode" || agent.harness === "dsh") && (
+                      <p>{t.unconfirmedStop(agent.harness === "claude" ? "Claude" : agentHarnessName(agent))}</p>
                     )}
                   </>
                 ) : (

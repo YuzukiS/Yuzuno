@@ -27,7 +27,7 @@ const menuText = strings({
 });
 /** The harness as it is written, not as it is keyed. */
 const harnessName: Record<string, string> = {
-  claude: "Claude Code", codex: "Codex", opencode: "OpenCode",
+  claude: "Claude Code", codex: "Codex", opencode: "OpenCode", dsh: "DeepSeek Harness",
 };
 
 /** Where the menu opens, in viewport pixels. */

@@ -149,20 +149,37 @@ export function withModelControl(list: CommandList): CommandList {
   return { ...list, commands: [...others, ...claudeControls], total: list.total - replaced + claudeControls.length };
 }
 
+/**
+ * What a DeepSeek Harness Agent offers (YN-119 §4): dsh lists no commands
+ * over ACP, so only Yuzuno's own controls that open this Agent's settings or
+ * New agent. Nothing is read for it.
+ */
+export const dshControls: CommandList = {
+  state: "ready",
+  reason: "controls",
+  source: "controls",
+  sessionId: null,
+  commands: [modelControl, permissionsControl, newControl],
+  get total() { return this.commands.length; },
+  truncated: false,
+  skillsKnown: false,
+};
+
 /** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
  * own `/compact`, `/review`, `/status`, `/usage` and `/mcp`; a goal, a mode (`/plan`) and a fork are a
  * Codex session's, and a Claude Agent's `/plan` stays Claude Code's own. An
  * OpenCode Agent's model and settings are OpenCode's own: no control; its
- * `/compact` is OpenCode's own compaction (T-10). */
+ * `/compact` is OpenCode's own compaction (T-10). A DeepSeek Harness Agent
+ * has only those that open Yuzuno's own settings and New agent (YN-119). */
 const controlHarnesses = {
   compact: ["codex", "opencode"],
   review: ["codex"],
   goal: ["codex"],
   plan: ["codex"],
-  model: ["codex", "claude"],
-  permissions: ["codex", "claude"],
+  model: ["codex", "claude", "dsh"],
+  permissions: ["codex", "claude", "dsh"],
   fork: ["codex"],
-  new: ["codex", "claude"],
+  new: ["codex", "claude", "dsh"],
   resume: ["codex", "claude"],
   status: ["codex"],
   usage: ["codex"],
@@ -304,7 +321,7 @@ const loadFacet = Facet.define<() => Promise<CommandList>, (() => Promise<Comman
   combine: (values) => values[0] ?? null,
 });
 /** Whose list this composer shows, for the menu's own wording. */
-type Kind = "claude" | "codex" | "opencode";
+type Kind = "claude" | "codex" | "opencode" | "dsh";
 const kindFacet = Facet.define<Kind, Kind>({
   combine: (values) => values[0] ?? "claude",
 });
@@ -392,10 +409,11 @@ function createMenuView(view: EditorView): TooltipView {
     };
     const codex = view.state.facet(kindFacet) === "codex";
     const opencode = view.state.facet(kindFacet) === "opencode";
+    const dsh = view.state.facet(kindFacet) === "dsh";
     const skills = menu.kind === "skill";
-    box.setAttribute("aria-label", skills ? "Codex skills" : codex ? "Codex controls and skills" : opencode ? "OpenCode commands" : "Claude commands");
+    box.setAttribute("aria-label", skills ? "Codex skills" : codex ? "Codex controls and skills" : opencode ? "OpenCode commands" : dsh ? "Yuzuno controls" : "Claude commands");
     if (!current) {
-      note(skills ? "Reading this Agent's Codex skills…" : codex ? "Reading Codex controls and skills…" : opencode ? "Reading OpenCode's commands…" : "Reading Claude's commands…");
+      note(skills ? "Reading this Agent's Codex skills…" : codex ? "Reading Codex controls and skills…" : opencode ? "Reading OpenCode's commands…" : dsh ? "Reading Yuzuno's controls…" : "Reading Claude's commands…");
       return;
     }
     if (current.state !== "ready") {
@@ -459,6 +477,8 @@ function createMenuView(view: EditorView): TooltipView {
       );
       if (current.skillsNote) note(current.skillsNote, "is-failed");
       else if (current.truncated) note(`${current.total} in all; the first ${current.commands.length} shown.`, "is-source");
+    } else if (dsh) {
+      note("DeepSeek Harness lists no commands here. Yuzuno runs these controls itself, never as a prompt: choosing one fills it in, and Send runs it.", "is-source");
     } else if (opencode) {
       const own = current.commands.filter((c) => c.source !== "control").length;
       note(own

@@ -118,6 +118,7 @@ import { hasAgentContent, isCompacting } from "./conversation-blocks";
 import { ContextUsage } from "./ContextUsage";
 import { AgentSettings } from "./AgentSettings";
 import { agentHarnessName, nativeSession } from "./machine-checks";
+import { DshContext } from "./dsh";
 import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
 import { CodexReviewDialog, startCodexReview } from "./CodexReview";
@@ -1572,9 +1573,10 @@ export function App() {
     ),
   ), [currentDetail?.pending]);
   const hasDraft = hasDraftContent(draft);
-  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode");
+  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode" || agent?.harness === "dsh");
   // What happens to an image on its way to this Agent, said beside the image button.
-  const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages : null;
+  const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages
+    : agent?.harness === "dsh" ? shell.dshImages : null;
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
@@ -1588,6 +1590,10 @@ export function App() {
   const outsidePending = pendingElsewhere(workspace?.agents || [], scope);
   const isClaude = agent?.harness === "claude";
   const isOpenCode = agent?.harness === "opencode";
+  const isDsh = agent?.harness === "dsh";
+  // Codex's own panels and controls go to a Codex Agent only, named so: an Agent from before harnesses were named ran
+  // Codex, and no other harness falls through to them (YN-119 W1).
+  const isCodex = !!agent && (!agent.harness || agent.harness === "codex");
   const logicalTurns = sessionHistory.navigationTurns;
   // The Turn being read, counted from 1: the latest while none is.
   const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
@@ -1639,7 +1645,8 @@ export function App() {
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id || null
     : null;
-  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy && !openCodeTurnId);
+  // DeepSeek Harness takes one prompt at a time (ACP): nothing joins its running turn (YN-119 §3.5).
+  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy && !openCodeTurnId) || (isDsh && busy);
   // Codex would refuse to add to a Turn whose result is unconfirmed; the
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
@@ -1650,7 +1657,7 @@ export function App() {
   // Why Send waits, in its tip and to assistive technology.
   const sendWaits =
     cannotSendWhileWorking || closed
-      ? shell.waitOrInterrupt
+      ? isDsh && !closed ? shell.dshWaitTurn : shell.waitOrInterrupt
       : holdForRecovery
         ? recovery === "collaboration"
           ? shell.reconnectWorkspace
@@ -1706,7 +1713,7 @@ export function App() {
       .find((turn) => turn.status === "inProgress")?.id || null;
   // The turn a message joins: Claude's follow-up, OpenCode's or Codex's
   // running turn.
-  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? openCodeTurnId : activeTurnId;
+  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? openCodeTurnId : isDsh ? null : activeTurnId;
   const {
     submit: submitMessage,
     sending,
@@ -3251,7 +3258,7 @@ export function App() {
       if (control?.command === "new" || control?.command === "resume") {
         const claudeAgent = agent.harness === "claude";
         setCreateInitial(control.command === "new"
-          ? { nonce: Date.now(), mode: "new", harness: claudeAgent ? "claude" : "codex", machineId: agent.remote?.machine.id || "local",
+          ? { nonce: Date.now(), mode: "new", harness: claudeAgent ? "claude" : agent.harness === "dsh" ? "dsh" : "codex", machineId: agent.remote?.machine.id || "local",
             cwd: agent.cwd, projectId: agent.projectId || "" }
           : { nonce: Date.now(), mode: claudeAgent ? "claude" : "existing" });
         setCreateOpen(true);
@@ -3580,6 +3587,7 @@ export function App() {
       : searched;
 
   return (
+    <DshContext.Provider value={workspace?.dsh ?? null}>
     <HandoffContext.Provider value={handoffApi}>
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
@@ -4664,7 +4672,7 @@ export function App() {
                 {/* What the conversation asks of you before you write; on a short
                     phone screen it gives way to the composer (T-170). */}
                 <div className="composer-notices">
-                  {currentDetail && !isClaude && !previewMode && (
+                  {currentDetail && isCodex && !previewMode && (
                     <CodexWriterNotice
                       detail={currentDetail}
                       agents={workspace?.agents || []}
@@ -4772,7 +4780,7 @@ export function App() {
                     placeholder={placeholderShort ? shortPlaceholder : composerPlaceholder}
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
+                    slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : isDsh ? "dsh" : "codex"}
                     sendKey={sendKey}
                     onChange={next => setDraft(selected, next)}
                     onSkill={skill => skill.path && setDraft(selected, current => {
@@ -4882,7 +4890,7 @@ export function App() {
                     </span>
                     <div className="composer-send-actions">
                       {/* Codex's Plan mode, beside Send as a mode is in ChatGPT. */}
-                      {!previewMode && !isClaude && !isOpenCode && (
+                      {!previewMode && isCodex && (
                         <CodexPlanChip state={currentDetail?.codexPlan}
                           onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
                       )}
@@ -5106,7 +5114,7 @@ export function App() {
                 {isClaude && currentDetail && !agent.remote && (
                   <AutoContinueSetting key={agent.id} detail={currentDetail} disabled={!!agent.closedAt} />
                 )}
-                {!isClaude && !isOpenCode && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
+                {isCodex && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
               </dl>
             </section>
             <ArtifactsPanel
@@ -5117,7 +5125,7 @@ export function App() {
               onOpen={openFile}
             />
             {isClaude && <ClaudeMcpStatus agent={agent} language={language} />}
-            {!isClaude && !isOpenCode && !previewMode && <CodexMcpStatus agent={agent} language={language} />}
+            {isCodex && !previewMode && <CodexMcpStatus agent={agent} language={language} />}
             <section className="inspector-section">
               <div className="section-title">
                 <h2>
@@ -5238,7 +5246,7 @@ export function App() {
         focus={taskFocus}
         workspaceId={previewMode ? "" : workspaceId}
       />
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexGoalDialog
           key={`goal-${agent.id}-${goalRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5253,7 +5261,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexPlanDialog
           key={`plan-${agent.id}-${planRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5270,7 +5278,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexReviewDialog
           key={`review-${agent.id}-${reviewRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5279,7 +5287,7 @@ export function App() {
           onStarted={() => { if (reviewRequest) reviewStarted(reviewRequest.agentId, reviewRequest.draft); }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && changesRequest?.agentId === agent.id && (
+      {agent && isCodex && changesRequest?.agentId === agent.id && (
         <CodexChangesDialog
           key={`changes-${agent.id}-${changesRequest.nonce}`}
           agent={agent}
@@ -5297,7 +5305,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && terminalsRequest?.agentId === agent.id && (
+      {agent && isCodex && terminalsRequest?.agentId === agent.id && (
         <CodexTerminalsDialog
           key={`terminals-${agent.id}-${terminalsRequest.nonce}`}
           agent={agent}
@@ -5306,7 +5314,7 @@ export function App() {
           onOpenChange={(open) => { if (!open) setTerminalsRequest(null); }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && diffRequest?.agentId === agent.id && (
+      {agent && isCodex && diffRequest?.agentId === agent.id && (
         <CodexDiffDialog
           key={`diff-${agent.id}-${diffRequest.nonce}`}
           agent={agent}
@@ -5344,7 +5352,7 @@ export function App() {
           refresh();
         }}
       />
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <ForkCodexDialog
           key={`fork-${workspaceId}-${agent.id}`}
           agent={agent}
@@ -5391,6 +5399,7 @@ export function App() {
         }}
         defaultCwd={workspace?.defaultCwd || ""}
         opencode={!!workspace?.opencode?.enabled}
+        dsh={workspace?.dsh ?? null}
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
@@ -5461,5 +5470,6 @@ export function App() {
     </MessageLinks.Provider>
     </PointFixOpen.Provider>
     </HandoffContext.Provider>
+    </DshContext.Provider>
   );
 }

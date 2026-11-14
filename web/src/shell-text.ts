@@ -133,6 +133,8 @@ export const shellText = strings({
   claudeImages: "Large images are scaled or compressed when sent to Claude · originals are kept",
   // OpenCode takes images only for a chosen model that reads them (core/src/opencode_agent.rs).
   openCodeImages: "Images need a model chosen in Settings that reads images · large ones are scaled or compressed when sent · originals are kept",
+  dshImages: "Images need a model that reads images, such as deepseek-flash · originals are kept",
+  dshWaitTurn: "DeepSeek Harness takes nothing more until this turn finishes: wait for it, or interrupt it",
   // The context panel (T-189 slice 19); the work summary, names, paths and
   // the session ID stay as they came.
   atGlance: "At a glance",
@@ -309,6 +311,8 @@ export const shellText = strings({
   addInput: "向当前 Turn 添加输入",
   claudeImages: "发送给 Claude 时，大图片会被缩放或压缩 · 原图会保留",
   openCodeImages: "需要在设置里选定能读图片的模型 · 发送时大图片会被缩放或压缩 · 原图会保留",
+  dshImages: "需要能读图片的模型，例如 deepseek-flash · 原图会保留",
+  dshWaitTurn: "DeepSeek Harness 在这一轮结束前不接受追加：请等它结束，或先中断",
   atGlance: "概览",
   closePanel: "关闭上下文面板",
   currentWork: "当前工作",

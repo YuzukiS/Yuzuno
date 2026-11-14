@@ -80,6 +80,7 @@ const entryLabelsZh: Record<string, string> = {
   jobs: "Job 记录与输出日志",
   claudeRuntime: "Claude 运行环境缓存",
   opencode: "OpenCode 会话数据库",
+  dsh: "DeepSeek Harness 的 Agent 目录（它的 home、设置和会话）",
   desktopDownloads: "桌面应用下载",
   previews: "正在预览的会话文件副本",
   backupOperations: "备份与恢复记录",
@@ -131,6 +132,7 @@ const text = strings({
   sizeUnknown: "size unknown",
   agents: (count: number, closed: number) => `${count} ${count === 1 ? "Agent" : "Agents"}${closed ? ` (${closed} closed)` : ""}`,
   opencodeKept: "Kept in this Workspace's folder (OpenCode session databases above); not in a backup.",
+  dshKept: "Kept in this Workspace's folder (DeepSeek Harness Agent folders above).",
   keptBy: (name: string) => `Kept by ${name} in its own folder on that computer. Yuzuno does not measure, back up or remove it.`,
   never: "Never in a Workspace backup",
   footer: "What each held Agent's stored history takes inside the database is in History & memory information. To report a problem, Copy diagnostics shows its text before anything is copied.",
@@ -193,6 +195,7 @@ const text = strings({
   sizeUnknown: "大小未知",
   agents: (count, closed) => `${count} 个 Agent${closed ? `（${closed} 个已关闭）` : ""}`,
   opencodeKept: "保存在这个 Workspace 的文件夹中（上面的 OpenCode 会话数据库）；不在备份中。",
+  dshKept: "保存在这个 Workspace 的文件夹中（上面的 DeepSeek Harness 的 Agent 目录）。",
   keptBy: (name) => `由 ${name} 保存在那台电脑上它自己的文件夹中。Yuzuno 不会测量、备份或删除它。`,
   never: "从不在 Workspace 备份中的内容",
   footer: "每个保留的 Agent 的历史在数据库中占用多少，见“历史与内存信息”。要报告问题，“复制诊断信息”会先显示文本，再复制任何内容。",
@@ -432,7 +435,7 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
                   <span className="storage-size">{t.sizeUnknown}</span>
                   <span className="storage-detail">
                     {t.agents(group.agents, group.closed)} ·{" "}
-                    {group.harness === "opencode" ? t.opencodeKept : t.keptBy(harnessNames[group.harness] ?? group.harness)}
+                    {group.harness === "opencode" ? t.opencodeKept : group.harness === "dsh" ? t.dshKept : t.keptBy(harnessNames[group.harness] ?? group.harness)}
                   </span>
                 </li>
               ))}

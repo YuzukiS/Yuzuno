@@ -56,6 +56,8 @@ function slotOf(c: CandidateLike, keyIds: readonly string[]): string | null | ty
   switch (credential?.kind) {
     case "login":
       if (c.harness === "opencode") return `opencode:${modelProvider(typeof c.model === "string" ? c.model : null) ?? OPENCODE_DEFAULT}`;
+      // DeepSeek Harness has no login here (YN-119 §3.10): one saved so lacks its DeepSeek key, as the routing page says.
+      if (c.harness === "dsh") return null;
       return hostSlot(c.harness) ?? UNMAPPED;
     case "pool": return "cswap";
     case "codexHome": return typeof credential.id === "string" ? `home:${credential.id}` : UNMAPPED;

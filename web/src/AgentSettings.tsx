@@ -11,6 +11,7 @@ import { OpenCodeLogin } from "./OpenCodeLogin";
 import { OpenCodeModelPicker } from "./OpenCodeModelPicker";
 import { AgentNameSetting } from "./RenameAgent";
 import { langTag, strings, useLanguage } from "./i18n";
+import { DSH_EFFORTS, DSH_LEVELS, dshLevelName, isDshLevel, useDsh } from "./dsh";
 import { Tip, TipText } from "./Tip";
 import "./agent-settings.css";
 
@@ -72,6 +73,19 @@ const text = strings({
   overridesCleared: "Saved context overrides cleared. Reconnect to use your Codex configuration, or apply when available and idle.",
   compactExceeds: COMPACT_EXCEEDS,
   tokenInvalid: TOKEN_INVALID,
+  // A DeepSeek Harness Agent's (YN-119 W1): its model, effort and level from the next turn.
+  dshButtonTitle: "DeepSeek Harness model, reasoning effort and permissions",
+  dshDescription: "The model, reasoning effort and permissions apply from the next turn; a running turn keeps its own. DeepSeek Harness keeps Ask you first, Auto-approve and Full access, never Read only: its network isn’t limited at any level.",
+  dshUnknownModel: (wanted: string) => `“${wanted}” is not a model this Agent's DeepSeek Harness offers; choose one below.`,
+  dshDefault: "DeepSeek’s default",
+  dshEffortNote: "DeepSeek Harness runs the model at this effort from the next turn. DeepSeek’s default leaves it to the provider.",
+  permissions: "Permissions",
+  dshLevelNotes: {
+    ask: "In its sandbox, which limits writing files only; anything beyond it asks you, one action at a time.",
+    auto: "In its sandbox as usual; anything beyond it is refused without asking you. Nothing reviews an action.",
+    full: "No sandbox, and nothing asks: it writes wherever this host’s user can.",
+  } as Record<string, string>,
+  dshVersion: (version: string) => `DeepSeek Harness ${version} on the Core host.`,
 }, {
   button: "Agent 设置",
   buttonTitle: (harness) => (harness === "claude" ? "Claude Code 的模型、推理强度与审批" : harness === "opencode" ? "OpenCode 的模型与变体" : "模型、推理与权限"),
@@ -118,6 +132,18 @@ const text = strings({
   overridesCleared: "已清除保存的上下文覆盖设置。重新连接即可使用你的 Codex 配置，或在可用且空闲时应用。",
   compactExceeds: "压缩阈值不能超过所设置的窗口。",
   tokenInvalid: "请输入正整数，或留空以使用自动值。",
+  dshButtonTitle: "DeepSeek Harness 的模型、推理强度与权限",
+  dshDescription: "模型、推理强度和权限从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置。DeepSeek Harness 支持先问你、自动审批和完全放开，不支持只读：它在任何级别都不限网络。",
+  dshUnknownModel: (wanted) => `“${wanted}”不是此 Agent 的 DeepSeek Harness 提供的模型；请在下方选择一个。`,
+  dshDefault: "DeepSeek 的默认",
+  dshEffortNote: "从下一个 Turn 起，DeepSeek Harness 用这个推理强度运行模型。选 DeepSeek 的默认则由服务商决定。",
+  permissions: "权限",
+  dshLevelNotes: {
+    ask: "在它的沙箱里做，沙箱只限制写文件；越出沙箱的操作每次先问你。",
+    auto: "沙箱里照常做；越出沙箱的不问你，一律拒绝。没有自动审查。",
+    full: "不用沙箱，也不询问：这台主机的用户能写的地方它都能写。",
+  },
+  dshVersion: (version) => `Core 主机上的 DeepSeek Harness ${version}。`,
 });
 type Words = ReturnType<typeof text>;
 /** A note or error: as Core gave it, or worded on show from this dialog's words. */
@@ -125,6 +151,11 @@ type Said = string | ((t: Words) => string);
 
 const chosenMode = (agent: Agent) =>
   agent.settings?.permissionMode === "auto" ? "auto" : "default";
+/** A DeepSeek Harness Agent's level as saved; Ask you first when none is (YN-119 §3.6). */
+const dshLevelOf = (agent: Agent): string => {
+  const level = agent.settings?.permissionLevel;
+  return isDshLevel(level) ? level : "ask";
+};
 export function AgentSettings({
   agent,
   disabled,
@@ -169,6 +200,10 @@ export function AgentSettings({
   const claude = agent.harness === "claude";
   // OpenCode (T-10): only the model, from what its own OpenCode lists.
   const opencode = agent.harness === "opencode";
+  // DeepSeek Harness (YN-119 W1): a model, an effort of its own four and one of the three levels it keeps.
+  const dsh = agent.harness === "dsh";
+  const dshStatus = useDsh();
+  const [dshLevel, setDshLevel] = useState<string>(() => dshLevelOf(agent));
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
   // OpenCode (YN-47): its providers and where each gets its access, and the model OpenCode uses when none is chosen
@@ -220,6 +255,7 @@ export function AgentSettings({
     setContextNote("");
     setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
+    setDshLevel(dshLevelOf(agent));
     api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
       .then(({ models, providers, default: resolved, permissions, context, opencode: native }) => {
         if (!current()) return;
@@ -239,11 +275,11 @@ export function AgentSettings({
             selectModel(row.model || row.id, models, agent.settings?.reasoningEffort || "");
             return;
           }
-          if (!row) setError(() => (t: Words) => t.unknownModel(wanted, agent.harness === "claude"));
+          if (!row) setError(() => (t: Words) => (agent.harness === "dsh" ? t.dshUnknownModel(wanted) : t.unknownModel(wanted, agent.harness === "claude")));
         }
         // A Claude effort is only ever the user's choice; no default fills it.
-        // OpenCode takes none here.
-        if (agent.harness === "claude" || agent.harness === "opencode") return;
+        // OpenCode takes none here, and DeepSeek Harness's is its own four.
+        if (agent.harness === "claude" || agent.harness === "opencode" || agent.harness === "dsh") return;
         const selected = models.find((m) => (m.model || m.id) === agent.model);
         setSettings((s) => ({
           ...s,
@@ -346,6 +382,11 @@ export function AgentSettings({
   // Nothing is saved until Save.
   function selectModel(value: string, catalog: Model[], effort: string) {
     setModel(value);
+    // DeepSeek Harness's efforts are the same four for every model: a chosen one stays.
+    if (dsh) {
+      setEffortNote("");
+      return;
+    }
     if (opencode) {
       // A chosen variant survives a model switch only if the new model lists it.
       const row = catalog.find((r) => (r.model || r.id) === value);
@@ -378,21 +419,25 @@ export function AgentSettings({
   const opencodeVariant = opencode ? settings.reasoningEffort || "" : "";
   const variants = opencode ? selected?.variants || [] : [];
   const variantUnlisted = !!opencodeVariant && !variants.includes(opencodeVariant);
+  const dshEffort = dsh ? settings.reasoningEffort || "" : "";
   async function save() {
     if (saving) return;
     setSaving(true);
     setError("");
     try {
-      const window = claude || opencode ? null : tokenSetting(contextWindow);
-      const compact = claude || opencode ? null : tokenSetting(compactLimit);
+      const window = claude || opencode || dsh ? null : tokenSetting(contextWindow);
+      const compact = claude || opencode || dsh ? null : tokenSetting(compactLimit);
       if (window !== null && compact !== null && compact > window) throw new Error(COMPACT_EXCEEDS);
-      const contextChanged = !claude && !opencode && (window !== (agent.settings?.contextWindow ?? null) || compact !== (agent.settings?.autoCompactTokenLimit ?? null));
+      const contextChanged = !claude && !opencode && !dsh && (window !== (agent.settings?.contextWindow ?? null) || compact !== (agent.settings?.autoCompactTokenLimit ?? null));
       await post(`/agents/${encodeURIComponent(agent.id)}/settings`, {
         model,
         // Claude always receives the chosen mode: saving also returns a live
         // session from a mode Claude switched to, and replaces older records.
         // OpenCode receives the model alone.
-        ...(opencode
+        // DeepSeek Harness receives its effort and level with the model (YN-119 §3.9).
+        ...(dsh
+          ? { effort: dshEffort || null, permissionLevel: dshLevel }
+          : opencode
           ? { effort: opencodeVariant || null }
           : claude
             ? { permissionMode, effort: claudeEffort || null }
@@ -456,7 +501,7 @@ export function AgentSettings({
   }
   return (
     <>
-      <Tip side="bottom" content={<TipText title={t.buttonTitle(agent.harness ?? "codex")} />}>
+      <Tip side="bottom" content={<TipText title={dsh ? t.dshButtonTitle : t.buttonTitle(agent.harness ?? "codex")} />}>
       <button
         type="button"
         className="conversation-action agent-settings-button"
@@ -478,7 +523,7 @@ export function AgentSettings({
         open={open}
         onOpenChange={changeOpen}
         title={t.title(agent.name)}
-        description={claude ? t.claudeDescription : opencode ? t.opencodeDescription : t.codexDescription}
+        description={claude ? t.claudeDescription : opencode ? t.opencodeDescription : dsh ? t.dshDescription : t.codexDescription}
         lang={langTag(language)}
         closeLabel={t.closeDialog}
       >
@@ -527,7 +572,7 @@ export function AgentSettings({
               }
               onChange={(value) => selectModel(value, models, opencode ? opencodeVariant : claudeEffort)}
               choices={[
-                ...(claude || opencode ? [{ value: "", label: t.harnessDefault }] : []),
+                ...(claude || opencode || dsh ? [{ value: "", label: t.harnessDefault }] : []),
                 // The model in use stays shown while the catalog loads, or
                 // when the catalog no longer lists it.
                 ...(!selected && model
@@ -620,6 +665,45 @@ export function AgentSettings({
                 )}
             </div>
           )}
+          {dsh && (
+            <div className="agent-setting">
+              <ChoiceChips
+                label={t.effort}
+                name="agent-effort"
+                value={dshEffort}
+                disabled={loading || saving}
+                onChange={(value) => setSettings((s) => ({ ...s, reasoningEffort: value || null }))}
+                choices={[
+                  { value: "", label: t.dshDefault },
+                  // A saved effort it no longer offers stays shown.
+                  ...(dshEffort && !(DSH_EFFORTS as readonly string[]).includes(dshEffort) ? [{ value: dshEffort, label: dshEffort, note: t.current }] : []),
+                  ...DSH_EFFORTS.map((level) => ({ value: level, label: level })),
+                ]}
+              />
+              <small>{t.dshEffortNote}</small>
+            </div>
+          )}
+          {dsh && (
+            <div className="agent-setting">
+              <ChoiceChips
+                label={t.permissions}
+                name="agent-dsh-level"
+                value={dshLevel}
+                disabled={saving}
+                onChange={setDshLevel}
+                // The three levels it keeps; never Read only (YN-119 §3.6).
+                choices={DSH_LEVELS.map((level) => ({ value: level, label: dshLevelName(level, language) }))}
+              />
+              <small>{t.dshLevelNotes[dshLevel] ?? ""}</small>
+              {agent.dshVersion && (
+                <small className="model-catalog-note dsh-version-note">
+                  {t.dshVersion(agent.dshVersion)}
+                  {/* Core's note of the version it found now, when it is this Agent's. */}
+                  {dshStatus?.label && dshStatus.version === agent.dshVersion ? ` ${dshStatus.label}` : ""}
+                </small>
+              )}
+            </div>
+          )}
           {opencode && (variants.length > 0 || variantUnlisted) && (
             <div className="agent-setting">
               <ChoiceChips
@@ -647,7 +731,7 @@ export function AgentSettings({
             <small className="model-catalog-note opencode-version-note">{t.openCodeNewer(openCodeNote.version, openCodeNote.verified)}</small>
           )}
           {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} onChanged={rereadModels} />}
-          {!claude && !opencode && (
+          {!claude && !opencode && !dsh && (
             <>
               <div className="agent-setting">
                 <ChoiceChips
@@ -722,7 +806,9 @@ export function AgentSettings({
               disabled={
                 saving ||
                 loading ||
-                (opencode
+                (dsh
+                  ? !!model && !selected
+                  : opencode
                   ? (!!model && !selected) || variantUnlisted
                   : claude
                     ? (!!model && !selected) || effortUnlisted

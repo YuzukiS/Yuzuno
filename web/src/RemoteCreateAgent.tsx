@@ -20,6 +20,8 @@ import { ImportCodexSession } from "./ImportCodexSession";
 import { ImportClaudeSession } from "./ImportClaudeSession";
 import { ImportOpenCodeSession } from "./ImportOpenCodeSession";
 import { harnessName, runMachineCheck, type MachineCheck } from "./machine-checks";
+import { DSH_LEVELS, DSH_NAME, dshAvailable, dshLevelName, type DshStatus } from "./dsh";
+import { readKeys, type RoutingKey } from "./routing-keys";
 import { LastCheck } from "./MachinesPage";
 import {
   CLAUDE_MODES,
@@ -71,7 +73,7 @@ export interface WorkspaceMachine {
 export type CreateInitial = {
   nonce: number;
   mode: "new" | "existing" | "claude";
-  harness?: "codex" | "claude";
+  harness?: "codex" | "claude" | "dsh";
   machineId?: string;
   cwd?: string;
   projectId?: string;
@@ -87,6 +89,7 @@ export function RemoteCreateAgent({
   projects = [],
   initialProjectId = "",
   opencode = false,
+  dsh = null,
 }: {
   open: boolean;
   /** Where to start, once per opening (`nonce`); null is the usual start. */
@@ -107,6 +110,9 @@ export function RemoteCreateAgent({
    * yes unless it was started with them off (YN-27). Each entry is marked
    * experimental. */
   opencode?: boolean;
+  /** `dsh` of /workspace (YN-119 W1): DeepSeek Harness is offered only while
+   * Core says it starts it, on the Core host, with a DeepSeek key. */
+  dsh?: DshStatus | null;
 }) {
   const language = useLanguage();
   const t = newAgentText(language);
@@ -128,13 +134,27 @@ export function RemoteCreateAgent({
   const [model, setModel] = useState("");
   /** This Agent's own reasoning effort ("" is the default), for Codex on the Core host. */
   const [effort, setEffort] = useState("");
-  const [harness, setHarness] = useState<"codex" | "claude" | "opencode">("codex");
+  const [harness, setHarness] = useState<"codex" | "claude" | "opencode" | "dsh">("codex");
   // OpenCode is offered only while Core says it creates such Agents, and
   // only on the Core host, with OpenCode's own default model.
   const isOpenCode = harness === "opencode";
   useEffect(() => {
     if (!opencode && isOpenCode) setHarness("codex");
   }, [opencode, isOpenCode]);
+  // DeepSeek Harness likewise, while Core says it starts it (YN-119 W1).
+  const offerDsh = dshAvailable(dsh);
+  const isDsh = harness === "dsh";
+  useEffect(() => {
+    if (!offerDsh && isDsh) setHarness("codex");
+  }, [offerDsh, isDsh]);
+  // Both run on the Core host only.
+  const hostOnly = isOpenCode || isDsh;
+  const hostOnlyNote = isDsh ? t.dshLocal : t.openCodeLocal;
+  // A DeepSeek Harness Agent's key: the Workspace's DeepSeek keys, read for it.
+  const [dshKeys, setDshKeys] = useState<RoutingKey[] | null>(null);
+  const [keysError, setKeysError] = useState("");
+  const [keysReload, setKeysReload] = useState(0);
+  const [keyId, setKeyId] = useState("");
   // The Workspace's defaults for new Agents (T-190): "unknown" from a Core
   // that doesn't report them. The harness starts on the default until this
   // Agent's own harness is chosen; a permission is sent only when chosen.
@@ -294,7 +314,7 @@ export function RemoteCreateAgent({
     setLoadingModels(true);
     setModelError("");
     api<{ models: Model[] }>(
-      harness === "claude" ? "/models?harness=claude" : "/models",
+      harness === "claude" ? "/models?harness=claude" : harness === "dsh" ? "/models?harness=dsh" : "/models",
       { signal: controller.signal },
     )
       .then((result) => {
@@ -308,6 +328,27 @@ export function RemoteCreateAgent({
       });
     return () => controller.abort();
   }, [open, disabled, remote, harness, modelReload, mode]);
+
+  // The DeepSeek keys, read on each opening with DeepSeek Harness chosen. A
+  // key chosen stays while it is still there and set; else the first that is.
+  useEffect(() => {
+    if (!open || disabled || mode !== "new" || !isDsh) return;
+    const controller = new AbortController();
+    setDshKeys(null);
+    setKeysError("");
+    readKeys(controller.signal)
+      .then((view) => {
+        if (controller.signal.aborted) return;
+        const deepseek = view.keys.filter((k) => k.provider === "deepseek");
+        setDshKeys(deepseek);
+        setKeyId((current) => (deepseek.some((k) => k.id === current && k.set) ? current : deepseek.find((k) => k.set)?.id ?? ""));
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setKeysError(errorText(e));
+      });
+    return () => controller.abort();
+  }, [open, disabled, mode, isDsh, keysReload]);
+  const dshKey = isDsh ? dshKeys?.find((k) => k.id === keyId && k.set) : undefined;
 
   // Read on each opening, so a change in Settings or another client shows,
   // and again for the project chosen: its overrides come before the
@@ -405,8 +446,8 @@ export function RemoteCreateAgent({
   }
   function machineAdded(saved: WorkspaceMachine) {
     listMachine(saved);
-    // An OpenCode Agent stays on the Core host; the machine is kept for later.
-    if (!isOpenCode) selectMachine(saved);
+    // An OpenCode or DeepSeek Harness Agent stays on the Core host; the machine is kept for later.
+    if (!hostOnly) selectMachine(saved);
     setAdding(false);
   }
 
@@ -433,7 +474,7 @@ export function RemoteCreateAgent({
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (disabled || locked || adding || checking || permissionConflict || overLimit(name, coreLimits.agentName)) return;
+    if (disabled || locked || adding || checking || permissionConflict || (isDsh && !dshKey) || overLimit(name, coreLimits.agentName)) return;
     setBusy(true);
     setError("");
     try {
@@ -450,6 +491,8 @@ export function RemoteCreateAgent({
           // Only this Agent's own choice; Core applies the default otherwise.
           ...(permission && harness === "codex" ? { permissionPreset: permission } : {}),
           ...(permission && harness === "claude" ? { permissionMode: permission } : {}),
+          // DeepSeek Harness: its level, Ask you first unless chosen, and the DeepSeek key it runs with (YN-119 §3.6, §3.10).
+          ...(dshKey ? { permissionLevel: permission || "ask", runtimeProfile: { kind: "apiKey", keyId: dshKey.id } } : {}),
           ...(projectId
             ? { projectId, saveProjectDefault: saveDefault && !!cwd.trim() }
             : {}),
@@ -587,16 +630,17 @@ export function RemoteCreateAgent({
               disabled={defaultsReading}
               onChange={(value) => {
                 harnessChosen.current = true;
-                setHarness(value as "codex" | "claude" | "opencode");
+                setHarness(value as "codex" | "claude" | "opencode" | "dsh");
                 setPermission("");
                 setModel("");
-                if (value === "opencode" && remote)
+                if ((value === "opencode" || value === "dsh") && remote)
                   selectMachine(machines.find((m) => m.kind === "local") || localMachine);
               }}
               choices={[
                 { value: "codex", label: "Codex" },
                 { value: "claude", label: "Claude Code" },
                 ...(opencode ? [{ value: "opencode", label: "OpenCode", note: t.experimental }] : []),
+                ...(offerDsh ? [{ value: "dsh", label: DSH_NAME, note: dsh?.version || undefined }] : []),
               ]}
             />
             {defaultsReading && (
@@ -624,19 +668,19 @@ export function RemoteCreateAgent({
                 label: m.name,
                 note: m.kind === "ssh" ? "SSH" : t.local,
                 icon: m.kind === "ssh" ? <Server size={13} /> : <Monitor size={13} />,
-                title: m.kind === "ssh" ? isOpenCode ? t.openCodeLocal : m.target : t.coreMachine,
-                disabled: isOpenCode && m.kind === "ssh",
+                title: m.kind === "ssh" ? hostOnly ? hostOnlyNote : m.target : t.coreMachine,
+                disabled: hostOnly && m.kind === "ssh",
               }))}
               after={
-                <Tip content={isOpenCode ? <TipText body={t.openCodeLocal} /> : null} hold>
+                <Tip content={hostOnly ? <TipText body={hostOnlyNote} /> : null} hold>
                   <button
                     ref={addMachineButton}
                     type="button"
                     className="choice-chip-action"
                     aria-expanded={adding}
                     aria-controls="new-ssh-machine"
-                    disabled={disabled || adding || loadingMachines || isOpenCode}
-                    aria-description={isOpenCode ? t.openCodeLocal : undefined}
+                    disabled={disabled || adding || loadingMachines || hostOnly}
+                    aria-description={hostOnly ? hostOnlyNote : undefined}
                     onClick={() => setAdding(true)}
                   >
                     <Plus size={13} /> {t.addMachine}
@@ -742,6 +786,7 @@ export function RemoteCreateAgent({
                 {projectDefault ? t.makeDefault(project.name, machine.name) : t.saveDefault(project.name, machine.name)}
               </label>
             )}
+            {isDsh && <p className="remote-field-note create-dsh-note">{t.dshNote(dsh?.label || null)}</p>}
             {isOpenCode ? (
               <p className="remote-field-note">{t.openCodeNote}</p>
             ) : remote ? (
@@ -837,7 +882,17 @@ export function RemoteCreateAgent({
                 )}
               </p>
             )}
-            {!isOpenCode && (
+            {isDsh && (
+              <ChoiceChips
+                label={t.permissions}
+                name="create-permissions"
+                value={permission || "ask"}
+                onChange={setPermission}
+                // The three levels it keeps; never Read only (YN-119 §3.6).
+                choices={DSH_LEVELS.map((level) => ({ value: level, label: dshLevelName(level, language) }))}
+              />
+            )}
+            {!isOpenCode && !isDsh && (
               <ChoiceChips
                 label={t.permissions}
                 name="create-permissions"
@@ -867,10 +922,45 @@ export function RemoteCreateAgent({
             )}
             {!isOpenCode && (
               <p className="remote-field-note">
-                {harness === "codex" ? t.codexPermissionNote : t.claudePermissionNote}
+                {harness === "codex" ? t.codexPermissionNote : isDsh ? t.dshPermissionNote : t.claudePermissionNote}
               </p>
             )}
-            {!isOpenCode && (
+            {isDsh && (dshKeys?.length ? (
+              <ChoiceChips
+                label={t.dshKey}
+                name="create-dsh-key"
+                className="create-dsh-key"
+                value={dshKey?.id ?? ""}
+                onChange={setKeyId}
+                choices={dshKeys.map((k) => ({
+                  value: k.id,
+                  label: k.id,
+                  note: !k.set ? t.dshKeyUnset : k.source === "1password" ? "1Password" : undefined,
+                  disabled: !k.set,
+                }))}
+              />
+            ) : null)}
+            {isDsh && !dshKeys && !keysError && (
+              <p className="remote-field-note" role="status">{t.dshKeysReading}</p>
+            )}
+            {isDsh && keysError && (
+              <div className="remote-field-error" role="alert">
+                <span>{t.dshKeysError(keysError)}</span>
+                <button type="button" className="quiet-button" onClick={() => setKeysReload((n) => n + 1)}>
+                  {t.tryAgain}
+                </button>
+              </div>
+            )}
+            {isDsh && dshKeys && !dshKeys.some((k) => k.set) && (
+              <p className="remote-field-error create-dsh-no-key" role="alert">{t.dshNoKey}</p>
+            )}
+            {isDsh && dshKey && (
+              <p className="remote-login-note">
+                <Server size={13} />
+                <span>{t.dshKeyNote}</span>
+              </p>
+            )}
+            {!isOpenCode && !isDsh && (
               <p className="remote-login-note">
                 <Server size={13} />
                 <span>{t.login(harnessName(harness), remote ? machine.name : null)}</span>
@@ -914,7 +1004,8 @@ export function RemoteCreateAgent({
                 !name.trim() ||
                 overLimit(name, coreLimits.agentName) ||
                 !cwd.trim() ||
-                permissionConflict
+                permissionConflict ||
+                (isDsh && !dshKey)
               }
             >
               {busy ? (
