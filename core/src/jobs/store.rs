@@ -25,6 +25,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- reason. An older Core ignores it and runs its own four.
         CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
     super::runs::migrate(db)?;
+    super::history::migrate(db)?;
     super::gpu::migrate(db)?;
     super::queue::migrate(db)
 }
@@ -293,7 +294,7 @@ fn previous(
         "idempotency_conflict: requestId already names a different job submission"
     );
     let response: Value = serde_json::from_str(&response)?;
-    Ok(Some(QueueState::read(db)?.view(get(
+    Ok(Some(QueueState::read(db)?.view(super::history::replayed(
         db,
         response["jobId"].as_str().context("Invalid job receipt")?,
     )?)))
@@ -425,11 +426,7 @@ pub(super) fn new_job(
         task_data["archivedAt"].is_null(),
         "Archived tasks cannot accept new jobs"
     );
-    let count: i64 = tx.query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0))?;
-    ensure!(
-        count < 5000,
-        "Local job history limit reached (5000); this version has no automatic history pruning"
-    );
+    // Room in the Job history is made by each insert's caller (history.rs).
     // Stages waiting for their upstream count as queued work too.
     let waiting: i64 = tx.query_row(
         "SELECT COUNT(*) FROM local_jobs WHERE status IN ('queued','waiting')",
@@ -533,6 +530,9 @@ pub(super) fn new_job(
 
 /// Insert a job record; its cursor is its queue position.
 pub(super) fn insert_job(tx: &Connection, mut value: Value) -> Result<Value> {
+    // Each caller made room first (history::make_room); this only keeps the limit.
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0))?;
+    ensure!(count < super::history::LIMIT, "Local job history limit reached ({})", super::history::LIMIT);
     tx.execute(
         "INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,?3,?4,?5)",
         params![value["id"].as_str(), value["taskId"].as_str(), value["agentId"].as_str(), value["status"].as_str(), value.to_string()],
@@ -692,6 +692,7 @@ impl Store {
         // table and kept with it, its request beside it (YN-6 S2).
         let query = super::suggestion::Query { task_id: input.task_id.clone(), name: input.name.clone(), argv: input.argv.clone() };
         let suggestion = super::suggestion::for_job(&tx, &query, actor, input.resources.memory_mi_b)?;
+        super::history::make_room(&tx, 1, &super::history::Keep::default())?;
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;
         value["identity"] = identity;
         value["suggestion"] = suggestion;
