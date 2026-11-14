@@ -186,6 +186,33 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     assert!(compact["tasks"].as_array().unwrap().iter().all(|row| row.get("executorSlot").is_none()));
 }
 
+/// YN-137: a template dispatch's priority marks its executor's slot: urgent
+/// ones are urgent, normal ones and those without a priority are not, and
+/// the task's executorSlot says so only for an urgent one.
+#[test]
+fn an_urgent_template_dispatch_queues_an_urgent_executor() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let mut slots = Vec::new();
+    for priority in [Some("urgent"), Some("normal"), None] {
+        let t = task(&store, &format!("Release {priority:?}"), Some(&p), None);
+        let mut input = dispatch(&t, &format!("dispatch {priority:?}"));
+        if let Some(priority) = priority {
+            input["priority"] = json!(priority);
+        }
+        let plan = begun(&store, None, input).unwrap();
+        create(&store, &plan);
+        store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+        let urgent: bool = store.db.read().unwrap()
+            .query_row("SELECT urgent FROM executor_slots WHERE agent_id=?1", [&plan.dispatch.agent_id], |r| r.get(0)).unwrap();
+        let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
+        slots.push((urgent, current["current"]["executorSlot"].get("urgent").cloned()));
+    }
+    assert_eq!(slots, [(true, Some(json!(true))), (false, None), (false, None)]);
+}
+
 /// T-34: a dispatch that fails is `failed` with its error, which a retry
 /// gets again; the executor it made is named once, to be closed.
 #[test]

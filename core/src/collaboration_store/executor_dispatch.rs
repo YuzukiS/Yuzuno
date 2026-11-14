@@ -211,9 +211,10 @@ fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
 /// The store's task_dispatch of a template dispatch (its input names
 /// `executor`): its row, `created` for this Agent, becomes `dispatched` in the
 /// same transaction, so a dispatched task never has a failed executor, and
-/// its executor waits for a slot. Returns the template the executor was made
+/// its executor waits for a slot, first in the queue when `urgent` (the
+/// dispatch's priority, YN-137). Returns the template the executor was made
 /// from, for its materials.
-pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str) -> Result<Value> {
+pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agent: &str, dispatch: &str, urgent: bool) -> Result<Value> {
     let at = now();
     let row: Option<(String, String, Option<String>, String, String)> = db
         .query_row(
@@ -229,7 +230,7 @@ pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agen
     ensure!(moved == 1, "invalid_input: executor names a dispatch to a new executor, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
     db.execute("UPDATE agent_roles SET dispatch_id=?2,updated_at=?3 WHERE agent_id=?1 AND kind='executor'", params![agent, dispatch, at])?;
     let (template, task, project, machine, template_id) = row.context("the dispatch's template is missing")?;
-    crate::executor_slots::enqueue(db, agent, &task, project.as_deref(), &machine, &template_id)?;
+    crate::executor_slots::enqueue(db, agent, &task, project.as_deref(), &machine, &template_id, urgent)?;
     Ok(serde_json::from_str(&template)?)
 }
 

@@ -21,7 +21,9 @@
 //! Workspace's record (`executors.slots`) keeps the start time limit, and the
 //! number older Cores read; a Project's and a template's limits from before
 //! stay stored for them, unused here. It counts executors only, apart from
-//! the Jobs' machine slots.
+//! the Jobs' machine slots. An urgent dispatch's executor (YN-137) goes
+//! first in the queue and may take `URGENT_EXTRA` slots over its machine's
+//! limit; no other passes it.
 //!
 //! A fresh executor's start the runtime refused closes it (kept, to see what
 //! happened) and frees its slot; that close carries the record of its
@@ -49,6 +51,15 @@ use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, OnceLock}, time::D
 pub(crate) const DEFAULT_SLOTS: i64 = 3;
 pub(crate) const MAX_SLOTS: i64 = 64;
 const KEY: &str = "executors.slots";
+
+/// The slots over a machine's limit an urgent dispatch's executor may take
+/// (YN-137, the user's choice B): it goes first in the queue and starts
+/// while fewer than limit + this hold a slot there; any other only while
+/// fewer than the limit do. One is the least that lets an urgent executor,
+/// a release say, start without waiting for any other to close; two urgent
+/// ones go in dispatch order. It is that lane's width, not a tuning number,
+/// so it is no setting.
+pub(crate) const URGENT_EXTRA: i64 = 1;
 
 /// What the first open of S5 did, once (`machines_only`).
 const MACHINES_ONLY: &str = "executors.slots.machines";
@@ -89,6 +100,13 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executor_slots') WHERE name='rebuilt_from')", [], |r| r.get(0))?;
     if !has {
         db.execute_batch("ALTER TABLE executor_slots ADD COLUMN rebuilt_from TEXT")?;
+    }
+    // YN-137: an urgent dispatch's executor (`URGENT_EXTRA`). Every INSERT
+    // names its columns, so an older Core's rows take the default, 0.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executor_slots') WHERE name='urgent')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE executor_slots ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0")?;
     }
     machines_only(db)
 }
@@ -248,14 +266,19 @@ struct Waiting {
     agent: String,
     project: Option<String>,
     machine: String,
+    urgent: bool,
 }
 
 /// The executor a pass takes: starting, and its Project the one served last.
-fn take(tx: &Connection, agent: &str, key: &str) -> Result<()> {
+/// An urgent one leaves the Projects' turns as they were (YN-137).
+fn take(tx: &Connection, agent: &str, key: &str, urgent: bool) -> Result<()> {
     tx.execute(
         "UPDATE executor_slots SET state='starting',since=?2,reason=NULL WHERE agent_id=?1 AND state='waiting'",
         params![agent, now()],
     )?;
+    if urgent {
+        return Ok(());
+    }
     tx.execute(
         "INSERT INTO executor_queue_state(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         [json!({"lastProject": key}).to_string()],
@@ -266,20 +289,23 @@ fn take(tx: &Connection, agent: &str, key: &str) -> Result<()> {
 /// The waiting executors in queue order (jobs/queue.rs `order`, the Jobs
 /// queue's own: aged first, then Projects in turn after the one served last).
 /// That order covers a window (`queue::WINDOW`); the rest follow it in the
-/// order they were dispatched, so each has a place in the queue.
+/// order they were dispatched, so each has a place in the queue. Urgent
+/// executors go before all of it, in the order they were dispatched (YN-137);
+/// the others keep their order behind them.
 fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     let now = chrono::Utc::now();
     let mut q = db.prepare(
-        "SELECT agent_id, seq, project_id, machine_id, queued_at FROM executor_slots WHERE state='waiting' ORDER BY seq",
+        "SELECT agent_id, seq, project_id, machine_id, queued_at, urgent FROM executor_slots WHERE state='waiting' ORDER BY seq",
     )?;
     let rows = q
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+                r.get::<_, bool>(5)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let queued: Vec<Queued> = rows
         .iter()
-        .map(|(agent, seq, project, _, queued_at)| Queued {
+        .map(|(agent, seq, project, _, queued_at, _)| Queued {
             id: agent.clone(),
             seq: *seq,
             // Executors without a Project take their turn as one, in the
@@ -295,11 +321,16 @@ fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     let mut order = queue::order(&queued, last_project(db)?.as_deref());
     let ordered: std::collections::HashSet<usize> = order.iter().copied().collect();
     order.extend((0..rows.len()).filter(|i| !ordered.contains(i)));
-    Ok(order
+    // The urgent ones first, by seq (dispatch order); the rest keep the order above.
+    let (mut first, rest): (Vec<usize>, Vec<usize>) = order.into_iter().partition(|&i| rows[i].5);
+    first.sort_by_key(|&i| rows[i].1);
+    first.extend(rest);
+    Ok(first
         .into_iter()
         .map(|i| {
-            let (agent, _, project, machine, _) = &rows[i];
-            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone() }, queued[i].project.clone())
+            let (agent, _, project, machine, _, urgent) = &rows[i];
+            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone(), urgent: *urgent },
+                queued[i].project.clone())
         })
         .collect())
 }
@@ -360,24 +391,29 @@ fn holding(db: &Connection) -> Result<HashMap<String, i64>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// A slot row as a task shows it: its executor, state, machine and reason.
-type SlotRow = (String, String, String, Option<String>);
+/// A slot row as a task shows it: its executor, state, machine, reason and
+/// whether it is urgent.
+type SlotRow = (String, String, String, Option<String>, bool);
 
 /// An executor's slot row as the task card shows it, and its place in the
 /// queue (1 first) while it waits.
 fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> Result<Option<Value>> {
     let row: Option<SlotRow> = db
         .query_row(
-            "SELECT s.agent_id, s.state, s.machine_id, s.reason FROM executor_slots s
+            "SELECT s.agent_id, s.state, s.machine_id, s.reason, s.urgent FROM executor_slots s
              WHERE s.task_id=?1 AND s.state!='released'
                AND EXISTS(SELECT 1 FROM agents a WHERE a.id=s.agent_id AND json_extract(a.data,'$.agent.closedAt') IS NULL)
              ORDER BY s.seq DESC LIMIT 1",
             [task],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((agent, state, machine, reason)) = row else { return Ok(None) };
+    let Some((agent, state, machine, reason, urgent)) = row else { return Ok(None) };
     let mut view = json!({"agentId": agent, "state": state, "machine": machine});
+    // An urgent dispatch's (YN-137); any other's view is as before.
+    if urgent {
+        view["urgent"] = json!(true);
+    }
     if state == "waiting" {
         view["position"] = json!(positions.get(&agent));
         // What it waits for (S5): a slot on its machine, and how full that is.
@@ -466,14 +502,16 @@ pub(crate) fn follow_agent(db: &Connection, agent: &crate::model::Agent, kind: &
 }
 
 /// The waiting row of an executor just dispatched, in the transaction that
-/// dispatches its task (collaboration_store/executor_dispatch.rs).
-pub(crate) fn enqueue(db: &Connection, agent: &str, task: &str, project: Option<&str>, machine: &str, template: &str) -> Result<()> {
+/// dispatches its task (collaboration_store/executor_dispatch.rs). `urgent`:
+/// its dispatch's priority was urgent (YN-137, `URGENT_EXTRA`).
+pub(crate) fn enqueue(db: &Connection, agent: &str, task: &str, project: Option<&str>, machine: &str, template: &str,
+    urgent: bool) -> Result<()> {
     let seq: i64 = db.query_row("SELECT COALESCE(MAX(seq),0)+1 FROM executor_slots", [], |r| r.get(0))?;
     let at = now();
     db.execute(
-        "INSERT OR IGNORE INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at)
-         VALUES(?1,?2,?3,?4,?5,?6,'waiting',?7,?7)",
-        params![agent, seq, task, project, machine, template, at],
+        "INSERT OR IGNORE INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at,urgent)
+         VALUES(?1,?2,?3,?4,?5,?6,'waiting',?7,?7,?8)",
+        params![agent, seq, task, project, machine, template, at, urgent],
     )?;
     Ok(())
 }
@@ -484,8 +522,9 @@ type OlderExecutor = (String, Option<String>, Option<String>, Option<String>, St
 impl Store {
     /// The scheduler's one transaction: frees the slots of closed executors,
     /// marks connected ones running, then takes the first waiting executor in
-    /// queue order whose machine has room under its limit (S5: the only one),
-    /// and sets it starting. Returns it, for its runtime to start.
+    /// queue order whose machine has room under its limit (S5: the only one;
+    /// an urgent one's room is `URGENT_EXTRA` more, YN-137), and sets it
+    /// starting. Returns it, for its runtime to start.
     /// `in_flight`: the executors passes are starting or settling. The one
     /// taken joins them before its row reads starting, so no other pass
     /// settles a start this one is making (R2 de2313b7).
@@ -513,13 +552,15 @@ impl Store {
                     limit
                 }
             };
-            if held.get(&waiting.machine).copied().unwrap_or(0) < limit && in_flight.lock().unwrap().insert(waiting.agent.clone()) {
+            // Only an urgent one may pass the limit, and by URGENT_EXTRA at most.
+            let room = limit + if waiting.urgent { URGENT_EXTRA } else { 0 };
+            if held.get(&waiting.machine).copied().unwrap_or(0) < room && in_flight.lock().unwrap().insert(waiting.agent.clone()) {
                 chosen = Some((waiting, key));
                 break;
             }
         }
         let took = match &chosen {
-            Some((waiting, key)) => take(&tx, &waiting.agent, key),
+            Some((waiting, key)) => take(&tx, &waiting.agent, key, waiting.urgent),
             None => Ok(()),
         }
         .and_then(|()| Ok(tx.commit()?));
@@ -589,15 +630,17 @@ impl Store {
     /// holding its slot, may start.
     pub(crate) fn executor_slot_gate(&self, agent: &str) -> Result<()> {
         let db = self.db.read()?;
-        let row: Option<(String, String)> = db
-            .query_row("SELECT state, machine_id FROM executor_slots WHERE agent_id=?1", [agent], |r| Ok((r.get(0)?, r.get(1)?)))
+        let row: Option<(String, String, bool)> = db
+            .query_row("SELECT state, machine_id, urgent FROM executor_slots WHERE agent_id=?1", [agent],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()?;
-        if let Some((_, machine)) = row.filter(|(state, _)| state == "waiting") {
+        if let Some((_, machine, urgent)) = row.filter(|(state, _, _)| state == "waiting") {
             let place = positions(&db)?.get(agent).map(|n| format!("; number {n} in the queue")).unwrap_or_default();
             let (running, limit) = machine_slots(&db, &machine)?;
             let name = machine_name(&db, &machine)?;
+            let over = if urgent { "; it is urgent, so it may take one slot over that limit" } else { "" };
             return Err(WaitsForSlot(format!(
-                "executor_queued: this executor waits for a slot on {name} ({running} of {limit} running there{place}); it starts when one is free. To run more at once there, raise that machine's Executors at once in Settings → Machines"
+                "executor_queued: this executor waits for a slot on {name} ({running} of {limit} running there{place}{over}); it starts when one is free. To run more at once there, raise that machine's Executors at once in Settings → Machines"
             )).into());
         }
         Ok(())
@@ -661,7 +704,7 @@ impl Store {
         Ok(json!({
             "workspace": {"version": workspace.version,
                 "startLimitSeconds": workspace.start_limit.unwrap_or(DEFAULT_START_LIMIT)},
-            "limits": {"min": 1, "max": MAX_SLOTS, "default": DEFAULT_SLOTS,
+            "limits": {"min": 1, "max": MAX_SLOTS, "default": DEFAULT_SLOTS, "urgentExtra": URGENT_EXTRA,
                 "startLimitSeconds": {"min": START_LIMITS.start(), "max": START_LIMITS.end(), "default": DEFAULT_START_LIMIT}},
             "machines": listed,
             "total": total,

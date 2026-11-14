@@ -28,7 +28,7 @@ fn executor(store: &Store, id: &str, by: &str) {
          VALUES(?1,'executor','reviewer',?2,?3,'dispatched','now','now')",
         params![id, format!("task-{id}"), by],
     ).unwrap();
-    crate::executor_slots::enqueue(&db, id, &format!("task-{id}"), None, "local", "reviewer").unwrap();
+    crate::executor_slots::enqueue(&db, id, &format!("task-{id}"), None, "local", "reviewer", false).unwrap();
 }
 
 fn slot(store: &Store, id: &str) -> String {

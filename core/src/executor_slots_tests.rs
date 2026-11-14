@@ -22,13 +22,19 @@ fn agent_of(store: &Store, id: &str, harness: &str) {
 /// Executor `id`, dispatched for the task `task-<id>`, waiting in the queue.
 fn queued(store: &Store, id: &str, project: Option<&str>, machine: &str) {
     agent(store, id);
-    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "reviewer").unwrap();
+    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "reviewer", false).unwrap();
+}
+
+/// As `queued`, an urgent dispatch's (YN-137).
+fn queued_urgent(store: &Store, id: &str, project: Option<&str>, machine: &str) {
+    agent(store, id);
+    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, machine, "core-release", true).unwrap();
 }
 
 /// As `queued` on this host, made from the template `template` (its id).
 fn queued_from(store: &Store, id: &str, project: Option<&str>, template: &str) {
     agent(store, id);
-    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, "local", template).unwrap();
+    enqueue(&store.db.write().unwrap(), id, &format!("task-{id}"), project, "local", template, false).unwrap();
 }
 
 /// A template list as a save leaves it: the Workspace's, or a Project's own.
@@ -191,14 +197,14 @@ async fn a_reopened_executor_whose_start_fails_stays_open_with_its_slot_and_a_fr
         dir.path().join("no-codex").to_string_lossy().into()).unwrap();
     limit(&ws.store, &machine_key("local"), 1);
     agent_of(&ws.store, "fresh", "codex");
-    enqueue(&ws.store.db.write().unwrap(), "fresh", "task-fresh", None, "local", "reviewer").unwrap();
+    enqueue(&ws.store.db.write().unwrap(), "fresh", "task-fresh", None, "local", "reviewer", false).unwrap();
     pass(&ws).await;
     assert!(ws.store.agent("fresh").unwrap().closed_at.is_some(), "a fresh dispatch whose start was refused is closed");
     assert_eq!(state(&ws.store, "fresh").0, "released", "and frees its slot");
 
     // Dispatched, closed before it started, and reopened: its next start is a later one.
     agent_of(&ws.store, "again", "codex");
-    enqueue(&ws.store.db.write().unwrap(), "again", "task-again", None, "local", "reviewer").unwrap();
+    enqueue(&ws.store.db.write().unwrap(), "again", "task-again", None, "local", "reviewer", false).unwrap();
     close(&ws.store, "again");
     reopen(&ws.store, "again");
     pass(&ws).await;
@@ -211,7 +217,7 @@ async fn a_reopened_executor_whose_start_fails_stays_open_with_its_slot_and_a_fr
     assert_eq!(view(&ws.store, "task-again").unwrap()["reason"], json!(reason), "the task shows why");
     ws.store.executor_slot_gate("again").expect("retryable: the user's Connect may start it");
     agent_of(&ws.store, "next", "codex");
-    enqueue(&ws.store.db.write().unwrap(), "next", "task-next", None, "local", "reviewer").unwrap();
+    enqueue(&ws.store.db.write().unwrap(), "next", "task-next", None, "local", "reviewer", false).unwrap();
     pass(&ws).await;
     assert_eq!(state(&ws.store, "next").0, "waiting", "its slot stays held: the next waits");
 }
@@ -329,6 +335,14 @@ fn a_waiting_executor_says_which_machine_it_waits_for() {
     let refused = store.executor_slot_gate("b").unwrap_err().to_string();
     assert!(refused.starts_with("executor_queued: this executor waits for a slot on this Core host (1 of 1 running there; number 1 in the queue)"),
         "{refused}");
+    // YN-137: an urgent one says it may take one over; past that it waits too.
+    queued_urgent(&store, "u1", None, "local");
+    queued_urgent(&store, "u2", None, "local");
+    assert_eq!(started(&store), ["u1"], "one over the limit, for the first urgent one");
+    let refused = store.executor_slot_gate("u2").unwrap_err().to_string();
+    assert!(refused.starts_with("executor_queued: this executor waits for a slot on this Core host (2 of 1 running there; \
+        number 1 in the queue; it is urgent, so it may take one slot over that limit); it starts when one is free"), "{refused}");
+    assert!(!store.executor_slot_gate("b").unwrap_err().to_string().contains("urgent"), "a normal one's says nothing of it");
 }
 
 /// Projects take turns, as in the Jobs queue; one waiting past the aging
@@ -494,7 +508,7 @@ async fn the_workspace_and_project_slot_saves_are_refused_and_the_start_limit_st
     }
     let view = ws.store.executor_slots_view(Some(&project)).unwrap();
     assert_eq!((view["workspace"].clone(), view["limits"].clone()), (json!({"version":2,"startLimitSeconds":45}),
-        json!({"min":1,"max":MAX_SLOTS,"default":3,"startLimitSeconds":{"min":30,"max":3600,"default":300}})), "{view}");
+        json!({"min":1,"max":MAX_SLOTS,"default":3,"urgentExtra":1,"startLimitSeconds":{"min":30,"max":3600,"default":300}})), "{view}");
     assert_eq!((view["machines"].clone(), view["total"].clone()),
         (json!([{"id":"local","name":"this Core host","version":0,"slots":3,"saved":false,"default":3,"executors":0}]), json!(3)),
         "each machine's limit, this Core host's first, and their sum; a Project has none: {view}");
@@ -589,4 +603,167 @@ async fn a_machines_own_limit_is_saved_through_its_route() {
     assert_eq!((cleared["machines"][1]["slots"].clone(), cleared["machines"][1]["saved"].clone()), (json!(3), json!(false)),
         "null clears it, for the default");
     assert_eq!(started(&ws.store), ["c"], "cleared: the default, 3, applies");
+}
+
+/// Whether an executor's row is urgent, as stored.
+fn urgent(store: &Store, id: &str) -> bool {
+    store.db.read().unwrap().query_row("SELECT urgent FROM executor_slots WHERE agent_id=?1", [id], |r| r.get(0)).unwrap()
+}
+
+/// YN-137, as on 11-14: this Core host's limit 8, all 8 running, six waiting.
+/// An urgent one dispatched after them is first in the queue and starts at
+/// once, on a ninth slot; a second urgent one finds limit + 1 held and waits.
+#[test]
+fn an_urgent_executor_goes_first_and_may_take_one_slot_over_the_limit() {
+    let (_dir, store) = store();
+    limit(&store, &machine_key("local"), 8);
+    for i in 0..8 {
+        queued(&store, &format!("r{i}"), Some("p1"), "local");
+    }
+    assert_eq!(started(&store).len(), 8);
+    for i in 0..8 {
+        connected(&store, &format!("r{i}"));
+    }
+    for i in 0..6 {
+        queued(&store, &format!("w{i}"), Some("p1"), "local");
+    }
+    queued_urgent(&store, "u1", Some("p1"), "local");
+    let shown = view(&store, "task-u1").unwrap();
+    assert_eq!((shown["position"].clone(), shown["urgent"].clone()), (json!(1), json!(true)), "first in the queue: {shown}");
+    assert!(view(&store, "task-w0").unwrap().get("urgent").is_none(), "a normal one's view is as before");
+    assert_eq!(started(&store), ["u1"], "it takes a ninth slot; the normal ones still wait");
+    assert_eq!(view(&store, "task-u1").unwrap(), json!({"agentId":"u1","state":"starting","machine":"local","urgent":true}));
+    queued_urgent(&store, "u2", Some("p1"), "local");
+    assert!(started(&store).is_empty(), "limit + 1 held: a second urgent one waits");
+    assert_eq!(view(&store, "task-u2").unwrap()["waitsFor"]["running"], 9);
+}
+
+/// YN-137: while an urgent one holds the slot over the limit, normal ones
+/// start only under the limit; a free slot goes to the next urgent one first.
+#[test]
+fn normal_executors_never_pass_the_limit_while_an_urgent_one_holds_the_extra_slot() {
+    let (_dir, store) = store();
+    limit(&store, &machine_key("local"), 2);
+    queued(&store, "r0", None, "local");
+    queued(&store, "r1", None, "local");
+    assert_eq!(started(&store), ["r0", "r1"]);
+    queued(&store, "w0", None, "local");
+    queued(&store, "w1", None, "local");
+    queued_urgent(&store, "u1", None, "local");
+    assert_eq!(started(&store), ["u1"], "2 held, the limit: only the urgent one starts, on a third slot");
+    queued_urgent(&store, "u2", None, "local");
+    assert!(started(&store).is_empty(), "3 held, limit + 1: the second urgent one waits too");
+    close(&store, "r0");
+    assert_eq!(started(&store), ["u2"], "2 held: still no room for a normal one; the urgent one takes it");
+    close(&store, "r1");
+    close(&store, "u1");
+    assert_eq!(started(&store), ["w0"], "1 held: one normal one starts, up to the limit, and no more");
+    assert_eq!(state(&store, "w1").0, "waiting");
+}
+
+/// YN-137: urgent ones go first, in dispatch order, before one waiting past
+/// the aging time too; the rest keep the order they had. Taking an urgent one
+/// leaves the Projects' turns as they were.
+#[test]
+fn urgent_ones_go_in_dispatch_order_before_aged_ones_and_leave_the_rotation_as_it_was() {
+    for aged in [false, true] {
+        let (_dir, store) = store();
+        limit(&store, &machine_key("local"), 10);
+        for id in ["x1", "x2", "x3"] {
+            queued(&store, id, Some("p1"), "local");
+        }
+        queued(&store, "y1", Some("p2"), "local");
+        // Dispatched last, u2 in p1: were their Project's turn taken, p1 would be served last and y1 go next.
+        queued_urgent(&store, "u1", Some("p2"), "local");
+        queued_urgent(&store, "u2", Some("p1"), "local");
+        if aged {
+            let long_ago = (chrono::Utc::now() - chrono::Duration::seconds(queue::AGING_SECS + 60)).to_rfc3339();
+            store.db.write().unwrap().execute("UPDATE executor_slots SET queued_at=?1 WHERE agent_id='x3'", [long_ago]).unwrap();
+        }
+        let place = |id: &str| view(&store, &format!("task-{id}")).unwrap()["position"].clone();
+        assert_eq!((place("u1"), place("u2"), place(if aged { "x3" } else { "x1" })), (json!(1), json!(2), json!(3)));
+        let next = || store.executor_slot_next(&Default::default()).unwrap();
+        assert_eq!((next(), next()), (Some("u1".to_owned()), Some("u2".to_owned())), "urgent ones first, in dispatch order");
+        assert_eq!(last_project(&store.db.read().unwrap()).unwrap(), None, "taking them left the Projects' turns as they were");
+        let expected: &[&str] = if aged { &["x3", "y1", "x1", "x2"] } else { &["x1", "y1", "x2", "x3"] };
+        assert_eq!(started(&store), expected, "then the order the rest had without them");
+    }
+}
+
+/// YN-137: past the Jobs queue's window an urgent one still goes first.
+#[test]
+fn an_urgent_one_past_the_queue_window_still_goes_first() {
+    let (_dir, store) = store();
+    limit(&store, &machine_key("local"), 1);
+    queued(&store, "holder", None, "local");
+    assert_eq!(started(&store), ["holder"]);
+    for i in 0..queue::WINDOW {
+        queued(&store, &format!("w{i:02}"), None, "local");
+    }
+    queued_urgent(&store, "late", None, "local");
+    assert_eq!(view(&store, "task-late").unwrap()["position"], 1);
+    assert_eq!(view(&store, "task-w00").unwrap()["position"], 2);
+    assert_eq!(started(&store), ["late"]);
+}
+
+/// YN-137: an urgent one whose machine has limit + 1 held waits there, and
+/// holds back none bound for another machine.
+#[test]
+fn an_urgent_one_whose_machine_is_full_holds_back_none_bound_for_another() {
+    let (_dir, store) = store();
+    limit(&store, &machine_key("m1"), 1);
+    limit(&store, &machine_key("local"), 1);
+    queued(&store, "r0", None, "m1");
+    assert_eq!(started(&store), ["r0"]);
+    queued_urgent(&store, "u0", None, "m1");
+    assert_eq!(started(&store), ["u0"], "1 over m1's limit, for the urgent one");
+    queued_urgent(&store, "u1", None, "m1");
+    queued(&store, "l0", None, "local");
+    assert_eq!(view(&store, "task-u1").unwrap()["position"], 1);
+    assert_eq!(started(&store), ["l0"], "u1 waits for m1; the one bound for this Core host starts");
+    assert_eq!(state(&store, "u1").0, "waiting");
+}
+
+/// YN-137: a reopened urgent executor is queued again as urgent: first, and
+/// with the slot over the limit.
+#[test]
+fn a_reopened_urgent_executor_is_still_urgent() {
+    let (_dir, store) = store();
+    limit(&store, &machine_key("local"), 1);
+    queued(&store, "r0", None, "local");
+    assert_eq!(started(&store), ["r0"]);
+    queued_urgent(&store, "u1", None, "local");
+    assert_eq!(started(&store), ["u1"]);
+    queued(&store, "w0", None, "local");
+    close(&store, "u1");
+    reopen(&store, "u1");
+    assert_eq!(state(&store, "u1"), ("waiting".into(), None));
+    assert!(urgent(&store, "u1"), "the reopen keeps it urgent");
+    let shown = view(&store, "task-u1").unwrap();
+    assert_eq!((shown["position"].clone(), shown["urgent"].clone()), (json!(1), json!(true)), "queued again after w0, and still before it: {shown}");
+    assert_eq!(started(&store), ["u1"], "1 held: the slot over the limit is its");
+    assert_eq!(state(&store, "w0").0, "waiting");
+}
+
+/// YN-137: a Workspace from before the column gets it at open, its rows not
+/// urgent; and its slots work as before.
+#[test]
+fn the_urgent_column_is_added_at_open_and_older_rows_are_not_urgent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.db");
+    {
+        let store = Store::open(&path).unwrap();
+        limit(&store, &machine_key("local"), 2);
+        store.db.write().unwrap().execute_batch("ALTER TABLE executor_slots DROP COLUMN urgent;").unwrap();
+        // As an older Core writes it: without the column.
+        agent(&store, "older");
+        store.db.write().unwrap().execute(
+            "INSERT INTO executor_slots(agent_id,seq,task_id,project_id,machine_id,template_id,state,since,queued_at)
+             VALUES('older',1,'task-older',NULL,'local','reviewer','waiting','now','now')", []).unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert!(!urgent(&store, "older"), "an older row is not urgent");
+    assert!(view(&store, "task-older").unwrap().get("urgent").is_none());
+    queued_urgent(&store, "u1", None, "local");
+    assert_eq!(started(&store), ["u1", "older"], "the urgent one first; then the older one under the limit");
 }
