@@ -1279,7 +1279,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
         of Code (Workspace {workspace}, Project {project}):\n\nLooks good"));
     // A message already sent under this id: its retry returns it, though the card changed since.
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], origin: None, status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], origin: None, status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -1465,7 +1465,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     assert!(message.contains("Chose: Left (left)") && message.contains("\nGo\n") && message.contains(r#"{op:"resolve", key:"decide"}"#), "{message}");
 
     // A reply to version 1 already sent under m1: its retry returns it and marks version 1.
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
             "reply":home::reply_digest(Some("left"), "Go", None, &[])})),
         input: crate::model::MessageInput { client_message_id: "m1".into(), text: message.clone(), text_blocks: None, images: vec![],
@@ -1541,7 +1541,7 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
     // Home's first send was accepted (as in the test above): its retry marks the ask.
     let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "setup").unwrap().unwrap();
     let message = home::compose_ask(&workspace, "Code", &project, &row, None, &text);
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,
             "reply":home::reply_digest(None, &text, Some(&form), &[])})),
         input: crate::model::MessageInput { client_message_id: "f1".into(), text: message, text_blocks: None, images: vec![],
@@ -1671,7 +1671,7 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
 
     // Read back: from Core's receipt by client id. The same text typed in the
     // composer, or a body that names a snapshot itself, shows none.
-    let typed = crate::model::MessageReceipt { binding: None, skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+    let typed = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
         turn_id: Some("t1".into()), error: None, input: crate::model::MessageInput { client_message_id: "typed".into(), text: message.clone(),
             text_blocks: None, images: vec![], expected_turn_id: None, question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(typed)).unwrap();
@@ -1772,7 +1772,7 @@ async fn a_form_reply_takes_a_long_pasted_answer_whole() {
     // Delivered: Home's retry of a send Core accepted marks the ask with the answers by id.
     let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "after").unwrap().unwrap();
     let digest = home::reply_digest(None, &text, round_reply(&workspace, &text, &review, "f2").form.as_ref(), &[]);
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"after","version":1,"workspaceId":workspace,"reply":digest})),
         input: crate::model::MessageInput { client_message_id: "f2".into(), text: home::compose_ask(&workspace, "Code", &project, &row, None, &text),
             text_blocks: None, images: vec![], expected_turn_id: Some("t1".into()), question: None, clarification: None } };

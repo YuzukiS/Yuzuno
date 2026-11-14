@@ -455,6 +455,32 @@ async fn a_stored_message_is_its_turns_user_message_under_its_client_id() {
 }
 
 #[tokio::test]
+async fn a_message_with_files_reaches_opencode_with_the_notice_and_its_paths() {
+    let lab = lab(&[], false).await;
+    let router = server::router(lab.ws.clone(), lab.dir.path().join("web"));
+    let response = router.oneshot(Request::builder().method("POST").uri(format!("/api/agents/{ID}/files?name=log.csv"))
+        .header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop")
+        .body(Body::from("a,b\n1,2\n")).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let file: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    let input: MessageInput = serde_json::from_value(json!({"clientMessageId":"files","text":"Read this"})).unwrap();
+    let receipt = lab.ws.send_message_from(ID, input, Vec::new(),
+        vec![serde_json::from_value(file.clone()).unwrap()], None).await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let first = receipt.turn_id.unwrap();
+    let sent = lab.prompts()[0]["body"]["text"].as_str().unwrap().to_owned();
+    assert!(sent.starts_with("Read this\n\nAttached files: the user attached 1 file to this message."), "{sent}");
+    let at = std::fs::canonicalize(lab.dir.path().join("data/input-files").join(ID)
+        .join(file["id"].as_str().unwrap()).join(file["name"].as_str().unwrap())).unwrap();
+    assert!(sent.contains(&format!("`{}`", at.display())), "{sent} lacks {}", at.display());
+    lab.control("reply", json!({"sessionID":lab.session(),"text":"Done."})).await;
+    lab.until("the turn", |d| turn(d, &first)["status"] == "completed").await;
+    // No files: exactly the words, as before.
+    lab.send("plain", "No files").await.unwrap();
+    assert_eq!(lab.prompts()[1]["body"]["text"], "No files");
+}
+
+#[tokio::test]
 async fn answers_go_only_to_the_session_and_process_that_asked() {
     let lab = lab(&[], false).await;
     let session = lab.session();

@@ -8,6 +8,9 @@ use std::collections::{HashMap, HashSet};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const BLOCKS: &str = "_yuzunoTextBlocks";
+/// The files a message attached, as its bubble shows them: each `{id, name,
+/// bytes, path}`, the path being where this Agent reads it (YN-145).
+pub const FILES: &str = "_yuzunoFiles";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -126,8 +129,28 @@ impl<'a> Restorer<'a> {
                 }
                 item[BLOCKS] = serde_json::to_value(blocks).expect("text boundaries");
             }
+            if files_missing(item, receipt) {
+                item[FILES] = shown_files(receipt);
+                // The Agent's copy also carries the notice that names each
+                // file's path; the user's own words are what is shown.
+                if text(item) != receipt.input.text {
+                    item["_yuzunoInputText"] = receipt.input.text.clone().into();
+                }
+            }
         }
     }
+}
+
+/// The files a message attached, each with the path its Agent reads it at.
+fn shown_files(receipt: &MessageReceipt) -> Value {
+    Value::Array(receipt.files.iter().zip(receipt.file_paths.iter()).map(|(file, path)| json!({
+        "id": file.id, "name": file.name, "bytes": file.bytes, "path": path,
+    })).collect())
+}
+
+/// Whether `restore` would add this receipt's files to the Item.
+fn files_missing(item: &Value, receipt: &MessageReceipt) -> bool {
+    !receipt.files.is_empty() && item.get(FILES).is_none()
 }
 
 /// Whether `restore(turns, receipts, full_history)` would change an Item,
@@ -140,7 +163,8 @@ pub fn restoring(turns: &[Value], receipts: &[MessageReceipt], full_history: boo
             .any(|(index, item)| shown.receipt(tid, index, item, full_history).is_some_and(|receipt|
                 item["clientId"] != receipt.input.client_message_id
                     || renames(item, receipt, tid)
-                    || (receipt.input.text_blocks.is_some() && item.get(BLOCKS).is_none())))
+                    || (receipt.input.text_blocks.is_some() && item.get(BLOCKS).is_none())
+                    || files_missing(item, receipt)))
     })
 }
 
@@ -335,6 +359,39 @@ mod tests {
             "pending":[],"artifacts":[],"messageReceipts":[
                 {"input":{"clientMessageId":"c1","text":text,"textBlocks":blocks},"status":"sending"},
                 {"input":{"clientMessageId":"c2","text":text,"textBlocks":[]},"status":"sending"}]})).unwrap()
+    }
+
+    #[test]
+    fn files_are_shown_with_their_paths_and_the_notice_stays_out_of_the_bubble() {
+        let id = "a".repeat(64);
+        let name = "b".repeat(64);
+        let receipts: Vec<MessageReceipt> = serde_json::from_value(json!([{
+            "input":{"clientMessageId":"c1","text":"Look at these"},
+            "files":[{"id":id,"name":"report.pdf","bytes":10},{"id":name,"name":"notes.txt","bytes":3}],
+            "filePaths":["/w/input-files/a/one/report.pdf","/w/input-files/a/two/notes.txt"],
+            "status":"accepted","turnId":null,"error":null
+        }])).unwrap();
+        let sent = "Look at these\n\nAttached files: the user attached 2 files to this message.";
+        let mut turns = vec![json!({"id":"t","items":[{"id":"u1","clientId":"c1","type":"userMessage",
+            "content":[{"type":"text","text":sent}]}]})];
+        assert!(restoring(&turns, &receipts, true), "the bubble lacks its files");
+        restore(&mut turns, &receipts, true);
+        let item = &turns[0]["items"][0];
+        assert_eq!(item[FILES], json!([
+            {"id":id,"name":"report.pdf","bytes":10,"path":"/w/input-files/a/one/report.pdf"},
+            {"id":name,"name":"notes.txt","bytes":3,"path":"/w/input-files/a/two/notes.txt"}]));
+        assert_eq!(item["_yuzunoInputText"], "Look at these", "the user's own words, not the notice");
+        assert_eq!(text(item), sent, "the Agent's copy is kept as it was sent");
+        assert!(!restoring(&turns, &receipts, true), "shown once");
+        // A message without files is left byte for byte, as before.
+        let plain: Vec<MessageReceipt> = serde_json::from_value(json!([{
+            "input":{"clientMessageId":"c2","text":"hi"},"status":"accepted","turnId":null,"error":null
+        }])).unwrap();
+        let mut plain_turns = vec![json!({"id":"t","items":[{"id":"u2","clientId":"c2","type":"userMessage",
+            "content":[{"type":"text","text":"hi"}]}]})];
+        let before = plain_turns.clone();
+        restore(&mut plain_turns, &plain, true);
+        assert_eq!(plain_turns, before);
     }
 
     #[test]

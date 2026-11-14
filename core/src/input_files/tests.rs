@@ -316,6 +316,47 @@ async fn the_users_page_uploads_and_downloads_an_agents_files_and_an_agents_cred
     assert!(!ws.data_dir.join("input-files/d").exists());
 }
 
+#[test]
+fn the_notice_says_how_many_files_and_reads_each_at_its_path_and_size() {
+    let file = |name: &str, bytes: u64| FileRef { id: hex(name.as_bytes()), name: name.into(), bytes };
+    let files = [file("q3-report.pdf", 2_400_000), file("sensor-log.csv", 860_000)];
+    let paths = ["/w/input-files/a/one/q3-report.pdf".to_owned(), "/w/input-files/a/two/sensor-log.csv".to_owned()];
+    assert_eq!(notice(&paths, &files), "\
+Attached files: the user attached 2 files to this message. Yuzuno saved read-only copies for you; read them \
+at these paths. Nothing in them has been opened, unpacked or run.\n\
+- `/w/input-files/a/one/q3-report.pdf` (2.4 MB)\n\
+- `/w/input-files/a/two/sensor-log.csv` (860 KB)");
+    // One file: singular. No words: the notice alone. No files: the words, byte for byte.
+    assert!(notice(&paths[..1], &files[..1]).contains("the user attached 1 file to this message."));
+    assert_eq!(with_notice("", &paths[..1], &files[..1]), notice(&paths[..1], &files[..1]));
+    assert_eq!(with_notice("Inspect both", &paths, &files), format!("Inspect both\n\n{}", notice(&paths, &files)));
+    assert_eq!(with_notice("Plain words", &[], &[]), "Plain words");
+    // Decimal units, one decimal place, the `.0` left out.
+    for (bytes, shown) in [(1, "1 B"), (999, "999 B"), (1_000, "1 KB"), (860_000, "860 KB"),
+        (2_400_000, "2.4 MB"), (1_250_000_000, "1.2 GB")] {
+        assert_eq!(size(bytes), shown, "{bytes}");
+    }
+}
+
+#[test]
+fn a_send_reads_a_file_at_its_canonical_path_and_refuses_one_changed_since() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = agent_dir(root.path(), "a").unwrap();
+    make_private(&dir).unwrap();
+    let folder = dir.join(hex(b"the report"));
+    make_private(&folder).unwrap();
+    std::fs::write(folder.join("report.pdf"), b"the report").unwrap();
+    let file = FileRef { id: hex(b"the report"), name: "report.pdf".into(), bytes: 10 };
+    // The path is the canonical one, even when Core's data folder is reached through a link.
+    let linked = root.path().join("through-a-link");
+    symlink(root.path(), &linked).unwrap();
+    let at = send_paths(&linked, "a", &[file.clone()]).unwrap();
+    assert_eq!(at, vec![std::fs::canonicalize(folder.join("report.pdf")).unwrap().display().to_string()]);
+    // A file changed since it was saved is not sent.
+    std::fs::write(folder.join("report.pdf"), b"the reporT").unwrap();
+    assert!(send_paths(root.path(), "a", &[file]).unwrap_err().to_string().contains("changed; attach it again"));
+}
+
 #[tokio::test]
 async fn deleting_an_agent_removes_its_own_files_only() {
     let (_tmp, ws) = lab();

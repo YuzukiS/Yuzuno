@@ -143,7 +143,7 @@ async fn a_persons_newer_input_ends_it_and_cores_own_turn_does_not() {
     end(&ws, &op, Phase::Complete, true);
     let input = MessageInput { client_message_id: "refresh-1".into(), text: "Refresh the card".into(), text_blocks: None,
         images: vec![], expected_turn_id: None, question: None, clarification: None };
-    ws.send_message_from("a", input, Vec::new(), Some(json!({"kind":"schedule"}))).await.unwrap();
+    ws.send_message_from("a", input, Vec::new(), Vec::new(), Some(json!({"kind":"schedule"}))).await.unwrap();
     later_turn(&ws, "native-turn", "inProgress", Some("refresh-1"));
     ws.resume_after_update().await.unwrap();
     assert_eq!(starts(dir.path()).len(), 1);
@@ -223,7 +223,7 @@ async fn a_send_core_stopped_during_settles_from_its_receipt() {
     assert!(!ws.store.set_update_resume(&key, None, Some(json!({"state":"sending"}))).unwrap());
     let input = MessageInput { client_message_id: format!("{CLIENT_PREFIX}went"), text: text(&ended_op(&ws, &op)), text_blocks: None,
         images: vec![], expected_turn_id: None, question: None, clarification: None };
-    ws.send_message_from("a", input, Vec::new(), Some(json!({"kind":ORIGIN}))).await.unwrap();
+    ws.send_message_from("a", input, Vec::new(), Vec::new(), Some(json!({"kind":ORIGIN}))).await.unwrap();
     ws.resume_after_update().await.unwrap();
     assert_eq!(starts(dir.path()).len(), 1);
     let state = resume(&ws, &op);
