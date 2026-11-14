@@ -340,7 +340,9 @@ fn size(bytes: u64) -> String {
     }
     let mut value = bytes as f64 / 1000.0;
     let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
+    // Chosen after rounding to the one decimal shown: 999,950..999,999 bytes
+    // is 1 MB, never "1000 KB".
+    while (value * 10.0).round() >= 10_000.0 && unit + 1 < UNITS.len() {
         value /= 1000.0;
         unit += 1;
     }

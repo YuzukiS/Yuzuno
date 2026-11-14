@@ -141,6 +141,13 @@ impl<'a> Restorer<'a> {
     }
 }
 
+/// The text the harness was sent for this receipt: the user's words, then the
+/// notice naming each file (`input_files::with_notice`); the words alone when
+/// there were no files, byte for byte.
+fn sent_text(receipt: &MessageReceipt) -> String {
+    crate::input_files::with_notice(&receipt.input.text, &receipt.file_paths, &receipt.files)
+}
+
 /// The files a message attached, each with the path its Agent reads it at.
 fn shown_files(receipt: &MessageReceipt) -> Value {
     Value::Array(receipt.files.iter().zip(receipt.file_paths.iter()).map(|(file, path)| json!({
@@ -206,7 +213,9 @@ impl<'a> Shown<'a> {
                     (full_history && synthetic(item))
                         .then(|| self.positions.get(&(tid, index)).copied())
                         .flatten()
-                        .filter(|r| text(item) == r.input.text)
+                        // The text the harness was sent, which carries the
+                        // notice when the message had files.
+                        .filter(|r| text(item) == sent_text(r))
                 })
         }
     }
@@ -371,7 +380,9 @@ mod tests {
             "filePaths":["/w/input-files/a/one/report.pdf","/w/input-files/a/two/notes.txt"],
             "status":"accepted","turnId":null,"error":null
         }])).unwrap();
-        let sent = "Look at these\n\nAttached files: the user attached 2 files to this message.";
+        let paths = ["/w/input-files/a/one/report.pdf".to_owned(), "/w/input-files/a/two/notes.txt".to_owned()];
+        let sent = crate::input_files::with_notice("Look at these", &paths, &receipts[0].files);
+        assert!(sent.contains("(10 B)") && sent.contains("(3 B)"));
         let mut turns = vec![json!({"id":"t","items":[{"id":"u1","clientId":"c1","type":"userMessage",
             "content":[{"type":"text","text":sent}]}]})];
         assert!(restoring(&turns, &receipts, true), "the bubble lacks its files");
@@ -383,6 +394,16 @@ mod tests {
         assert_eq!(item["_yuzunoInputText"], "Look at these", "the user's own words, not the notice");
         assert_eq!(text(item), sent, "the Agent's copy is kept as it was sent");
         assert!(!restoring(&turns, &receipts, true), "shown once");
+        // Full native history without a client ID: the position names it, and
+        // the text it is matched by is the one the harness was sent, notice and all.
+        let mut bound = receipts.clone();
+        bound[0].binding = Some(MessageBinding { turn_id: "t".into(), item_id: "native-1".into(), user_index: 0 });
+        let mut history = vec![json!({"id":"t","items":[{"id":"item-1","type":"userMessage",
+            "content":[{"type":"text","text":sent}]}]})];
+        restore(&mut history, &bound, true);
+        assert_eq!(history[0]["items"][0]["clientId"], "c1", "the position names it");
+        assert_eq!(history[0]["items"][0][FILES][0]["path"], "/w/input-files/a/one/report.pdf");
+        assert_eq!(history[0]["items"][0]["_yuzunoInputText"], "Look at these");
         // A message without files is left byte for byte, as before.
         let plain: Vec<MessageReceipt> = serde_json::from_value(json!([{
             "input":{"clientMessageId":"c2","text":"hi"},"status":"accepted","turnId":null,"error":null

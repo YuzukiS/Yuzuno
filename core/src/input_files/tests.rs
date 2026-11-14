@@ -333,6 +333,7 @@ at these paths. Nothing in them has been opened, unpacked or run.\n\
     assert_eq!(with_notice("Plain words", &[], &[]), "Plain words");
     // Decimal units, one decimal place, the `.0` left out.
     for (bytes, shown) in [(1, "1 B"), (999, "999 B"), (1_000, "1 KB"), (860_000, "860 KB"),
+        (999_949, "999.9 KB"), (999_950, "1 MB"), (999_999, "1 MB"), (999_950_000, "1 GB"),
         (2_400_000, "2.4 MB"), (1_250_000_000, "1.2 GB")] {
         assert_eq!(size(bytes), shown, "{bytes}");
     }
