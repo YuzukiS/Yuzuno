@@ -36,6 +36,7 @@ import { homeText } from "./home-text";
 import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
+import { RefreshChangedContext } from "./refresh-changed";
 import { settleWhenLanded } from "../settle";
 
 export type { HomeTarget } from "./home-navigation";
@@ -851,6 +852,7 @@ export function Home({
     <PinsContext.Provider value={pins}>
     <DeckSizes.Provider value={deckSizes}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
+    <RefreshChangedContext.Provider value={readOnly ? null : changed}>
     <ReportOpen.Provider value={cardReport}>
     <div className="home-stage">
     <div
@@ -1002,12 +1004,14 @@ export function Home({
         }
         onSeen={seen}
         onOpened={opened}
+        onRefreshChanged={changed}
         readError={error?.kind === "read" || error?.kind === "unavailable" ? error : null}
         onRetry={reload}
       />
     )}
     </div>
     </ReportOpen.Provider>
+    </RefreshChangedContext.Provider>
     </HomeReadContext.Provider>
     </DeckSizes.Provider>
     </PinsContext.Provider>

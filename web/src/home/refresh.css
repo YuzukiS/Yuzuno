@@ -1,0 +1,292 @@
+/* A card that refreshes itself (YN-113 R3): its schedule tag and state, its
+ * schedule panel, and its report's issues. Colours come from Home's theme
+ * variables (home.css) so every palette and dark mode follows. */
+
+/* The head's tag and the foot's state: words, not a control; the alarm button
+   beside Seen opens the panel. */
+.home-refresh-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-refresh-tag > svg {
+  flex: none;
+}
+.home-refresh-tag.is-paused {
+  color: var(--home-ink-2);
+  font-style: italic;
+}
+.home-refresh-state {
+  color: var(--home-ink-2);
+}
+.home-refresh-state.is-refreshing {
+  color: var(--accent-ink, var(--green));
+  font-weight: 600;
+}
+.home-refresh-state.is-waiting {
+  color: var(--home-ink-2);
+}
+.home-refresh-state.is-failed {
+  color: var(--home-error-ink);
+}
+.home-refresh-state.is-paused {
+  color: var(--home-ink-2);
+}
+/* A made-up run is smaller than a plain one (design §3.1). */
+.home-refresh-state.is-caughtUp {
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.home-refresh-state.is-notYet {
+  color: var(--home-ink-2);
+}
+
+/* The schedule panel, in the card and under the report's title. */
+.home-refresh-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-refresh-panel.is-report {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+}
+.home-refresh-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-refresh-runs {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+.home-refresh-frequency,
+.home-refresh-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.home-refresh-choice {
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.home-refresh-choice[aria-pressed="true"] {
+  border-color: var(--accent-ink, var(--green));
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 12%, var(--home-surface));
+  color: var(--accent-ink, var(--green));
+  font-weight: 600;
+}
+.home-refresh-choice:focus-visible,
+.home-refresh-panel :is(input, select, textarea):focus-visible,
+.home-refresh-actions button:focus-visible,
+.home-refresh-issues select:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.home-refresh-when {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+.home-refresh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.home-refresh-field > span:first-child {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-refresh-field :is(input, select, textarea) {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--home-surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-refresh-field textarea {
+  min-height: 68px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.home-refresh-instruction {
+  width: 100%;
+}
+.home-refresh-note {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-refresh-recent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-refresh-recent ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-refresh-recent li > span {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--home-ink-2);
+}
+.home-refresh-recent li[data-state="refreshed"] > span {
+  background: var(--accent-ink, var(--green));
+}
+.home-refresh-recent li[data-state="caughtUp"] > span {
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 55%, var(--home-ink-2));
+}
+.home-refresh-recent li[data-state="sent"] > span {
+  background: var(--accent-ink, var(--green));
+  outline: 2px solid color-mix(in srgb, var(--accent-ink, var(--green)) 35%, transparent);
+}
+.home-refresh-recent li[data-state="failed"] > span {
+  background: var(--home-error-ink);
+}
+.home-refresh-recent li[data-state="skipped"] > span {
+  background: transparent;
+  border: 1px solid var(--home-ink-2);
+}
+.home-refresh-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, max-content));
+  gap: 6px;
+  align-items: center;
+}
+.home-refresh-actions button {
+  min-height: 32px;
+  white-space: nowrap;
+}
+.home-refresh-history {
+  justify-self: start;
+}
+/* The phone: one control a row, every one full width and reachable (the user's rule; design §3.2). */
+@media (max-width: 560px) {
+  .home-refresh-actions,
+  .home-refresh-when {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .home-refresh-actions button,
+  .home-refresh-choice {
+    min-height: 44px;
+  }
+}
+
+/* The report's issues: the current one and Core's past ones, in one list. */
+.report-issue-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 6px 0 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.home-refresh-issues {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: min(100%, 460px);
+}
+.home-refresh-issues label {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+.home-refresh-issues select {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--home-surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+}
+.home-refresh-issues-note {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.report-refresh-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.report-issue-panel {
+  margin: 8px 0 4px;
+}
+/* A past issue: said at the top, with the way back to this one. */
+.report-issue-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-ink, var(--green)) 30%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 7%, var(--home-surface));
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.report-issue-banner p {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+.report-issue-banner small {
+  color: var(--home-ink-2);
+}
+.report-issue-banner button {
+  white-space: nowrap;
+}
