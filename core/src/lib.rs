@@ -51,6 +51,7 @@ mod input_origin;
 pub mod conversation_time;
 pub mod data_dir;
 pub mod db;
+pub mod dsh;
 pub mod events;
 pub mod gpu_sampler;
 pub mod machine_load;
