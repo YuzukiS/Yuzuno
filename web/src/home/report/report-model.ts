@@ -96,12 +96,16 @@ export type FigureEntry = { id: string; title: string; kind: "chart" | "table" |
 
 const title = (node: Node | undefined) => (typeof node?.props?.title === "string" ? node.props.title.trim() : "");
 
-/** Titled Groups and titled figures among `ids`, the top-level blocks shown. */
+/** Titled Groups and titled figures among `ids`, the top-level blocks shown; a Tabs by its label (YN-113 R6). */
 export function outlineOf(section: Section, ids: readonly string[]): OutlineEntry[] {
   const body = tree(section);
   if (!body) return [];
   return ids.flatMap((id) => {
     const node = body.elements[id];
+    if (node?.type === "Tabs") {
+      const label = typeof node.props?.label === "string" ? node.props.label.trim() : "";
+      return label ? [{ id, title: label }] : [];
+    }
     const name = title(node);
     if (!name || (node?.type !== "Group" && !CHARTS.has(node?.type ?? "") && node?.type !== "Table" && node?.type !== "ResearchDesk")) return [];
     return [{ id, title: name }];

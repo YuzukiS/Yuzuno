@@ -158,6 +158,8 @@ export const briefText = strings({
   slideOf: (at: number, total: number) => `${at} / ${total}`,
   carouselPrevious: "Previous",
   carouselNext: "Next",
+  // Tabs (YN-113 R6): the row of tabs, when its author gave it no label.
+  tabs: "Pages",
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -289,6 +291,7 @@ export const briefText = strings({
   slideOf: (at, total) => `${at} / ${total}`,
   carouselPrevious: "上一页",
   carouselNext: "下一页",
+  tabs: "分页",
 });
 
 /**

@@ -60,7 +60,10 @@ const everyComponent = {
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs", "gallery"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "pages", "sources", "desk"] },
+      // YN-113 R6: pages of titled Groups the reader switches between; a page holds any block, inputs included.
+      pages: { type: "Tabs", props: { id: "pages", label: "Parts" }, children: ["inputs", "more"] },
+      more: { type: "Group", props: { title: "References and files" }, children: ["refs", "files", "gallery"] },
       // YN-128: items with a picture of the section, a link and tags.
       gallery: { type: "Collection", props: { id: "gallery", title: "Picks", layout: "grid", items: [
         { id: "a", title: "Grid search", text: "Finds the corner", meta: "Run 12 · 07:40", image: "plot.png", alt: "The grid", href: "https://example.com/a", tags: ["runs", "grid"] },
@@ -287,7 +290,7 @@ test("every per-block limit is rejected with a reason to act on", () => {
   assert.equal(first(twoRoots).code, "extra_root");
   const leaf = section("Markdown", { text: "x" });
   leaf.body.elements.it.children = ["body"];
-  assert.match(first(leaf).reason, /cannot have children; only BriefBody, Group and Columns do/);
+  assert.match(first(leaf).reason, /cannot have children; only BriefBody, Group, Columns and Tabs do/);
   // Columns: 2 to 4 children, one width from 1 to 4 per child when given.
   const columns = (count, props = {}) => {
     const spec = section("Columns", props);
@@ -486,7 +489,7 @@ test("schema problems name the field, the component's props and the guide part",
   assert.match(unknown.reason, /Findings "it" has unknown field "color"\. Findings props: \{title\?, items\[1-30\]\{id, source, severity: info\|low\|medium\|high\|critical, text\}\}/);
   const component = first(section("Html", { html: "<b>" }));
   assert.equal(component.code, "unknown_component");
-  assert.match(component.reason, /Unknown component type "Html".*Use one of: BriefBody, Group, Columns, Markdown/);
+  assert.match(component.reason, /Unknown component type "Html".*Use one of: BriefBody, Group, Columns, Tabs, Markdown/);
   const envelope = problems({ ...section("Markdown", { text: "x" }), kind: "note", extra: 1 });
   assert.deepEqual(envelope.map((p) => [p.code, p.path, p.guide]), [
     ["invalid_field", "kind", "brief_guide sections"],
@@ -1339,6 +1342,86 @@ test("YN-16 S3 R1 P3: a second Diagram or Figure selecting into the same variabl
   // A Segmented's variable missing an id still says so, naming the Segmented.
   const parts = { type: "Segmented", props: { name: "part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }] } };
   assert.match(first(inGroup({ parts, two: flow(["frame", "wheel"]) })).reason, /whose options do not name "wheel"; give its Segmented an option for every node or hotspot/);
+});
+
+test("YN-113 R6 a Tabs holds 2-6 titled Groups, one page each; no summary names it or a block in it", () => {
+  /** A report whose root holds a Tabs "it" of `count` pages, each a titled Group with one paragraph. */
+  const tabs = (count, props = { id: "it" }, page = (i) => ({ type: "Group", props: { title: `Page ${i}` }, children: [`t${i}`] })) => {
+    const spec = section("Tabs", props);
+    spec.body.elements.it.children = items(count, (i) => `p${i}`);
+    for (let i = 0; i < count; i++) {
+      spec.body.elements[`p${i}`] = page(i);
+      spec.body.elements[`t${i}`] = { type: "Markdown", props: { text: `Text ${i}` } };
+    }
+    return spec;
+  };
+  assert.ok(checkBriefSection(tabs(2)));
+  assert.deepEqual(checkBriefSection(tabs(6, { id: "it", label: "Categories" })).body.elements.it.props, { id: "it", label: "Categories" });
+  assert.equal(BRIEF_LIMITS.tabs, 6, "as many as a Segmented's options");
+  for (const count of [1, 7]) {
+    const found = first(tabs(count));
+    assert.deepEqual([found.code, found.path], [count === 1 ? "invalid_field" : "too_many", "body.elements.it.children"], String(count));
+  }
+  const missing = first(tabs(2, {}));
+  assert.deepEqual([missing.code, missing.path], ["missing_field", "body.elements.it.props.id"]);
+  // Each page is a titled Group: its title is its tab.
+  const untitled = first(tabs(2, { id: "it" }, (i) => ({ type: "Group", props: i === 1 ? {} : { title: "Shown" }, children: [`t${i}`] })));
+  assert.deepEqual([untitled.code, untitled.path], ["invalid_field", "body.elements.it.children"]);
+  assert.match(untitled.reason, /^Tabs "it" has "p1" as a page, a Group without a title; each page is a titled Group, its title on its tab\./);
+  const leafPage = tabs(2);
+  leafPage.body.elements.it.children = ["p0", "t1"];
+  delete leafPage.body.elements.p1;
+  assert.match(first(leafPage).reason, /^Tabs "it" has "t1" as a page, a Markdown; each page is a titled Group/);
+  // A page is always there: visible is for a block inside a Group, and a page's own blocks may have one.
+  const hidden = tabs(2);
+  hidden.body.elements.body.children.push("switch");
+  hidden.body.elements.switch = { type: "Group", props: {}, children: ["on"] };
+  hidden.body.elements.on = { type: "Switch", props: { name: "on", label: "On", value: true } };
+  hidden.body.elements.p1.visible = { $state: "/on" };
+  assert.match(first(hidden).reason, /^"p1" has visible, which only a block inside a Group may have: the root's own blocks and the pages of a Tabs are always shown\./);
+  delete hidden.body.elements.p1.visible;
+  hidden.body.elements.t1.visible = { $state: "/on" };
+  assert.ok(checkBriefSection(hidden), "a block in a page may come and go with a variable");
+  // A card's summary never shows it: neither the Tabs nor a block in one is part of a summary.
+  const summary = (named) => {
+    const spec = tabs(2);
+    spec.body.elements.body.children.unshift("lead");
+    spec.body.elements.lead = { type: "Markdown", props: { text: "The point." } };
+    spec.body.elements.body.props = { summary: { lead: "lead", size: "wide", ...named } };
+    return spec;
+  };
+  assert.ok(checkBriefSection(summary({})));
+  const visual = first(summary({ visual: "it" }));
+  assert.deepEqual([visual.code, visual.path], ["summary", "body.elements.body.props.summary.visual"]);
+  assert.match(visual.reason, /^summary\.visual "it" is a Tabs, which a card's summary never shows; name one figure directly under the root, or leave visual out\./);
+  assert.match(first(summary({ conditions: "it" })).reason, /^summary\.conditions "it" is a Tabs, .*name a Markdown or Checklist directly under the root\./);
+  for (const [slot, key] of [["visual", "p0"], ["conditions", "t1"]]) {
+    const inside = first(summary({ [slot]: key }));
+    assert.deepEqual([inside.code, inside.path], ["summary", `body.elements.body.props.summary.${slot}`]);
+    assert.match(inside.reason, new RegExp(`^summary\\.${slot} "${key}" is inside Tabs "it", whose pages a card's summary never shows; name a block directly under the root\\.`));
+  }
+  const folded = summary({});
+  folded.body.elements.body.props.details = ["p0"];
+  assert.equal(first(folded).code, "details", "a page is not one of the root's own blocks");
+  // A file a page shows is shown: a put may register it.
+  const shown = tabs(2);
+  shown.attachments = [{ name: "plot.png", path: "/home/me/run/plot.png" }];
+  shown.body.elements.p1.children.push("files");
+  shown.body.elements.files = { type: "Attachments", props: { items: [{ name: "plot.png" }] } };
+  assert.ok(checkBriefSection(shown));
+  // The worked example.
+  const example = checkBriefSection(BRIEF_EXAMPLES.tabs);
+  assert.equal(example.body.elements.more.type, "Tabs");
+});
+
+test("YN-113 R6 the guide names Tabs with its pages and its limit", () => {
+  const content = briefGuide("content");
+  assert.match(content, /Only BriefBody, Group, Columns and Tabs have children\./);
+  assert.match(content, /- Tabs \{id, label\?≤160\}: Pages the reader switches between, one tab each, e\.g\. news, papers and policy: each child is a page, its Group's title on its tab\..*A card's summary never shows it: no summary names a Tabs or a block in one; it shows on the report page, and wherever the whole body does\. Children: 2-6 titled Groups, one per page\./);
+  assert.match(content, /and a Tabs of titled Groups for parts of one kind the reader picks between \(news, papers, policy\), as in the tabs example\./);
+  assert.match(briefGuide("limits"), /Columns 2-4, Tabs 2-6\./);
+  assert.ok(briefGuide("examples").includes(JSON.stringify(BRIEF_EXAMPLES.tabs)));
+  assert.ok(!BRIEF_DESCRIBED_COMPONENTS.includes("Tabs"), "brief_update's description leaves it to brief_guide");
 });
 
 // YN-128 (YN-113 §3.6): a Collection's items, pictures of the section, links and tags.

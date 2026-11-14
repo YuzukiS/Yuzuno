@@ -46,6 +46,8 @@ export const BRIEF_LIMITS = {
   bodyChildren: 32,
   groupChildren: 24,
   columns: 4,
+  // Tabs (YN-113 R6): its pages, as many as a Segmented's 2-6 options.
+  tabs: 6,
   titleChars: 120,
   questionChars: 500,
   codeBlockLines: 200,
@@ -358,6 +360,9 @@ export const briefComponentProps = {
   }),
   Group: z.strictObject({ title: short.optional(), tone: z.enum(["plain", "accent", "muted"]).optional() }),
   Columns: z.strictObject({ widths: z.array(z.number().int().min(1).max(4)).min(2).max(L.columns).optional() }),
+  // YN-113 R6: pages the reader switches between on the report page, each a
+  // titled Group (checked with the tree); label names the set of them.
+  Tabs: z.strictObject({ id, label: short.optional() }),
   Markdown: z.strictObject({ text: z.string().min(1).max(L.bodyBytes) }),
   Math: z.strictObject({ tex: z.string().min(1).max(L.mathChars), display: z.boolean().optional() }),
   Checklist: z.strictObject({
@@ -589,6 +594,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   BriefBody: "The root of every section body. summary and details name some of its own children by id; see Layout below.",
   Group: "A group of components with an optional title. tone accent or muted tints its background, e.g. for a summary across the top.",
   Columns: "Lays out its children side by side, each child one column (usually a Group). widths gives their relative widths, e.g. [2, 1]; equal without it. A narrow window stacks the columns in the order given.",
+  Tabs: "Pages the reader switches between, one tab each, e.g. news, papers and policy: each child is a page, its Group's title on its tab. label names them all for screen readers, e.g. Categories. The first page shows first. A card's summary never shows it: no summary names a Tabs or a block in one; it shows on the report page, and wherever the whole body does.",
   Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. HTML written in it is sanitized: scripts, event handlers, images, forms, buttons, frames and styles are removed, so write Markdown, not HTML.",
   Math: "A KaTeX formula; display:true sets it on its own line.",
   Checklist: "Items with done flags.",
@@ -619,7 +625,7 @@ const leaves = [
   "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
   "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk", ...INPUT_TYPES, "Calc", "Diagram", "Figure", "Steps", "Timeline",
   "Collection",
-] as const satisfies readonly Exclude<BriefComponent, "BriefBody" | "Group" | "Columns">[];
+] as const satisfies readonly Exclude<BriefComponent, "BriefBody" | "Group" | "Columns" | "Tabs">[];
 // A block's condition on the variables (YN-16). Its grammar, a small part of
 // json-render's, is checked with the tree (checkVisible), where the variables
 // and the block's parent are known, with reasons that name both.
@@ -640,6 +646,12 @@ const element = z.discriminatedUnion("type", [
     type: z.literal("Columns"),
     props: briefComponentProps.Columns.default({}),
     children: z.array(id).min(2).max(L.columns),
+    visible: visibleSchema,
+  }),
+  z.strictObject({
+    type: z.literal("Tabs"),
+    props: briefComponentProps.Tabs,
+    children: z.array(id).min(2).max(L.tabs),
     visible: visibleSchema,
   }),
   ...leaves.map((type) =>
@@ -933,7 +945,7 @@ function issueProblem(issue: z.ZodError["issues"][number], input: unknown): Brie
       const [remedy, remedyPart] = remedyFor(input, path) ?? ["", part];
       const tail = remedy ? ` ${remedy}` : "";
       if (issue.origin === "array" && Array.isArray(value)) {
-        if (issue.maximum === 0) return problem("invalid_field", path, `${found?.type ?? "This component"} "${found?.key}" cannot have children; only BriefBody, Group and Columns do.`, "content");
+        if (issue.maximum === 0) return problem("invalid_field", path, `${found?.type ?? "This component"} "${found?.key}" cannot have children; only BriefBody, Group, Columns and Tabs do.`, "content");
         return problem("too_many", path, `${at} has ${value.length} items; the limit is ${issue.maximum}.${tail}`, remedyPart);
       }
       if (issue.origin === "string" && typeof value === "string")
@@ -1296,7 +1308,7 @@ function checkVariables(spec: BriefBodySpec, add: (found: BriefProblem) => void)
     if (!("visible" in node) || node.visible === undefined) continue;
     const path = `body.elements.${key}.visible`;
     if (parents.get(key) !== "Group") {
-      bad("invalid_field", path, `"${key}" has visible, which only a block inside a Group may have: the root's own blocks${parents.get(key) === "Columns" ? " and the columns of a Columns" : ""} are always shown. Put "${key}" in a Group.`);
+      bad("invalid_field", path, `"${key}" has visible, which only a block inside a Group may have: the root's own blocks${parents.get(key) === "Columns" ? " and the columns of a Columns" : parents.get(key) === "Tabs" ? " and the pages of a Tabs" : ""} are always shown. Put "${key}" in a Group.`);
       continue;
     }
     let conditions = 0;
@@ -1558,6 +1570,12 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   const rootProps = (spec.elements[spec.root].props ?? {}) as Props<"BriefBody">;
   const top = spec.elements[spec.root].children ?? [];
   const typeOf = (key: string) => spec.elements[key]?.type;
+  // The Tabs a block is a page of, or is inside a page of (YN-113 R6): a card's summary shows none of it.
+  const parentOf = new Map(entries.flatMap(([key, node]) => (node.children ?? []).map((child) => [child, key] as const)));
+  const inTabs = (key: string) => {
+    for (let up = parentOf.get(key); up !== undefined; up = parentOf.get(up)) if (typeOf(up) === "Tabs") return up;
+    return null;
+  };
   const at = `body.elements.${spec.root}.props`;
   const named = rootProps.summary;
   const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
@@ -1578,10 +1596,14 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   slots.forEach(([slot, key], index) => {
     const path = `${at}.summary.${slot}`;
     const [what, fits] = SLOT_RULE[slot];
-    if (!top.includes(key))
+    if (!top.includes(key) && inTabs(key) !== null)
+      add(problem("summary", path, `summary.${slot} "${key}" is inside Tabs "${inTabs(key)}", whose pages a card's summary never shows; name a block directly under the root.`, "content"));
+    else if (!top.includes(key))
       add(problem("summary", path, `summary.${slot} "${key}" is not one of the root's own children; name a block directly under the root.`, "content"));
     else if (slots.findIndex(([, other]) => other === key) < index)
       add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
+    else if (!fits(key) && typeOf(key) === "Tabs")
+      add(problem("summary", path, `summary.${slot} "${key}" is a Tabs, which a card's summary never shows; name ${slot === "visual" ? "one figure" : `a ${slot === "lead" ? "Markdown" : "Markdown or Checklist"}`} directly under the root${slot === "visual" ? ", or leave visual out" : ""}.`, "content"));
     else if (!fits(key) && slot === "visual" && typeOf(key) === "Group")
       add(problem("summary", path, `summary.visual "${key}" is a Group, which is a figure only as a Group of inputs: 1-${CARD_PARTS} blocks of its own, each ${[...CARD_PART_TYPES].join(", ")}, at least one an input.`, "interactive"));
     else if (!fits(key))
@@ -1642,6 +1664,14 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       case "ResearchDesk":
         // Its plans' links are LiveRefs too, read live like theirs.
         refs += checkResearch(key, node.props as Props<"ResearchDesk">, at, add, (name, path) => needsFile(name, path, false));
+        break;
+      case "Tabs":
+        // Each page is a titled Group, whose title is its tab (YN-113 R6).
+        for (const child of node.children ?? []) {
+          const page = spec.elements[child];
+          if (page?.type !== "Group" || !(page.props as Props<"Group">).title)
+            add(problem("invalid_field", `body.elements.${key}.children`, `Tabs "${key}" has "${child}" as a page, ${page?.type === "Group" ? "a Group without a title" : `a ${page?.type}`}; each page is a titled Group, its title on its tab.`, "content"));
+        }
         break;
       case "Columns": {
         const widths = (node.props as Props<"Columns">).widths;
@@ -1822,7 +1852,7 @@ function attachmentReferences(body: unknown): Set<string> {
           if (object(item) && typeof item.image === "string") names.add(item.image);
       }
     }
-    if (["BriefBody", "Group", "Columns"].includes(String(node.type)) && Array.isArray(node.children))
+    if (["BriefBody", "Group", "Columns", "Tabs"].includes(String(node.type)) && Array.isArray(node.children))
       for (const child of node.children) if (typeof child === "string") pending.push(child);
   }
   return names;
@@ -1895,7 +1925,7 @@ const spaced = (notes: string) => (notes ? ` ${notes}` : "");
 const componentLine = (type: BriefComponent) => {
   const defaults = Object.hasOwn(BRIEF_DISPLAY_DEFAULTS, type) ? BRIEF_DISPLAY_DEFAULTS[type] : undefined;
   const notes = [
-    type === "BriefBody" ? `Children: at most ${L.bodyChildren}.` : type === "Group" ? `Children: at most ${L.groupChildren}.` : type === "Columns" ? `Children: 2-${L.columns}, one per column.` : "",
+    type === "BriefBody" ? `Children: at most ${L.bodyChildren}.` : type === "Group" ? `Children: at most ${L.groupChildren}.` : type === "Columns" ? `Children: 2-${L.columns}, one per column.` : type === "Tabs" ? `Children: 2-${L.tabs} titled Groups, one per page.` : "",
     // The shared formatter has no notation for a tuple: say what a point is.
     type === "LineChart" || type === "BarChart" || type === "ScatterChart" ? "Each point is an [x, y] pair." : "",
     defaults ? Object.entries(defaults).map(([key, value]) => `${key} defaults to "${value}".`).join(" ") : "",
@@ -2226,6 +2256,35 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
+  // YN-113 R6: parts of one kind the reader picks between, one page each.
+  tabs: {
+    op: "put",
+    key: "digest/today",
+    kind: "report",
+    title: "Today's news and papers",
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", size: "small" } }, children: ["lead", "more"] },
+        lead: { type: "Markdown", props: { text: "Three stories and **two new papers** worth reading today." } },
+        more: { type: "Tabs", props: { id: "more", label: "Categories" }, children: ["news", "papers"] },
+        news: { type: "Group", props: { title: "News" }, children: ["stories"] },
+        stories: { type: "Markdown", props: { text: "- An open model reaches 1.0, ahead on long-context tests.\n- A chip export rule takes effect next month.\n- A city opens its transit data." } },
+        papers: { type: "Group", props: { title: "Papers" }, children: ["reading"] },
+        reading: {
+          type: "Table",
+          props: {
+            id: "reading",
+            columns: [{ key: "paper", label: "Paper" }, { key: "why", label: "Why read it" }],
+            rows: [
+              { id: "p1", cells: { paper: "Sparse attention at 1M tokens", why: "Halves memory with the same accuracy" } },
+              { id: "p2", cells: { paper: "Agents that test their own patches", why: "A benchmark with real repositories" } },
+            ],
+          },
+        },
+      },
+    },
+  },
   decision: {
     op: "put",
     key: "next-run",
@@ -2357,7 +2416,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
   ],
   content: [
-    `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?, visible?} (visible: see interactive). root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group and Columns have children. ${SIGNATURE_LEGEND} Components:`,
+    `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?, visible?} (visible: see interactive). root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group, Columns and Tabs have children. ${SIGNATURE_LEGEND} Components:`,
     ...(Object.keys(briefComponentProps) as BriefComponent[])
       .filter((type) => !isChart(type) && type !== "ResearchDesk" && !(INTERACTIVE_TYPES as readonly string[]).includes(type)).map(componentLine),
     `- ${CHARTS.join(", ")}: see charts.`,
@@ -2367,7 +2426,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Collection: items of one kind (news, papers, projects, pictures), 2-${L.collectionItems}, each with a title and, as it has them, an image, text (one line), meta (its source or time, e.g. "News · 07:40"), an https href its title opens in a new window, and up to ${L.collectionTags} tags. image names an image attachment of this section (see attachments), which the Collection shows, so it needs no Attachments block; alt says what it shows. A section has at most ${L.attachments} attachments, so at most ${L.attachments} pictures; an item without one shows its text alone. layout: carousel is one page per item side by side, a picture over its text, for a few the reader looks at one by one; grid is tiles to browse and compare; list is rows for many results. Nothing turns pages by itself. As the summary's visual, a wide or large card shows a carousel whole, a grid's first row (two rows on a large card) and a list's first ${COLLECTION_CARD_ROWS.wide} rows (${COLLECTION_CARD_ROWS.large} on a large card), and a small card its first item, each with how many there are. The report page shows every item; a grid or list whose items have tags shows up to ${L.collectionFilters} of them to filter by, and a list a search of titles, text and meta.`,
-    `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
+    `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example, and a Tabs of titled Groups for parts of one kind the reader picks between (news, papers, policy), as in the tabs example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
     `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers, a Collection's first item; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk; a Collection under it) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
@@ -2423,7 +2482,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   ],
   limits: [
     `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic; seen reports stay ${L.historyDays} days.`,
-    `- Body: ${L.bodyBytes} bytes of compact JSON, ${L.components} components, ${L.depth} levels; BriefBody ${L.bodyChildren} children, Group ${L.groupChildren}, Columns 2-${L.columns}.`,
+    `- Body: ${L.bodyBytes} bytes of compact JSON, ${L.components} components, ${L.depth} levels; BriefBody ${L.bodyChildren} children, Group ${L.groupChildren}, Columns 2-${L.columns}, Tabs 2-${L.tabs}.`,
     `- Markdown: each fenced code or log block ${L.codeBlockLines} lines. Math: ${L.mathChars} characters.`,
     `- Checklist, Plan and Findings: ${L.listItems} items each. Metrics: ${L.metrics}. Sources: ${L.sources}.`,
     `- Table: ${L.tableRows} rows, ${L.tableColumns} columns. Collection: 2-${L.collectionItems} items, ${L.collectionTags} tags each.`,
