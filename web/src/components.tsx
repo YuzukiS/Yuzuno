@@ -29,6 +29,8 @@ import {
   ListChecks,
   LoaderCircle,
   MessageSquare,
+  RotateCw,
+  Gauge,
   RefreshCw,
   BellRing,
   ShieldCheck,
@@ -995,6 +997,17 @@ export function Turn({
             <MessageTime mark={timeOf(item)} />
           </div>
           <div className="user-text brief-reminder-text">{itemText(item)}</div>
+        </>
+      ) : item._yuzunoInput === "update" || item._yuzunoInput === "resume" ? (
+        <>
+          <div className="message-label">
+            <span className="you-avatar" aria-hidden="true">
+              {item._yuzunoInput === "update" ? <RotateCw size={13} /> : <Gauge size={13} />}
+            </span>
+            {item._yuzunoInput === "update" ? t.afterUpdate : t.afterUsageLimit}
+            <MessageTime mark={timeOf(item)} />
+          </div>
+          <div className="user-text">{itemText(item)}</div>
         </>
       ) : (
         <>

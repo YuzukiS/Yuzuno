@@ -1,4 +1,5 @@
 import { strings, type Language } from "./i18n";
+import { updatesText } from "./updates-text";
 
 export type ReleaseSummary = {
   releaseId: string;
@@ -39,6 +40,17 @@ export type UpdateOperation = {
   totalSessions?: number;
 };
 
+/** One Agent the update paused, and how its continue went (YN-131, resume.rs).
+ * `pending`: not decided yet, or being sent; `skipped` carries why. */
+export type UpdateResumeRow = {
+  agentId: string;
+  name: string;
+  state: "pending" | "sent" | "skipped" | "failed" | "uncertain";
+  reason?: string;
+  error?: string;
+  turnId?: string;
+};
+
 export type UpdateStatus = {
   managed: boolean;
   reason?: string;
@@ -51,6 +63,8 @@ export type UpdateStatus = {
     agentId: string; name: string; messageId: string; turnId: string;
     delivery: string; readAt?: string | null; idle: boolean; active: boolean;
   }[];
+  /** Who the update paused and what became of each continue (YN-131). */
+  resumes?: UpdateResumeRow[];
   acceptingWork: boolean;
   storage: {
     releaseBytes: number;
@@ -93,6 +107,22 @@ export function updateWaitRows(status: UpdateStatus | null, language: Language =
     }
   }
   return rows;
+}
+
+/** Who the update continued, and who it did not, in `language` (YN-131).
+ * Rows are Core's (`status.resumes`), one per paused Agent; an Agent that was
+ * never paused or no longer exists is not listed. */
+export function updateResumeRows(status: UpdateStatus | null, language: Language = "en") {
+  const w = updatesText(language).resume;
+  return (status?.resumes || []).map((row) => ({
+    ...row,
+    text:
+      row.state === "sent" ? w.sent
+      : row.state === "pending" ? w.pending
+      : row.state === "failed" ? w.failed(row.error)
+      : row.state === "uncertain" ? w.uncertain
+      : w.skipped[row.reason ?? ""] ?? w.notContinued,
+  }));
 }
 
 export function releaseTransferActive(status?: UpdateStatus["releaseSource"]) {
