@@ -222,20 +222,32 @@ async fn an_idle_sampler_stops_and_starts_again_on_the_next_read() {
 }
 
 /// A child that exits after giving readings is started again after a
-/// backoff that doubles, never at once.
+/// backoff that doubles, never at once. When each start is recorded, not a
+/// time the runner must keep: the stand-in appends its pid first thing, so
+/// the gaps below are the sampler's backoff (plus the stand-in's own exit),
+/// and a loaded runner only makes them longer.
 #[tokio::test]
 async fn a_child_that_exits_is_started_again_after_a_backoff() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mode"), "once").unwrap();
     let sampler = GpuSampler::new(config(dir.path()));
-    let until = Instant::now() + Duration::from_millis(600);
-    while Instant::now() < until {
+    let mut at: Vec<Instant> = Vec::new();
+    let until = Instant::now() + Duration::from_secs(30);
+    while at.len() < 3 && Instant::now() < until {
+        // Whole lines only: a poll can catch a pid mid-append.
+        let seen = std::fs::read_to_string(dir.path().join("starts")).unwrap_or_default().matches('\n').count();
+        while at.len() < seen {
+            at.push(Instant::now());
+        }
         let _ = sampler.latest(Duration::from_millis(100)).await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    // 50, 100, 200 ms between starts: four starts at most in 600 ms.
-    let n = starts(dir.path()).len();
-    assert!((2..=5).contains(&n), "started again after a backoff, not at once: {n} starts");
+    assert!(at.len() >= 3, "started again after a backoff: {} starts", at.len());
+    let (first, second) = (at[1] - at[0], at[2] - at[1]);
+    // 50 ms, then 100 ms after the stand-in has ended (it takes a few ms to
+    // exit after its reading, which only lengthens the gap).
+    assert!(first >= Duration::from_millis(40), "the second start came at once: {first:?}");
+    assert!(second >= Duration::from_millis(90), "the backoff did not double: {second:?}");
 }
 
 /// With neither NVML nor nvidia-smi, the sampler says why and is not tried

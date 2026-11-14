@@ -817,7 +817,13 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(session.reply(2, 5), {"re": 2, "err": {"code": "bad_args"}})
             session.watch(self)
             session.load(lambda data: data["cpu"] is not None, 5)
-            session.collect(0.3 + 0.1 * attempt)
+            # Three whole load frames, however slowly the split writes go out
+            # on this runner: a bound for a run that hangs, not a time the
+            # child must keep (a loaded macOS runner wrote two in 0.3 s,
+            # core-macos 43561271725, YN-147).
+            deadline = time.monotonic() + 10
+            while len(session.loads) < 3 and time.monotonic() < deadline:
+                session.collect(0.25)
             self.assertGreaterEqual(len(session.loads), 3)
             frames, code = session.close(self)
             self.assertEqual(code, 0, attempt)

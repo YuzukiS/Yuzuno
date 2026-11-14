@@ -137,14 +137,17 @@ for line in sys.stdin:
     fn methods(&self) -> String {
         std::fs::read_to_string(self.dir.path().join("methods")).unwrap_or_default()
     }
+    /// Until the stand-in has received `account/rateLimits/read`: the first
+    /// read, through a cold Python and two round trips. The bound is for a
+    /// run that hangs, not a time the fixture must keep: a loaded macOS
+    /// runner took more than the 1 s this used to allow (core-macos
+    /// 43555278608, YN-147).
     async fn reading(&self) {
-        for _ in 0..100 {
-            if self.dir.path().join("reading").exists() {
-                return;
-            }
+        let until = std::time::Instant::now() + Duration::from_secs(30);
+        while !self.dir.path().join("reading").exists() {
+            assert!(std::time::Instant::now() < until, "fixture never received read");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("fixture never received read");
     }
 }
 #[tokio::test]
