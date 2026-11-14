@@ -276,6 +276,14 @@ pub fn name_for(url: &Url) -> String {
     if name.is_empty() { "Workspace".into() } else { name }
 }
 
+/// The name of a Workspace the connection page installed or started in a
+/// WSL distribution: `<distribution> · WSL` (YN-107 design 4.6).
+pub fn name_for_wsl(distro: &str) -> String {
+    let suffix = " · WSL";
+    let room = NAME_LIMIT - suffix.chars().count();
+    format!("{}{suffix}", distro.chars().take(room).collect::<String>())
+}
+
 pub fn next_id(entries: &[Entry]) -> String {
     (1..)
         .map(|n| format!("core-{n}"))
@@ -285,6 +293,9 @@ pub fn next_id(entries: &[Entry]) -> String {
 
 fn start_json(start: &StartProfile) -> Value {
     serde_json::json!({
+        // Where the start runs: always WSL here (YN-107 design section 6,
+        // part 4). The Mac app writes its own.
+        "platform": "wsl",
         // The address this profile was saved for. An entry pointed somewhere
         // else no longer has it: it is not carried to the new address, and
         // never to another entry.
@@ -298,11 +309,18 @@ fn start_json(start: &StartProfile) -> Value {
 }
 
 /// The start profile in `value`, for an entry whose address is `url`. `None`
-/// when there is none, when it was saved for another address, or when any
-/// part of it no longer passes the checks it passed when saved.
+/// when there is none, when it is for another platform's start, when it was
+/// saved for another address, or when any part of it no longer passes the
+/// checks it passed when saved.
 fn start_from_json(value: &Value, url: &Url) -> Option<StartProfile> {
     let start = value.get("start")?;
     if start.is_null() {
+        return None;
+    }
+    // Only a start in WSL is one this app runs; one without `platform` is
+    // from before it, and was one. Another platform's leaves this entry an
+    // address to connect to, and is not written back.
+    if !crate::connection::wsl_platform(start) {
         return None;
     }
     // Saved for this entry's address, and no other. A record that says
@@ -550,6 +568,46 @@ mod tests {
 
     fn known(address: &str, workspace: &str) -> Remembered {
         Remembered { url: core(address), workspace_id: workspace.into() }
+    }
+
+    #[test]
+    fn a_start_is_written_for_wsl_and_another_platforms_is_not_started_or_kept() {
+        let entries = [entry("core-1", "Main", "http://127.0.0.1:4317", Some("w-one"), Some(start_for("http://127.0.0.1:4317", "w-one")))];
+        let text = record(&entries, Some("core-1"), &[]).unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["entries"][0]["start"]["platform"], "wsl");
+        assert_eq!(read(text.as_bytes()).entries()[0].start, entries[0].start);
+        // Another platform's start: the record reads, that entry only
+        // connects, and writing it back drops that start. A start of each
+        // platform is not "more than one".
+        let mac = r#"{"platform":"macos","coreUrl":"http://127.0.0.1:4318/","installDir":"/Users/someone/yuzuno","workspaceId":"w-two","confirmed":true}"#;
+        let wsl = start_json(&start_for("http://127.0.0.1:4317", "w-one"));
+        for (platform, start) in [("macos", mac.to_owned()), ("unknown", mac.replace("macos", "elsewhere"))] {
+            let both = format!(
+                r#"{{"version":1,"selected":"core-2","entries":[{{"id":"core-1","name":"Main","url":"http://127.0.0.1:4317/","start":{wsl}}},{{"id":"core-2","name":"Mac","url":"http://127.0.0.1:4318/","start":{start}}}]}}"#
+            );
+            let saved = read(both.as_bytes());
+            let listed = saved.entries();
+            assert_eq!(listed.len(), 2, "{platform}");
+            assert!(listed[0].startable());
+            assert_eq!(listed[1].start, None, "{platform}");
+            let written = record(listed, Some("core-2"), &[]).unwrap();
+            assert_eq!(written.matches("\"start\"").count(), 1, "{written}");
+        }
+        // One without a platform, as written before it, is a start in WSL.
+        let mut old = wsl.clone();
+        old.as_object_mut().unwrap().remove("platform");
+        let old = format!(r#"{{"version":1,"entries":[{{"id":"core-1","name":"Main","url":"http://127.0.0.1:4317/","start":{old}}}]}}"#);
+        assert!(read(old.as_bytes()).entries()[0].startable());
+    }
+
+    #[test]
+    fn a_workspace_installed_in_wsl_is_named_for_its_distribution() {
+        assert_eq!(name_for_wsl("Ubuntu-24.04"), "Ubuntu-24.04 · WSL");
+        let long = "d".repeat(64);
+        let name = name_for_wsl(&long);
+        assert_eq!(name.chars().count(), NAME_LIMIT);
+        assert!(name.ends_with(" · WSL") && name_ok(&name));
     }
 
     #[test]

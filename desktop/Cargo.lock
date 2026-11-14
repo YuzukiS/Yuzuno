@@ -5432,6 +5432,7 @@ version = "0.1.0"
 dependencies = [
  "block2",
  "mac-usernotifications",
+ "minisign-verify",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -5439,8 +5440,10 @@ dependencies = [
  "png 0.18.1",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-notification",

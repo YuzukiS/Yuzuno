@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "repository": "YuzukiS/Yuzuno",
+  "tag": "core-20991231-0a1b2c3",
+  "manifest": {
+    "format": 1,
+    "releaseId": "20991231-0a1b2c3",
+    "version": "test.1",
+    "gitSha": "0a1b2c3000000000000000000000000000000000",
+    "builtAt": "2099-12-31T00:00:00Z",
+    "notes": "Desktop verifier test fixture, signed with a throwaway key; never execute.",
+    "platform": "linux-x86_64",
+    "protocol": 1,
+    "schema": {
+      "writes": 2,
+      "readsMin": 2,
+      "readsMax": 2
+    },
+    "records": {
+      "writes": 1,
+      "readsMin": 0,
+      "readsMax": 1
+    },
+    "files": {
+      "bin/yuzuno-update-helper": {
+        "sha256": "769b86be7762d596bf092498a41ac8f90e6acbdd9cb02fdf67b9c2cc0ad50f35",
+        "bytes": 48,
+        "executable": true
+      },
+      "bin/yuzuno-workspace": {
+        "sha256": "275239824e00e61b0a220e61a41791c7e9b4bd726f8b0c27077a338f8131c9dc",
+        "bytes": 17,
+        "executable": true
+      }
+    }
+  },
+  "manifestSha256": "722fff77d1414880f36bbbac8fa020b124c392af60073435ee9563677e4b09d4",
+  "archiveSha256": "db5dfd2af46070117d9ab5f2737179e58741b50873d734797bff51a33a6d4363",
+  "archiveBytes": 316
+}
