@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Eye, FileText, Globe, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
+import { AlarmClock, ArrowRight, Eye, FileText, Globe, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareReply, MoreHorizontal, RefreshCw, Square, SquareCheckBig } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
@@ -36,6 +36,10 @@ import type { SeenMark } from "./home-api";
 import { BriefDensity } from "./brief/density";
 import { homeText } from "./home-text";
 import { useReportOpen } from "./report/report-open";
+import { useRefreshChanged } from "./refresh-changed";
+import { RefreshPanel } from "./RefreshPanel";
+import { cadenceLabel, refreshClock, refreshDateTime, refreshStatus } from "./refresh-state";
+import { refreshText } from "./refresh-text";
 import { DataAsOf, PinButton } from "./SectionCard";
 import { Tip, TipText } from "../Tip";
 import { SectionBody } from "./SectionBody";
@@ -91,9 +95,24 @@ export const SummaryCard = memo(function SummaryCard({
   const language = useLanguage();
   const home = homeText(language);
   const t = useStrings(cardText);
+  const tRefresh = useStrings(refreshText);
   const openReport = useReportOpen();
   const content = useMemo(() => cardContent(section), [section]);
   const sub = topic !== undefined;
+  // A report that refreshes itself (YN-113 R3): its schedule is Core's; this card shows the tag in its head,
+  // the last run in its foot, and opens the panel from the alarm beside Seen.
+  const refresh = section.refresh ?? null;
+  const refreshChanged = useRefreshChanged();
+  const [refreshOpen, setRefreshOpen] = useState(false);
+  const refreshPanelId = useId();
+  const alarmButton = useRef<HTMLButtonElement>(null);
+  const clock = useMemo(() => refreshClock(time), [time]);
+  const dates = useMemo(() => refreshDateTime(time), [time]);
+  const refreshState = refresh ? refreshStatus(refresh, language, clock, section.owner.name) : null;
+  const schedule = refresh ? cadenceLabel(refresh.cadence, language, tRefresh) : "";
+  useEffect(() => {
+    if (!refresh) setRefreshOpen(false);
+  }, [refresh]);
   // Only a card on the deck has a size: its author's, as first shown in this visit.
   const sizes = useContext(DeckSizes);
   const { size, source, own } = deck || widget
@@ -136,7 +155,8 @@ export const SummaryCard = memo(function SummaryCard({
     }
   }
   // A card that is its whole report has no way to a page that would show only the same (YN-3); the page keeps its address.
-  const contained = useMemo(() => selfContained(section, content, size), [section, content, size]);
+  // A refreshing card keeps its page: its past issues and the whole schedule are read there (YN-113 §3.2, §3.4).
+  const contained = useMemo(() => !refresh && selfContained(section, content, size), [section, content, size, refresh]);
   const report = contained ? null : openReport;
   const open = (from: HTMLElement) => report?.(projectId, section, from);
   const status = section.kind === "status";
@@ -173,6 +193,14 @@ export const SummaryCard = memo(function SummaryCard({
       <header className="home-summary-head">
         {sub && <span className="home-sub-of">{home.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}`}>{home.kind[section.kind]}</span>
+        {refresh && (
+          <Tip content={<TipText body={refresh.enabled ? tRefresh.tagTip(schedule, dates(refresh.nextAt)) : tRefresh.pausedTag} />}>
+            <span className={`home-refresh-tag${refresh.enabled ? "" : " is-paused"}`}>
+              <RefreshCw size={11} aria-hidden="true" />
+              {refresh.enabled ? schedule : tRefresh.pausedTag}
+            </span>
+          </Tip>
+        )}
         {changed && (
           <Tip content={<TipText body={home.changedTitle} />}>
             <span className="home-changed">
@@ -214,6 +242,21 @@ export const SummaryCard = memo(function SummaryCard({
                 onClick={toggleReply}
               >
                 <MessageSquareReply size={14} />
+              </button>
+            </Tip>
+          )}
+          {refresh && !readOnly && (
+            <Tip content={<TipText title={tRefresh.panel.title} />} describe={false}>
+              <button
+                type="button"
+                className="icon-button home-refresh-open"
+                ref={alarmButton}
+                aria-expanded={refreshOpen}
+                aria-controls={refreshPanelId}
+                aria-label={tRefresh.alarm(section.title)}
+                onClick={() => setRefreshOpen((open) => !open)}
+              >
+                <AlarmClock size={14} />
               </button>
             </Tip>
           )}
@@ -269,7 +312,12 @@ export const SummaryCard = memo(function SummaryCard({
               {section.owner.state !== "active" && home.ownerState(section.owner.state)}
             </span>
           )}
-          {status && section.status ? (
+          {refresh && refreshState ? (
+            <>
+              <span className={`home-refresh-state is-${refreshState.kind}`}>{refreshState.text}</span>
+              {refresh.enabled && refresh.nextAt && <span className="home-refresh-next">{tRefresh.next(dates(refresh.nextAt))}</span>}
+            </>
+          ) : status && section.status ? (
             <DataAsOf status={section.status} stale={stale} />
           ) : (
             <Tip content={<TipText title={absolute(section.updatedAt, time)} />}>
@@ -291,6 +339,25 @@ export const SummaryCard = memo(function SummaryCard({
           readOnly={readOnly}
           reply={replyable ? { open: replying, onToggle: toggleReply, button: replyButton } : null}
           place={{ projectId, workspaceId, agents }}
+        />
+      )}
+      {refresh && refreshOpen && (
+        <RefreshPanel
+          section={section}
+          projectId={projectId}
+          refresh={refresh}
+          readOnly={readOnly}
+          panelId={refreshPanelId}
+          onOpenIssues={
+            report
+              ? () => {
+                  setRefreshOpen(false);
+                  report(projectId, section, alarmButton.current ?? replyButton.current ?? document.body);
+                }
+              : null
+          }
+          onChanged={() => refreshChanged?.()}
+          onClose={() => setRefreshOpen(false)}
         />
       )}
       {replyable && replying && (
