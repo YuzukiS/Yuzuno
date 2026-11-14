@@ -406,6 +406,13 @@ impl crate::store::Store {
         set_route(&*self.db.write()?, agent, route)
     }
 
+    /// What routing gave `agent` at its dispatch or start: None when it wasn't routed.
+    pub(crate) fn routing_route(&self, agent: &str) -> Result<Option<Value>> {
+        let raw: Option<Option<String>> = self.db.read()?
+            .query_row("SELECT route_json FROM executor_dispatches WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?;
+        Ok(raw.flatten().and_then(|r| serde_json::from_str(&r).ok()))
+    }
+
     pub(crate) fn routing_left_queued(&self) -> Result<Vec<QueuedRouted>> {
         left_queued(&*self.db.read()?, None)
     }

@@ -78,7 +78,7 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
 
 /// A Turn of a Claude Agent with a sub-agent or background task still able
 /// to report (crate::claude::subagent_running).
-fn claude_task_running(turn: &Value) -> bool {
+pub(crate) fn claude_task_running(turn: &Value) -> bool {
     turn["items"].as_array().into_iter().flatten().any(|item| {
         crate::claude::TASK_RECORDS.iter().any(|key| crate::claude::subagent_running(&item[*key]))
     })
@@ -106,7 +106,7 @@ fn codex_thread_at_rest(status: &Value) -> bool {
 impl Workspace {
     /// What `refusal` reads: the metadata, the open and newest Turns, and
     /// those with a Claude task still able to report (found by their keys).
-    async fn disconnect_view(&self, id: &str) -> Result<AgentDetail> {
+    pub(crate) async fn disconnect_view(&self, id: &str) -> Result<AgentDetail> {
         let agent = id.to_owned();
         let running = self.stored(move |store| store.keyed_turns(&agent, "running", None)).await?;
         self.view(id, crate::store::Sel::Turns(running)).await
