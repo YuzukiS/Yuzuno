@@ -81,6 +81,50 @@ Sealed Resources=none
 Internal requirements=none'''
 
 
+# Every script the Mac job runs or loads: it runs them with the command line
+# tools' /usr/bin/python3, Python 3.9 (.github/workflows/release-inputs.yml).
+MAC_SCRIPTS = ['build-release-inputs-ci.py', 'build-core-artifact.py', 'release_common.py',
+               'claude_sdk_release.py', 'package-release.py', 'third_party_notices.py',
+               'runtime_notices.py', 'release-inputs-check.py', 'release-inputs-smoke.py']
+# What those scripts would most likely reach for that Python 3.9 lacks.
+NEWER_THAN_39 = {'file_digest': 'hashlib.file_digest (3.11)', 'tomllib': 'tomllib (3.11)',
+                 'pairwise': 'itertools.pairwise (3.10)', 'UTC': 'datetime.UTC (3.11)',
+                 'batched': 'itertools.batched (3.12)'}
+
+
+class MacPythonTests(unittest.TestCase):
+    def test_the_scripts_the_mac_job_runs_keep_to_python_3_9(self):
+        import ast
+        for name in MAC_SCRIPTS:
+            with self.subTest(name):
+                tree = ast.parse((TOOLS / name).read_text(), name, feature_version=(3, 9))
+                newer = [f'{NEWER_THAN_39[node.attr]} at line {node.lineno}' for node in ast.walk(tree)
+                         if isinstance(node, ast.Attribute) and node.attr in NEWER_THAN_39]
+                newer += [f'{NEWER_THAN_39[alias.name]} at line {node.lineno}' for node in ast.walk(tree)
+                          if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names
+                          if alias.name in NEWER_THAN_39]
+                newer += [f'zip(strict=) at line {node.lineno}' for node in ast.walk(tree)
+                          if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'zip'
+                          and any(keyword.arg == 'strict' for keyword in node.keywords)]
+                self.assertEqual(newer, [])
+
+    def test_the_mac_build_loads_no_other_tool(self):
+        """A new import in the Mac build must be added to MAC_SCRIPTS."""
+        import ast
+        loaded = set()
+        for name in MAC_SCRIPTS:
+            tree = ast.parse((TOOLS / name).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and (TOOLS / f'{node.module}.py').exists():
+                    loaded.add(f'{node.module}.py')
+                elif isinstance(node, ast.Import):
+                    loaded.update(f'{alias.name}.py' for alias in node.names if (TOOLS / f'{alias.name}.py').exists())
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith('tools/') \
+                        and node.value.endswith('.py'):
+                    loaded.add(node.value.removeprefix('tools/'))
+        self.assertLessEqual(loaded, set(MAC_SCRIPTS))
+
+
 class MachOReaderTests(unittest.TestCase):
     def read(self, data):
         with tempfile.TemporaryDirectory() as temp:
