@@ -369,6 +369,14 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_form {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_form TEXT")?;
     }
+    // reply_images: the images the user's reply to the replied version of an
+    // ask carried (YN-134), a JSON array of their IDs; NULL without any.
+    // Shown on Home's answered ask; older Cores ignore it.
+    let has_reply_images: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_images')", [], |r| r.get(0))?;
+    if !has_reply_images {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_images TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

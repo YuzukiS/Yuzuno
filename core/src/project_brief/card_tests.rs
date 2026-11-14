@@ -295,7 +295,7 @@ async fn a_reply_to_a_released_executors_card_goes_to_its_responsible_agent() {
     let reply = |key: &str, id: &str, card: Option<(i64, &str)>, ask: Option<i64>| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: if ask.is_some() { String::new() } else { "Looks right.".into() },
         client_message_id: id.into(), choice: ask.map(|_| "left".into()), version: card.map(|(v, _)| v),
-        title: card.map(|(_, t)| t.to_owned()), ask_version: ask, workspace_id: ask.map(|_| workspace.clone()), form: None };
+        title: card.map(|(_, t)| t.to_owned()), ask_version: ask, workspace_id: ask.map(|_| workspace.clone()), form: None, images: vec![] };
     home::reply(&ws, project.clone(), reply("page", "r1", Some((1, "About page")), None)).await.unwrap();
     let sent = ws.store.receipt("c", "r1").unwrap().expect("the card's responsible Agent has it");
     assert!(sent.input.text.contains(&format!("\nThis card is bound to task {task}; you are its responsible Agent.\n\nLooks right.")), "{}", sent.input.text);
