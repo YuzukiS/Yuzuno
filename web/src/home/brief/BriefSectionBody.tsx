@@ -26,6 +26,7 @@ import { BriefButton, BriefCalc, type Press } from "./Calc";
 import { BriefDiagram } from "./Diagram";
 import { BriefFigure } from "./Figure";
 import { BriefSteps, BriefTimeline } from "./Steps";
+import { BriefCollection } from "./Collection";
 import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
 import { useSectionStore } from "./brief-state";
 import { useBriefDensity } from "../home-density";
@@ -38,6 +39,7 @@ import {
   isBriefSpec,
   type BriefSpec,
   type BriefTableProps,
+  type CollectionProps,
   type SourcesProps,
 } from "./brief-catalog";
 import "../../intelligent-ui/intelligent-ui.css";
@@ -201,6 +203,8 @@ const registry: ComponentRegistry = {
   Figure: part(BriefFigure),
   Steps: part(BriefSteps),
   Timeline: part(BriefTimeline),
+  // Drawn whole, as on its page: only Home's card gives it a face (SummaryCard.tsx).
+  Collection: part((props: CollectionProps) => <BriefCollection {...props} face={undefined} />),
 };
 const noActions = Object.freeze({});
 function BriefSources(props: SourcesProps) {

@@ -35,6 +35,7 @@ import {
   type FigureProps,
   type StepsProps,
   type TimelineProps,
+  type CollectionProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -367,6 +368,15 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
       case "Timeline": {
         const { title, items } = part.props as TimelineProps;
         return [...heading(depth, title), items.map((item) => `- ${inline(item.at)} · ${inline(item.title)} — ${b.timelineState[item.state ?? "done"]}${item.text ? `: ${inline(item.text)}` : ""}`).join("\n")];
+      }
+      // A Collection copies as one line per item, its title linked to its page, its tags after it (YN-128).
+      case "Collection": {
+        const { title, items } = part.props as CollectionProps;
+        return [...heading(depth, title), items.map((item) => {
+          const name = link(item.title, item.href) ?? itemText(item.title);
+          const tags = (item.tags ?? []).map((tag) => `#${inline(tag)}`).join(" ");
+          return `- ${name}${item.text ? ` — ${inline(item.text)}` : ""}${tags ? ` ${tags}` : ""}`;
+        }).join("\n")];
       }
       case "Sources": {
         const { items } = part.props as SourcesProps;
