@@ -417,7 +417,12 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 - `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
   - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
   - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
+  - It reads this Core host's readings, even for an executor on another machine: claude-swap's active account for a Claude Code `login`, this host's Codex for a Codex `login`. A candidate only for other machines should not have one.
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
+- `{ "kind": "machine", "machines": ["local" | "<machine id>", …] }` (YN-139): the machines the candidate may run on, 1 to 16, each once; `local` is this Core host.
+  - With no machine named (the dispatch and its template name none, or `auto`, and a preview), the executor's machine counts as this Core host. A dispatch like that given such a candidate runs here: `auto` chooses no other machine after routing.
+  - A save takes it on any credential and doesn't check that each machine is still registered: one removed never matches. It widens nothing: a candidate that runs on this Core host only (below) still does. The page offers it for a Claude Code or Codex `login`, the only candidates that run on another machine.
+  - A Core before YN-139 keeps it and reads it as a kind it doesn't know: unknown, so with `unknown: "skip"` the candidate is passed over there rather than run on that Core's host.
 
 ### `route_json`: why a candidate was chosen (S3b)
 
@@ -454,7 +459,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
 - **Of a harness it can be given:** at dispatch (YN-70) and at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. At dispatch `machine` is null when the dispatch and its template name none (this Core host) or `auto`. An executor something of which already ran is given its own harness only (`otherHarness`).
-- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
+- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`). A candidate whose `machine` condition doesn't name the executor's machine is `otherMachine`, with `params: { machine }` (null when none is named: this Core host).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Serves the tier:** with a [tier](#tiers-yn-70), a candidate whose `tiers` don't include it is `skipped`, with `tierNotServed` and `params: { tier }`.
 - **Its credential is there:**
@@ -689,12 +694,15 @@ dispatch is routed:
   readings as Core last observed them, and gives the executor:
   - its harness, model and effort. Its permission is the template's [permission level](#permission-levels-yn-56) on that harness; a template with none gets that harness's defaults for new Agents. A candidate whose harness doesn't keep the level is passed over;
   - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
-  A candidate that runs on this Core host only makes it run here. The record
+  A candidate that runs on this Core host only makes it run here, and so
+  does one with a `machine` condition when the dispatch names no machine or
+  `auto` (it held for this Core host). The record
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
   harness of the first candidate that could run there (of a harness its
-  machine runs), keeps its level and serves its tier, a stand-in, and stays in the queue while executors after it start. At each
+  machine runs, and not one its `machine` condition leaves out), keeps its
+  level and serves its tier, a stand-in, and stays in the queue while executors after it start. At each
   slot pass routing is read again, among every candidate it could be given,
   whatever its harness (YN-66). The first that holds gives it its harness,
   model, effort, permission and account or key, and it starts in turn:
@@ -710,15 +718,17 @@ dispatch is routed:
   - A candidate it can't be given now, such as a default model that can't be
     checked, leaves it waiting with `applyFailed`; the next pass tries again.
   - Its machine is fixed at its dispatch: waiting on another machine, it is
-    never given a candidate that runs on this Core host only.
+    never given a candidate that runs on this Core host only, nor one whose
+    `machine` condition leaves that machine out.
 
   If none ever could, it is released and starts in turn as it would without
   routing, on the host's own login: its route says `released`, with
   `routingOff` when routing was turned off, or `noCandidate` when no candidate
   it could be given is left: none enabled that is not excluded for it after a
   failed start, of a harness its machine runs, that keeps its level and
-  serves its tier, and, while it waits on another machine, not this Core
-  host's only.
+  serves its tier, whose `machine` condition, if it has one, names its
+  machine, and, while it waits on another machine, not this Core host's
+  only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.

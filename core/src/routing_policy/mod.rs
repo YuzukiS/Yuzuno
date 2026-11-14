@@ -32,6 +32,8 @@ pub const KEY: &str = "executors.routing";
 pub const MAX_CANDIDATES: usize = 8;
 const MAX_CONDITIONS: usize = 16;
 const MAX_POOL: usize = 16;
+/// The machines a machine condition may name (YN-139).
+const MAX_MACHINES: usize = 16;
 pub const HARNESSES: &[&str] = &["claude", "codex", "opencode"];
 
 /// The policy as stored, and its version (0 before the first save).
@@ -262,6 +264,12 @@ fn plain_kind(kind: &str) -> bool {
     !kind.is_empty() && kind.len() <= 32 && kind.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// A machine a machine condition names: `local`, this Core host, or a registered
+/// machine's id, 1 to 64 of A-Z, a-z, 0-9 and - (YN-139).
+fn machine_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 fn check_condition(value: &Value, path: &str, credential: &str) -> Result<(), Invalid> {
     let c = object(value, path, "A condition")?;
     let field = |name: &str| format!("{path}.{name}");
@@ -305,8 +313,18 @@ fn check_condition(value: &Value, path: &str, credential: &str) -> Result<(), In
                 return refuse(field("usd"), "An amount in USD is above 0 and at most 10000");
             }
         }
+        // YN-139: the machines it may run on. Whether each is still registered is not
+        // checked: one removed only never matches. Whether its credential may leave this
+        // Core host at all is routing's, before this condition.
+        "machine" => match c.get("machines") {
+            Some(Value::Array(list)) if (1..=MAX_MACHINES).contains(&list.len())
+                && list.iter().all(|m| m.as_str().is_some_and(machine_id))
+                && list.iter().collect::<HashSet<_>>().len() == list.len() => {}
+            _ => return refuse(field("machines"),
+                format!("machines lists 1 to {MAX_MACHINES} machines, each once: local for this Core host, or a machine's id")),
+        },
         other if plain_kind(other) => {}
-        _ => return refuse(field("kind"), "kind is timeWindow, quota or dailyApiCap"),
+        _ => return refuse(field("kind"), "kind is timeWindow, quota, dailyApiCap or machine"),
     }
     Ok(())
 }

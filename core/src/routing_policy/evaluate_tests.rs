@@ -367,3 +367,50 @@ fn a_tier_passes_over_a_candidate_that_does_not_serve_it() {
     assert!(serves(&json!({}), Some("fast")) && serves(&json!({"tiers": ["strong", "fast"]}), Some("fast")));
     assert!(!serves(&json!({"tiers": ["strong"]}), Some("fast")) && serves(&json!({"tiers": ["strong"]}), None));
 }
+
+/// YN-139: a machine condition names the machines a candidate may run on, this Core host
+/// as `local`; no machine (a preview, `auto`) is this Core host. A pool still runs on this
+/// Core host only, whatever its conditions, and the condition itself is never unknown.
+#[test]
+fn a_machine_condition_lets_a_login_run_only_on_the_machines_it_names() {
+    let f = Fixture::new();
+    let none = Assume::default();
+    let only = |machines: Value| json!({"enabled": true, "whenNone": "wait", "candidates": [
+        {"id": "c-pool", "enabled": true, "harness": "claude", "model": "opus",
+         "credential": {"kind": "pool", "manager": "cswap", "accounts": "all"}, "conditions": []},
+        {"id": "c-mac", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"},
+         "conditions": [{"kind": "machine", "machines": machines}]}]});
+    let p = only(json!(["lab-mac"]));
+    // On the Mac: the pool is this Core host's only, so the Mac's own login.
+    let mac = f.run(&p, utc(9, 12, 0), Some("lab-mac"), &[], &none);
+    assert_eq!(states(&mac), [("c-pool".into(), "skipped".into()), ("c-mac".into(), "chosen".into())], "{}", mac.record);
+    assert_eq!((codes(&mac, "c-pool"), codes(&mac, "c-mac")), (vec!["hostOnly".to_owned()], vec![]));
+    assert_eq!(mac.profile, None, "the Mac's own login");
+    // Here, named or not: the pool, as before; with it off, the Mac's login is passed over, saying why.
+    for machine in [Some("local"), None] {
+        assert_eq!(f.run(&p, utc(9, 12, 0), machine, &[], &none).record["chosen"], "c-pool", "{machine:?}");
+        let mut off = p.clone();
+        off["candidates"][0]["enabled"] = json!(false);
+        let route = f.run(&off, utc(9, 12, 0), machine, &[], &none);
+        assert_eq!((route.record["chosen"].clone(), codes(&route, "c-mac")), (Value::Null, vec!["otherMachine".to_owned()]), "{machine:?}");
+        let why = &route.record["candidates"][1]["reasons"][0];
+        assert_eq!((why["message"].clone(), why["messageZh"].clone(), why["params"]["machine"].clone()),
+            (json!("It runs only on the machines its condition names"), json!("它只在条件里选的机器上跑"), json!(machine)));
+    }
+    // Another machine it doesn't name.
+    let mut off = p.clone();
+    off["candidates"][0]["enabled"] = json!(false);
+    assert_eq!(codes(&f.run(&off, utc(9, 12, 0), Some("lab-linux"), &[], &none), "c-mac"), ["otherMachine"]);
+    // Naming this Core host too: chosen with no machine named, so never `unknownCondition`.
+    let mut both = only(json!(["local", "lab-mac"]));
+    both["candidates"][0]["enabled"] = json!(false);
+    let route = f.run(&both, utc(9, 12, 0), None, &[], &none);
+    assert_eq!((route.record["chosen"].clone(), codes(&route, "c-mac")), (json!("c-mac"), vec![]), "{}", route.record);
+    // A pool that names the Mac still runs here only: the condition widens nothing.
+    let mut pool = p.clone();
+    pool["candidates"][0]["conditions"] = json!([{"kind": "machine", "machines": ["lab-mac"]}]);
+    pool["candidates"][1]["enabled"] = json!(false);
+    assert_eq!(codes(&f.run(&pool, utc(9, 12, 0), Some("lab-mac"), &[], &none), "c-pool"), ["hostOnly"]);
+    assert_eq!(codes(&f.run(&pool, utc(9, 12, 0), Some("local"), &[], &none), "c-pool"), ["otherMachine"]);
+    assert!(machine_allows(&json!({"conditions": []}), Some("lab-mac")) && machine_allows(&json!({}), None), "no machine condition: anywhere");
+}

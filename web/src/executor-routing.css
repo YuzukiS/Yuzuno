@@ -343,6 +343,11 @@
 .executor-routing .routing-number { width: 6em; }
 .executor-routing .routing-time { width: 8em; }
 .routing-add-menu { display: flex; flex-wrap: wrap; gap: 6px; }
+/* YN-139: the machines a machine condition names, as checkboxes in one row; the quota note on its own line below. */
+.routing-machines { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; flex: 1; min-width: 0; }
+.routing-machine-choices { display: inline-flex; flex-wrap: wrap; gap: 6px 16px; }
+.routing-machine-choices label { color: var(--ink); }
+.routing-machines .settings-row-meta { flex-basis: 100%; margin: 0; }
 .routing-window { display: grid; gap: 8px; flex: 1; min-width: 0; }
 .routing-window-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .routing-slots { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }

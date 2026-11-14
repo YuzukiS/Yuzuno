@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronUp, CircleAlert, CircleHelp, Clock, Gauge, GripVertical, Layers, Pencil, Plus, Tag, Wallet } from "lucide-react";
-import { errorText } from "./api";
-import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, tiersOf, type AnyCondition, type Candidate, type Harness, type Policy, type PolicyView, type PresetId } from "./executor-routing";
+import { ChevronDown, ChevronUp, CircleAlert, CircleHelp, Clock, Gauge, GripVertical, Layers, Monitor, Pencil, Plus, Tag, Wallet } from "lucide-react";
+import { api, errorText } from "./api";
+import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, tiersOf, type AnyCondition, type Candidate, type Harness, type NamedMachine, type Policy, type PolicyView, type PresetId } from "./executor-routing";
+import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import { langTag, useLanguage } from "./i18n";
 import { ROUTING_CREDENTIALS_CHANGED, readAccountsShared, readKeys, type AccountsView, type RoutingKey } from "./routing-keys";
 import { CandidateLive, NowCard, RecentChoices, SpendLine, StatePill, useLiveRouting } from "./RoutingLive";
@@ -16,7 +17,7 @@ import { CandidateEditor } from "./RoutingCandidateEditor";
 import "./executor-routing.css";
 
 const savedAt = timeFormatter({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const chipIcon = (c: AnyCondition) => (c.kind === "timeWindow" ? Clock : c.kind === "quota" ? Gauge : c.kind === "dailyApiCap" ? Wallet : CircleHelp);
+const chipIcon = (c: AnyCondition) => (c.kind === "timeWindow" ? Clock : c.kind === "quota" ? Gauge : c.kind === "dailyApiCap" ? Wallet : c.kind === "machine" ? Monitor : CircleHelp);
 
 /** Settings → Executor routing: the ordered candidates (YN-49 S4a), saved
  * whole against the version read, through the page's save bar. */
@@ -33,6 +34,9 @@ export function ExecutorRouting({ active, onManageKeys }: { active: boolean; onM
   // Why the last read failed, if it did: null means unread, else the list read before is kept (YN-84 S2).
   const [keysError, setKeysError] = useState("");
   const [accountsError, setAccountsError] = useState("");
+  // The SSH machines a machine condition can name (YN-139), as Templates reads them; null until read. One that
+  // isn't listed shows its id.
+  const [machines, setMachines] = useState<NamedMachine[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PolicyView | null>(null);
   const [refused, setRefused] = useState<{ text: string; path?: string } | null>(null);
@@ -79,6 +83,9 @@ export function ExecutorRouting({ active, onManageKeys }: { active: boolean; onM
         .catch((e) => { if (!signal.aborted) setAccountsError(errorText(e)); });
     };
     credentials();
+    api<{ machines: WorkspaceMachine[] }>("/machines", { signal }).then((list) => {
+      if (!signal.aborted) setMachines((Array.isArray(list.machines) ? list.machines : []).filter((m) => m.kind === "ssh").map((m) => ({ id: m.id, name: m.name })));
+    }).catch(() => { /* Unread: this Core host is still offered, and a saved machine shows its id. */ });
     window.addEventListener(ROUTING_CREDENTIALS_CHANGED, credentials);
     return () => { controller.abort(); window.removeEventListener(ROUTING_CREDENTIALS_CHANGED, credentials); };
   }, [active]);
@@ -197,7 +204,7 @@ export function ExecutorRouting({ active, onManageKeys }: { active: boolean; onM
         {accountsError && <p className="settings-block-help routing-credential-note" role="status">
           {(accounts ? t.accountsStale : t.accountsUnread)(accountsError)}
         </p>}
-        <CandidateList policy={policy} t={t} keys={keys} accounts={accounts} live={policy.enabled ? evaluation.record : null} open={open} problems={problems} refusedId={refusedId}
+        <CandidateList policy={policy} t={t} keys={keys} accounts={accounts} machines={machines} live={policy.enabled ? evaluation.record : null} open={open} problems={problems} refusedId={refusedId}
           refusedCondition={refusedPlace.condition} colourOf={colourOf} onOpen={setOpen} onMove={move} onManageKeys={onManageKeys}
           onEdit={editCandidate} onRemove={(id) => { edit((p) => ({ ...p, candidates: p.candidates.filter((c) => c.id !== id) })); setOpen(null); }} />
         <p className="sr-only" role="status" aria-live="polite">{live}</p>
@@ -260,8 +267,8 @@ export function ExecutorRouting({ active, onManageKeys }: { active: boolean; onM
 }
 
 /** The candidates as cards, reordered by a handle's drag, its arrow keys, or the arrows beside each card. */
-function CandidateList({ policy, t, keys, accounts, live, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove, onManageKeys }: {
-  policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; live: RouteRecord | null; open: string | null;
+function CandidateList({ policy, t, keys, accounts, machines, live, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove, onManageKeys }: {
+  policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; machines: readonly NamedMachine[] | null; live: RouteRecord | null; open: string | null;
   problems: Map<string, { at: string; text: string }[]>; refusedId?: string; refusedCondition?: number;
   colourOf: (id: string) => number; onOpen: (id: string | null) => void; onMove: (from: number, to: number, focus?: boolean) => void;
   onEdit: (id: string, change: (c: Candidate) => Candidate) => void; onRemove: (id: string) => void; onManageKeys?: () => void;
@@ -360,7 +367,7 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
               <div className="routing-chips">
                 {c.conditions.map((cond, n) => {
                   const Icon = chipIcon(cond);
-                  const chip = <span key={n} className="routing-chip"><Icon size={13} aria-hidden="true" /><span>{chipText(cond, t)}</span></span>;
+                  const chip = <span key={n} className="routing-chip"><Icon size={13} aria-hidden="true" /><span>{chipText(cond, t, machines)}</span></span>;
                   // A time window's chip names its first period; its tip has every one (YN-44's Tip).
                   return isKnown(cond) && cond.kind === "timeWindow"
                     ? <Tip key={n} content={<TipText title={`${t.timeWindow} · ${zoneWords(cond.schedule, t)}`} status={cond.inside ? t.insideOption : t.outsideOption}
@@ -375,7 +382,7 @@ function CandidateList({ policy, t, keys, accounts, live, open, problems, refuse
               </div>
               <CandidateLive live={now} />
               {expanded && (
-                <CandidateEditor c={c} t={t} keys={keys ?? []} keysRead={keys !== null} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
+                <CandidateEditor c={c} t={t} keys={keys ?? []} keysRead={keys !== null} accounts={accounts} machines={machines} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
                   onManageKeys={onManageKeys}
                   onEdit={(change) => onEdit(c.id, change)} onRemove={() => onRemove(c.id)} onClose={() => onOpen(null)} />
               )}

@@ -20,7 +20,7 @@
 //!   removed. The same pass then reads routing for it among every candidate,
 //!   as for one that waited from its dispatch; none it could ever be given
 //!   releases it onto the host's own login.
-use super::evaluate::{evaluate, serves, Assume, Gathered};
+use super::evaluate::{evaluate, has_machine_condition, machine_allows, serves, Assume, Gathered};
 use super::left::{left, Left};
 use crate::{executor_templates::Template, routing_launch::RuntimeProfile};
 use anyhow::Result;
@@ -34,7 +34,8 @@ pub(crate) struct Routed {
     pub template: Template,
     pub route: Value,
     pub profile: Option<RuntimeProfile>,
-    /// "local" when the chosen candidate runs on this Core host only.
+    /// "local" when the chosen candidate runs on this Core host only, or, with no
+    /// machine named (`auto` or unset), has a machine condition (YN-139).
     pub machine: Option<String>,
 }
 
@@ -72,6 +73,14 @@ fn host_only(candidate: &Value) -> bool {
     candidate["credential"]["kind"] != "login" || candidate["harness"] == "opencode"
 }
 
+/// Whether a dispatch to `machine` that gives its executor `candidate` fixes it on this
+/// Core host: a host-only one; or, with no machine named (`auto` or unset), one with a
+/// machine condition (YN-139), which held for this Core host, so `auto` choosing another
+/// machine after routing can't take it where its condition leaves it out.
+fn here(candidate: &Value, machine: Option<&str>) -> bool {
+    host_only(candidate) || (machine.is_none() && has_machine_condition(candidate))
+}
+
 /// The tier a dispatch wants and whose it is (YN-70): `template`, `lead` or `user`.
 pub(crate) type Tier<'a> = Option<(&'a str, &'a str)>;
 
@@ -103,16 +112,19 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     let mut record = route.record;
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
-        let machine = host_only(&candidate).then(|| "local".to_owned());
+        let machine = here(&candidate, machine).then(|| "local".to_owned());
         return Ok(Some(Routed { template: apply(template, &candidate), route: record, profile: route.profile, machine }));
     }
     // None now: the first enabled candidate that could run there, keeps the
     // template's permission level and serves its tier, stands in for its
     // harness while it waits. One that doesn't serve the tier would pin it to
-    // this Core host for nothing (a host-only one's machine is fixed here).
+    // this Core host for nothing (a host-only one's machine is fixed here). One
+    // whose machine condition leaves the machine out never holds there, so it
+    // stands in for none (YN-139).
     let first = stored.policy["candidates"].as_array().into_iter().flatten()
         .find(|c| c["enabled"] == true && !exclude.iter().any(|e| c["id"] == e.as_str())
             && (!host_only(c) || machine.is_none_or(|m| m == "local"))
+            && machine_allows(c, machine)
             && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default())
             && !unavailable.contains(&c["harness"].as_str().unwrap_or_default())
             && serves(c, tier.map(|(tier, _)| tier)));
@@ -123,7 +135,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     let mut waiting = apply(template, first);
     waiting.model = None;
     waiting.reasoning_effort = None;
-    let machine = host_only(first).then(|| "local".to_owned());
+    let machine = here(first, machine).then(|| "local".to_owned());
     Ok(Some(Routed { template: waiting, route: record, profile: None, machine }))
 }
 
@@ -296,8 +308,9 @@ fn mark_left(db: &mut Connection, agent: &str, left: &Left, route: &Value) -> Re
 /// candidate it can be given is what `evaluate` would not pass over for it whatever the
 /// readings: enabled; not `excluded` for it (a rebuild's); of a harness its machine runs
 /// (YN-66), and its own once something of it ran; not this Core host's only while it
-/// waits on another machine (#805 R2 P3); of a harness that keeps its permission level;
-/// and serving its tier (YN-70).
+/// waits on another machine (#805 R2 P3); with no machine condition that leaves its
+/// machine out (YN-139); of a harness that keeps its permission level; and serving its
+/// tier (YN-70).
 pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Option<Value> {
     let excluded = waiting.excluded();
     let possible = |c: &Value| {
@@ -305,6 +318,7 @@ pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Optio
         c["enabled"] == true && waiting.harness_only().is_none_or(|own| own == harness)
             && !excluded.iter().any(|e| c["id"] == e.as_str())
             && !(waiting.machine != "local" && host_only(c))
+            && machine_allows(c, Some(waiting.machine.as_str()))
             && !waiting.unavailable.contains(&harness)
             && crate::permission_levels::keeps(waiting.level(), harness)
             && serves(c, waiting.tier())

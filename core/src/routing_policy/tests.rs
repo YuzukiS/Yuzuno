@@ -275,3 +275,38 @@ async fn evaluate_and_simulate_answer_from_cores_own_evaluator_for_a_draft_or_th
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: an Agent's credential is refused");
     }
 }
+
+/// YN-139: a machine condition names 1 to 16 machines, each once: `local` or a machine's
+/// id. A save keeps it as sent, on any credential (only routing decides where one runs);
+/// a machine no longer registered is not checked for.
+#[tokio::test]
+async fn a_machine_condition_is_saved_as_sent_and_each_bad_list_is_refused_at_its_path() {
+    let lab = lab();
+    let login = |machines: Value| json!({"id": "c-mac", "enabled": true, "harness": "claude", "model": "opus",
+        "credential": {"kind": "login"}, "conditions": [{"kind": "machine", "machines": machines}]});
+    let mut pool = login(json!(["local"]));
+    pool["id"] = json!("c-pool");
+    pool["credential"] = json!({"kind": "pool", "manager": "cswap", "accounts": "all"});
+    let sent = policy(vec![login(json!(["ab70ea20-0000-4000-8000-000000000001", "local"])), pool]);
+    let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 0, "policy": sent.clone()})), vec![]).await;
+    assert_eq!((status, saved["policy"].clone()), (StatusCode::OK, sent), "{saved}");
+    let (_, read) = call(&lab.local, "GET", None, vec![]).await;
+    assert_eq!(read, saved, "read as saved");
+    let path = "candidates[0].conditions[0].machines";
+    let seventeen: Vec<String> = (0..17).map(|n| format!("lab-{n}")).collect();
+    for machines in [json!([]), json!(["local", "local"]), json!(["lab_mac"]), json!(["x".repeat(65)]), json!([""]), json!([7]),
+        json!("local"), Value::Null, json!(seventeen)] {
+        let mut sent = policy(vec![login(machines.clone())]);
+        if machines.is_null() {
+            sent["candidates"][0]["conditions"][0].as_object_mut().unwrap().remove("machines");
+        }
+        let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 1, "policy": sent})), vec![]).await;
+        assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!(path)), "{machines}: {refused}");
+        assert!(refused["error"].as_str().unwrap().contains("1 to 16 machines, each once"), "{refused}");
+    }
+    assert_eq!(lab.ws.store.routing_policy().unwrap().version, 1, "no refused save changed it");
+    let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 1, "policy": policy(vec![
+        json!({"id": "c-bad", "enabled": true, "harness": "codex", "model": "", "credential": {"kind": "login"}, "conditions": [{"kind": "Not a kind"}]})])})), vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("dailyApiCap or machine"), "{refused}");
+}
