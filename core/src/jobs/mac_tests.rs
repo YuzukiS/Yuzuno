@@ -145,6 +145,10 @@ async fn a_macos_core_runs_its_job_on_this_mac_in_the_limited_mode_and_checks_it
     assert_eq!(queued["executor"], json!({"kind":"mac","machineId":"mac","machineName":"This Mac","limitMode":"limited"}));
     assert_eq!(queued["capabilities"], remote::mac_capabilities());
     assert_eq!((queued["status"].as_str(), queued["reason"].as_str()), (Some("queued"), Some("Waiting for a slot on This Mac")));
+    // No Core before data roots ran on macOS: this Job is nothing an older
+    // Core would mishandle (older_cores.rs), queued or started.
+    let id = queued["id"].as_str().unwrap().to_owned();
+    assert!(!lab.ws.store.older_core_hazard().unwrap().unwrap_or_default().contains(&id));
     // A retry sent as before is the same Job.
     assert_eq!(lab.call(Some("a"), "job_submit", sent).await.unwrap()["id"], queued["id"]);
     let done = lab.until(&queued, |j| j["reserved"] == false).await;
@@ -160,13 +164,6 @@ async fn a_macos_core_runs_its_job_on_this_mac_in_the_limited_mode_and_checks_it
     assert_eq!(done["remote"]["platform"], if cfg!(target_os = "macos") { "Darwin" } else { "Linux" }, "{done}");
     let log = remote::logs_with(&lab.ws, &done, None, &lab.programs()).await.unwrap();
     assert_eq!(log["text"], "ok\n");
-    // No Core before data roots ran on macOS: none is kept out for it
-    // (older_cores.rs), so the Workspace lock is not made read-only.
-    if !rustix::process::geteuid().is_root() {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(lab.ws.data_dir.join("workspace.lock")).unwrap().permissions().mode();
-        assert_ne!(mode & 0o777, 0o400, "the Workspace lock stays writable");
-    }
 }
 
 #[tokio::test]
@@ -239,7 +236,7 @@ async fn on_a_macos_core_this_host_is_this_mac_and_what_needs_linux_is_refused_b
     }
     let before = lab.saved_jobs();
     for (extra, refusal) in [
-        (json!({"guardGit": true}), "guardGit is not available on This Mac, where a macOS Core runs its Jobs in the limited mode, in this version; set guardGit to false"),
+        (json!({"guardGit": true}), "guardGit is not available yet on This Mac, where a macOS Core runs its Jobs in the limited mode; set guardGit to false"),
         (json!({"gpu": {"memoryMiB": 1024}}), "GPU admission is not available on This Mac"),
         (json!({"resources": {"cpuMillis": 500, "cpuMillisMax": 2000, "memoryMiB": 128, "swapMiB": 0}}), "A CPU range up to cpuMillisMax needs a Linux host's cgroup"),
         (json!({"exclusive": true}), "exclusive is not available on This Mac"),

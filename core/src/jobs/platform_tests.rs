@@ -169,7 +169,7 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
         (Some("a"), job("on-agent", json!({"machineId":"agent"}))),
     ] {
         let error = lab.call(actor, "job_submit", input).await.unwrap_err().to_string();
-        assert!(error.starts_with("guardGit is not available on This Mac"), "{error}");
+        assert!(error.starts_with("guardGit is not available yet on This Mac"), "{error}");
     }
     // Nothing written or run for them, and nothing saved.
     assert_eq!(lab.helpers(), Vec::<String>::new());

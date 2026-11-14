@@ -563,7 +563,7 @@ impl Submit {
             "A CPU range up to cpuMillisMax needs a Linux host's cgroup: {why}, a Job runs at cpuMillis. Omit cpuMillisMax"
         );
         ensure!(!self.exclusive, "exclusive is not available {why}; omit it");
-        ensure!(!self.guard_git, "guardGit is not available {why} in this version; set guardGit to false and list the files to freeze as inputs");
+        ensure!(!self.guard_git, "guardGit is not available yet {why}; set guardGit to false and list the files to freeze as inputs");
         ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which is not available {why}; omit it");
         ensure!(
             self.outputs.is_empty(),
