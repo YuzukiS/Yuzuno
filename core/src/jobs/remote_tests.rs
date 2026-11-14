@@ -626,8 +626,8 @@ async fn a_dead_supervisor_and_a_child_left_by_the_leader_keep_the_slot_until_ca
 /// A supervisor that is gone does not take the timeout with it: before the
 /// deadline it recorded the attempt is unknown and keeps its slot; the first
 /// check after it stops the command's group and records the timeout, which
-/// releases the slot. The unknown is told once, the timeout once.
-#[cfg(target_os = "linux")]
+/// releases the slot. The unknown is told once, the timeout once. On macOS
+/// too: the deadline is on one clock for every process (YN-144).
 #[tokio::test]
 async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_the_next_check() {
     let lab = lab();
@@ -659,8 +659,8 @@ async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_
 
 /// A cancel of a lost attempt whose command ignores TERM is not settled by
 /// the call that sends it TERM (4 s); Core asks again at its next check, and
-/// that call KILLs it, 5 s after the first TERM: cancelled, slot released.
-#[cfg(target_os = "linux")]
+/// that call KILLs it, 5 s after the first TERM: cancelled, slot released. On
+/// macOS too: the first TERM's time is on one clock for every process (YN-144).
 #[tokio::test]
 async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_check() {
     let lab = lab();
@@ -681,6 +681,43 @@ async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_chec
     assert!(cancelled["reason"].as_str().unwrap().contains("its supervisor was gone"), "{cancelled}");
     assert!(gone(leader).await);
     assert!(cancelled["notifications"]["cancelled"].is_string(), "{cancelled}");
+}
+
+/// A lost attempt's deadline written before its records named their clock
+/// (an older helper's supervisor): on Linux it was CLOCK_MONOTONIC already,
+/// so it still applies; on macOS it was that process's own clock, which no
+/// other process can read, so it is never applied in the supervisor's place
+/// and the attempt keeps its slot until a cancel, as before (YN-144).
+#[tokio::test]
+async fn a_lost_attempts_deadline_from_before_the_clock_was_named_keeps_its_meaning() {
+    let lab = lab();
+    // Its own timeout far off, so that only the rewritten deadline can pass.
+    let first = create(&lab, input(&lab, "unmarked", "exec sleep 60", json!({"timeoutSeconds": 30})));
+    until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let attempt = folder(&lab, &first);
+    let supervisor = read(attempt.join("supervisor.json"))["pid"].as_i64().unwrap();
+    let leader = read(attempt.join("started.json"))["pid"].as_i64().unwrap();
+    std::process::Command::new("kill").args(["-KILL", &supervisor.to_string()]).status().unwrap();
+    assert!(gone(supervisor).await);
+    // As an older supervisor wrote it: no clock, and long past on this one.
+    let mut deadline = read(attempt.join("deadline.json"));
+    assert_eq!(deadline["clock"], "CLOCK_MONOTONIC", "{deadline}");
+    deadline.as_object_mut().unwrap().remove("clock");
+    deadline["monotonic"] = json!(0.5);
+    std::fs::write(attempt.join("deadline.json"), deadline.to_string()).unwrap();
+    tick(&lab, &lab.ssh).await;
+    let checked = job(&lab, &first);
+    if cfg!(target_os = "macos") {
+        assert_eq!((checked["status"].as_str(), checked["reserved"].as_bool()), (Some("unknown"), Some(true)), "{checked}");
+        assert!(alive(leader));
+        cancel(&lab, &first);
+        let cancelled = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
+        assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+    } else {
+        assert_eq!((checked["status"].as_str(), checked["reserved"].as_bool()), (Some("failed"), Some(false)), "{checked}");
+        assert_eq!(checked["reason"], "timeout after 30 s; its supervisor was gone, so its process group was stopped here");
+    }
+    assert!(gone(leader).await);
 }
 
 #[tokio::test]
