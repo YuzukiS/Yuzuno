@@ -14,7 +14,14 @@
 //!   its gate, and its route, written last, lets it start.
 //! - **A rebuild** (a definite start failure) leaves out the candidates the
 //!   executor it replaces was started with, so each is tried once.
+//! - **One routed but not started yet whose candidate, account or key has left**
+//!   (left.rs) waits again (YN-138): in one transaction, while its slot still
+//!   waits, its route says `waiting` and `left`, and its runtime profile is
+//!   removed. The same pass then reads routing for it among every candidate,
+//!   as for one that waited from its dispatch; none it could ever be given
+//!   releases it onto the host's own login.
 use super::evaluate::{evaluate, serves, Assume, Gathered};
+use super::left::{left, Left};
 use crate::{executor_templates::Template, routing_launch::RuntimeProfile};
 use anyhow::Result;
 use chrono::Utc;
@@ -224,6 +231,66 @@ pub(crate) fn waiting_list(db: &Connection) -> Result<Vec<WaitingExecutor>> {
     waiting_where(db, None)
 }
 
+/// An executor routed at its dispatch, queued for a slot, nothing of which ran (YN-138).
+pub(crate) struct QueuedRouted {
+    pub agent: String,
+    pub route: Value,
+    pub profile: Option<RuntimeProfile>,
+}
+
+/// The executors routed, queued for a slot and not started: not waiting for a
+/// candidate, not released onto the host's login. Or the one `agent` names while it still is.
+fn left_queued(db: &Connection, agent: Option<&str>) -> Result<Vec<QueuedRouted>> {
+    let mut statement = db.prepare(
+        "SELECT d.agent_id, d.route_json, a.data, p.profile,
+                EXISTS(SELECT 1 FROM agent_turns t WHERE t.agent_id=d.agent_id),
+                EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=d.agent_id)
+         FROM executor_dispatches d JOIN agents a ON a.id=d.agent_id JOIN executor_slots s ON s.agent_id=d.agent_id
+              LEFT JOIN agent_runtime_profiles p ON p.agent_id=d.agent_id
+         WHERE d.route_json IS NOT NULL AND s.state='waiting' AND (?1 IS NULL OR d.agent_id=?1)")?;
+    let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+        r.get::<_, Option<String>>(3)?, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (agent, route, data, profile, turns, receipts) in rows {
+        let (Ok(route), Ok(data)) = (serde_json::from_str::<Value>(&route), serde_json::from_str::<Value>(&data)) else { continue };
+        if route["waiting"] == true || !route["released"].is_null() || !unstarted(&data, turns, receipts) {
+            continue;
+        }
+        // A profile this Core can't read is not judged: its start says why.
+        let Ok(profile) = profile.map(|p| serde_json::from_str::<RuntimeProfile>(&p)).transpose() else { continue };
+        out.push(QueuedRouted { agent, route, profile });
+    }
+    Ok(out)
+}
+
+/// Makes `agent`, routed by `route`, wait for a candidate again because what it was
+/// given has left, in one transaction and only while its slot still waits: its
+/// route says `waiting` and `left` (with the candidate and account it had), and its
+/// runtime profile is removed, so no start uses that account or key. Whether it did:
+/// a pass that took it to start first leaves it as it is.
+fn mark_left(db: &mut Connection, agent: &str, left: &Left, route: &Value) -> Result<bool> {
+    let mut route = route.clone();
+    let mut why = left.reason();
+    why["at"] = json!(Utc::now().to_rfc3339());
+    why["from"] = route["chosen"].clone();
+    if !route["account"].is_null() {
+        why["fromAccount"] = route["account"].clone();
+    }
+    route["waiting"] = json!(true);
+    route["left"] = why;
+    let tx = db.transaction()?;
+    let written = tx.execute(
+        "UPDATE executor_dispatches SET route_json=?2
+         WHERE agent_id=?1 AND EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting')",
+        rusqlite::params![agent, route.to_string()])? > 0;
+    if written {
+        tx.execute("DELETE FROM agent_runtime_profiles WHERE agent_id=?1", [agent])?;
+    }
+    tx.commit()?;
+    Ok(written)
+}
+
 /// Why an executor waiting for a candidate starts without one: routing is off, or no
 /// candidate it could ever be given is left, so none could be chosen (#805 R1 P2). A
 /// candidate it can be given is what `evaluate` would not pass over for it whatever the
@@ -325,6 +392,19 @@ impl crate::store::Store {
         set_route(&*self.db.write()?, agent, route)
     }
 
+    pub(crate) fn routing_left_queued(&self) -> Result<Vec<QueuedRouted>> {
+        left_queued(&*self.db.read()?, None)
+    }
+
+    /// `agent`, while it is routed, queued and not started.
+    pub(crate) fn routing_left_queued_one(&self, agent: &str) -> Result<Option<QueuedRouted>> {
+        Ok(left_queued(&*self.db.read()?, Some(agent))?.pop())
+    }
+
+    pub(crate) fn mark_routing_left(&self, agent: &str, left: &Left, route: &Value) -> Result<bool> {
+        mark_left(&mut *self.db.write()?, agent, left, route)
+    }
+
     pub(crate) fn routing_choices(&self, limit: usize) -> Result<Vec<Value>> {
         choices(&*self.db.read()?, limit)
     }
@@ -354,7 +434,12 @@ impl crate::workspace::Workspace {
     /// (`start_as`), and it joins the queue to start. Each under its gate: a
     /// start and another pass routing or releasing it wait for this one, which
     /// reads it again there.
+    ///
+    /// First, while routing is on, each executor routed but not started whose
+    /// candidate, account or key has left waits again (YN-138, `mark_left`), so
+    /// this pass routes it with the others.
     pub(crate) async fn route_waiting(self: &Arc<Self>) {
+        let gathered = self.route_left_queued().await;
         let listed = match self.stored(|store| store.routing_waiting()).await {
             Ok(listed) if !listed.is_empty() => listed,
             Ok(_) => return,
@@ -371,9 +456,12 @@ impl crate::workspace::Workspace {
             }
         };
         // Once for the pass. Without it one none can take is still released.
-        let gathered = self.routing_gathered().await.map_err(|error| {
-            eprintln!("Routing: its readings could not be gathered for the executors waiting for a candidate: {error:#}");
-        }).ok();
+        let gathered = match gathered {
+            Some(gathered) => Some(gathered),
+            None => self.routing_gathered().await.map_err(|error| {
+                eprintln!("Routing: its readings could not be gathered for the executors waiting for a candidate: {error:#}");
+            }).ok(),
+        };
         #[cfg(test)]
         self.route_meet("unlocked").await;
         for listed in listed {
@@ -383,6 +471,56 @@ impl crate::workspace::Workspace {
                 eprintln!("Routing: executor {} could not be routed: {error:#}", listed.agent);
             }
         }
+    }
+
+    /// Makes each executor routed but not started whose candidate, account or key
+    /// has left wait for a candidate again (YN-138), each under its gate, read
+    /// again there. Only while routing is on and its readings could be gathered:
+    /// what isn't known decides nothing. Answers the readings, when it gathered them.
+    async fn route_left_queued(self: &Arc<Self>) -> Option<Gathered> {
+        let read = self.stored(|store| Ok((store.routing_left_queued()?, store.routing_policy()?))).await;
+        let (queued, stored) = match read {
+            Ok((queued, stored)) if !queued.is_empty() && stored.policy["enabled"] == true => (queued, stored),
+            Ok(_) => return None,
+            Err(error) => {
+                eprintln!("Routing: the executors queued to start could not be read: {error:#}");
+                return None;
+            }
+        };
+        let gathered = match self.routing_gathered().await {
+            Ok(gathered) => gathered,
+            Err(error) => {
+                eprintln!("Routing: its readings could not be gathered, so no queued executor is routed again: {error:#}");
+                return None;
+            }
+        };
+        let keys: Vec<String> = gathered.keys.iter().map(|(id, _, _)| id.clone()).collect();
+        for queued in queued {
+            let gate = self.gate(&queued.agent).await;
+            let _held = gate.lock().await;
+            let id = queued.agent.clone();
+            let again = match self.stored(move |store| store.routing_left_queued_one(&id)).await {
+                Ok(Some(again)) => again,
+                Ok(None) => continue,
+                Err(error) => {
+                    eprintln!("Routing: executor {} could not be read again: {error:#}", queued.agent);
+                    continue;
+                }
+            };
+            let Some(why) = left(&stored.policy, &again.route, again.profile.as_ref(), &keys, &gathered.codex_homes, &gathered.cswap) else {
+                continue;
+            };
+            let (id, route, code) = (again.agent.clone(), again.route, why.code);
+            match self.stored(move |store| store.mark_routing_left(&id, &why, &route)).await {
+                Ok(true) => {
+                    eprintln!("Routing: executor {} is routed again before its start ({code})", again.agent);
+                    self.changed(&again.agent);
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("Routing: executor {} could not be routed again: {error:#}", again.agent),
+            }
+        }
+        Some(gathered)
     }
 
     /// One waiting executor's routing, under its gate.
@@ -405,6 +543,11 @@ impl crate::workspace::Workspace {
         let route = evaluate(stored.version, &stored.policy, "start", &inputs);
         let mut record = route.record;
         record["excluded"] = json!(excluded);
+        // What it was given before, when that left (YN-138): kept on each record
+        // after, so its start says what it was changed from.
+        if !waiting.route["left"].is_null() {
+            record["left"] = waiting.route["left"].clone();
+        }
         match route.chosen {
             Some(candidate) => self.start_as(&waiting, &candidate, route.profile, record).await,
             None => {
@@ -434,7 +577,17 @@ impl crate::workspace::Workspace {
         };
         #[cfg(test)]
         self.route_meet("locked").await;
-        let mut changed = json!({"from": null, "reason": "It waited for a candidate, and this one holds now"});
+        // One whose candidate, account or key left (YN-138) was changed from that
+        // candidate, and why; one that waited from its dispatch from none.
+        let left = &waiting.route["left"];
+        let mut changed = if left.is_null() {
+            json!({"from": null, "reason": "It waited for a candidate, and this one holds now"})
+        } else {
+            json!({"from": left["from"], "reason": {"code": left["code"], "message": left["message"], "messageZh": left["messageZh"]}})
+        };
+        if !left["fromAccount"].is_null() {
+            changed["fromAccount"] = left["fromAccount"].clone();
+        }
         let mut event = json!({"candidate": candidate["id"], "model": born.model, "harness": born.harness});
         if born.harness != waiting.harness {
             changed["harnessFrom"] = json!(waiting.harness);

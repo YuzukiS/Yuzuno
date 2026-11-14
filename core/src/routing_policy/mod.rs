@@ -25,6 +25,7 @@ use std::collections::HashSet;
 
 pub mod dispatch;
 pub mod evaluate;
+pub(crate) mod left;
 pub mod routes;
 
 pub const KEY: &str = "executors.routing";
