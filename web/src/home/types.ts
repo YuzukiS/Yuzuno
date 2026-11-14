@@ -97,6 +97,8 @@ export type Section = {
     state: "open" | "replied" | "resolved";
     repliedAt?: string;
     replyText?: string;
+    /** The images the user's reply took (YN-134), by their IDs in the Project's images; only with any. */
+    replyImages?: string[];
     deferredUntil?: string;
     /** An executor's gate (T-43 S4): the step of its task's template this asks you to approve. */
     gate?: AskGate;
