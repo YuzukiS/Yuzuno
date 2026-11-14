@@ -1,11 +1,9 @@
 use super::*;
 use crate::test_ports::free_port;
 use crate::updates::{
-    start::tests::{answer, compiled, held, install as installed, starts_seen},
+    start::tests::{alive, answer, compiled, held, install as installed, starts_seen},
     state::ReleaseRef,
 };
-#[cfg(target_os = "linux")]
-use crate::updates::start::tests::alive;
 use std::{os::unix::fs::PermissionsExt, sync::atomic::Ordering};
 
 const REPOSITORY: &str = "YuzukiS/Yuzuno";
@@ -308,7 +306,6 @@ fn request(install: &crate::updates::start::tests::Install, port: u16) -> FirstS
     FirstStart { root: install.layout.root.clone(), port, data_dir, cwd, codex: None }
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn a_new_installation_starts_with_the_login_shells_environment_and_records_it() {
     let install = installed();
@@ -407,7 +404,6 @@ fn a_first_start_refuses_what_it_cannot_start_and_starts_nothing() {
     assert!(start::read_record(&install.layout).is_none());
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn a_first_start_whose_core_exits_or_is_slow_says_so() {
     let install = installed();
