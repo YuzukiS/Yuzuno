@@ -136,10 +136,10 @@ async function open(language, viewport, mobile = false) {
   return { context, page };
 }
 const W = {
-  en: { rename: "Rename…", settings: "Agent settings…", title: "Rename agent", save: "Save", saveName: "Save name", cancel: "Cancel",
+  en: { rename: "Rename…", settings: "Agent settings…", title: "Rename agent", save: "Save", saveName: "Rename", cancel: "Cancel",
     empty: "A name can’t be empty.", control: "A name can’t contain control characters, such as a tab.", over: /bytes too long/,
     renamed: (name) => `Renamed to “${name}”.` },
-  zh: { rename: "重命名…", settings: "Agent 设置…", title: "重命名 Agent", save: "保存", saveName: "保存名称", cancel: "取消",
+  zh: { rename: "重命名…", settings: "Agent 设置…", title: "重命名 Agent", save: "保存", saveName: "重命名", cancel: "取消",
     empty: "名称不能为空。", control: "名称不能包含控制字符（例如制表符）。", over: /超出 \d+ 字节/,
     renamed: (name) => `已重命名为「${name}」。` },
 };

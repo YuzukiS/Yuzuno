@@ -17,7 +17,8 @@ const text = strings({
   cancel: "Cancel",
   save: "Save",
   saving: "Saving…",
-  saveName: "Save name",
+  // Not "Save …": the dialog's own Save, below, saves the settings.
+  rename: "Rename",
   nameNote: "The name saves on its own, at once, without waiting for the models below.",
   close: "Close dialog",
   empty: "A name can’t be empty.",
@@ -29,7 +30,7 @@ const text = strings({
   cancel: "取消",
   save: "保存",
   saving: "正在保存…",
-  saveName: "保存名称",
+  rename: "重命名",
   nameNote: "名称单独保存，立即生效，不等下方的模型载入。",
   close: "关闭对话框",
   empty: "名称不能为空。",
@@ -194,7 +195,7 @@ function RenameDialog({
 
 /**
  * The name in an Agent's settings (YN-112), first in the dialog: a field
- * with its own Save. The dialog's Save waits for the model catalog and, for
+ * with its own Rename button. The dialog's Save waits for the model catalog and, for
  * Codex, its runtime; a name never does, so it saves here on its own, even
  * when the Agent's machine is offline. Enter in the field saves the name
  * only, never the settings below. A name changed elsewhere (another page)
@@ -236,7 +237,7 @@ export function AgentNameSetting({ agent, onRenamed }: { agent: Agent; onRenamed
           onClick={() => void rename.save()}
         >
           {rename.busy ? <LoaderCircle size={15} className="spin" /> : null}
-          {rename.busy ? t.saving : t.saveName}
+          {rename.busy ? t.saving : t.rename}
         </button>
       </div>
       <NameProblem value={rename.value} />

@@ -9,7 +9,7 @@
   margin: 10px 0 0;
 }
 
-/* In Agent settings, first: the name and its own Save on one line, the
+/* In Agent settings, first: the name and its own Rename button on one line, the
    field taking what is left. On a narrow screen the field has the line and
    the button goes under it, at its end. */
 .agent-name-row {

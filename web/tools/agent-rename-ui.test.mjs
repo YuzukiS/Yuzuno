@@ -191,7 +191,7 @@ test("the settings field saves the name alone, on Enter too, never the settings 
   await tick();
   const input = page.input();
   assert.equal(input.value, "Agent a");
-  assert.ok(page.button("Save name").disabled);
+  assert.ok(page.button("Rename").disabled);
   page.type(input, "Mori");
   await tick();
   input.dispatchEvent(new page.window.CompositionEvent("compositionstart", { bubbles: true }));
@@ -210,7 +210,7 @@ test("the settings field saves the name alone, on Enter too, never the settings 
   // A refused name: the reason in place, nothing sent.
   page.type(input, "");
   await tick();
-  assert.ok(page.button("Save name").disabled);
+  assert.ok(page.button("Rename").disabled);
   assert.ok(page.said().includes("A name can’t be empty."));
   page.key(input, { key: "Enter" });
   await tick();
