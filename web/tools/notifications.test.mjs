@@ -356,8 +356,62 @@ test("an executor you dispatched, new in Needs you, notifies once and opens Home
   assert.deepEqual(events.askNotices(null, after, true), [], "the first read tells of nothing");
 });
 
-test("none of it talks to Core: muting this device changes nothing the Workspace delivers", async () => {
-  const fetchBefore = globalThis.fetch;
+// YN-113 R4: a card that refreshes itself notifies its run's end, once, and
+// not its owner's generic Turn end; a pause Core made notifies, a chosen one
+// does not.
+const refresh = (extra = {}) => ({
+  projectId: "p1", projectName: "Digest", identity: 7, key: "digest/news", title: "Daily news", live: true,
+  version: 1, enabled: true, pausedReason: null,
+  cadence: { every: "day", at: "08:00" }, zone: "local", weeklyRuns: 7,
+  run: null, waiting: null, ...extra,
+});
+const refreshRun = (state, extra = {}) => ({ slot: "2026-11-14T00:00:00Z", missed: 0, state, turnId: "t1", ...extra });
+
+test("a refresh run's end notifies once as refreshed or failed, and its Turn's generic end notifies not at all (YN-113 R4)", () => {
+  const before = [refresh({ run: refreshRun("sent") })];
+  assert.deepEqual(events.refreshNotices(null, before, true), [], "the first read tells of nothing");
+  const refreshed = [refresh({ run: refreshRun("refreshed") })];
+  assert.deepEqual(events.refreshNotices(before, refreshed, true), [{
+    kind: "finished", tag: "yuzuno:finished:refresh:p1:7", title: "“Daily news” refreshed", body: "Digest", home: true,
+  }]);
+  assert.deepEqual(events.refreshNotices(refreshed, refreshed, true), [], "the same run again");
+  assert.deepEqual(events.refreshNotices(before, [refresh({ run: refreshRun("sent") })], true), [], "still running");
+  assert.equal(events.refreshNotices(before, [refresh({ run: refreshRun("refreshed", { missed: 2 }) })], true)[0].body,
+    "Digest · caught up, 2 missed");
+  const failed = events.refreshNotices(before, [refresh({ run: refreshRun("failed", { reason: { code: "turn_failed", message: "The Turn failed: it stopped" } }) })], true);
+  assert.deepEqual(failed.map((n) => [n.kind, n.title, n.body]),
+    [["failed", "“Daily news” didn’t refresh", "Digest · The Turn failed: it stopped"]]);
+  assert.equal(events.refreshNotices(before, [refresh({ run: refreshRun("failed") })], false)[0].body,
+    "Digest · Open Settings → Home → Refreshes to see why.");
+
+  // The owner's Turn end is one notice, the refresh's: not the generic one.
+  const owner = (status, workSummary) => ({ id: "a", name: "Mori", status, pendingCount: 0, closedAt: null, workSummary });
+  const ended = owner("idle", { kind: "result", text: "Done", turnId: "t1" });
+  assert.deepEqual(events.agentNotices([owner("working")], [ended], true, new Set(["t1"])), []);
+  assert.equal(events.agentNotices([owner("working")], [ended], true)[0].kind, "finished", "without a refresh, as before");
+  assert.deepEqual([...events.refreshTurns(refreshed)], ["t1"]);
+});
+
+test("a pause Core made notifies once; a pause by the user or the owner tells of nothing (YN-113 R4)", () => {
+  const failed = refresh({ run: refreshRun("failed", { reason: { code: "turn_failed", message: "The Turn failed" } }) });
+  const paused = refresh({ version: 2, enabled: false, pausedReason: { code: "failures", message: "Paused after 3 failures in a row" } });
+  const found = events.refreshNotices([failed], [paused], true);
+  assert.deepEqual(found.map((n) => [n.kind, n.tag, n.title, n.body]), [
+    ["failed", "yuzuno:failed:refresh-paused:p1:7", "“Daily news” paused", "Digest · Paused after 3 failures in a row"],
+  ]);
+  assert.deepEqual(events.refreshNotices([paused], [paused], true), [], "the same pause again");
+  // The failed run and the pause found together: one notice, the run's.
+  assert.equal(events.refreshNotices([refresh({ run: refreshRun("sent") })], [refresh({
+    enabled: false, pausedReason: { code: "failures", message: "Paused after 3 failures" },
+    run: refreshRun("failed", { reason: { code: "turn_failed", message: "The Turn failed" } }),
+  })], true).length, 1);
+  for (const code of ["paused", "paused_by_owner", "restored"]) {
+    const chosen = refresh({ enabled: false, pausedReason: { code, message: "Paused" } });
+    assert.deepEqual(events.refreshNotices([failed], [chosen], true), [], code);
+  }
+});
+
+test("none of it talks to Core: muting this device changes nothing the Workspace delivers", async () => {  const fetchBefore = globalThis.fetch;
   let requests = 0;
   globalThis.fetch = () => {
     requests += 1;

@@ -50,9 +50,10 @@ test("Settings' search finds an entry by its words in either language", () => {
   assert.deepEqual(titles("language"), ["Language"]);
   assert.deepEqual(titles("键盘快捷键"), ["Keyboard shortcuts"]);
   assert.deepEqual(titles("外观与交互 发送键"), ["Sending messages"]);
+  assert.deepEqual(titles("定时刷新"), ["Scheduled refreshes"]);
 });
 
-test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Code review, Phone & remote access, Runtime & versions, New Agent defaults, Executor templates, Executor routing, Executor routing: accounts and keys, Workspace backup & restore, History & memory information, Draft storage, Versions & updates, Continue after a usage limit: Workspace default, Core host Job budget, Remote machine Job budgets (every Settings editor)", () => {
-  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "executor-templates", "executor-routing", "routing-keys", "backup", "history", "drafts", "updates", "auto-continue", "jobs-budget", "jobs-remote"]);
+test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Scheduled refreshes, Code review, Phone & remote access, Runtime & versions, New Agent defaults, Executor templates, Executor routing, Executor routing: accounts and keys, Workspace backup & restore, History & memory information, Draft storage, Versions & updates, Continue after a usage limit: Workspace default, Core host Job budget, Remote machine Job budgets (every Settings editor)", () => {
+  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "refreshes", "review", "remote", "runtime", "agent-defaults", "executor-templates", "executor-routing", "routing-keys", "backup", "history", "drafts", "updates", "auto-continue", "jobs-budget", "jobs-remote"]);
   for (const editor of translatedEditors) assert.ok(settingsCatalog.some((entry) => entry.target.kind === "editor" && entry.target.editor === editor), editor);
 });

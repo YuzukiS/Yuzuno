@@ -365,7 +365,26 @@ fn read_now(store: &Store) -> Result<Read> {
         turn: a.work_summary.as_ref().and_then(|s| s.turn_id.clone()),
         request: a.work_summary.as_ref().and_then(|s| s.request_id.clone()),
     }).collect();
-    Ok(Read { agents, asks, executors })
+    // Home cards that refresh themselves (YN-113 R4): a run's end and a
+    // pause Core made are notices of their own.
+    let refreshes = crate::project_brief::refresh::notice_states(store)?.into_iter().map(|refresh| notices::RefreshState {
+        project: refresh.project_id,
+        project_name: refresh.project_name,
+        identity: refresh.identity,
+        key: refresh.key,
+        title: refresh.title,
+        enabled: refresh.enabled,
+        version: refresh.version,
+        state: refresh.state,
+        slot: refresh.slot,
+        missed: refresh.missed,
+        reason: refresh.reason,
+        paused: refresh.paused,
+        paused_message: refresh.paused_message,
+        owner: refresh.owner,
+        turn: refresh.turn,
+    }).collect();
+    Ok(Read { agents, asks, executors, refreshes })
 }
 
 /// A message after which the Agent list or Home's Asks may read otherwise.
