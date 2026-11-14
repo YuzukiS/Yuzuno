@@ -13,8 +13,8 @@
 //! route, done once; one that failed is tried again where it stopped; a
 //! different one at a recorded index is refused. One route failing never
 //! undoes another.
-use super::{front_desk, message, request_row, send, Request, ORIGIN, REQUEST};
-use crate::{commit_sha::{self, Form}, store::Store, workspace::Workspace};
+use super::{front_desk, images_refused, message, request_row, send, Request, ORIGIN, REQUEST};
+use crate::{commit_sha::{self, Form}, model::MessageInput, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -662,7 +662,17 @@ const WHY_ROOM: usize = WHY_PREFIX.len() + 3 * MAX_LINE;
 /// (Dev Lead 2, seq 12103): Core's head, a blank line and the words, in
 /// bytes, within a task description's limit less the room for why.
 fn words_fit(ctx: &Ctx) -> bool {
-    description_head(ctx).len() + 2 + ctx.request.text.len() <= MAX_DESCRIPTION - WHY_ROOM
+    description_head(ctx).len() + 2 + ctx.request.text.len() + images_left(ctx, "a task description").len() <= MAX_DESCRIPTION - WHY_ROOM
+}
+
+/// What a task description or a mail says of the images the user attached
+/// to the request (YN-134), which neither can carry: empty without any.
+fn images_left(ctx: &Ctx, carrier: &str) -> String {
+    match ctx.request.images.len() {
+        0 => String::new(),
+        n => format!("\n\nThe user also attached {n} image{} to R-{} on Home; {carrier} can't carry them.",
+            if n == 1 { "" } else { "s" }, ctx.request.n),
+    }
 }
 
 /// A new card's task description (§4.2): Core's head, a blank line, the
@@ -672,7 +682,7 @@ fn words_fit(ctx: &Ctx) -> bool {
 fn description(ctx: &Ctx, why: &str) -> (String, bool) {
     let head = description_head(ctx);
     if words_fit(ctx) {
-        return (format!("{head}\n\n{}{WHY_PREFIX}{why}", ctx.request.text), true);
+        return (format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, images_left(ctx, "a task description")), true);
     }
     let request = &ctx.request;
     (
@@ -700,14 +710,47 @@ fn hand_off_head(ctx: &Ctx, task: &str) -> String {
 }
 
 /// Sends the request's words to `agent` as one message from Home, Core's
-/// head first, the user's pasted blocks with them (as a follow-up is sent).
-async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, head: &str) -> Result<()> {
+/// head first, the user's pasted blocks and images with them (as a
+/// follow-up is sent); without `words`, only `head` and the images, the
+/// words being in the task's description. Images `agent` can't be given (it
+/// takes none, or they could not be copied to it, YN-134) never hold the
+/// hand-off up: the words go without them, Core's head first saying why
+/// (Dev Lead 2, seq 13370), or without words only that line.
+async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, head: &str, words: bool) -> Result<()> {
     let client = format!("route-{}", row.id);
     let request = &ctx.request;
     let origin = json!({"kind":ORIGIN,"projectId":ctx.project,"requestId":request.id,"request":request.n,"route":row.idx,
         "workspaceId":ctx.workspace});
-    send(ws, agent, &client, origin, |turn| message(&client, head, &request.text, request.text_blocks.as_deref(), turn)).await?;
+    let compose = |head: &str, images: &[String], turn: Option<String>| match words {
+        true => message(&client, head, &request.text, request.text_blocks.as_deref(), images, turn),
+        false => MessageInput { client_message_id: client.clone(), text: head.to_owned(), text_blocks: None, images: images.to_vec(),
+            expected_turn_id: turn, question: None, clarification: None },
+    };
+    let error = match send(ws, &ctx.project, agent, &client, origin.clone(), |turn| compose(head, &request.images, turn)).await {
+        Ok(_) => return Ok(()),
+        Err(error) => error,
+    };
+    let Some(reason) = images_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) else {
+        return Err(error);
+    };
+    let n = request.images.len();
+    let why = format!(
+        "The user also attached {n} image{} to R-{} on Home, which could not be sent to you: {reason}.",
+        if n == 1 { "" } else { "s" }, request.n
+    );
+    let head = if words { format!("{why}\n{head}") } else { why };
+    send(ws, &ctx.project, agent, &client, origin, |turn| compose(&head, &[], turn)).await?;
     Ok(())
+}
+
+/// The line of a message that hands an Agent a request's images when its
+/// words are in the task's description (Dev Lead 2, seq 13386).
+fn images_head(ctx: &Ctx, task: &str) -> String {
+    format!(
+        "The images the user attached to R-{} of the project {} on Home (Workspace {}, Project {}); the request's words are in \
+         the description of task {task}, whose card you answer for.",
+        ctx.request.n, ctx.name, ctx.workspace, ctx.project
+    )
 }
 
 /// The front desk's why, by mail from it to `agent`, about the card's task.
@@ -771,7 +814,10 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
                     "expectedVersion":1,"toAgentId":agent,"body":body}))
                     .await?;
                 if !whole {
-                    hand_off(ws, ctx, row, agent, &hand_off_head(ctx, &key)).await?;
+                    hand_off(ws, ctx, row, agent, &hand_off_head(ctx, &key), true).await?;
+                } else if !ctx.request.images.is_empty() {
+                    // The words are in the description; the images go as a message (YN-134).
+                    hand_off(ws, ctx, row, agent, &images_head(ctx, &key), false).await?;
                 }
             }
             save(ws, &row.id, "target_agent_id", json!(agent)).await?;
@@ -858,7 +904,7 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
         }
         None if agent != actor => {
             let shown = format!("card {} (task {key})", card.key);
-            hand_off(ws, ctx, row, &agent, &hand_off_head(ctx, &key)).await?;
+            hand_off(ws, ctx, row, &agent, &hand_off_head(ctx, &key), true).await?;
             tell_why(ws, actor, ctx, row, &agent, &task, &shown).await?;
         }
         None => {}
@@ -878,7 +924,7 @@ fn queued_hand_off(ctx: &Ctx, why: &str, task: &str) -> Result<String> {
          as written:",
         ctx.request.n, ctx.name, ctx.workspace, ctx.project, ctx.front
     );
-    let body = format!("{head}\n\n{}{WHY_PREFIX}{why}", ctx.request.text);
+    let body = format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, images_left(ctx, "a mail"));
     ensure!(
         body.len() <= crate::collaboration_store::MAX_MAIL_BODY,
         "executor_queued: who answers for task {task} is an executor still waiting for its slot, which takes no message from Home \

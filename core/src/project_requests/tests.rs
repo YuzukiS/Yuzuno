@@ -51,7 +51,7 @@ fn close(ws: &Workspace, id: &str) {
 }
 
 fn words(ws: &Workspace, text: &str, id: &str) -> Words {
-    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into() }
+    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![] }
 }
 
 fn receipt(ws: &Workspace, agent: &str, id: &str) -> Option<MessageReceipt> {
@@ -212,7 +212,7 @@ fn the_longest_head_fits_beside_the_longest_words() {
     assert_eq!(name.len(), 100);
     let words = longest();
     for head in [request_head(&workspace, &name, &project_id, i64::MAX), follow_up_head(&workspace, &name, &project_id, i64::MAX)] {
-        let sent = message("m", &head, &words, None, None);
+        let sent = message("m", &head, &words, None, &[], None);
         assert!(sent.text.len() - words.len() <= MAX_MESSAGE_TEXT - MAX_REPLY, "a head of {} bytes", sent.text.len() - words.len());
         assert!(sent.text.len() <= MAX_MESSAGE_TEXT);
     }
@@ -430,3 +430,6 @@ async fn another_messages_client_id_is_not_taken_for_this_one() {
     assert!(request["replies"].as_array().unwrap().is_empty(), "nothing kept");
     assert_eq!(request["delivery"], json!(receipt(&ws, "b", "m1").unwrap().status), "the request's own message");
 }
+
+#[path = "image_tests.rs"]
+mod image_tests;
