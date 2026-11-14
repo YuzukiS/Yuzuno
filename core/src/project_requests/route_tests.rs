@@ -426,6 +426,12 @@ async fn a_card_routes_materials_are_checked_before_anything_is_recorded() {
     agent_body["body"] = json!("x");
     let mut remote = with(json!({"worktree":worktree}));
     remote["executor"]["machineId"] = json!("mac-1");
+    // A template that runs on another machine (R1 a18614c4): its executor takes no worktree either.
+    lab.ws.store.db.write().unwrap().execute("UPDATE workspace_meta SET value=?1 WHERE key='executors.templates'",
+        [json!({"version":1,"templates":[{"id":"design","label":"Design","harness":"codex","routing":"fixed"},
+            {"id":"remote","label":"Remote","harness":"codex","routing":"fixed","machineId":"mac-1"}]}).to_string()]).unwrap();
+    let mut remote_template = with(json!({"worktree":worktree}));
+    remote_template["executor"]["templateId"] = json!("remote");
     let mut long_body = design("导出格式", "要比较格式");
     long_body["body"] = json!("x".repeat(MAX_BODY + 1));
     // Beside the Project's folder, sharing its name's start: outside it.
@@ -445,7 +451,8 @@ async fn a_card_routes_materials_are_checked_before_anything_is_recorded() {
         (with(json!({"baseSha":other,"repositoryId":123})), "invalid_input: baseSha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb is not a commit of o/r"),
         (with(json!({"worktree":sibling})), "folder_not_allowed: an executor a route makes works in a folder inside"),
         (with(json!({"worktree":missing})), "folder_not_allowed: an executor a route makes works in a folder inside"),
-        (remote, "folder_not_allowed: routes[0].materials.worktree is a path on this Core host"),
+        (remote, "folder_not_allowed: routes[0].materials.worktree is a path on this Core host, and this executor runs on mac-1 (its executor.machineId)"),
+        (remote_template, "folder_not_allowed: routes[0].materials.worktree is a path on this Core host, and this executor runs on mac-1 (its template's machine)"),
         (long_body, "invalid_input: routes[0].body is 16385 bytes"),
     ] {
         let error = lab.route("desk", n, "导出格式", "好", vec![route.clone()]).await.unwrap_err().to_string();

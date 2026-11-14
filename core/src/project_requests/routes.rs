@@ -306,15 +306,6 @@ fn route(index: usize, given: &Value) -> Result<Value> {
         (Some(executor), None) => {
             card["executor"] = self::executor(&at, executor)?;
             if let Some(materials) = materials {
-                // A worktree is a path on this Core host: an executor on
-                // another machine works in its Project's folder there, and
-                // its dispatch is refused one (executor_dispatch.rs).
-                let machine = card["executor"]["machineId"].as_str().unwrap_or("local");
-                let worktree = materials["worktree"].as_str().is_some_and(|worktree| !worktree.trim().is_empty());
-                if worktree && !matches!(machine, "local" | crate::collaboration_store::executor_choice::AUTO) {
-                    bail!("folder_not_allowed: {at}materials.worktree is a path on this Core host, and executor.machineId {machine} is \
-                        another machine, where an executor works in its Project's folder there; leave one of them out. Nothing was routed");
-                }
                 card["materials"] = materials;
             }
             if let Some(body) = body {
@@ -446,6 +437,7 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
                 // Its materials, checked as its dispatch will check them
                 // (YN-135): a call they would fail records and makes nothing.
                 if let Some(materials) = route.get("materials") {
+                    worktree_here(&tx, index, &route["executor"], materials)?;
                     crate::collaboration_store::executor_dispatch::route_materials(&tx, &project, materials)
                         .map_err(|error| anyhow::anyhow!("{error:#} (routes[{index}].materials). Nothing was routed"))?;
                 }
@@ -475,6 +467,36 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
     let front = store.brief_in(&tx, actor)?.map(|brief| brief.agent.name).unwrap_or_default();
     tx.commit()?;
     Ok(Ctx { workspace, project, name, front, request, todo, given: call.routes.len() })
+}
+
+/// A route's worktree is a path on this Core host (YN-135, R1 a18614c4): it
+/// goes only with an executor that runs here, as its dispatch takes its
+/// machine: the route's executor.machineId, else its template's, else this
+/// Core host; `auto` chooses this host for a worktree (executor_choice.rs),
+/// and routing moves an executor to no other machine (routing_policy/
+/// dispatch.rs). An executor on another machine works in its Project's
+/// folder there, and its dispatch is refused a worktree (executor_dispatch.rs).
+fn worktree_here(db: &Connection, index: usize, executor: &Value, materials: &Value) -> Result<()> {
+    if !materials["worktree"].as_str().is_some_and(|worktree| !worktree.trim().is_empty()) {
+        return Ok(());
+    }
+    let (machine, whose) = match executor["machineId"].as_str() {
+        Some(machine) => (machine.to_owned(), "its executor.machineId"),
+        None => {
+            let template = crate::executor_templates::template(db, executor["templateId"].as_str().unwrap_or_default())?;
+            match template.and_then(|template| template.machine_id).filter(|machine| !machine.is_empty()) {
+                Some(machine) => (machine, "its template's machine"),
+                None => ("local".to_owned(), "this Core host"),
+            }
+        }
+    };
+    ensure!(
+        matches!(machine.as_str(), "local" | crate::collaboration_store::executor_choice::AUTO),
+        "folder_not_allowed: routes[{index}].materials.worktree is a path on this Core host, and this executor runs on {machine} \
+         ({whose}), where an executor works in its Project's folder there; leave worktree out, or give executor.machineId local. \
+         Nothing was routed"
+    );
+    Ok(())
 }
 
 /// `project_route` for the Agent `actor`. Refused whole, nothing done, when
