@@ -151,6 +151,7 @@ async fn item_states(lab: &Lab, plan: &Value) -> BTreeMap<String, (String, Optio
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 async fn items_of(lab: &Lab, plan: &Value) -> Vec<Value> {
     let read = lab.ws.collaboration_call(Some("ex"), "cleanup_plan_get",
         json!({"planId": plan["planId"], "view": "items", "limit": 100})).await.unwrap();
@@ -185,6 +186,7 @@ fn cargo_target(dir: &Path, profiles: &[&str]) {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn what_is_fixed_in_core_is_refused_whatever_the_settings_say() {
     let lab = lab();
@@ -223,6 +225,7 @@ async fn what_is_fixed_in_core_is_refused_whatever_the_settings_say() {
     assert!(why("project").contains("This Project's folder"), "{}", why("project"));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn xdg_cache_home_counts_where_it_is_set_and_home_unset_refuses_everything() {
     let lab = lab();
@@ -275,6 +278,7 @@ async fn links_mounts_other_owners_and_unreadable_mounts_are_refused() {
     assert_eq!(refused(&item_states(&lab, &plan).await, "real"), "owner");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_protected_path_is_refused_until_it_is_taken_out_of_settings_and_entries_need_a_scratch_root() {
     let lab = lab();
@@ -299,6 +303,7 @@ async fn a_protected_path_is_refused_until_it_is_taken_out_of_settings_and_entri
     pending(&states, "holder");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn worktrees_are_the_ones_git_lists_wherever_they_are_and_never_main_or_locked() {
     let lab = lab();
@@ -334,6 +339,7 @@ async fn worktrees_are_the_ones_git_lists_wherever_they_are_and_never_main_or_lo
     assert_eq!(refused(&item_states(&lab, &plan).await, "box"), "holdsWorktree");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cache_folders_go_by_rule_and_git_must_ignore_them_inside_the_project() {
     let lab = lab();
@@ -388,6 +394,7 @@ async fn cache_folders_go_by_rule_and_git_must_ignore_them_inside_the_project() 
     assert_eq!(refused(&item_states(&lab, &plan).await, "plain"), "notIgnored");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_project_that_is_a_folder_of_a_larger_repository_has_its_cache_folders_checked_from_the_repository_s_top() {
     let lab = lab();
@@ -419,6 +426,7 @@ async fn a_project_that_is_a_folder_of_a_larger_repository_has_its_cache_folders
     assert_eq!(refused(&item_states(&lab, &plan).await, "app"), "forbidden");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn what_a_removal_renamed_aside_and_anything_inside_it_is_never_an_item() {
     let lab = lab();
@@ -444,6 +452,7 @@ async fn what_a_removal_renamed_aside_and_anything_inside_it_is_never_an_item() 
     pending(&states, "plain");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cache_folder_where_a_listed_worktree_now_holds_another_repository_is_refused() {
     let lab = lab();
@@ -469,6 +478,7 @@ async fn a_cache_folder_where_a_listed_worktree_now_holds_another_repository_is_
     assert_eq!(refused(&states, "swapped"), "otherTree");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn fresh_writes_and_the_evidence_window_keep_items_and_snapshots_have_a_limit() {
     let lab = lab();
@@ -525,6 +535,7 @@ async fn a_decision_that_does_not_fit_its_kinds_refuses_the_whole_plan() {
         vec![item("w", "k", "worktree", &ahead), item("e", "a", "entry", &lab.scratch.join("e"))]).await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn core_s_summary_shows_a_worktree_with_its_own_commits_whatever_the_author_calls_its_group() {
     let lab = lab();

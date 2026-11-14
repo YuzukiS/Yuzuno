@@ -602,7 +602,9 @@ mod transport_tests {
         })
         .await
         .unwrap();
-        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        // Gone and reaped: the kernel knows no such process (ESRCH).
+        let gone = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        assert_eq!(rustix::process::test_kill_process(gone), Err(rustix::io::Errno::SRCH));
         let (_connection, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();

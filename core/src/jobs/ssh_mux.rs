@@ -121,7 +121,7 @@ impl Mux {
     }
 
     /// The same, with masters that carry `sessions` calls at once, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn with_sessions(mut self, sessions: usize) -> Self {
         self.sessions = sessions;
         self
@@ -198,7 +198,7 @@ impl Mux {
     }
 
     /// `machine`'s slot for where its target leads now, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     fn slot(&self, machine: &RemoteMachine) -> Option<Arc<Mutex<Slot>>> {
         let slots = self.slots.lock().unwrap();
         let prefix = format!("{}\n{}\n", machine.id, machine.target);
@@ -209,20 +209,20 @@ impl Mux {
     }
 
     /// The masters' sockets, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn socket_dir(&self) -> Option<PathBuf> {
         self.dir()
     }
 
     /// How many masters were started for `machine`, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn starts(&self, machine: &RemoteMachine) -> usize {
         self.slot(machine).map_or(0, |slot| slot.lock().unwrap().starts)
     }
 
     /// Whether a master for `machine` is ready, and whether one is being
     /// started, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn state(&self, machine: &RemoteMachine) -> (bool, bool) {
         self.slot(machine).map_or((false, false), |slot| {
             let held = slot.lock().unwrap();
@@ -231,13 +231,13 @@ impl Mux {
     }
 
     /// The process ID of `machine`'s master, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn master_pid(&self, machine: &RemoteMachine) -> Option<u32> {
         self.slot(machine)?.lock().unwrap().master.as_ref()?.child.id()
     }
 
     /// Ends `machine`'s master as if it had stopped by itself, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn kill_master_for_test(&self, machine: &RemoteMachine) {
         if let Some(slot) = self.slot(machine) {
             if let Some(master) = &mut slot.lock().unwrap().master {

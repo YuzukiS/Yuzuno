@@ -2,7 +2,9 @@
 //! workspace shows, what creating one registers, and that cleanup removes
 //! only selected, unprotected Cargo profile output, once, as previewed.
 use super::*;
-use crate::build_output::{mounts, GIT_SECONDS, REMOVING};
+use crate::build_output::GIT_SECONDS;
+#[cfg(target_os = "linux")]
+use crate::build_output::{mounts, REMOVING};
 use crate::model::AgentDetail;
 use std::collections::BTreeMap;
 
@@ -210,6 +212,7 @@ fn candidate<'a>(preview: &'a Value, relative: &str) -> &'a Value {
     preview["candidates"].as_array().unwrap().iter().find(|c| c["relative"] == relative).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cleanup_offers_only_cargo_profiles_of_this_worktree_and_keeps_the_rest() {
     let (lab, id, outside) = cargo_lab().await;
@@ -266,6 +269,7 @@ async fn protections_come_from_git_builds_jobs_agents_and_evidence() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn removal_is_once_per_preview_and_refuses_what_changed_since() {
     let (lab, id, _) = cargo_lab().await;
@@ -339,6 +343,7 @@ fn hard_linked_files_are_counted_once_and_apart() {
     assert!(second["bytes"].as_u64().unwrap() >= 8 * 1024);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn the_routes_register_without_conflict_and_mounts_are_read() {
     // axum panics at registration on conflicting routes.

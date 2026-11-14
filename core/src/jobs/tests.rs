@@ -741,6 +741,7 @@ fn queued_attempt_binds_boot_at_launch_and_does_not_move_to_a_different_machine(
     assert_eq!(s.job_budget_view(machine()).unwrap()["activeCount"], 0);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn host_evidence_and_git_input_guard_regressions() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -791,6 +792,7 @@ fn offline_completion_uses_machine_timestamps_instead_of_recovery_time() {
     assert_eq!((end - start).num_seconds(), 10);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn concurrent_helper_preparation_never_exposes_partial_script() {
     let dir = tempfile::tempdir().unwrap();
@@ -1094,6 +1096,7 @@ fn max_active_is_bounded_kept_and_can_return_to_the_default() {
 /// launch record was written. Before, the job stayed "unknown", held its
 /// reservation, and later read "Core stopped". Now it is not started, for
 /// certain: rejected with the real error, reservation released, one notice.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_launch_record_that_hits_a_full_disk_is_not_started_and_releases_its_reservation() {
     let (dir, s) = setup();
@@ -1221,6 +1224,7 @@ fn machine_id_local_and_a_local_agents_agent_are_this_host_and_the_target_says_s
 /// each run's stage take at submit with one sentence: which file, how big,
 /// which limit, and whether guardGit counted it. No traceback, and no path of
 /// the helper in Core's data folder. Other helper failures read as before.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn inputs_past_the_guard_are_refused_naming_the_file_its_size_and_the_limit() {
     async fn refused(helper: &std::path::Path, request: Value) -> String {
@@ -1320,6 +1324,7 @@ async fn job_submit_and_a_run_stage_refuse_an_input_past_the_guard_in_that_sente
 /// take keeps each path's Git object at HEAD and only the changes under it:
 /// a commit elsewhere leaves that, and a stage's code identity for reuse, as
 /// they were, and a commit under a guarded path changes both.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn guard_paths_are_checked_at_submit_and_freeze_only_the_content_under_them() {
     fn with(extra: Value) -> Result<Submit, String> {

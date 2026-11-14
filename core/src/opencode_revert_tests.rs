@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use crate::opencode_revert_files::{Launcher, Roots, Started, State};
 
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 /// One `opencode` for the whole test process, as the Agent tests have it.
@@ -18,6 +20,7 @@ fn program() {
     });
 }
 
+#[cfg(target_os = "linux")]
 fn agent(cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
         "id":"oc", "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
@@ -27,6 +30,7 @@ fn agent(cwd: &str) -> AgentDetail {
 }
 
 /// The stand-in's control, on its own port (`start.json`).
+#[cfg(target_os = "linux")]
 async fn control(data: &Path, name: &str, body: Value) -> Value {
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode/oc/start.json")).unwrap()).unwrap();
     reqwest::Client::builder().no_proxy().build().unwrap()
@@ -35,6 +39,7 @@ async fn control(data: &Path, name: &str, body: Value) -> Value {
 }
 
 /// What the stand-in was asked, by method and path.
+#[cfg(target_os = "linux")]
 fn asked(data: &Path) -> Vec<(String, String)> {
     std::fs::read_to_string(data.join("opencode/oc/calls.jsonl")).unwrap_or_default().lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -43,11 +48,13 @@ fn asked(data: &Path) -> Vec<(String, String)> {
 }
 
 /// A Workspace with an OpenCode Agent in `cwd`, connected to the stand-in.
+#[cfg(target_os = "linux")]
 async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
     lab_with(dir, cwd, &[]).await
 }
 
 /// `lab`, with the stand-in's switches left before it starts.
+#[cfg(target_os = "linux")]
 async fn lab_with(dir: &Path, cwd: &Path, switches: &[(&str, &str)]) -> Arc<Workspace> {
     program();
     let ws = Workspace::new(dir.join("data"), dir.to_string_lossy().into(), "unused".into()).unwrap();
@@ -63,28 +70,33 @@ async fn lab_with(dir: &Path, cwd: &Path, switches: &[(&str, &str)]) -> Arc<Work
 
 /// How many times the stand-in was asked to stage a revert (2.x's
 /// `POST /api/session/:id/revert/stage`).
+#[cfg(target_os = "linux")]
 fn reverts(data: &Path) -> usize {
     asked(data).iter().filter(|(method, path)| method == "POST" && path.ends_with("/revert/stage")).count()
 }
 
 /// How many times the stand-in was asked to commit one.
+#[cfg(target_os = "linux")]
 fn commits(data: &Path) -> usize {
     asked(data).iter().filter(|(method, path)| method == "POST" && path.ends_with("/revert/commit")).count()
 }
 
 /// Whether the stand-in was asked anything of a revert: 2.x's stage, commit
 /// or clear, or 1.19.3's revert.
+#[cfg(target_os = "linux")]
 fn any_revert(data: &Path) -> bool {
     asked(data).iter().any(|(_, path)| path.contains("/revert"))
 }
 
 /// The Agent's Turns, by ID.
+#[cfg(target_os = "linux")]
 fn turn_ids(ws: &Workspace) -> Vec<String> {
     ws.store.turn_ids("oc").unwrap()
 }
 
 /// A Turn sent and answered (with `answer`'s extra fields, such as patch
 /// parts): its ID, once Core has it completed.
+#[cfg(target_os = "linux")]
 async fn turn(ws: &Arc<Workspace>, data: &Path, text: &str, answer: Value) -> String {
     ws.opencode_send("oc", text.into()).await.unwrap();
     let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
@@ -710,6 +722,7 @@ async fn another_clients_commit_resyncs_the_record() {
 /// with that `XDG_DATA_HOME` (T-61 slice 5); a Started injected as if Core
 /// had started a native OpenCode. `a.txt` holds `a0`. The Workspace, its
 /// data folder and the work folder.
+#[cfg(target_os = "linux")]
 async fn v2_files_lab(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::PathBuf) {
     program();
     let cwd = root.join("work");
@@ -734,6 +747,7 @@ async fn v2_files_lab(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::
 /// `v2_files_lab` with two Turns: `first`, whose run changed `a.txt` to `a1`
 /// and made `new.txt`, and `second`, whose run changed `a.txt` to `a2`. The
 /// Workspace, its data folder, the work folder and both Turns.
+#[cfg(target_os = "linux")]
 async fn reverted_lab(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::PathBuf, String, String) {
     let (ws, data, cwd) = v2_files_lab(root).await;
     let first = turn(&ws, &data, "first", json!({"files": {"a.txt": "a1\n", "new.txt": "n\n"}})).await;

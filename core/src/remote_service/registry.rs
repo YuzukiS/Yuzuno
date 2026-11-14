@@ -411,7 +411,7 @@ impl Registry {
     }
 
     /// Tests: the program used as OpenSSH, and the timing.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
     pub(crate) fn configure(&self, ssh: &str, timing: Timing) {
         let mut state = self.state();
         state.ssh = ssh.into();

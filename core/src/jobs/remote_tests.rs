@@ -262,10 +262,7 @@ async fn pid_in(lab: &Lab, name: &str) -> i32 {
 
 /// Running: present and not a zombie waiting to be reaped.
 fn alive(pid: i64) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| stat.rsplit_once(") ").map(|(_, rest)| !rest.starts_with(['Z', 'X'])))
-        .unwrap_or(false)
+    crate::test_platform::running(pid)
 }
 
 async fn gone(pid: i64) -> bool {
@@ -327,7 +324,7 @@ async fn a_machine_with_its_own_data_root_keeps_every_attempt_there_and_writes_n
     let attempt = in_home(&lab, "~/jobs-lab/.yuzuno").join("jobs").join(first["id"].as_str().unwrap()).join(first["attempt"].as_str().unwrap());
     assert!(attempt.join("intent.json").is_file() && attempt.join("result.json").is_file());
     assert_eq!(ssh_logs(&lab, &done, &lab.ssh).await.unwrap()["text"], "begin\nend\n");
-    let home: Vec<_> = std::fs::read_dir(lab.dir.path().join("home")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    let home = crate::test_platform::home_entries(&lab.dir.path().join("home"));
     assert_eq!(home, ["jobs-lab"], "nothing in the home folder outside that root");
     // A root whose parent does not exist there: refused before anything starts.
     lab.ws.store.update_machine(&RemoteMachine { data_root: Some("~/missing/.yuzuno".into()), ..machine }).unwrap();
@@ -630,6 +627,7 @@ async fn a_dead_supervisor_and_a_child_left_by_the_leader_keep_the_slot_until_ca
 /// deadline it recorded the attempt is unknown and keeps its slot; the first
 /// check after it stops the command's group and records the timeout, which
 /// releases the slot. The unknown is told once, the timeout once.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_the_next_check() {
     let lab = lab();
@@ -662,6 +660,7 @@ async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_
 /// A cancel of a lost attempt whose command ignores TERM is not settled by
 /// the call that sends it TERM (4 s); Core asks again at its next check, and
 /// that call KILLs it, 5 s after the first TERM: cancelled, slot released.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_check() {
     let lab = lab();
@@ -774,6 +773,7 @@ async fn failures_and_refusals_are_outcomes_and_slots_are_per_machine() {
     until(&lab, &lab.ssh, &jobs[2], |j| j["status"] == "succeeded").await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     let lab = lab();
@@ -972,6 +972,7 @@ fn a_reply_is_one_complete_line_with_the_calls_nonce_and_a_matching_exit() {
     assert!(matches!(parse(0, "x".repeat(256 * 1024) + &ok), Reply::Broken(m) if m.contains("KiB")));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn the_remote_helper_on_its_own() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../acceptance/remote-jobs/helper_test.py");
@@ -1480,6 +1481,7 @@ async fn inputs_and_artifacts_go_with_the_start_and_are_checked_on_the_machine()
 
 /// `count` relative paths of about `budget` bytes of `unit`, in components of
 /// at most 255 bytes, each a 1-byte file under the lab's work folder.
+#[cfg(target_os = "linux")]
 fn long_paths(lab: &Lab, unit: &str, count: usize, budget: usize) -> Vec<String> {
     let per = 255 / unit.len();
     (0..count)
@@ -1508,6 +1510,7 @@ fn long_paths(lab: &Lab, unit: &str, count: usize, budget: usize) -> Vec<String>
 /// check comes back with its declared path, and what the reply left out is
 /// named. Before, that reply and every later one had no answer, cancel's
 /// included, so the job stayed unknown and held.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_terminal_reply_too_long_for_one_reply_still_ends_the_attempt_and_releases_its_slot() {
     let lab = lab();
@@ -1576,6 +1579,7 @@ fn a_check_without_its_path_gets_the_declared_one_only_when_its_digest_matches()
 /// Inputs whose details would not fit one reply refuse the submit with the
 /// size, and nothing is frozen: Job 85755f3e's sample, 128 inputs with ASCII
 /// paths of 1,791 bytes, made a 486,129-byte inspect reply.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn inputs_too_long_for_one_reply_refuse_the_submit_with_their_size() {
     let lab = lab();
@@ -1687,6 +1691,7 @@ async fn windows_and_this_hosts_jobs_share_one_budget() {
 /// suggested budget from the tick instead of stalling the queue; one the whole
 /// budget cannot hold says so; and a job whose reservation fails does not hold
 /// up the jobs after it (T-108 review R1).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_windows_job_without_a_stored_budget_or_beyond_it_does_not_stall_the_queue() {
     let lab = lab();
@@ -1772,6 +1777,7 @@ async fn a_set_windows_ceiling_keeps_older_cores_out() {
 /// A machine's mode is bound into each attempt when its slot is taken (T-108):
 /// strict starts nothing on a machine that cannot hold the declared limits,
 /// and limited runs there and records what is only declared.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_strict_machine_that_cannot_hold_the_limits_starts_nothing_and_limited_says_what_is_declared() {
     let lab = lab();
@@ -1862,6 +1868,7 @@ fn a_running_reason_says_the_limits_the_attempt_was_started_with() {
 /// lack of it; an attempt an older Core reserved (no mode at all) is the same.
 /// Windows always carries its limits (T-108 review R1, Lead seq 4179), except
 /// an attempt an older Core already pinned without them (review R2).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_machine_without_a_mode_keeps_the_record_only_behaviour_it_had_before_limits() {
     let lab = lab();
@@ -1914,6 +1921,7 @@ async fn a_machine_without_a_mode_keeps_the_record_only_behaviour_it_had_before_
 /// request does not match it, before anything is written there. This Core
 /// still starts it as bound, and jobs without either are pinned at their start
 /// exactly as before.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_job_with_inputs_or_artifacts_is_bound_at_submit_so_an_older_request_never_runs_it() {
     let lab = lab();
@@ -2311,6 +2319,7 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
 /// Core's admission and recorded, never held (macOS has no cgroup), and no
 /// pause. The stand-in runs the real helper here and only says "Darwin" in its
 /// hello reply, so everything else is the helper's own Linux behaviour.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_mac_is_told_its_limits_are_declared_only_and_that_it_cannot_pause() {
     let lab = lab();
@@ -2369,6 +2378,7 @@ fn save_mode(lab: &Lab, mode: Option<&str>) {
 /// setting stays as saved, and the attempt keeps the mode it was bound with
 /// beside the one it runs in. The same machine answering as Linux is refused
 /// in strict as before.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_mac_runs_every_attempt_limited_whatever_its_machine_saved() {
     let lab = lab();

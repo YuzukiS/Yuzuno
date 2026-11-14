@@ -14,7 +14,9 @@
 //! Everything is classified by reading before anything is created. Two
 //! different Workspaces, or a `workspace` folder holding something Core did
 //! not make, stop Core with both paths named; nothing is written.
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, Context, Result};
+#[cfg(target_os = "linux")]
+use anyhow::ensure;
 use std::path::{Path, PathBuf};
 
 /// The product's folder in the platform's data folder.

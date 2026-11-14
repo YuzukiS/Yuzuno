@@ -3,18 +3,24 @@
 //! with, what it lists, and that it ends and leaves nothing behind however a
 //! read ends. Synthetic values only; no OpenCode, key or provider is used.
 use super::*;
+#[cfg(target_os = "linux")]
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}};
+#[cfg(target_os = "linux")]
 use std::{fs, os::unix::fs::PermissionsExt};
+#[cfg(target_os = "linux")]
 use tower::ServiceExt;
 
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
+#[cfg(target_os = "linux")]
 fn script(path: &Path, body: &str) {
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// The stand-in as a program of its own.
+#[cfg(target_os = "linux")]
 fn program(dir: &Path) -> PathBuf {
     let program = dir.join("opencode");
     script(&program, &format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n"));
@@ -22,6 +28,7 @@ fn program(dir: &Path) -> PathBuf {
 }
 
 /// The same stand-in for the process's YUZUNO_OPENCODE_BIN, as opencode_agent_tests sets it: a Workspace's reads start it.
+#[cfg(target_os = "linux")]
 fn process_program() {
     static PROGRAM: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     PROGRAM.get_or_init(|| {
@@ -34,6 +41,7 @@ fn process_program() {
 
 /// What the stand-in lists for a new database: OpenCode's own provider, which
 /// needs no login, and two that need a key variable, as 2.2.5 lists them.
+#[cfg(target_os = "linux")]
 fn plan(catalogs: &Path, report: &Path, switches: Value) {
     fs::create_dir_all(catalogs).unwrap();
     let model = |name: &str| json!({"name": name, "limit": {"context": 128000, "output": 8000}});
@@ -49,6 +57,7 @@ fn plan(catalogs: &Path, report: &Path, switches: Value) {
     }).to_string()).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn run(dir: &Path, limit: Duration) -> Run {
     let work = dir.join("work");
     fs::create_dir_all(&work).unwrap();
@@ -56,11 +65,13 @@ fn run(dir: &Path, limit: Duration) -> Run {
 }
 
 /// What each start of the stand-in saw, in order.
+#[cfg(target_os = "linux")]
 fn starts(report: &Path) -> Vec<Value> {
     fs::read_to_string(report).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
 /// A process that has ended: gone, or a zombie no one has reaped yet.
+#[cfg(target_os = "linux")]
 fn ended(pid: i64) -> bool {
     match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Err(_) => true,
@@ -68,6 +79,7 @@ fn ended(pid: i64) -> bool {
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn until(what: &str, check: impl Fn() -> bool) {
     for _ in 0..100 {
         if check() {
@@ -79,6 +91,7 @@ async fn until(what: &str, check: impl Fn() -> bool) {
 }
 
 /// Nothing a read made is left: only the plan the test wrote beside them.
+#[cfg(target_os = "linux")]
 fn left(catalogs: &Path) -> Vec<String> {
     fs::read_dir(catalogs).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != "fixture-new.json").collect()
 }

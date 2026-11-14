@@ -88,6 +88,7 @@ fn checkout() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// Cargo 1.97 holds .cargo-lock shared while it compiles, and its newer
 /// .cargo-build-lock and .cargo-artifact-lock exclusively (YN-65 Job
 /// 3d9447d1): a build holding only one of the newer locks is a build too.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_build_holding_only_one_of_cargos_newer_locks_is_still_a_build() {
     let (_dir, root, debug) = checkout();
@@ -105,6 +106,7 @@ async fn a_build_holding_only_one_of_cargos_newer_locks_is_still_a_build() {
 
 /// A program that runs from it, works in it or has a file open there keeps
 /// it: `cargo test` and `cargo run` hold no lock while the program runs.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_process_working_in_running_from_or_reading_it_keeps_it() {
     let (dir, root, debug) = checkout();

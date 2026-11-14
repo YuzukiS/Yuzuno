@@ -427,7 +427,7 @@ async fn while_an_update_drains_a_machine_cannot_get_a_setting_that_keeps_older_
     assert_eq!(ws.store.machines().unwrap().len(), 1);
     ws.admission.reopen("test-update").unwrap();
     let (status, body) = request(&router, "POST", "/api/machines", rooted).await;
-    if unsafe { libc::geteuid() } == 0 {
+    if rustix::process::geteuid().is_root() {
         // Root ignores permissions, so older Cores could not be kept out: refused.
         assert!(!status.is_success(), "{body}");
     } else {

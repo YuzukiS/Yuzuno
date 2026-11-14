@@ -2,6 +2,7 @@
 //! comes back as it was; what Core never removes; snapshots expire, refs not.
 use super::*;
 
+#[cfg(target_os = "linux")]
 fn commit(dir: &Path, name: &str, text: &str) {
     std::fs::write(dir.join(name), text).unwrap();
     git(dir, &["add", name]);
@@ -9,6 +10,7 @@ fn commit(dir: &Path, name: &str, text: &str) {
 }
 
 /// Ignored without being a cleanup rule's: the repository's own exclude file.
+#[cfg(target_os = "linux")]
 fn ignore(lab: &Lab, pattern: &str) {
     let common = git(&lab.project, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     let exclude = Path::new(&common).join("info/exclude");
@@ -19,6 +21,7 @@ fn ignore(lab: &Lab, pattern: &str) {
 }
 
 /// Registers, approves and applies a one-group delete plan of `items`.
+#[cfg(target_os = "linux")]
 async fn reclaim(lab: &Lab, request: &str, items: Vec<Value>) -> Value {
     let plan = submit(lab, request, vec![group("d", "delete")], items).await;
     let key = format!("gate-{request}");
@@ -29,10 +32,12 @@ async fn reclaim(lab: &Lab, request: &str, items: Vec<Value>) -> Value {
     plan
 }
 
+#[cfg(target_os = "linux")]
 async fn restore(lab: &Lab, actor: Option<&str>, request: &str, plan: &Value, item: &str) -> Result<Value> {
     lab.ws.collaboration_call(actor, "cleanup_restore", json!({"requestId": request, "planId": plan["planId"], "itemId": item})).await
 }
 
+#[cfg(target_os = "linux")]
 fn tar_names(path: &str) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
     let mut names: Vec<String> = tar::Archive::new(flate2::read::GzDecoder::new(&bytes[..])).entries().unwrap()
@@ -41,6 +46,7 @@ fn tar_names(path: &str) -> Vec<String> {
     names
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_worktree_with_its_own_commit_is_pinned_kept_removed_and_comes_back_as_it_was() {
     let lab = lab();
@@ -82,6 +88,7 @@ async fn a_worktree_with_its_own_commit_is_pinned_kept_removed_and_comes_back_as
     assert!(error.starts_with("item_restored:"), "{error}");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn changes_git_tracks_need_save_diff_and_come_back_with_it() {
     let lab = lab();
@@ -101,6 +108,7 @@ async fn changes_git_tracks_need_save_diff_and_come_back_with_it() {
     assert_eq!(std::fs::read_to_string(tree.join("README.md")).unwrap(), "demo, edited\n", "its change is applied again");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_snapshot_over_the_limit_keeps_the_worktree_and_an_expired_snapshot_keeps_its_ref() {
     let lab = lab();
@@ -132,6 +140,7 @@ async fn a_snapshot_over_the_limit_keeps_the_worktree_and_an_expired_snapshot_ke
     assert!(back["restored"]["how"].to_string().contains("expired"), "{back:#}");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_scratch_entry_gets_back_its_evidence_and_nothing_comes_back_over_something_new() {
     let lab = lab();
@@ -150,6 +159,7 @@ async fn a_scratch_entry_gets_back_its_evidence_and_nothing_comes_back_over_some
 
 /// Review daaf3749: an untracked folder Git does not enter (a nested
 /// repository) is kept whole, and comes back.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_nested_repository_git_does_not_enter_is_kept_whole_and_comes_back() {
     let lab = lab();
@@ -172,6 +182,7 @@ async fn a_nested_repository_git_does_not_enter_is_kept_whole_and_comes_back() {
 
 /// Review daaf3749: a worktree removed only in part keeps its snapshot and
 /// ref on record, and can be restored.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_worktree_removed_only_in_part_keeps_its_snapshot_on_record_and_comes_back() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -202,6 +213,7 @@ async fn a_worktree_removed_only_in_part_keeps_its_snapshot_on_record_and_comes_
 
 /// Review daaf3749: nothing is made before the snapshot is checked, and a
 /// branch checked out elsewhere comes back detached.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_changed_snapshot_makes_nothing_and_a_branch_checked_out_elsewhere_comes_back_detached() {
     let lab = lab();
@@ -229,6 +241,7 @@ async fn a_changed_snapshot_makes_nothing_and_a_branch_checked_out_elsewhere_com
 }
 
 /// A worktree of an existing branch.
+#[cfg(target_os = "linux")]
 fn worktree_on(lab: &Lab, path: &Path, branch: &str) -> PathBuf {
     git(&lab.project, &["worktree", "add", "-q", &path.display().to_string(), branch]);
     std::fs::canonicalize(path).unwrap()
@@ -237,6 +250,7 @@ fn worktree_on(lab: &Lab, path: &Path, branch: &str) -> PathBuf {
 /// Lead, mail 10748: only the reclaimed worktree's own record goes. Another
 /// worktree whose folder is away for now (a drive not mounted) keeps its
 /// record, and comes back to it.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn only_the_reclaimed_worktree_s_record_goes_not_one_whose_folder_is_away_for_now() {
     let lab = lab();

@@ -5,11 +5,12 @@
 //! the stand-in `opencode serve` (tests/fixtures/opencode_server.py, run by
 //! /usr/bin/python3) as its one Agent's OpenCode. The signal goes only to that
 //! process. No OpenCode, Codex, account, model or network service is used.
-#![cfg(target_os = "linux")]
+//! It runs on Linux and on macOS (YN-108): processes are looked at with the
+//! kernel's ESRCH and with `ps`, not through /proc.
 
 #[allow(unused_imports)]
 use yuzuno_workspace::store::whole::WholeRecord;
-use rustix::process::{kill_process, Pid, Signal};
+use rustix::process::{kill_process, test_kill_process, Pid, Signal};
 use serde_json::{json, Value};
 use std::{
     os::unix::{fs::PermissionsExt, process::{CommandExt, ExitStatusExt}},
@@ -30,11 +31,20 @@ fn agent(cwd: &Path) -> AgentDetail {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
 
-/// No such process, or a zombie its parent has yet to reap.
+/// What `ps` says of process `pid` in one column (`stat`, `command`); None
+/// when it knows no such process.
+fn ps(pid: u64, column: &str) -> Option<String> {
+    let output = Command::new("ps").args(["-ww", "-o", &format!("{column}="), "-p", &pid.to_string()])
+        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !said.is_empty()).then_some(said)
+}
+
+/// No such process (ESRCH), or a zombie its parent has yet to reap.
 fn ended(pid: u64) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => true,
-        Ok(stat) => stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')),
+    match test_kill_process(Pid::from_raw(pid as i32).unwrap()) {
+        Err(rustix::io::Errno::SRCH) => true,
+        _ => ps(pid, "stat").is_none_or(|stat| stat.starts_with('Z')),
     }
 }
 
@@ -68,8 +78,7 @@ impl Drop for Leftovers {
             }
         }
         for &pid in &self.fixture {
-            let ours = std::fs::read(format!("/proc/{pid}/cmdline"))
-                .is_ok_and(|line| line.windows(5).any(|w| w == b"sleep") || line.windows(FIXTURE.len()).any(|w| w == FIXTURE.as_bytes()));
+            let ours = ps(pid, "command").is_some_and(|line| line.contains("sleep") || line.contains(FIXTURE));
             if ours && !ended(pid) {
                 let _ = kill_process(Pid::from_raw(pid as i32).unwrap(), Signal::KILL);
             }

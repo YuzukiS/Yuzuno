@@ -21,6 +21,19 @@ while True:
 """
 
 
+def home_entries(home):
+    """The names in a home folder, sorted, leaving out only what macOS's own
+    Python writes there: /usr/bin/python3 keeps its bytecode cache in
+    ~/Library/Caches/com.apple.python (YN-108)."""
+    def names(folder):
+        return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+    found = names(home)
+    library = home / "Library"
+    if sys.platform == "darwin" and names(library) == ["Caches"] and names(library / "Caches") == ["com.apple.python"]:
+        found.remove("Library")
+    return found
+
+
 class Transfers(unittest.TestCase):
     # The Agent's data root, as Core names it in each request.
     ROOT = "~/.yuzuno"
@@ -303,7 +316,7 @@ class Transfers(unittest.TestCase):
         path = Path(self.call()["files"][0]["path"])
         self.assertEqual(path.parts[-7:-5], (self.base.name, "image-cache"))
         self.assertTrue(path.is_relative_to(self.base.resolve()))
-        self.assertEqual([p.name for p in self.home.iterdir()], [self.base.relative_to(self.home).parts[0]])
+        self.assertEqual(home_entries(self.home), [self.base.relative_to(self.home).parts[0]])
         for root in ("~/../outside", "~/a b", "~/missing/.yuzuno", None):
             request = dict(self.request, root=root)
             self.call(request, ok=False)

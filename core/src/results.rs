@@ -1363,7 +1363,9 @@ mod tests {
         package::atomic_json(&release.path.join("manifest.json"), &release.manifest).unwrap();
         let release = Bundle::verify(&release.path, &package::sha256(&release.path.join("manifest.json")).unwrap()).unwrap();
         let path = resolve(Some(release_validator(&release).into())).unwrap();
-        assert!(path.starts_with(dir.path()));
+        // `resolve` gives a canonical path; the temporary folder may not be one
+        // (macOS: /var is /private/var).
+        assert!(path.starts_with(dir.path().canonicalize().unwrap()));
         // It runs from the release, away from this checkout.
         let validator = Arc::new(Validator::new(Some(path), node()));
         assert!(matches!(validator.check(&spec(None)).await, Ok(Checked::Accepted { .. })));

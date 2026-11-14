@@ -6,6 +6,13 @@ use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use yuzuno_workspace::{model::{AgentDetail, AgentSettings, MessageInput}, store::Store, workspace::Workspace};
 
+/// Whether process `pid` is gone and reaped: the kernel knows no such process
+/// (ESRCH). A zombie its parent has not reaped is still there.
+fn reaped(pid: u64) -> bool {
+    let pid = rustix::process::Pid::from_raw(pid as i32).expect("a process id");
+    rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH)
+}
+
 fn detail(cwd: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":cwd,"model":"test","color":"sage","threadId":"native-thread","status":"idle","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
@@ -165,8 +172,8 @@ async fn close_waits_for_native_interrupt_then_reopen_keeps_identity_and_session
     assert!(closed.agent.error.is_none(), "intentional shutdown is not an execution error");
     assert_eq!(closed.turns[0]["status"], "interrupted", "ACK alone is not completion");
     assert_eq!(closed.agent.thread_id.as_deref(), Some("native-thread"));
-    let pid = std::fs::read_to_string(dir.path().join("pids")).unwrap().lines().next().unwrap().to_owned();
-    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "close waits for owned process exit");
+    let pid: u64 = std::fs::read_to_string(dir.path().join("pids")).unwrap().lines().next().unwrap().parse().unwrap();
+    assert!(reaped(pid), "close waits for owned process exit");
     let sequence = closed.agent.last_seq;
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     assert_eq!(ws.close_agent("a").await.unwrap().agent.last_seq, sequence, "idempotent close and late disconnect cannot mutate history");

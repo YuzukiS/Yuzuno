@@ -1,0 +1,148 @@
+# Core's build and tests on macOS (YN-108), on the standard GitHub-hosted
+# Apple silicon runner (macos-26), as the CI workflow runs them on Linux:
+# `cargo build --locked --all-targets`, then .github/scripts/core_tests.py.
+# Tests of Linux mechanisms (cgroup, systemd, /proc, pidfd, leases) are
+# compiled for Linux only and do not run here; see docs/macos-core.md.
+#
+# Runs for a pull request or a push to main that changes Core, its runtimes,
+# the Cargo files, the test runner or this workflow. Nothing is uploaded; it
+# uses no secret, and its token reads contents only.
+name: Core macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - core/**
+      - runtimes/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/core_tests.py
+      - .github/scripts/hosted-guard.sh
+      - .github/scripts/disk-precheck.sh
+      - .github/workflows/core-macos.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - core/**
+      - runtimes/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/core_tests.py
+      - .github/scripts/hosted-guard.sh
+      - .github/scripts/disk-precheck.sh
+      - .github/workflows/core-macos.yml
+
+permissions:
+  contents: read
+
+# As in CI: a newer push to a PR cancels its older run; every main commit
+# gets a run of its own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The CI workflow's toolchains; bump them together.
+  RUST_TOOLCHAIN: 1.97.1
+  NODE_VERSION: 22.23.2
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  core:
+    name: Core on macOS (build and test)
+    # The standard macOS 26 Apple silicon runner, free for public
+    # repositories. Not a paid -large or -xlarge one, nor a self-hosted one.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      # As in CI: line information for backtraces without full debug data.
+      CARGO_PROFILE_DEV_DEBUG: "1"
+      CARGO_PROFILE_TEST_DEBUG: "1"
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      # The label's platform is the one tested: refuse any other.
+      - name: Platform
+        run: |
+          [ "$(uname -s) $(uname -m)" = "Darwin arm64" ] || { echo "::error::this runner is $(uname -s) $(uname -m), not Darwin arm64"; exit 1; }
+          sw_vers
+
+      # Only the pinned toolchain, in a RUSTUP_HOME of its own, as in CI.
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list
+          rustc --version && cargo --version
+
+      # The result and Brief tests run the generated validator with Node, as
+      # Core does (CI's "Result validator").
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Result validator
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:result-validator
+
+      # The fake runtimes run through /usr/bin/python3, which the runner's
+      # Xcode command line tools provide.
+      - name: Show test prerequisites
+        run: |
+          xcode-select -p
+          /usr/bin/python3 --version
+          command -v ssh && ssh -V
+          node --version
+
+      # Cargo dependencies only; saved only from main, as in CI.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: .github/scripts/disk-precheck.sh 20 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Build
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          cargo build --locked --all-targets
+
+      # As in CI: each process runs one test at a time; see the script.
+      # - TMPDIR: macOS's own (/var/folders/.../T/) makes the sockets tests
+      #   make there longer than macOS's 104-byte limit, which Core rightly
+      #   refuses. A new folder of its own under /tmp is short; /tmp is a
+      #   symbolic link to /private/tmp, as on every Mac.
+      # - YUZUNO_TEST_PYTHON: the Python 3.6 check of the remote helpers
+      #   needs a Python older than 3.13 (python_compat_tests.rs); the
+      #   command line tools' /usr/bin/python3 is one.
+      - name: Test (one test at a time per process)
+        env:
+          YUZUNO_TEST_PYTHON: /usr/bin/python3
+        run: |
+          TMPDIR=$(mktemp -d /tmp/ct-XXXXXX)
+          export TMPDIR
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          .github/scripts/core_tests.py
+
+      - name: Disk capacity after tests
+        if: always()
+        run: df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
