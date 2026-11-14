@@ -148,6 +148,8 @@ pub struct Workspace {
     pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
     /// The daily backup (T-196); see `workspace_backup::schedule`.
     pub(crate) backup_schedule: Arc<crate::workspace_backup::schedule::Planner>,
+    /// Home cards that refresh themselves (YN-113); see `project_brief::refresh`.
+    pub(crate) brief_refresh: Arc<crate::project_brief::refresh::Timer>,
     /// The phone entry's listener and its last check (T-185); see `remote_access`.
     pub(crate) remote_access: crate::remote_access::State,
     /// Push notifications to Home Screen web apps (T-200); see `web_push`.
@@ -200,6 +202,7 @@ impl Workspace {
             default_cwd: cwd,
             backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             backup_schedule: Arc::new(crate::workspace_backup::schedule::Planner::open(&data_dir)),
+            brief_refresh: Default::default(),
             data_dir,
             program,
             session_reads: tokio::sync::Semaphore::new(1),

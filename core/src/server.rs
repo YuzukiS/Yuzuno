@@ -64,6 +64,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_delivery();
     ws.start_merge_queue();
     ws.start_backup_schedule();
+    ws.start_brief_refresh();
     ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())

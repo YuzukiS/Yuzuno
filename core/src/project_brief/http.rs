@@ -31,6 +31,7 @@ pub(super) fn routes() -> Router<Arc<Workspace>> {
         .route("/api/projects/{id}/brief/chart/{section}/{element}", get(chart))
         .route("/api/projects/{id}/brief/research/{section}/{element}", get(research))
         .route("/api/brief-cache/clear", post(clear))
+        .route("/api/brief-refreshes", get(refreshes))
 }
 
 impl IntoResponse for attachments::Missing {
@@ -202,6 +203,12 @@ async fn research(
         Ok(desk) => Json(desk).into_response(),
         Err(missing) => missing.into_response(),
     })
+}
+
+/// Every card that refreshes itself, with the limits and totals (YN-113):
+/// for Settings and notifications. Read-only.
+async fn refreshes(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.stored(super::refresh::list).await?))
 }
 
 async fn clear(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {

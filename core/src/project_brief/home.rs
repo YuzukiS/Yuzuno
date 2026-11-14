@@ -289,6 +289,11 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let current = |row: &sections::Row| -> Result<bool> {
             Ok(row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)?)
         };
+        // A card's refresh (YN-113), on the one entry Home shows of its
+        // identity: the live section, else its newest history entry.
+        let name = |agent: &str| by_id.get(agent).map(|a| a.name.clone());
+        let refreshes = super::refresh::shown(&db, id, &name, at)?;
+        let mut refreshed = std::collections::HashSet::new();
         let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -303,6 +308,9 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
                     section["currentSource"] = json!(current(row)?);
+                }
+                if let Some(refresh) = refreshes.get(&row.identity).filter(|_| refreshed.insert(row.identity)) {
+                    section["refresh"] = refresh.clone();
                 }
                 Ok(section)
             }).collect()
