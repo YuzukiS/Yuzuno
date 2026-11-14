@@ -132,6 +132,9 @@ async function serve(route) {
     "/api/models": () => ({ models: [] }),
     "/api/waits/live": () => ({ agents: {} }),
     "/api/machine-live": () => ({ machines: [] }),
+    // The project's page (YN-96): no front desk Agent and no requests, as project-talk-check answers them.
+    "/api/projects/p1/front-desk": () => ({ version: 1, agentId: null, effectiveAgentId: null }),
+    "/api/projects/p1/requests": () => ({ requests: [], hasMore: false }),
   }[path];
   if (json) return route.fulfill({ json: json() });
   if (path.startsWith("/api/")) {
