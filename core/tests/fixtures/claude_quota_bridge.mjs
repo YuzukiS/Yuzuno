@@ -21,6 +21,12 @@ const session = `0a0a0a0a-0000-4000-8000-${String(process.pid).padStart(12, '0')
 const held = new Map();
 
 function query({ prompt, options }) {
+  // YN-145 F3a: a test reads the options a session was started with.
+  if (process.env.YUZUNO_TEST_CLAUDE_OPTIONS) {
+    appendFileSync(process.env.YUZUNO_TEST_CLAUDE_OPTIONS, `${JSON.stringify({
+      additionalDirectories: options.additionalDirectories ?? [], disallowedTools: options.disallowedTools ?? [],
+    })}\n`);
+  }
   const output = new PromptQueue();
   output.initializationResult = async () => ({ account: { email: process.env.YUZUNO_TEST_CLAUDE_ACCOUNT || 'me@example.com' } });
   // As the SDK answers: every server given is added (a lab Core passes Workspace MCP).
