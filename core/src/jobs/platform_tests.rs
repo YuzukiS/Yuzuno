@@ -1,9 +1,11 @@
 //! Local Jobs on a Core whose host cannot run them (T-88): macOS, as
 //! `host::NOT_LINUX` makes one Core's data folder look while these tests run
 //! on Linux, and as it is when they run on macOS (core-macos.yml, YN-108).
-//! Local work is refused before the helper is written or run and before
-//! anything is saved; a Job for a registered machine, the history and the
-//! answers already given are unchanged.
+//! Local work (runs of stages, a checkpoint's resume) is refused before the
+//! helper is written or run and before anything is saved; a Job for this
+//! host runs on This Mac instead (mac_tests.rs, YN-108 M2c), and what it
+//! cannot have there is refused before anything is saved too. A Job for a
+//! registered machine, the history and the answers already given are unchanged.
 use super::runs::{self, Prepared, RunSubmit};
 use super::*;
 use crate::{model::AgentDetail, remote::RemoteMachine};
@@ -142,17 +144,12 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
     let stopped = checkpointed(&lab.ws.store);
     lab.on_macos();
     let refusal = host::local_host(&lab.data).unwrap_err().to_string();
-    assert!(refusal.contains("Local Jobs need Linux with a systemd user manager, and this Core runs on macos"), "{refusal}");
+    assert!(refusal.contains("Runs of stages and checkpoints need Linux with a systemd user manager, and this Core runs on macOS"), "{refusal}");
     assert!(refusal.contains("nothing was written, run or queued on this host"), "{refusal}");
     let before = lab.saved();
     let decide = json!({"requestId":"go-on","runId":"run","stage":"prep","gateId":"gate","attemptId":"attempt","decision":"continue"});
     for (actor, operation, input) in [
-        (None, "job_submit", job("here", json!({}))),
-        (None, "job_submit", job("named-local", json!({"machineId":"local"}))),
-        // `a` runs on this host: the alias resolves here, then is refused.
-        (Some("a"), "job_submit", job("on-agent", json!({"machineId":"agent"}))),
         (Some("a"), "job_run_submit", run_input("run")),
-        (None, "job_budget", json!({})),
         (Some("a"), "job_run_retry", json!({"requestId":"retry","runId":"run","stage":"prep"})),
         (Some("a"), "job_run_decide", decide),
         (None, "job_checkpoint_resume", json!({"jobId":stopped})),
@@ -163,7 +160,17 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
         };
         assert_eq!(error, refusal, "{operation}");
     }
-    assert_eq!(put_budget(&lab.ws).await, Err(refusal.clone()), "PUT budget");
+    // A Job for this host runs on This Mac, which has no guardGit (on by
+    // default): refused there with why, however this host was named.
+    for (actor, input) in [
+        (None, job("here", json!({}))),
+        (None, job("named-local", json!({"machineId":"local"}))),
+        // `a` runs on this host: the alias resolves to This Mac.
+        (Some("a"), job("on-agent", json!({"machineId":"agent"}))),
+    ] {
+        let error = lab.call(actor, "job_submit", input).await.unwrap_err().to_string();
+        assert!(error.starts_with("guardGit is not available on This Mac"), "{error}");
+    }
     // Nothing written or run for them, and nothing saved.
     assert_eq!(lab.helpers(), Vec::<String>::new());
     assert!(lab.ws.jobs.gpu_sampled.lock().unwrap().is_none(), "no GPU sample recorded for them");
@@ -229,7 +236,7 @@ async fn on_linux_the_same_requests_go_on_as_before() {
     let retry = lab.call(Some("a"), "job_run_retry", json!({"requestId":"retry","runId":"missing","stage":"prep"})).await.unwrap_err().to_string();
     let decide = lab.call(Some("a"), "job_run_decide",
         json!({"requestId":"go-on","runId":"missing","stage":"prep","gateId":"gate","attemptId":"attempt","decision":"continue"})).await.unwrap_err().to_string();
-    let refusal = "Local Jobs need Linux";
+    let refusal = "need Linux with a systemd user manager";
     assert!(!retry.contains(refusal) && !decide.contains(refusal), "{retry} / {decide}");
     let run = failed_run(&lab.ws.store);
     let retried = lab.call(Some("a"), "job_run_retry", json!({"requestId":"retry","runId":run,"stage":"prep"})).await.unwrap();

@@ -13,7 +13,8 @@ Remote Codex Agents on a Mac over SSH are a separate feature, and they do not ma
 - **Run there, among others:**
   - SIGTERM and SIGINT stop a running Core through its own shutdown, and the Workspace opens again afterwards (`core/tests/core_signals.rs`);
   - Cores from before data roots are kept out of the Workspace ([below](#keeping-older-cores-out));
-  - a Job for a registered remote machine is queued, and local Jobs are refused before anything is written (`core/src/jobs/platform_tests.rs`);
+  - a Job for a registered remote machine is queued, and runs of stages and checkpoints are refused before anything is written (`core/src/jobs/platform_tests.rs`);
+  - a Job on This Mac runs through the real `/usr/bin/xcode-select` and `/usr/bin/python3`, in a data folder with a space in its path, and its artifact is checked; a cancel and a timeout stop its process group (`core/src/jobs/mac_tests.rs`);
   - checks that a child process was reaped ask the kernel (ESRCH) instead of looking for `/proc/<pid>`;
   - a process's identity for managed updates (its PID, start time and executable) is read from libproc, for this test process and for a child while it runs, once it has exited and once it is reaped (`core/src/updates/state.rs`), and the managed-update tests that need it run.
 
@@ -46,13 +47,13 @@ Before YN-108, a macOS Core refused every such write. Adding a machine with Jobs
 | Workspace storage | Works: bundled SQLite, `File::try_lock` on `workspace.lock`, owner-only data folder. The default data folder is `~/Library/Application Support/yuzuno/workspace`; one an earlier build made in `~/Library/Application Support/yuzuno-next` is used where it is. | none | — | `core/src/store.rs`, `core/src/data_dir.rs` |
 | Browser boundary and API | Works: Core listens on 127.0.0.1 only. The SSH tunnel path is the same code as on Linux but was not tried on a Mac. | none | — | `core/src/main.rs`, `core/src/server.rs` |
 | Registered machines and their Jobs | Work as on Linux; older Cores are kept out as above. | none | M1 | `core/src/older_cores.rs` |
-| **Jobs on this Core's host** | **Refused** before the helper is written or anything is queued: "Local Jobs need Linux with a systemd user manager, and this Core runs on macos". The job tools are still listed to Agents. | runtime | M2c | `core/src/jobs/host.rs` |
+| Jobs on this Core's host | Run on **This Mac** (`machineId` `mac`; also without one, with `local`, and with `agent` for an Agent here) in **limited mode**: the helper a Mac over SSH runs, started by `/usr/bin/python3` once `xcode-select -p` names the Command Line Tools (without them nothing is run). Attempts live in `<data folder>/local-jobs`. They take this Core's Jobs budget and `maxActive`, which only queue and record them. guardGit, a CPU range, GPUs, exclusive, outputs, services, checkpoints, pause and runs of stages are refused with why. | runtime | M2c | `core/src/jobs/remote.rs`, `core/src/jobs/host.rs` |
 | **Managed updates** | **Nothing to update to yet.** The running Core's process identity, which Prepare and Apply record, is read from libproc (`proc_pidinfo`, `proc_pidpath`); its start time is in microseconds since 1970, compared only on the same Mac in the same boot. No release has a `macos-aarch64` package yet, and an update has not been run end to end on a Mac. | packaging | M3b | `core/src/updates/state.rs`, `core/src/updates/releases.rs` |
 | Update helper | Works as on Linux: log pruning tells the log it writes to by the open file's device and inode, and the executable it runs as is resolved before it is compared with release paths (on macOS `current_exe()` can be the link `updates/start`). | none | M2a | `core/src/updates/helper.rs` |
 | Starting and stopping Core | SIGTERM and SIGINT shut Core down cleanly (tested on macOS). The install guide's start uses the `setsid` command, which macOS lacks; Core's own start uses the `setsid` system call, which macOS has. Stopping through `updates/start stop` needs Linux, and the desktop's start profile WSL. | runtime | M2b | `docs/independent-core.md`, `core/src/updates/start.rs` |
 | Finding Claude Code, Node, Codex, git, gh | Through Core's `PATH`. A Core started outside a login shell does not see `/opt/homebrew/bin`: T-88's check without it reported "Claude Code was not found on Core's PATH", and found it once `/opt/homebrew/bin` was added. | runtime | M2b, M4 | `core/src/machines.rs`, `core/src/claude.rs` |
 | Packages and signing | Linux only: the build script refuses other systems, packaging names only `linux-*`, and signing accepts only `linux-*`. | tooling | M3a, M3b | `tools/build-core-artifact.py`, `tools/package-release.py`, `tools/sign-core-release.py`, `tools/core-release.py` |
-| Labels | **Settings → Updates** names the system its Core reports: macOS or Linux / WSL. The Jobs panel shows the local refusal beside its list, and **Settings → Jobs** shows it as an error. | runtime | M2c | `web/src/updates-text.ts`, `web/src/Jobs.tsx`, `web/src/JobsSettings.tsx` |
+| Labels | **Settings → Updates** names the system its Core reports: macOS or Linux / WSL. A new Job in the Jobs panel says "This Mac · macOS · limits declared only", with guardGit off, and **Settings → Jobs** says the budget only queues and records Jobs. | none | M2c | `web/src/updates-text.ts`, `web/src/Jobs.tsx`, `web/src/JobsSettings.tsx` |
 | Desktop app | The macOS app ([T-165](../desktop/README.md#macos-desktop-core-on-another-computer)) connects to a Core that runs elsewhere; it cannot install or start one on the Mac yet. | packaging | M4 | `desktop/` |
 
 ## Jobs: the Linux backend has no macOS counterpart yet
@@ -74,11 +75,13 @@ The current implementation has no macOS backend. The obvious tools do not give t
 
 Whether another macOS mechanism could would need its own investigation; this page does not rule one out. **A launcher built from these tools must not be shown as the same capability.**
 
-The user chose (YN-108) to run Jobs on a macOS Core's own host in **limited mode**, as Jobs already run on a remote Mac (YN-104): the declared CPU and memory are used to queue and are recorded, but nothing enforces them, and the Jobs pages say so. That is slice M2c. Until then such Jobs are refused.
+The user chose (YN-108) to run Jobs on a macOS Core's own host in **limited mode**, as Jobs already run on a remote Mac (YN-104): the declared CPU and memory are used to queue and are recorded, but nothing enforces them, and the Jobs pages say so. Slice M2c does this: the built-in machine `mac`, This Mac, reached without SSH by the Mac's own `/usr/bin/python3` running the same helper (`core/src/jobs/remote_job.py`). Each attempt runs in its own process group, which cancel and timeouts stop. One Job can still use the whole Mac.
+
+The helper's data root may have spaces inside a folder name (a Mac's default data folder is under `Application Support`), not at either end of one; a data folder with other characters (non-ASCII ones, for example) is refused at the attempt's start, with the reason. A registered machine's root still allows no space (`core/src/remote.rs` `validate_root`).
 
 ## Slices (YN-108)
 
-Each slice is its own pull request. M1 and M2a are in this commit; the others are planned.
+Each slice is its own pull request. M1, M2a and M2c are in this commit; the others are planned.
 
 | Slice | What it adds |
 |---|---|

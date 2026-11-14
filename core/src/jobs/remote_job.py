@@ -1044,7 +1044,11 @@ ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 KEY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 HOST = re.compile(r"[0-9a-f]{32}")
-ROOT_PART = re.compile(r"[A-Za-z0-9._-]+")
+# A folder name of a data root: plain characters, and spaces inside one but
+# never at either end, as in a macOS Core's own data folder under
+# "Application Support" (YN-108 M2c). Core's check of a registered machine's
+# root (remote.rs validate_root) still allows no space.
+ROOT_PART = re.compile(r"[A-Za-z0-9._-](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?")
 PAGE = 32768
 MARK = "YUZUNO-JOBS-REPLY "
 NONCE = re.compile(r"[0-9a-f]{32}")
@@ -1253,13 +1257,14 @@ def private_dir(path):
 
 def data_root(request):
     """The data root the request names: ~/<folder> in this account's home or
-    an absolute folder, of plain names only."""
+    an absolute folder, of plain names only (ROOT_PART)."""
     given = request.get("root")
     if not isinstance(given, str):
         raise Refused("root must name the machine's data folder")
     parts = given[2:].split("/") if given.startswith("~/") else given[1:].split("/") if given.startswith("/") else []
     if len(given) > 1024 or not parts or any(p in (".", "..") or not ROOT_PART.fullmatch(p) for p in parts):
-        raise Refused("root must be ~/<folder> or an absolute folder of plain names")
+        raise Refused("root must be ~/<folder> or an absolute folder of plain names (letters, digits, . _ - and spaces "
+                      "inside a name)")
     return (Path.home() if given.startswith("~/") else Path("/")).joinpath(*parts)
 
 

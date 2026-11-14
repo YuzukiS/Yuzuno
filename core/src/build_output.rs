@@ -160,7 +160,8 @@ impl Store {
         let mut q = db.prepare(
             "SELECT id, json_extract(data,'$.name'), status, json_extract(data,'$.cwd'), json_extract(data,'$.taskRef'),
                     json_extract(data,'$.env.CARGO_TARGET_DIR'), json_extract(data,'$.taskId')
-             FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting')) AND json_extract(data,'$.executor') IS NULL
+             FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting'))
+               AND (json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind')='mac')
              ORDER BY seq LIMIT 1000",
         )?;
         let rows = q.query_map([], |r| {

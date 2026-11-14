@@ -71,6 +71,8 @@ mod suggestion;
 mod suggestion_tests;
 #[cfg(test)]
 mod remote_tests;
+#[cfg(test)]
+mod mac_tests;
 mod runs;
 /// A run of stages as a Brief's Live Reference shows it (YN-7); None for an unknown id.
 pub(crate) fn run_live_ref(db: &rusqlite::Connection, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
@@ -309,10 +311,11 @@ pub(crate) struct Submit {
     /// Core resolves at submit (T-162).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     machine_id: Option<String>,
-    /// `machine_id` as the submission named it, once Core resolved an alias:
-    /// what a retry is matched against and what the Job's target shows.
+    /// `machine_id` as the submission named it (Some(None): none), once Core
+    /// resolved an alias, or no machine on a macOS Core: what a retry is
+    /// matched against and what the Job's target shows.
     #[serde(skip)]
-    requested_machine: Option<String>,
+    requested_machine: Option<Option<String>>,
     /// How the command saves and exits when the user stops it at a
     /// checkpoint (T-109). This host's Jobs only: standalone, or a run's
     /// stage (YN-30), whose resume is that stage's next attempt.
@@ -459,14 +462,23 @@ impl Submit {
     /// a retry is compared with, whatever an alias resolved to.
     pub(super) fn as_requested(&self) -> Result<Value> {
         let mut value = serde_json::to_value(self)?;
-        if let Some(named) = &self.requested_machine {
-            value["machineId"] = json!(named);
+        match &self.requested_machine {
+            Some(Some(named)) => value["machineId"] = json!(named),
+            Some(None) => {
+                if let Some(fields) = value.as_object_mut() {
+                    fields.remove("machineId");
+                }
+            }
+            None => {}
         }
         Ok(value)
     }
     /// The machine as the submission named it, if it named one.
     pub(super) fn named_machine(&self) -> Option<&str> {
-        self.requested_machine.as_deref().or(self.machine_id.as_deref())
+        match &self.requested_machine {
+            Some(named) => named.as_deref(),
+            None => self.machine_id.as_deref(),
+        }
     }
     /// An alias Core still has to resolve (see `Store::resolve_machine`).
     fn alias(&self) -> bool {
@@ -487,7 +499,9 @@ impl Submit {
             "requestId must contain 1–128 bytes"
         );
         self.validate_checkpoint()?;
-        if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
+        if self.machine_id.as_deref() == Some(remote::MAC) {
+            self.validate_mac()?;
+        } else if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
             ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
@@ -515,6 +529,10 @@ impl Submit {
             );
         }
         if let Some(service) = &self.service {
+            ensure!(
+                self.machine_id.as_deref() != Some(remote::MAC),
+                "service is not available on a macOS Core in this version: a service Job needs Linux with a systemd user manager, and This Mac runs its Jobs in the limited mode; nothing was queued"
+            );
             // An alias is checked again once resolved (job_submit).
             ensure!(
                 self.machine_id.is_none() || self.alias(),
@@ -534,9 +552,32 @@ impl Submit {
         }
         self.validate_command()
     }
+    /// What This Mac does not have (YN-108 M2c): a macOS Core's Jobs run
+    /// there as on a Mac reached over SSH, so what Core can enforce or see
+    /// only on a Linux host is refused, before anything is queued.
+    fn validate_mac(&self) -> Result<()> {
+        let why = "on This Mac, where a macOS Core runs its Jobs in the limited mode";
+        ensure!(self.gpu.is_none(), "GPU admission is not available {why}; omit gpu");
+        ensure!(
+            self.resources.cpu().max == self.resources.cpu_millis,
+            "A CPU range up to cpuMillisMax needs a Linux host's cgroup: {why}, a Job runs at cpuMillis. Omit cpuMillisMax"
+        );
+        ensure!(!self.exclusive, "exclusive is not available {why}; omit it");
+        ensure!(!self.guard_git, "guardGit is not available {why} in this version; set guardGit to false and list the files to freeze as inputs");
+        ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which is not available {why}; omit it");
+        ensure!(
+            self.outputs.is_empty(),
+            "outputs are not available {why}; declare the files as artifacts, which are checked there after a clean exit"
+        );
+        Ok(())
+    }
     /// A declared checkpoint's protocol, for a Job and for a run's stage.
     fn validate_checkpoint(&self) -> Result<()> {
         if let Some(checkpoint) = &self.checkpoint {
+            ensure!(
+                self.machine_id.as_deref() != Some(remote::MAC),
+                "Stop at a checkpoint is not available on a macOS Core in this version: it needs Linux with a systemd user manager; omit checkpoint"
+            );
             // An alias is checked again once resolved (job_submit).
             ensure!(
                 self.machine_id.is_none() || self.alias(),
@@ -1056,10 +1097,12 @@ async fn set_budget(
     let _permit = ws.admission.enter_work()?;
     let budget = Resources { cpu_millis: input.cpu_millis, memory_mi_b: input.memory_mi_b, swap_mi_b: input.swap_mi_b };
     validate_budget(&budget)?;
-    host::local_host(&ws.data_dir)?;
+    host::budget_host(&ws.data_dir)?;
     let value = ws.stored(move |s| s.set_job_budget_with(budget, input.max_active)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
+    // This Mac's queued Jobs wait for this budget and its maxActive.
+    ws.jobs.remote_wake.notify_one();
     changed(&ws);
     Ok(Json(value))
 }
@@ -1181,17 +1224,20 @@ pub async fn call(
             }
             // A retry above named its Job however its alias resolves now. A
             // new one runs where the alias resolves now, from the submitting
-            // Agent's record, and keeps that machine (T-162).
-            if input.alias() {
+            // Agent's record, and keeps that machine (T-162). On a macOS Core
+            // this host is This Mac, also when no machine is named.
+            let mac_core = host::mac_core(&ws.data_dir);
+            if input.alias() || mac_core && input.machine_id.is_none() {
                 let author = actor.clone();
-                input = ws.stored(move |s| s.resolve_machine(author.as_deref(), input)).await?;
+                input = ws.stored(move |s| s.resolve_machine(author.as_deref(), input, mac_core)).await?;
                 input.validate()?;
             }
             let windows = input.machine_id.as_deref() == Some(remote::WINDOWS);
+            let mac = input.machine_id.as_deref() == Some(remote::MAC);
             if input.machine_id.is_some() {
-                if windows {
-                    // Windows on this PC holds this host's budget: make sure
-                    // there is one, as a first local job would.
+                if windows || mac {
+                    // Windows on this PC and This Mac hold this host's
+                    // budget: make sure there is one, as a first local job would.
                     let host = host::machine_info().await?;
                     ws.stored(move |s| s.init_job_budget(&host["suggestedBudget"])).await?;
                 }
@@ -1199,11 +1245,13 @@ pub async fn call(
                 // this host is read for them (on Windows, nothing through /mnt).
                 let machine_id = input.machine_id.clone().unwrap_or_default();
                 let helper = if windows { remote::windows_helper() } else { None };
-                let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
+                let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux), mac: remote::MAC_TOOLS };
                 let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
                 let author = actor.clone();
                 let capabilities = if windows {
                     remote::windows_capabilities()
+                } else if mac {
+                    remote::mac_capabilities()
                 } else {
                     // As the machine last answered; corrected at its hello (T-186).
                     let id = machine_id.clone();
@@ -1213,8 +1261,13 @@ pub async fn call(
                 let job = ws
                     .stored(move |s| {
                         // Until it ends, a Core before data roots would start it in its own
-                        // folder, without this Core's limits (older_cores.rs).
-                        let _kept_out = s.keep_older_cores_out(if windows { "a Job is queued for Windows" } else { "a Job is queued for a remote machine" })?;
+                        // folder, without this Core's limits (older_cores.rs). None
+                        // ran on macOS (YN-108 2.2), so none is kept out for This Mac.
+                        let _kept_out = if mac {
+                            None
+                        } else {
+                            Some(s.keep_older_cores_out(if windows { "a Job is queued for Windows" } else { "a Job is queued for a remote machine" })?)
+                        };
                         s.create_job(author.as_deref(), input, snapshot, Value::Null, capabilities)
                     })
                     .await?;
@@ -1503,13 +1556,16 @@ pub async fn call(
                 input.as_object().is_some_and(|m| m.is_empty()),
                 "job_budget takes no arguments"
             );
-            host::local_host(&ws.data_dir)?;
+            host::budget_host(&ws.data_dir)?;
             sample_gpus(&ws, false).await;
             let machine = host::machine_info().await?;
             let mut view = ws.stored(move |s| s.job_budget_view(machine)).await?;
             view["disk"] = disk_view(&ws).await?;
             // Whether machineId "windows" exists here at all (WSL with interop on).
             view["windows"]["available"] = json!(remote::windows_available());
+            // Whether this host's Jobs run on This Mac (a macOS Core), where
+            // the budget only queues and records them.
+            view["mac"] = json!({"available": host::mac_core(&ws.data_dir), "limits": "declared"});
             Ok(view)
         }
         "job_gpus" => {
@@ -1799,7 +1855,9 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     (declare artifacts), service, runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
     on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
-    resubmit it. How each machine runs, limits and checks a job: yuzuno_guide topic jobs.";
+    resubmit it. On a macOS Core this host is \"mac\", This Mac: without machineId, with local, or agent for an Agent here, a job runs \
+    there in the limited mode (limits declared only, within this Core's Jobs budget and maxActive), and what is not available with \
+    machineId above is refused there too, checkpoint included. How each machine runs, limits and checks a job: yuzuno_guide topic jobs.";
 
 /// service in short (T-5): what the services list then says about it is
 /// service_jobs.rs.
@@ -1887,7 +1945,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
     let run_id = json!({"runId":run_ref});
     vec![
-        make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
+        make("job_submit", "Submit an authorized long-running command on this Core's host, tied to an existing task and your Agent: on Linux/WSL with cgroup limits; on a macOS Core it runs on This Mac (machineId mac) in the limited mode, limits declared only. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
         make("job_suggestion", "Before submitting, read what earlier runs of the same Job suggest requesting: this task's Jobs of the same name or argv, else the other tasks of its Project with the same argv (never another Project). Their newest five runs measured whole on this host count, only if one succeeded: memoryMiB = max(1.3 × largest peak, peak + 1 GiB), rounded up to 512 MiB; cpuMillis = 1.5 × largest average cores; hitMemoryLimit marks a run killed at its limit. basedOn lists them, another Agent's by Job ID, task and numbers only. null without such a run. Reserves and changes nothing.", json!({"taskId":task_reference,"name":string,"argv":{"type":"array","items":string,"maxItems":128}}), vec!["taskId","name"]),
         make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, cpuWaiting, rule, heldBy, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
