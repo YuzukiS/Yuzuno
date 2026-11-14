@@ -419,3 +419,27 @@ fn the_pending_folders_are_read_and_forgotten() {
     s.forget_pruned_folders(&pending).unwrap();
     assert!(s.pruned_folders().unwrap().is_empty());
 }
+
+#[test]
+fn a_job_a_present_runs_stage_reuses_stays_and_so_does_its_own_run() {
+    // Review d70beabf: a reused stage names its Job only in the run's
+    // stages, and the run's analysis gate and afterRuns read it again.
+    let (_dir, s) = setup();
+    let t1 = task(&s, "T-1");
+    let (earlier, reused, later);
+    {
+        let db = s.db.write().unwrap();
+        reused = row(&db, &t1, "succeeded", 1, json!({}));
+        earlier = run(&db, &t1, Some(2), &[], std::slice::from_ref(&reused));
+        later = run(&db, &t1, None, &[], &[]);
+        db.execute("UPDATE local_job_runs SET data=json_set(data,'$.stages',json(?2)) WHERE id=?1",
+            params![later, json!([{"key":"s","reusedFrom":{"jobId":reused,"attempt":"a"},"waitForAnalysis":true}]).to_string()]).unwrap();
+    }
+    let rest = fill(&s, &t1, 100, LIMIT - 1);
+    submit(&s, "new").unwrap();
+    assert!(exists(&s, &reused), "a present run's stage reuses it");
+    assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM local_job_run_attempts WHERE run_id='{earlier}'")), 1, "its run stays whole");
+    assert_eq!(count(&s, &format!("SELECT COUNT(*) FROM local_job_runs WHERE id IN ('{earlier}','{later}')")), 2);
+    assert!(rest[..(LIMIT - TARGET) as usize].iter().all(|id| !exists(&s, id)));
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM local_jobs"), TARGET + 1);
+}

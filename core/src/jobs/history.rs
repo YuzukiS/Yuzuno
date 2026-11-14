@@ -16,6 +16,9 @@
 //!   cites (open: not done, not cancelled, not archived), whose citation reads
 //!   it again (`result_outcome::resolve`);
 //! - a run not settled, or one an unsettled run waits for (`afterRuns`);
+//! - a Job a stage of any run still present reuses (`reusedFrom.jobId`):
+//!   the run's analysis gate and the artifacts a waiting run leaves out of
+//!   its guard read it again (`runs/analysis.rs`, `runs/after.rs declared`);
 //! - what the caller names (`Keep`): the run a retry adds to, the runs a new
 //!   run waits for, the Job it reuses.
 //!
@@ -89,6 +92,7 @@ enum Held {
     Service,
     Inventory,
     Cited,
+    Reused,
     Run,
     Caller,
 }
@@ -124,9 +128,10 @@ fn prune(tx: &Connection, count: i64, adding: i64, keep: &Keep) -> Result<()> {
             "Local job history is full ({LIMIT}) and too few finished Jobs can be removed to make room, so nothing was removed or queued: \
              {} unfinished or holding resources, {} stopped at a checkpoint that can be resumed, {} linked to a service, \
              {} a cleanup plan's inventory, {} cited by an open task's result, research or review evidence, \
-             {} in a run not settled or one a run waits for. Let them finish, settle or close those tasks, runs or services, then submit again",
+             {} reused by a run's stage, {} in a run not settled or one a run waits for. \
+             Let them finish, settle or close those tasks, runs or services, then submit again",
             held(Held::Unfinished), held(Held::Checkpoint), held(Held::Service),
-            held(Held::Inventory), held(Held::Cited), held(Held::Run) + held(Held::Caller)
+            held(Held::Inventory), held(Held::Cited), held(Held::Reused), held(Held::Run) + held(Held::Caller)
         );
     }
     let before = Checks::read(tx)?;
@@ -237,6 +242,11 @@ fn plan(db: &Connection, keep: &Keep) -> Result<Plan> {
     let service = ids(db, "SELECT job_id FROM project_service_jobs")?;
     let inventory = ids(db, "SELECT job_id FROM cleanup_inventories WHERE job_id IS NOT NULL")?;
     let cited = ids(db, CITED)?;
+    let reused = ids(
+        db,
+        "SELECT json_extract(s.value,'$.reusedFrom.jobId') FROM local_job_runs r, json_each(r.data,'$.stages') s
+         WHERE json_type(s.value,'$.reusedFrom')='object'",
+    )?;
     let caller_jobs: HashSet<&str> = keep.jobs.iter().map(String::as_str).collect();
     // Each Job: its unit's time and task, and why it stays, if it does.
     struct Job {
@@ -270,6 +280,8 @@ fn plan(db: &Connection, keep: &Keep) -> Result<Plan> {
                 Some(Held::Inventory)
             } else if cited.contains(&id) {
                 Some(Held::Cited)
+            } else if reused.contains(&id) {
+                Some(Held::Reused)
             } else if caller_jobs.contains(id.as_str()) {
                 Some(Held::Caller)
             } else {
