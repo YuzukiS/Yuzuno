@@ -13,7 +13,7 @@
 //! different one at a recorded index is refused. One route failing never
 //! undoes another.
 use super::{front_desk, message, request_row, send, Request, ORIGIN, REQUEST};
-use crate::{store::Store, workspace::Workspace};
+use crate::{commit_sha::{self, Form}, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -84,7 +84,7 @@ pub(crate) fn tool_definition() -> Value {
     let line = |what: &str| json!({"type":"string","minLength":1,"maxLength":MAX_LINE,"description":what});
     json!({
         "name":TOOL,
-        "description":"For your Project's front desk only: route the user's request R-n to cards, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply), then its card: a status section you own, keyed by the task's key in lowercase and bound to it;\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins a live card bound to a task; its words go to the Agent answering for it.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
+        "description":"For your Project's front desk only: route the user's request R-n to cards, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch, not the task), then its card: a status section you own, keyed by the task's key in lowercase and bound to it. Materials are checked before the route is recorded; a call they fail is refused whole. For code, give materials.worktree (git worktree add inside the Project's folder) with a full baseSha and repositoryId; without it the executor starts in the Project's folder itself;\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins a live card bound to a task; its words go to the Agent answering for it.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["request","title","note","routes"],"properties":{
             "request":{"type":"string","description":"R-12, as Core's message names the request."},
             "title":line("A short phrase, like a task title, saying what the request is; not the user's words, not where it goes. The user knows the request by it."),
@@ -96,10 +96,27 @@ pub(crate) fn tool_definition() -> Value {
                 "shortName":{"type":"string","minLength":1,"maxLength":crate::collaboration_store::SHORT_NAME_CHARS,"description":"card: the task's short name, as task_create's."},
                 "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"properties":{
                     "templateId":{"type":"string"},"tier":{"type":"string","enum":crate::executor_templates::TIERS},"machineId":{"type":"string"}}},
+                "materials":materials_schema(),
+                "body":{"type":"string","description":"card + executor: its dispatch's additional instructions, as task_dispatch's body; at most 16384 bytes in UTF-8."},
                 "agentId":{"type":"string","description":"card: an open member of the Project, not an executor."},
                 "cardKey":{"type":"string","description":"existing: the card's section key."}}}}}}
     })
 }
+
+/// A card route's materials (YN-135): task_dispatch's, except that baseSha
+/// and headSha are full SHAs (`materials`).
+fn materials_schema() -> Value {
+    let mut schema = crate::collaboration_store::materials_schema();
+    for (key, purpose) in [("baseSha", "The commit the work starts from."), ("headSha", "The commit to deliver or review.")] {
+        schema["properties"][key] = commit_sha::schema(Form::Any, true, &format!("{purpose} Core asks GitHub in repositoryId \
+            before the route is recorded: one that is no commit there refuses the call."));
+    }
+    schema
+}
+
+/// The longest additional instructions of a dispatch, in UTF-8 bytes, as
+/// its materials take task_dispatch's body (dispatch_materials.rs).
+const MAX_BODY: usize = 16_384;
 
 /// A route as kept.
 #[derive(Clone, Debug)]
@@ -260,7 +277,7 @@ fn route(index: usize, given: &Value) -> Result<Value> {
     let object = given.as_object().with_context(|| format!("invalid_input: {at} is not an object"))?;
     let kind = object.get("kind").and_then(Value::as_str).unwrap_or_default();
     let fields: &[&str] = match kind {
-        CARD => &["kind", "why", "title", "shortName", "executor", "agentId"],
+        CARD => &["kind", "why", "title", "shortName", "executor", "agentId", "materials", "body"],
         EXISTING => &["kind", "why", "cardKey"],
         _ => bail!("invalid_input: {at}kind is card or existing"),
     };
@@ -284,12 +301,76 @@ fn route(index: usize, given: &Value) -> Result<Value> {
     let short = given.get("shortName").and_then(Value::as_str).map(str::trim).filter(|short| !short.is_empty())
         .with_context(|| format!("invalid_input: {at}shortName is required: what the task is about in a few words"))?;
     let mut card = json!({"kind":kind,"title":title,"shortName":short,"why":why});
+    let (materials, body) = (self::materials(&at, object.get("materials"))?, self::body(&at, object.get("body"))?);
     match (object.get("executor"), object.get("agentId")) {
-        (Some(executor), None) => card["executor"] = self::executor(&at, executor)?,
-        (None, Some(Value::String(agent))) if !agent.trim().is_empty() => card["agentId"] = json!(agent.trim()),
+        (Some(executor), None) => {
+            card["executor"] = self::executor(&at, executor)?;
+            if let Some(materials) = materials {
+                // A worktree is a path on this Core host: an executor on
+                // another machine works in its Project's folder there, and
+                // its dispatch is refused one (executor_dispatch.rs).
+                let machine = card["executor"]["machineId"].as_str().unwrap_or("local");
+                let worktree = materials["worktree"].as_str().is_some_and(|worktree| !worktree.trim().is_empty());
+                if worktree && !matches!(machine, "local" | crate::collaboration_store::executor_choice::AUTO) {
+                    bail!("folder_not_allowed: {at}materials.worktree is a path on this Core host, and executor.machineId {machine} is \
+                        another machine, where an executor works in its Project's folder there; leave one of them out. Nothing was routed");
+                }
+                card["materials"] = materials;
+            }
+            if let Some(body) = body {
+                card["body"] = json!(body);
+            }
+        }
+        (None, Some(Value::String(agent))) if !agent.trim().is_empty() => {
+            // A new executor starts from its dispatch's materials; an Agent
+            // already here works in its own folder.
+            for (field, given) in [("materials", materials.is_some()), ("body", body.is_some())] {
+                ensure!(!given, "invalid_input: {at}{field} goes with executor: a new executor starts from its dispatch's materials, \
+                    and an Agent already here works where it is. Nothing was routed");
+            }
+            card["agentId"] = json!(agent.trim());
+        }
         _ => bail!("invalid_input: {at} a card route gives executor for a new executor, or agentId for an Agent already here; one of them"),
     }
     Ok(card)
+}
+
+/// A card route's materials (YN-135), as kept: an object, as task_dispatch's,
+/// none when it is null or says nothing. Core's shaCheck is no part of it,
+/// and its baseSha and headSha are full SHAs: a recorded route never
+/// changes, and only GitHub can make one of an abbreviation. The rest is
+/// checked before the route is recorded (`record`).
+fn materials(at: &str, given: Option<&Value>) -> Result<Option<Value>> {
+    let mut materials = match given {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(materials)) => materials.clone(),
+        Some(_) => bail!("invalid_input: {at}materials is an object, as task_dispatch's materials"),
+    };
+    materials.remove("shaCheck");
+    if materials.is_empty() {
+        return Ok(None);
+    }
+    for key in ["baseSha", "headSha"] {
+        match materials.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(sha)) if Form::Any.accepts(sha) => {}
+            Some(sha) => bail!("invalid_input: {at}materials.{}", commit_sha::problem(key, sha.as_str().unwrap_or_default(), Form::Any)),
+        }
+    }
+    Ok(Some(Value::Object(materials)))
+}
+
+/// A card route's body (YN-135): its dispatch's additional instructions,
+/// without spaces at either end; none when that leaves nothing.
+fn body(at: &str, given: Option<&Value>) -> Result<Option<String>> {
+    let body = match given {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(body)) => body.trim(),
+        Some(_) => bail!("invalid_input: {at}body is text, its dispatch's additional instructions"),
+    };
+    ensure!(body.len() <= MAX_BODY, "invalid_input: {at}body is {} bytes in UTF-8; a dispatch's additional instructions are at most {MAX_BODY}",
+        body.len());
+    Ok(Some(body.to_owned()).filter(|body| !body.is_empty()))
 }
 
 pub(super) fn executor(at: &str, given: &Value) -> Result<Value> {
@@ -362,6 +443,12 @@ fn record(store: &Store, actor: &str, call: &Call) -> Result<Ctx> {
                 call.n, row.kind, row.state
             ),
             None => {
+                // Its materials, checked as its dispatch will check them
+                // (YN-135): a call they would fail records and makes nothing.
+                if let Some(materials) = route.get("materials") {
+                    crate::collaboration_store::executor_dispatch::route_materials(&tx, &project, materials)
+                        .map_err(|error| anyhow::anyhow!("{error:#} (routes[{index}].materials). Nothing was routed"))?;
+                }
                 tx.execute(
                     "INSERT INTO project_routes(id,project_id,request_id,idx,kind,input,why,by_agent_id,at,state)
                      VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
@@ -410,6 +497,24 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value
     // One call at a time per request: a route is never done twice at once.
     let gate = ws.gate(&format!("project-route:{request}")).await;
     let _held = gate.lock().await;
+    // Each SHA a route not recorded yet gives is asked of GitHub first, as
+    // its dispatch will ask (YN-135): one GitHub says is no commit there
+    // refuses the call before anything is recorded; one it can't answer for
+    // goes on, and its dispatch asks again. A recorded route is not asked.
+    let id = request.clone();
+    let recorded: Vec<i64> = ws
+        .stored(move |store| Ok(of_request(&*store.db.read()?, &id)?.into_iter().filter_map(|row| row.idx).collect()))
+        .await?;
+    for (index, route) in call.routes.iter().enumerate() {
+        let Some(materials) = route.get("materials").filter(|m| !m["baseSha"].is_null() || !m["headSha"].is_null()) else {
+            continue;
+        };
+        if !recorded.contains(&(index as i64)) {
+            commit_sha::resolve_materials(&ws, Some(&actor), "task_create", json!({"materials":materials}))
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:#} (routes[{index}].materials). Nothing was routed"))?;
+        }
+    }
     let (who, given) = (actor.clone(), call.clone());
     let ctx = ws.stored(move |store| record(store, &who, &given)).await?;
     for row in &ctx.todo {
@@ -442,10 +547,16 @@ pub(crate) async fn call(ws: Arc<Workspace>, actor: Option<String>, input: Value
 }
 
 /// The front desk's own call of a task or mail tool, as collaboration_call
-/// makes it for the front desk (collaboration_runtime.rs): a template
-/// dispatch through `executor_dispatch`, anything else through the store,
-/// with every check either applies to an Agent's call.
+/// makes it for the front desk (collaboration_runtime.rs): its materials'
+/// SHAs asked of GitHub, then a template dispatch through
+/// `executor_dispatch`, anything else through the store, with every check
+/// either applies to an Agent's call.
 async fn own_call(ws: &Arc<Workspace>, actor: &str, operation: &str, input: Value) -> Result<Value> {
+    let input = if matches!(operation, "task_create" | "task_update" | "task_dispatch") {
+        commit_sha::resolve_materials(ws, Some(actor), operation, input).await?
+    } else {
+        input
+    };
     if operation == "task_dispatch" && input.get("executor").is_some() {
         return ws.executor_dispatch(Some(actor), input).await;
     }
@@ -636,9 +747,14 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
             agent.clone()
         }
         (None, None) => {
-            let answer = own_call(ws, actor, "task_dispatch", json!({"requestId":step(row, "dispatch"),"taskId":task,
-                "expectedVersion":1,"executor":input["executor"]}))
-                .await?;
+            let mut dispatch = json!({"requestId":step(row, "dispatch"),"taskId":task,"expectedVersion":1,"executor":input["executor"]});
+            // Its materials and body as recorded (YN-135): the same on every try.
+            for key in ["materials", "body"] {
+                if let Some(value) = input.get(key) {
+                    dispatch[key] = value.clone();
+                }
+            }
+            let answer = own_call(ws, actor, "task_dispatch", dispatch).await?;
             let agent = answer["agentId"].as_str().context("task_dispatch answered without its executor")?.to_owned();
             save(ws, &row.id, "target_agent_id", json!(agent)).await?;
             agent

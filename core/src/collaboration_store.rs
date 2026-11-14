@@ -642,6 +642,13 @@ fn required_text(input: &Value, field: &str, max: usize) -> Result<String> {
     Ok(value.into())
 }
 
+/// The schema of task_create's, task_update's and task_dispatch's
+/// `materials`, for a tool served elsewhere that takes them too
+/// (project_route, YN-135).
+pub(crate) fn materials_schema() -> Value {
+    dispatch_materials::schema()
+}
+
 /// The most characters a task's short name has (T-43).
 pub(crate) const SHORT_NAME_CHARS: usize = 16;
 

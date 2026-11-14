@@ -190,13 +190,57 @@ fn agent_worktree(db: &Connection, task: &str, request: &Value, worktree: Option
             let registration = dispatch_materials::registered(db, task)?;
             let registered = registration["value"]["worktree"].as_str().filter(|_| registration["actor"]["kind"] == "user");
             let allowed = registered.and_then(canonical).is_some_and(|registered| registered == folder)
-                || project_dir.and_then(canonical).is_some_and(|dir| folder.starts_with(dir));
+                || inside(&folder, project_dir);
             ensure!(allowed, "folder_not_allowed: {AGENT_FOLDER}, and {worktree} is neither; a path an Agent gives, in a dispatch's or a task's materials, is information, not permission. Ask the user to register the worktree on the task, or to dispatch it");
             Ok(Some(folder.to_string_lossy().into_owned()))
         }
         None if given => bail!("folder_not_allowed: {AGENT_FOLDER}, and {worktree} is not a folder here; name one that already is"),
         None => Ok(None),
     }
+}
+
+/// Whether `folder`, a canonical path, is the Project's folder `dir` or
+/// inside it, compared as canonical paths (whole components: a sibling
+/// sharing a prefix is outside).
+fn inside(folder: &std::path::Path, dir: Option<&str>) -> bool {
+    dir.and_then(|dir| std::fs::canonicalize(dir).ok()).is_some_and(|dir| folder.starts_with(dir))
+}
+
+const ROUTE_FOLDER: &str = "an executor a route makes works in a folder inside its Project's folder on this host";
+
+/// The materials a route gives the executor it makes (YN-135,
+/// project_requests/routes.rs), checked before the route is recorded as the
+/// front desk's task_dispatch will check them, for a task of `project` not
+/// made yet: their fields (dispatch_materials::validate); a baseSha or
+/// headSha with its repositoryId, one of the Project's repositories (the new
+/// task has no links of its own); and a worktree that is a folder on this
+/// host now, inside the Project's folder here, as `agent_worktree` takes it
+/// (the new task has no registered worktree). The dispatch checks them all
+/// again.
+pub(crate) fn route_materials(db: &Connection, project: &str, materials: &Value) -> Result<()> {
+    let materials = dispatch_materials::validate(db, materials)?;
+    let named: Vec<&str> = ["baseSha", "headSha"].into_iter().filter(|key| !materials[*key].is_null()).collect();
+    if !named.is_empty() && materials["repositoryId"].is_null() {
+        bail!("invalid_input: explicit base/head requires an explicit repositoryId: materials give {} but no repositoryId. \
+            Add one of the Project's repositories (github_repositories lists them)", named.join(" and "));
+    }
+    if let Some(id) = materials["repositoryId"].as_i64() {
+        let linked: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM github_project_repos WHERE project_id=?1 AND repo_id=?2)",
+            params![project, id], |r| r.get(0))?;
+        ensure!(linked, "invalid_input: repository {id} is not one of the Project's, and the route's task, made with no links of \
+            its own, works in one of them; give one of the Project's repositories (github_repositories lists them)");
+    }
+    if let Some(worktree) = materials["worktree"].as_str().filter(|worktree| !worktree.trim().is_empty()) {
+        let Some(folder) = std::fs::canonicalize(worktree).ok().filter(|folder| folder.is_dir()) else {
+            bail!("folder_not_allowed: {ROUTE_FOLDER}, and {worktree} is not a folder here; make it first (git worktree add), or leave worktree out");
+        };
+        let dir = crate::projects::default_dir(db, project, "local")?;
+        ensure!(inside(&folder, dir.as_deref()),
+            "folder_not_allowed: {ROUTE_FOLDER}, and {worktree} is not inside it; a path you give is information, not permission. \
+             Make the worktree inside the Project's folder, or leave worktree out");
+    }
+    Ok(())
 }
 
 fn store_input(request: &Value, sha_check: &Value, agent: &str) -> Value {
