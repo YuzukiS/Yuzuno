@@ -41,8 +41,11 @@
   font-weight: 600;
   border-bottom-color: var(--home-new, var(--green));
 }
-.brief-tab:focus-visible,
-.brief-tabpanel:focus-visible {
+/* Inside the tab: the row scrolls, so a ring outside it would be cut at the
+ * row's edges. More specific than Home's and the report's own ring
+ * (home.css, .home-report :is(button, …):focus-visible), which sits outside. */
+.brief-tablist > .brief-tab:focus-visible,
+.brief-tabs > .brief-tabpanel:focus-visible {
   outline: 2px solid var(--focus, var(--green));
   outline-offset: -2px;
 }

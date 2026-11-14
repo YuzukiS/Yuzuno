@@ -192,6 +192,8 @@ const tabsNow = () => page.evaluate(() => {
     shown: panels.map((panel) => panel.checkVisibility()),
     titles: panels.map((panel) => { const h = panel.querySelector(":scope > .brief-group > h4"); return h ? h.checkVisibility() : null; }),
     focused: tabs.indexOf(document.activeElement),
+    // The focused tab's ring, which the scrolling row would cut were it drawn outside the tab.
+    ring: tabs.includes(document.activeElement) ? { style: getComputedStyle(document.activeElement).outlineStyle, offset: getComputedStyle(document.activeElement).outlineOffset } : null,
     list: { ...box(list), scrollWidth: list.scrollWidth, clientWidth: list.clientWidth, scrollLeft: Math.round(list.scrollLeft), overflowX: getComputedStyle(list).overflowX },
     pageSideways: scroller.scrollWidth > window.innerWidth + 1,
     viewport: window.innerWidth,
@@ -232,6 +234,7 @@ try {
         moves.push([key, at, state.list.scrollLeft]);
       }
       const state = await tabsNow();
+      assert.deepEqual(state.ring, { style: "solid", offset: "-2px" }, "the focus ring is drawn inside the tab");
       const last = state.tabs[5].box;
       assert.ok(last.left >= state.list.left - 1 && last.right <= state.list.right + 1, `the focused tab is in view: ${JSON.stringify(last)} in ${JSON.stringify(state.list)}`);
       if (width === 390) assert.ok(state.list.scrollLeft > 0, "the row scrolled, not the page");
