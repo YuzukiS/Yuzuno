@@ -96,6 +96,33 @@ test('Core\'s capability notice joins the collaboration append once and only wit
   }
 });
 
+test('attached-file folders are readable without a prompt and never writable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'yuzuno-attachments-'));
+  try {
+    // Without collaboration too: the folder is the Agent's own, nothing else.
+    const f = await fixture({}, { readableDirs: [dir] });
+    assert.equal(f.response('start').error, undefined);
+    assert.deepEqual(f.state.options.additionalDirectories, [dir]);
+    assert.deepEqual(f.state.options.disallowedTools, [`Edit(/${dir}/**)`]);
+    f.bridge.close(); await f.bridge.reader;
+    // A read-only level keeps its own list and adds the deny; neither replaces the other.
+    const readOnly = { disallowedTools: ['Bash', 'Write'], allowedTools: ['Read'] };
+    const r = await fixture({}, { readableDirs: [dir], readOnly });
+    assert.equal(r.response('start').error, undefined);
+    assert.deepEqual(r.state.options.additionalDirectories, [dir]);
+    assert.deepEqual(r.state.options.disallowedTools, ['Bash', 'Write', `Edit(/${dir}/**)`]);
+    r.bridge.close(); await r.bridge.reader;
+    // A relative path, a pattern, a `..` or an empty list is refused before any start.
+    for (const bad of [['relative/dir'], [`${dir}/*`], ['/a/../b'], [''], [7], []]) {
+      const rejected = await fixture({}, { readableDirs: bad });
+      assert.match(rejected.response('start').error, /readable directories/, JSON.stringify(bad));
+      rejected.bridge.close(); await rejected.bridge.reader;
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('urgent mailbox context reaches one native tool boundary without another prompt or turn', async () => {
   const f = await mailboxFixture();
   await f.bridge.handle({ id: 'send', op: 'send', turnId: 'turn1', text: 'continue work' });

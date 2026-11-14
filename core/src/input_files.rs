@@ -287,6 +287,18 @@ pub(crate) async fn save_stream(dir: PathBuf, name: &str, declared: Option<u64>,
     saved
 }
 
+/// The folder `agent` reads its attached files in, made private (0700) and
+/// canonical, as a harness's read rule names it before its start (F3a).
+/// Blocking.
+pub fn readable_agent_dir(root: &FsPath, agent: &str) -> Result<String> {
+    let dir = agent_dir(root, agent)?;
+    make_private(&dir)?;
+    Ok(std::fs::canonicalize(&dir)
+        .with_context(|| format!("Cannot resolve {}", dir.display()))?
+        .display()
+        .to_string())
+}
+
 /// A message's files, checked before it is sent: in this folder, still as
 /// they were saved (size and SHA-256), and within the count and the total.
 /// Their paths, in order. Blocking.
