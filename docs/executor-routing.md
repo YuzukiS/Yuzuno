@@ -22,7 +22,8 @@ version; a later slice adds to it.
 | YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
 | YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | Done |
 | YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | Done |
-| YN-138 PR 1 | [A queued executor whose candidate, account or key left](#routing-at-dispatch-s3b2) is routed again before it starts | This version |
+| YN-138 PR 1 | [A queued executor whose candidate, account or key left](#routing-at-dispatch-s3b2) is routed again before it starts | Done |
+| YN-138 PR 2 | [A started Claude executor whose account left its pool](#claude-swap-accounts) moves to another account of it and resumes its session | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -177,12 +178,50 @@ profile, refreshes its tokens and guards the default login.
     account;
   - any other listed account starts through
     `cswap run <slot> --require-session`;
-  - an account no longer listed is gone, and the executor does not start.
-    Core never starts it as another account. A refusal at launch (the account
-    became the default login after the list was read) fails that start the
-    same way. Before its first start, routing gives an executor whose account
-    left another candidate (YN-138, [Routing at dispatch](#routing-at-dispatch-s3b2));
-    once started, it is not moved to another account.
+  - an account no longer listed is gone, and the executor does not start
+    on it. A refusal at launch (the account became the default login after
+    the list was read) fails that start the same way.
+- **An account that left its pool (YN-138).** While routing is on and the
+  executor's route chose a pool candidate (on or off), an account taken out
+  of that pool's `accounts`, or no longer in the list just read, is changed
+  at that launch for another account of the pool: among the accounts the
+  list has, each `quota` condition holding, the one with the most of its week
+  left, ties to the lower number, as a dispatch picks one. That account
+  becomes its runtime profile and its route's `account`, and its route's
+  `accountChanged` keeps a line `{code, message, messageZh, from, to, at}`
+  (the last 10). None to change to refuses the launch, saying so. The
+  session resumes on the new account (its `claudeSessionId` is kept):
+  claude-swap 1.0.0 shares chat history by default, so every account's
+  `projects/` is a link to `~/.claude/projects` ([the auto memory
+  folder](#claude-swap-accounts), below), and `--resume` finds the session
+  under any of them. Routing off, or a candidate that is not a pool, never
+  changes an account. Before its first start, routing gives an executor
+  whose account left another candidate altogether ([Routing at
+  dispatch](#routing-at-dispatch-s3b2)).
+- **A connected executor on such an account moves once idle.** At each slot
+  pass, while routing is on, a Claude executor of this Core host, connected
+  and not disconnected by you, whose account left its pool, is moved when
+  the readings, fresh and available, give another account of the pool:
+  - only while nothing of it is under way: no Turn running, no request shown
+    or approval waited for, no background task or sub-agent still able to
+    report, and its status idle or error. A Turn under way is never cut
+    short; the pass after it ends moves it (one runs every 5 seconds, and
+    saving the policy wakes one);
+  - its bridge is detached as an update detaches one (the bridge confirms it
+    is idle, its events are drained, only that connection is closed), then
+    started again, and that launch changes the account as above. It is idle
+    after, its error cleared, and mail waiting for it is delivered. No Turn
+    is started for it;
+  - each move runs on its own, within the Workspace's start time limit
+    ([the start time limit](executor-model.md#executors-at-once), as a start is), so the pass never waits for it and
+    starts no second move of the same executor. A start that fails, or a
+    move the limit cuts off, is its failure, as a Reconnect's is: it is shown
+    with why and left to you, never closed. No other account to move to
+    leaves it connected as it is.
+
+  One you disconnected moves at your Reconnect; one whose bridge already
+  ended moves at its next start. Codex homes and API keys are not changed
+  for a started executor: a Codex thread lives in its own home.
 - **The launcher.** claude-swap 1.0.0's `run` has no quiet or JSON option and
   prints a notice to stdout before it execs Claude Code, while the Agent SDK
   reads Claude's JSON from that stdout. So a Claude executor on an account
@@ -236,7 +275,7 @@ Core runs.
 
 [An executor's account or key](executor-model.md#an-executors-account-or-key)
 has the rules: where the profile lives, that each start reads it again, and
-that a started executor is not moved to another account. This is what each harness
+that a started Claude executor moves to another account of its pool only when its account left it. This is what each harness
 gets, and what its tools can see. The key goes to that executor's process only:
 Core's own environment never holds it, so no other Agent, Job, review run or
 catalog read sees it.
@@ -434,6 +473,9 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
   "tier": "fast", "tierSource": "template",                       // only with a tier (YN-70): "template" | "lead" | "user"
   "chosen": "c-deepseek",                                         // null when none could be chosen
   "account": { "number": 2, "fingerprint": "3f2a…" },             // or { "home": "work" }, when the credential has one
+  "accountChanged": [ { "code": "accountLeftPool", "message": "…", "messageZh": "…", // a started Claude executor moved
+                        "from": { "number": 2, "fingerprint": "3f2a…" },        // off an account that left its pool
+                        "to": { "number": 3, "fingerprint": "9c1d…" }, "at": "…" } ], // (YN-138), the last 10
   "candidates": [
     { "id": "c-claude", "label": "Claude pool", "harness": "claude", "model": "opus",
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
@@ -754,7 +796,10 @@ dispatch is routed:
   now, it waits, keeping `left`; none it could ever be given, it is
   released onto the host's own login. Saving the policy wakes a pass at
   once. One a pass took to start first starts as it was routed.
-- **Once started, an executor is not moved to another account.**
+- **Once started, an executor keeps its candidate.** A Claude executor's
+  claude-swap account that left its pool is changed for another account of
+  the pool ([claude-swap accounts](#claude-swap-accounts)); nothing else of
+  it is.
 
 ### A real DeepSeek executor: the lab check (S3b3)
 

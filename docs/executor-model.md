@@ -1009,13 +1009,18 @@ executor starts on the host's own login, as before.
     and the host login is that same account;
   - any other listed account starts through `cswap run <slot> --require-session`;
   - an account no longer listed does not start.
-- **Once started, an executor is not moved to another account.** Before
-  its first start, one whose candidate, account or key left the routing
-  policy is routed again ([Routing at dispatch](executor-routing.md#routing-at-dispatch-s3b2), YN-138). A
-  refusal, an account that is gone, or a key that cannot be read fails that
-  start with its reason. The start is then a failed start like any other
-  (see [Executors at once](#executors-at-once)). Its session lives in that
-  account's profile, so another account could not resume it anyway.
+- **An executor keeps its account or key while it is there (YN-138).**
+  Before its first start, one whose candidate, account or key left the
+  routing policy is routed again ([Routing at dispatch](executor-routing.md#routing-at-dispatch-s3b2)).
+  Once started, only a Claude executor's claude-swap account changes, and
+  only when it left the executor's pool candidate: at its next start, or
+  once it is idle, it moves to another account of that pool and resumes its
+  session there, since claude-swap shares chat history between its accounts
+  ([claude-swap accounts](executor-routing.md#claude-swap-accounts)). A
+  Codex home or API key is never changed for a started executor. A refusal,
+  an account that is gone with no other in its pool, or a key that cannot be
+  read fails that start with its reason. The start is then a failed start
+  like any other (see [Executors at once](#executors-at-once)).
 - **On another machine** an executor with a profile does not start: keys and
   accounts stay on this Core host.
 - **It is not forked.** A fork is a new Agent, without the profile, so it
@@ -1024,7 +1029,8 @@ executor starts on the host's own login, as before.
 - **With an older Core**, the profile is not read: such an executor is
   reconnected on the host's own login. A Claude session started in a
   claude-swap profile is then not found. Close such executors before going
-  back to an older Core.
+  back to an older Core. A Core before YN-138 also never changes a started
+  executor's account.
 
 ## An executor's session
 

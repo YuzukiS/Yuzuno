@@ -499,6 +499,18 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
     Err((why, Value::Array(states)))
 }
 
+/// Another account of the pool `candidate` for a started executor whose account
+/// `except` left it (YN-138): as `pick` chooses, each quota condition holding,
+/// among the accounts `inputs.cswap` lists but `except`. Its fingerprint and number.
+pub(crate) fn pick_other(candidate: &Value, inputs: &Inputs, except: &str) -> Option<(String, u64)> {
+    let mut cswap = inputs.cswap.clone();
+    if let Some(accounts) = cswap["accounts"].as_array_mut() {
+        accounts.retain(|a| a["fingerprint"] != except);
+    }
+    let inputs = Inputs { cswap: &cswap, ..*inputs };
+    pick(candidate, &inputs).ok().map(|(fingerprint, number, _)| (fingerprint, number))
+}
+
 /// What an evaluation reads, gathered once from the store, the key file and the readings.
 pub(crate) struct Gathered {
     pub keys: Vec<(String, Provider, &'static str)>,
