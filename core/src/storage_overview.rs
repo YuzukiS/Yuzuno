@@ -24,6 +24,8 @@ const KNOWN: &[(&str, &str)] = &[
     ("workspace.lock", "lock"),
     ("input-images", "inputImages"),
     ("home-images", "homeImages"),
+    ("input-files", "inputFiles"),
+    ("home-files", "homeFiles"),
     ("brief-attachments", "briefAttachments"),
     ("pr-reviews", "reviews"),
     ("jobs", "jobs"),

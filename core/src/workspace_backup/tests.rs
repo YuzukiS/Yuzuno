@@ -192,6 +192,52 @@ fn a_backup_restores_into_a_new_folder_where_core_reads_every_agent() {
     assert_eq!(credentials, 0);
 }
 
+/// YN-145: the files attached for an Agent, and those kept for a Project's
+/// Home, are copied for the Agents and Projects the database copy names,
+/// read-only as they are; an upload still being written is not.
+#[test]
+fn attached_files_are_copied_for_the_agents_and_projects_the_database_names() {
+    let root = tempfile::tempdir().unwrap();
+    let data = workspace(root.path());
+    Store::open(&data.join(DATABASE)).unwrap().db.write().unwrap()
+        .execute("INSERT INTO projects(id,data) VALUES('project-a','{}')", []).unwrap();
+    let id = "c".repeat(64);
+    let write = |path: &str| {
+        let path = data.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"synthetic attached file").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+    };
+    let kept = [format!("home-files/project-a/{id}/notes.txt"), format!("input-files/agent-a/{id}/q3-report.pdf")];
+    let left_out = [
+        ("input-files/.tmp-upload", TEMPORARY),
+        ("input-files/agent-a/.tmp-upload", TEMPORARY),
+        ("input-files/agent-gone", NOT_IN_COPY),
+        ("home-files/project-a/.tmp-upload", TEMPORARY),
+        ("home-files/project-gone", NOT_IN_COPY),
+    ];
+    for path in &kept {
+        write(path);
+    }
+    for (path, _) in left_out {
+        // A folder of an Agent or Project the database no longer names.
+        write(&if path.ends_with("-gone") { format!("{path}/{id}/x") } else { path.to_owned() });
+    }
+    let out = root.path().join("backup");
+    let manifest = backup(&data, &out).unwrap();
+    let paths: Vec<_> = manifest.files.iter().map(|f| f.path.as_str()).filter(|p| p.contains("-files/")).collect();
+    assert_eq!(paths, kept);
+    let left: BTreeMap<_, _> = manifest.excluded.iter().map(|e| (e.path.as_str(), e.reason.as_str())).collect();
+    for (path, reason) in left_out {
+        assert_eq!(left[path], reason, "{path}");
+    }
+    let target = root.path().join("restored");
+    restore(&out, &target).unwrap();
+    for path in kept {
+        assert_eq!(fs::read(target.join(&path)).unwrap(), b"synthetic attached file", "{path}");
+    }
+}
+
 #[test]
 fn a_damaged_or_altered_backup_is_refused_and_nothing_is_restored() {
     let root = tempfile::tempdir().unwrap();

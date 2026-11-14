@@ -38,6 +38,8 @@ export const entryLabels: Record<string, string> = {
   lock: "Workspace lock",
   inputImages: "Images sent to Agents",
   homeImages: "Images written on Home",
+  inputFiles: "Files attached in conversations",
+  homeFiles: "Files attached on Home",
   briefAttachments: "Brief attachments",
   reviews: "Code review sources",
   jobs: "Job records and output logs",
