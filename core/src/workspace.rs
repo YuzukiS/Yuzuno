@@ -1539,6 +1539,12 @@ impl Workspace {
         }
         let agent = id.to_owned();
         self.stored(move |store| store.delete_closed_agent(&agent)).await?;
+        // Its attached files go with it (YN-145); one left behind is only logged.
+        let (root, agent) = (self.data_dir.clone(), id.to_owned());
+        let removed = tokio::task::spawn_blocking(move || crate::input_files::remove_agent_dir(&root, &agent)).await;
+        if let Err(error) = removed.map_err(anyhow::Error::from).and_then(|removed| removed) {
+            eprintln!("Agent {id} was deleted; its attached files were not removed: {error:#}");
+        }
         self.changed(id);
         // A source must not keep pointing at a deleted continuation; it shows
         // its writer conflict again and can be forked by an explicit request.

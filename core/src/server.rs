@@ -177,6 +177,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::machine_load::router())
         .merge(crate::remote_service::router())
         .merge(crate::storage_overview::router())
+        .merge(crate::input_files::router())
         .merge(crate::claude_sdk::router())
         .merge(crate::github::router())
         .merge(crate::workspace_backup::online::router())
