@@ -62,7 +62,7 @@ const CREDENTIALS: &str = "collaboration.mcp.agent.*";
 
 /// Folders Core keeps its own files in; what is copied from each is chosen
 /// by the database copy (`Named`).
-pub(crate) const INCLUDED: &[&str] = &["input-images", "brief-attachments", "pr-reviews", "jobs"];
+pub(crate) const INCLUDED: &[&str] = &["input-images", "home-images", "brief-attachments", "pr-reviews", "jobs"];
 /// Names in the Workspace folder left out, with the reason the manifest gives.
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("workspace.lock", "The lock of the Core using the Workspace"),
@@ -478,11 +478,12 @@ pub fn restore_with(backup: &Path, target: &Path, keep_out: Option<&Path>, ctl: 
     result.context("Nothing was restored; nothing else was changed")
 }
 
-/// What the database copy names: the Agents, Jobs, reviews and Brief
-/// attachment files whose folders and files a backup holds.
+/// What the database copy names: the Agents, Projects, Jobs, reviews and
+/// Brief attachment files whose folders and files a backup holds.
 #[derive(Default)]
 struct Named {
     agents: BTreeSet<String>,
+    projects: BTreeSet<String>,
     jobs: BTreeSet<String>,
     finished_reviews: BTreeSet<String>,
     running_reviews: BTreeSet<String>,
@@ -501,6 +502,7 @@ impl Named {
         };
         Ok(Self {
             agents: ids("agents", "SELECT id FROM agents")?,
+            projects: ids("projects", "SELECT id FROM projects")?,
             jobs: ids("local_jobs", "SELECT id FROM local_jobs")?,
             finished_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status NOT IN ('preparing','running')")?,
             running_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status IN ('preparing','running')")?,
@@ -514,6 +516,8 @@ impl Named {
         let named = match folder {
             "input-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
             "input-images" => self.agents.contains(entry),
+            "home-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
+            "home-images" => self.projects.contains(entry),
             "brief-attachments" if entry.starts_with(".tmp-") => return Err(TEMPORARY),
             "brief-attachments" => self.attachments.contains(entry),
             "pr-reviews" if self.running_reviews.contains(entry) => return Err(RUNNING_REVIEW),
@@ -527,7 +531,7 @@ impl Named {
     /// Why a name inside a kept entry is left out, if it is.
     fn skip(folder: &str, name: &str) -> Option<&'static str> {
         match folder {
-            "input-images" if name.starts_with(".tmp") => Some(TEMPORARY),
+            "input-images" | "home-images" if name.starts_with(".tmp") => Some(TEMPORARY),
             "pr-reviews" if name == "objects.git" => Some(REVIEW_CACHE),
             _ => None,
         }

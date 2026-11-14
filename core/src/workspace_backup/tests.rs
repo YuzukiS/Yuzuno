@@ -1134,3 +1134,52 @@ async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays
     let third = backups.start("check", "third", json!({"path": "/c"}), |_| None, |_| unreachable!("not while the second runs"));
     assert!(matches!(third, Err(Refusal::Busy(id)) if id == second.id), "the second, still running, holds the place");
 }
+
+/// YN-134: a Project's images written on Home are in a backup while its
+/// database copy names the Project. A folder of a Project it does not name
+/// and temporary files are left out with their reason, and a backup that
+/// holds images of a Project its copy does not name is refused.
+#[test]
+fn home_images_go_with_the_projects_the_database_copy_names() {
+    let root = tempfile::tempdir().unwrap();
+    let data = workspace(root.path());
+    let project = Store::open(&data.join(DATABASE)).unwrap().create_project("Synthetic", Default::default()).unwrap().id;
+    let image = format!("home-images/{project}/{}.png", "c".repeat(64));
+    let half = format!("home-images/{project}/.tmpUpload");
+    for (path, bytes) in [
+        (image.as_str(), &b"\x89PNG synthetic image written on Home"[..]),
+        (half.as_str(), b"half an image"),
+        ("home-images/project-gone/0.png", b"a Project the database no longer names"),
+        ("home-images/.tmp-folder/0.png", b"temporary"),
+    ] {
+        let path = data.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let out = root.path().join("backup");
+    let manifest = backup(&data, &out).unwrap();
+    assert!(manifest.files.iter().any(|f| f.path == image), "{:?}", manifest.files);
+    assert!(!manifest.files.iter().any(|f| f.path.starts_with("home-images/") && f.path != image), "{:?}", manifest.files);
+    let left: BTreeMap<_, _> = manifest.excluded.iter().map(|e| (e.path.as_str(), e.reason.as_str())).collect();
+    for (path, reason) in [
+        (half.as_str(), TEMPORARY),
+        ("home-images/project-gone", NOT_IN_COPY),
+        ("home-images/.tmp-folder", TEMPORARY),
+    ] {
+        assert_eq!(left[path], reason, "{path}");
+    }
+    let target = root.path().join("restored");
+    restore(&out, &target).unwrap();
+    assert_eq!(fs::read(target.join(&image)).unwrap(), fs::read(data.join(&image)).unwrap());
+    assert!(!target.join("home-images/project-gone").exists());
+
+    // A backup holding the images of a Project its copy does not name.
+    let broken = copy_of(&out, &root.path().join("broken"));
+    let path = "home-images/project-gone/0.png";
+    let file = broken.join(FILES).join(path);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "added").unwrap();
+    let (bytes, sha256) = hash_file(&file).unwrap();
+    rewrite_manifest(&broken, |m| m["files"].as_array_mut().unwrap().push(json!({"path":path,"bytes":bytes,"sha256":sha256})));
+    assert!(error(verify(&broken)).contains("which its database copy does not name"));
+}
