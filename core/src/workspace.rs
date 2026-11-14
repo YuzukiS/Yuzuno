@@ -113,6 +113,11 @@ pub struct Workspace {
     pub(crate) rpcs: std::sync::Mutex<HashMap<String, Connection>>,
     pub(crate) claudes: std::sync::Mutex<HashMap<String, crate::claude::Connection>>,
     pub(crate) opencodes: std::sync::Mutex<HashMap<String, crate::opencode_agent::Connection>>,
+    /// Each dsh Agent's running dsh (YN-119 S2a, `dsh_agent`).
+    pub(crate) dshs: std::sync::Mutex<HashMap<String, crate::dsh_agent::Connection>>,
+    /// A test's stand-in dsh and model address, in place of `YUZUNO_DSH_BIN` and `YUZUNO_DSH_BASE_URL`.
+    #[cfg(test)]
+    pub(crate) dsh_test: std::sync::Mutex<Option<(PathBuf, Option<String>)>>,
     pub(crate) claude_mcp: crate::claude_mcp::State,
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     owners: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -216,6 +221,9 @@ impl Workspace {
             rpcs: std::sync::Mutex::new(HashMap::new()),
             claudes: std::sync::Mutex::new(HashMap::new()),
             opencodes: std::sync::Mutex::new(HashMap::new()),
+            dshs: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            dsh_test: std::sync::Mutex::new(None),
             claude_mcp: Default::default(),
             gates: Mutex::new(HashMap::new()),
             owners: std::sync::Mutex::new(HashMap::new()),
@@ -571,6 +579,8 @@ impl Workspace {
             opencode_session_id: None,
             opencode_version: None,
             opencode_major: None,
+            dsh_session_id: None,
+            dsh_version: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
@@ -1190,6 +1200,7 @@ impl Workspace {
         let codex = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
         codex.or_else(|| self.claudes.lock().unwrap().get(id).map(|c| c.generation))
             .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
+            .or_else(|| self.dshs.lock().unwrap().get(id).map(|c| c.generation))
     }
 
     /// Ensure, then reconcile the thread with the record, as a Reconnect
@@ -1293,6 +1304,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_accepted(id, permit).await,
             "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
+            "dsh" => return self.dsh_reconnect_accepted(id, permit).await,
             _ => {}
         }
         self.reconnect_codex(id, true).await?.context("record")
@@ -1320,6 +1332,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_gated(id, permit, false).await.map(drop),
             "opencode" => return self.opencode_reconnect_gated(id, permit, false).await.map(drop),
+            "dsh" => return self.dsh_reconnect_gated(id, permit, false).await.map(drop),
             _ => {}
         }
         self.reconnect_codex(id, false).await.map(drop)
@@ -1391,6 +1404,8 @@ impl Workspace {
             self.claude_close_runtime(id).await?;
         } else if view.agent.harness == "opencode" {
             self.opencode_close_runtime(id).await?;
+        } else if view.agent.harness == "dsh" {
+            self.dsh_close_runtime(id).await?;
         } else {
             // A detached remote turn may still be running. Reconcile native
             // history first, without sending/replaying any task.
@@ -1524,6 +1539,12 @@ impl Workspace {
                 self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
             }
         }
+        if closed.harness == "dsh" {
+            // Its dsh stopped above; its folder of Core's own goes before anything of the Agent is deleted (YN-119 §3.8).
+            let (data, agent) = (self.data_dir.clone(), id.to_owned());
+            tokio::task::spawn_blocking(move || crate::dsh_agent::remove_folder(&data, &agent)).await?
+                .map_err(|error| anyhow::anyhow!("dsh Agent 的文件夹没有删除（{error:#}）；Agent 没有删除"))?;
+        }
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.
@@ -1599,6 +1620,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_send(id, text).await,
             "opencode" => return self.opencode_send(id, text).await,
+            "dsh" => return self.dsh_send(id, text).await,
             _ => {}
         }
         let _permit = self.admission.enter_work()?;
@@ -1726,6 +1748,9 @@ impl Workspace {
         if detail.agent.harness == "opencode" {
             return self.opencode_admit(id, input, detail).await;
         }
+        if detail.agent.harness == "dsh" {
+            return self.dsh_admit(id, input, detail).await;
+        }
         if detail.agent.harness == "claude" {
             if input.clarification.is_some() { return self.claude_admit_form(id).await; }
             if input.expected_turn_id.is_none() {
@@ -1842,7 +1867,7 @@ impl Workspace {
                 anyhow::ensure!(detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
-            if !claude && detail.agent.harness != "opencode" {
+            if !claude && !matches!(detail.agent.harness.as_str(), "opencode" | "dsh") {
                 let agent = id.to_owned();
                 self.stored(move |store| store.activate_codex_import(&agent)).await?;
             }
@@ -1872,6 +1897,9 @@ impl Workspace {
                 Some(expected) => self.opencode_add_input_locked(id, &input.text, expected, &input.client_message_id, &input.images).await,
                 None => self.opencode_send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, true).await,
             }
+        } else if detail.agent.harness == "dsh" {
+            // A new message only (`dsh_admit`); a form's answers are one too.
+            self.dsh_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
         } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
             self.claude_answer_form_locked(id, &input).await
         } else if input.question.is_some() || input.clarification.is_some() {
@@ -2355,6 +2383,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_interrupt(id).await,
             "opencode" => return self.opencode_interrupt(id).await,
+            "dsh" => return self.dsh_interrupt(id).await,
             _ => {}
         }
         let d = self.send_view(id).await?;
@@ -2697,6 +2726,10 @@ impl Workspace {
             }
             if a.harness == "opencode" {
                 if self.opencode_respond(&a.id, request_id, &response).await? { return Ok(()); }
+                continue;
+            }
+            // Core answers every request of a dsh Agent itself (YN-119 S2a): none is the user's.
+            if a.harness == "dsh" {
                 continue;
             }
             // Re-read Pending under the same lock as disconnect; reply and
@@ -3446,7 +3479,7 @@ mod tests {
         assert_eq!(p["approvalPolicy"], "on-request");
         assert_eq!(p["approvalsReviewer"], "user");
         assert_eq!(p["sandbox"], "workspace-write");
-        agent.settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort: Some("high".into()), approval_policy: "never".into(), sandbox: "read-only".into(), permission_preset: None, permission_mode: None };
+        agent.settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort: Some("high".into()), approval_policy: "never".into(), sandbox: "read-only".into(), permission_preset: None, permission_mode: None, permission_level: None };
         let p = resume_params("thread", &agent);
         assert_eq!(p["approvalPolicy"], "never");
         assert_eq!(p["sandbox"], "read-only");

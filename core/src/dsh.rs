@@ -539,24 +539,29 @@ impl Drop for Group {
 /// the overlay's, DSH_TELEMETRY_DISABLED=1, and with `key` the Agent's key.
 /// No key or token is ever in its arguments.
 fn command(launch: &Launch, prepared: &Prepared, args: &[&OsStr], key: bool) -> Command {
-    let mut command = Command::new(&launch.program);
-    command.args(args).current_dir(&launch.directory);
-    for (name, _) in std::env::vars_os() {
-        let bytes = name.as_encoded_bytes();
-        if bytes.starts_with(b"DSH_") || bytes.starts_with(b"DEEPSEEK_") {
-            command.env_remove(&name);
-        }
-    }
-    command
-        .env("DSH_HOME", &prepared.home)
-        .env("DSH_PERMISSION_MODE", launch.access.mode())
-        .env("DSH_TELEMETRY_DISABLED", "1");
+    let mut command = bare(&launch.program, &launch.directory, &prepared.home);
+    command.args(args).env("DSH_PERMISSION_MODE", launch.access.mode());
     if let (true, Some(secret)) = (key, &launch.key) {
         command.env("DEEPSEEK_API_KEY", secret.expose());
     }
     if let Some(endpoint) = &launch.endpoint {
         command.env("DEEPSEEK_BASE_URL", endpoint);
     }
+    command
+}
+
+/// `program` in `directory`, in a group of its own, with Core's environment
+/// but its DSH_* and DEEPSEEK_*, DSH_HOME `home` and no telemetry.
+fn bare(program: &Path, directory: &Path, home: &Path) -> Command {
+    let mut command = Command::new(program);
+    command.current_dir(directory);
+    for (name, _) in std::env::vars_os() {
+        let bytes = name.as_encoded_bytes();
+        if bytes.starts_with(b"DSH_") || bytes.starts_with(b"DEEPSEEK_") {
+            command.env_remove(&name);
+        }
+    }
+    command.env("DSH_HOME", home).env("DSH_TELEMETRY_DISABLED", "1");
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
@@ -670,7 +675,19 @@ pub async fn check(launch: &Launch) -> Result<Checked> {
 }
 
 async fn read_version(launch: &Launch, prepared: &Prepared) -> Result<(Version, Standing)> {
-    let output = run(command(launch, prepared, &["--version".as_ref()], false), VERSION_LIMIT, VERSION_MOST, "--version").await?;
+    version_of(run(command(launch, prepared, &["--version".as_ref()], false), VERSION_LIMIT, VERSION_MOST, "--version").await?)
+}
+
+/// The dsh `program` names as step 1 of a start reads it (§5.1), before any
+/// Agent starts (YN-119 S2a, `/api/workspace`): in `home`, an empty folder
+/// of Core's own that is its DSH_HOME and working directory, with no key.
+pub async fn installed(program: &Path, home: &Path) -> Result<(Version, Standing)> {
+    let mut command = bare(program, home, home);
+    command.arg("--version");
+    version_of(run(command, VERSION_LIMIT, VERSION_MOST, "--version").await?)
+}
+
+fn version_of(output: Output) -> Result<(Version, Standing)> {
     ensure!(output.status.success(), "`dsh --version` failed ({}); {UPDATE}", status_said(&output));
     let text = String::from_utf8_lossy(&output.stdout);
     standing(text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default())
@@ -956,6 +973,8 @@ pub struct Dsh {
     close_input: watch::Sender<bool>,
     stopped: watch::Receiver<bool>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// Once dsh's stderr has ended, all of it read.
+    stderr_ended: watch::Receiver<bool>,
     version: Version,
     standing: Standing,
     initialized: Value,
@@ -999,9 +1018,10 @@ impl Dsh {
         let (stopped_tx, stopped) = watch::channel(false);
         let waiting: Waiting = Arc::default();
         let kept = Arc::new(Mutex::new(Vec::new()));
+        let (ended_tx, stderr_ended) = watch::channel(false);
         tokio::spawn(write(stdin, rx, closing));
         tokio::spawn(read(stdout, waiting.clone(), events.into(), stopped_tx));
-        tokio::spawn(keep_tail(stderr, kept.clone()));
+        tokio::spawn(keep_tail(stderr, kept.clone(), ended_tx));
         let mut dsh = Self {
             group,
             child: tokio::sync::Mutex::new(child),
@@ -1011,6 +1031,7 @@ impl Dsh {
             close_input,
             stopped,
             stderr: kept,
+            stderr_ended,
             version: checked.version,
             standing: checked.standing,
             initialized: Value::Null,
@@ -1061,6 +1082,14 @@ impl Dsh {
     /// The last STDERR_KEPT bytes dsh wrote on stderr.
     pub fn stderr_tail(&self) -> String {
         String::from_utf8_lossy(&self.stderr.lock().unwrap()).into_owned()
+    }
+
+    /// What dsh said last on stderr, as a refusal quotes it: once its stderr
+    /// has ended (an ended dsh's group is ended first, `shutdown`), or after
+    /// at most a second.
+    pub async fn last_words(&self) -> String {
+        let _ = timeout(Duration::from_secs(1), self.stderr_ended.clone().wait_for(|ended| *ended)).await;
+        said(&self.stderr.lock().unwrap())
     }
 
     /// The tail of stderr, after a moment for its last lines, as a refusal
@@ -1233,8 +1262,9 @@ async fn route(mut message: Value, bytes: usize, waiting: &Waiting, events: &Eve
     Ok(())
 }
 
-/// Keeps the last STDERR_KEPT bytes of dsh's stderr, draining all of it.
-async fn keep_tail(mut stderr: tokio::process::ChildStderr, kept: Arc<Mutex<Vec<u8>>>) {
+/// Keeps the last STDERR_KEPT bytes of dsh's stderr, draining all of it,
+/// and says when it has ended.
+async fn keep_tail(mut stderr: tokio::process::ChildStderr, kept: Arc<Mutex<Vec<u8>>>, ended: watch::Sender<bool>) {
     let mut chunk = [0u8; 4096];
     while let Ok(read) = stderr.read(&mut chunk).await {
         if read == 0 {
@@ -1245,6 +1275,7 @@ async fn keep_tail(mut stderr: tokio::process::ChildStderr, kept: Arc<Mutex<Vec<
         let over = kept.len().saturating_sub(STDERR_KEPT);
         kept.drain(..over);
     }
+    let _ = ended.send(true);
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@
 //!   Claude Code gets ANTHROPIC_API_KEY with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1,
 //!   so its Bash commands, hooks and stdio MCP servers don't inherit it.
 //!   OpenCode gets its provider's variable; its shell tool does inherit the
-//!   server's environment (a known limit, docs/executor-routing.md).
+//!   server's environment (a known limit, docs/executor-routing.md). dsh
+//!   gets DEEPSEEK_API_KEY from a DeepSeek key only (YN-119 §3.10).
 //! - **Codex**: a named CODEX_HOME (routing_accounts) is that process's
 //!   `CODEX_HOME`. An OpenAI key: `codex app-server` reads no CODEX_API_KEY,
 //!   so the process runs in a home of Core's own (`codex-api-home`) with
@@ -209,6 +210,23 @@ impl Workspace {
                     Provider::Openai => "OPENAI_API_KEY",
                 };
                 Ok(vec![(name.into(), key)])
+            }
+        }
+    }
+
+    /// The DeepSeek key Agent `id`'s dsh starts with (YN-119 §3.10), given to
+    /// that one process as DEEPSEEK_API_KEY and nowhere else (`dsh::Launch`).
+    /// dsh passes on no key of Core's own environment (dsh.rs), so a dsh
+    /// Agent without a DeepSeek routing key does not start.
+    pub(crate) async fn dsh_launch(&self, id: &str) -> Result<Secret> {
+        match self.profile_of(id).await? {
+            None => bail!("{}", crate::dsh_agent::NO_KEY),
+            Some(RuntimeProfile::ClaudeAccount { .. }) => bail!("A claude-swap account is a Claude executor's, not a dsh Agent's"),
+            Some(RuntimeProfile::CodexHome { .. }) => bail!("A Codex home is a Codex executor's, not a dsh Agent's"),
+            Some(RuntimeProfile::ApiKey { key_id }) => {
+                let (provider, key) = self.routing_key(&key_id).await?;
+                anyhow::ensure!(provider == Provider::Deepseek, "Routing key {key_id} is not a DeepSeek key, so a dsh Agent cannot start with it");
+                Ok(key)
             }
         }
     }

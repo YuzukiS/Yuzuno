@@ -52,6 +52,8 @@ pub mod conversation_time;
 pub mod data_dir;
 pub mod db;
 pub mod dsh;
+/// dsh Agents on the process layer (YN-119 S2a).
+mod dsh_agent;
 pub mod events;
 pub mod gpu_sampler;
 pub mod machine_load;

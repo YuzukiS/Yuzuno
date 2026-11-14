@@ -1020,6 +1020,7 @@ impl Workspace {
         match agent.harness.as_str() {
             "claude" => self.claude_ensure(id).await.map(drop)?,
             "opencode" => self.opencode_ensure(id).await.map(drop)?,
+            "dsh" => self.dsh_ensure(id).await.map(drop)?,
             _ if attempt > 1 => self.reconcile(id).await?,
             _ => self.ensure(id).await.map(drop)?,
         }
