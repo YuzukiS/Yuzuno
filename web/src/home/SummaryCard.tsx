@@ -5,7 +5,7 @@ import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { attachmentUrl, type ChartProps, type ResearchDeskProps } from "./brief/brief-catalog";
+import { attachmentUrl, type ChartProps, type CollectionProps, type ResearchDeskProps } from "./brief/brief-catalog";
 import { BriefContext } from "./brief/BriefContext";
 import { briefText } from "./brief/brief-text";
 import { CardChart, type ChartKind } from "./brief/Charts";
@@ -14,6 +14,7 @@ import { reportMarkdown } from "./brief/brief-copy";
 import { keptSnapshot, useKeptImage } from "./brief/kept-image";
 import { useKeptImagePreview } from "./brief/image-preview";
 import { BriefMarkdown } from "./brief/Markdown";
+import { BriefCollection } from "./brief/Collection";
 import { BriefStateScope } from "./brief/brief-state";
 import { DeskCardClaim } from "./brief/ResearchDesk";
 import { changedSinceSeen, readBefore, sectionDomId, unreadChange } from "./brief-layout";
@@ -143,9 +144,10 @@ export const SummaryCard = memo(function SummaryCard({
   // a kept image, a button that opens it whole in place (YN-3); any other,
   // one line naming it and where it is read, "Open report" below.
   const shown = content.figure;
-  // A figure of inputs is drawn at every size: the reader sets it on the card (YN-16).
-  const figure = !shown ? null : size !== "small" || shown.kind === "interactive" ? (
-    <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} agents={agents} />
+  // A figure of inputs is drawn at every size: the reader sets it on the card (YN-16). So is a Collection, as much of
+  // it as the card holds: on a small card its first item (YN-128).
+  const figure = !shown ? null : size !== "small" || shown.kind === "interactive" || shown.kind === "collection" ? (
+    <FigureFrame section={section} projectId={projectId} figure={shown} size={size} agents={agents} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
   ) : shown.kind === "image" && shown.kept ? (
@@ -231,8 +233,9 @@ export const SummaryCard = memo(function SummaryCard({
           <MoreActions section={section} projectId={projectId} readOnly={readOnly} widget={widget && own ? { ...widget, own } : undefined} />
         </span>
       </header>
-      {/* The text, and beside it on a wide card or under it otherwise, the one figure. */}
-      <div className={`home-summary-body${figure ? " has-figure" : ""}`}>
+      {/* The text, and beside it on a wide card or under it otherwise, the one figure; a Collection, which needs the
+          card's width, always under it (YN-113 §3.6). */}
+      <div className={`home-summary-body${figure ? " has-figure" : ""}${figure && shown?.kind === "collection" ? " has-collection" : ""}`}>
         <div className="home-summary-text">
           <h3 id={`${domId}-title`} className="home-summary-title">
             {report ? (
@@ -612,7 +615,8 @@ function ImageView({ section, projectId, figure }: { section: Section; projectId
  * to fit the frame, its axes and legend with it (CardChart, Lead 2655); the
  * report page has the whole chart.
  */
-function FigureFrame({ section, projectId, figure, large, agents }: { section: Section; projectId: string; figure: CardFigure; large: boolean; agents: Agent[] }) {
+function FigureFrame({ section, projectId, figure, size, agents }: { section: Section; projectId: string; figure: CardFigure; size: CardSize | null; agents: Agent[] }) {
+  const large = size === "large";
   const t = useStrings(cardText);
   const words = useStrings(briefText);
   // A kept image arrives as on its report page (T-19 HM:B14, kept-image.ts): the same snapshot (this Workspace, the
@@ -651,6 +655,17 @@ function FigureFrame({ section, projectId, figure, large, agents }: { section: S
         </div>
       </figure>
     );
+  // A Collection, by its own renderer, as much as the card holds; its links and pictures work on the card (YN-128).
+  if (figure.kind === "collection") {
+    const props = (section.body as { elements?: Record<string, { props?: unknown }> }).elements?.[figure.id]?.props as CollectionProps | undefined;
+    return props ? (
+      <figure className="home-card-frame kind-collection">
+        <BriefContext.Provider value={brief}>
+          <BriefCollection {...props} face={size ?? "wide"} />
+        </BriefContext.Provider>
+      </figure>
+    ) : null;
+  }
   if (figure.kind === "page")
     return (
       <figure className="home-card-frame kind-page">
