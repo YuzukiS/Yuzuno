@@ -1717,7 +1717,8 @@ function TaskPane({
                 {task.result ? t.updateResult : t.addResult}
               </button>
             </div>
-            <TaskOutcome task={task} onOpenAgent={onOpenAgent} availableAgents={agents.map(agent => agent.id)} />
+            <TaskOutcome task={task} onOpenAgent={onOpenAgent} availableAgents={agents.map(agent => agent.id)}
+              ownerName={agents.find((agent) => agent.id === task.assigneeAgentId)?.name} />
             {reporting && (
               <MutationForm
                 pending={mutation.pending}

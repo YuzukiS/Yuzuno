@@ -126,6 +126,7 @@ import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { EndMissingTurnDialog } from "./EndMissingTurn";
 import { DisconnectAgentDialog } from "./DisconnectAgent";
+import { RenameAgentDialog } from "./RenameAgent";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
@@ -493,6 +494,8 @@ export function App() {
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
+  // The Agent the rename dialog is open on (YN-112), from its actions menu.
+  const [renameFor, setRenameFor] = useState<string | null>(null);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
@@ -2531,6 +2534,8 @@ export function App() {
       setEndMissingFor(id);
     },
     disconnect: (id) => setDisconnectFor(id),
+    // In place, without opening the Agent: only its name changes.
+    rename: previewMode ? undefined : (id) => setRenameFor(id),
     copyLink: linkBase && workspaceId && !previewMode ? copyAgentLink : undefined,
   };
   useEffect(() => {
@@ -4080,6 +4085,10 @@ export function App() {
                     // Only Codex has context settings to apply.
                     setNotice(shell.settingsSaved(agent.harness !== "codex"));
                   }}
+                  onRenamed={(name) => {
+                    refresh();
+                    setNotice(shell.renamed(name));
+                  }}
                 />
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
@@ -5316,6 +5325,15 @@ export function App() {
           }}
         />
       )}
+      <RenameAgentDialog
+        agent={workspace?.agents.find((candidate) => candidate.id === renameFor) ?? null}
+        open={!!renameFor}
+        onOpenChange={(open) => { if (!open) setRenameFor(null); }}
+        onRenamed={(name) => {
+          setNotice(shell.renamed(name));
+          refresh();
+        }}
+      />
       <DisconnectAgentDialog
         agent={workspace?.agents.find((candidate) => candidate.id === disconnectFor) ?? null}
         open={!!disconnectFor}
