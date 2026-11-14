@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api, isNative } from "./api";
 import type { NeedsYouItem } from "./home/types";
+import { readRefreshes, type RefreshItem } from "./brief-refreshes";
 import { knownDesktopNotifier, readDesktopNotifier, useDesktopNotifier } from "./desktop-notifier";
 import { browserHost, notificationAccess, reachesSystem, showSystemNotification } from "./notification-access";
-import { agentNotices, askNotices, backupNotice, merged, type AgentState, type BackupRun, type Notice } from "./notification-events";
+import { agentNotices, askNotices, backupNotice, merged, refreshNotices, refreshTurns, type AgentState, type BackupRun, type Notice } from "./notification-events";
 import { notifies } from "./notification-prefs";
 import { useNotificationPrefs } from "./notification-store";
 
@@ -42,11 +43,41 @@ export function useBackupRun(revision: number, enabled = true): BackupRun | null
 }
 
 /**
+ * The refreshes Core lists (`GET /api/brief-refreshes`), read when Core says
+ * one changed (`revision`), only while a refresh notice could be notified on
+ * this device (YN-113 R4). Otherwise nothing is read and `undefined` is
+ * returned, so the next read starts afresh.
+ */
+export function useRefreshRuns(revision: number, enabled = true): RefreshItem[] | undefined {
+  const prefs = useNotificationPrefs();
+  const desktop = useDesktopNotifier();
+  const wanted = enabled && prefs.enabled && !prefs.muted && (prefs.categories.finished || prefs.categories.failed)
+    && reachesSystem(notificationAccess(browserHost(isNative, desktop)));
+  const [items, setItems] = useState<RefreshItem[] | undefined>(undefined);
+  useEffect(() => {
+    if (!wanted) {
+      setItems(undefined);
+      return;
+    }
+    let current = true;
+    readRefreshes().then(
+      (read) => current && setItems(read.items),
+      // A read that fails changes nothing: the next one compares with the last.
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [wanted, revision]);
+  return wanted ? items : undefined;
+}
+
+/**
  * Shows this device's system notifications for what changed between the
  * Workspace's reads (T-188): the Agent list, the Asks in Home's Needs you,
- * and the daily backup's last run (T-196). It shows them only where this
- * device chose them and its system allows them, and asks the system
- * nothing; it sends nothing to Core.
+ * the daily backup's last run (T-196), and Home cards' scheduled refreshes
+ * (YN-113 R4). It shows them only where this device chose them and its
+ * system allows them, and asks the system nothing; it sends nothing to Core.
  */
 export function useSystemNotifications(
   workspaceId: string,
@@ -54,6 +85,7 @@ export function useSystemNotifications(
   asks: NeedsYouItem[] | null,
   open: (notice: Notice) => void,
   backup?: BackupRun | null,
+  refreshes?: RefreshItem[],
 ) {
   const chosen = useNotificationPrefs();
   const prefs = useRef(chosen);
@@ -64,9 +96,19 @@ export function useSystemNotifications(
   useEffect(() => void readDesktopNotifier(), []);
   // The last reads compared with, per Workspace: another one starts afresh.
   // `backup` is undefined until a read; `shown` holds the backup notices
-  // this page showed, each once, whatever the reads after.
-  type Seen = { workspaceId: string; agents: AgentState[] | null; asks: NeedsYouItem[] | null; backup: BackupRun | null | undefined; shown: Set<string> };
-  const fresh = (): Seen => ({ workspaceId, agents: null, asks: null, backup: undefined, shown: new Set() });
+  // this page showed, each once, whatever the reads after. `refreshes` and
+  // the Turns they ran in are the last read of Home's scheduled refreshes
+  // (YN-113 R4): their Agent's generic Turn end is not notified.
+  type Seen = {
+    workspaceId: string;
+    agents: AgentState[] | null;
+    asks: NeedsYouItem[] | null;
+    backup: BackupRun | null | undefined;
+    refreshes: RefreshItem[] | null;
+    refreshTurnIds: Set<string>;
+    shown: Set<string>;
+  };
+  const fresh = (): Seen => ({ workspaceId, agents: null, asks: null, backup: undefined, refreshes: null, refreshTurnIds: new Set(), shown: new Set() });
   const last = useRef<Seen>(fresh());
   const before = () => {
     if (last.current.workspaceId !== workspaceId) last.current = fresh();
@@ -89,9 +131,19 @@ export function useSystemNotifications(
       void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice), whenAway: !inView });
   };
   useEffect(() => {
+    if (!refreshes) return;
+    const seen = before();
+    const notices = refreshNotices(seen.refreshes, refreshes, prefs.current.preview);
+    seen.refreshes = refreshes;
+    seen.refreshTurnIds = refreshTurns(refreshes);
+    show(notices);
+    // Each read of the refreshes, and only that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, refreshes]);
+  useEffect(() => {
     if (!agents) return;
     const seen = before();
-    const notices = agentNotices(seen.agents, agents, prefs.current.preview);
+    const notices = agentNotices(seen.agents, agents, prefs.current.preview, seen.refreshTurnIds);
     seen.agents = agents;
     show(notices);
     // Each read of the list, and only that.

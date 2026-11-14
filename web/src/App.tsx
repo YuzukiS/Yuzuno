@@ -240,7 +240,7 @@ import {
 import { markTurnSeen, useTurnSeen } from "./turn-seen";
 import { useOpenAsks } from "./home/open-asks";
 import { GateAsks } from "./GateAsks";
-import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
+import { useBackupRun, useRefreshRuns, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
 import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
 import { ExecutorOverview, ExecutorPaneTabs, type ExecutorPaneTab } from "./ExecutorOverview";
@@ -409,6 +409,9 @@ export function App() {
   const [settingsAt, setSettingsAt] = useState<SettingsOpenAt | null>(null);
   // Core said the daily backup's last run changed: read again for notifications.
   const [backupRevision, setBackupRevision] = useState(0);
+  // Core said a Home card's scheduled refresh changed (YN-113 R4): read the
+  // refresh list again for notifications.
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
@@ -1078,6 +1081,8 @@ export function App() {
           else if (event.scope === "brief" || event.scope === "home") {
             homeRefresh.soon(250);
             asksRefresh.soon(250);
+            // A refresh's send, settle or pause is a Brief change (YN-113 R4).
+            setRefreshRevision((n) => n + 1);
           }
           // A Project's requests (YN-86 §4.2): read again with Home, whose page shows them.
           else if (event.scope === "requests") homeRefresh.soon(250);
@@ -1106,6 +1111,7 @@ export function App() {
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.
           if (event.reason !== "poll") setBackupRevision((n) => n + 1);
+          if (event.reason !== "poll") setRefreshRevision((n) => n + 1);
           return;
       }
     },
@@ -1900,6 +1906,7 @@ export function App() {
   // This device's system notifications, where it chose them and its system
   // allows them (T-188). A preview's sample Workspace has none.
   const backupRun = useBackupRun(backupRevision, !previewMode);
+  const refreshRuns = useRefreshRuns(refreshRevision, !previewMode);
   useSystemNotifications(workspaceId, previewMode ? undefined : workspace?.agents, previewMode ? null : needsYouItems, (notice) => {
     if (notice.backup) {
       // Only this Workspace's Backup status: retrying or anything else is the user's to choose there.
@@ -1908,7 +1915,7 @@ export function App() {
       setUpdatesOpen(true);
     } else if (notice.home) goHome();
     else if (notice.agentId) selectAgent(notice.agentId);
-  }, backupRun);
+  }, backupRun, refreshRuns);
   // Settings closed, however (its own close, or a card that opens another
   // dialog): a notification's request is used up, not repeated next time.
   useEffect(() => {
@@ -5190,6 +5197,7 @@ export function App() {
         onNeedsReloadChange={setUpdatesNeedReload}
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         workspaceId={previewMode ? "" : workspaceId}
+        onOpenCard={(projectId, key) => { setUpdatesOpen(false); openProject(projectId, key); }}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
         pages={{
           // Settings › Projects and › Machines (YN-8). Each request (the rail,

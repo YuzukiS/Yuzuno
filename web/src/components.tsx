@@ -423,7 +423,7 @@ export function turnText(turn: NativeTurn) {
     ...(turn._yuzunoSource === "native" ? [nativeTurnLabel(turn)] : []),
     ...turn.items.map(
       (i) =>
-        `${i.type === "userMessage" ? (isPeerInput(turn, i, firstUser) ? "Workspace mailbox" : isBriefReminder(turn, i, firstUser) ? "Yuzuno reminder" : "You") : i.type === "agentMessage" ? "Agent" : i.type === "exitedReviewMode" ? "Codex review" : i.type}\n${itemText(i)}`,
+        `${i.type === "userMessage" ? (isPeerInput(turn, i, firstUser) ? "Workspace mailbox" : isBriefReminder(turn, i, firstUser) ? "Yuzuno reminder" : isScheduledRefresh(i) ? "Scheduled refresh" : "You") : i.type === "agentMessage" ? "Agent" : i.type === "exitedReviewMode" ? "Codex review" : i.type}\n${itemText(i)}`,
     ),
   ].join("\n\n");
 }
@@ -447,7 +447,7 @@ export function messageHandoff(
   const author: MessageAuthor =
     reply ? { kind: "agent" }
       : isPeerInput(turn, item, firstUser) ? { kind: "mailbox" }
-      : isBriefReminder(turn, item, firstUser) ? { kind: "reminder" }
+      : isBriefReminder(turn, item, firstUser) || isScheduledRefresh(item) ? { kind: "reminder" }
       : { kind: "user" };
   return {
     kind: "message",
@@ -464,6 +464,11 @@ export function messageHandoff(
 /** Yuzuno's own prompt asking an Agent to update its Project Brief (T-85). */
 export function isBriefReminder(turn: NativeTurn, item: NativeItem, firstUser?: NativeItem) {
   return item._yuzunoSource === "brief-reminder" || (turn._yuzunoSource === "brief-reminder" && item === firstUser);
+}
+/** The prompt Core sent a card's owner to refresh it, as its receipt's
+ * origin names it (YN-113 R4, input_origin.rs `schedule`). */
+export function isScheduledRefresh(item: NativeItem) {
+  return item._yuzunoInput === "schedule";
 }
 /** Why a Turn ended with no run of its own, as Core noted it (T-61 slice 3), in
  * the language shown; null for none, or a kind this version doesn't know. */
@@ -979,6 +984,14 @@ export function Turn({
         <>
           <div className="message-label brief-reminder-label">
             <span className="you-avatar"><BellRing size={13} /></span>{t.reminder}
+            <MessageTime mark={timeOf(item)} />
+          </div>
+          <div className="user-text brief-reminder-text">{itemText(item)}</div>
+        </>
+      ) : isScheduledRefresh(item) ? (
+        <>
+          <div className="message-label brief-reminder-label scheduled-refresh-label">
+            <span className="you-avatar"><RefreshCw size={13} /></span>{t.scheduledRefresh}
             <MessageTime mark={timeOf(item)} />
           </div>
           <div className="user-text brief-reminder-text">{itemText(item)}</div>
