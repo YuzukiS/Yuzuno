@@ -754,6 +754,9 @@ pub(crate) struct State {
     /// pass settles another start that ended without its runtime only when
     /// it is not one of these. Shared with the take that adds one.
     pub(crate) in_flight: Arc<Mutex<HashSet<String>>>,
+    /// The executors a pass is moving to another claude-swap account, each in
+    /// a task of its own (routing_policy/moves.rs, YN-138): a later pass leaves them.
+    pub(crate) moving: Mutex<HashSet<String>>,
     /// A test's start time limit, below the 30 s a user can save.
     #[cfg(test)]
     pub(crate) start_limit: std::sync::Mutex<Option<Duration>>,
@@ -847,8 +850,9 @@ impl Workspace {
         self.settle_ended_starts(&mut started).await;
         self.finish_rebuilds(&mut started).await;
         self.route_waiting().await;
-        // A started Claude executor whose account left its pool moves once idle (YN-138).
-        self.move_off_left_accounts().await;
+        // A started Claude executor whose account left its pool moves once idle
+        // (YN-138), each in a task of its own: the pass never waits for a restart.
+        started.extend(self.move_off_left_accounts().await);
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
             let in_flight = self.executor_slots.in_flight.clone();
@@ -959,7 +963,7 @@ impl Workspace {
         }
     }
 
-    async fn start_limit(&self) -> Result<Duration> {
+    pub(crate) async fn start_limit(&self) -> Result<Duration> {
         #[cfg(test)]
         if self.executor_slots.fault_reads.load(std::sync::atomic::Ordering::Relaxed) {
             anyhow::bail!("a test's store error");

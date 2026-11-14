@@ -128,6 +128,13 @@ impl Lab {
         self.ws.store.agent(ID).unwrap()
     }
 
+    /// The pass's moves, and their tasks to their end.
+    async fn pass(&self) {
+        for task in self.ws.move_off_left_accounts().await {
+            task.await.unwrap();
+        }
+    }
+
     fn set_status(&self, status: &str) {
         let status = status.to_owned();
         self.ws.store.update(ID, "test/status", &json!({}), move |d| d.agent.status = status).unwrap();
@@ -142,7 +149,7 @@ async fn an_idle_executor_whose_account_left_its_pool_resumes_its_session_on_ano
     lab.pool(&[3]);
     // A Turn that failed on the account that left leaves it in error: that is idle enough.
     lab.set_status("error");
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts(), [json!({"resume": SESSION, "account": "2"}), json!({"resume": SESSION, "account": "3"})]);
     let agent = lab.agent();
     assert_eq!((agent.connection_state.as_str(), agent.status.as_str(), agent.claude_session_id.as_deref()), ("connected", "idle", Some(SESSION)));
@@ -153,7 +160,7 @@ async fn an_idle_executor_whose_account_left_its_pool_resumes_its_session_on_ano
     assert_eq!(changed.len(), 1, "{route}");
     assert_eq!((changed[0]["code"].clone(), changed[0]["from"]["number"].clone(), changed[0]["to"]["number"].clone()),
         (json!("accountLeftPool"), json!(2), json!(3)));
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().len(), 2, "on an account of its pool now: not moved again");
 }
 
@@ -164,11 +171,11 @@ async fn an_executor_with_a_turn_under_way_is_moved_only_once_it_has_ended() {
     let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
     lab.pool(&[3]);
     lab.set_status("working");
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().len(), 1, "not while its Turn runs");
     assert_eq!((lab.agent().connection_state, lab.profile()), ("connected".to_owned(), Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) })));
     lab.set_status("idle");
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
 }
 
@@ -180,7 +187,7 @@ async fn an_executor_whose_pool_has_no_other_account_now_keeps_its_connection() 
     lab.pool(&[3]);
     lab.readings(&[1, 2]);
     lab.set_status("idle");
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().len(), 1);
     assert_eq!(lab.agent().connection_state, "connected");
     assert_eq!(lab.profile(), Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) }));
@@ -197,7 +204,7 @@ async fn an_executor_the_user_disconnected_on_another_machine_or_with_routing_of
     off.policy["enabled"] = json!(false);
     off.policy["candidates"][0]["credential"]["accounts"] = json!([fp(3)]);
     lab.ws.store.save_routing_policy(off.version, off.policy).unwrap().unwrap();
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().len(), 1, "routing off");
 
     lab.pool(&[3]);
@@ -214,10 +221,41 @@ async fn an_executor_the_user_disconnected_on_another_machine_or_with_routing_of
     assert_eq!(lab.ws.store.routing_on_accounts(None).unwrap().len(), 1);
 
     lab.ws.disconnect_agent(ID).await.unwrap();
-    lab.ws.move_off_left_accounts().await;
+    lab.pass().await;
     assert_eq!(lab.starts().len(), 1, "disconnected by the user");
     assert_eq!(lab.profile(), Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) }));
     // Their Reconnect starts it, and that start moves it (routing_launch.rs `move_account`).
     lab.ws.reconnect(ID).await.unwrap();
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
+}
+
+/// #966 R1 P2: a move runs in a task of its own, so a restart that does not end
+/// holds no pass, and a later pass starts no second move of it; the Workspace's
+/// start time limit cuts it off, its failure shown, its connection kept. Here the
+/// test holds the executor's gate, as a move that never finishes would.
+#[tokio::test]
+async fn a_move_that_does_not_finish_holds_no_pass_and_is_cut_off_by_the_start_limit() {
+    let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
+    lab.pool(&[3]);
+    lab.set_status("idle");
+    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(std::time::Duration::from_secs(1));
+    let gate = lab.ws.gate(ID).await;
+    let held = gate.lock().await;
+    let moving = tokio::time::timeout(std::time::Duration::from_secs(5), lab.ws.move_off_left_accounts()).await
+        .expect("the pass does not wait for the move");
+    assert_eq!(moving.len(), 1);
+    assert!(lab.ws.move_off_left_accounts().await.is_empty(), "one being moved is left to its task");
+    for task in moving {
+        task.await.unwrap();
+    }
+    let agent = lab.agent();
+    assert_eq!((agent.status.as_str(), agent.connection_state.as_str()), ("error", "connected"));
+    assert!(agent.error.as_deref().is_some_and(|e| e.contains("did not finish within 1 s") && e.contains("已中止")), "{:?}", agent.error);
+    assert_eq!((lab.starts().len(), lab.profile()), (1, Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) })));
+    assert!(lab.ws.executor_slots.moving.lock().unwrap().is_empty());
+    drop(held);
+    // In error, it is idle enough: the next pass moves it.
+    lab.pass().await;
+    assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
+    assert_eq!(lab.agent().status, "idle");
 }
