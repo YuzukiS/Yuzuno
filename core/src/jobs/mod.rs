@@ -14,6 +14,9 @@ mod cpu;
 #[cfg(test)]
 mod cpu_tests;
 mod host;
+mod history;
+#[cfg(test)]
+mod history_tests;
 mod ids;
 #[cfg(test)]
 mod ids_tests;
@@ -1597,6 +1600,10 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     let Ok(_completion) = ws.admission.enter_completion() else {
         return Ok(());
     };
+    // The folders of Jobs a committed removal took from the history (YN-142).
+    if let Err(error) = history::remove_folders(ws).await {
+        eprintln!("Job history: removing folders: {error:#}");
+    }
     // A stop at a checkpoint past its grace period becomes a cancel first.
     if checkpoint::expire(ws).await? {
         changed(ws);
