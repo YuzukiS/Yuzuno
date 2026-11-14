@@ -128,11 +128,18 @@ function RenameDialog({
   const language = useLanguage();
   const t = text(language);
   const rename = useRename(agent, onRenamed);
-  const select = useRef(true);
+  const field = useRef<HTMLInputElement>(null);
   return (
     <Modal
       open={open}
       onOpenChange={(next) => !rename.busy && onOpenChange(next)}
+      // The name, selected, ready to be typed over. Not `autoFocus`: the
+      // dialog then gives focus back to where its menu opened from.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        field.current?.focus();
+        field.current?.select();
+      }}
       title={t.title}
       description={t.description}
       lang={langTag(language)}
@@ -148,18 +155,12 @@ function RenameDialog({
         <label>
           {t.name}
           <input
-            autoFocus
+            ref={field}
             value={rename.value}
             readOnly={rename.busy}
             spellCheck={false}
             autoComplete="off"
             aria-invalid={!!rename.problem || undefined}
-            onFocus={(event) => {
-              // Selected once as it opens, ready to be typed over.
-              if (!select.current) return;
-              select.current = false;
-              event.currentTarget.select();
-            }}
             onChange={(event) => rename.setValue(event.target.value)}
           />
         </label>
