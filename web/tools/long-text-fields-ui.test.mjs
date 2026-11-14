@@ -677,12 +677,15 @@ test("each one-line field's limit is the one Core checks", async (t) => {
     serviceName: await one("services.rs", /name\.len\(\) <= ([\d_]+)/g, "a service's name"),
     mergeReason: await one("merge_queue/mod.rs", /r\.len\(\) <= ([\d_]+)/g, "a revert's reason"),
   };
-  // An Agent's name: every way Core makes one checks the same number.
-  for (const [file, count] of [["workspace.rs", 1], ["claude.rs", 1], ["opencode_agent.rs", 1], ["codex_sessions.rs", 2], ["claude_sessions.rs", 1]]) {
-    const found = [...(await rust(file)).matchAll(/name\.len\(\) (?:>|<=) ([\d_]+)/g)].map((m) => Number(m[1].replaceAll("_", "")));
-    assert.equal(found.length, count, `${file}: its Agent name checks`);
-    for (const max of found) assert.equal(page.window.coreLimits.agentName.max, max, `${file}: an Agent's name`);
-  }
+  // An Agent's name (YN-112): one rule, model.rs `agent_name`, checks it
+  // for a rename and for every way Core makes an Agent. That each of those
+  // eight ways calls it is Core's own test, which makes each refuse a name
+  // only that rule refuses (agent_rename_tests.rs,
+  // every_way_of_making_an_agent_refuses_a_name_the_rule_refuses); here the
+  // page's number is that rule's.
+  assert.equal(page.window.coreLimits.agentName.max,
+    one(model, /pub const AGENT_NAME_MAX: usize = ([\d_]+);/g, "an Agent's name"), "an Agent's name");
+  assert.equal(page.window.coreLimits.agentName.trim, true, "the rule counts a name trimmed");
   for (const [key, max] of Object.entries(core)) {
     assert.equal(page.window.coreLimits[key].max, max, `${key} is Core's ${max}`);
     assert.equal(page.window.coreLimits[key].unit, "bytes", key);

@@ -110,7 +110,9 @@ fn live_jobs(db: &Connection, agents: &HashMap<String, Agent>) -> Result<Vec<Liv
         let mut data: Value = serde_json::from_str(&data)?;
         // The key its task has now, not the one stored when it was submitted (T-56).
         crate::task_keys::refresh(db, &mut data);
-        let name = data["agent"]["name"].as_str().map(str::to_owned).or_else(|| agents.get(&agent).map(|a| a.name.clone()));
+        // Its Agent's name now (a rename shows at once, YN-112); the one the
+        // Job kept only when that Agent is gone, as machine_load.rs does.
+        let name = agents.get(&agent).map(|a| a.name.clone()).or_else(|| data["agent"]["name"].as_str().map(str::to_owned));
         jobs.push(LiveJob {
             project: task_project.or(agent_project),
             shown: json!({"id":id,"name":data["name"],"status":status,"agentId":agent,"agentName":name,"taskRef":data["taskRef"]}),

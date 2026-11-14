@@ -54,8 +54,8 @@ export const coreLimits = {
   jobName: bytes(160),
   /** jobs/gpu.rs: why a GPU is closed to new Jobs. */
   gpuReason: bytes(200),
-  /** An Agent's name, as each way of making one checks it (workspace.rs,
-   * claude.rs, opencode_agent.rs, codex_sessions.rs, claude_sessions.rs). */
+  /** model.rs `AGENT_NAME_MAX`: an Agent's name, as a rename and every way
+   * of making one check it (`agent_name`, YN-112). */
   agentName: bytes(100),
   /** remote.rs `validate_machine`: a machine's name. */
   machineName: bytes(128),
