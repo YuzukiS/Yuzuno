@@ -481,17 +481,13 @@ impl Guard {
     async fn after(&mut self) -> Result<(), Error> {
         let running = running_names().await;
         let Some(running) = running else {
-            return if self.witness.is_some() {
-                Err(Error::new(
-                    "peerChanged",
-                    format!(
-                        "The shared state could not be checked: WSL's running distributions could not be read. Nothing further was run in {}.",
-                        self.target
-                    ),
-                ))
-            } else {
-                Ok(())
-            };
+            return Err(Error::new(
+                "peerChanged",
+                format!(
+                    "The shared state could not be checked: WSL's running distributions could not be read. Nothing further was run in {}.",
+                    self.target
+                ),
+            ));
         };
         let still_running = self.witness.as_ref().is_some_and(|witness| running.iter().any(|name| name == witness));
         if self.witness.is_none() {
@@ -1425,6 +1421,11 @@ pub async fn start_guarded(profile: &StartProfile) -> StartOutcome {
         Ok(guard) => guard,
         Err(error) => return StartOutcome::Failed(error.message),
     };
+    // The look before the start. It may also be read when WSL's running
+    // names cannot be read, and then nothing is started.
+    if let Err(error) = guard.after().await {
+        return StartOutcome::Failed(error.message);
+    }
     let profile = profile.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || wsl::start(&profile))
         .await
