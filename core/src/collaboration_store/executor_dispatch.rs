@@ -392,7 +392,8 @@ impl Store {
                 // before any executor exists.
                 ensure!(harness != "dsh", "dsh_needs_key: {} runs DeepSeek Harness, whose DeepSeek key comes from a routing candidate, \
                     and routing gives this dispatch none. Use a template that follows routing, with routing on and a DeepSeek Harness \
-                    candidate with a DeepSeek key in Settings → Routing", template.label);
+                    candidate with a DeepSeek key in Settings → Routing. dsh 执行者的 DeepSeek 密钥来自路由候选，这次派发没有拿到密钥。\
+                    请用跟随路由的模板，加一个 dsh 候选", template.label);
                 (template.resolved(&harness)?, None, None)
             }
         };

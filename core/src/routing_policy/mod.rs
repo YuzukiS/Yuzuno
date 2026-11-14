@@ -381,3 +381,5 @@ impl Store {
 mod tests;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(all(test, unix))]
+mod dsh_start_tests;
