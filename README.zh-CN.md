@@ -27,7 +27,7 @@ Yuzuno 是一个个人工作空间，给那些要跨多个 Agent、跨很多轮�
 
 > 本文是 [README.md](README.md) 的中文版。两者不一致时，以英文版为准。
 
-![Yuzuno 的 Home：等你回复的决定、由 Agent 撰写的项目页和机器负载](docs/images/home.png)
+![Yuzuno 的 Home：等你回答的提问和权限请求，以及每个项目的概况](docs/images/home.png)
 
 <p align="center"><em>本页截图里都是虚构的示例数据。</em></p>
 

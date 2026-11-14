@@ -25,7 +25,7 @@ Claude Code, Codex and OpenCode, your projects, and the work that carries on bet
 
 Yuzuno is a personal workspace for work that spans many agents and many turns. One **Core** keeps your Agents, Projects, tasks, background Jobs and reviews, and the decisions waiting for you. Open it in a browser, the desktop app or on your phone; close the window and the work goes on. The Claude Code, Codex and OpenCode you already use keep doing the model work, with their own sign-ins.
 
-![Yuzuno Home: decisions waiting for a reply, project pages written by Agents, and machine load](docs/images/home.png)
+![Yuzuno Home: a question and a permission waiting for you, and each Project at a glance](docs/images/home.png)
 
 <p align="center"><em>Screenshots on this page show fictional sample data.</em></p>
 
