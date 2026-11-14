@@ -535,7 +535,7 @@ impl Workspace {
                 cwd: row.cwd.clone().unwrap_or_default(), model: fixed.model.clone(),
                 settings: crate::model::AgentSettings { reasoning_effort: fixed.variant.clone(), ..Default::default() }, color: "sage".into(),
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(fixed.payload.id().to_owned()),
-                opencode_version: Some(version.clone()), opencode_major: crate::opencode::major(&version), thread_id: None,
+                opencode_version: Some(version.clone()), opencode_major: crate::opencode::major(&version), dsh_session_id: None, dsh_version: None, thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
                 created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, open_questions: 0, last_turn_end: None, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),

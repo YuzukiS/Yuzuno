@@ -14,8 +14,9 @@ A tool result is answered with a short text (end_turn).
 
 Each request is logged as one JSON line: its path, its header names (never
 their values), whether it carried an API key, its body's top-level keys,
-whether those include dsh's `dsh_session_log` and `dsh_plugin_packages`, and
-whether the system prompt or any message holds the marker given.
+whether those include dsh's `dsh_session_log` and `dsh_plugin_packages`, how
+many messages it carries, and whether the system prompt or any message holds
+the marker given.
 
 Usage: stub_anthropic.py PORT_FILE LOG_FILE MARKER
 It runs on Python 3.9 (macOS's /usr/bin/python3).
@@ -98,6 +99,7 @@ class Handler(BaseHTTPRequestHandler):
             "bodyKeys": sorted(body.keys()),
             "hasSessionLog": "dsh_session_log" in body,
             "hasPluginPackages": "dsh_plugin_packages" in body,
+            "messages": len(messages),
             "marker": MARKER in json.dumps(body.get("system")) or any(MARKER in json.dumps(m) for m in messages),
             "decision": decision[0],
         })

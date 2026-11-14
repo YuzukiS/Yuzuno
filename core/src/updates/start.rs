@@ -43,7 +43,7 @@ const LOG: &str = "core.log";
 /// The environment kept with the record: what Core and the tools it starts
 /// read from it, so a start from the desktop matches one from the user's
 /// shell. Nothing else is recorded; the rest comes from `wsl.exe`.
-pub const ENVIRONMENT: [&str; 16] = [
+pub const ENVIRONMENT: [&str; 17] = [
     "PATH",
     "LANG",
     "LC_ALL",
@@ -57,6 +57,7 @@ pub const ENVIRONMENT: [&str; 16] = [
     "YUZUNO_NODE",
     "YUZUNO_OPENCODE_BIN",
     "YUZUNO_EXPERIMENTAL_OPENCODE",
+    "YUZUNO_DSH_BIN",
     "YUZUNO_CLAUDE_RUNTIME_CACHE",
     "YUZUNO_SERVICE_PORTS",
     "YUZUNO_WINDOWS_JOBS_ROOT",

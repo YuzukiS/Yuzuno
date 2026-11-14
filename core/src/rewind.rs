@@ -318,6 +318,10 @@ impl Workspace {
         }
         let d = self.view(id, crate::store::Sel::Turns(vec![target.to_owned()])).await?;
         idle(&d)?;
+        // dsh keeps no checkpoints Core could go back to (YN-119 §4).
+        if d.agent.harness == "dsh" {
+            return Ok(json!({"available":false,"reason":"DeepSeek Harness has no conversation or file rewind. Nothing will be changed."}));
+        }
         if d.agent.harness != "codex" {
             let uuid = d
                 .turns

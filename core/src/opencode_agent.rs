@@ -699,6 +699,8 @@ impl Workspace {
             opencode_session_id: None,
             opencode_version: None,
             opencode_major: None,
+            dsh_session_id: None,
+            dsh_version: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),

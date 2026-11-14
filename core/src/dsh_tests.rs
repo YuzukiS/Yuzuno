@@ -556,13 +556,14 @@ struct Rig {
 #[cfg(unix)]
 impl Rig {
     fn new(control: Value) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         core_has_its_own_dsh_variables();
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
+        // A link to the stand-in, which is executable itself: a program
+        // written here and run at once could meet "Text file busy" (ETXTBSY)
+        // while another test's fork still holds it open for writing.
         let program = root.join("dsh");
-        std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(FIXTURE, &program).unwrap();
         let directory = root.join("work");
         std::fs::create_dir(&directory).unwrap();
         let folder = root.join("data/dsh/agent-1");
