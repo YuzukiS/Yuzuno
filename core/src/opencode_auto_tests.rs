@@ -1,6 +1,7 @@
 //! Who gets Core's answers, and what a snapshot of their connection leaves
 //! the user.
 use super::*;
+#[cfg(target_os = "linux")]
 use crate::opencode::Snapshot;
 
 #[test]

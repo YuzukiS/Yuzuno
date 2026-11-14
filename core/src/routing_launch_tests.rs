@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
 const KEY: &str = "sk-test-yn34-launch-0123456789";
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 fn agent(id: &str, harness: &str, cwd: &str) -> AgentDetail {
@@ -30,6 +31,7 @@ fn python3() -> Option<std::path::PathBuf> {
 }
 
 /// The same stand-in program opencode_agent_tests uses: YUZUNO_OPENCODE_BIN is the process's.
+#[cfg(target_os = "linux")]
 fn opencode_program() {
     static PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     PROGRAM.get_or_init(|| {

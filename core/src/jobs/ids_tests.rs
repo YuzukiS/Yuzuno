@@ -174,6 +174,7 @@ async fn job_get_logs_cancel_and_provenance_take_a_prefix() {
 /// YN-30: job_run_get, job_run_retry, job_run_decide and job_run_cancel name
 /// a run as the Job tools do. A retry or decision made by a prefix is kept
 /// with the whole ID, so its repeat by either is the same request.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_run_tools_take_a_prefix_and_keep_the_whole_id() {
     let (_dir, ws) = setup();

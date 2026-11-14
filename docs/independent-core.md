@@ -23,7 +23,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 |---|---|---|
 | Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks, and the public core.13's first Claude start, which downloads the Agent SDK (no sign-in). Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 and the public core.13, each with registration, Core and UI file serving, restart and data-preserving reinstall; no real login, Claude start, browser rendering or systemd Jobs in that rootfs. |
 | Core on Linux aarch64 | Planned | No package yet. |
-| Core on macOS | Planned | Not supported. A source build compiles and starts on Apple silicon, but Jobs and managed updates are refused there and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
+| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, but local Jobs and managed updates are refused and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
 | Core on Windows | Unavailable | On Windows, run Core in WSL2. |
 | Core as a systemd service | Planned | Start it as shown below; see the note there. |
 | Browser on the Core host | Tested | Chromium. |
@@ -330,13 +330,14 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 
 ## macOS Core: current gaps
 
-A macOS Core is planned. Remote Codex Agents on a Mac (over SSH) already work, but that is not a macOS Core. Today:
+A macOS Core is being built (YN-108). Remote Codex Agents on a Mac (over SSH) already work, but that is not a macOS Core. Today:
 
-- **Jobs:** need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`). macOS has neither. A plain process launcher would not give the same hard CPU, memory or process limits, so Jobs would be unavailable or explicitly weaker there.
+- **Tests:** Core and its tests build on Apple silicon, and CI runs the tests there on every change to Core (`.github/workflows/core-macos.yml`).
+- **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither, so they are refused there. Jobs on registered machines work.
 - **Managed updates:** identify the running process through Linux-only process identity (`core/src/updates/state.rs`). They are refused on other systems.
-- **Packages:** release packaging, signing and CI build Linux x86_64 only (`tools/build-core-artifact.py`, `tools/package-release.py`).
+- **Packages:** release packaging and signing build Linux x86_64 only (`tools/build-core-artifact.py`, `tools/package-release.py`).
 
-A macOS Core first needs these decisions; until then a source build on macOS is not supported. A source build of main was compiled and started on a Mac on 2026-10-17. [macOS Core: gaps and a first slice](macos-core.md) lists what it found, every gap with its code, and a proposed first slice (not implemented).
+Until those slices are done, a source build on macOS is not supported. [macOS Core: status and gaps](macos-core.md) lists every gap with its code and the slice that closes it.
 
 ## What was tested
 

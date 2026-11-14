@@ -52,8 +52,7 @@ fn starts(dir: &Path) -> Vec<String> {
 }
 
 fn alive(pid: &str) -> bool {
-    Path::new("/proc").join(pid).join("stat").exists()
-        && !std::fs::read_to_string(Path::new("/proc").join(pid).join("stat")).unwrap_or_default().contains(") Z ")
+    pid.parse().is_ok_and(crate::test_platform::running)
 }
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -246,6 +245,7 @@ async fn with_no_nvml_and_no_nvidia_smi_nothing_is_tried_again_for_a_minute() {
 /// The load and Jobs read the same sample: /api/machine-load's GPUs and the
 /// Jobs GPU view report one reading and its observedAt (T-58, D3), and both
 /// come from one child.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_load_and_jobs_report_one_sample_and_its_observed_at() {
     let dir = tempfile::tempdir().unwrap();

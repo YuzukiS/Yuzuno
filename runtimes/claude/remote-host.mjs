@@ -26,7 +26,7 @@
 //
 // Usage: node remote-host.mjs serve <private runtime dir>
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import readline from 'node:readline';
@@ -372,7 +372,10 @@ function defaultSpawn(bridge) {
   return spawn(process.execPath, [bridge], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Run as a program, not imported. Both paths resolved: Node gives the module
+// its real path, while argv names it as started, which a symbolic link in
+// the home folder or data root changes (macOS: /tmp is /private/tmp).
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const [mode, root] = process.argv.slice(2);
   if (mode !== 'serve' || !root) {
     console.error('Usage: node remote-host.mjs serve <private runtime dir>');

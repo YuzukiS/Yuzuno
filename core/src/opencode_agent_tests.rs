@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 fn agent(cwd: &str) -> AgentDetail {

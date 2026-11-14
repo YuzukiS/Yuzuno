@@ -543,8 +543,10 @@ async fn a_capture_ends_within_its_deadline_and_reaps_what_it_started_however_it
 }
 
 /// A pipe that fails once it has given its first bytes, as a read can.
+#[cfg(target_os = "linux")]
 struct FailsAfterFirst<R>(R, bool);
 
+#[cfg(target_os = "linux")]
 impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for FailsAfterFirst<R> {
     fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
         if self.1 {
@@ -558,20 +560,24 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for FailsAfterFirst<R
 }
 
 /// A pipe that says when it is dropped.
+#[cfg(target_os = "linux")]
 struct Dropped<R>(R, std::sync::Arc<std::sync::atomic::AtomicBool>);
 
+#[cfg(target_os = "linux")]
 impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Dropped<R> {
     fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<R> Drop for Dropped<R> {
     fn drop(&mut self) {
         self.1.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
+#[cfg(target_os = "linux")]
 fn sh(script: String) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("/bin/sh");
     command.arg("-c").arg(script);
@@ -579,6 +585,7 @@ fn sh(script: String) -> tokio::process::Command {
 }
 
 /// The process ID a script wrote to `file`, once it has.
+#[cfg(target_os = "linux")]
 async fn written(file: &Path) -> i32 {
     for _ in 0..400 {
         if let Some(pid) = fs::read_to_string(file).ok().and_then(|pid| pid.trim().parse().ok()) {

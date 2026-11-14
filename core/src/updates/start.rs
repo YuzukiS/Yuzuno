@@ -729,7 +729,12 @@ pub(super) enum Answer {
     Free,
     /// This Workspace's Core (any Core, when no Workspace was given), the
     /// Workspace it says it has open, and the release it says it runs.
-    Ours { ready: bool, release: Option<String>, workspace: String },
+    Ours {
+        ready: bool,
+        #[cfg_attr(not(target_os = "linux"), expect(dead_code, reason = "read only by a stop, which needs Linux for now (YN-108 M2b)"))]
+        release: Option<String>,
+        workspace: String,
+    },
     /// Another Workspace's Core.
     Workspace,
     /// Not a Yuzuno Core.
@@ -1055,7 +1060,8 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             seen[0]["argv"],
             json!(["--install-dir", root, "--port", port.to_string(), "--data-dir", data, "--cwd", cwd, "--codex", "/opt/codex/bin/codex"])
         );
-        assert_eq!(seen[0]["cwd"], json!(cwd));
+        // Its working folder as the system resolves it (macOS: /tmp is /private/tmp).
+        assert_eq!(seen[0]["cwd"], json!(launch.cwd.canonicalize().unwrap().to_string_lossy()));
         // Its own session, so it outlives the helper and wsl.exe.
         assert_eq!(seen[0]["sid"], seen[0]["pid"]);
         assert_eq!(seen[0]["pid"], outcome["pid"]);
@@ -1113,6 +1119,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     const ORIGIN: &str = "https://core.example-tailnet.ts.net:8444";
     const LOGIN: &str = "person@example.com";
+    #[cfg(target_os = "linux")]
     const QUICK_STOP: StopBudget = StopBudget { lock: Duration::from_secs(5), exit: Duration::from_secs(20) };
 
     /// tests/fixtures/managed_core_stand_in.rs, compiled once per test
@@ -1160,6 +1167,8 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     pub(in crate::updates) fn held(outcome: &Value) -> Held {
         Held(outcome["pid"].as_u64().and_then(|pid| state::ProcessIdentity::read(pid as u32).ok()))
     }
+    /// Needs the process identity, which only Linux reads so far (YN-108 M2a).
+    #[cfg(target_os = "linux")]
     pub(in crate::updates) fn alive(core: &Held) -> bool {
         core.0.as_ref().is_some_and(state::ProcessIdentity::alive)
     }
@@ -1170,6 +1179,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A start gives Core the remote entry it is told to (T-170), or none, and
     /// says what Core recorded; a later start as recorded keeps it. While
     /// Core runs, a start with settings changes nothing.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_start_gives_core_the_remote_entry_it_is_told_to_and_says_what_core_recorded() {
         let install = install();
@@ -1256,6 +1266,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A stop interrupts this installation's Core, once it is sure which
     /// process that is, and waits for it to go; a start that stays (the
     /// release's helper, with the same --install-dir) is not that process.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_stop_interrupts_this_installations_core_and_waits_for_it_to_go() {
         let install = install();
@@ -1300,6 +1311,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// Workspace or program, a Core of the installation that does not hold
     /// the port, two Cores of the installation, or a Core whose executable is
     /// not the release it says it runs.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_stop_signals_nothing_it_cannot_tie_to_this_installations_one_core() {
         let install = install();
@@ -1383,6 +1395,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     /// A Core that does not exit when interrupted is said to be stopping and
     /// left as it is: nothing kills it.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_core_that_does_not_exit_is_said_to_be_stopping_and_left_running() {
         let install = install();
@@ -1403,6 +1416,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A Core that has exited while its port is held again (here by a process
     /// it shared its socket with) is said to have stopped, with what holds the
     /// port: not that it may still be finishing.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_core_gone_while_its_port_is_held_again_is_said_to_have_stopped() {
         let install = install();
@@ -1428,6 +1442,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         assert!(alive(&keeper), "the port keeper was signalled");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn options_are_read_as_core_is_given_them() {
         let arguments: Vec<String> = ["--install-dir", "/i", "--port=4317", "--data-dir", "/d"].map(String::from).to_vec();

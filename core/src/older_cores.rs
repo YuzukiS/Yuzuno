@@ -26,9 +26,16 @@
 //!   kernel must confirm that no other process holds it open (a write lease;
 //!   an older Core that opened it just before it closed would take the lock
 //!   once this Core left). Unproven, the write is refused: running as root, a
-//!   file system without permissions or leases, a platform other than Linux,
-//!   another open of the file, or a lease the kernel does not confirm was let
-//!   go.
+//!   file system without permissions or leases, a platform other than Linux
+//!   or macOS, another open of the file, or a lease the kernel does not
+//!   confirm was let go.
+//! - On macOS (YN-108) only the second proof is skipped: it has no leases, so
+//!   the kernel cannot be asked whether another process holds the file open.
+//!   No released Core before data roots runs there: every such release was
+//!   built for Linux only (tools/sign-core-release.py signs only linux-*
+//!   bundles; a macOS one can only be of a Core with data roots). The mode,
+//!   the failed open for writing, the sync and the lock held by writes are
+//!   all as on Linux.
 //! - Opened again only when Core opens or leaves the Workspace and finds
 //!   nothing such left, while no write that needs it is under way. Nothing is
 //!   changed to get there: an attempt keeps its root, its state and its slot
@@ -36,7 +43,10 @@
 //!
 //! Not covered: an older Core run as root (it ignores permissions), a lock
 //! file someone deleted or made writable by hand, and a copy of the Workspace
-//! database opened without its lock file.
+//! database opened without its lock file. On macOS also a Core someone built
+//! there from source before data roots that opened the lock file before it
+//! was made read-only: nothing tells this Core about that open, and that
+//! Core would take the lock once this one left.
 use crate::remote::{RemoteMachine, LEGACY_ROOT};
 use crate::store::Store;
 use anyhow::{bail, Context, Result};
@@ -157,7 +167,17 @@ fn release_lease(fd: std::os::fd::RawFd) -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has no leases, so whether another process holds the lock file open
+/// is not asked (YN-108): no released Core before data roots runs on macOS,
+/// so none can be holding it. The other proof, that opening the file for
+/// writing fails, has been made by `close` as on Linux. What this leaves
+/// open is in the module's notes.
+#[cfg(target_os = "macos")]
+fn only_open(_file: &File) -> Result<std::result::Result<(), String>> {
+    Ok(Ok(()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn only_open(_file: &File) -> Result<std::result::Result<(), String>> {
     Ok(Err("this platform cannot tell whether another process holds its lock file open".into()))
 }
@@ -350,8 +370,7 @@ mod tests {
     }
 
     fn as_root() -> bool {
-        // SAFETY: geteuid has no preconditions.
-        unsafe { libc::geteuid() == 0 }
+        rustix::process::geteuid().is_root()
     }
 
     fn lab_host() -> RemoteMachine {
@@ -429,19 +448,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_older_core_that_opened_the_lock_before_it_closed_keeps_the_write_from_happening() {
-        if as_root() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let store = open(tmp.path()).unwrap();
-        // An older Core that opened the lock for writing just before it closed:
-        // it would take the lock once this Core left. A real process, not a
-        // child of this one, holds it (the inner shell).
+    /// An older Core that opened the lock for writing just before it closed:
+    /// it would take the lock once this Core left. A real process, not a
+    /// child of this one, holds it (the inner shell).
+    fn older_core_holding(lock: &std::path::Path) -> std::process::Child {
         let mut older = std::process::Command::new("/bin/sh")
             .args(["-c", "sh -c 'exec 3<>\"$1\"; echo \"ready $$\"; read stop' sh \"$1\"; :", "sh"])
-            .arg(lock(tmp.path()))
+            .arg(lock)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -449,6 +462,18 @@ mod tests {
         let mut ready = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(older.stdout.take().unwrap()), &mut ready).unwrap();
         assert!(ready.starts_with("ready "), "{ready}");
+        older
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_older_core_that_opened_the_lock_before_it_closed_keeps_the_write_from_happening() {
+        if as_root() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let store = open(tmp.path()).unwrap();
+        let mut older = older_core_holding(&lock(tmp.path()));
         let refused = store.add_machine(&lab_host()).unwrap_err().to_string();
         assert!(refused.contains("another process holds its lock file open"), "{refused}");
         assert!(store.machines().unwrap().is_empty(), "nothing was saved");
@@ -458,9 +483,32 @@ mod tests {
         assert!(!older_core_opens(tmp.path()));
     }
 
+    /// macOS cannot tell that another process holds the lock file open
+    /// (YN-108): such a holder does not stop the write, which is the known
+    /// limit the module's notes name. Every other step is as on Linux: the
+    /// file is read-only, on disk, and an older Core opening it now fails.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_macos_a_holder_from_before_it_closed_is_not_seen_and_the_rest_is_proven() {
+        if as_root() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let store = open(tmp.path()).unwrap();
+        let mut older = older_core_holding(&lock(tmp.path()));
+        store.add_machine(&lab_host()).unwrap();
+        assert_eq!(store.machines().unwrap().len(), 1, "saved: the holder is not seen");
+        assert_eq!(std::fs::metadata(lock(tmp.path())).unwrap().permissions().mode() & 0o777, CLOSED);
+        assert!(!older_core_opens(tmp.path()), "an older Core that opens it now cannot");
+        assert!(store.workspace_lock.proven.load(Ordering::SeqCst));
+        drop(older.stdin.take());
+        older.wait().unwrap();
+    }
+
     /// A process of this account that holds the lock open and makes itself
     /// non-dumpable: its descriptors cannot be listed (/proc/PID/fd refuses),
     /// so nothing short of the kernel's own count can see it.
+    #[cfg(target_os = "linux")]
     fn hidden_holder(lock: Option<&std::path::Path>) -> std::process::Child {
         let mut child = std::process::Command::new("python3")
             .args(["-c", "import ctypes, os, sys\n\
@@ -479,6 +527,7 @@ mod tests {
         child
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_holder_that_cannot_be_inspected_still_keeps_the_write_from_happening() {
         if as_root() {
@@ -502,6 +551,7 @@ mod tests {
         other.wait().unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_checks_lease_is_let_go_and_a_release_the_kernel_refuses_is_an_error() {
         if as_root() {

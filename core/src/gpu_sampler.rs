@@ -621,6 +621,8 @@ mod nvml {
     type UtilizationRates = unsafe extern "C" fn(Handle, *mut Utilization) -> Return;
 
     struct Calls {
+        // Called once, when a library is opened, which is on Linux only.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
         init: Bare,
         shutdown: Bare,
         count: Count,

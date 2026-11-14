@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 fn user(id: &str, text: &str) -> Value {
@@ -141,6 +142,7 @@ fn model_rule_keeps_a_listed_model_and_says_when_it_cannot() {
     assert_eq!(kept_model(&Value::Null, &listed), (Value::Null, String::new(), None, None));
 }
 
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 /// One `opencode` for the whole test process, as the Agent tests have it.
@@ -177,6 +179,7 @@ async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
     ws
 }
 
+#[cfg(target_os = "linux")]
 async fn control(data: &Path, agent: &str, name: &str, body: Value) -> Value {
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(agent).join("start.json")).unwrap()).unwrap();
     reqwest::Client::builder().no_proxy().build().unwrap()
@@ -184,20 +187,24 @@ async fn control(data: &Path, agent: &str, name: &str, body: Value) -> Value {
         .timeout(Duration::from_secs(20)).send().await.unwrap().json().await.unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn asked(data: &Path, agent: &str, method: &str, path: &str) -> usize {
     std::fs::read_to_string(data.join("opencode").join(agent).join("calls.jsonl")).unwrap_or_default().lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|c| c["method"] == method && c["path"].as_str().is_some_and(|p| p.ends_with(path))).count()
 }
 
+#[cfg(target_os = "linux")]
 fn held(data: &Path, agent: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(agent).join("state.json")).unwrap_or_else(|_| "{}".into())).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn plan_new(data: &Path, modes: Value) {
     std::fs::write(data.join("opencode/fixture-new.json"), modes.to_string()).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 async fn turn_on(ws: &Arc<Workspace>, data: &Path, agent: &str, text: &str) -> String {
     ws.opencode_send(agent, text.into()).await.unwrap();
     let session = ws.opencodes.lock().unwrap().get(agent).cloned().unwrap().session;
@@ -215,6 +222,7 @@ async fn turn_on(ws: &Arc<Workspace>, data: &Path, agent: &str, text: &str) -> S
 
 /// The source's session exported as `opencode session export` writes it:
 /// its info and every settled message.
+#[cfg(target_os = "linux")]
 async fn exported(ws: &Arc<Workspace>) -> Value {
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
     let messages: Vec<Value> = c.server.messages(&c.session).await.unwrap().as_array().unwrap().iter()
@@ -236,6 +244,7 @@ async fn source(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::
     (ws, data, cwd, vec![first, second], file)
 }
 
+#[cfg(target_os = "linux")]
 fn create(request: &Value, name: &str, cwd: &Path) -> Create {
     Create { request_id: request.as_str().unwrap().into(), name: name.into(), cwd: cwd.to_string_lossy().into() }
 }

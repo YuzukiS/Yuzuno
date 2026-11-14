@@ -9,9 +9,22 @@ type SourcePhase = NonNullable<UpdateStatus["releaseSource"]>["phase"];
  * notes and what Core says (its reasons and errors) are shown as they came;
  * only this window's own words are here.
  */
+/**
+ * The system a Core runs on, named from its release's platform (YN-108):
+ * `linux-*` is Linux or WSL and `macos-*` is macOS; any other is shown as it
+ * came. None while Core has not said.
+ */
+export function coreSystem(platform: string | undefined): string | undefined {
+  if (!platform) return undefined;
+  if (platform.startsWith("linux-")) return "Linux / WSL";
+  if (platform.startsWith("macos-")) return "macOS";
+  return platform;
+}
+
 export const updatesText = strings({
   title: "Workspace service",
-  intro: "The Workspace service, Core + Web UI on Linux / WSL, changes only when you choose a version to update to. Checking restarts nothing.",
+  intro: (system?: string) =>
+    `The Workspace service, Core + Web UI${system ? ` on ${system}` : ""}, changes only when you choose a version to update to. Checking restarts nothing.`,
   installedNow: "Installed now",
   status: "Update status",
   download: "Release download",
@@ -76,7 +89,7 @@ export const updatesText = strings({
   details: "Version details",
   installedLabel: "Installed",
   runsAs: "Runs as",
-  runsAsValue: "Workspace service · Core + Web UI · Linux / WSL",
+  runsAsValue: (system?: string) => `Workspace service · Core + Web UI${system ? ` · ${system}` : ""}`,
   preparedLabel: "Prepared",
   nextVersion: "Next version",
   release: (platform: string, protocol: number, schema: number, records: number) => `${platform} · API ${protocol} · data ${schema} · records ${records}`,
@@ -104,7 +117,8 @@ export const updatesText = strings({
   } as Record<SourcePhase, string>,
 }, {
   title: "Workspace 服务",
-  intro: "Workspace 服务（Linux / WSL 上的 Core + Web UI）只会在你选择要更新到的版本时改变。检查更新不会重启任何东西。",
+  intro: (system) =>
+    `Workspace 服务（${system ? `${system} 上的 ` : ""}Core + Web UI）只会在你选择要更新到的版本时改变。检查更新不会重启任何东西。`,
   installedNow: "当前已安装",
   status: "更新状态",
   download: "发行版下载",
@@ -163,7 +177,7 @@ export const updatesText = strings({
   details: "版本详情",
   installedLabel: "已安装",
   runsAs: "运行方式",
-  runsAsValue: "Workspace 服务 · Core + Web UI · Linux / WSL",
+  runsAsValue: (system) => `Workspace 服务 · Core + Web UI${system ? ` · ${system}` : ""}`,
   preparedLabel: "已准备",
   nextVersion: "下一个版本",
   release: (platform, protocol, schema, records) => `${platform} · API ${protocol} · 数据 ${schema} · 记录 ${records}`,

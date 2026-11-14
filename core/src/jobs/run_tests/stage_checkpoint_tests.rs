@@ -145,6 +145,7 @@ fn a_stop_without_a_verified_checkpoint_is_never_retried_automatically_and_may_b
     assert_eq!(second["checkpoint"], json!({"signal":"SIGTERM","graceSeconds":60,"stoppedExitCode":75}));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn only_the_user_resumes_a_stage_and_not_once_its_run_is_cancelled() {
     let (dir, s) = setup();

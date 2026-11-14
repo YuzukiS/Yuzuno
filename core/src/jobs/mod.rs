@@ -93,7 +93,8 @@ mod service_tests;
 #[cfg(test)]
 mod tests;
 mod watch;
-#[cfg(test)]
+// Local Jobs' cgroups: Linux only.
+#[cfg(all(test, target_os = "linux"))]
 mod watch_tests;
 
 use crate::{server::ApiError, workspace::Workspace};

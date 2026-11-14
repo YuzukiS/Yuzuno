@@ -66,7 +66,7 @@ import {
   type UpdateStatus,
   type UpdateStop,
 } from "./updates";
-import { updatesText } from "./updates-text";
+import { coreSystem, updatesText } from "./updates-text";
 import "./updates.css";
 import { randomId } from "./random-id";
 import { Tip, TipText } from "./Tip";
@@ -841,7 +841,7 @@ export function WorkspaceUpdates({
               <header className="settings-section-heading">
                 <div>
                   <h3 id="settings-updates-title">{t.title}</h3>
-                  <p>{t.intro}</p>
+                  <p>{t.intro(coreSystem(status?.current.platform))}</p>
                 </div>
                 {status && (
                   <Tip content={<TipText title={t.installedNow} />}>
@@ -980,7 +980,7 @@ export function WorkspaceUpdates({
                     </div>
                     <div>
                       <dt>{t.runsAs}</dt>
-                      <dd>{t.runsAsValue}</dd>
+                      <dd>{t.runsAsValue(coreSystem(status.current.platform))}</dd>
                     </div>
                     {candidate && (
                       <div>

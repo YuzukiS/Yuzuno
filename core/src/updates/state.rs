@@ -311,6 +311,7 @@ mod tests {
         }
         assert_eq!(layout.journal().unwrap().requests.len(), 8);
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn process_identity_includes_start_time_and_executable() {
         let live = ProcessIdentity::read(std::process::id()).unwrap();
