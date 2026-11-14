@@ -540,7 +540,8 @@ pub(super) fn message(project: &str, title: &str, key: &str, slot: &str, missed:
     let mut text = format!(
         "[Yuzuno 定时刷新] 刷新你在「{project}」的报告「{title}」（key {key}）：{slot} 这一次{missed}。\n\
          照下面的刷新说明做，然后用 brief_update 在同一个 key 下 put 整张卡。按 visual first 写：在 summary 里指定一个视觉摘要\
-         （图表、Figure 或一张图，按内容选），lead 一句结论，长说明放后面；组件随你选（brief_guide content）。\n\
+         （Collection 的 carousel / grid / list、图表、Figure 或一张图，按内容选；分类多时正文用 Tabs），lead 一句结论，\
+         长说明放后面；组件随你选（brief_guide content）。\n\
          上一期 Core 会自己留进往期，不用重复。\n"
     );
     if let Some(preference) = preference {
