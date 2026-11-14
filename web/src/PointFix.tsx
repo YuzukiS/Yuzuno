@@ -18,14 +18,15 @@ import {
   type Size,
 } from "./point-fix";
 import type { Agent } from "./types";
+import { takesImages } from "./home/home-images";
 import "./point-fix.css";
 
 /** Why an Agent cannot take an image, or null. Never a path in its place. */
 export function imageRefusal(agent: Agent | undefined) {
   if (!agent) return "That Agent is no longer in this Workspace.";
   if (agent.closedAt) return `${agent.name} is closed and cannot receive messages.`;
-  if (agent.harness !== "codex" && agent.harness !== "claude")
-    return `${agent.name} cannot receive images; Codex and Claude Agents can.`;
+  // As Core decides (input_images::takes_images, YN-134 §7-1).
+  if (!takesImages(agent.harness)) return `${agent.name} cannot receive images; Codex, Claude and OpenCode Agents can.`;
   return null;
 }
 

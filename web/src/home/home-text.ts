@@ -250,6 +250,10 @@ export const homeText = strings({
     `${over.toLocaleString("en-US")} ${over === 1 ? "byte" : "bytes"} too long to send: a reply from Home is at most ${most.toLocaleString("en-US")} bytes in UTF-8, where a Chinese character is 3. Shorten it to send; what you wrote is kept.`,
   queuedFor: (agent: string, version: number) => `Queued for ${agent}, referring to version ${version}; not confirmed as read yet.`,
   sentTo: (agent: string, version: number) => `Sent to ${agent}, referring to version ${version}.`,
+  // Images on a reply (YN-134).
+  sentImages: (n: number) => `${n} image${n === 1 ? "" : "s"} went with it.`,
+  cantTakeImages: (agent: string) => `${agent} can't receive images; Codex, Claude and OpenCode Agents can. Remove the images or choose someone else.`,
+  olderCoreImages: "This Core can't take images with a reply yet, so nothing was sent. Update Core, or remove the images and send again.",
   olderCore:
     "This Core can't bind a reply to a card version yet, so nothing was sent. Update Core to reply to cards, or write to the Agent in its conversation.",
   repliesNotSent: "Replies not sent",
@@ -626,6 +630,9 @@ export const homeText = strings({
     `超出 ${over.toLocaleString("en-US")} 字节，发不出去：Home 的一条回复最多 ${most.toLocaleString("en-US")} 字节（UTF-8，一个汉字 3 字节）。删减后才能发送，已写的内容不会丢。`,
   queuedFor: (agent, version) => `已排队发给 ${agent}，指向版本 ${version}；尚未确认已读。`,
   sentTo: (agent, version) => `已发送给 ${agent}，指向版本 ${version}。`,
+  sentImages: (n) => `带了 ${n} 张图片。`,
+  cantTakeImages: (agent) => `${agent} 不能接收图片（Codex、Claude 和 OpenCode Agent 可以）。移除图片，或换一个收件人。`,
+  olderCoreImages: "这个 Core 还不能随回复发送图片，所以什么都没有发出。请更新 Core，或移除图片后再发。",
   olderCore: "此 Core 还不能把回复绑定到卡片版本，因此没有发送任何内容。请更新 Core 后再回复卡片，或在会话中写给该 Agent。",
   repliesNotSent: "未发送的回复",
   keptInHistory: (title) => `你对“${title}”的回复已保留：那张卡片现在在历史中，已标为已看。`,

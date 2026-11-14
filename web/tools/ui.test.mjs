@@ -3098,7 +3098,8 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
   const uploads = [];
   let drawn;
   const page = await mount({
-    harness: "opencode",
+    // An Agent whose harness takes no images (Core's input_images::takes_images): the reason shows.
+    harness: "dsh",
     artifacts: [{ path: "/workspace/shot.png", name: "shot.png", kind: "image", sourceItemId: "r1" }],
     beforeLoad: (window) => { drawn = pointFixBrowser(window, uploads, { failFirst: true }); },
   });
@@ -3118,7 +3119,7 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     button(page, "Mark up").click();
     await until(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
     // Mori owns the image but cannot take one: said, and nothing can be added.
-    assert.match(dialog().textContent, /Mori cannot receive images; Codex and Claude Agents can/);
+    assert.match(dialog().textContent, /Mori cannot receive images; Codex, Claude and OpenCode Agents can/);
     assert.equal(button(page, "Add to Mori’s draft").disabled, true);
     // Two areas without a pointer: Add area, its fields and its note.
     button(page, "Add area").click();
@@ -3176,6 +3177,32 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     assert.match(text, /1\. Area at x 10, y 20, 50×40 px: Too tight, by 4 px\n2\. Area at x 150, y 113, 100×75 px: Wrong colour/);
     assert.equal(page.document.querySelector(".composer-area").querySelectorAll(".input-image").length, 2);
     assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0, "nothing is sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("Point & Fix takes an OpenCode Agent, as Core does (YN-134 §7-1)", async () => {
+  const uploads = [];
+  const page = await mount({
+    harness: "opencode",
+    artifacts: [{ path: "/workspace/shot.png", name: "shot.png", kind: "image", sourceItemId: "r1" }],
+    beforeLoad: (window) => { pointFixBrowser(window, uploads); },
+  });
+  try {
+    const dialog = () => page.document.querySelector(".point-fix-dialog");
+    button(page, "Mori").click();
+    await until(() => page.document.querySelector(".artifacts-panel .artifact-row"), "Mori's artifacts");
+    page.document.querySelector(".artifacts-panel .artifact-row").click();
+    await until(() => button(page, "Mark up"), "an image artifact can be marked up");
+    button(page, "Mark up").click();
+    await until(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
+    assert.doesNotMatch(dialog().textContent, /cannot receive images/);
+    const select = dialog().querySelector(".point-fix-target select");
+    assert.equal(select.value, "a", "its owner, an OpenCode Agent, is the one told");
+    assert.equal(select.querySelector('option[value="a"]').disabled, false);
+    button(page, "Add area").click();
+    await pause();
+    assert.equal(button(page, "Add to Mori’s draft").disabled, false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
