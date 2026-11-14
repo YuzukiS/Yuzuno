@@ -32,6 +32,10 @@ export const LARGE_METRICS = 6;
  *   the card, sandboxed as the Portal shows it (CardPage.tsx).
  * - `interactive`: a Group of inputs (YN-16), drawn whole by its own
  *   renderer at every size, its controls working on the card.
+ * - `collection`: a Collection (YN-128), drawn by its own renderer at every
+ *   size, as much of it as the card holds (Collection.tsx `CARD_ITEMS`):
+ *   a carousel whole, a grid's first row or two, a list's first rows; a
+ *   small card its first item. Each says how many there are (`total`).
  */
 export type CardFigure =
   | { kind: "block"; id: string }
@@ -39,7 +43,10 @@ export type CardFigure =
   | { kind: "image"; id: string; name: string; caption: string | null; kept: boolean; takenAt: string | null }
   | { kind: "desk"; id: string; title: string; claims: number; plots: number; lead: { id: string; title: string; status: string } | null }
   | { kind: "page"; id: string; name: string; size: number; caption: string | null; takenAt: string | null }
-  | { kind: "interactive"; id: string };
+  | { kind: "interactive"; id: string }
+  | { kind: "collection"; id: string; layout: CollectionLayout; total: number };
+export type CollectionLayout = "carousel" | "grid" | "list";
+const LAYOUTS = new Set<string>(["carousel", "grid", "list"]);
 
 /** A file the body shows besides the card's picture, as a card names it (YN-3): a kept image, a page, or another file. */
 export type CardFile = { name: string; kind: "image" | "page" | "file"; kept: boolean };
@@ -120,6 +127,11 @@ export function figureOf(section: Section, id: string): CardFigure | null {
   if (CHARTS.has(node.type ?? "") || node.type === "Metrics" || node.type === "Calc") return { kind: "block", id };
   // A Diagram works on the card too: the reader selects its nodes there (YN-16 S3).
   if (["Diagram", "Figure", "Steps", "Timeline"].includes(node.type ?? "") || interactiveGroup(tree(section)?.elements, id)) return { kind: "interactive", id };
+  if (node.type === "Collection") {
+    const items = Array.isArray(props.items) ? props.items : [];
+    const layout = typeof props.layout === "string" && LAYOUTS.has(props.layout) ? (props.layout as CollectionLayout) : "list";
+    return { kind: "collection", id, layout, total: items.length };
+  }
   if (node.type === "Table") {
     const columns = (Array.isArray(props.columns) ? props.columns : []) as { key: string; label: string }[];
     const rows = (Array.isArray(props.rows) ? props.rows : []) as { id: string; cells: Record<string, unknown> }[];
@@ -263,12 +275,14 @@ export function selfContained(section: Section, content: CardContent = cardConte
   // A file the card can only name (not kept, or neither an image nor a page) is opened on the report page.
   if (!content.files.every((file) => file.kept && (file.kind === "image" || file.kind === "page"))) return false;
   const files = (id: string) => body.elements[id]?.type === "Attachments";
-  // Drawn whole on the card as shown: a kept image, a page, a chart on a card not small; a table or Metrics show only part of theirs.
+  // Drawn whole on the card as shown: a kept image, a page, a chart or a carousel on a card not small; a table, Metrics,
+  // a grid or a list show only part of theirs (and their filters are the page's).
   const whole = (figure: CardFigure | null) =>
     figure === null ||
     (figure.kind === "image" && figure.kept) ||
     figure.kind === "page" ||
     figure.kind === "interactive" ||
+    (figure.kind === "collection" && figure.layout === "carousel" && size !== "small") ||
     (figure.kind === "block" && size !== "small" && CHARTS.has(body.elements[figure.id]?.type ?? ""));
   const oneParagraph = (id: string | null | undefined) => {
     const value = id ? text(body.elements[id]?.props?.text).trim() : "";
