@@ -17,7 +17,9 @@
 //! refused, and so is a new one until dsh has answered the last (§3.5).
 //!
 //! An interrupt is `session/cancel`: dsh's `cancelled` ends the Turn; with no
-//! answer within STOP_LIMIT its end is unknown, as Claude's is.
+//! answer within STOP_LIMIT its end is unknown, as Claude's is, and that dsh
+//! is ended, since ACP's next prompt would wait for this one's answer: the
+//! next message or a reconnect resumes the session in a new dsh.
 //!
 //! A request past dsh's sandbox (`session/request_permission`) is refused by
 //! Core at every level, reject-once (§3.6, S2a): S2b asks the user at Ask.
@@ -813,22 +815,69 @@ impl Workspace {
     }
 
     /// An interrupt dsh has not answered within STOP_LIMIT (§3.5): its Turn's
-    /// end is unknown. A later answer still ends it, and until then no new
-    /// prompt goes (`dsh_send_locked`).
-    async fn dsh_stop_unconfirmed(&self, id: &str, c: &Connection, params: &Value) {
+    /// end is unknown, and that dsh is ended (`dsh_end_unanswered`): kept, it
+    /// would take no prompt again, since ACP's next one waits for this one's
+    /// answer (R1 9c3aa8f5). An answer that comes first still ends the Turn.
+    async fn dsh_stop_unconfirmed(self: &Arc<Self>, id: &str, c: &Connection, params: &Value) {
         let Some(turn) = params["turnId"].as_str().map(str::to_owned) else { return };
         if c.prompt.lock().unwrap().as_deref() != Some(turn.as_str()) {
             return;
         }
-        let message = "dsh 在 10 秒内没有确认中断；这一轮的结果未确认，不会重发。dsh did not confirm the interrupt within 10 s; this Turn's end is unknown.";
+        let secs = STOP_LIMIT.as_secs();
+        let message = format!("dsh 在 {secs} 秒内没有确认中断；这一轮的结果未确认，不会重发。dsh did not confirm the interrupt within {secs} s; this Turn's end is unknown.");
+        let unknown_turn = turn.clone();
         let written = self.record_update(id, "dsh/stopUnconfirmed", params.clone(), Sel::Turns(vec![turn.clone()]), move |d| {
+            let turn = unknown_turn;
             if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str() && t["status"] == "inProgress") {
-                unknown(entry, message);
+                unknown(entry, &message);
             }
             refresh_status(d);
         }).await;
         if let Err(error) = written {
             eprintln!("Workspace dsh interrupt not recorded: {error:#}");
+        }
+        self.changed(id);
+        // Under the Agent gate, which an event never waits for (lock order 1 on Workspace).
+        let (ws, id, generation) = (self.clone(), id.to_owned(), c.generation);
+        tokio::spawn(async move {
+            let _event = ws.admission.enter_event();
+            let gate = ws.gate(&id).await;
+            let _held = gate.lock().await;
+            ws.dsh_end_unanswered(&id, generation, &turn).await;
+        });
+    }
+
+    /// Under the Agent gate: connection `generation`, whose prompt `turn` did
+    /// not answer an interrupt, removed and its dsh stopped as a close stops
+    /// it (its group with it), and only then the Agent offline, so that no new
+    /// dsh resumes the session while this one still runs. Nothing is sent again.
+    async fn dsh_end_unanswered(&self, id: &str, generation: u64, turn: &str) {
+        let removed = {
+            let _owned = self.owner(id).await;
+            let mut connections = self.dshs.lock().unwrap();
+            // Answered meanwhile, closed or replaced: nothing to end.
+            let unanswered = connections.get(id)
+                .is_some_and(|c| c.generation == generation && c.prompt.lock().unwrap().as_deref() == Some(turn));
+            if unanswered { connections.remove(id) } else { None }
+        };
+        let Some(c) = removed else { return };
+        let ending = match c.dsh.shutdown().await {
+            Ok((ending, _)) => format!("{ending:?}"),
+            Err(error) => format!("{error:#}"),
+        };
+        let secs = STOP_LIMIT.as_secs();
+        let message = format!("dsh 在 {secs} 秒内没有确认中断，Core 已结束这个 dsh；执行完成情况未获确认，不会重发。下一条消息或重连会在新的 dsh 里恢复同一会话。\
+            dsh did not confirm the interrupt within {secs} s and was stopped; what it ran is unconfirmed and is not sent again. \
+            The next message or a reconnect resumes the session in a new dsh.");
+        let data = json!({"turnId": turn, "generation": generation, "ending": ending});
+        let written = self.record_update(id, "dsh/endedUnanswered", data, Sel::Open, move |d| {
+            ended(d, &message);
+            d.agent.connection_state = "disconnected".into();
+            d.agent.status = "offline".into();
+            d.agent.error = Some(message);
+        }).await;
+        if let Err(error) = written {
+            eprintln!("Workspace dsh end not recorded: {error:#}");
         }
         self.changed(id);
     }

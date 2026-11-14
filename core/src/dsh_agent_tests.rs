@@ -330,6 +330,33 @@ async fn an_interrupt_ends_the_turn_and_no_message_goes_while_it_runs() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// An interrupt dsh never answers (§3.5): its Turn unknown, and that dsh
+/// ended, since ACP's next prompt would wait for its answer; the next message
+/// resumes the session in a new dsh (R1 9c3aa8f5).
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unanswered_interrupt_ends_that_dsh_and_the_next_message_resumes_the_session() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let running = lab.send("c1", "HANG").await.unwrap().turn_id.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("that dsh is ended", |d| d.agent.connection_state == "disconnected").await;
+    let turn = d.turns.iter().find(|t| t["id"] == running.as_str()).unwrap();
+    assert_eq!((&turn["status"], &turn["interruptRequested"]), (&json!("outcomeUnknown"), &json!(true)));
+    assert!(turn["error"]["message"].as_str().unwrap().contains("没有确认中断"), "{turn:#}");
+    assert_eq!(d.agent.status, "offline");
+    assert!(d.agent.error.as_deref().unwrap().contains("Core 已结束这个 dsh"), "{:?}", d.agent.error);
+    assert!(lab.ws.dshs.lock().unwrap().get(ID).is_none());
+    assert!(lab.log(ID).iter().any(|r| r["kind"] == "stdinEnded"), "that dsh was stopped");
+    let next = lab.send("c2", "after").await.unwrap();
+    assert_eq!(lab.turn_ended(next.turn_id.as_deref().unwrap()).await["status"], "completed");
+    let log = lab.log(ID);
+    assert!(log.iter().any(|r| r["kind"] == "resumed" && r["sessionId"] == "ses-1"), "resumed, not made anew");
+    assert_eq!(lab.acp_runs(ID).len(), 2);
+    assert_eq!(log.iter().filter(|r| r["method"] == "session/prompt").count(), 2, "the hung one not sent again");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// A Core that starts again resumes the Agent's session in a new dsh (§3.8),
 /// its effort set again, and what the earlier dsh ran and never answered is
 /// unknown, never sent again.

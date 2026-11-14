@@ -27,6 +27,7 @@ text holds one of these words runs that scene:
   ASK     sends session/request_permission (as dsh does past its sandbox),
           then, once answered, an agent_message_chunk quoting the answer
   SLEEP   answers only after session/cancel, with stopReason `cancelled`
+  HANG    never answers, not even session/cancel
   EXIT    writes "fixture: exiting" on stderr and exits 3 without answering
   NOISE   writes a line that is not JSON
   LATER   answers end_turn, then 0.3 s later sends a message of its own, as
@@ -405,6 +406,8 @@ def serve():
                                 {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}]}})
             elif "SLEEP" in text:
                 sleeping[session] = mid
+            elif "HANG" in text:
+                pass
             elif "EXIT" in text:
                 sys.stderr.write("fixture: exiting\n")
                 sys.stderr.flush()
