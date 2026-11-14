@@ -25,8 +25,9 @@ root that Core recorded for the attempt and names in each of its requests
                        starttime, process group and session), written before
                        that process may run the command
   deadline.json        the deadline the supervisor counts the timeout to, on
-                       this boot's monotonic clock, with the command's
-                       identity: applied by status if the supervisor is gone
+                       this boot's monotonic clock (boot_clock, named in it),
+                       with the command's identity: applied by status if the
+                       supervisor is gone
   stopping.json        when this helper first sent TERM to a lost attempt's
                        group, on the same clock, with the same identity: KILL
                        follows 5 s later, at whichever call reaches it
@@ -230,6 +231,27 @@ def all_pids():
     return [int(each) for each in buf[:got // ctypes.sizeof(ctypes.c_int32)] if each > 0]
 
 
+# What deadline.json and stopping.json are timed on: one clock for every
+# process of this boot, so that a call can read a time another process wrote.
+# time.monotonic() is that clock (CLOCK_MONOTONIC) on Linux, but on macOS each
+# process's starts near 0 (the Command Line Tools' python3 3.9; YN-144, Job
+# 2c6fc88d), so there it never applies a lost attempt's deadline and never
+# KILLs after a TERM another call sent. CLOCK_MONOTONIC is one clock on both.
+BOOT_CLOCK = "CLOCK_MONOTONIC"
+
+
+def boot_clock():
+    return time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+def on_boot_clock(record):
+    """Whether a record's time is on boot_clock: marked so, or, on Linux,
+    written before the mark, when time.monotonic() already was that clock.
+    An unmarked record on a Mac is on a clock no other process has."""
+    clock = record.get("clock")
+    return clock == BOOT_CLOCK or (clock is None and not DARWIN)
+
+
 def boot_id():
     override = os.environ.get("YUZUNO_JOBS_BOOT_ID_FILE")
     if override:
@@ -337,8 +359,8 @@ def stop(group, limit=None, since=None):
     a KILL runs from that TERM rather than from a time nothing was signalled.
     `since` is the TERM an earlier call already sent, checked against this
     attempt, boot and process; it is kept, so a grace already given is never
-    restarted by a later call."""
-    begin = time.monotonic()
+    restarted by a later call. Times are on boot_clock, as `since` is."""
+    begin = boot_clock()
     first = since
     termed = False
     blind = None
@@ -346,7 +368,7 @@ def stop(group, limit=None, since=None):
         left = live(group)
         if left == []:
             return True
-        now = time.monotonic()
+        now = boot_clock()
         if limit is not None and now - begin >= limit:
             return False
         if left is None:
@@ -911,14 +933,15 @@ def pump():
 
 reader = threading.Thread(target=pump, daemon=True)
 reader.start()
-deadline = time.monotonic() + spec["timeoutSeconds"]
+deadline = boot_clock() + spec["timeoutSeconds"]
 # The same deadline for status, if this supervisor is gone before it.
-# CLOCK_MONOTONIC (time.monotonic on Linux) is one clock for this boot's
-# processes, so the record names the boot and the command's identity. Without
-# it nothing is applied in this supervisor's place.
+# boot_clock is one clock for this boot's processes, so the record names the
+# clock, the boot and the command's identity. Without it nothing is applied in
+# this supervisor's place.
 try:
     atomic(root / "deadline.json", {"bootId": group["bootId"], "pid": pid, "starttime": group["starttime"],
-                                    "timeoutSeconds": spec["timeoutSeconds"], "monotonic": deadline})
+                                    "timeoutSeconds": spec["timeoutSeconds"], "monotonic": deadline,
+                                    "clock": BOOT_CLOCK})
 except OSError:
     pass
 why = None
@@ -938,7 +961,7 @@ while True:
     if why is None:
         if (root / "cancel.json").exists():
             why = "cancel"
-        elif time.monotonic() > deadline:
+        elif boot_clock() > deadline:
             # The timeout counts while the job is paused, as for local jobs.
             why = "timeout"
         if why:
@@ -1523,7 +1546,7 @@ def past_deadline(root, started):
         return False
     return (all(deadline.get(key) == started.get(key) for key in ("bootId", "pid", "starttime"))
             and deadline["bootId"] == boot_id() and deadline.get("timeoutSeconds") == spec.get("timeoutSeconds")
-            and time.monotonic() > at)
+            and on_boot_clock(deadline) and boot_clock() > at)
 
 
 def overdue(root, started):
@@ -1547,7 +1570,7 @@ def first_term(root, intent, started):
     at = record.get("monotonic") if isinstance(record, dict) else None
     if (isinstance(at, (int, float)) and not isinstance(at, bool) and record.get("attempt") == intent["attempt"]
             and all(record.get(key) == started.get(key) for key in STOPPING)
-            and record["bootId"] == boot_id() and at <= time.monotonic()):
+            and record["bootId"] == boot_id() and on_boot_clock(record) and at <= boot_clock()):
         return at
     return None
 
@@ -1574,7 +1597,7 @@ def stop_lost(root, intent, started):
     at = first_term(root, intent, started)
     if at is not None:
         return stop(started, limit=4, since=at), None
-    first = time.monotonic()
+    first = boot_clock()
     left = members(started)
     for pid in left:
         send(pid, signal.SIGTERM, started)
@@ -1582,7 +1605,7 @@ def stop_lost(root, intent, started):
     if left:
         try:
             atomic(root / "stopping.json", dict({key: started[key] for key in STOPPING}, attempt=intent["attempt"],
-                                                monotonic=first))
+                                                monotonic=first, clock=BOOT_CLOCK))
             since = first
         except OSError as error:
             problem = "the time of its first TERM could not be recorded (%s), so no later call KILLs it" % (
