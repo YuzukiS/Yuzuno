@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { errorText } from "./api";
-import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, MODEL_HINTS, credentialFits, effortsOf, harnessesOffered, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
+import { dshAvailable, useDsh } from "./dsh";
 import { TIER_CHOICES, tierChoiceOf, withTierChoice } from "./routing-tiers";
 import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
 import { useLanguage } from "./i18n";
@@ -20,7 +21,8 @@ type Choice = { value: string; label: string; disabled?: boolean };
  * (YN-57 S3): "key:<id>" for each key it takes, then "new:<provider>" for each provider it takes a key of, which adds
  * one in place; always offered, unusable only while the keys can't be read here. */
 function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRead: boolean, accounts: AccountsView | null, current: Credential): { accounts: Choice[]; keys: Choice[] } {
-  const accountChoices: Choice[] = [
+  // DeepSeek Harness has no login of its own here: only a DeepSeek key (YN-119 §3.10).
+  const accountChoices: Choice[] = harness === "dsh" ? [] : [
     { value: "login", label: harness === "claude" ? t.credLoginClaude : harness === "codex" ? t.credLoginCodex : t.credLoginOpencode },
   ];
   if (harness === "claude") accountChoices.push({ value: "pool", label: t.credPool });
@@ -36,7 +38,8 @@ function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRe
   if (![...accountChoices, ...keyChoices].some((c) => c.value === value)) {
     (current.kind === "apiKey" ? keyChoices : accountChoices).unshift({ value,
       label: current.kind === "apiKey" ? (keysRead ? t.keyMissing(current.keyId) : t.keyPending(current.keyId))
-        : current.kind === "codexHome" ? (accounts ? t.codexHomeMissing(current.id) : t.codexHomePending(current.id)) : value });
+        : current.kind === "codexHome" ? (accounts ? t.codexHomeMissing(current.id) : t.codexHomePending(current.id))
+          : harness === "dsh" ? t.dshKeyOnly : value });
   }
   return { accounts: accountChoices, keys: keyChoices };
 }
@@ -56,6 +59,8 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
   onEdit: (change: (c: Candidate) => Candidate) => void; onRemove: () => void; onClose: () => void;
 }) {
   const keysT = keysText(useLanguage());
+  // DeepSeek Harness is offered while this Core starts it; a candidate saved with it keeps it shown.
+  const dsh = dshAvailable(useDsh());
   // A key being added in place (YN-57 S3), by its provider; what it said when refused; and the keys added here, shown
   // until the page's own read of the keys lists them.
   const [adding, setAdding] = useState<KeyProvider | null>(null);
@@ -109,22 +114,27 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
             onEdit((x) => {
               const { reasoningEffort: _, ...rest } = x;
               const keyKept = x.credential.kind !== "apiKey" || keys.some((k) => k.id === (x.credential as { keyId: string }).keyId && keyFits(harness, k.provider));
-              // A reasoning effort is Codex's only (S3a); an account or key the new tool can't use goes back to the host's login,
-              // and then, as when the credential is chosen, a daily spend cap goes with the key (R1 75964dfb).
-              const credential: Credential = credentialFits(harness, x.credential) && keyKept ? x.credential : { kind: "login" };
-              return { ...(harness === "codex" ? x : rest), harness, model: MODEL_HINTS[harness][0], credential,
+              // A reasoning effort is Codex's and DeepSeek Harness's (S3a, YN-119 S3), each its own: one the new tool lists
+              // stays. An account or key the new tool can't use goes back to the host's login, or for DeepSeek Harness,
+              // which has none, to the Workspace's first DeepSeek key (named "deepseek" while there is none, as a preset
+              // names it); and then, as when the credential is chosen, a daily spend cap goes with the key (R1 75964dfb).
+              const fallback: Credential = harness === "dsh"
+                ? { kind: "apiKey", keyId: keys.find((k) => k.provider === "deepseek")?.id ?? "deepseek" } : { kind: "login" };
+              const credential: Credential = credentialFits(harness, x.credential) && keyKept ? x.credential : fallback;
+              const effortKept = !!x.reasoningEffort && effortsOf(harness).includes(x.reasoningEffort);
+              return { ...(effortKept ? x : rest), harness, model: MODEL_HINTS[harness][0], credential,
                 conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) } as Candidate;
             });
           }}>
-            {HARNESSES.map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
+            {harnessesOffered(dsh, c.harness).map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
           </select>
         </label>
         <ModelField c={c} t={t} keyProvider={keyProvider} onChange={(model) => onEdit((x) => ({ ...x, model }))} />
-        {c.harness === "codex" && (
+        {(c.harness === "codex" || c.harness === "dsh") && (
           <label className="routing-field"><span>{t.effort}</span>
             <select className="settings-select" value={c.reasoningEffort ?? ""} onChange={(e) => field("reasoningEffort", e.target.value)}>
-              <option value="">{t.effortDefault}</option>
-              {[...EFFORTS, ...(c.reasoningEffort && !EFFORTS.includes(c.reasoningEffort) ? [c.reasoningEffort] : [])].map((v) => <option key={v} value={v}>{v}</option>)}
+              <option value="">{c.harness === "dsh" ? t.effortDshDefault : t.effortDefault}</option>
+              {[...effortsOf(c.harness), ...(c.reasoningEffort && !effortsOf(c.harness).includes(c.reasoningEffort) ? [c.reasoningEffort] : [])].map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </label>
         )}
@@ -136,9 +146,11 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
             const credential = credentialOf(e.target.value);
             onEdit((x) => ({ ...x, credential, conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) }));
           }}>
-            <optgroup label={t.credGroupAccounts}>
-              {choices.accounts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </optgroup>
+            {choices.accounts.length > 0 && (
+              <optgroup label={t.credGroupAccounts}>
+                {choices.accounts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </optgroup>
+            )}
             <optgroup label={t.credGroupKeys}>
               {choices.keys.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
             </optgroup>

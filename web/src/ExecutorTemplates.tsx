@@ -14,6 +14,7 @@ import { langTag, strings, useLanguage, type Language } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import { ChoiceCards } from "./SettingsChoices";
+import { DSH_NAME, dshAvailable, useDsh } from "./dsh";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-templates.css";
 import { Tip, TipText } from "./Tip";
@@ -55,6 +56,7 @@ const text = strings({
   machineHelp: "Where its executors run. A dispatch may name another machine.",
   autoHelp: "Core chooses at each dispatch: a machine with a free executor slot first, then the most spare Jobs memory, then CPU. The task shows which it chose and why.",
   opencodeHost: "OpenCode executors run on this Core host.",
+  dshHost: "DeepSeek Harness executors run on this Core host.",
   later: (n: number) => `This list also holds ${n} ${n === 1 ? "template" : "templates"} saved by a newer Core. This Core can’t show ${n === 1 ? "it" : "them"}; saving here keeps ${n === 1 ? "it" : "them"} as ${n === 1 ? "it is" : "they are"}.`,
   newTemplate: "New template",
   label: "Label",
@@ -64,6 +66,7 @@ const text = strings({
   followsRouting: "Follows routing",
   followsHelp: (name: string) => `Routing on: routing's order chooses the tool, model and account. Routing off: the default for new Agents (here: ${name}; a project can have its own).`,
   fixedHelp: (name: string) => `Fixed: always ${name} on this host's login, whatever routing says.`,
+  fixedDshHelp: "Fixed: always DeepSeek Harness on this Core host, whatever routing says. It runs with a DeepSeek API key from Accounts & keys.",
   whenToChoose: "When to choose it",
   whenToChooseHelp: "One line a lead reads to choose this template. Not sent to the executor.",
   model: "Model",
@@ -100,6 +103,10 @@ const text = strings({
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
   opencodeOwnModel: "Its own configuration’s model",
   opencodeOption: "OpenCode (Experimental)",
+  dshLevels: { ask: "its sandbox; anything beyond it asks you", auto: "its sandbox; anything beyond it is refused", full: "no sandbox" } as Record<string, string>,
+  dshNote: "On DeepSeek Harness, Auto-approve is its sandbox: work inside it runs as usual, and anything beyond it is refused without asking you; nothing reviews an action. Its network isn't limited at any level, so it doesn't keep Read only.",
+  dshModelHelp: "As DeepSeek Harness names it, such as deepseek-flash or deepseek-v4-pro",
+  dshOwnModel: "DeepSeek Harness's default model",
   namePattern: "Name",
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
   instructions: "Instructions",
@@ -177,6 +184,7 @@ const text = strings({
   machineHelp: "其执行者运行的地方。派发时可以指定其他机器。",
   autoHelp: "Core 在每次派发时选择：先选有空闲执行者槽位的机器，再选 Job 剩余内存最多的，然后是 CPU。任务上会显示选了哪台以及原因。",
   opencodeHost: "OpenCode 执行者在此 Core 主机上运行。",
+  dshHost: "DeepSeek Harness 执行者在此 Core 主机上运行。",
   later: (n) => `此列表还有 ${n} 个由较新的 Core 保存的模板。此 Core 无法显示；在此保存会原样保留它们。`,
   newTemplate: "新模板",
   label: "标签",
@@ -186,6 +194,7 @@ const text = strings({
   followsRouting: "跟随路由",
   followsHelp: (name) => `路由开着：按路由的顺序选运行环境、模型和账号。路由关着：用新 Agent 的默认（这里是 ${name}；项目可以有自己的）。`,
   fixedHelp: (name) => `固定：总用 ${name} 和这台主机的登录，不看路由。`,
+  fixedDshHelp: "固定：总在此 Core 主机上用 DeepSeek Harness，不看路由。它用「账号与 key」里的 DeepSeek API key 运行。",
   whenToChoose: "何时选它",
   whenToChooseHelp: "一行字，负责人据此选模板。不会发给执行者。",
   model: "模型",
@@ -221,6 +230,10 @@ const text = strings({
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
   opencodeOwnModel: "其自身配置中的模型",
   opencodeOption: "OpenCode（实验性）",
+  dshLevels: { ask: "它的沙箱；越出沙箱的先问你", auto: "它的沙箱；越出沙箱的一律拒绝", full: "不用沙箱" },
+  dshNote: "在 DeepSeek Harness 上，自动审批就是它的沙箱：沙箱里照常做，越出沙箱的请求不问你、一律拒绝；没有自动审查。它在任何级别都不限网络，所以不支持只读。",
+  dshModelHelp: "按 DeepSeek Harness 的写法，例如 deepseek-flash 或 deepseek-v4-pro",
+  dshOwnModel: "DeepSeek Harness 的默认模型",
   namePattern: "名称",
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
   instructions: "说明",
@@ -363,8 +376,8 @@ const templateOf = (d: Draft): ExecutorTemplate => {
     if (d.harness === "codex") template.permissionPreset = "config";
   } else if (d.level) template.permissionLevel = d.level;
   if (d.instructions.trim()) template.instructions = d.instructions;
-  // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
-  if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
+  // Kept as saved (T-35 S3): an OpenCode or DeepSeek Harness template runs on this Core host.
+  if (d.machine && !hostOnly(d.harness)) template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
   if (d.harness) template.routing = "fixed";
   // The way back stays until the template is fixed to a harness.
@@ -380,13 +393,14 @@ const stepRefused = (d: Draft, s: DraftStep) => (d.deliveryMode || "pr") !== "pr
 const stepsInvalid = (d: Draft) => !!d.steps && (d.steps.length === 0 || d.steps.some((s) => stepRefused(d, s)));
 /** The machines a template's executors may run on, by harness: this Core
  * host always; an SSH machine for Codex unless it keeps its Agents contained,
- * and for Claude Code; `auto` for both. OpenCode runs on this Core host only,
- * where `auto` would always choose (T-35 S3). */
+ * and for Claude Code; `auto` for both. OpenCode and DeepSeek Harness run on
+ * this Core host only, where `auto` would always choose (T-35 S3, YN-119 §4). */
+const hostOnly = (harness: "" | ExecutorHarness) => harness === "opencode" || harness === "dsh";
 const machineOptions = (harness: "" | ExecutorHarness, machines: WorkspaceMachine[]) =>
-  harness === "opencode" ? [] : machines.filter((m) => m.kind === "ssh" && !(harness === "codex" && m.contained));
+  hostOnly(harness) ? [] : machines.filter((m) => m.kind === "ssh" && !(harness === "codex" && m.contained));
 const bytes = (value: string) => new TextEncoder().encode(value).length;
-const harnessName = (h: ExecutorHarness) => (h === "codex" ? "Codex" : h === "claude" ? "Claude Code" : "OpenCode");
-const HARNESSES: ExecutorHarness[] = ["codex", "claude", "opencode"];
+const harnessName = (h: ExecutorHarness) => (h === "codex" ? "Codex" : h === "claude" ? "Claude Code" : h === "dsh" ? DSH_NAME : "OpenCode");
+const HARNESSES: ExecutorHarness[] = ["codex", "claude", "opencode", "dsh"];
 /** A level's name in the page's language. */
 const levelName = (levels: LevelInfo[], level: string, language: Language) => {
   if (level === "config") return codexPermissionText("config", language);
@@ -662,16 +676,16 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       if (change.label !== undefined && !d.idTouched) next.id = idFor(change.label, list.filter(o => o.key !== key).map(o => o.id));
       // Codex's own configuration is Codex's only; a level stays, and is shown as refused where the harness doesn't keep it.
       if (change.harness !== undefined && change.harness !== "codex" && d.level === "config") next.level = "";
-      // Only a fixed template names a model, and OpenCode names its models otherwise: a model is not
-      // carried into following routing, nor to or from OpenCode.
+      // Only a fixed template names a model, and OpenCode and DeepSeek Harness name their models otherwise: a
+      // model is not carried into following routing, nor to or from either of them.
       if (change.harness !== undefined && change.harness !== d.harness
-        && (!change.harness || change.harness === "opencode" || d.harness === "opencode")) {
+        && (!change.harness || hostOnly(change.harness) || hostOnly(d.harness))) {
         next.model = "";
         next.reasoningEffort = "";
       }
-      // A machine the new harness can't run on goes back to this Core host:
-      // OpenCode runs only there, Codex on no machine that keeps Agents contained.
-      if (change.harness === "opencode"
+      // A machine the new harness can't run on goes back to this Core host: OpenCode and DeepSeek Harness
+      // run only there, Codex on no machine that keeps Agents contained.
+      if ((change.harness !== undefined && hostOnly(change.harness))
         || (change.harness === "codex" && machines.some(m => m.id === next.machine && m.contained))) next.machine = "";
       // An effort is for its model: clearing the model clears it too (R1 de0ae592).
       if (change.model !== undefined && !change.model.trim()) next.reasoningEffort = "";
@@ -717,7 +731,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
     setOpenKey(made.key);
   };
   const runsOnText = (d: Draft) =>
-    d.harness === "opencode" || !d.machine ? t.thisHost
+    hostOnly(d.harness) || !d.machine ? t.thisHost
       : d.machine === "auto" ? t.auto
         : machines.find(m => m.id === d.machine)?.name ?? savedMachine(d.machine);
   const presets = view ? presetsIn(view.presets, language) : [];
@@ -842,15 +856,19 @@ function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
 /** A template's permission level (YN-56): one for every tool, and what it is
  * on each. A fixed template's harness keeps only some; a fixed Codex template
  * may follow its machine's own Codex configuration instead. */
-function LevelField({ d, t, language, levels, opencode, edit }: {
-  d: Draft; t: Text; language: Language; levels: LevelInfo[]; opencode: boolean; edit: (change: Partial<Draft>) => void;
+function LevelField({ d, t, language, levels, opencode, dsh, edit }: {
+  d: Draft; t: Text; language: Language; levels: LevelInfo[]; opencode: boolean;
+  /** Whether this Core starts DeepSeek Harness (`dsh.available` of /api/workspace). */
+  dsh: boolean;
+  edit: (change: Partial<Draft>) => void;
 }) {
-  const shownHarnesses = HARNESSES.filter((h) => h !== "opencode" || opencode || d.harness === "opencode");
+  const shownHarnesses = HARNESSES.filter((h) => (h !== "opencode" || opencode || d.harness === "opencode") && (h !== "dsh" || dsh || d.harness === "dsh"));
   const info = levels.find((l) => l.level === d.level);
   const nativeText = (h: ExecutorHarness) => {
     if (!info) return null;
     if (h === "codex") return info.codex ? codexPermissionText(info.codex.permissionPreset, language) : null;
     if (h === "claude") return info.claude ? claudeModeText(info.claude.permissionMode, language) : null;
+    if (h === "dsh") return info.dsh ? t.dshLevels[info.level] ?? null : null;
     return info.opencode ? t.opencodeRules : null;
   };
   const skipped = info && !d.harness ? shownHarnesses.filter((h) => !keepsLevel(levels, info.level, h)) : [];
@@ -870,6 +888,9 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
         {skipped.length > 0 && <span className="settings-row-help">{t.levelSkips(skipped.map(harnessName).join(", "))}</span>}
         {d.level === "auto" && info?.opencode && (d.harness === "opencode" || (!d.harness && shownHarnesses.includes("opencode"))) && (
           <span className="settings-row-help executor-level-opencode">{t.opencodeNote}</span>
+        )}
+        {(d.level === "auto" || d.level === "read-only") && (d.harness === "dsh" || (!d.harness && shownHarnesses.includes("dsh"))) && (
+          <span className="settings-row-help executor-level-dsh">{t.dshNote}</span>
         )}
       </span>
       <select className="settings-select" aria-label={t.permission} value={d.level} aria-invalid={refused || undefined}
@@ -917,6 +938,7 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
   const name = d.label.trim() || t.newTemplate;
   const noLabel = !d.label.trim();
   const refused = refusedOn(d, view);
+  const dsh = dshAvailable(useDsh());
   // The harness for new Agents while routing is off, as a general executor's: the Workspace's here.
   const general = view.general?.harness;
   const defaultHarness = general === "codex" || general === "claude" || general === "opencode" ? harnessName(general) : "Codex";
@@ -960,7 +982,7 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
             <span className="settings-row-main">
               <span className="settings-row-title">{t.harness}</span>
               <span className="settings-row-help">
-                {d.harness ? t.fixedHelp(harnessName(d.harness)) : t.followsHelp(defaultHarness)}
+                {d.harness === "dsh" ? t.fixedDshHelp : d.harness ? t.fixedHelp(harnessName(d.harness)) : t.followsHelp(defaultHarness)}
               </span>
             </span>
             <select className="settings-select" aria-label={t.harness} value={d.harness}
@@ -969,6 +991,7 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
               <option value="claude">Claude Code</option>
               <option value="codex">Codex</option>
               {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">{t.opencodeOption}</option>}
+              {(dsh || d.harness === "dsh") && <option value="dsh">{DSH_NAME}</option>}
             </select>
           </label>
           {d.harness && (
@@ -976,10 +999,11 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
               <span className="settings-row-main">
                 <span className="settings-row-title">{t.model}</span>
                 {d.harness === "opencode" ? <span className="settings-row-help">{t.opencodeModelHelp}</span>
-                  : d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+                  : d.harness === "dsh" ? <span className="settings-row-help">{t.dshModelHelp}</span>
+                    : d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
               </span>
               <input className="settings-input" aria-label={t.model} value={d.model}
-                placeholder={d.harness === "opencode" ? t.opencodeOwnModel : t.inheritModel}
+                placeholder={d.harness === "opencode" ? t.opencodeOwnModel : d.harness === "dsh" ? t.dshOwnModel : t.inheritModel}
                 onChange={e => edit({ model: e.target.value })} />
             </label>
           )}
@@ -991,7 +1015,7 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
             </label>
           )}
           {!d.harness && d.preset?.modelHint && <p className="settings-row-help executor-template-note">{t.modelHint(d.preset.modelHint)}</p>}
-          <LevelField d={d} t={t} language={language} levels={view.levels} opencode={view.opencodeEnabled} edit={edit} />
+          <LevelField d={d} t={t} language={language} levels={view.levels} opencode={view.opencodeEnabled} dsh={dsh} edit={edit} />
           <TierField d={d} t={t} edit={edit} />
           {refused && (
             <p className="inline-error executor-template-refused" role="note">
@@ -1017,18 +1041,18 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
             <span className="settings-row-main">
               <span className="settings-row-title">{t.runsOn}</span>
               <span className="settings-row-help">
-                {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
+                {d.harness === "opencode" ? t.opencodeHost : d.harness === "dsh" ? t.dshHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
               </span>
             </span>
-            <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
-              disabled={locked || d.harness === "opencode"} onChange={e => edit({ machine: e.target.value })}>
+            <select className="settings-select" aria-label={t.runsOn} value={hostOnly(d.harness) ? "" : d.machine}
+              disabled={locked || hostOnly(d.harness)} onChange={e => edit({ machine: e.target.value })}>
               <option value="">{t.thisHost}</option>
               {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
+              {!hostOnly(d.harness) && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
                 // Kept as saved, and named for what is known of it.
                 <option value={d.machine}>{savedMachine(d.machine)}</option>
               )}
-              {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
+              {!hostOnly(d.harness) && <option value="auto">{t.auto}</option>}
             </select>
           </label>
           <label className="settings-row">

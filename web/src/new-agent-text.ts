@@ -72,6 +72,18 @@ export const newAgentText = strings({
   codexPermissionNote:
     "Follow Codex config uses this machine’s own Codex configuration; the others are Yuzuno’s choice. The machine checks it when the Agent starts.",
   claudePermissionNote: "The Agent shows the mode its Claude Code session reports once it starts.",
+  // A DeepSeek Harness Agent (YN-119 W1): on the Core host, with a DeepSeek key.
+  dshLocal: "DeepSeek Harness Agents run only on the Core host",
+  dshNote: (label: string | null) =>
+    `Runs DeepSeek Harness on your Core host in a home folder of its own, so your own ~/.dsh settings aren’t used, and its session log isn’t uploaded with its requests. Each step shows once it finishes, not word by word; nothing can be added to a turn while it runs; rewind, manual compaction and session import aren’t offered.${label ? ` ${label}` : ""}`,
+  dshKey: "DeepSeek key",
+  dshKeyNote: "DeepSeek Harness has no login of its own here: it runs with this key from Settings → Accounts & keys.",
+  dshKeysReading: "Reading the DeepSeek keys…",
+  dshKeysError: (reason: string) => `Couldn’t read the keys: ${reason}`,
+  dshNoKey: "DeepSeek Harness needs a DeepSeek key: add one in Settings → Accounts & keys.",
+  dshKeyUnset: "not set",
+  dshPermissionNote:
+    "Ask you first and Auto-approve keep DeepSeek Harness in its sandbox, which limits writing files only: anything beyond it asks you, or is refused without asking. Its network isn’t limited at any level, so Read only isn’t offered.",
   /** `machine` null: the Core host. */
   login: (harness: string, machine: string | null) => `Uses the ${harness} login on ${machine ?? "your Core host"}.`,
   createDisabled: "Creation is disabled in the read-only design preview.",
@@ -227,6 +239,16 @@ export const newAgentText = strings({
   autoConflict: "此模型不支持自动模式，因此不能使用新 Agent 的默认值。请为此 Agent 选择权限。",
   codexPermissionNote: "“跟随 Codex 配置”使用此机器自己的 Codex 配置；其他选项由 Yuzuno 决定。Agent 启动时机器会检查它。",
   claudePermissionNote: "Agent 启动后会显示其 Claude Code 会话报告的模式。",
+  dshLocal: "DeepSeek Harness Agent 只在 Core 主机上运行",
+  dshNote: (label) =>
+    `在你的 Core 主机上运行 DeepSeek Harness，用它自己的 home 文件夹，所以不会用到你自己的 ~/.dsh 设置，请求里也不附带会话日志。每一步做完才整块显示，不逐字出现；一轮进行中不能追加消息；不提供回退、手动压缩和会话导入。${label ? ` ${label}` : ""}`,
+  dshKey: "DeepSeek key",
+  dshKeyNote: "DeepSeek Harness 在这里没有自己的登录：它用「设置 → 账号与密钥」里的这个 key 运行。",
+  dshKeysReading: "正在读取 DeepSeek 的 key…",
+  dshKeysError: (reason) => `无法读取 key：${reason}`,
+  dshNoKey: "DeepSeek Harness 需要一个 DeepSeek 的 key：在「设置 → 账号与密钥」里添加。",
+  dshKeyUnset: "未设置",
+  dshPermissionNote: "先问你和自动审批都让 DeepSeek Harness 待在它的沙箱里，沙箱只限制写文件：越出沙箱的先问你，或不问你直接拒绝。它在任何级别都不限网络，所以不提供只读。",
   login: (harness, machine) => `使用${machine ? ` ${machine} ` : "你的 Core 主机"}上的 ${harness} 登录。`,
   createDisabled: "在只读的设计预览中无法创建。",
   cancel: "取消",

@@ -6,7 +6,7 @@ import { strings } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
 
 
-export const harnessName: Record<Harness, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
+export const harnessName: Record<Harness, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", dsh: "DeepSeek Harness" };
 export const providerName: Record<string, string> = { deepseek: "DeepSeek", anthropic: "Anthropic", openai: "OpenAI" };
 
 export const text = strings({
@@ -77,6 +77,7 @@ export const text = strings({
   modelReading: (tool: string) => `Reading ${tool}'s models…`,
   modelFromClaude: "From Claude Code on this Core host: its aliases, and the versions they point to now.",
   modelFromCodex: "From Codex on this Core host: its own model list.",
+  modelFromDsh: "From DeepSeek Harness on this Core host: the models it offers, as a new executor sees them.",
   modelFromOpencode: (version: string) => `From OpenCode${version ? ` ${version}` : ""} on this Core host: its release's catalog and your OpenCode config, as a new executor sees them.`,
   modelUnreadable: (tool: string, why: string) => `Couldn't read ${tool}'s models on this Core host (${why}). Showing Yuzuno's short list; choose Other to type any model.`,
   modelReread: "Read again",
@@ -86,6 +87,7 @@ export const text = strings({
   groupAliases: "Aliases · follow new releases",
   groupPinned: "Pinned versions",
   groupCodex: "Codex's models",
+  groupDsh: "DeepSeek Harness's models",
   groupWithKey: (provider: string) => `${provider} · with this candidate's API key`,
   groupNeedsKey: (provider: string) => `${provider} · only with its own API key`,
   groupEnv: (provider: string) => `${provider} · from this host's environment`,
@@ -93,6 +95,7 @@ export const text = strings({
   groupLoggedIn: (provider: string) => `${provider} · logged in`,
   groupShortList: "Yuzuno's short list",
   effortDefault: "The model's own",
+  effortDshDefault: "DeepSeek's default",
   credential: "Account or key",
   credLoginClaude: "This host's login",
   credLoginCodex: "This host's login (ChatGPT subscription)",
@@ -159,6 +162,7 @@ export const text = strings({
   homeNeeded: (id: string) => `The Codex account ${id} isn't listed: add it under Accounts & keys, or choose another.`,
   labelTooLong: "A name is at most 60 characters.",
   credNotFit: "This tool can't use that account or key.",
+  dshKeyOnly: "DeepSeek Harness runs with a DeepSeek API key: choose one under Account or key.",
   poolEmpty: "Choose an account, or all.",
   quotaEmpty: "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.",
   capBad: "A daily spend above $0, at most $10,000.",
@@ -254,6 +258,7 @@ export const text = strings({
   modelReading: (tool) => `正在读取 ${tool} 的模型…`,
   modelFromClaude: "来自这台 Core 主机上的 Claude Code：它的别名，和别名现在指向的版本。",
   modelFromCodex: "来自这台 Core 主机上 Codex 自己的模型列表。",
+  modelFromDsh: "来自这台 Core 主机上的 DeepSeek Harness：它提供的模型，也就是新执行者看到的那份。",
   modelFromOpencode: (version) => `来自这台 Core 主机上的 OpenCode${version ? ` ${version}` : ""}：它这个版本自带的目录加上你的 OpenCode 配置，也就是新执行者看到的那份。`,
   modelUnreadable: (tool, why) => `读不到这台 Core 主机上 ${tool} 的模型（${why}）。先列出 Yuzuno 自带的几个；要别的就选「其他（手动输入）」。`,
   modelReread: "重新读取",
@@ -263,6 +268,7 @@ export const text = strings({
   groupAliases: "别名 · 跟着新版本走",
   groupPinned: "固定版本",
   groupCodex: "Codex 的模型",
+  groupDsh: "DeepSeek Harness 的模型",
   groupWithKey: (provider) => `${provider} · 用这个候选的 API key`,
   groupNeedsKey: (provider) => `${provider} · 只能用它自己的 API key`,
   groupEnv: (provider) => `${provider} · 来自主机的环境变量`,
@@ -270,6 +276,7 @@ export const text = strings({
   groupLoggedIn: (provider) => `${provider} · 已登录`,
   groupShortList: "Yuzuno 自带的几个",
   effortDefault: "模型自己的",
+  effortDshDefault: "DeepSeek 的默认",
   credential: "账号或 key",
   credLoginClaude: "主机的登录",
   credLoginCodex: "主机的登录（ChatGPT 订阅）",
@@ -332,6 +339,7 @@ export const text = strings({
   homeNeeded: (id) => `Codex 账号 ${id} 不在列表里：在「账号与密钥」里添加，或换一个。`,
   labelTooLong: "名称最多 60 个字。",
   credNotFit: "这个工具用不了这个账号或 key。",
+  dshKeyOnly: "DeepSeek Harness 要用 DeepSeek 的 API key：在「账号或 key」里选一个。",
   poolEmpty: "选一个账号，或全部。",
   quotaEmpty: "填本周至少剩多少，或删掉这个条件：5 小时额度已不再判断。",
   capBad: "每日花费要大于 $0，最多 $10,000。",
@@ -388,6 +396,8 @@ export function chipText(c: AnyCondition, t: Text): string {
 /** What a candidate's account or key is, in a line. */
 export function credentialWords(c: Candidate, t: Text, keys: RoutingKey[] | null, accounts: AccountsView | null): { text: string; missing: boolean } {
   const cred = c.credential;
+  // DeepSeek Harness has no login here (YN-119 §3.10): one saved so is said to need a key.
+  if (cred.kind === "login" && c.harness === "dsh") return { text: t.dshKeyOnly, missing: true };
   if (cred.kind === "login") return { text: c.harness === "codex" ? t.loginCodex : c.harness === "claude" ? t.loginClaude : t.loginOpencode, missing: false };
   if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length), missing: false };
   if (cred.kind === "apiKey") {
@@ -417,7 +427,7 @@ export function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, acc
   else if (c.harness === "opencode" && model && !/^[^/\s]+\/[^\s]+$/.test(model)) list.push({ at: "", text: t.modelOpencode });
   if ((c.label ?? "").trim().length > 60) list.push({ at: "", text: t.labelTooLong });
   const cred = c.credential;
-  if (!credentialFits(c.harness, cred)) list.push({ at: "", text: t.credNotFit });
+  if (!credentialFits(c.harness, cred)) list.push({ at: "", text: c.harness === "dsh" ? t.dshKeyOnly : t.credNotFit });
   else if (cred.kind === "apiKey" && keys) {
     const key = keys.find((k) => k.id === cred.keyId);
     if (!key) list.push({ at: "", text: t.keyNeeded(cred.keyId) });
