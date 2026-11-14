@@ -1585,6 +1585,20 @@ ul.home-widget {
   min-height: calc(2 * 1.5em);
   padding: 6px 8px;
 }
+/* A field that takes images (YN-134): thumbnails under the text, then "+" at
+   the box's bottom left, in the order of the conversation's box. */
+.home-composer[data-attach] .input-images {
+  padding: 2px 8px 0;
+}
+.home-composer-note {
+  margin: 0;
+  padding: 2px 8px 0;
+}
+.home-composer-tools {
+  display: flex;
+  align-items: center;
+  padding: 0 4px 3px;
+}
 .home-ask-replied {
   display: flex;
   align-items: flex-start;

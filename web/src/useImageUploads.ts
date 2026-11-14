@@ -8,6 +8,16 @@ import {
 } from "./image-input";
 import { fitImage } from "./image-fit";
 import type { ComposerDraft } from "./composer-draft";
+import { strings, useStrings } from "./i18n";
+
+// Said when images can't be attached (YN-134 §7-3: in Chinese too).
+const text = strings({
+  unsupported: "Images are supported by Codex, Claude and OpenCode Agents.",
+  wait: "Please wait for these images to finish saving before attaching more.",
+}, {
+  unsupported: "Codex、Claude 和 OpenCode Agent 可以接收图片。",
+  wait: "请等这些图片保存好，再添加更多。",
+});
 
 export function useImageUploads(
   agentId: string,
@@ -18,6 +28,7 @@ export function useImageUploads(
     update: (draft: ComposerDraft) => ComposerDraft,
   ) => void,
 ) {
+  const t = useStrings(text);
   const active = useRef(new Set<string>());
   const [pending, setPending] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -35,14 +46,8 @@ export function useImageUploads(
     if (!files.length) return;
     const target = agentId;
     try {
-      if (!supported)
-        throw new Error(
-          "Images are supported by Codex, Claude and OpenCode Agents.",
-        );
-      if (active.current.has(target))
-        throw new Error(
-          "Please wait for these images to finish saving before attaching more.",
-        );
+      if (!supported) throw new Error(t.unsupported);
+      if (active.current.has(target)) throw new Error(t.wait);
       // How many and which types, before any image is read or made smaller.
       validateImageChoice(files, getDraft(target).images || []);
       active.current.add(target);

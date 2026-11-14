@@ -35,6 +35,10 @@ export type HomeReplyInput = {
    * (AskReply's formText): Core checks both against that version's form and
    * keeps the answers by label, or sends nothing. */
   form?: { formId: string; answers: Record<string, string | string[]> };
+  /** Images the user attached on Home (YN-134), by their IDs in the
+   * Project's images: Core copies them to whoever the reply goes to. Only
+   * sent with any, so a reply without goes to an older Core as before. */
+  images?: string[];
 };
 
 export type LinkedRepositories = {
@@ -208,6 +212,10 @@ export const OLDER_CORE = Symbol("older Core");
 export const olderCore = (error: unknown) =>
   error instanceof HttpError && /unknown field `(version|title)`/.test(errorText(error));
 
+/** A Core from before Home's images (YN-134) refuses a reply or a request that has any: nothing was sent. */
+export const olderCoreImages = (error: unknown) =>
+  error instanceof HttpError && /unknown field `images`/.test(errorText(error));
+
 /** Core's reason without its code, or that an older Core refused the reply. */
 export function explain(error: unknown) {
   if (olderCore(error)) return OLDER_CORE;
@@ -228,6 +236,8 @@ export async function sendReply(
   reply: {
     key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string;
     askVersion?: number; workspaceId?: string; form?: HomeReplyInput["form"]; shown?: string;
+    /** Images the user attached (YN-134), by their IDs in the Project's images. */
+    images?: string[];
   },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
@@ -241,7 +251,8 @@ export async function sendReply(
     (kept.title ?? null) === (reply.title ?? null) &&
     (kept.askVersion ?? null) === (reply.askVersion ?? null) &&
     (kept.workspaceId ?? null) === (reply.workspaceId ?? null) &&
-    JSON.stringify(kept.form ?? null) === JSON.stringify(reply.form ?? null);
+    JSON.stringify(kept.form ?? null) === JSON.stringify(reply.form ?? null) &&
+    JSON.stringify(kept.images ?? []) === JSON.stringify(reply.images ?? []);
   const input: Outbound = same
     ? kept
     : {
@@ -252,6 +263,8 @@ export async function sendReply(
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
         ...(reply.form ? { form: reply.form } : {}),
+        // Only with images: a reply without goes to an older Core as before.
+        ...(reply.images?.length ? { images: reply.images } : {}),
         shown: reply.shown ?? reply.text,
         sentAt: new Date().toISOString(),
       };
