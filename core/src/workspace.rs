@@ -1758,6 +1758,16 @@ impl Workspace {
     /// (`codex_skills`): typed `skill` items after its text, kept on its
     /// receipt beside the input.
     pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
+        self.send_message_guarded(id, input, skills, origin, |_| Ok(())).await
+    }
+
+    /// `send_message_from` with one more check, `guard`: it reads the Agent
+    /// as the send's own checks do, with the Agent's gate held, before
+    /// anything is recorded. When it refuses, nothing is sent, and the
+    /// `MessageNotSubmitted` returned holds its error (YN-131, resume.rs).
+    /// An ID that has a receipt already returns it without the guard.
+    pub(crate) async fn send_message_guarded(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>,
+        guard: impl FnOnce(&AgentDetail) -> Result<()> + Send) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -1789,6 +1799,7 @@ impl Workspace {
             crate::codex_skills::check(&skills)?;
             ensure_agent_open(&detail.agent)?;
             ensure_not_disconnected(&detail.agent)?;
+            guard(&detail)?;
             anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
                 "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";
