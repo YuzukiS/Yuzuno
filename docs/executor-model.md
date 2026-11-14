@@ -1009,7 +1009,9 @@ executor starts on the host's own login, as before.
     and the host login is that same account;
   - any other listed account starts through `cswap run <slot> --require-session`;
   - an account no longer listed does not start.
-- **An executor is never moved to another account during its life.** A
+- **Once started, an executor is not moved to another account.** Before
+  its first start, one whose candidate, account or key left the routing
+  policy is routed again ([Routing at dispatch](executor-routing.md#routing-at-dispatch-s3b2), YN-138). A
   refusal, an account that is gone, or a key that cannot be read fails that
   start with its reason. The start is then a failed start like any other
   (see [Executors at once](#executors-at-once)). Its session lives in that

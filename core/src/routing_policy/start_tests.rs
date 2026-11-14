@@ -160,7 +160,6 @@ async fn a_waiting_executor_takes_the_first_candidate_that_holds_whatever_its_ha
 /// record, its account or key, and its permission level, for each harness.
 #[tokio::test]
 async fn an_executor_given_another_harness_at_its_start_is_made_as_a_dispatch_choosing_that_candidate_makes_it() {
-    let lab = Lab::new();
     // What differs between any two executors whatever their harness: who and when.
     let kept = |mut data: Value| {
         for field in ["id", "name", "createdAt", "updatedAt", "color", "rev", "lastSeq", "reviewedSeq"] {
@@ -168,8 +167,10 @@ async fn an_executor_given_another_harness_at_its_start_is_made_as_a_dispatch_ch
         }
         data
     };
-    let mut made = Vec::new();
     for (target, stand) in [(codex(), "opencode"), (claude(), "opencode"), (deepseek(), "codex")] {
+        // A Lab for each: a later target's policy, without this one, would route this
+        // one's executors again while they are queued, as their candidate left (YN-138).
+        let lab = Lab::new();
         let id = target["id"].as_str().unwrap().to_owned();
         lab.policy(vec![target.clone()]);
         let at_dispatch = lab.dispatch(&format!("At dispatch {id}"), "auto").await;
@@ -181,25 +182,26 @@ async fn an_executor_given_another_harness_at_its_start_is_made_as_a_dispatch_ch
         lab.policy(vec![stand_in(stand), target.clone()]);
         lab.ws.route_waiting().await;
         assert_eq!(lab.route(&at_start)["chosen"], json!(id), "{}", lab.route(&at_start));
+        assert_eq!(lab.route(&at_dispatch)["at"], "dispatch", "its candidate is there again: routed as at its dispatch");
 
         assert_eq!(kept(lab.data(&at_start)), kept(lab.data(&at_dispatch)), "{id}: the same Agent record");
         assert_eq!(lab.rows(&at_start), lab.rows(&at_dispatch), "{id}: the same account or key, and permission level");
-        made.extend([(target["harness"].as_str().unwrap().to_owned(), at_dispatch), (target["harness"].as_str().unwrap().to_owned(), at_start)]);
-    }
-    // What those records are, so the comparison above compares something.
-    for (harness, agent) in made {
-        let data = lab.data(&agent);
-        let (profile, level) = lab.rows(&agent);
-        assert_eq!(data["agent"]["harness"], json!(harness));
-        match harness.as_str() {
-            "codex" => assert_eq!((data["agent"]["settings"]["permissionPreset"].clone(), data["agent"]["model"].clone(), level),
-                (json!("auto"), json!("gpt-test"), None), "the level auto, as Codex's own"),
-            "claude" => assert_eq!((data["agent"]["settings"]["permissionMode"].clone(), data["agent"]["model"].clone(), level),
-                (json!("auto"), json!("opus"), None), "the level auto, as Claude Code's own"),
-            _ => {
-                assert_eq!((data["agent"]["model"].clone(), level.as_deref()), (json!("deepseek/deepseek-flash"), Some("auto")),
-                    "OpenCode's level is its own row");
-                assert!(profile.is_some_and(|p| p.contains("deepseek")), "and DeepSeek's key is its profile");
+        // What those records are, so the comparison above compares something.
+        let harness = target["harness"].as_str().unwrap();
+        for agent in [at_dispatch, at_start] {
+            let data = lab.data(&agent);
+            let (profile, level) = lab.rows(&agent);
+            assert_eq!(data["agent"]["harness"], json!(harness));
+            match harness {
+                "codex" => assert_eq!((data["agent"]["settings"]["permissionPreset"].clone(), data["agent"]["model"].clone(), level),
+                    (json!("auto"), json!("gpt-test"), None), "the level auto, as Codex's own"),
+                "claude" => assert_eq!((data["agent"]["settings"]["permissionMode"].clone(), data["agent"]["model"].clone(), level),
+                    (json!("auto"), json!("opus"), None), "the level auto, as Claude Code's own"),
+                _ => {
+                    assert_eq!((data["agent"]["model"].clone(), level.as_deref()), (json!("deepseek/deepseek-flash"), Some("auto")),
+                        "OpenCode's level is its own row");
+                    assert!(profile.is_some_and(|p| p.contains("deepseek")), "and DeepSeek's key is its profile");
+                }
             }
         }
     }
@@ -329,4 +331,159 @@ async fn a_waiting_executor_keeps_its_tier_and_is_released_when_no_candidate_ser
     let route = lab.route(&waiting);
     assert_eq!((route["released"]["code"].clone(), route["waiting"].clone(), route["tier"].clone()), (json!("noCandidate"), json!(false), json!("fast")),
         "it starts in turn as without routing, its route keeping its tier: {route}");
+}
+
+// YN-138: an executor routed at its dispatch, queued and not started, whose
+// candidate, account or key has left by its start.
+
+const FP2: &str = "2222222222222222";
+const FP3: &str = "3333333333333333";
+
+/// Claude Code on claude-swap's accounts `accounts` (fingerprints).
+fn pool(accounts: &[&str]) -> Value {
+    json!({"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus",
+        "credential": {"kind": "pool", "manager": "cswap", "accounts": accounts}, "conditions": []})
+}
+
+impl Lab {
+    /// A fresh claude-swap reading: each account's number, fingerprint and share of its week left.
+    fn cswap(&self, accounts: &[(u64, &str, f64)]) {
+        let reading = json!({"accounts": accounts.iter().map(|(n, f, week)| json!({"number": n, "fingerprint": f, "active": false,
+            "source": "cswap", "week": {"leftPct": week, "resetsAt": "2026-11-21T00:00:00+00:00"}})).collect::<Vec<_>>()});
+        self.ws.store.db.write().unwrap().execute(
+            "INSERT INTO routing_quotas(source, reading, observed_at) VALUES('cswap', ?1, ?2)
+             ON CONFLICT(source) DO UPDATE SET reading=excluded.reading, observed_at=excluded.observed_at",
+            [reading.to_string(), Utc::now().to_rfc3339()]).unwrap();
+    }
+
+    fn profile(&self, agent: &str) -> Option<RuntimeProfile> {
+        self.ws.store.runtime_profile(agent).unwrap()
+    }
+
+    /// Dispatched on account 2 of a pool of 2 (80% of its week left) and 3 (60%).
+    async fn on_account_two(&self, title: &str) -> String {
+        self.cswap(&[(2, FP2, 80.0), (3, FP3, 60.0)]);
+        self.policy(vec![pool(&[FP2, FP3])]);
+        let agent = self.dispatch(title, "writer").await;
+        let route = self.route(&agent);
+        assert_eq!((route["chosen"].clone(), route["account"]["number"].clone(), route.get("waiting")), (json!("c-claude"), json!(2), None), "{route}");
+        assert_eq!(self.profile(&agent), Some(RuntimeProfile::ClaudeAccount { fingerprint: FP2.into() }));
+        agent
+    }
+}
+
+/// The case of 11-14: account 2 stopped working, the user took it out of the pool,
+/// and executors queued on it still started on it. Now the pass routes it again
+/// before it starts: account 3, and its route says what it was changed from.
+#[tokio::test]
+async fn a_queued_executor_whose_account_left_its_pool_is_routed_again_before_it_starts() {
+    let lab = Lab::new();
+    let agent = lab.on_account_two("Write the parser").await;
+    lab.policy(vec![pool(&[FP3])]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&agent);
+    assert_eq!((route["chosen"].clone(), route["at"].clone(), route["account"]["number"].clone(), route.get("waiting")),
+        (json!("c-claude"), json!("start"), json!(3), None), "{route}");
+    assert_eq!(lab.profile(&agent), Some(RuntimeProfile::ClaudeAccount { fingerprint: FP3.into() }));
+    let changed = &route["changedAtStart"];
+    assert_eq!((changed["from"].clone(), changed["fromAccount"].clone(), changed["reason"]["code"].clone()),
+        (json!("c-claude"), json!({"number": 2, "fingerprint": FP2}), json!("accountLeftPool")), "{route}");
+    assert_eq!(changed["reason"]["messageZh"], "它绑定的 claude-swap 账号 2 已移出候选的账号池");
+    assert_eq!((route["left"]["from"].clone(), route["left"]["code"].clone()), (json!("c-claude"), json!("accountLeftPool")));
+    assert_eq!(lab.harness(&agent), json!("claude"));
+    assert_eq!(lab.next(), Some(agent), "it starts in turn");
+}
+
+/// Its candidate turned off: any candidate may take it, of any harness, as for one
+/// that waited from its dispatch (YN-66). One that holds only at a later pass still
+/// says what it was changed from.
+#[tokio::test]
+async fn a_queued_executor_whose_candidate_was_turned_off_takes_another_harness_now_or_at_a_later_pass() {
+    let lab = Lab::new();
+    let agent = lab.on_account_two("Write the parser").await;
+    lab.policy(vec![off(pool(&[FP2, FP3])), codex()]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&agent);
+    assert_eq!((route["chosen"].clone(), lab.harness(&agent), route.get("account")), (json!("c-codex"), json!("codex"), None), "{route}");
+    assert_eq!((route["changedAtStart"]["from"].clone(), route["changedAtStart"]["harnessFrom"].clone(), route["changedAtStart"]["reason"]["code"].clone()),
+        (json!("c-claude"), json!("claude"), json!("candidateOff")));
+    assert_eq!(lab.rows(&agent).0, None, "Codex on the host's login: no account");
+    assert_eq!(lab.next(), Some(agent));
+
+    let later = lab.on_account_two("Write the lexer").await;
+    lab.policy(vec![off(pool(&[FP2, FP3])), stand_in("codex")]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&later);
+    assert_eq!((route["waiting"].clone(), route["chosen"].clone(), route["left"]["from"].clone()), (json!(true), Value::Null, json!("c-claude")),
+        "none holds now: it waits, keeping what it had: {route}");
+    assert_eq!((lab.profile(&later), lab.next()), (None, None), "no account to start on, and not taken");
+    lab.policy(vec![off(pool(&[FP2, FP3])), stand_in("codex"), codex()]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&later);
+    assert_eq!((route["chosen"].clone(), route["changedAtStart"]["from"].clone(), route["changedAtStart"]["reason"]["code"].clone()),
+        (json!("c-codex"), json!("c-claude"), json!("candidateOff")), "{route}");
+    assert_eq!(lab.next(), Some(later));
+}
+
+/// No candidate it could be given is left: released onto the host's own login, its
+/// account's profile already gone, so it never starts on the account that left.
+#[tokio::test]
+async fn a_queued_executor_no_candidate_can_take_after_its_candidate_left_starts_on_the_hosts_login() {
+    let lab = Lab::new();
+    let agent = lab.on_account_two("Write the parser").await;
+    lab.policy(vec![codex()]);
+    lab.ws.route_waiting().await;
+    // Its candidate is gone; Codex is a candidate it can be given, so it is chosen.
+    assert_eq!(lab.route(&agent)["changedAtStart"]["reason"]["code"], "candidateRemoved");
+    assert_eq!(lab.next(), Some(agent));
+
+    let released = lab.on_account_two("Write the lexer").await;
+    lab.policy(vec![off(pool(&[FP2, FP3]))]);
+    lab.ws.route_waiting().await;
+    let route = lab.route(&released);
+    assert_eq!((route["released"]["code"].clone(), route["waiting"].clone(), route["left"]["code"].clone()),
+        (json!("noCandidate"), json!(false), json!("candidateOff")), "{route}");
+    assert_eq!(lab.rows(&released).0, None, "the host's own login");
+    assert_eq!(lab.next(), Some(released.clone()));
+    lab.ws.route_waiting().await;
+    assert_eq!(lab.route(&released), route, "released, it is not routed again");
+}
+
+/// What still holds is kept: its account still in the pool and listed, its quota
+/// lower now (not leaving), or routing off.
+#[tokio::test]
+async fn a_queued_executor_whose_candidate_and_account_are_still_there_keeps_them() {
+    let lab = Lab::new();
+    let agent = lab.on_account_two("Write the parser").await;
+    let before = lab.route(&agent);
+    lab.cswap(&[(2, FP2, 5.0), (3, FP3, 95.0)]);
+    lab.ws.route_waiting().await;
+    assert_eq!(lab.route(&agent), before, "a lower quota is not leaving");
+    assert_eq!(lab.profile(&agent), Some(RuntimeProfile::ClaudeAccount { fingerprint: FP2.into() }));
+
+    let mut stored = lab.ws.store.routing_policy().unwrap();
+    stored.policy = json!({"enabled": false, "whenNone": "wait", "candidates": [pool(&[FP3])]});
+    lab.ws.store.save_routing_policy(stored.version, stored.policy).unwrap().unwrap();
+    lab.ws.route_waiting().await;
+    assert_eq!(lab.route(&agent), before, "routing off judges nothing");
+    assert_eq!(lab.profile(&agent), Some(RuntimeProfile::ClaudeAccount { fingerprint: FP2.into() }));
+    assert_eq!(lab.next(), Some(agent));
+}
+
+/// Taken to start by another pass first: the write, made only while its slot still
+/// waits, changes nothing, and it starts as it was routed.
+#[tokio::test]
+async fn an_executor_taken_to_start_first_is_not_marked_as_left() {
+    let lab = Lab::new();
+    let agent = lab.on_account_two("Write the parser").await;
+    let before = lab.route(&agent);
+    assert_eq!(lab.next(), Some(agent.clone()));
+    assert_eq!(lab.slot_state(&agent), "starting");
+    let why = super::super::left::left(&json!({"enabled": true, "candidates": [pool(&[FP3])]}), &before,
+        lab.profile(&agent).as_ref(), &[], &[], &Value::Null).unwrap();
+    assert!(!lab.ws.store.mark_routing_left(&agent, &why, &before).unwrap());
+    assert_eq!((lab.route(&agent), lab.profile(&agent)), (before, Some(RuntimeProfile::ClaudeAccount { fingerprint: FP2.into() })));
+    lab.policy(vec![pool(&[FP3])]);
+    lab.ws.route_waiting().await;
+    assert_eq!(lab.route(&agent)["account"]["number"], 2, "not queued: a pass doesn't read it");
 }
