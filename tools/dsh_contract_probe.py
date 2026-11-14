@@ -894,8 +894,15 @@ def main():
         # Outside the workspace: refused, then asked; reject keeps the file away.
         turn = prompt(ask, sid, 'PROBE-OUTSIDE', policy='reject')
         first = [r for m in turn['model'] for r in m['toolResults'] if r['id'] == 'call-OUTSIDE-1']
-        checks.add('sandbox', 'a write outside the workspace fails with Read-only file system',
-                   any('read-only file system' in r['text'].lower() for r in first), first)
+        # dsh-sandbox's README ("Denied calls and escalation") names the denial
+        # marker; the errno depends on the Linux backend it took (bwrap first,
+        # then Landlock): a local bwrap host gave Read-only file system, the
+        # GitHub ubuntu-24.04 runner Permission denied.
+        refused = [r for r in first if '[sandbox: file access denied under workspace-write mode]' in r['text']
+                   and any(e in r['text'].lower() for e in ('read-only file system', 'permission denied'))]
+        checks.add('sandbox', 'a write outside the workspace is refused by the sandbox '
+                   '(Read-only file system under bwrap, Permission denied under Landlock)',
+                   bool(refused), first)
         perms = [r for r in turn['requests'] if r]
         checks.add('sandbox', 'the retry with sandbox_permissions sends session/request_permission', len(perms) == 1, perms)
         if perms:
