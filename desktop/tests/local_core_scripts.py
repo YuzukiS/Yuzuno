@@ -37,6 +37,9 @@ with open(SCRIPT, "rb") as _script:
 STAGE = os.path.join(DESKTOP, "src", "local_core", "stage.sh")
 with open(STAGE, "rb") as _script:
     STAGE_BYTES = _script.read()
+GUARD = os.path.join(DESKTOP, "src", "local_core", "guard.sh")
+with open(GUARD, "rb") as _script:
+    GUARD_BYTES = _script.read()
 FIXTURES = os.path.join(HERE, "fixtures", "release")
 
 # Every key the script prints; check_rules.rs reads them.
@@ -512,6 +515,119 @@ class StageScript(unittest.TestCase):
                 code, printed = self.run_stage(interpreter, "remove", self.root)
                 self.assertEqual((code, printed["error"]), (1, "Unknown step: remove"))
                 self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+
+
+class GuardScript(unittest.TestCase):
+    """guard.sh, as the desktop runs it: `sh -s`, the script on stdin, in a
+    distribution that is already running. A fake root supplies its /proc and
+    /sys (the script's YUZUNO_GUARD_ROOT, which wsl.exe never passes) and
+    nothing may change under it."""
+
+    def setUp(self):
+        self.assertTrue(SHELLS, "no dash or bash here")
+        self.base = tempfile.mkdtemp(prefix="yn156-guard-")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.root = os.path.join(self.base, "root")
+        self.binfmt = os.path.join(self.root, "proc", "sys", "fs", "binfmt_misc")
+        self.cgroup = os.path.join(self.root, "sys", "fs", "cgroup")
+        self.user = os.path.join(self.cgroup, "user.slice", "user-1000.slice", "user@1000.service")
+        self.make()
+
+    def make(self):
+        write(os.path.join(self.binfmt, "status"), "enabled\n")
+        self.entry("WSLInterop", "enabled", "4d5a", "/init", "P")
+        self.entry("OtherInterop", "enabled", "4d5a", "/init", "")
+        self.entry("Elsewhere", "enabled", "7f454c46", "/usr/bin/wine")
+        write(os.path.join(self.cgroup, "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.cgroup, "user.slice", "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.cgroup, "system.slice", "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.user, "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.user, "app.slice", "cgroup.subtree_control"), "+cpu\n")
+
+    def entry(self, name, state, magic, interpreter, flags=""):
+        lines = [state, f"interpreter {interpreter}", "offset 0", f"magic {magic}"]
+        if flags:
+            lines.append(f"flags: {flags}")
+        write(os.path.join(self.binfmt, name), "\n".join(lines) + "\n")
+
+    def run_guard(self, interpreter, root=True):
+        env = {"PATH": "/usr/bin:/bin", "TMPDIR": self.base}
+        if root:
+            env["YUZUNO_GUARD_ROOT"] = self.root if root is True else root
+        before = snapshot(self.base)
+        done = subprocess.run(
+            [interpreter, "-s"],
+            input=GUARD_BYTES,
+            capture_output=True,
+            env=env,
+            cwd=self.base,
+            timeout=30,
+        )
+        self.assertEqual(snapshot(self.base), before, "the guard changed files")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        printed = []
+        for line in done.stdout.decode().splitlines():
+            key, _, value = line.partition("=")
+            printed.append((key, value))
+        return printed
+
+    def values(self, printed, key):
+        return [value for printed_key, value in printed if printed_key == key]
+
+    def test_what_the_witness_sees(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertEqual(self.values(printed, "format"), ["1"])
+                self.assertEqual(self.values(printed, "binfmt.status"), ["enabled"])
+                self.assertEqual(
+                    sorted(self.values(printed, "interop")),
+                    ["OtherInterop enabled -", "WSLInterop enabled P"],
+                )
+                self.assertEqual(self.values(printed, "binfmt.other"), ["1"])
+                self.assertEqual(self.values(printed, "cgroup.root"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "cgroup.user-slice"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "cgroup.system-slice"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "user.1000.control"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "user.1000.app"), ["+cpu"])
+                # Keys are printed once each, in the order the app reads.
+                keys = [key for key, _ in printed]
+                self.assertEqual(keys.count("interop"), 2)
+                self.assertEqual(len(keys), len(set(keys)) + 1)
+
+    def test_a_fake_root_without_anything(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter, root=os.path.join(self.base, "missing"))
+                self.assertEqual(self.values(printed, "binfmt.status"), ["absent"])
+                self.assertEqual(self.values(printed, "binfmt.other"), ["0"])
+                self.assertEqual(self.values(printed, "interop"), [])
+                self.assertEqual(self.values(printed, "cgroup.root"), ["(absent)"])
+
+    def test_a_disabled_table_and_entries_that_are_not_interop(self):
+        write(os.path.join(self.binfmt, "status"), "disabled\n")
+        self.entry("WSLInterop", "disabled", "4d5a", "/init", "P")
+        self.entry("NoFlags", "enabled", "4d5a", "/init", "")
+        self.entry("OtherInit", "enabled", "4d5a", "/bin/not-init", "P")
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertEqual(self.values(printed, "binfmt.status"), ["disabled"])
+                self.assertEqual(
+                    sorted(self.values(printed, "interop")),
+                    ["NoFlags enabled -", "OtherInterop enabled -", "WSLInterop disabled P"],
+                )
+                # Elsewhere, OtherInit: not an interop rule.
+                self.assertEqual(self.values(printed, "binfmt.other"), ["2"])
+
+    def test_a_manager_directory_that_is_not_a_number_is_left_out(self):
+        odd = os.path.join(self.cgroup, "user.slice", "user-nobody.slice", "user@nobody.service")
+        write(os.path.join(odd, "cgroup.subtree_control"), "+cpu\n")
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertNotIn("user.nobody.control", [key for key, _ in printed])
+                self.assertEqual(self.values(printed, "user.1000.control"), ["+cpu +memory +pids"])
 
 
 class ReleaseKey(unittest.TestCase):

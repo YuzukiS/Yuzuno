@@ -212,6 +212,13 @@ jobs:
           rustc --edition 2021 --test desktop/src/local_core/check_rules.rs -o "$RUNNER_TEMP/desktop-check-rules"
           "$RUNNER_TEMP/desktop-check-rules"
 
+      # Likewise what the read-only guard saw of WSLInterop and the shared
+      # cgroup tree, and what it reports as changed (YN-156).
+      - name: Desktop local Core guard rules
+        run: |
+          rustc --edition 2021 --test desktop/src/local_core/guard_rules.rs -o "$RUNNER_TEMP/desktop-guard-rules"
+          "$RUNNER_TEMP/desktop-guard-rules"
+
       # The check script itself, under dash and bash, with a fake HOME and
       # a PATH of stand-ins: what it prints, and that it writes nothing.
       - name: Desktop local Core check script
