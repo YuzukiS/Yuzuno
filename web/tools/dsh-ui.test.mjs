@@ -102,12 +102,13 @@ function mount({ keys = someKeys, language } = {}) {
     const answer = (status, value) => ({ ok: status < 400, status, json: async () => value, text: async () => JSON.stringify(value) });
     if (url.includes("/agent-defaults")) return answer(200, defaults);
     if (url.endsWith("/machines")) return answer(200, { machines: [local, studio] });
+    // The Agent's own routes first: its catalog's path also ends in /models.
+    if (url.endsWith("/agents/ds/models")) return answer(200, { models: dshModels });
+    if (url.endsWith("/agents/ds/settings")) return answer(200, { id: "ds", ...body });
     if (url.endsWith("/models?harness=dsh")) return answer(200, { models: dshModels });
     if (url.endsWith("/models?harness=claude")) return answer(200, { models: [] });
     if (url.endsWith("/models")) return answer(200, { models: [{ id: "gpt", model: "gpt", displayName: "GPT" }] });
     if (url.endsWith("/routing/keys")) return answer(200, { keys, onePasswordToken: { set: true } });
-    if (url.endsWith("/agents/ds/models")) return answer(200, { models: dshModels });
-    if (url.endsWith("/agents/ds/settings")) return answer(200, { id: "ds", ...body });
     if (url.endsWith("/agents") && init.method === "POST") return answer(200, { id: "new", ...body });
     return answer(200, {});
   };
@@ -203,7 +204,7 @@ test("a new DeepSeek Harness Agent runs on the Core host with a DeepSeek key and
       name: "Dune", cwd: "/workspace", machineId: "local", harness: "dsh", model: "deepseek-v4-pro",
       permissionLevel: "auto", runtimeProfile: { kind: "apiKey", keyId: "deepseek-team" },
     });
-    assert.equal(page.created.length, 1);
+    await until(() => page.created.length === 1, "the Agent Core made");
 
     // Ask you first, sent as such, when nothing else is chosen.
     await pick(page, "Harness", "codex");

@@ -172,7 +172,7 @@ try {
 
     // The dsh Agent's settings.
     await page.locator('.agent-row[data-agent-id="ds"] .agent-select').click();
-    await page.locator(".agent-settings-button").click();
+    await page.locator(".agent-settings-button").first().click();
     const settings = dialog(page);
     await settings.waitFor();
     await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] input[value="deepseek-v4-pro"]').length > 0);
