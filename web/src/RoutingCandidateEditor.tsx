@@ -179,6 +179,16 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, machines, issu
           ) : <p className="settings-row-meta">{accounts ? t.noAccounts : t.poolUnread}</p>)}
         </fieldset>
       )}
+      {pool && (
+        <fieldset className="routing-field routing-pick">
+          <legend>{t.poolPick}</legend>
+          <label><input type="radio" name={`pick-${c.id}`} checked={pool.pick !== "soonestReset"}
+            onChange={() => onEdit((x) => ({ ...x, credential: { ...pool, pick: "mostRemaining" } }))} /> {t.poolPickMost}</label>
+          <label><input type="radio" name={`pick-${c.id}`} checked={pool.pick === "soonestReset"}
+            onChange={() => onEdit((x) => ({ ...x, credential: { ...pool, pick: "soonestReset" } }))} /> {t.poolPickSoonest}</label>
+          {pool.pick === "soonestReset" && <p className="settings-row-meta">{t.poolPickHelp}</p>}
+        </fieldset>
+      )}
       <div className="routing-field routing-conditions">
         <span>{t.conditions}</span>
         {c.conditions.length === 0 && <p className="settings-row-meta">{t.noConditions}</p>}

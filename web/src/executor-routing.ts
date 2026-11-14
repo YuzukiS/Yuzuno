@@ -7,9 +7,12 @@ import { API_BASE, NetworkError, api } from "./api";
 
 export type Harness = "claude" | "codex" | "opencode";
 export const HARNESSES: readonly Harness[] = ["claude", "codex", "opencode"];
+/** Which of a pool's accounts it uses first (YN-150): the one with the most of
+ * its week left (the default), or the one whose week resets soonest. */
+export type PoolPick = "mostRemaining" | "soonestReset";
 export type Credential =
   | { kind: "login" }
-  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: "mostRemaining" }
+  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: PoolPick }
   | { kind: "apiKey"; keyId: string }
   | { kind: "codexHome"; id: string };
 /** One weekly period: ISO days (Monday 1 … Sunday 7), from and to as HH:MM, `to` exclusive ("24:00" allowed). */

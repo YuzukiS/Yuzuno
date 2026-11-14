@@ -7,17 +7,45 @@ fn utc(d: u32, h: u32, m: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 11, d, h, m, 0).unwrap()
 }
 
-fn window(left: f64) -> Value {
-    json!({"leftPct": left, "resetsAt": "2026-11-09T12:00:00+00:00"})
-}
-
 /// claude-swap's accounts, by the share of the week each has left: weeks only,
 /// as claude-swap reads them since Claude's 5-hour quota went (YN-60).
 fn cswap(weeks: &[f64]) -> Value {
+    let weeks: Vec<(f64, Option<&str>)> = weeks.iter().map(|w| (*w, Some("2026-11-09T12:00:00+00:00"))).collect();
+    cswap_resets(&weeks)
+}
+
+/// claude-swap's accounts, each with its own week: the share left and when it
+/// resets (`None`: the reading has no reset time).
+fn cswap_resets(weeks: &[(f64, Option<&str>)]) -> Value {
     let accounts: Vec<Value> = weeks.iter().zip(["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc"]).enumerate()
-        .map(|(n, (week, fingerprint))| json!({"number": n + 1, "fingerprint": fingerprint, "active": n == 0, "source": "cswap", "week": window(*week)}))
-        .collect();
+        .map(|(n, ((left, resets), fingerprint))| {
+            let mut week = json!({"leftPct": left});
+            if let Some(at) = resets {
+                week["resetsAt"] = json!(at);
+            }
+            json!({"number": n + 1, "fingerprint": fingerprint, "active": n == 0, "source": "cswap", "week": week})
+        }).collect();
     json!({"observedAt": "x", "stale": false, "accounts": accounts})
+}
+
+/// A policy of one pool: its `pick` when named, and a weekly quota condition
+/// when `week_left_pct` is (YN-150).
+fn pool_pick(pick: Option<&str>, week_left_pct: Option<f64>) -> Value {
+    let mut credential = json!({"kind": "pool", "manager": "cswap", "accounts": "all"});
+    if let Some(pick) = pick {
+        credential["pick"] = json!(pick);
+    }
+    let conditions = match week_left_pct {
+        Some(pct) => json!([{"kind": "quota", "weekLeftPct": pct}]),
+        None => json!([]),
+    };
+    json!({"enabled": true, "whenNone": "wait", "dailyApiCapUsd": 5, "candidates": [
+        {"id": "c-pool", "enabled": true, "harness": "claude", "model": "opus", "credential": credential, "conditions": conditions}]})
+}
+
+/// The first candidate's account rows.
+fn account_rows(route: &Route) -> Vec<Value> {
+    route.record["candidates"][0]["accounts"].as_array().cloned().unwrap_or_default()
 }
 
 fn policy() -> Value {
@@ -413,4 +441,111 @@ fn a_machine_condition_lets_a_login_run_only_on_the_machines_it_names() {
     assert_eq!(codes(&f.run(&pool, utc(9, 12, 0), Some("lab-mac"), &[], &none), "c-pool"), ["hostOnly"]);
     assert_eq!(codes(&f.run(&pool, utc(9, 12, 0), Some("local"), &[], &none), "c-pool"), ["otherMachine"]);
     assert!(machine_allows(&json!({"conditions": []}), Some("lab-mac")) && machine_allows(&json!({}), None), "no machine condition: anywhere");
+}
+
+/// YN-150: `soonestReset` takes the account whose week resets first, even with
+/// less of the week left; a reset that is not known, or has already passed,
+/// comes after one that is ahead.
+#[test]
+fn soonest_reset_takes_the_earliest_reset_even_with_less_left() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(80.0, Some("2026-11-09T11:00:00+00:00")), (30.0, Some("2026-11-09T10:00:00+00:00"))]);
+    let route = f.run(&pool_pick(Some("soonestReset"), None), utc(9, 9, 0), Some("local"), &[], &Assume::default());
+    assert_eq!(route.record["account"], json!({"number": 2, "fingerprint": "bbbbbbbbbbbbbbbb"}), "{}", route.record);
+    // Each row says what the choice read: the week left and when it resets.
+    assert_eq!(account_rows(&route), [
+        json!({"number": 1, "fingerprint": "aaaaaaaaaaaaaaaa", "state": "ok", "weekLeftPct": 80.0, "resetsAt": "2026-11-09T11:00:00+00:00"}),
+        json!({"number": 2, "fingerprint": "bbbbbbbbbbbbbbbb", "state": "pick", "weekLeftPct": 30.0, "resetsAt": "2026-11-09T10:00:00+00:00"}),
+    ]);
+}
+
+/// YN-150: a quota condition still comes first: an account below it is passed
+/// over even when its week resets first.
+#[test]
+fn soonest_reset_passes_over_an_account_below_the_week_it_wants() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(80.0, Some("2026-11-09T11:00:00+00:00")), (20.0, Some("2026-11-09T10:00:00+00:00"))]);
+    let route = f.run(&pool_pick(Some("soonestReset"), Some(30.0)), utc(9, 9, 0), Some("local"), &[], &Assume::default());
+    assert_eq!(route.record["account"], json!({"number": 1, "fingerprint": "aaaaaaaaaaaaaaaa"}), "{}", route.record);
+    let rows = account_rows(&route);
+    assert_eq!((rows[0]["state"].clone(), rows[1]["state"].clone()), (json!("pick"), json!("low")), "{}", route.record);
+}
+
+/// YN-150: a reset that has passed (the reading is not refreshed yet) or that
+/// the reading does not know comes after one still ahead; those two are ordered
+/// by the week left, then the lower number, as `mostRemaining` orders.
+#[test]
+fn soonest_reset_puts_unknown_and_passed_resets_last_then_by_week_left() {
+    let mut f = Fixture::new();
+    // #1's reset was at 09:00, an hour before now; #2's is ahead but it is below
+    // the week the pool wants; #3's reading knows no reset time.
+    f.cswap = cswap_resets(&[(70.0, Some("2026-11-09T09:00:00+00:00")), (5.0, Some("2026-11-09T11:00:00+00:00")), (60.0, None)]);
+    let route = f.run(&pool_pick(Some("soonestReset"), Some(20.0)), utc(9, 10, 0), Some("local"), &[], &Assume::default());
+    assert_eq!(route.record["account"], json!({"number": 1, "fingerprint": "aaaaaaaaaaaaaaaa"}), "{}", route.record);
+    // A row keeps the week left it read, and a reset time only when there is one.
+    let rows = account_rows(&route);
+    assert_eq!((rows[2]["weekLeftPct"].clone(), rows[2].get("resetsAt").cloned()), (json!(60.0), None), "{}", route.record);
+}
+
+/// YN-150: a stale reading is read as before: a quota condition makes the
+/// accounts unknown, and without one the lowest number is taken. No reset time
+/// is taken from a reading that is not fresh.
+#[test]
+fn a_stale_reading_picks_as_before_under_soonest_reset() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(80.0, Some("2026-11-09T11:00:00+00:00")), (30.0, Some("2026-11-09T10:00:00+00:00"))]);
+    f.cswap["stale"] = json!(true);
+    let route = f.run(&pool_pick(Some("soonestReset"), Some(30.0)), utc(9, 9, 0), Some("local"), &[], &Assume::default());
+    assert_eq!((states(&route), codes(&route, "c-pool")), (vec![("c-pool".into(), "unknown".to_owned())], vec!["quotaUnknown".to_owned()]), "{}", route.record);
+    assert!(account_rows(&route).iter().all(|r| r.get("weekLeftPct").is_none() && r.get("resetsAt").is_none()), "{}", route.record);
+    let route = f.run(&pool_pick(Some("soonestReset"), None), utc(9, 9, 0), Some("local"), &[], &Assume::default());
+    assert_eq!(route.record["account"], json!({"number": 1, "fingerprint": "aaaaaaaaaaaaaaaa"}), "{}", route.record);
+}
+
+/// YN-150: under `soonestReset` a reading that shows nothing left is used up,
+/// even with no quota condition, so the pool moves to the next account.
+/// `mostRemaining` is unchanged: the fullest is taken anyway, and a 0% reading
+/// is only marked.
+#[test]
+fn soonest_reset_counts_an_account_whose_reading_shows_nothing_left_as_used_up() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(0.0, Some("2026-11-09T10:00:00+00:00")), (50.0, Some("2026-11-09T11:00:00+00:00"))]);
+    let now = utc(9, 9, 0);
+    let route = f.run(&pool_pick(Some("soonestReset"), None), now, Some("local"), &[], &Assume::default());
+    let rows = account_rows(&route);
+    assert_eq!((rows[0]["state"].clone(), rows[1]["state"].clone()), (json!("low"), json!("pick")), "{}", route.record);
+    let route = f.run(&pool_pick(Some("mostRemaining"), None), now, Some("local"), &[], &Assume::default());
+    assert_eq!(account_rows(&route)[0]["state"], "ok", "{}", route.record);
+}
+
+/// YN-150: no `pick`, `mostRemaining`, and a value a later Core wrote read the
+/// same: the account with the most of its week left.
+#[test]
+fn no_pick_and_a_pick_this_core_does_not_know_read_as_most_remaining() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(80.0, Some("2026-11-09T11:00:00+00:00")), (30.0, Some("2026-11-09T10:00:00+00:00"))]);
+    let now = utc(9, 9, 0);
+    let none = Assume::default();
+    let most = f.run(&pool_pick(Some("mostRemaining"), None), now, Some("local"), &[], &none);
+    assert_eq!(most.record["account"]["number"], 1, "the most left, as before");
+    for pick in [None, Some("laterPickValue")] {
+        let route = f.run(&pool_pick(pick, None), now, Some("local"), &[], &none);
+        assert_eq!(route.record, most.record, "{pick:?} is read as mostRemaining");
+    }
+}
+
+/// YN-150 with YN-138: an account that left the pool is replaced by the same
+/// rule — the earliest reset of those left, not the fullest.
+#[test]
+fn pick_other_uses_the_pool_pick_rule_too() {
+    let mut f = Fixture::new();
+    f.cswap = cswap_resets(&[(80.0, Some("2026-11-09T11:00:00+00:00")), (30.0, Some("2026-11-09T10:00:00+00:00")),
+        (90.0, Some("2026-11-09T12:00:00+00:00"))]);
+    let none = Assume::default();
+    let now = utc(9, 9, 0);
+    let inputs = Inputs { now, keys: &f.keys, codex_homes: &f.homes, spend: &f.spend, cswap: &f.cswap, codex: &f.codex,
+        machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None, tier: None, tier_source: None, assume: &none };
+    let p = pool_pick(Some("soonestReset"), None);
+    // Account 2's week resets first, but it left; account 1 is next, not the fullest (3).
+    assert_eq!(pick_other(&p["candidates"][0], &inputs, "bbbbbbbbbbbbbbbb"), Some(("aaaaaaaaaaaaaaaa".into(), 1)));
 }

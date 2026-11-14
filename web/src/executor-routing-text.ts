@@ -1,7 +1,7 @@
 /** Executor routing's words (YN-49 S4a), in English and Chinese, and what
  * a candidate, a condition or a schedule is called in a line; and what keeps a
  * candidate from being saved, as YN-34 S3a's check refuses it. */
-import { DEEPSEEK_PEAK, LOCAL_MACHINE, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type NamedMachine, type PresetId, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, LOCAL_MACHINE, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type NamedMachine, type PoolPick, type PresetId, type Schedule, type Slot } from "./executor-routing";
 import { strings } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
 
@@ -33,7 +33,7 @@ export const text = strings({
   loginClaude: "This host's login",
   loginCodex: "This host's login (ChatGPT subscription)",
   loginOpencode: "OpenCode's own login",
-  pool: (n: number | "all") => (n === "all" ? "claude-swap pool · the account with most left · all accounts" : `claude-swap pool · the account with most left · ${n} ${n === 1 ? "account" : "accounts"}`),
+  pool: (n: number | "all", pick: PoolPick) => `claude-swap pool · ${pick === "soonestReset" ? "the account that resets soonest" : "the account with most left"} · ${n === "all" ? "all accounts" : `${n} ${n === 1 ? "account" : "accounts"}`}`,
   key: (provider: string, source: string) => `API key: ${provider} · ${source}`,
   keyLocal: "this host",
   key1p: "1Password",
@@ -54,7 +54,7 @@ export const text = strings({
   chipOutside: (s: string, m?: number) => `Outside ${s}${m ? ` · ${m} min left at least` : ""}`,
   chipQuota: (week?: number) => (week != null ? `Week left ≥ ${week}%` : ""),
   chipCap: (usd: number) => `Today ≤ $${usd}`,
-  chipPick: "The account with most left",
+  chipPick: (pick: PoolPick): string => (pick === "soonestReset" ? "The account that resets soonest" : "The account with most left"),
   chipSkip: "Skipped when a reading is unavailable",
   chipPass: "Counted as met when a reading is unavailable",
   chipUnknownKind: (kind: string) => `A condition this version can't show (${kind})`,
@@ -101,7 +101,7 @@ export const text = strings({
   credLoginClaude: "This host's login",
   credLoginCodex: "This host's login (ChatGPT subscription)",
   credLoginOpencode: "OpenCode's own login",
-  credPool: "claude-swap pool (the account with most left)",
+  credPool: "claude-swap pool",
   credKey: (provider: string, id: string) => `API key: ${provider} (${id})`,
   credHome: (label: string) => `Codex account: ${label}`,
   // An API key for a candidate, added in place (YN-57 S3).
@@ -113,6 +113,10 @@ export const text = strings({
   poolAccounts: "Accounts in the pool",
   poolAll: "All accounts claude-swap lists",
   poolSome: "Only these:",
+  poolPick: "Which account first",
+  poolPickMost: "The one with most left",
+  poolPickSoonest: "The one that resets soonest, until it runs low",
+  poolPickHelp: "Among the accounts whose conditions hold, the one whose week resets first; once it falls below \"This week left at least\" or reaches 0%, the next one. Accounts with no known reset come last.",
   account: (n: number) => `Account #${n}`,
   noAccounts: "claude-swap lists no account now.",
   conditions: "Conditions",
@@ -224,7 +228,7 @@ export const text = strings({
   loginClaude: "主机的登录",
   loginCodex: "主机的登录（ChatGPT 订阅）",
   loginOpencode: "OpenCode 自己的登录",
-  pool: (n) => (n === "all" ? "claude-swap 账号池 · 选剩余最多的 · 全部账号" : `claude-swap 账号池 · 选剩余最多的 · ${n} 个账号`),
+  pool: (n, pick) => `claude-swap 账号池 · ${pick === "soonestReset" ? "先用快重置的" : "选剩余最多的"} · ${n === "all" ? "全部账号" : `${n} 个账号`}`,
   key: (provider, source) => `API key：${provider} · ${source}`,
   keyLocal: "本机密钥库",
   key1p: "1Password",
@@ -245,7 +249,7 @@ export const text = strings({
   chipOutside: (s, m) => `在 ${s} 以外${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
   chipQuota: (week) => (week != null ? `本周剩 ≥ ${week}%` : ""),
   chipCap: (usd) => `今日本项 ≤ $${usd}`,
-  chipPick: "选剩余最多的账号",
+  chipPick: (pick) => (pick === "soonestReset" ? "先用快重置的账号" : "选剩余最多的账号"),
   chipSkip: "读不到时跳过",
   chipPass: "读不到时当作满足",
   chipUnknownKind: (kind) => `这个版本显示不了的条件（${kind}）`,
@@ -290,7 +294,7 @@ export const text = strings({
   credLoginClaude: "主机的登录",
   credLoginCodex: "主机的登录（ChatGPT 订阅）",
   credLoginOpencode: "OpenCode 自己的登录",
-  credPool: "claude-swap 账号池（选剩余最多的）",
+  credPool: "claude-swap 账号池",
   credKey: (provider, id) => `API key：${provider}（${id}）`,
   credHome: (label) => `Codex 账号：${label}`,
   credGroupAccounts: "账号",
@@ -301,6 +305,10 @@ export const text = strings({
   poolAccounts: "池里的账号",
   poolAll: "claude-swap 列出的全部账号",
   poolSome: "只用这些：",
+  poolPick: "先用哪个账号",
+  poolPickMost: "剩得最多的",
+  poolPickSoonest: "离重置最近的，用完再换下一个",
+  poolPickHelp: "在满足条件的账号里，先用本周额度最早重置的；它低于「本周至少剩」或用到 0% 后，再用下一个。不知道重置时间的排在最后。",
   account: (n) => `账号 #${n}`,
   noAccounts: "claude-swap 现在没有列出账号。",
   conditions: "条件",
@@ -422,7 +430,7 @@ export function chipText(c: AnyCondition, t: Text, machines: readonly NamedMachi
 export function credentialWords(c: Candidate, t: Text, keys: RoutingKey[] | null, accounts: AccountsView | null): { text: string; missing: boolean } {
   const cred = c.credential;
   if (cred.kind === "login") return { text: c.harness === "codex" ? t.loginCodex : c.harness === "claude" ? t.loginClaude : t.loginOpencode, missing: false };
-  if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length), missing: false };
+  if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length, cred.pick), missing: false };
   if (cred.kind === "apiKey") {
     if (!keys) return { text: t.keyPending(cred.keyId), missing: false };
     const key = keys.find((k) => k.id === cred.keyId);
