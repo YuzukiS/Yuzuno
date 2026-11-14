@@ -111,8 +111,9 @@ pub(crate) fn left(policy: &Value, route: &Value, profile: Option<&RuntimeProfil
                 format!("Codex 目录 {home} 已不在列表里")))
         }
         (Some("login"), None) => None,
-        // A kind this Core doesn't know decides nothing.
+        // A kind it knows, with a profile of another kind (or none): the credential changed.
         (Some("pool" | "apiKey" | "codexHome" | "login"), _) => changed(),
+        // A kind this Core doesn't know decides nothing.
         _ => None,
     }
 }
