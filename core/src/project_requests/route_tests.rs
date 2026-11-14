@@ -116,7 +116,7 @@ fn answer(why: &str) -> Value {
 
 impl Lab {
     fn words(&self, text: &str, id: &str) -> Words {
-        Words { workspace_id: self.workspace.clone(), text: text.into(), text_blocks: None, client_message_id: id.into() }
+        Words { workspace_id: self.workspace.clone(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![] }
     }
 
     /// The user says `text`: its request number.
@@ -213,7 +213,7 @@ fn utf16(text: &str, start: usize, end: usize) -> String {
 fn kept_request(text: &str) -> Request {
     Request {
         id: "r".into(), n: 1, text: text.into(), text_blocks: None, title: None, created_at: String::new(),
-        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(),
+        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(), images: vec![],
     }
 }
 
@@ -727,7 +727,7 @@ fn the_longest_hand_off_head_fits_and_words_fit_counts_the_head_and_the_blank_li
     };
     let words = "长".repeat(MAX_REPLY / 3) + &"a".repeat(MAX_REPLY % 3);
     let head = hand_off_head(&ctx(&words), &format!("{}-{}", "K".repeat(16), i64::MAX));
-    let sent = message("m", &head, &words, None, None);
+    let sent = message("m", &head, &words, None, &[], None);
     assert!(sent.text.len() <= MAX_MESSAGE_TEXT, "{} bytes", sent.text.len());
     let room = MAX_DESCRIPTION - WHY_ROOM - description_head(&ctx("")).len() - 2;
     assert!(words_fit(&ctx(&"a".repeat(room))));
@@ -973,3 +973,6 @@ fn the_route_tools_description_fits_2048_utf16_units() {
     assert!(description.contains("- answer: no task, no card"));
     assert_eq!(tool["inputSchema"]["properties"]["routes"]["items"]["properties"]["kind"]["enum"], json!(["card", "existing", "answer"]));
 }
+
+#[path = "route_image_tests.rs"]
+mod route_image_tests;

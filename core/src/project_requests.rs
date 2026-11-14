@@ -71,6 +71,15 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         DELETE FROM project_requests WHERE project_id NOT IN (SELECT id FROM projects);
         DELETE FROM project_request_replies WHERE request_id NOT IN (SELECT id FROM project_requests);",
     )?;
+    // images: the images the user attached on Home (YN-134), a JSON array of
+    // their IDs; NULL without any. Older Cores ignore the column.
+    for table in ["project_requests", "project_request_replies"] {
+        let has: bool = db.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='images')"), [], |r| r.get(0))?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN images TEXT"))?;
+        }
+    }
     routes::migrate(db)
 }
 
@@ -86,6 +95,11 @@ pub(crate) struct Words {
     pub text_blocks: Option<Vec<TextBlock>>,
     /// The page's ID for this message: sent again, it is the same message.
     pub client_message_id: String,
+    /// Images the user attached on Home (YN-134), by their IDs in the
+    /// Project's images written on Home (input_images::home_dir). Each Agent
+    /// the message goes to is given its own copy (`send`).
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 /// Refused before anything was kept or sent: the page keeps the words, and
@@ -140,9 +154,85 @@ pub(crate) fn follow_up_head(workspace: &str, project: &str, project_id: &str, n
     )
 }
 
+/// Checks the images a message to a Project names (YN-134), before its lock
+/// is taken: each in the Project's images written on Home, unchanged, and
+/// within a message's count and total. Refused, nothing is kept or sent.
+async fn check_images(ws: &Workspace, project: &str, images: &[String]) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    let (root, project, images) = (ws.data_dir.clone(), project.to_owned(), images.to_vec());
+    tokio::task::spawn_blocking(move || crate::input_images::check_home(&root, &project, &images))
+        .await?
+        .map_err(|error| not_submitted(format!("home_images: {error}. Nothing was sent, and your message is kept.")))
+}
+
+/// Refuses a message with images when one of the Agents it goes to takes no
+/// images (YN-134), read in the caller's transaction: nothing is kept or sent.
+fn refuse_images(db: &Connection, to: &[String], images: &[String]) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    for agent in to {
+        let (name, harness): (Option<String>, Option<String>) = db
+            .query_row("SELECT json_extract(data,'$.agent.name'),json_extract(data,'$.agent.harness') FROM agents WHERE id=?1", [agent],
+                |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .unwrap_or_default();
+        // An Agent record without a harness is a Codex one (model::Agent).
+        if !crate::input_images::takes_images(harness.as_deref().unwrap_or("codex")) {
+            return Err(not_submitted(format!(
+                "images_unsupported: {} answers for this request and can't receive images; Codex, Claude and OpenCode Agents can. \
+                 Nothing was sent, and your message is kept.",
+                name.unwrap_or_else(|| agent.clone())
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Why a message's images could not go to its Agent (YN-134): it takes no
+/// images, or they could not be copied to it. Nothing was sent; `send`
+/// refuses the message, and a route's hand-off sends the words without them.
+#[derive(Debug)]
+pub(crate) struct ImagesRefused(pub String);
+
+impl std::fmt::Display for ImagesRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "home_images: {}. Nothing was sent, and your message is kept.", self.0)
+    }
+}
+
+impl std::error::Error for ImagesRefused {}
+
+/// The reason a refused message's images could not go, if that is why.
+pub(crate) fn images_refused(error: &anyhow::Error) -> Option<&str> {
+    let inner = error.downcast_ref::<MessageNotSubmitted>().map_or(error, |refused| &refused.0);
+    inner.downcast_ref::<ImagesRefused>().map(|refused| refused.0.as_str())
+}
+
+/// Gives `agent` its own copy of a new message's images (input_images::adopt),
+/// when it takes images; refused (`ImagesRefused`), nothing is sent.
+async fn adopt_images(ws: &Workspace, project: &str, agent: &str, images: &[String]) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    let refused = |reason: String| anyhow::Error::new(MessageNotSubmitted(anyhow::Error::new(ImagesRefused(reason))));
+    let to = agent.to_owned();
+    let found = ws.stored(move |store| store.agent(&to)).await?;
+    if !crate::input_images::takes_images(&found.harness) {
+        return Err(refused(format!("{} can't receive images", found.name)));
+    }
+    let (root, project, agent, images) = (ws.data_dir.clone(), project.to_owned(), agent.to_owned(), images.to_vec());
+    tokio::task::spawn_blocking(move || crate::input_images::adopt(&root, &project, &agent, &images))
+        .await?
+        .map_err(|error| refused(error.to_string()))
+}
+
 /// One message: `head`, a blank line, then the user's `words` byte for byte,
-/// their pasted blocks moved past the head.
-pub(crate) fn message(client: &str, head: &str, words: &str, blocks: Option<&[TextBlock]>, turn: Option<String>) -> MessageInput {
+/// their pasted blocks moved past the head, and the images they attached.
+pub(crate) fn message(client: &str, head: &str, words: &str, blocks: Option<&[TextBlock]>, images: &[String], turn: Option<String>)
+    -> MessageInput {
     let shift = head.encode_utf16().count() + 2;
     MessageInput {
         client_message_id: client.into(),
@@ -150,7 +240,7 @@ pub(crate) fn message(client: &str, head: &str, words: &str, blocks: Option<&[Te
         text_blocks: blocks.map(|blocks| {
             blocks.iter().map(|block| TextBlock { id: block.id.clone(), start: block.start + shift, end: block.end + shift }).collect()
         }),
-        images: vec![],
+        images: images.to_vec(),
         expected_turn_id: turn,
         question: None,
         clarification: None,
@@ -169,9 +259,11 @@ struct Request {
     front_agent_id: String,
     message_id: String,
     state: String,
+    /// The images the user attached (YN-134), by ID; none for most.
+    images: Vec<String>,
 }
 
-const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state";
+const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state,images";
 
 fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
     Ok(Request {
@@ -184,6 +276,7 @@ fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
         front_agent_id: r.get(6)?,
         message_id: r.get(7)?,
         state: r.get(8)?,
+        images: stored_images(r.get(9)?),
     })
 }
 
@@ -194,6 +287,16 @@ fn blocks(raw: Option<String>) -> Option<Vec<TextBlock>> {
 
 fn kept_blocks(blocks: &Option<Vec<TextBlock>>) -> Result<Option<String>> {
     Ok(blocks.as_ref().map(serde_json::to_string).transpose()?)
+}
+
+/// Images as kept (YN-134): what Core checked, so a row it cannot read shows none.
+fn stored_images(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+}
+
+/// NULL without images, as rows written before them.
+fn kept_images(images: &[String]) -> Result<Option<String>> {
+    Ok((!images.is_empty()).then(|| serde_json::to_string(images)).transpose()?)
 }
 
 /// The Workspace, and the Project's name and whether it is archived, for one message.
@@ -251,16 +354,21 @@ async fn lock(ws: &Workspace, project: &str) -> Arc<tokio::sync::Mutex<()>> {
 
 /// Sends one message of a request to `agent`: the one sent before under its
 /// client ID if there is one (a retry), else `compose` for the Turn the
-/// Agent is in now. Another message under that client ID, one whose receipt
-/// names another `origin`, is not this one: refused, nothing sent. Refused
-/// before it was sent, `Err` says so.
-async fn send(ws: &Arc<Workspace>, agent: &str, client: &str, origin: Value, compose: impl FnOnce(Option<String>) -> MessageInput)
-    -> Result<MessageReceipt> {
+/// Agent is in now, its images first copied to the Agent (`adopt_images`,
+/// YN-134; never again for a retry). Another message under that client ID,
+/// one whose receipt names another `origin`, is not this one: refused,
+/// nothing sent. Refused before it was sent, `Err` says so.
+async fn send(ws: &Arc<Workspace>, project: &str, agent: &str, client: &str, origin: Value,
+    compose: impl FnOnce(Option<String>) -> MessageInput) -> Result<MessageReceipt> {
     let (to, id) = (agent.to_owned(), client.to_owned());
     let input = match ws.stored(move |store| store.receipt(&to, &id)).await? {
         Some(previous) if previous.origin.as_ref() == Some(&origin) => previous.input,
         Some(_) => return Err(not_submitted("This clientMessageId was already used for another message. Nothing was sent.".into())),
-        None => compose(follow_up_turn(&ws.send_view(agent).await.map_err(|error| not_submitted(error.to_string()))?)),
+        None => {
+            let input = compose(follow_up_turn(&ws.send_view(agent).await.map_err(|error| not_submitted(error.to_string()))?));
+            adopt_images(ws, project, agent, &input.images).await?;
+            input
+        }
     };
     ws.send_message_from(agent, input, Vec::new(), Some(origin)).await
 }
@@ -277,6 +385,7 @@ fn announce(ws: &Workspace, project: &str) {
 /// nothing is kept.
 pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> Result<Value> {
     check(&words)?;
+    check_images(ws, project, &words.images).await?;
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
@@ -289,11 +398,13 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
                 params![id, said.client_message_id], request_row)
             .optional()?;
         if let Some(found) = found {
-            ensure!(found.text == said.text && found.text_blocks == said.text_blocks, "This clientMessageId was already used for another message");
+            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images,
+                "This clientMessageId was already used for another message");
             return Ok((place, found));
         }
         refuse_archived(&place)?;
         let front = front_desk_now(&tx, &id)?;
+        refuse_images(&tx, std::slice::from_ref(&front), &said.images)?;
         let n: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_requests WHERE project_id=?1", [&id], |r| r.get(0))?;
         let request = Request {
             id: uuid::Uuid::new_v4().to_string(),
@@ -305,20 +416,21 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
             front_agent_id: front,
             message_id: said.client_message_id,
             state: "open".into(),
+            images: said.images,
         };
         tx.execute(
-            "INSERT INTO project_requests(id,project_id,n,text,text_blocks,created_at,front_agent_id,message_id,state)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO project_requests(id,project_id,n,text,text_blocks,created_at,front_agent_id,message_id,state,images)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![request.id, id, request.n, request.text, kept_blocks(&request.text_blocks)?, request.created_at,
-                request.front_agent_id, request.message_id, request.state],
+                request.front_agent_id, request.message_id, request.state, kept_images(&request.images)?],
         )?;
         tx.commit()?;
         Ok((place, request))
     }).await?;
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"workspaceId":place.workspace});
     let head = request_head(&place.workspace, &place.name, project, request.n);
-    let sent = send(ws, &request.front_agent_id, &request.message_id, origin, |turn| {
-        message(&request.message_id, &head, &request.text, request.text_blocks.as_deref(), turn)
+    let sent = send(ws, project, &request.front_agent_id, &request.message_id, origin, |turn| {
+        message(&request.message_id, &head, &request.text, request.text_blocks.as_deref(), &request.images, turn)
     }).await;
     match sent {
         Ok(receipt) => {
@@ -390,6 +502,7 @@ fn follow_up_to(db: &Connection, project: &str, request: &str) -> Result<Vec<Str
 /// anyone, nothing is kept.
 pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words: Words) -> Result<Value> {
     check(&words)?;
+    check_images(ws, project, &words.images).await?;
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
@@ -406,17 +519,21 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
                 params![request.id, said.client_message_id], reply_row)
             .optional()?;
         if let Some(found) = found {
-            ensure!(found.text == said.text && found.text_blocks == said.text_blocks, "This clientMessageId was already used for another message");
+            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images,
+                "This clientMessageId was already used for another message");
             return Ok((place, request, found));
         }
         refuse_archived(&place)?;
         let to = follow_up_to(&tx, &id, &request.id)?;
+        // Every Agent it goes to takes its images, or none is sent any of it.
+        refuse_images(&tx, &to, &said.images)?;
         let m: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_request_replies WHERE request_id=?1", [&request.id], |r| r.get(0))?;
-        let reply = Reply { n: m, text: said.text, text_blocks: said.text_blocks, at: crate::model::now(), message_id: said.client_message_id, delivered_to: to };
+        let reply = Reply { n: m, text: said.text, text_blocks: said.text_blocks, at: crate::model::now(), message_id: said.client_message_id,
+            delivered_to: to, images: said.images };
         tx.execute(
-            "INSERT INTO project_request_replies(request_id,n,text,text_blocks,at,message_id,delivered_to) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO project_request_replies(request_id,n,text,text_blocks,at,message_id,delivered_to,images) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![request.id, reply.n, reply.text, kept_blocks(&reply.text_blocks)?, reply.at, reply.message_id,
-                serde_json::to_string(&reply.delivered_to)?],
+                serde_json::to_string(&reply.delivered_to)?, kept_images(&reply.images)?],
         )?;
         tx.commit()?;
         Ok((place, request, reply))
@@ -425,8 +542,8 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"reply":reply.n,"workspaceId":place.workspace});
     let mut receipts = Vec::new();
     for agent in &reply.delivered_to {
-        let sent = send(ws, agent, &reply.message_id, origin.clone(), |turn| {
-            message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), turn)
+        let sent = send(ws, project, agent, &reply.message_id, origin.clone(), |turn| {
+            message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), &reply.images, turn)
         }).await;
         match sent {
             Ok(receipt) => receipts.push(receipt),
@@ -464,9 +581,11 @@ struct Reply {
     at: String,
     message_id: String,
     delivered_to: Vec<String>,
+    /// The images the user attached (YN-134), by ID.
+    images: Vec<String>,
 }
 
-const REPLY: &str = "n,text,text_blocks,at,message_id,delivered_to";
+const REPLY: &str = "n,text,text_blocks,at,message_id,delivered_to,images";
 
 fn reply_row(r: &rusqlite::Row) -> rusqlite::Result<Reply> {
     Ok(Reply {
@@ -476,6 +595,7 @@ fn reply_row(r: &rusqlite::Row) -> rusqlite::Result<Reply> {
         at: r.get(3)?,
         message_id: r.get(4)?,
         delivered_to: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(),
+        images: stored_images(r.get(6)?),
     })
 }
 
@@ -500,7 +620,8 @@ fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
     let delivered_to = reply.delivered_to.iter()
         .map(|agent| Ok(json!({"agentId":agent,"delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?})))
         .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"at":reply.at,"messageId":reply.message_id,"deliveredTo":delivered_to}))
+    Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"images":reply.images,"at":reply.at,"messageId":reply.message_id,
+        "deliveredTo":delivered_to}))
 }
 
 /// A request as the Project's page reads it: the user's words and blocks as
@@ -517,7 +638,7 @@ fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
         .map(|reply| reply_view(db, &request.id, reply))
         .collect::<Result<Vec<_>>>()?;
     let mut shown = json!({
-        "id":request.id,"n":request.n,"text":request.text,"textBlocks":request.text_blocks,"title":request.title,
+        "id":request.id,"n":request.n,"text":request.text,"textBlocks":request.text_blocks,"images":request.images,"title":request.title,
         "createdAt":request.created_at,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
     });
