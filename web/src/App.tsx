@@ -3593,7 +3593,6 @@ export function App() {
               <PanelLeft size={17} />
             </button>
           </Tip>
-          <span className="workspace-name">{shell.workspace}</span>
           <span className="toolbar-context">
             {isNative ? shell.desktop : shell.web}
           </span>

@@ -988,10 +988,8 @@ try {
     await page.setViewportSize({ width, height: 1000 });
     const bar = await page.evaluate(() => {
       const toolbar = document.querySelector(".toolbar");
-      const name = document.querySelector(".workspace-name");
       return {
         fits: toolbar.scrollWidth <= toolbar.clientWidth + 1,
-        oneLine: name.scrollHeight <= name.clientHeight + 1,
         inToolbar: toolbar.querySelectorAll(".toolbar-nav .catchup-nav").length,
         inRail: document.querySelectorAll(".rail .catchup-nav").length,
       };
@@ -999,7 +997,7 @@ try {
     assert.deepEqual(
       bar,
       // Home, Tasks & messages and (since Jobs arrived) Jobs.
-      { fits: true, oneLine: true, inToolbar: 3, inRail: 0 },
+      { fits: true, inToolbar: 3, inRail: 0 },
       `${width}px`,
     );
   }
