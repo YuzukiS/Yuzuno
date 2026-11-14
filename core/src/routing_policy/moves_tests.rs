@@ -229,34 +229,27 @@ async fn an_executor_the_user_disconnected_on_another_machine_or_with_routing_of
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
 }
 
-/// #966 R3 P2: the wait for the executor's gate and the idle checks are not
-/// within the start time limit. Another lifecycle operation holding the gate
-/// longer than it must never mark a live executor failed; once the gate is
-/// free the move runs within the limit, and a later pass leaves it to its task.
+/// #966 R3 P2: a gate another operation holds is not waited for. This pass
+/// starts no move of the executor, writes nothing to it, and the next pass
+/// moves it once the gate is free. Only the detach and restart are timed.
 #[tokio::test]
-async fn a_move_waiting_on_the_gate_is_not_cut_off_by_the_start_limit() {
+async fn a_move_whose_gate_is_held_is_left_to_a_later_pass_and_marks_nothing_failed() {
     let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
     lab.pool(&[3]);
     lab.set_status("idle");
     *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(std::time::Duration::from_secs(2));
     let gate = lab.ws.gate(ID).await;
     let held = gate.lock().await;
-    let moving = tokio::time::timeout(std::time::Duration::from_secs(5), lab.ws.move_off_left_accounts()).await
-        .expect("the pass does not wait for the move");
-    assert_eq!(moving.len(), 1);
-    assert!(lab.ws.move_off_left_accounts().await.is_empty(), "one being moved is left to its task");
-    // Past the limit while another holder has the gate: nothing was detached,
-    // and the executor stays as it was.
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    lab.pass().await;
     let agent = lab.agent();
-    assert_eq!((agent.status.as_str(), agent.error.as_deref()), ("idle", None), "a gate held past the limit is not its failure");
+    assert_eq!((agent.status.as_str(), agent.error.as_deref()), ("idle", None), "a gate held by another operation writes nothing");
     assert_eq!(lab.starts().len(), 1, "nothing was detached");
-    assert!(lab.ws.executor_slots.moving.lock().unwrap().contains(ID));
+    assert!(lab.ws.executor_slots.moving.lock().unwrap().is_empty(), "the mark is released");
     drop(held);
-    for task in moving {
-        tokio::time::timeout(std::time::Duration::from_secs(10), task).await.expect("the move ends once the gate is free").unwrap();
-    }
+    // The next pass finds the gate free and moves it, within the limit.
+    lab.pass().await;
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
+    assert_eq!(lab.agent().status, "idle");
     assert!(lab.ws.executor_slots.moving.lock().unwrap().is_empty());
 }
 

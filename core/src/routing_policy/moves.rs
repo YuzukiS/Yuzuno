@@ -8,15 +8,14 @@
 //! (`pick_other`). None to move to leaves it connected as it is.
 //!
 //! Each move runs in a task of its own, under a work permit: the pass never
-//! waits for a restart, and a later pass leaves one being moved. The move
-//! waits for it to be idle: under its gate, read again, no Turn running,
-//! request shown, approval waited for, background task or sub-agent still able
-//! to report, and its status idle or error. Only its detach and restart then
-//! run within the Workspace's start time limit, as a slot start does; the wait
-//! for its gate and the idle checks are not counted, since the executor is
-//! live and running one of them longer than the limit must never mark it
-//! failed. Its bridge is detached as an update detaches one
-//! (`detach_idle_claude`: the bridge confirms it is idle, its events are
+//! waits for a restart, and a later pass leaves one being moved. The move takes
+//! its gate only if it is free, then reads it again: no Turn running, request
+//! shown, approval waited for, background task or sub-agent still able to
+//! report, and its status idle or error. A gate another operation holds skips
+//! it for this pass, which starts no move of it at all; the next pass tries
+//! again. Only its detach and restart run within the Workspace's start time
+//! limit, as a slot start does. Its bridge is detached as an update detaches
+//! one (`detach_idle_claude`: the bridge confirms it is idle, its events are
 //! drained, only this generation is closed) and started again
 //! (`claude_ensure`), whose start moves its account
 //! (routing_launch.rs `move_account`) and resumes its session there. A Turn
@@ -151,13 +150,14 @@ impl Workspace {
         })
     }
 
-    /// One executor's move, if it is idle now, under its gate: whether it was
-    /// detached and started again. The wait for its gate and the idle checks
-    /// are not within `limit`; only the detach and restart are, so a live
-    /// executor held by another lifecycle operation is never marked failed.
+    /// One executor's move if it is idle now: whether it was detached and
+    /// started again. Its gate is taken only if it is free, so a gate another
+    /// operation holds leaves it to a later pass, and only the detach and
+    /// restart run within `limit`; a live executor is never marked failed for
+    /// work it did not start.
     async fn move_when_idle(self: &Arc<Self>, id: &str, policy: &Value, gathered: &Gathered, limit: std::time::Duration) -> Result<MoveEnd> {
         let gate = self.gate(id).await;
-        let _held = gate.lock().await;
+        let Ok(_held) = gate.try_lock() else { return Ok(MoveEnd::NotIdle) };
         // Read again under its gate: its start, a Reconnect or another pass may have moved it.
         let agent = id.to_owned();
         let Some(on) = self.stored(move |store| Ok(store.routing_on_accounts(Some(&agent))?.pop())).await? else { return Ok(MoveEnd::NotIdle) };
