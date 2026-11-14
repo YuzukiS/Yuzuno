@@ -6,7 +6,8 @@ const GPU0: &str = "GPU-00000000-1111-2222-3333-444444444444";
 /// A stand-in nvidia-smi: a burst of two rows every `-l` seconds or `-lms`
 /// milliseconds, each saying there are two, 30 ms apart (so a reading kept
 /// row by row would be seen half), the second device's name holding a comma
-/// and its values unknown; each start noted in `starts` beside it. `mode` beside it: `once`
+/// and its values unknown; each start noted in `starts` beside it, and its own
+/// time as the creation time of the `times/<n>` file it makes first. `mode` beside it: `once`
 /// prints once and exits, `silent` exits at once with nothing, `truncated` loses the first
 /// burst's first row and gives the second device's total as 16000 + the burst's number, `hang`
 /// prints once and then neither prints nor exits.
@@ -14,6 +15,11 @@ fn stub(dir: &Path) -> PathBuf {
     let path = dir.join("nvidia-smi");
     std::fs::write(&path, format!(r#"#!/bin/sh
 here=$(dirname "$0")
+n=0
+# BSD wc pads its count; strip it before $(( )).
+[ -f "$here/starts" ] && n=$(wc -l < "$here/starts" | tr -d ' ')
+mkdir -p "$here/times"
+: > "$here/times/$((n + 1))"
 echo $$ >> "$here/starts"
 every=1
 while [ $# -gt 0 ]; do
@@ -49,6 +55,15 @@ fn config(dir: &Path) -> Config {
 
 fn starts(dir: &Path) -> Vec<String> {
     std::fs::read_to_string(dir.join("starts")).unwrap_or_default().lines().map(str::to_owned).collect()
+}
+
+/// When each start happened, as the stand-in recorded it: every start creates
+/// `times/<n>` first thing, so its creation time is the start's own, not the
+/// moment a reader noticed it. A reader's poll is late by up to its whole
+/// `latest` wait, and two starts can fall in one poll (Linux CI 43642940734:
+/// the second gap measured 42 ms where the backoff was 100 ms).
+fn start_times(dir: &Path) -> Vec<std::time::SystemTime> {
+    (1..).map_while(|n| std::fs::metadata(dir.join("times").join(n.to_string())).ok().and_then(|m| m.modified().ok())).collect()
 }
 
 fn alive(pid: &str) -> bool {
@@ -222,28 +237,28 @@ async fn an_idle_sampler_stops_and_starts_again_on_the_next_read() {
 }
 
 /// A child that exits after giving readings is started again after a
-/// backoff that doubles, never at once. When each start is recorded, not a
-/// time the runner must keep: the stand-in appends its pid first thing, so
-/// the gaps below are the sampler's backoff (plus the stand-in's own exit),
-/// and a loaded runner only makes them longer.
+/// backoff that doubles, never at once. Each gap is between the two starts
+/// themselves, as the stand-in recorded them, so a runner that is slow to
+/// notice a start still measures the sampler's backoff (plus the stand-in's
+/// own exit, which only makes the gap longer).
 #[tokio::test]
 async fn a_child_that_exits_is_started_again_after_a_backoff() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mode"), "once").unwrap();
     let sampler = GpuSampler::new(config(dir.path()));
-    let mut at: Vec<Instant> = Vec::new();
     let until = Instant::now() + Duration::from_secs(30);
-    while at.len() < 3 && Instant::now() < until {
-        // Whole lines only: a poll can catch a pid mid-append.
-        let seen = std::fs::read_to_string(dir.path().join("starts")).unwrap_or_default().matches('\n').count();
-        while at.len() < seen {
-            at.push(Instant::now());
-        }
+    while start_times(dir.path()).len() < 3 && Instant::now() < until {
+        // A read starts the next session once its backoff has passed, and
+        // keeps the idle stop from ending it meanwhile.
         let _ = sampler.latest(Duration::from_millis(100)).await;
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    assert!(at.len() >= 3, "started again after a backoff: {} starts", at.len());
-    let (first, second) = (at[1] - at[0], at[2] - at[1]);
+    let times = start_times(dir.path());
+    assert!(times.len() >= 3, "started again after a backoff: {} starts", times.len());
+    let (first, second) = (
+        times[1].duration_since(times[0]).unwrap_or_default(),
+        times[2].duration_since(times[1]).unwrap_or_default(),
+    );
     // 50 ms, then 100 ms after the stand-in has ended (it takes a few ms to
     // exit after its reading, which only lengthens the gap).
     assert!(first >= Duration::from_millis(40), "the second start came at once: {first:?}");
