@@ -74,6 +74,7 @@ export const turnWords = strings({
   stop: "Stop",
   changeModel: "Change model",
   reminder: "Yuzuno reminder",
+  scheduledRefresh: "Scheduled refresh",
   you: "You",
   // Reading by your inputs (T-6).
   yourInput: (n: number | null): string => (n ? `YOUR INPUT ${n}` : "YOUR INPUT"),
@@ -180,6 +181,7 @@ export const turnWords = strings({
   stop: "停止",
   changeModel: "换模型",
   reminder: "Yuzuno 提醒",
+  scheduledRefresh: "定时刷新",
   you: "你",
   yourInput: (n) => (n ? `你的输入 ${n}` : "你的输入"),
   earlierInput: "较早的输入 · 来源未记录",

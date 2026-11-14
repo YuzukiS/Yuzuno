@@ -307,7 +307,7 @@ export interface RunningCall {
   item: NativeItem;
 }
 export type RunningSubAgent = RunningCall;
-export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "native";
+export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "schedule" | "native";
 /** Where a Home reply came from, as its receipt names it (T-9). `key` and
  * `version` are null for a reply to the whole Project; `workspaceId` is null
  * on receipts written before Core kept it. `snapshot` is absent on older

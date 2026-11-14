@@ -40,6 +40,7 @@ import { ExecutorTemplates } from "./ExecutorTemplates";
 import { ExecutorRouting } from "./ExecutorRouting";
 import { RoutingKeys } from "./RoutingKeys";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { BriefRefreshSettings } from "./BriefRefreshSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
@@ -372,6 +373,7 @@ export function WorkspaceUpdatesHost({
   workspaceId,
   openAt,
   pages,
+  onOpenCard,
 }: {
   enabled: boolean;
   open: boolean;
@@ -386,6 +388,8 @@ export function WorkspaceUpdatesHost({
   openAt?: SettingsOpenAt | null;
   /** The Projects and Machines pages' managers (YN-8), drawn by their owner. */
   pages?: SettingsPagesContent;
+  /** Opens a Home card from Settings → Home → Refreshes (YN-113 R4). */
+  onOpenCard?: (projectId: string, key: string) => void;
 }) {
   const intent = useUpdateIntent(workspaceId);
   // A chosen update is followed closely even while Settings is closed.
@@ -404,6 +408,7 @@ export function WorkspaceUpdatesHost({
       workspaceId={workspaceId}
       openAt={openAt}
       pages={pages}
+      onOpenCard={onOpenCard}
       {...updates}
     />
   );
@@ -438,6 +443,7 @@ export function WorkspaceUpdates({
   workspaceId,
   openAt,
   pages,
+  onOpenCard,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -451,6 +457,7 @@ export function WorkspaceUpdates({
   workspaceId: string;
   openAt?: SettingsOpenAt | null;
   pages?: SettingsPagesContent;
+  onOpenCard?: (projectId: string, key: string) => void;
 }) {
   const language = useLanguage();
   const dialog = settingsDialogText(language);
@@ -1073,6 +1080,7 @@ export function WorkspaceUpdates({
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "refreshes" && <BriefRefreshSettings active={open} visible={visible} onOpenCard={onOpenCard} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
           {tab === "remote" && <RemoteAccessSettings key={workspaceId} active={open && visible} workspaceId={workspaceId} />}

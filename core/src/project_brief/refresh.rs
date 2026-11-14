@@ -1033,6 +1033,56 @@ pub(super) fn list(store: &Store) -> Result<Value> {
     Ok(json!({"limits":limits(&db)?,"total":{"cards":rows.len(),"active":active,"weeklyRuns":weekly},"items":items}))
 }
 
+/// What a push notice names of one refresh (web_push, YN-113 R4): the card
+/// and its Project, the last run's outcome, and how it is paused.
+pub(crate) struct NoticeState {
+    pub project_id: String,
+    pub project_name: String,
+    pub identity: i64,
+    pub key: String,
+    pub title: String,
+    pub enabled: bool,
+    pub version: i64,
+    pub state: Option<String>,
+    pub slot: Option<String>,
+    pub missed: u32,
+    pub reason: Option<String>,
+    pub paused: Option<String>,
+    pub paused_message: Option<String>,
+    pub owner: Option<String>,
+    pub turn: Option<String>,
+}
+
+/// Every refresh as a push notice reads it, the cards' names included.
+pub(crate) fn notice_states(store: &Store) -> Result<Vec<NoticeState>> {
+    let db = store.db.read()?;
+    let labels = crate::projects::project_labels(&db)?;
+    let rows = all(&db)?;
+    let mut states = vec![];
+    for refresh in rows {
+        let card = sections::by_identity(&db, &refresh.project_id, refresh.identity)?;
+        let run = refresh.progress.run.as_ref();
+        states.push(NoticeState {
+            project_id: refresh.project_id.clone(),
+            project_name: labels.get(&refresh.project_id).map(|(name, _)| name.clone()).unwrap_or_default(),
+            identity: refresh.identity,
+            key: card.as_ref().map_or_else(|| refresh.key.clone(), |row| row.key.clone()),
+            title: card.as_ref().and_then(|row| row.data["title"].as_str()).unwrap_or(&refresh.key).to_owned(),
+            enabled: refresh.enabled,
+            version: refresh.version,
+            state: run.map(|run| run.state.clone()),
+            slot: run.map(|run| run.slot.to_rfc3339()),
+            missed: run.map_or(0, |run| run.missed),
+            reason: run.and_then(|run| run.reason.as_ref()).map(|why| why.message.clone()),
+            paused: refresh.paused_reason.as_ref().map(|why| why.code.clone()),
+            paused_message: refresh.paused_reason.as_ref().map(|why| why.message.clone()),
+            owner: run.and_then(|run| run.agent_id.clone()),
+            turn: run.and_then(|run| run.turn_id.clone()),
+        });
+    }
+    Ok(states)
+}
+
 /// Pauses every refresh on in `db`, the copy a backup holds
 /// (workspace_backup.rs `finish_copy`): a Workspace restored from it starts
 /// with each paused, saying so, and the Workspace backed up keeps refreshing.

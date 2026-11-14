@@ -38,7 +38,7 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["executor-routing"] },
   // The accounts and keys routing may start an executor with (YN-84 S2), on their own page.
   { id: "accounts", group: "workspace", label: { en: "Accounts & keys", zh: "账号与密钥" }, editors: ["routing-keys"] },
-  { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home"] },
+  { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home", "refreshes"] },
   { id: "phone", group: "workspace", label: { en: "Phone access", zh: "手机访问" }, editors: ["remote"] },
   { id: "storage", group: "data", label: { en: "Storage", zh: "存储" }, editors: ["storage", "drafts", "history"] },
   { id: "backup", group: "data", label: { en: "Backup & restore", zh: "备份与恢复" }, editors: ["backup"] },
