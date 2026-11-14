@@ -28,7 +28,7 @@ import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/
 import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
-import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/brief/density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
 import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
@@ -38,7 +38,7 @@ const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
-// With a density, as Home draws its cards (T-9); without one, as anywhere else.
+// With a density, as a Home card's front draws (low, T-9); without one, as anywhere else (high).
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));
 // A report as its summary card on Home (T-18), read only: its figure in its frame; on the deck (extra.deck), at its size.
@@ -1380,9 +1380,9 @@ test("a broken body or part stays local, and a failed chart read keeps its place
   assert.ok(document.querySelector("p.brief-preview-frame"), "the failed preview keeps its frame");
 });
 
-// T-9: the same body at Home's two densities, chosen per device. Low shows a
-// card's main point, high every field and row; nothing is dropped silently,
-// nothing unknown becomes 0, and switching keeps the section's state.
+// T-9: the same body at the two densities (density.ts). Low, on a Home card's
+// front, shows a card's main point, high every field and row; nothing is
+// dropped silently and nothing unknown becomes 0.
 const dense = (elements, children, attachments = []) => ({
   op: "put",
   key: KEY,
@@ -1550,47 +1550,6 @@ test("T-9 low density never folds away an attachment that warns: gone, not kept 
   await until(() => shown().length === 5, "every attachment after Show all");
   assert.deepEqual(shown(), names);
   assert.equal(document.querySelector(".brief-attachments-more").textContent, "Show fewer");
-  assert.deepEqual(page.errors, []);
-});
-
-test("T-9 switching density keeps the section's state: the same nodes, a table's filter, an open data table and focus", async (t) => {
-  const page = mount(respond);
-  t.after(page.close);
-  const { document, window } = page;
-  const section = readSection(page, dense({
-    note: { type: "Markdown", props: { text: "Runs so far." } },
-    runs: {
-      type: "Table",
-      props: {
-        id: "runs",
-        title: "Runs",
-        columns: [{ key: "run", label: "Run" }],
-        rows: [{ id: "r1", cells: { run: "1" } }, { id: "r2", cells: { run: "2" } }, { id: "r12", cells: { run: "12" } }],
-      },
-    },
-    trend: { type: "LineChart", props: { id: "trend", title: "Trend", x: { label: "Run" }, y: { label: "Score" }, series: [{ name: "S", points: [[1, 2], [2, 3]] }] } },
-  }, ["note", "runs", "trend"]));
-  window.renderSection(section, PROJECT, {}, "ws-density", "high");
-  const body = document.querySelector(".brief-body");
-  const note = document.querySelector(".brief-markdown");
-  const filter = () => document.querySelector('input[aria-label="Filter Runs"]');
-  const input = filter();
-  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, "2");
-  input.dispatchEvent(new window.Event("input", { bubbles: true }));
-  await until(() => document.querySelectorAll(".result-table-scroll tbody tr").length === 2, "the filtered table");
-  const data = document.querySelector("details.brief-chart-data");
-  data.open = true;
-  await until(() => data.querySelector("tbody tr"), "the opened data table");
-  input.focus();
-  window.renderSection(section, PROJECT, {}, "ws-density", "low");
-  assert.ok(document.querySelector(".brief-body") === body, "the section is not drawn again");
-  assert.ok(document.querySelector(".brief-markdown") === note, "an unchanged block keeps its node");
-  assert.ok(filter() === input, "the filter input is the same node");
-  assert.equal(filter().value, "2", "the filter stays");
-  assert.equal(document.querySelectorAll(".result-table-scroll tbody tr").length, 2);
-  assert.ok(document.querySelector("details.brief-chart-data") === data, "the data table is the same node");
-  assert.ok(data.open, "the data table stays open");
-  assert.ok(document.activeElement === input, "focus stays where it was");
   assert.deepEqual(page.errors, []);
 });
 
