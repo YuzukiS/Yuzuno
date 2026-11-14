@@ -486,10 +486,14 @@ export function TaskOutcome({
   task,
   onOpenAgent,
   availableAgents = [],
+  ownerName,
 }: {
   task: Task;
   onOpenAgent?: (id: string, turnId?: string) => void;
   availableAgents?: string[];
+  /** Its assignee's name now, as the board shows it (YN-112); the name it
+   * had when assigned only once that Agent is gone. */
+  ownerName?: string;
 }) {
   const t = useStrings(outcomeText);
   const [density, setDensity] = useState<"low" | "high">("low");
@@ -660,7 +664,7 @@ export function TaskOutcome({
               <UserRound size={14} />
               {t.owner}
             </dt>
-            <dd>{task.assignee?.name || t.unassigned}</dd>
+            <dd>{ownerName || task.assignee?.name || t.unassigned}</dd>
           </div>
           {result?.outcome?.nextAgent && (
             <div>
@@ -853,7 +857,7 @@ export function TaskOutcome({
                       </section>
                       <section>
                         <h4>{t.owner}</h4>
-                        <p>{task.assignee?.name || t.unassigned}</p>
+                        <p>{ownerName || task.assignee?.name || t.unassigned}</p>
                       </section>
                       {selected.outcome?.nextAgent && (
                         <section>

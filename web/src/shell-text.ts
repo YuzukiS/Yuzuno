@@ -68,6 +68,7 @@ export const shellText = strings({
   interruptHere: "Interrupt requested. Your conversation is preserved.",
   interruptFor: (name: string) => `Interrupt requested for ${name}. The conversation is preserved.`,
   disconnected: (name: string) => `${name} is disconnected. Nothing starts it again until you reconnect it.`,
+  renamed: (name: string) => `Renamed to “${name}”.`,
   endedMissing: "Ended as interrupted, result unknown. Reconnect to go on in the same session.",
   // The conversation's own controls (T-189 slice 18): its header strip and
   // the composer's chrome. Messages, names and file names stay as written.
@@ -249,6 +250,7 @@ export const shellText = strings({
   interruptHere: "已请求中断。你的会话会保留。",
   interruptFor: (name) => `已请求中断 ${name}。会话会保留。`,
   disconnected: (name) => `${name} 已断开连接。在你重新连接之前，没有任何东西会再次启动它。`,
+  renamed: (name) => `已重命名为「${name}」。`,
   endedMissing: "已作为中断结束，结果未知。重新连接即可在同一会话中继续。",
   conversationTools: "会话工具",
   backHome: "返回 Home",

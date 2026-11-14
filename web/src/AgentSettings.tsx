@@ -9,6 +9,7 @@ import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
 import { OpenCodeLogin } from "./OpenCodeLogin";
 import { OpenCodeModelPicker } from "./OpenCodeModelPicker";
+import { AgentNameSetting } from "./RenameAgent";
 import { langTag, strings, useLanguage } from "./i18n";
 import { Tip, TipText } from "./Tip";
 import "./agent-settings.css";
@@ -134,10 +135,13 @@ export function AgentSettings({
   observedContextUsage,
   request,
   onRequestOpened,
+  onRenamed,
 }: {
   agent: Agent;
   disabled?: boolean;
   onSaved: () => void;
+  /** The name saved from its own field (YN-112); the dialog stays open. */
+  onRenamed?: (name: string) => void;
   onOpenChange?: (open: boolean) => void;
   /** Mode the live Claude session reports, which may differ from the choice. */
   observedPermissionMode?: string | null;
@@ -486,6 +490,8 @@ export function AgentSettings({
             void save();
           }}
         >
+          {/* First, and saved on its own: a name waits for no catalog (YN-112). */}
+          <AgentNameSetting agent={agent} onRenamed={(name) => onRenamed?.(name)} />
           <p className="agent-settings-location">{t.machine(agent.remote?.machine.name || null)}</p>
           {opencode ? (
             <div className="agent-setting">
