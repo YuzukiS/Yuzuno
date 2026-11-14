@@ -18,7 +18,9 @@
 //! 2. Owner: the card's owner as it is now must be open, in the card's
 //!    Project and one of its leads, and the card a report still on Home (live
 //!    or in its history); otherwise the refresh is paused, saying why.
-//! 3. Due: the latest slot at or before now, later than the last one sent.
+//! 3. Due: the latest slot at or before now, later than the last one sent;
+//!    else the user's "refresh now" (R2), which is sent as a slot is, but
+//!    leaves the cadence's slots as they were.
 //! 4. Ready: its owner connected, idle (or its last Turn failed), with no
 //!    Turn running, no approval waiting and no message of unknown outcome.
 //!    Otherwise the slot waits, saying for what.
@@ -41,8 +43,9 @@
 //! The copy of the database a backup holds has every refresh paused
 //! (`pause_for_backup`, workspace_backup.rs `finish_copy`): a restored
 //! Workspace and this one never both refresh. What writes refreshes
-//! (brief_update's `refresh`, the user's routes) and the limits setting come
-//! with R2; here they are read.
+//! (brief_update's `refresh`, the user's routes, the limits setting) is
+//! refresh_writes.rs (R2); the user's "refresh now" is a request in `run`
+//! (`Progress::now`) this timer sends as it sends a slot, outside the cadence.
 use super::{editors, sections, *};
 use crate::{
     model::{MessageInput, MessageReceipt},
@@ -65,8 +68,8 @@ const COUNT_DAYS: i64 = 400;
 pub(crate) const CLIENT_PREFIX: &str = "brief-refresh-";
 /// The origin `kind` a refresh's message receipt carries (input_origin.rs).
 pub(crate) const ORIGIN: &str = "schedule";
-/// Where the user's limits are kept (written from Settings, R2).
-const LIMITS_KEY: &str = "brief.refresh.limits";
+/// Where the user's limits are kept (written from Settings, refresh_writes.rs).
+pub(super) const LIMITS_KEY: &str = "brief.refresh.limits";
 
 pub(super) const SENT: &str = "sent";
 pub(super) const REFRESHED: &str = "refreshed";
@@ -234,6 +237,9 @@ pub(super) struct Times {
 }
 
 impl Times {
+    pub fn new(cadence: &Cadence, zone: &str) -> Result<Times> {
+        Ok(Times { clock: cadence.clock()?, zone: parse_zone(zone)? })
+    }
     pub fn latest(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         match self.zone {
             Zone::Utc => latest_in(&self.clock, &Utc, now),
@@ -271,7 +277,7 @@ pub(super) struct Reason {
     pub message_zh: String,
 }
 
-fn reason(code: &str, message: impl Into<String>, message_zh: impl Into<String>) -> Reason {
+pub(super) fn reason(code: &str, message: impl Into<String>, message_zh: impl Into<String>) -> Reason {
     Reason { code: code.into(), message: message.into(), message_zh: message_zh.into() }
 }
 
@@ -297,6 +303,10 @@ pub(super) struct Run {
     pub sent_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
+    /// The user's "refresh now" it was, by its requestId: no slot of the
+    /// cadence, so `last_slot` stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<String>,
 }
 
 /// A slot due and not sent: what it waits for (busy, approval, offline, or
@@ -311,6 +321,17 @@ pub(super) struct Waiting {
     pub since: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The user's "refresh now" waiting, by its requestId.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<String>,
+}
+
+/// The user's "refresh now" (POST …/refreshes/{identity}/now), not sent yet.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct NowRequest {
+    pub request_id: String,
+    pub at: DateTime<Utc>,
 }
 
 /// The `run` column.
@@ -321,6 +342,8 @@ pub(super) struct Progress {
     pub run: Option<Run>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<NowRequest>,
 }
 
 /// One dot of `recent`.
@@ -431,7 +454,6 @@ pub(super) fn of_project(db: &Connection, project: &str) -> Result<Vec<Refresh>>
     read(db, "project_id=?1 ORDER BY identity", [project])
 }
 
-#[cfg(test)]
 pub(super) fn one(db: &Connection, project: &str, identity: i64) -> Result<Option<Refresh>> {
     Ok(read(db, "project_id=?1 AND identity=?2", params![project, identity])?.pop())
 }
@@ -463,7 +485,7 @@ fn save(db: &Connection, before: &Refresh, after: &Refresh) -> Result<bool> {
 }
 
 /// A value as JSON text, as `save` writes it.
-fn text<T: Serialize>(value: &T) -> String {
+pub(super) fn text<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".into())
 }
 
@@ -494,9 +516,13 @@ pub(super) fn limits(db: &Connection) -> Result<Limits> {
 }
 
 /// The client message ID of the slot's message: the same slot is the same
-/// message, also after Core restarts.
-pub(super) fn client_id(project: &str, identity: i64, slot: DateTime<Utc>) -> String {
-    format!("{CLIENT_PREFIX}{project}-{identity}-{}", slot.format("%Y%m%dT%H%MZ"))
+/// message, also after Core restarts. A "refresh now" is named by when it
+/// was asked for, to the second.
+pub(super) fn client_id(project: &str, identity: i64, slot: DateTime<Utc>, manual: bool) -> String {
+    match manual {
+        false => format!("{CLIENT_PREFIX}{project}-{identity}-{}", slot.format("%Y%m%dT%H%MZ")),
+        true => format!("{CLIENT_PREFIX}{project}-{identity}-now-{}", slot.format("%Y%m%dT%H%M%SZ")),
+    }
 }
 
 /// The slot as the message names it, in the refresh's zone.
@@ -707,7 +733,7 @@ fn skip(next: &mut Refresh, waited: Waiting, now: DateTime<Utc>) {
     if next.progress.run.as_ref().is_none_or(|run| run.state != SENT) {
         next.progress.run = Some(Run {
             slot: waited.slot, missed: waited.missed, state: SKIPPED.into(), reason: Some(why), agent_id: Some(waited.agent_id),
-            client_id: None, turn_id: None, sent_at: None, ended_at: Some(now),
+            client_id: None, turn_id: None, sent_at: None, ended_at: Some(now), manual: None,
         });
     }
 }
@@ -716,6 +742,7 @@ fn pause(next: &mut Refresh, why: Reason) {
     next.enabled = false;
     next.paused_reason = Some(why);
     next.progress.waiting = None;
+    next.progress.now = None;
 }
 
 /// Step 7.
@@ -788,13 +815,26 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
             return Ok(());
         }
     };
-    // 3. The latest slot, if it is later than the last one handled.
-    let Some(slot) = times.latest(now).filter(|slot| next.baseline().is_none_or(|last| *slot > last)) else {
-        return Ok(());
+    // 3. The latest slot, if it is later than the last one handled; else the
+    // user's "refresh now", named by when it was asked for. A slot due
+    // answers a "refresh now" too.
+    let due = times.latest(now).filter(|slot| next.baseline().is_none_or(|last| *slot > last));
+    let (slot, manual) = match (due, next.progress.now.clone()) {
+        (Some(slot), _) => {
+            next.progress.now = None;
+            (slot, None)
+        }
+        (None, Some(asked)) => (asked.at, Some(asked.request_id)),
+        (None, None) => return Ok(()),
     };
-    let missed = next.baseline().map_or(0, |last| times.between(last, slot));
-    // 6. A slot waiting since before this one is skipped.
+    let missed = match manual {
+        Some(_) => 0,
+        None => next.baseline().map_or(0, |last| times.between(last, slot)),
+    };
+    // 6. A slot waiting since before this one is skipped; a "refresh now"
+    // waiting gives way to a slot, which refreshes the card all the same.
     let since = match next.progress.waiting.take() {
+        Some(waited) if waited.manual.is_some() && manual.is_none() => now,
         Some(waited) if waited.slot < slot => {
             skip(next, waited, now);
             pause_if_failing(next, limits);
@@ -807,7 +847,8 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
         None => now,
     };
     let wait = |next: &mut Refresh, why: &str, error: Option<String>| {
-        next.progress.waiting = Some(Waiting { slot, missed, reason: why.into(), agent_id: card.owner_id.clone(), since, error });
+        next.progress.waiting = Some(Waiting { slot, missed, reason: why.into(), agent_id: card.owner_id.clone(), since, error,
+            manual: manual.clone() });
     };
     // A run still going holds the next slot, whatever its owner is doing.
     if next.progress.run.as_ref().is_some_and(|run| run.state == SENT) {
@@ -815,7 +856,7 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
         return Ok(());
     }
     // 5. Its message: the one sent already, if the slot's receipt exists.
-    let client = client_id(&next.project_id, next.identity, slot);
+    let client = client_id(&next.project_id, next.identity, slot, manual.is_some());
     let (owner, id) = (card.owner_id.clone(), client.clone());
     let sent = ws.stored(move |store| store.receipt(&owner, &id)).await?;
     let receipt = match sent {
@@ -827,12 +868,18 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
                 return Ok(());
             }
             let preference = ws.stored(|store| presentation::for_agents(&*store.db.read()?)).await?;
-            let body = message(&card.project_name, &card.title, &card.key, &slot_text(slot, &next.zone), missed,
-                preference.as_deref(), &next.instruction);
+            let named = match manual {
+                Some(_) => format!("用户点的「立即刷新」（{}）", slot_text(slot, &next.zone)),
+                None => slot_text(slot, &next.zone),
+            };
+            let body = message(&card.project_name, &card.title, &card.key, &named, missed, preference.as_deref(), &next.instruction);
             let input = MessageInput { client_message_id: client.clone(), text: body, text_blocks: None, images: vec![],
                 expected_turn_id: None, question: None, clarification: None };
-            let origin = json!({"kind":ORIGIN,"projectId":next.project_id,"key":card.key,"identity":next.identity,
+            let mut origin = json!({"kind":ORIGIN,"projectId":next.project_id,"key":card.key,"identity":next.identity,
                 "slot":slot,"missed":missed});
+            if let Some(request) = &manual {
+                origin["now"] = json!(request);
+            }
             match sender.send(ws, &card.owner_id, input, origin).await {
                 Ok(receipt) => receipt,
                 // Refused before anything was sent: the slot is due still.
@@ -843,11 +890,15 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
             }
         }
     };
-    next.last_slot = Some(slot);
+    // A "refresh now" is no slot of the cadence: the next slot stays when it was.
+    match manual {
+        Some(_) => next.progress.now = None,
+        None => next.last_slot = Some(slot),
+    }
     next.progress.waiting = None;
     next.progress.run = Some(Run {
         slot, missed, state: SENT.into(), reason: None, agent_id: Some(card.owner_id.clone()), client_id: Some(client),
-        turn_id: receipt.turn_id.clone(), sent_at: Some(now), ended_at: None,
+        turn_id: receipt.turn_id.clone(), sent_at: Some(now), ended_at: None, manual,
     });
     if receipt.status == "rejected" {
         end_run(next, FAILED, Some(rejected(&receipt)), now);
