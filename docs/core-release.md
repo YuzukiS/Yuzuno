@@ -89,8 +89,11 @@ each binary, as it ships, fail the build: `lipo -archs` is `arm64` alone;
 lists only libSystem, libiconv and CoreFoundation (`MACOS_LIBRARIES` in
 `tools/build-core-artifact.py`; any other library needs a review); and
 `codesign --verify --strict` passes on the linker's own ad hoc signature
-(`adhoc,linker-signed`). Nothing changes a binary after the link: a strip or
-another signature would break that signature. `build.json` records the SDK's version and path, `ld -v`
+(`adhoc,linker-signed`). Nothing changes a binary after the link: the build
+checks that the shipped bytes are cargo's own output (SHA-256). Signing again
+drops `linker-signed` and any other change breaks the signature, but Apple's
+`strip` signs again as the linker did, so the signature alone cannot show a
+strip. `build.json` records the SDK's version and path, `ld -v`
 and `sw_vers` among the toolchains, and per binary the minimum, architectures,
 libraries and signature as its compatibility. Intel Macs are not covered.
 The isolated smoke additionally exercises the production binary on the release

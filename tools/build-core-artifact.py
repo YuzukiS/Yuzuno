@@ -38,8 +38,10 @@ MACOS_LIBRARIES = frozenset({
     '/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation',
 })
 # The linker's own ad hoc signature: Apple silicon runs only signed code,
-# and ad hoc is enough. Changing a binary after the link (strip, objcopy)
-# would invalidate it, so nothing does.
+# and ad hoc is enough. Signing again (codesign) drops linker-signed, and
+# any other change to the bytes breaks the signature. Apple's strip signs
+# again as the linker did, which no flag shows: that the shipped bytes are
+# cargo's own output is checked by their SHA-256 (YN-118, Job 54fcf4a8).
 MACOS_SIGNATURE = frozenset({'adhoc', 'linker-signed'})
 
 
