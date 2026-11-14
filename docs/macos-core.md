@@ -8,13 +8,14 @@ Remote Codex Agents on a Mac over SSH are a separate feature, and they do not ma
 
 [`core-macos.yml`](../.github/workflows/core-macos.yml) builds Core with all its tests on GitHub's standard Apple silicon runner (`macos-26`, free for public repositories) and runs them as CI runs them on Linux, with [`core_tests.py`](../.github/scripts/core_tests.py). It runs for every pull request and push to main that changes Core, its runtimes, the Cargo files or the test runner.
 
-- **Not run there:** tests of Linux mechanisms (cgroup, systemd, `/proc`, mount tables, pidfd, `renameat2`, file leases) are compiled for Linux only. So are the managed-update tests that need a running Core's process identity, until slice M2a, and the remote-Job tests that run the helper on the test machine itself as if it were a Linux machine.
+- **Not run there:** tests of Linux mechanisms (cgroup, systemd, `/proc`, mount tables, pidfd, `renameat2`, file leases) are compiled for Linux only. So are the tests of stopping a managed Core (`updates/start stop`), until slice M2b, and the remote-Job tests that run the helper on the test machine itself as if it were a Linux machine.
 - **The tests' environment there:** a short `TMPDIR`, because macOS's own (`/var/folders/…`) makes the sockets the tests create longer than macOS's 104-byte limit; and the command line tools' `/usr/bin/python3` (3.9) for the Python 3.6 check of the remote helpers, which needs a Python older than 3.13.
 - **Run there, among others:**
   - SIGTERM and SIGINT stop a running Core through its own shutdown, and the Workspace opens again afterwards (`core/tests/core_signals.rs`);
   - Cores from before data roots are kept out of the Workspace ([below](#keeping-older-cores-out));
   - a Job for a registered remote machine is queued, and local Jobs are refused before anything is written (`core/src/jobs/platform_tests.rs`);
-  - checks that a child process was reaped ask the kernel (ESRCH) instead of looking for `/proc/<pid>`.
+  - checks that a child process was reaped ask the kernel (ESRCH) instead of looking for `/proc/<pid>`;
+  - a process's identity for managed updates (its PID, start time and executable) is read from libproc, for this test process and for a child while it runs, once it has exited and once it is reaped (`core/src/updates/state.rs`), and the managed-update tests that need it run.
 
 Running them there found three things outside the tests:
 - `runtimes/claude/cswap-claude` did not start under macOS's `/bin/sh` (bash 3.2), which read an apostrophe in an error message as an open quote: a claude-swap account could not run on a Mac. Fixed.
@@ -46,8 +47,8 @@ Before YN-108, a macOS Core refused every such write. Adding a machine with Jobs
 | Browser boundary and API | Works: Core listens on 127.0.0.1 only. The SSH tunnel path is the same code as on Linux but was not tried on a Mac. | none | — | `core/src/main.rs`, `core/src/server.rs` |
 | Registered machines and their Jobs | Work as on Linux; older Cores are kept out as above. | none | M1 | `core/src/older_cores.rs` |
 | **Jobs on this Core's host** | **Refused** before the helper is written or anything is queued: "Local Jobs need Linux with a systemd user manager, and this Core runs on macos". The job tools are still listed to Agents. | runtime | M2c | `core/src/jobs/host.rs` |
-| **Managed updates** | **Refused.** Prepare and Apply need the running Core's process identity, which is read from `/proc` ("Managed Core updates require Linux/WSL"). | runtime | M2a | `core/src/updates/state.rs` |
-| Update helper | Needs fixes before updates can work. It reads `/proc/self/fd/1` so that log pruning skips its own live log; on macOS that read fails silently. It also compares `current_exe()` with release paths, which macOS may not have resolved. | runtime | M2a | `core/src/updates/helper.rs` |
+| **Managed updates** | **Nothing to update to yet.** The running Core's process identity, which Prepare and Apply record, is read from libproc (`proc_pidinfo`, `proc_pidpath`); its start time is in microseconds since 1970, compared only on the same Mac in the same boot. No release has a `macos-aarch64` package yet, and an update has not been run end to end on a Mac. | packaging | M3b | `core/src/updates/state.rs`, `core/src/updates/releases.rs` |
+| Update helper | Works as on Linux: log pruning tells the log it writes to by the open file's device and inode, and the executable it runs as is resolved before it is compared with release paths (on macOS `current_exe()` can be the link `updates/start`). | none | M2a | `core/src/updates/helper.rs` |
 | Starting and stopping Core | SIGTERM and SIGINT shut Core down cleanly (tested on macOS). The install guide's start uses the `setsid` command, which macOS lacks; Core's own start uses the `setsid` system call, which macOS has. Stopping through `updates/start stop` needs Linux, and the desktop's start profile WSL. | runtime | M2b | `docs/independent-core.md`, `core/src/updates/start.rs` |
 | Finding Claude Code, Node, Codex, git, gh | Through Core's `PATH`. A Core started outside a login shell does not see `/opt/homebrew/bin`: T-88's check without it reported "Claude Code was not found on Core's PATH", and found it once `/opt/homebrew/bin` was added. | runtime | M2b, M4 | `core/src/machines.rs`, `core/src/claude.rs` |
 | Packages and signing | Linux only: the build script refuses other systems, packaging names only `linux-*`, and signing accepts only `linux-*`. | tooling | M3a, M3b | `tools/build-core-artifact.py`, `tools/package-release.py`, `tools/sign-core-release.py`, `tools/core-release.py` |
@@ -77,7 +78,7 @@ The user chose (YN-108) to run Jobs on a macOS Core's own host in **limited mode
 
 ## Slices (YN-108)
 
-Each slice is its own pull request. Only M1 is in this commit; the others are planned.
+Each slice is its own pull request. M1 and M2a are in this commit; the others are planned.
 
 | Slice | What it adds |
 |---|---|

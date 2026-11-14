@@ -37,6 +37,8 @@ mod http;
 /// A kept image's size from its header alone, within a budget (T-19 HM:B14).
 mod image_header;
 mod presentation;
+/// Home cards that refresh themselves (YN-113 R1): the timer that wakes their owners.
+pub(crate) mod refresh;
 mod refs;
 mod research;
 mod sections;
@@ -45,6 +47,8 @@ mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+mod refresh_tests;
 #[cfg(test)]
 mod tests;
 
@@ -417,6 +421,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
          WHERE live=1 AND task_id IS NOT NULL;",
     )?;
+    // The cards that refresh themselves (YN-113), by their identity on Home.
+    // Older Cores ignore it.
+    refresh::migrate(db)?;
     Ok(())
 }
 
@@ -576,7 +583,8 @@ pub fn turn_outcome(store: &Store, agent_id: &str, turn_id: &str) -> Result<Opti
     ).optional()?)
 }
 
-/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache.
+/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache,
+/// /api/brief-refreshes.
 pub fn router() -> axum::Router<Arc<Workspace>> {
     http::routes()
 }

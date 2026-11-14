@@ -99,7 +99,8 @@ const text = strings({
   opencodeNote: "On OpenCode nothing reviews an action: everything inside the project is allowed, and only a folder outside it or a call that keeps failing asks you. Its commands aren't sandboxed.",
   opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
   opencodeOwnModel: "Its own configuration’s model",
-  opencodeOption: "OpenCode (Experimental)",
+  // Where Yuzuno's OpenCode support stops: Core's `opencode::VERIFIED` (YN-119).
+  opencodeOption: "OpenCode (stops at 2.2.5, experimental)",
   namePattern: "Name",
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
   instructions: "Instructions",
@@ -220,7 +221,7 @@ const text = strings({
   opencodeNote: "OpenCode 没有自动审查：项目内全部放行，只有项目外的文件夹或反复失败的调用才问你。它的命令也不在沙箱里。",
   opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
   opencodeOwnModel: "其自身配置中的模型",
-  opencodeOption: "OpenCode（实验性）",
+  opencodeOption: "OpenCode（停在 2.2.5，实验性）",
   namePattern: "名称",
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
   instructions: "说明",

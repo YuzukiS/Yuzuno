@@ -60,11 +60,15 @@ const everyComponent = {
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "pages", "sources", "desk", "inputs"] },
-      // YN-113 R6: pages of titled Groups the reader switches between.
-      pages: { type: "Tabs", props: { id: "pages", label: "Parts" }, children: ["first", "second"] },
-      first: { type: "Group", props: { title: "References" }, children: ["refs"] },
-      second: { type: "Group", props: { title: "Files" }, children: ["files"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "pages", "sources", "desk"] },
+      // YN-113 R6: pages of titled Groups the reader switches between; a page holds any block, inputs included.
+      pages: { type: "Tabs", props: { id: "pages", label: "Parts" }, children: ["inputs", "more"] },
+      more: { type: "Group", props: { title: "References and files" }, children: ["refs", "files", "gallery"] },
+      // YN-128: items with a picture of the section, a link and tags.
+      gallery: { type: "Collection", props: { id: "gallery", title: "Picks", layout: "grid", items: [
+        { id: "a", title: "Grid search", text: "Finds the corner", meta: "Run 12 · 07:40", image: "plot.png", alt: "The grid", href: "https://example.com/a", tags: ["runs", "grid"] },
+        { id: "b", title: "Notes" },
+      ] } },
       // YN-16: inputs, and a block they show only for some values.
       inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset", "flow", "photo", "how", "when"] },
       amounts: { type: "Calc", props: { items: [{ id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 }, { id: "oil", label: "Oil", expr: "flour / 10", when: "vegan" }] } },
@@ -1185,7 +1189,7 @@ test("YN-16 S2 the guide gives the formula language, the functions and the Butto
   assert.match(part, /on: \{"press": action or a list of 1-4\}, each \{"action": "setState", "params": \{"statePath": "\/<name>", "value": v\}\}.*Nothing else runs from a Button, and no other block takes on\./);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.calculator)));
   // Every figure the check accepts is named where the guide says what a visual may be (S4 R1 P3).
-  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Attachments with one image file, or a Group of inputs/);
+  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Collection, Attachments with one image file, or a Group of inputs/);
   assert.equal(BRIEF_LIMITS.formulas, 48);
 });
 
@@ -1418,4 +1422,65 @@ test("YN-113 R6 the guide names Tabs with its pages and its limit", () => {
   assert.match(briefGuide("limits"), /Columns 2-4, Tabs 2-6\./);
   assert.ok(briefGuide("examples").includes(JSON.stringify(BRIEF_EXAMPLES.tabs)));
   assert.ok(!BRIEF_DESCRIBED_COMPONENTS.includes("Tabs"), "brief_update's description leaves it to brief_guide");
+});
+
+// YN-128 (YN-113 §3.6): a Collection's items, pictures of the section, links and tags.
+const pics = { attachments: [{ name: "n1.png", path: "/home/me/run/n1.png" }, { name: "n2.jpg", path: "/home/me/run/n2.jpg" }, { name: "notes.txt", path: "/home/me/run/notes.txt" }] };
+const entry = (i, extra = {}) => ({ id: `n${i}`, title: `Item ${i}`, ...extra });
+const collection = (props = {}, extra = { attachments: pics.attachments.slice(0, 2) }) => ({
+  ...section("Collection", { id: "top", layout: "carousel", items: [entry(1, { image: "n1.png", alt: "A chart" }), entry(2, { image: "n2.jpg", alt: "A map", text: "One line", meta: "News · 07:40", href: "https://example.com/2", tags: ["News", "AI"] })], ...props }),
+  ...extra,
+});
+
+test("YN-128 a Collection: 2-30 items, each picture an image of this section with its alt, https links, 4 tags, unique ids", () => {
+  for (const layout of ["carousel", "grid", "list"]) assert.ok(checkBriefSection(collection({ layout })), layout);
+  // Its pictures count as shown: nothing else needs to show them.
+  assert.ok(checkBriefSection(collection()));
+  // Text items only, up to 30; no attachments.
+  assert.ok(checkBriefSection(collection({ layout: "list", items: items(30, (i) => entry(i, { text: `Line ${i}`, tags: ["a", "b", "c", "d"] })) }, {})));
+  for (const [props, extra, code, path, reason] of [
+    [{ items: [entry(1)] }, {}, "invalid_field", "body.elements.it.props.items", /needs at least 2/],
+    [{ items: items(31, (i) => entry(i)) }, {}, "too_many", "body.elements.it.props.items", /the limit is 30/],
+    [{ items: [entry(1), entry(1)] }, {}, "duplicate_id", "body.elements.it.props.items", /item id "n1" is used twice/],
+    [{ items: [entry(1, { image: "gone.png", alt: "x" }), entry(2)] }, {}, "missing_attachment", "body.elements.it.props.items.0.image", /"gone.png" is not in this section's attachments/],
+    [{ items: [entry(1, { image: "notes.txt", alt: "x" }), entry(2)] }, { attachments: [pics.attachments[2]] }, "invalid_field", "body.elements.it.props.items.0.image", /item "n1" shows "notes.txt", which is not an image kept with a path/],
+    [{ items: [entry(1, { image: "n1.png" }), entry(2)] }, { attachments: [pics.attachments[0]] }, "missing_field", "body.elements.it.props.items.0.alt", /has an image but no alt/],
+    [{ items: [entry(1, { href: "http://example.com/1" }), entry(2)] }, {}, "invalid_field", "body.elements.it.props.items.0.href", /https:\/\//],
+    [{ items: [entry(1, { href: "https://user:pw@example.com/" }), entry(2)] }, {}, "invalid_field", "body.elements.it.props.items.0.href", /not an https address without a user name or password/],
+    [{ items: [entry(1, { tags: ["a", "b", "c", "d", "e"] }), entry(2)] }, {}, "too_many", "body.elements.it.props.items.0.tags", /the limit is 4/],
+    [{ items: [entry(1, { text: "x".repeat(201) }), entry(2)] }, {}, "too_long", "body.elements.it.props.items.0.text", /the limit is 200/],
+    [{ items: [entry(1, { title: "x".repeat(121) }), entry(2)] }, {}, "too_long", "body.elements.it.props.items.0.title", /the limit is 120/],
+    [{ layout: "masonry" }, undefined, "invalid_field", "body.elements.it.props.layout", /"carousel" or "grid" or "list"/],
+  ]) {
+    const found = first(collection(props, extra));
+    assert.deepEqual([found.code, found.path], [code, path], JSON.stringify(props));
+    assert.match(found.reason, reason);
+    assert.match(found.reason, code === "missing_attachment" ? /\(brief_guide attachments\)$/ : /\(brief_guide content\)$/);
+  }
+  // An edit that drops the last Collection item showing a picture leaves it unused: refused, as for a Figure.
+  const before = checkBriefSection(collection()).body;
+  const after = collection({ items: [entry(1), entry(2)] });
+  assert.equal(problems(after, before)[0].code, "unused_attachment");
+});
+
+test("YN-128 a Collection is a summary's visual, at any size; the guide says how it is written and where it shows", () => {
+  for (const size of ["small", "wide", "large"]) {
+    const put = collection();
+    put.body.elements.body = { type: "BriefBody", props: { summary: { lead: "lead", visual: "it", size } }, children: ["lead", "it"] };
+    put.body.elements.lead = { type: "Markdown", props: { text: "Three picks today." } };
+    assert.ok(checkBriefSection(put), size);
+  }
+  const content = briefGuide("content");
+  assert.ok(content.includes(`- Collection {id, title?≤160, layout="carousel"|"grid"|"list", items[2-30]{id, title≤120, text?≤200, meta?≤160, image?, alt?≤160, href?≤2000, tags?[≤4](string≤160)}}: Items of one kind`), content.match(/- Collection .*/)?.[0]);
+  assert.match(content, /small \(one column: the lead and conditions, Metrics of one or two values as big numbers, a Collection's first item; any other figure is left to the page\), wide \(two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk; a Collection under it\)/);
+  assert.match(content, /image names an image attachment of this section \(see attachments\), which the Collection shows, so it needs no Attachments block; alt says what it shows/);
+  assert.match(content, /Nothing turns pages by itself/);
+  assert.match(content, /a list's first 3 rows \(8 on a large card\), and a small card its first item, each with how many there are/);
+  assert.match(content, /a grid or list whose items have tags shows up to 12 of them to filter by, and a list a search of titles, text and meta/);
+  assert.match(briefGuide("attachments"), /data\.attachment, or as a Figure's image or a Collection item's image\./);
+  assert.match(briefGuide("limits"), /Collection: 2-30 items, 4 tags each/);
+  assert.equal(BRIEF_LIMITS.collectionItems, BRIEF_LIMITS.listItems);
+  assert.equal(BRIEF_LIMITS.collectionTags, BRIEF_LIMITS.columns);
+  assert.equal(BRIEF_LIMITS.collectionFilters, BRIEF_LIMITS.formOptions);
+  assert.match(BRIEF_PROBLEM_CODES.unused_attachment, /Figure, Collection or ResearchDesk/);
 });

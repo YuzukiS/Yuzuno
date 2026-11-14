@@ -5,7 +5,7 @@ import { Plus, Trash2, X } from "lucide-react";
 import { errorText } from "./api";
 import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
 import { TIER_CHOICES, tierChoiceOf, withTierChoice } from "./routing-tiers";
-import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
+import { chipText, providerName, type Text } from "./executor-routing-text";
 import { useLanguage } from "./i18n";
 import { KEY_PROVIDERS, announceCredentialsChanged, putLocalKey, putReferenceKey, shortFingerprint, type AccountsView, type KeyProvider, type RoutingKey } from "./routing-keys";
 import { NewKeyForm, keysText } from "./RoutingKeys";
@@ -116,7 +116,7 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
                 conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) } as Candidate;
             });
           }}>
-            {HARNESSES.map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
+            {HARNESSES.map((h) => <option key={h} value={h}>{t.harnessOption(h)}</option>)}
           </select>
         </label>
         <ModelField c={c} t={t} keyProvider={keyProvider} onChange={(model) => onEdit((x) => ({ ...x, model }))} />

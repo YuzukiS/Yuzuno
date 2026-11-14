@@ -596,7 +596,7 @@ export function RemoteCreateAgent({
               choices={[
                 { value: "codex", label: "Codex" },
                 { value: "claude", label: "Claude Code" },
-                ...(opencode ? [{ value: "opencode", label: "OpenCode", note: t.experimental }] : []),
+                ...(opencode ? [{ value: "opencode", label: t.openCodeName, note: t.experimental }] : []),
               ]}
             />
             {defaultsReading && (

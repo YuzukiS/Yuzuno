@@ -478,7 +478,7 @@ this evaluator, with the readings as Core last observed them.
 A permission level is a permission said once for every harness. Core maps it
 to each harness's own setting, so it holds whichever harness routing chooses.
 
-| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
+| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode (support stops at 2.2.5) |
 | --- | --- | --- | --- | --- |
 | `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
 | `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
@@ -530,8 +530,9 @@ Every other Agent and level starts as the table says.
 
 - **Only on OpenCode 2.2.5.** Core's answers were checked against that
   release's own source, so they are its alone. This is kept apart from the
-  release Core is otherwise verified with: verifying a newer OpenCode for
-  the rest of Core does not widen it. On any other release, an executor at
+  release the rest of Core's OpenCode support stops at, also 2.2.5 (YN-119,
+  [OpenCode Agents](opencode.md)): a newer release that starts at another
+  level does not widen it. On any other release, an executor at
   Auto-approve gets no working connection, and its error says which release
   it found and that only 2.2.5 is supported. Ask you first, Full access,
   Read only and an Agent that is not an executor are not affected.

@@ -7,7 +7,7 @@ type Body = { root?: unknown; elements?: Record<string, Node> } | null | undefin
 
 const CHARTS = new Set(["LineChart", "BarChart", "ScatterChart"]);
 /** A summary's one figure (brief-contract.ts): Attachments with exactly one item. */
-const FIGURES = new Set([...CHARTS, "Metrics", "Calc", "Diagram", "Figure", "Steps", "Timeline", "Table", "ResearchDesk", "Attachments"]);
+const FIGURES = new Set([...CHARTS, "Metrics", "Calc", "Diagram", "Figure", "Steps", "Timeline", "Table", "ResearchDesk", "Attachments", "Collection"]);
 
 function tree(section: Section) {
   const body = section.body as Body;

@@ -482,6 +482,8 @@ test("a candidate added by hand offers an API key for its tool with no keys adde
   const offered = () => [...editorField(page, id, "Account or key").options].map((o) => [o.value, o.textContent]);
   assert.ok(offered().some(([value, label]) => value === "new:anthropic" && label === "Add an API key for Anthropic…"),
     `Claude Code takes an Anthropic key, and one can be added from here: ${JSON.stringify(offered())}`);
+  // The tool choice says where OpenCode's support stops (YN-127).
+  assert.deepEqual([...editorField(page, id, "Tool").options].map((o) => o.textContent), ["Claude Code", "Codex", "OpenCode (stops at 2.2.5)"]);
   await set(page, editorField(page, id, "Tool"), "opencode");
   for (const provider of ["DeepSeek", "Anthropic", "OpenAI"]) {
     assert.ok(offered().some(([, label]) => label === `Add an API key for ${provider}…`), `OpenCode takes ${provider}'s: ${JSON.stringify(offered())}`);

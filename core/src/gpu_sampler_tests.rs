@@ -57,6 +57,20 @@ fn alive(pid: &str) -> bool {
 
 const WAIT: Duration = Duration::from_secs(2);
 
+/// `config` without its 400 ms idle stop, for a test whose reads must all
+/// fall in one session: a read that starts a session waits for its first
+/// reading without reading again, and on a loaded runner the stand-in's
+/// first whole burst can come later than 400 ms (macOS CI 43544818577: the
+/// session stopped idle before it, YN-122).
+fn without_idle_stop(dir: &Path) -> Config {
+    Config { idle: Duration::from_secs(60), ..config(dir) }
+}
+
+/// How long a test waits for a session's first reading where how soon it
+/// comes is not what the test checks: a bound for a run that hangs, not a
+/// time the stand-in must keep (YN-122).
+const FIRST: Duration = Duration::from_secs(30);
+
 /// nvidia-smi's rows, read from both ends: how many devices the burst has,
 /// a name that may hold a comma, and `[N/A]` as unknown, not zero.
 #[test]
@@ -81,12 +95,17 @@ fn a_row_is_read_from_both_ends_and_n_a_is_unknown() {
 #[tokio::test]
 async fn every_read_shares_one_session_and_one_child() {
     let dir = tempfile::tempdir().unwrap();
-    let sampler = GpuSampler::new(config(dir.path()));
+    let sampler = GpuSampler::new(without_idle_stop(dir.path()));
     let mut seen = std::collections::BTreeSet::new();
-    for _ in 0..60 {
-        let sample = sampler.latest(WAIT).await.expect("a reading");
+    // At least 60 reads, 20 ms apart, and on until it has sampled on its own
+    // six times: how fast the stand-in prints is the runner's, not the
+    // sampler's (a loaded macOS runner printed 5 bursts in 60 reads, YN-122).
+    let (mut reads, until) = (0, Instant::now() + FIRST);
+    while reads < 60 || (seen.len() <= 5 && Instant::now() < until) {
+        let sample = sampler.latest(FIRST).await.expect("a reading");
         assert_eq!((sample.source, sample.devices.len()), ("nvidia-smi", 2), "each reading is a whole burst, every device in it");
         seen.insert(sample.observed_at);
+        reads += 1;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(seen.len() > 5, "it samples on its own between reads: {}", seen.len());
@@ -109,8 +128,9 @@ async fn every_read_shares_one_session_and_one_child() {
 async fn a_burst_missing_a_row_is_dropped_not_completed_with_the_next() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mode"), "truncated").unwrap();
-    let sampler = GpuSampler::new(config(dir.path()));
-    let first = sampler.latest(WAIT).await.expect("a reading");
+    // Its first whole reading is the stand-in's second burst.
+    let sampler = GpuSampler::new(without_idle_stop(dir.path()));
+    let first = sampler.latest(FIRST).await.expect("a reading");
     assert_eq!(first.devices.len(), 2, "{first:?}");
     let burst = |sample: &Sample| (sample.devices[0].utilization_percent, sample.devices[1].memory_total_mib.map(|total| total - 16000));
     assert_eq!(burst(&first), (Some(1), Some(1)), "a reading never mixes two bursts");

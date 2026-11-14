@@ -2214,27 +2214,21 @@ test("YN-113 R6 Tabs: a page counts its one Collection's items on its tab; no la
   t.after(page.close);
   const { document, window } = page;
   const section = readSection(page, digest(window));
-  // A Collection (YN-113 R5) is drawn by its own renderer; its count is read from the body as Core keeps it.
-  const elements = section.body.elements;
-  const counted = {
-    ...section,
-    body: {
-      ...section.body,
-      elements: {
-        ...elements,
-        more: { ...elements.more, props: { id: "more" } },
-        papers: { ...elements.papers, children: ["reading", "list"] },
-        list: { type: "Collection", props: { id: "list", layout: "list", items: Array.from({ length: 14 }, (_, i) => ({ id: `i${i}`, title: `Paper ${i}` })) } },
-        policy: { ...elements.policy, children: ["rule", "list2", "list3"] },
-        list2: { type: "Collection", props: { id: "list2", items: [{ id: "a", title: "A" }, { id: "b", title: "B" }] } },
-        list3: { type: "Collection", props: { id: "list3", items: [{ id: "c", title: "C" }, { id: "d", title: "D" }] } },
-      },
-    },
-  };
+  // Collections (YN-128) on the pages, as the contract accepts them: Papers holds one, Policy two.
+  const listed = (id, count) => ({ type: "Collection", props: { id, layout: "list", items: Array.from({ length: count }, (_, i) => ({ id: `${id}${i}`, title: `${id} ${i}` })) } });
+  const put = digest(window);
+  delete put.body.elements.more.props.label;
+  put.body.elements.papers.children.push("list");
+  put.body.elements.list = listed("list", 14);
+  put.body.elements.policy.children.push("listTwo", "listThree");
+  put.body.elements.listTwo = listed("listTwo", 2);
+  put.body.elements.listThree = listed("listThree", 2);
+  const counted = readSection(page, put);
   window.renderSection(counted, PROJECT);
   const tabs = () => [...document.querySelectorAll('[role="tab"]')];
   assert.deepEqual(tabs().map((tab) => [tab.firstChild.textContent, tab.querySelector(".brief-tab-count")?.textContent ?? null]),
     [["News", null], ["Papers", "14"], ["Policy", null]], "one Collection counts; two do not add up");
+  assert.equal(document.querySelector(".result-part-error"), null, "a Collection draws on a page, hidden or shown");
   assert.equal(document.querySelector('[role="tablist"]').getAttribute("aria-label"), "Pages");
   window.chooseLanguage("zh-Hans");
   window.renderSection({ ...counted }, PROJECT);
