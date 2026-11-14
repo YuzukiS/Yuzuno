@@ -985,6 +985,8 @@ test("the contract's examples render without a failed part", async (t) => {
     flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
     timeline: ["the user installs it", "Nov 3, 2026", "Candidate cut", "Notes reviewed", "Week 46", "Planned", "Installing it", "Step 1 of 4", "Download the bundle"],
     review: ["Version 2 rewrites section 2", "design-v2.pdf", "Design doc v2 (PDF)"],
+    // Every page is drawn, the hidden ones too (YN-113 R6).
+    tabs: ["two new papers", "News", "Papers", "An open model reaches 1.0", "Sparse attention at 1M tokens"],
   };
   const reads = {
     note: [],
@@ -1001,6 +1003,7 @@ test("the contract's examples render without a failed part", async (t) => {
     flowchart: [],
     timeline: [],
     review: [attachment("design-v2.pdf", "pdf", "application/pdf", { caption: "Design doc, version 2" })],
+    tabs: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -2244,6 +2247,7 @@ test("YN-113 R6 Tabs: a page counts its one Collection's items on its tab; no la
   assert.equal(document.querySelector('[role="tablist"], [role="tabpanel"]'), null, "the card draws no Tabs");
   // Copy report: each page a section under its title, every page whatever was open.
   const copied = window.sectionMarkdown(section, "en", { clock: "h24", timeZone: "UTC" });
-  assert.match(copied, /## News\n\n- An open model reaches 1\.0[^\n]*\n- A chip export rule[^\n]*\n- A city opens its transit data\.\n\n## Papers\n\n[\s\S]*Sparse attention at 1M tokens[\s\S]*\n\n## Policy\n\nA transit data rule takes effect\.\n$/);
+  // A Markdown block that opens with a list is set apart from the heading before it by an HTML comment, as everywhere in a copy.
+  assert.match(copied, /## News\n\n<!-- -->\n\n- An open model reaches 1\.0[^\n]*\n- A chip export rule[^\n]*\n- A city opens its transit data\.\n\n## Papers\n\n[\s\S]*Sparse attention at 1M tokens[\s\S]*\n\n## Policy\n\nA transit data rule takes effect\.\n$/);
   assert.ok(!/Categories|Pages/.test(copied), "the row of tabs is not copied");
 });
