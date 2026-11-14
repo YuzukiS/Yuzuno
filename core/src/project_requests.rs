@@ -128,7 +128,7 @@ fn check(words: &Words) -> Result<()> {
 pub(crate) fn request_head(workspace: &str, project: &str, project_id: &str, n: i64) -> String {
     format!(
         "Request R-{n} from the user to the project {project} (Workspace {workspace}, Project {project_id}). \
-         Route it with project_route; the user's words travel as they are:"
+         Route or answer it with project_route; the user's words travel as they are:"
     )
 }
 

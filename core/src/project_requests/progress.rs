@@ -104,7 +104,9 @@ fn first_request(db: &Connection, task: &str) -> Result<Option<i64>> {
 /// - `routes`: its routes and the user's reassignments of its cards, by time;
 /// - `cards`: one per task it went to, as Home shows the card and who
 ///   answers for it now; `progress`: how many of their tasks ended;
-/// - `state`: waiting (no card yet), doing, or done (every card's task ended);
+/// - `state`: waiting (no card yet), doing, done (every card's task ended),
+///   or answered (no card, the front desk answered it with an answer route,
+///   and no follow-up came after its newest note; YN-136);
 /// - `lines`: Core's lines in the conversation, one per fact: each Ask on
 ///   one of its cards (`ask`, with its state), and each card's task that
 ///   ended (`done`). A card several requests went to has its lines on the
@@ -160,6 +162,7 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, shown:
     lines.sort_by(|a, b| a["at"].as_str().unwrap_or_default().cmp(b["at"].as_str().unwrap_or_default()));
     let count = cards.len();
     shown["state"] = json!(match (count, ended) {
+        (0, _) if answered(db, request, &rows)? => "answered",
         (0, _) => "waiting",
         (count, ended) if ended == count => "done",
         _ => "doing",
@@ -168,6 +171,24 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, shown:
     shown["cards"] = json!(cards);
     shown["lines"] = json!(lines);
     Ok(())
+}
+
+/// A request with no card is answered (YN-136) when the front desk answered
+/// it with an answer route and the user said nothing more after its newest
+/// note: a follow-up reopens it for the front desk, and the front desk's next
+/// note (a new answer, an identical one being no new note) settles it again.
+/// Both times are model::now()'s, compared as text as `lines` are.
+fn answered(db: &Connection, request: &str, rows: &[RouteRow]) -> Result<bool> {
+    if !rows.iter().any(|row| row.kind == routes::ANSWER && row.state == routes::DONE) {
+        return Ok(false);
+    }
+    let note: Option<String> = db.query_row("SELECT MAX(at) FROM project_request_notes WHERE request_id=?1", [request], |r| r.get(0))?;
+    let reply: Option<String> = db.query_row("SELECT MAX(at) FROM project_request_replies WHERE request_id=?1", [request], |r| r.get(0))?;
+    Ok(match (note, reply) {
+        (Some(note), Some(reply)) => note > reply,
+        (Some(_), None) => true,
+        (None, _) => false,
+    })
 }
 
 fn notes(db: &Connection, request: &str) -> Result<Vec<Value>> {
