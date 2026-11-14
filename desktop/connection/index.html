@@ -92,6 +92,15 @@
           <label for="distro" id="distro-label"></label>
           <div class="pick-row"><select id="distro"></select><button class="secondary" type="button" id="recheck" data-t="recheck"></button></div>
           <div id="check-message" class="message" role="status" aria-live="polite"></div>
+          <!-- Rule R1 (YN-156): a stopped distribution is not started while
+               another one runs, so it is not checked; this says why. -->
+          <section id="boot-card" class="boot" aria-labelledby="boot-title" hidden>
+            <h3 id="boot-title"></h3>
+            <p id="boot-body"></p>
+            <p class="hint" id="boot-stop"></p>
+            <p class="hint" id="boot-default"></p>
+            <p class="note" id="boot-detail" hidden></p>
+          </section>
           <p id="not-found" class="note" hidden></p>
           <div class="checks" id="checks" hidden></div>
           <div class="found" id="found" hidden><h3 id="found-title"></h3><p id="found-body"></p></div>
@@ -119,6 +128,13 @@
           </div>
           <div class="row-end"><p class="hint" id="progress-hint"></p><div class="buttons"><button class="secondary" type="button" id="progress-close" data-t="close" hidden></button><button class="secondary" type="button" id="progress-cancel"></button><button type="button" id="retry" data-t="retry" hidden></button></div></div>
         </div>
+        <!-- YN-156: the guard stopped because what the other distributions
+             see of their shared state changed. The commands are text. -->
+        <section id="guard-stop" class="guard" aria-labelledby="guard-title" hidden>
+          <h3 id="guard-title"></h3>
+          <p id="guard-body"></p>
+          <pre id="guard-text" tabindex="0"></pre>
+        </section>
       </div>
 
       <div class="connection-note"><span aria-hidden="true">↳</span><p data-t="note" data-html>Your agents keep working when this window closes.<br /><span>The Workspace Core runs separately.</span></p></div>

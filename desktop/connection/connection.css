@@ -122,6 +122,20 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 .problem .cleaned { color: #4f5f48; }
 .problem details { color: #7a5247; }
 
+/* Rule R1 (YN-156): why a stopped distribution is not started. */
+.boot { margin-top: 14px; border: 1px solid #e8dfb9; background: #fffbea; border-radius: 12px; padding: 12px 14px; }
+.boot h3 { margin: 0 0 4px; font-size: 13px; color: #5b5228; }
+.boot p { margin: 0 0 6px; font-size: 12px; line-height: 1.6; color: #5f5a3d; }
+.boot .hint { margin: 0 0 5px; color: #6e6a50; font-size: 11px; }
+.boot .note { margin: 2px 0 0; padding: 0; background: none; font-size: 11px; color: #6b6f62; }
+
+/* The guard stopped (YN-156): the changes and commands are text to run by
+   hand; this page never runs them. */
+.guard { border: 1px solid #ecc9bf; background: #fdf4f1; border-radius: 12px; padding: 12px 14px; margin-top: 14px; }
+.guard h3 { margin: 0 0 4px; font-size: 13px; color: #94503f; }
+.guard p { margin: 0 0 8px; font-size: 12px; line-height: 1.6; color: #7a5247; }
+.guard pre { margin: 0; padding: 10px 12px; border-radius: 9px; background: #fffefa; border: 1px solid #efdfd8; font: 11px "Cascadia Code", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #4c5a49; }
+
 /* Frameless window (Windows): the top band moves the window; its buttons
    follow the page's quiet style, close warming to coral on hover. */
 .window-controls { position: fixed; top: 10px; right: 12px; display: flex; gap: 4px; }
