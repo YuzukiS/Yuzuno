@@ -21,9 +21,10 @@
 //! caller's (`check_session`).
 //!
 //! dsh runs in a process group of its own, so what stays in it ends with it
-//! (`shutdown`, or a `Dsh` dropped). It also ends when its stdin closes (in
-//! about 0.1 s, probe cf6d119a), so a Core that ends without either leaves no
-//! dsh reading behind.
+//! (`shutdown`, or a `Dsh` dropped), also once dsh has exited by itself: the
+//! group is sent SIGKILL after dsh exits and before it is reaped. dsh also
+//! ends when its stdin closes (in about 0.1 s, probe cf6d119a), so a Core
+//! that ends without either leaves no dsh reading behind.
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -43,7 +44,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::{mpsc, oneshot, watch},
-    time::{timeout, Instant},
+    time::timeout,
 };
 
 use crate::backlog::EventSender;
@@ -474,8 +475,9 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
 // ---------------------------------------------------------------- processes
 
 /// A dsh's process group, whose ID is its PID. It is signalled only while
-/// that process is not yet reaped, so the ID cannot be anyone else's; it is
-/// sent SIGKILL when dropped.
+/// that process is not yet reaped, so the ID cannot be anyone else's: an
+/// exited process keeps its ID until it is reaped. It is sent SIGKILL when
+/// dropped, and by `end` once its process has exited.
 struct Group(Mutex<Option<u32>>);
 
 impl Group {
@@ -498,6 +500,23 @@ impl Group {
         let Some(pid) = self.0.lock().unwrap().and_then(|pid| Pid::from_raw(pid as i32)) else { return true };
         let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
         !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
+    }
+
+    /// Once its process has exited, still unreaped.
+    #[cfg(unix)]
+    async fn exit(&self) {
+        while !self.exited() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Ends what its process left in the group, once that process has
+    /// exited and before it is reaped: SIGKILL, as dsh has had its own
+    /// teardown by then (§3.1). Called with the process exited, or about to
+    /// be after SIGKILL.
+    fn end(&self) {
+        #[cfg(unix)]
+        self.signal(rustix::process::Signal::KILL);
     }
 
     /// Reaped: its ID may be reused from now on.
@@ -552,7 +571,8 @@ pub(crate) struct Output {
 
 /// Runs a step's `command` within `limit`, reading at most `most` bytes of
 /// its stdout (more is refused) and STDERR_KEPT of its stderr (the rest is
-/// drained). Past `limit`, or on an error, its group is ended.
+/// drained). Its group is ended once it exits, and past `limit` or on an
+/// error.
 pub(crate) async fn run(mut command: Command, limit: Duration, most: usize, what: &str) -> Result<Output> {
     let mut child = command.spawn().with_context(|| format!("dsh could not be started for {what}; {UPDATE}"))?;
     let group = Group::new(child.id());
@@ -560,6 +580,9 @@ pub(crate) async fn run(mut command: Command, limit: Duration, most: usize, what
     let ran = timeout(limit, async {
         let ((stdout, cut), (stderr, _)) = tokio::try_join!(bounded(stdout, most), bounded(stderr, STDERR_KEPT))?;
         ensure!(!cut, "dsh printed more than {most} bytes for {what}");
+        #[cfg(unix)]
+        group.exit().await;
+        group.end();
         let status = child.wait().await?;
         group.reaped();
         Ok(Output { status, stdout, stderr })
@@ -1104,7 +1127,8 @@ impl Dsh {
     }
 
     /// Ends dsh (§3.1): closes its stdin and waits CLOSE_GRACE, then SIGTERM
-    /// to its group and CLOSE_GRACE again, then SIGKILL; then reaps it.
+    /// to its group and CLOSE_GRACE again, then SIGKILL. However it exited,
+    /// what it left in its group is then sent SIGKILL, before dsh is reaped.
     pub async fn shutdown(&self) -> Result<(Ending, ExitStatus)> {
         self.shutdown_within(CLOSE_GRACE).await
     }
@@ -1127,6 +1151,10 @@ impl Dsh {
             ending = Ending::Kill;
             let _ = self.child.lock().await.start_kill();
         }
+        // dsh has exited (or is sent SIGKILL) and is not yet reaped, so the
+        // group is still its own: what it left there, a tool's command or an
+        // MCP server, ends now (review 4f8d976e).
+        self.group.end();
         let status = self.child.lock().await.wait().await.context("dsh did not end")?;
         // Reaped: the group's ID may now be reused, so it is not signalled again.
         self.group.reaped();
@@ -1135,11 +1163,7 @@ impl Dsh {
 
     #[cfg(unix)]
     async fn exits_within(&self, limit: Duration) -> bool {
-        let deadline = Instant::now() + limit;
-        while !self.group.exited() && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        self.group.exited()
+        timeout(limit, self.group.exit()).await.is_ok()
     }
 }
 

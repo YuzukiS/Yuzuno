@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(unix)]
 use std::future::Future;
+#[cfg(unix)]
+use tokio::time::Instant;
 
 fn version(text: &str) -> Version {
     Version::parse(text).unwrap_or_else(|| panic!("{text} is a version"))
@@ -822,10 +824,40 @@ async fn shutdown_signals_dshs_group_when_dsh_stays() {
 
     let rig = Rig::new(json!({"ignoreStdin": true, "ignoreTerm": true, "child": true}));
     let (dsh, _events) = rig.start().await;
-    let child = rig.log().iter().find(|r| r["kind"] == "child").expect("its child")["pid"].as_u64().unwrap();
+    let child = child_of(&rig);
     assert!(!ended(child));
     let (ending, status) = within(dsh.shutdown_within(Duration::from_millis(300))).await.unwrap();
     assert_eq!((ending, status.signal()), (Ending::Kill, Some(9)));
+    ends(child).await;
+}
+
+#[cfg(unix)]
+fn child_of(rig: &Rig) -> u64 {
+    rig.log().iter().find(|r| r["kind"] == "child").expect("its child")["pid"].as_u64().unwrap()
+}
+
+/// What dsh leaves in its group ends with it, also when dsh itself exits
+/// once its stdin closes, or ends on its own first (review 4f8d976e).
+#[cfg(unix)]
+#[tokio::test]
+async fn what_dsh_leaves_in_its_group_ends_when_dsh_exits_itself() {
+    let rig = Rig::new(json!({"child": true}));
+    let (dsh, _events) = rig.start().await;
+    let child = child_of(&rig);
+    let (ending, status) = within(dsh.shutdown()).await.unwrap();
+    assert_eq!(ending, Ending::Input);
+    assert!(status.success(), "{status}");
+    ends(child).await;
+
+    let rig = Rig::new(json!({"child": true}));
+    let (dsh, mut events) = rig.start().await;
+    let session = session(&dsh, &rig.launch.directory).await;
+    let _ = within(dsh.call("session/prompt", prompt(&session, "EXIT")).await.unwrap().answer()).await;
+    event(&mut events, "yuzuno/disconnected").await;
+    let child = child_of(&rig);
+    assert!(!ended(child), "its child outlives dsh until Core ends the group");
+    let (ending, status) = within(dsh.shutdown()).await.unwrap();
+    assert_eq!((ending, status.code()), (Ending::Input, Some(3)));
     ends(child).await;
 }
 
@@ -835,7 +867,7 @@ async fn a_dsh_dropped_ends_its_group() {
     let rig = Rig::new(json!({"ignoreStdin": true, "ignoreTerm": true, "child": true}));
     let (dsh, _events) = rig.start().await;
     let pid = u64::from(dsh.pid().unwrap());
-    let child = rig.log().iter().find(|r| r["kind"] == "child").expect("its child")["pid"].as_u64().unwrap();
+    let child = child_of(&rig);
     drop(dsh);
     ends(pid).await;
     ends(child).await;
@@ -921,6 +953,12 @@ async fn a_step_past_its_limit_is_ended_and_more_output_than_it_takes_refused() 
     assert_eq!(error, "dsh printed more than 1024 bytes for a test");
     let output = within(run(step("printf ok; printf oops >&2; exit 4"), LIMIT, 1024, "a test")).await.unwrap();
     assert_eq!((output.status.code(), &output.stdout[..], &output.stderr[..]), (Some(4), &b"ok"[..], &b"oops"[..]));
+    // A step that exits leaving something in its group: that ends too.
+    let left = dir.path().join("left");
+    let script = format!("sleep 30 >/dev/null 2>&1 & echo $! > '{}'", left.display());
+    let output = within(run(step(&script), LIMIT, 1024, "a test")).await.unwrap();
+    assert!(output.status.success());
+    ends(std::fs::read_to_string(&left).unwrap().trim().parse().unwrap()).await;
 }
 
 // ---------------------------------------------------------------- a real dsh
