@@ -138,10 +138,10 @@ def build(out, target_platform='linux-x86_64'):
         raise ValueError('CI SHA differs from checkout')
     toolchains = {tool: command([tool, '--version']) for tool in ('rustc', 'cargo', 'node', 'npm')}
     if macos:
-        # Apple's linker, and the SDK rustc and the cc crate build with: they
-        # ask for the macosx SDK, not xcrun's default, which can be another
-        # one (on a Mac with both Xcode and the command line tools).
-        toolchains.update({'sdk': command(['xcrun', '--sdk', 'macosx', '--show-sdk-version']),
+        # The macosx SDK of the selected Xcode or command line tools, which
+        # the whole build uses (SDKROOT below), and Apple's linker.
+        sdk_root = command(['xcrun', '--sdk', 'macosx', '--show-sdk-path'])
+        toolchains.update({'sdk': command(['xcrun', '--sdk', 'macosx', '--show-sdk-version']), 'sdkRoot': sdk_root,
                            'ld': tool_output(['ld', '-v']), 'macos': tool_output(['sw_vers'])})
     else:
         # Detect missing/wrong linker setup before doing a production build.
@@ -155,6 +155,11 @@ def build(out, target_platform='linux-x86_64'):
         ROOT, release_target)
     if macos:
         env['MACOSX_DEPLOYMENT_TARGET'] = MACOS_MINIMUM
+        # rustc, the cc crate and clang all read SDKROOT. Without it a link
+        # can take xcrun's default SDK instead, which on a Mac with both
+        # Xcode and the command line tools can be another one, even one
+        # this linker cannot read (YN-118, Jobs 194d8deb and 01c0641e).
+        env['SDKROOT'] = sdk_root
     private_roots = [ROOT, release_target, Path.home(),
                      Path(env.get('CARGO_HOME', str(Path.home() / '.cargo')))]
     def run(argv, cwd=ROOT):

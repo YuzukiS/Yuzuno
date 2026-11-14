@@ -80,15 +80,17 @@ hosts are Linux/WSL x86_64 with glibc >= 2.35, Node 22 and installed authenticat
 official CLIs. Alpine/musl, older glibc, ARM and the Windows desktop binary are
 not covered by this artifact. SQLite is bundled; no secret is sent to CI.
 
-The macOS inputs are built for `aarch64-apple-darwin` with Apple's linker and
-`MACOSX_DEPLOYMENT_TARGET=11.0`, and carry no Windows Jobs helper. Four checks of
+The macOS inputs are built for `aarch64-apple-darwin` with Apple's linker,
+`MACOSX_DEPLOYMENT_TARGET=11.0` and `SDKROOT` set to the selected Xcode's (or
+command line tools') macOS SDK (`xcrun --sdk macosx --show-sdk-path`), and carry
+no Windows Jobs helper. Four checks of
 each binary, as it ships, fail the build: `lipo -archs` is `arm64` alone;
 `vtool -show-build` and the file's own load command say macOS 11.0; `otool -L`
 lists only libSystem, libiconv and CoreFoundation (`MACOS_LIBRARIES` in
 `tools/build-core-artifact.py`; any other library needs a review); and
 `codesign --verify --strict` passes on the linker's own ad hoc signature
 (`adhoc,linker-signed`). Nothing changes a binary after the link: a strip or
-another signature would break that signature. `build.json` records the SDK, `ld -v`
+another signature would break that signature. `build.json` records the SDK's version and path, `ld -v`
 and `sw_vers` among the toolchains, and per binary the minimum, architectures,
 libraries and signature as its compatibility. Intel Macs are not covered.
 The isolated smoke additionally exercises the production binary on the release
