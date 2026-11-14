@@ -58,7 +58,9 @@ pub(crate) struct Attachment {
 ///    replacement. Every insert into or removal from `rpcs`/`claudes` for that
 ///    Agent happens under it as well. Held only across store work, never
 ///    across a native request or response, and never two Agents' at once. It
-///    is per Agent, so one Agent's slow event never delays another's.
+///    is per Agent, so one Agent's slow event never delays another's. Never
+///    held while waiting for that Agent's events (`EventBarrier::drain`):
+///    applying them takes it.
 /// 3. `rpcs` / `claudes`: lookups only; std locks, never held across `.await`.
 /// 4. Store's own: the Agent's record lock, then one SQLite connection (the
 ///    single writer or a reader), then its in-memory state (see `store::Store`
@@ -117,6 +119,10 @@ pub struct Workspace {
     pub(crate) next_generation: AtomicU64,
     #[cfg(test)]
     pub(crate) reconnect_timeout_ms: AtomicU64,
+    /// While true, each connection's event loop holds `yuzuno/disconnected`
+    /// before applying it, as a loaded host can (YN-130).
+    #[cfg(test)]
+    pub(crate) disconnects_held: tokio::sync::watch::Sender<bool>,
     /// Native events Core has received but not yet applied, per connection.
     pub(crate) backlogs: crate::backlog::Backlogs,
     pub(crate) collaboration_url: OnceLock<String>,
@@ -216,6 +222,8 @@ impl Workspace {
             next_generation: AtomicU64::new(1),
             #[cfg(test)]
             reconnect_timeout_ms: AtomicU64::new(45_000),
+            #[cfg(test)]
+            disconnects_held: tokio::sync::watch::Sender::new(false),
             backlogs: Default::default(),
             collaboration_url: OnceLock::new(),
             collaboration_wakeup: Notify::new(),
@@ -702,6 +710,10 @@ impl Workspace {
             while let Some(message) = rx.recv().await {
                 let native = crate::backlog::is_native(&message);
                 if event_barrier.upgrade().is_some_and(|barrier| barrier.acknowledge(&message)) { continue; }
+                #[cfg(test)]
+                if message["method"] == "yuzuno/disconnected" {
+                    let _ = this.disconnects_held.subscribe().wait_for(|held| !held).await;
+                }
                 let _event = this.admission.enter_event();
                 this.dispatch_event(&agent_id, generation, message).await;
                 if native { backlog.applied(); }
@@ -755,7 +767,22 @@ impl Workspace {
         let agent = id.to_owned();
         anyhow::ensure!(!self.stored(move |store| store.codex_handoff_pending(&agent)).await?, "导入会话尚未接续；请结束原客户端当前 Turn，然后点击重新连接或发送消息");
         anyhow::ensure!(a.harness == "codex", "此操作需要 Codex 原生会话；不会为其他 Harness 创建 Codex 会话");
-        let existing = self.rpcs.lock().unwrap().get(id).cloned();
+        let mut existing = self.rpcs.lock().unwrap().get(id).cloned();
+        // A stopped transport queued its `yuzuno/disconnected` before it said
+        // it stopped (rpc.rs), but stays in `rpcs` until the event loop applies
+        // that event. Wait for it there, so this attaches anew instead of
+        // handing out a closed channel (YN-130). `dispatch_event` takes the
+        // owner lock, which no caller of `ensure` holds. An unfinished attach
+        // still finishes from the reply it kept, as before.
+        if let Some(stopped) = existing.clone().filter(|c| !c.rpc.is_running()) {
+            if stopped.attachment.lock().await.is_none() {
+                if let Some(events) = &stopped.events {
+                    // Not applied in time: as before, its first request fails.
+                    let _ = events.drain().await;
+                }
+                existing = self.rpcs.lock().unwrap().get(id).cloned();
+            }
+        }
         if let Some(connection) = existing {
             let attaching = connection.attachment.lock().await.is_some();
             if attaching { return self.finish_attach(id, connection).await; }
@@ -3340,6 +3367,10 @@ mod metadata_event_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_reads_tests.rs"]
 mod reconnect_reads_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_exit_tests.rs"]
+mod reconnect_exit_tests;
 
 #[cfg(test)]
 mod tests {

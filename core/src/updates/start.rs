@@ -8,7 +8,9 @@
 //! ([`keep_running`]), so WSL keeps the distribution, and Core, running.
 //! A start can also give Core the phone's remote entry, or none ([`Remote`],
 //! T-170), and `updates/start stop …` stops this installation's Core and
-//! nothing else ([`stop`]).
+//! nothing else ([`stop`]). On macOS (YN-108) both run as they do on Linux,
+//! from a terminal; there a start returns once it has printed, since
+//! nothing ends a detached Core when the command that started it exits.
 use super::{
     package::{self, Bundle},
     state::{self, Launch, Layout, ReleaseRef},
@@ -121,13 +123,45 @@ pub(super) fn read_record(layout: &Layout) -> Option<Record> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// What the desktop keeps to start this Core again: where it is. Says why
-/// not when this Core cannot be started that way.
+/// Where a desktop starts this Core: in a WSL distribution, by its name, or
+/// on the Mac it runs on.
+#[derive(Debug, PartialEq, Eq)]
+enum Platform {
+    Wsl(String),
+    Macos,
+}
+
+impl Platform {
+    /// This process's: WSL, which sets `WSL_DISTRO_NAME` in every process it
+    /// starts, or macOS. None elsewhere (Linux outside WSL).
+    fn here() -> Option<Self> {
+        match std::env::var("WSL_DISTRO_NAME") {
+            Ok(distro) if !distro.is_empty() => Some(Self::Wsl(distro)),
+            _ if cfg!(target_os = "macos") => Some(Self::Macos),
+            _ => None,
+        }
+    }
+}
+
+/// What the desktop keeps to start this Core again: where it is, and on
+/// which `platform` (`wsl` or `macos`; a desktop reads an answer without
+/// one as WSL's, as Cores before it answered). Says why not when this Core
+/// cannot be started that way.
 pub fn profile(layout: Option<&Layout>, port: u16, workspace_id: &str) -> Value {
+    profile_on(Platform::here(), layout, port, workspace_id, || user_info().map(|user| user.name))
+}
+
+fn profile_on(
+    platform: Option<Platform>,
+    layout: Option<&Layout>,
+    port: u16,
+    workspace_id: &str,
+    user: impl FnOnce() -> Option<String>,
+) -> Value {
     let Some(layout) = layout else {
         return json!({"available":false,"reason":"notManaged"});
     };
-    let Some(distro) = std::env::var("WSL_DISTRO_NAME").ok().filter(|name| !name.is_empty()) else {
+    let Some(platform) = platform else {
         return json!({"available":false,"reason":"notWsl"});
     };
     if !read_record(layout).is_some_and(|record| record.port == port && record.workspace_id == workspace_id)
@@ -135,11 +169,18 @@ pub fn profile(layout: Option<&Layout>, port: u16, workspace_id: &str) -> Value 
     {
         return json!({"available":false,"reason":"notRecorded"});
     }
-    let Some(user) = user_info().map(|user| user.name) else {
+    let Some(user) = user() else {
         return json!({"available":false,"reason":"noUser"});
     };
-    json!({"available":true,"wslDistro":distro,"user":user,"installDir":layout.root,
-        "port":port,"workspaceId":workspace_id})
+    let mut answer = json!({"available":true,"user":user,"installDir":layout.root,"port":port,"workspaceId":workspace_id});
+    match platform {
+        Platform::Wsl(distro) => {
+            answer["platform"] = json!("wsl");
+            answer["wslDistro"] = json!(distro);
+        }
+        Platform::Macos => answer["platform"] = json!("macos"),
+    }
+    answer
 }
 
 /// This process's user, from the user database.
@@ -149,9 +190,11 @@ pub(super) struct User {
     pub shell: Option<PathBuf>,
 }
 
-/// This process's user name and login shell, from the user database.
+/// This process's user name and login shell, from the user database
+/// (`getpwuid_r`: on Linux with glibc, and on macOS). Elsewhere only the
+/// name, from `USER`.
 pub(super) fn user_info() -> Option<User> {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"))]
     {
         let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
         let mut found = std::ptr::null_mut();
@@ -173,7 +216,7 @@ pub(super) fn user_info() -> Option<User> {
             .map(PathBuf::from);
         name.to_str().ok().map(|name| User { name: name.to_owned(), shell })
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    #[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos")))]
     std::env::var("USER").ok().map(|name| User { name, shell: None })
 }
 
@@ -481,21 +524,23 @@ impl Default for StopBudget {
 }
 
 /// Stops the Core installed at `root` that last ran on `port` with the
-/// Workspace `workspace_id` (T-170), as an interrupt does: it shuts down
-/// cleanly. Only when that Core answers there and is the one process of this
-/// installation, running the release it says it runs and holding the port;
-/// otherwise nothing is signalled. Nothing is ever killed: a Core that has
-/// not exited within the wait is said to be `stopping` (code `timeout`) and
-/// left as it is. The result's `state`: `stopped` (with `portHeldBy` when
-/// something holds the port again by the time Core has gone), `notRunning`,
-/// `stopping`, `refused` or `failed`, with a `code` and `message`.
+/// Workspace `workspace_id` (T-170): it asks Core to shut down, and Core
+/// shuts down cleanly. On Linux it interrupts Core (SIGINT); on macOS it
+/// sends SIGTERM (YN-108), which Core takes the same way. Only when that
+/// Core answers there and is the one process of this installation, running
+/// the release it says it runs, started with that port and, where the
+/// system can tell (Linux), holding it; otherwise nothing is signalled.
+/// Nothing is ever killed: a Core that has not exited within the wait is
+/// said to be `stopping` (code `timeout`) and left as it is. The result's
+/// `state`: `stopped` (with `portHeldBy` when something holds the port
+/// again by the time Core has gone), `notRunning`, `stopping`, `refused` or
+/// `failed`, with a `code` and `message`.
 pub fn stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> Value {
     result_of(try_stop(root, port, workspace_id, budget))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> Result<Value, Stop> {
-    use rustix::process::{pidfd_open, pidfd_send_signal, Pid, PidfdFlags, Signal};
     let (layout, _lock, _record) = prepare(root, port, workspace_id, budget.lock)?;
     let client = client().map_err(|error| failed("error", error.to_string()))?;
     let release = match probe(&client, port, Some(workspace_id)) {
@@ -512,15 +557,7 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
     };
     package::valid_id(&release).map_err(|error| refused("unidentified", format!("{error:#}; nothing was stopped.")))?;
     let core = instance(&layout, port, &release)?;
-    let pid = Pid::from_raw(core.pid as i32).ok_or_else(|| failed("error", format!("Invalid process ID {}", core.pid)))?;
-    // Held before the last check: a process ID used again after it is not
-    // the one interrupted.
-    let held = pidfd_open(pid, PidfdFlags::empty())
-        .map_err(|error| refused("changed", format!("Core (process {}) could not be held ({error}); nothing was stopped.", core.pid)))?;
-    if !core.alive() || holds(core.pid, port) != Some(true) {
-        return Err(refused("changed", format!("Core (process {}) changed while it was checked; nothing was stopped.", core.pid)));
-    }
-    pidfd_send_signal(&held, Signal::INT).map_err(|error| failed("signal", format!("Cannot interrupt Core (process {}): {error}", core.pid)))?;
+    interrupt(&core, port)?;
     let until = Instant::now() + budget.exit;
     loop {
         if !core.alive() {
@@ -545,7 +582,7 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
                 state: "stopping",
                 code: "timeout",
                 message: format!(
-                    "Core (process {}) was interrupted but has not exited within {} s. Nothing more was done: it may still be finishing. Check again before stopping it any other way.",
+                    "Core (process {}) was asked to stop but has not exited within {} s. Nothing more was done: it may still be finishing. Check again before stopping it any other way.",
                     core.pid,
                     budget.exit.as_secs()
                 ),
@@ -556,26 +593,54 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn try_stop(_root: &Path, _port: u16, _workspace_id: &str, _budget: StopBudget) -> Result<Value, Stop> {
-    Err(refused("unsupported", "Stopping a managed Core needs Linux or WSL."))
+    Err(refused("unsupported", "Stopping a managed Core needs Linux, WSL or macOS."))
+}
+
+/// Interrupts Core, `core`, through a pidfd held before its last check: a
+/// process ID used again after it is not the one interrupted.
+#[cfg(target_os = "linux")]
+fn interrupt(core: &state::ProcessIdentity, port: u16) -> Result<(), Stop> {
+    use rustix::process::{pidfd_open, pidfd_send_signal, Pid, PidfdFlags, Signal};
+    let pid = Pid::from_raw(core.pid as i32).ok_or_else(|| failed("error", format!("Invalid process ID {}", core.pid)))?;
+    let held = pidfd_open(pid, PidfdFlags::empty())
+        .map_err(|error| refused("changed", format!("Core (process {}) could not be held ({error}); nothing was stopped.", core.pid)))?;
+    if !core.alive() || holds(core.pid, port) != Some(true) {
+        return Err(refused("changed", format!("Core (process {}) changed while it was checked; nothing was stopped.", core.pid)));
+    }
+    pidfd_send_signal(&held, Signal::INT).map_err(|error| failed("signal", format!("Cannot interrupt Core (process {}): {error}", core.pid)))
+}
+
+/// Sends Core, `core`, SIGTERM. macOS has no handle to signal a process
+/// through, as Linux's pidfd is, so its identity, start time included, is
+/// read again just before the signal: had it exited and its process ID been
+/// given to another process since it was found, that one has another start
+/// time and is not signalled. What is left is the moment between that read
+/// and the signal.
+#[cfg(target_os = "macos")]
+fn interrupt(core: &state::ProcessIdentity, _port: u16) -> Result<(), Stop> {
+    use rustix::process::{kill_process, Pid, Signal};
+    let pid = Pid::from_raw(core.pid as i32).ok_or_else(|| failed("error", format!("Invalid process ID {}", core.pid)))?;
+    if !core.alive() {
+        return Err(refused("changed", format!("Core (process {}) changed while it was checked; nothing was stopped.", core.pid)));
+    }
+    kill_process(pid, Signal::TERM).map_err(|error| failed("signal", format!("Cannot stop Core (process {}): {error}", core.pid)))
 }
 
 /// The one process of the installation at `layout` (`--install-dir` names
 /// it, and it runs a release of it): it must run `release` with `--port
-/// port` and hold that port. Refused when another process of the
-/// installation runs too, or when none is that one.
-#[cfg(target_os = "linux")]
+/// port` and, where the system can tell (Linux), hold that port. Refused
+/// when another process of the installation runs too, or when none is that
+/// one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn instance(layout: &Layout, port: u16, release: &str) -> Result<state::ProcessIdentity, Stop> {
     let root = fs::canonicalize(&layout.root).map_err(|error| failed("error", format!("{}: {error}", layout.root.display())))?;
     let releases = root.join("releases");
     let mut found = Vec::new();
-    let entries = fs::read_dir("/proc").map_err(|error| failed("error", format!("Cannot list processes: {error}")))?;
-    for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
-            continue;
-        };
-        // Another user's process, or one that has gone, has no identity here.
+    for pid in process_ids()? {
+        // A process that has gone, or on Linux another user's, has no
+        // identity here.
         let Ok(identity) = state::ProcessIdentity::read(pid) else { continue };
         // A release's Core: not its helper, which a start that stays runs
         // with the same --install-dir.
@@ -585,6 +650,7 @@ fn instance(layout: &Layout, port: u16, release: &str) -> Result<state::ProcessI
         if !core {
             continue;
         }
+        // Not shown for another user's process (macOS).
         let Some(arguments) = arguments(pid) else { continue };
         let installed = option(&arguments, "--install-dir").and_then(|dir| fs::canonicalize(dir).ok());
         if installed.as_deref() == Some(root.as_path()) {
@@ -611,10 +677,52 @@ fn instance(layout: &Layout, port: u16, release: &str) -> Result<state::ProcessI
             format!("Process {} runs {}, not the release its Core says it runs ({release}); nothing was stopped.", identity.pid, identity.executable.display()),
         ));
     }
-    if option(arguments, "--port") != Some(port.to_string().as_str()) || holds(identity.pid, port) != Some(true) {
+    // Where which process holds the port cannot be told (macOS: None), the
+    // one process of this installation started with it, running the release
+    // the Core on it names, is taken to be that Core.
+    if option(arguments, "--port") != Some(port.to_string().as_str()) || holds(identity.pid, port) == Some(false) {
         return Err(refused("unidentified", format!("Process {} of this installation does not hold port {port}; nothing was stopped.", identity.pid)));
     }
     Ok(identity.clone())
+}
+
+/// Every process ID on this machine, from /proc.
+#[cfg(target_os = "linux")]
+fn process_ids() -> Result<Vec<u32>, Stop> {
+    let entries = fs::read_dir("/proc").map_err(|error| failed("error", format!("Cannot list processes: {error}")))?;
+    Ok(entries.flatten().filter_map(|entry| entry.file_name().to_str()?.parse().ok()).collect())
+}
+
+/// Every process ID on this machine, from libproc (`proc_listallpids`).
+#[cfg(target_os = "macos")]
+fn process_ids() -> Result<Vec<u32>, Stop> {
+    let unlisted = |error: std::io::Error| failed("error", format!("Cannot list processes: {error}"));
+    // SAFETY: a null buffer of no bytes only asks how many there are.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    // A machine always runs some process: none means the question failed.
+    let mut room = usize::try_from(count).ok().filter(|&count| count > 0).ok_or_else(|| unlisted(std::io::Error::last_os_error()))?;
+    for _ in 0..4 {
+        // Room for processes that start between the two calls.
+        room += 64;
+        let mut pids: Vec<libc::pid_t> = vec![0; room];
+        let bytes = libc::c_int::try_from(room * std::mem::size_of::<libc::pid_t>())
+            .map_err(|_| unlisted(std::io::Error::other("too many processes")))?;
+        // SAFETY: `pids` is a live, writable buffer of `bytes` bytes, which
+        // is what proc_listallpids is told it may write.
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        // It answers how many IDs it wrote, at most `room`.
+        let listed = usize::try_from(listed)
+            .ok()
+            .filter(|&listed| listed > 0 && listed <= room)
+            .ok_or_else(|| unlisted(std::io::Error::last_os_error()))?;
+        // A full buffer may not have had room for them all: ask again.
+        if listed < room {
+            pids.truncate(listed);
+            return Ok(pids.into_iter().filter_map(|pid| u32::try_from(pid).ok().filter(|&pid| pid > 0)).collect());
+        }
+        room = listed * 2;
+    }
+    Err(unlisted(std::io::Error::other("their number kept growing")))
 }
 
 /// Process `pid`'s arguments, without the program.
@@ -628,8 +736,63 @@ fn arguments(pid: u32) -> Option<Vec<String>> {
     (!arguments.is_empty()).then(|| arguments.split_off(1))
 }
 
+/// Process `pid`'s arguments, without the program, from sysctl
+/// `KERN_PROCARGS2` ([`procargs`]). None for a process that has gone, and
+/// for another user's, which the kernel does not show.
+#[cfg(target_os = "macos")]
+fn arguments(pid: u32) -> Option<Vec<String>> {
+    let pid = libc::c_int::try_from(pid).ok().filter(|&pid| pid > 0)?;
+    // The most a process's arguments and environment take together.
+    let mut most: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut name = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: `name` holds the 2 names given; `most` is a writable c_int
+    // and `size` its size, which sysctl may write; nothing is set (null, 0).
+    let status = unsafe {
+        libc::sysctl(name.as_mut_ptr(), 2, (&mut most as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0)
+    };
+    if status != 0 || size != std::mem::size_of::<libc::c_int>() {
+        return None;
+    }
+    let mut buffer = vec![0u8; usize::try_from(most).ok().filter(|&most| most > 0)?];
+    let mut size = buffer.len();
+    let mut name = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    // SAFETY: `name` holds the 3 names given; `buffer` is writable for
+    // `size` bytes, which sysctl is told and sets to the bytes it wrote;
+    // nothing is set (null, 0).
+    let status = unsafe {
+        libc::sysctl(name.as_mut_ptr(), 3, buffer.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0)
+    };
+    if status != 0 {
+        return None;
+    }
+    procargs(buffer.get(..size)?)
+}
+
+/// The arguments, without the program, in an answer to `KERN_PROCARGS2`:
+/// the argument count (a native-endian int), the executable's path and the
+/// NULs that pad it, then that many NUL-terminated arguments, the program
+/// first, then the environment, which is not read. None when the answer
+/// ends before all of them: nothing is read past `bytes`.
+#[cfg(any(target_os = "macos", test))]
+fn procargs(bytes: &[u8]) -> Option<Vec<String>> {
+    let (count, rest) = bytes.split_first_chunk::<4>()?;
+    let count = usize::try_from(i32::from_ne_bytes(*count)).ok().filter(|&count| count > 0)?;
+    // Past the executable's path, then past its padding.
+    let rest = &rest[rest.iter().position(|&byte| byte == 0)?..];
+    let mut rest = &rest[rest.iter().position(|&byte| byte != 0)?..];
+    let mut arguments = Vec::new();
+    for _ in 0..count {
+        let end = rest.iter().position(|&byte| byte == 0)?;
+        arguments.push(String::from_utf8_lossy(&rest[..end]).into_owned());
+        rest = &rest[end + 1..];
+    }
+    arguments.remove(0);
+    Some(arguments)
+}
+
 /// The value of option `name`, given as `name value` or `name=value`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
     arguments.iter().enumerate().find_map(|(index, argument)| {
         if argument == name {
@@ -641,7 +804,8 @@ fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 /// Whether process `pid` holds the socket listening on 127.0.0.1:`port`,
-/// from /proc. None where that cannot be told: not on Linux.
+/// from /proc. None where that cannot be told: not on Linux (on macOS a
+/// stop and a first start then skip this check).
 #[cfg(target_os = "linux")]
 pub(super) fn holds(pid: u32, port: u16) -> Option<bool> {
     let Some(inode) = listening(port) else { return Some(false) };
@@ -731,7 +895,7 @@ pub(super) enum Answer {
     /// Workspace it says it has open, and the release it says it runs.
     Ours {
         ready: bool,
-        #[cfg_attr(not(target_os = "linux"), expect(dead_code, reason = "read only by a stop, which needs Linux for now (YN-108 M2b)"))]
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), expect(dead_code, reason = "read only by a stop, which needs Linux or macOS"))]
         release: Option<String>,
         workspace: String,
     },
@@ -1119,7 +1283,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     const ORIGIN: &str = "https://core.example-tailnet.ts.net:8444";
     const LOGIN: &str = "person@example.com";
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     const QUICK_STOP: StopBudget = StopBudget { lock: Duration::from_secs(5), exit: Duration::from_secs(20) };
 
     /// tests/fixtures/managed_core_stand_in.rs, compiled once per test
@@ -1177,7 +1341,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A start gives Core the remote entry it is told to (T-170), or none, and
     /// says what Core recorded; a later start as recorded keeps it. While
     /// Core runs, a start with settings changes nothing.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_start_gives_core_the_remote_entry_it_is_told_to_and_says_what_core_recorded() {
         let install = install();
@@ -1264,7 +1428,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A stop interrupts this installation's Core, once it is sure which
     /// process that is, and waits for it to go; a start that stays (the
     /// release's helper, with the same --install-dir) is not that process.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_stop_interrupts_this_installations_core_and_waits_for_it_to_go() {
         let install = install();
@@ -1306,10 +1470,10 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     /// Nothing that cannot be tied to this installation's one Core is
     /// signalled: an answer from a process outside the installation, another
-    /// Workspace or program, a Core of the installation that does not hold
-    /// the port, two Cores of the installation, or a Core whose executable is
-    /// not the release it says it runs.
-    #[cfg(target_os = "linux")]
+    /// Workspace or program, a Core of the installation started with another
+    /// port or (Linux) not holding it, two Cores of the installation, or a
+    /// Core whose executable is not the release it says it runs.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_stop_signals_nothing_it_cannot_tie_to_this_installations_one_core() {
         let install = install();
@@ -1327,33 +1491,64 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             done.store(true, std::sync::atomic::Ordering::SeqCst);
             assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("refused"), Some(code)), "{body}: {outcome}");
         }
-        // A Core of this installation given the port, which does not hold
-        // it: this test process answers there.
         let core_path = install.layout.root.join("releases/a/bin/yuzuno-workspace");
+        // A Core of this installation given the port, which does not hold
+        // it: this test process answers there. Only Linux can tell who
+        // holds a port (holds); macOS takes the one Core of the
+        // installation started with it to be the Core that answers.
+        #[cfg(target_os = "linux")]
+        {
+            let (port, done) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-1","apiReady":true,"releaseId":"a"}"#);
+            let quiet_data = install.temp.path().join("quiet");
+            fs::create_dir_all(&quiet_data).unwrap();
+            fs::write(quiet_data.join("no-listen"), "").unwrap();
+            let mut quiet = Command::new(&core_path)
+                .arg("--install-dir")
+                .arg(&install.layout.root)
+                .args(["--port", &port.to_string(), "--cwd", "/", "--codex", "codex", "--data-dir"])
+                .arg(&quiet_data)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !quiet_data.join("started").exists() {
+                assert!(Instant::now() < deadline, "the quiet Core did not start");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            record(&install.layout, &install.running, &launch(&install, port), WORKSPACE, |_| None).unwrap();
+            let outcome = stop(&install.layout.root, port, WORKSPACE, QUICK_STOP);
+            let quiet_alive = quiet.try_wait().unwrap().is_none();
+            let _ = quiet.kill();
+            let _ = quiet.wait();
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("refused"), Some("unidentified")), "{outcome}");
+            assert!(quiet_alive, "a Core not holding the port was signalled");
+        }
+        // A Core of this installation started with another port is not the
+        // one on this port: this test process answers there.
         let (port, done) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-1","apiReady":true,"releaseId":"a"}"#);
-        let quiet_data = install.temp.path().join("quiet");
-        fs::create_dir_all(&quiet_data).unwrap();
-        fs::write(quiet_data.join("no-listen"), "").unwrap();
-        let mut quiet = Command::new(&core_path)
+        let elsewhere_data = install.temp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere_data).unwrap();
+        fs::write(elsewhere_data.join("no-listen"), "").unwrap();
+        let mut elsewhere = Command::new(&core_path)
             .arg("--install-dir")
             .arg(&install.layout.root)
-            .args(["--port", &port.to_string(), "--cwd", "/", "--codex", "codex", "--data-dir"])
-            .arg(&quiet_data)
+            .args(["--port", &free_port().to_string(), "--cwd", "/", "--codex", "codex", "--data-dir"])
+            .arg(&elsewhere_data)
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !quiet_data.join("started").exists() {
-            assert!(Instant::now() < deadline, "the quiet Core did not start");
+        while !elsewhere_data.join("started").exists() {
+            assert!(Instant::now() < deadline, "the other port's Core did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
         record(&install.layout, &install.running, &launch(&install, port), WORKSPACE, |_| None).unwrap();
         let outcome = stop(&install.layout.root, port, WORKSPACE, QUICK_STOP);
-        let quiet_alive = quiet.try_wait().unwrap().is_none();
-        let _ = quiet.kill();
-        let _ = quiet.wait();
+        let elsewhere_alive = elsewhere.try_wait().unwrap().is_none();
+        let _ = elsewhere.kill();
+        let _ = elsewhere.wait();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("refused"), Some("unidentified")), "{outcome}");
-        assert!(quiet_alive, "a Core not holding the port was signalled");
+        assert!(elsewhere_alive, "a Core started with another port was signalled");
         let port = free_port();
         let launch = launch(&install, port);
         record(&install.layout, &install.running, &launch, WORKSPACE, |_| None).unwrap();
@@ -1393,7 +1588,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     /// A Core that does not exit when interrupted is said to be stopping and
     /// left as it is: nothing kills it.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_core_that_does_not_exit_is_said_to_be_stopping_and_left_running() {
         let install = install();
@@ -1414,7 +1609,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
     /// A Core that has exited while its port is held again (here by a process
     /// it shared its socket with) is said to have stopped, with what holds the
     /// port: not that it may still be finishing.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_core_gone_while_its_port_is_held_again_is_said_to_have_stopped() {
         let install = install();
@@ -1440,7 +1635,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         assert!(alive(&keeper), "the port keeper was signalled");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn options_are_read_as_core_is_given_them() {
         let arguments: Vec<String> = ["--install-dir", "/i", "--port=4317", "--data-dir", "/d"].map(String::from).to_vec();
@@ -1449,5 +1644,126 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         assert_eq!(option(&arguments, "--data-dir"), Some("/d"));
         assert_eq!(option(&arguments, "--cwd"), None);
         assert_eq!(option(&["--port".to_string()], "--port"), None);
+    }
+
+    /// The start profile says where this Core starts again, and on which
+    /// platform: in a WSL distribution, or on the Mac it runs on.
+    #[test]
+    fn the_start_profile_names_its_platform() {
+        let install = install();
+        let port = 4321;
+        let user = || Some("someone".to_string());
+        let mac = || Some(Platform::Macos);
+        let root = install.layout.root.to_string_lossy().into_owned();
+        let not_recorded = json!({"available":false,"reason":"notRecorded"});
+        assert_eq!(profile_on(mac(), None, port, WORKSPACE, user), json!({"available":false,"reason":"notManaged"}));
+        assert_eq!(profile_on(mac(), Some(&install.layout), port, WORKSPACE, user), not_recorded);
+        record(&install.layout, &install.running, &launch(&install, port), WORKSPACE, |_| None).unwrap();
+        assert_eq!(
+            profile_on(Some(Platform::Wsl("Ubuntu-24.04".into())), Some(&install.layout), port, WORKSPACE, user),
+            json!({"available":true,"platform":"wsl","wslDistro":"Ubuntu-24.04","user":"someone","installDir":root,"port":port,"workspaceId":WORKSPACE})
+        );
+        assert_eq!(
+            profile_on(mac(), Some(&install.layout), port, WORKSPACE, user),
+            json!({"available":true,"platform":"macos","user":"someone","installDir":root,"port":port,"workspaceId":WORKSPACE})
+        );
+        // Linux outside WSL, another port or Workspace, no user.
+        assert_eq!(profile_on(None, Some(&install.layout), port, WORKSPACE, user), json!({"available":false,"reason":"notWsl"}));
+        assert_eq!(profile_on(mac(), Some(&install.layout), port + 1, WORKSPACE, user), not_recorded);
+        assert_eq!(profile_on(mac(), Some(&install.layout), port, "workspace-2", user), not_recorded);
+        assert_eq!(profile_on(mac(), Some(&install.layout), port, WORKSPACE, || None), json!({"available":false,"reason":"noUser"}));
+        #[cfg(target_os = "macos")]
+        if std::env::var_os("WSL_DISTRO_NAME").is_none() {
+            assert_eq!(Platform::here(), Some(Platform::Macos));
+        }
+    }
+
+    /// The user database names this process's user, as `id -un` does, and
+    /// on macOS always a login shell.
+    #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos"))]
+    #[test]
+    fn this_processs_user_and_shell_come_from_the_user_database() {
+        let id = Command::new("id").arg("-un").output().unwrap();
+        assert!(id.status.success(), "{id:?}");
+        let user = user_info().expect("this process's user is in the user database");
+        assert_eq!(user.name, String::from_utf8(id.stdout).unwrap().trim());
+        if let Some(shell) = &user.shell {
+            assert!(shell.is_absolute(), "{}", shell.display());
+        }
+        #[cfg(target_os = "macos")]
+        assert!(user.shell.is_some(), "no login shell for {}", user.name);
+    }
+
+    /// An answer to KERN_PROCARGS2 (macOS), laid out as macOS lays it: the
+    /// count, the executable's path and its padding, the arguments, then
+    /// the environment. Read on every system from these bytes.
+    #[test]
+    fn macos_process_arguments_are_read_within_their_bytes() {
+        fn answer(count: i32, rest: &[u8]) -> Vec<u8> {
+            [&count.to_ne_bytes()[..], rest].concat()
+        }
+        let path: &[u8] = b"/Users/someone/managed/releases/a/bin/yuzuno-workspace\0\0\0\0";
+        let full = [
+            path,
+            b"/Users/someone/managed/releases/a/bin/yuzuno-workspace\0",
+            b"--install-dir\0/Users/someone/my managed\0--port\0",
+            b"4317\0",
+            b"PATH=/usr/bin\0HOME=/Users/someone\0",
+        ]
+        .concat();
+        assert_eq!(procargs(&answer(5, &full)), Some(["--install-dir", "/Users/someone/my managed", "--port", "4317"].map(String::from).to_vec()));
+        // As many as the count says, and no more: the environment is not read.
+        assert_eq!(procargs(&answer(2, &full)), Some(vec!["--install-dir".to_string()]));
+        assert_eq!(procargs(&answer(1, &full)), Some(vec![]));
+        // An empty argument is one; the path may have no padding.
+        assert_eq!(procargs(&answer(3, &[path, b"program\0\0--x\0"].concat())), Some(vec![String::new(), "--x".into()]));
+        assert_eq!(procargs(&answer(2, b"/bin/p\0p\0--y\0")), Some(vec!["--y".to_string()]));
+        // More than there are, a count of none or less, and answers that
+        // end early: none.
+        for bytes in [
+            answer(8, &full),
+            answer(0, &full),
+            answer(-1, &full),
+            answer(2, b"/bin/p"),
+            answer(2, b"/bin/p\0\0\0"),
+            answer(2, b"/bin/p\0p\0--y"),
+            vec![1, 0],
+            vec![],
+        ] {
+            assert_eq!(procargs(&bytes), None, "{bytes:?}");
+        }
+    }
+
+    /// The system lists this process, and a Core's arguments are read as it
+    /// was given them, spaces and empty ones included.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn processes_are_listed_and_their_arguments_read() {
+        assert!(process_ids().map_err(|stop| stop.message).unwrap().contains(&std::process::id()));
+        assert_eq!(arguments(std::process::id()), Some(std::env::args().skip(1).collect::<Vec<_>>()));
+        let install = install();
+        let data = install.temp.path().join("data with space");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("no-listen"), "").unwrap();
+        let (root, data_dir) = (install.layout.root.to_string_lossy().into_owned(), data.to_string_lossy().into_owned());
+        let given: Vec<String> = [
+            "--install-dir", root.as_str(), "--port", "4317", "--cwd", "/", "--codex", "codex", "--data-dir", data_dir.as_str(), "a b", "",
+        ]
+        .map(String::from)
+        .to_vec();
+        let mut core = Command::new(compiled(&install, "yuzuno-workspace")).args(&given).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !data.join("started").exists() {
+            assert!(Instant::now() < deadline, "the stand-in did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let read = arguments(core.id());
+        let listed = process_ids().map_err(|stop| stop.message).unwrap().contains(&core.id());
+        let _ = core.kill();
+        let _ = core.wait();
+        assert_eq!(read, Some(given));
+        assert!(listed);
+        // A process that has gone has none.
+        assert_eq!(arguments(core.id()), None);
     }
 }

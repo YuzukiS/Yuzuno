@@ -11,7 +11,7 @@ type Baseline = { version: number; blocks: Record<string, string> };
 
 // Layout only: their own change is where their blocks sit, which each block
 // shows for itself.
-const LAYOUT = new Set(["BriefBody", "Columns"]);
+const LAYOUT = new Set(["BriefBody", "Columns", "Tabs"]);
 
 export const blockMemoryKey = (workspaceId: string, projectId: string, section: Section) =>
   `yuzuno.home-seen-blocks.v1:${JSON.stringify([workspaceId, projectId, section.key, section.id ?? null])}`;

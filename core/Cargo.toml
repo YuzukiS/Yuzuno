@@ -58,8 +58,11 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"
 
-# macOS: libproc (proc_pidinfo, proc_pidpath) for a process's identity
-# (updates/state.rs). It is part of libSystem, which every binary links.
+# macOS: libproc (proc_pidinfo, proc_pidpath, proc_listallpids) for a
+# process's identity (updates/state.rs) and for finding a managed Core to
+# stop, with sysctl KERN_PROCARGS2 for its arguments and getpwuid_r for the
+# login shell (updates/start.rs). All are part of libSystem, which every
+# binary links.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
