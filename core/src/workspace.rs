@@ -117,6 +117,10 @@ pub struct Workspace {
     pub(crate) next_generation: AtomicU64,
     #[cfg(test)]
     pub(crate) reconnect_timeout_ms: AtomicU64,
+    /// While true, each connection's event loop holds `yuzuno/disconnected`
+    /// before applying it, as a loaded host can (YN-130).
+    #[cfg(test)]
+    pub(crate) disconnects_held: tokio::sync::watch::Sender<bool>,
     /// Native events Core has received but not yet applied, per connection.
     pub(crate) backlogs: crate::backlog::Backlogs,
     pub(crate) collaboration_url: OnceLock<String>,
@@ -213,6 +217,8 @@ impl Workspace {
             next_generation: AtomicU64::new(1),
             #[cfg(test)]
             reconnect_timeout_ms: AtomicU64::new(45_000),
+            #[cfg(test)]
+            disconnects_held: tokio::sync::watch::Sender::new(false),
             backlogs: Default::default(),
             collaboration_url: OnceLock::new(),
             collaboration_wakeup: Notify::new(),
@@ -699,6 +705,10 @@ impl Workspace {
             while let Some(message) = rx.recv().await {
                 let native = crate::backlog::is_native(&message);
                 if event_barrier.upgrade().is_some_and(|barrier| barrier.acknowledge(&message)) { continue; }
+                #[cfg(test)]
+                if message["method"] == "yuzuno/disconnected" {
+                    let _ = this.disconnects_held.subscribe().wait_for(|held| !held).await;
+                }
                 let _event = this.admission.enter_event();
                 this.dispatch_event(&agent_id, generation, message).await;
                 if native { backlog.applied(); }
@@ -3337,6 +3347,10 @@ mod metadata_event_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_reads_tests.rs"]
 mod reconnect_reads_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_exit_tests.rs"]
+mod reconnect_exit_tests;
 
 #[cfg(test)]
 mod tests {

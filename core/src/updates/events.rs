@@ -40,6 +40,11 @@ impl EventBarrier {
     pub fn is_closing(&self) -> bool {
         self.closing.load(Ordering::Acquire)
     }
+    /// Whether a `drain` waits for its barrier now.
+    #[cfg(test)]
+    pub(crate) fn draining(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty()
+    }
     pub fn acknowledge(&self, event: &Value) -> bool {
         let Some(id) = event["_yuzunoUpdateBarrier"].as_str() else {
             return false;
