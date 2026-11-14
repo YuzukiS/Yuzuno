@@ -61,6 +61,17 @@ pub fn parse(text: &str) -> Vec<Distro> {
         .collect()
 }
 
+/// The names `wsl.exe --list --running --quiet` printed, in its order: one
+/// line per running distribution, no header. Blank lines are skipped; a name
+/// is kept as WSL printed it, so it compares with the name in the list.
+pub fn parse_running(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim_end_matches('\r').trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// WSL's own first line, to show when it lists nothing or fails: without a
 /// syslog level such as `<3>` before it (as `connection::start_result`
 /// shows one) and without a trailing period, at most 240 characters.
@@ -139,6 +150,17 @@ mod tests {
         assert_eq!(parse(text), [distro("main-distro", 2, true)]);
         assert_eq!(parse(""), []);
         assert_eq!(parse("  NAME   STATE   VERSION\r\n"), []);
+    }
+
+    #[test]
+    fn reads_the_running_names_without_a_header() {
+        // What `wsl.exe --list --running --quiet` prints with WSL_UTF8=1.
+        assert_eq!(parse_running("archlinux\r\nUbuntu-24.04\r\n"), ["archlinux", "Ubuntu-24.04"]);
+        assert_eq!(parse_running("  main-distro  \n\n"), ["main-distro"]);
+        assert_eq!(parse_running(""), Vec::<String>::new());
+        // UTF-16LE, as an older WSL prints it.
+        let utf16: Vec<u8> = "archlinux\r\n".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(parse_running(&decode(&utf16)), ["archlinux"]);
     }
 
     #[test]

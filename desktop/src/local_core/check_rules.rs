@@ -141,6 +141,51 @@ pub enum State {
     Unknown,
 }
 
+/// Whether this app may start a stopped distribution (YN-156, rule R1): only
+/// the WSL default one, or one stopped while nothing else runs. The page
+/// shows it with each target; every command checks it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Boot {
+    /// It is the default distribution: `wsl` starts it for the user anyway.
+    Own,
+    /// It is running, so using it starts nothing.
+    Running,
+    /// It is stopped and no other distribution runs: there is no victim.
+    Alone,
+    /// It is stopped and another distribution runs: this app does not start
+    /// it.
+    Risky,
+}
+
+impl Boot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Boot::Own => "own",
+            Boot::Running => "running",
+            Boot::Alone => "alone",
+            Boot::Risky => "risky",
+        }
+    }
+
+    pub fn can_start(self) -> bool {
+        self != Boot::Risky
+    }
+}
+
+/// Rule R1: a stopped `distro` may be started when it is the default one or
+/// no other distribution runs.
+pub fn boot(is_default: bool, running: bool, peers_running: bool) -> Boot {
+    if running {
+        Boot::Running
+    } else if is_default {
+        Boot::Own
+    } else if peers_running {
+        Boot::Risky
+    } else {
+        Boot::Alone
+    }
+}
+
 /// One line of the check list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -204,8 +249,10 @@ fn path_note(report: &Report) -> String {
 }
 
 /// Every check item, in the shared table's order, for a WSL distribution
-/// whose list entry says `wsl2`.
-pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item> {
+/// whose list entry says `wsl2`, and whether it is the WSL default one (rule
+/// R2: a non-default distribution that runs systemd may not be installed
+/// into).
+pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found, is_default: bool) -> Vec<Item> {
     use Level::{Recommended, Required};
     let item = |id, level, state, detail: Option<String>| Item { id, level, state, detail };
     let mut items = Vec::new();
@@ -223,6 +270,23 @@ pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item
             }
         }
         _ => item("user", Required, State::Unknown, None),
+    });
+
+    // Rule R2: systemd in a distribution that is not the default one clears
+    // the shared binfmt table and writes the shared cgroup tree, so Core is
+    // not installed there. "Unknown" is treated as risky by the page.
+    items.push(match report.get("init").map(str::trim) {
+        None | Some("") => item("peers", Required, State::Unknown, None),
+        Some("systemd") if !is_default => item(
+            "peers",
+            Required,
+            State::Missing,
+            Some(
+                "systemd runs in this distribution, which is not the default one; it shares Windows interop and cgroups with the other distributions."
+                    .into(),
+            ),
+        ),
+        Some(_) => item("peers", Required, State::Ok, None),
     });
 
     items.push(match report.get("arch") {
@@ -399,6 +463,7 @@ tool.claude=2.1.3 (Claude Code)
 tool.codex=codex-cli 0.80.0
 tool.python3=Python 3.12.3
 gh.auth=ok
+init=init
 systemd=running
 cgroup=cpu memory pids
 ";
@@ -427,7 +492,7 @@ cgroup=cpu memory pids
     }
 
     fn judged(changes: &[(&str, &str)]) -> Vec<Item> {
-        judge(&with(changes), true, &Port::Free(4317), Found::Nothing)
+        judge(&with(changes), true, &Port::Free(4317), Found::Nothing, true)
     }
 
     #[test]
@@ -436,13 +501,52 @@ cgroup=cpu memory pids
         let ids: Vec<_> = items.iter().map(|item| item.id).collect();
         assert_eq!(
             ids,
-            ["wsl2", "user", "arch", "glibc", "paths", "tools", "port", "node", "git", "python3", "systemd", "claude", "codex", "gh"]
+            ["wsl2", "user", "peers", "arch", "glibc", "paths", "tools", "port", "node", "git", "python3", "systemd", "claude", "codex", "gh"]
         );
         let required: Vec<_> = items.iter().filter(|item| item.level == Level::Required).map(|item| item.id).collect();
-        assert_eq!(required, ["wsl2", "user", "arch", "glibc", "paths", "tools", "port"]);
+        assert_eq!(required, ["wsl2", "user", "peers", "arch", "glibc", "paths", "tools", "port"]);
         assert!(items.iter().all(|item| item.state == State::Ok), "{items:?}");
         assert!(installable(&items, Found::Nothing));
         assert!(!installable(&items, Found::Installation));
+    }
+
+    #[test]
+    fn a_stopped_distribution_is_started_only_as_the_default_or_alone() {
+        assert_eq!(boot(true, false, false), Boot::Own);
+        assert_eq!(boot(true, false, true), Boot::Own);
+        assert_eq!(boot(true, true, true), Boot::Running);
+        assert_eq!(boot(false, true, true), Boot::Running);
+        assert_eq!(boot(false, false, false), Boot::Alone);
+        assert_eq!(boot(false, false, true), Boot::Risky);
+        assert!(Boot::Own.can_start() && Boot::Running.can_start() && Boot::Alone.can_start());
+        assert!(!Boot::Risky.can_start());
+        let names: Vec<_> = [Boot::Own, Boot::Running, Boot::Alone, Boot::Risky].iter().map(|boot| boot.as_str()).collect();
+        assert_eq!(names, ["own", "running", "alone", "risky"]);
+    }
+
+    #[test]
+    fn a_non_default_distribution_running_systemd_cannot_be_installed_into() {
+        let report = with(&[]);
+        let default = judge(&report, true, &Port::Free(4317), Found::Nothing, true);
+        assert_eq!(state(&default, "peers").0, State::Ok);
+        assert!(installable(&default, Found::Nothing));
+        // The default distribution may run systemd.
+        let systemd_default = judge(&with(&[("init", "systemd")]), true, &Port::Free(4317), Found::Nothing, true);
+        assert_eq!(state(&systemd_default, "peers").0, State::Ok);
+
+        let non_default = judge(&with(&[("init", "systemd")]), true, &Port::Free(4317), Found::Nothing, false);
+        let (found, detail) = state(&non_default, "peers");
+        assert_eq!(found, State::Missing);
+        assert!(detail.unwrap().contains("systemd runs"));
+        assert!(!installable(&non_default, Found::Nothing));
+
+        let no_systemd = judge(&with(&[("init", "init")]), true, &Port::Free(4317), Found::Nothing, false);
+        assert_eq!(state(&no_systemd, "peers").0, State::Ok);
+        assert!(installable(&no_systemd, Found::Nothing));
+
+        let unknown = judge(&with(&[("init", "")]), true, &Port::Free(4317), Found::Nothing, false);
+        assert_eq!(state(&unknown, "peers").0, State::Unknown);
+        assert!(!installable(&unknown, Found::Nothing));
     }
 
     #[test]
@@ -506,10 +610,10 @@ cgroup=cpu memory pids
         assert!(detail.unwrap().contains("holds a workspace"));
         // An installation is started, not installed again.
         let report = with(&[("root.state", "installed")]);
-        let items = judge(&report, true, &Port::Free(4317), Found::Installation);
+        let items = judge(&report, true, &Port::Free(4317), Found::Installation, true);
         assert_eq!(state(&items, "paths").0, State::Ok);
         assert!(!installable(&items, Found::Installation));
-        let items = judge(&report, true, &Port::Free(4317), Found::Unreadable);
+        let items = judge(&report, true, &Port::Free(4317), Found::Unreadable, true);
         assert_eq!(state(&items, "paths").0, State::Missing);
         assert!(!installable(&items, Found::Unreadable));
         assert_eq!(state(&judged(&[("root.state", "<none>")]), "paths").0, State::Unknown);
@@ -523,11 +627,11 @@ cgroup=cpu memory pids
             (Port::NoneFree, State::Missing),
             (Port::Unknown("no saved list".into()), State::Unknown),
         ] {
-            let items = judge(&report, true, &port, Found::Nothing);
+            let items = judge(&report, true, &port, Found::Nothing, true);
             assert_eq!(state(&items, "port").0, expected);
             assert_eq!(installable(&items, Found::Nothing), expected == State::Ok);
         }
-        assert!(!installable(&judge(&report, false, &Port::Free(4317), Found::Nothing), Found::Nothing));
+        assert!(!installable(&judge(&report, false, &Port::Free(4317), Found::Nothing, true), Found::Nothing));
     }
 
     #[test]

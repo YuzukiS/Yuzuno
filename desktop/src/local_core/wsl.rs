@@ -7,9 +7,11 @@
 //!
 //! What runs in WSL through it (design section 7, item 5): the list of
 //! distributions, the read-only check, a saved installation's start entry
-//! (`start`, moved here from main.rs), and the steps of an installation
+//! (`start`, moved here from main.rs), the steps of an installation
 //! (`super::Step`): making and removing its temporary folder, unpacking the
-//! verified release into it from stdin, installing and the first start.
+//! verified release into it from stdin, installing and the first start. It
+//! also reads which distributions run, without starting one, and the
+//! read-only guard of the state they share (YN-156).
 
 use crate::connection::{self, StartOutcome, StartProfile};
 use std::{
@@ -33,6 +35,10 @@ pub const LIST_WAIT: Duration = Duration::from_secs(10);
 /// How long the check may take: the first `wsl.exe` call may boot the
 /// distribution (design 4.3).
 pub const CHECK_WAIT: Duration = Duration::from_secs(90);
+
+/// How long the read-only guard may take in a distribution that is already
+/// running.
+pub const GUARD_WAIT: Duration = Duration::from_secs(30);
 
 /// How long the connection page waits for a start in WSL. The start itself
 /// waits up to two minutes for Core to answer; booting WSL comes first.
@@ -173,6 +179,19 @@ pub fn run_with(
 /// `wsl.exe --list --verbose`.
 pub fn list() -> Result<Output, Failure> {
     run(&["--list", "--verbose"], b"", LIST_WAIT, 64 * 1024)
+}
+
+/// `wsl.exe --list --running --quiet`: only the names of the distributions
+/// that run now. It starts none of them (YN-156 rule R1).
+pub fn running() -> Result<Output, Failure> {
+    run(&["--list", "--running", "--quiet"], b"", LIST_WAIT, 64 * 1024)
+}
+
+/// Runs `guard.sh` in `distro`, which must be running: the read-only look at
+/// the binfmt_misc table and the cgroup tree the distributions share, as
+/// `distro`'s default account.
+pub fn guard(distro: &str, script: &'static str) -> Result<Output, Failure> {
+    run(&["--distribution", distro, "--exec", "/bin/sh", "-s"], script.as_bytes(), GUARD_WAIT, 256 * 1024)
 }
 
 /// The read-only check in `distro` (a name from the list that passed

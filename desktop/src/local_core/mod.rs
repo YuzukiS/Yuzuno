@@ -17,11 +17,12 @@
 //!
 //! Errors are `{code, message}`; the codes: `notConnectionPage`,
 //! `unsupported`, `unavailable`, `unknownTarget`, `busy`, `noWsl`,
-//! `checkFailed`, `notChecked`, `checkChanged`, `noInstallation`,
-//! `invalidPath`, `invalidPort`, `portInUse`, `notInstallable`, `network`,
-//! `rateLimited`, `releaseNotFound`, `releaseInvalid`, `signature`,
-//! `cancelled`, `copyFailed`, `tooOld`, `installFailed`, `recorded`,
-//! `startFailed`, `starting`, `openFailed`.
+//! `checkFailed`, `notChecked`, `checkChanged`, `notStarted`,
+//! `peerChanged`, `noInstallation`, `invalidPath`, `invalidPort`,
+//! `portInUse`, `notInstallable`, `network`, `rateLimited`,
+//! `releaseNotFound`, `releaseInvalid`, `signature`, `cancelled`,
+//! `copyFailed`, `tooOld`, `installFailed`, `recorded`, `startFailed`,
+//! `starting`, `openFailed`.
 
 pub mod auto_start;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -53,6 +54,11 @@ const CHECK_SCRIPT: &str = include_str!("check.sh");
 #[cfg_attr(not(windows), allow(dead_code))]
 const STAGE_SCRIPT: &str = include_str!("stage.sh");
 
+/// Looks read-only at the state WSL 2's distributions share, sent to WSL on
+/// stdin (YN-156, guard.sh).
+#[cfg_attr(not(windows), allow(dead_code))]
+const GUARD_SCRIPT: &str = include_str!("guard.sh");
+
 /// The Core release a WSL distribution runs.
 #[cfg_attr(not(windows), allow(dead_code))]
 const WSL_PLATFORM: &str = "linux-x86_64";
@@ -78,6 +84,12 @@ pub struct Target {
     kind: &'static str,
     selectable: bool,
     is_default: bool,
+    /// Whether it runs now (`wsl --list --running --quiet`).
+    running: bool,
+    /// Rule R1 (check_rules::Boot): `own`, `running`, `alone` or `risky`.
+    boot: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    boot_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
@@ -244,7 +256,13 @@ pub async fn local_core_check(
 #[cfg(windows)]
 async fn platform_targets() -> Targets {
     match tauri::async_runtime::spawn_blocking(wsl::list).await {
-        Ok(Ok(output)) => wsl_targets(output.success, &output.stdout, &output.stderr),
+        Ok(Ok(output)) => {
+            // Reading the running names starts nothing (rule R1). If they
+            // cannot be read, every stopped non-default distribution is
+            // treated as risky.
+            let running = running_names().await;
+            wsl_targets(output.success, &output.stdout, &output.stderr, running.as_deref())
+        }
         Ok(Err(wsl::Failure::NoWsl)) => Targets {
             platform: Some("wsl"),
             available: false,
@@ -255,6 +273,15 @@ async fn platform_targets() -> Targets {
         Ok(Err(wsl::Failure::Run(message))) => wsl_error(message),
         Ok(Err(wsl::Failure::Cancelled)) => wsl_error("Listing was stopped.".into()),
         Err(error) => wsl_error(error.to_string()),
+    }
+}
+
+/// The distributions running now, or None when that could not be read.
+#[cfg(windows)]
+async fn running_names() -> Option<Vec<String>> {
+    match tauri::async_runtime::spawn_blocking(wsl::running).await {
+        Ok(Ok(output)) if output.success => Some(wsl_list::parse_running(&wsl_list::decode(&output.stdout))),
+        _ => None,
     }
 }
 
@@ -275,9 +302,11 @@ fn wsl_error(message: String) -> Targets {
 
 /// What the page is shown from `wsl.exe --list --verbose` (design 4.2): a
 /// distribution can be chosen if it is WSL 2 and its name is one this app
-/// passes to WSL. A failure shows WSL's own first line.
+/// passes to WSL. A failure shows WSL's own first line. `running` is the
+/// names from `--list --running --quiet`, or None when they could not be
+/// read (then a stopped distribution that is not the default is risky).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8]) -> Targets {
+fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8], running: Option<&[String]>) -> Targets {
     let text = wsl_list::decode(stdout);
     if !success {
         let message = wsl_list::first_line(&wsl_list::decode(stderr))
@@ -289,6 +318,7 @@ fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8]) -> Targets {
     if distros.is_empty() {
         return wsl_error("WSL listed no distributions.".into());
     }
+    let default = distros.iter().find(|distro| distro.is_default).map(|distro| distro.name.clone());
     let targets = distros
         .into_iter()
         .map(|distro| {
@@ -300,12 +330,34 @@ fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8]) -> Targets {
             } else {
                 None
             };
+            let is_running = running.is_some_and(|names| names.iter().any(|name| name == &distro.name));
+            let peers_running = match running {
+                Some(names) => names.iter().any(|name| name != &distro.name),
+                // Unknown: treat it as another distribution running.
+                None => true,
+            };
+            let boot = check_rules::boot(distro.is_default, is_running, peers_running);
+            let boot_detail = (boot == check_rules::Boot::Risky).then(|| {
+                let default = default.as_deref().map(|name| format!(" ({name})")).unwrap_or_default();
+                if running.is_some() {
+                    format!(
+                        "It is stopped and another WSL distribution is running. Starting it could remove Windows interop from the running one and share its cgroups. Stop the other distributions, or install into the default distribution{default}."
+                    )
+                } else {
+                    format!(
+                        "WSL's running distributions could not be read, so this app does not start this stopped distribution. Stop the other distributions, or install into the default distribution{default}."
+                    )
+                }
+            });
             Target {
                 label: distro.name.clone(),
                 id: distro.name,
                 kind: "wsl",
                 selectable: distro.version == 2 && named,
                 is_default: distro.is_default,
+                running: is_running,
+                boot: boot.as_str(),
+                boot_detail,
                 note,
             }
         })
@@ -314,10 +366,214 @@ fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8]) -> Targets {
 }
 
 #[cfg(windows)]
+fn failure_text(failure: wsl::Failure) -> String {
+    match failure {
+        wsl::Failure::NoWsl => "WSL is not installed on this computer".into(),
+        wsl::Failure::Run(message) => message,
+        wsl::Failure::Cancelled => "reading it was stopped".into(),
+    }
+}
+
+/// What rule R1 reads once: the default distribution and the ones running
+/// now (YN-156). Reading the running names starts nothing.
+#[cfg(windows)]
+struct Situation {
+    default: Option<String>,
+    /// None when `--list --running --quiet` could not be read; then a
+    /// stopped distribution that is not the default is treated as risky.
+    running: Option<Vec<String>>,
+}
+
+#[cfg(windows)]
+impl Situation {
+    async fn read() -> Result<Self, Error> {
+        let output = tauri::async_runtime::spawn_blocking(wsl::list)
+            .await
+            .map_err(|error| Error::new("checkFailed", error.to_string()))?
+            .map_err(|failure| Error::new("checkFailed", failure_text(failure)))?;
+        if !output.success {
+            let said = wsl_list::first_line(&wsl_list::decode(&output.stderr))
+                .or_else(|| wsl_list::first_line(&wsl_list::decode(&output.stdout)))
+                .unwrap_or_else(|| "WSL could not list its distributions.".into());
+            return Err(Error::new("checkFailed", said));
+        }
+        let default = wsl_list::parse(&wsl_list::decode(&output.stdout))
+            .iter()
+            .find(|distro| distro.is_default)
+            .map(|distro| distro.name.clone());
+        Ok(Self { default, running: running_names().await })
+    }
+
+    fn is_running(&self, distro: &str) -> bool {
+        self.running.as_ref().is_some_and(|names| names.iter().any(|name| name == distro))
+    }
+
+    /// Rule R1: a stopped distribution may not be started when it is not the
+    /// default one and another distribution runs (or that cannot be read).
+    /// A distribution that already runs is not started again by this.
+    fn may_start(&self, distro: &str) -> Result<(), Error> {
+        if self.is_running(distro) {
+            return Ok(());
+        }
+        if self.default.as_deref() == Some(distro) {
+            return Ok(());
+        }
+        match &self.running {
+            Some(running) => {
+                let peers: Vec<String> = running.iter().filter(|name| name.as_str() != distro).cloned().collect();
+                if peers.is_empty() {
+                    Ok(())
+                } else {
+                    Err(not_started(distro, Some(&peers), self.default.as_deref()))
+                }
+            }
+            None => Err(not_started(distro, None, self.default.as_deref())),
+        }
+    }
+
+    /// A running distribution other than the target to look from, preferring
+    /// the default one.
+    fn witness(&self, target: &str) -> Option<String> {
+        let running = self.running.as_ref()?;
+        running
+            .iter()
+            .find(|name| name.as_str() != target && self.default.as_deref() == Some(name.as_str()))
+            .or_else(|| running.iter().find(|name| name.as_str() != target))
+            .cloned()
+    }
+}
+
+#[cfg(windows)]
+fn not_started(distro: &str, peers: Option<&[String]>, default: Option<&str>) -> Error {
+    let who = match peers {
+        Some(peers) if !peers.is_empty() => format!("and {} is running", peers.join(", ")),
+        _ => "and other WSL distributions may be running".into(),
+    };
+    let default = default.map(|name| format!(" ({name})")).unwrap_or_default();
+    Error::new(
+        "notStarted",
+        format!(
+            "WSL did not start {distro}: it is stopped, it is not the default distribution, {who}. Starting it could remove Windows interop from the running distribution and share its cgroups. Stop the other distributions, or install into the default distribution{default}."
+        ),
+    )
+}
+
+/// The read-only witness for the distributions' shared state (YN-156 rule
+/// G): one look before the first command into the target and one after each
+/// command, in a distribution that is already running. A change stops the
+/// work; nothing is put back by this app.
+#[cfg(windows)]
+struct Guard {
+    target: String,
+    witness: Option<String>,
+    baseline: Option<guard_rules::Snapshot>,
+}
+
+#[cfg(windows)]
+impl Guard {
+    async fn open(situation: &Situation, target: &str) -> Result<Self, Error> {
+        let witness = situation.witness(target);
+        let baseline = match &witness {
+            Some(witness) => Some(snapshot(witness).await?),
+            None => None,
+        };
+        Ok(Self { target: target.to_owned(), witness, baseline })
+    }
+
+    async fn after(&mut self) -> Result<(), Error> {
+        let running = running_names().await;
+        let Some(running) = running else {
+            return if self.witness.is_some() {
+                Err(Error::new(
+                    "peerChanged",
+                    format!(
+                        "The shared state could not be checked: WSL's running distributions could not be read. Nothing further was run in {}.",
+                        self.target
+                    ),
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        let still_running = self.witness.as_ref().is_some_and(|witness| running.iter().any(|name| name == witness));
+        if self.witness.is_none() {
+            // A distribution started to run meanwhile: look from it from the
+            // next command on. Nothing was compared with it before.
+            let Some(witness) = running.into_iter().find(|name| name.as_str() != self.target.as_str()) else { return Ok(()) };
+            self.baseline = Some(snapshot(&witness).await?);
+            self.witness = Some(witness);
+            return Ok(());
+        }
+        if !still_running {
+            let witness = self.witness.as_deref().unwrap_or_default();
+            return Err(Error::new(
+                "peerChanged",
+                format!(
+                    "The shared state could not be checked: {witness} stopped while this app was working on {}. Nothing further was run in {}. Check Windows interop and the cgroups yourself; this app changes neither.",
+                    self.target
+                ),
+            ));
+        }
+        let witness = self.witness.clone().unwrap_or_default();
+        let after = snapshot(&witness).await?;
+        if let Some(before) = &self.baseline {
+            let changes = guard_rules::changes(before, &after);
+            if !changes.is_empty() {
+                return Err(Error::new("peerChanged", guard_rules::message(&witness, &self.target, &changes)));
+            }
+        }
+        self.baseline = Some(after);
+        Ok(())
+    }
+}
+
+/// One look at what `witness` can see of the shared state.
+#[cfg(windows)]
+async fn snapshot(witness: &str) -> Result<guard_rules::Snapshot, Error> {
+    let name = witness.to_owned();
+    let output = tauri::async_runtime::spawn_blocking(move || wsl::guard(&name, GUARD_SCRIPT))
+        .await
+        .map_err(|error| Error::new("peerChanged", format!("The shared state could not be checked: {error}.")))?
+        .map_err(|failure| Error::new("peerChanged", format!("The shared state could not be checked in {witness}: {}.", failure_text(failure))))?;
+    if !output.success {
+        let said = wsl_list::first_line(&wsl_list::decode(&output.stderr))
+            .or_else(|| wsl_list::first_line(&String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_else(|| "the guard printed nothing".into());
+        return Err(Error::new(
+            "peerChanged",
+            format!("The shared state could not be checked in {witness}: {said}. Nothing further was run in the target distribution."),
+        ));
+    }
+    guard_rules::parse(&String::from_utf8_lossy(&output.stdout)).map_err(|said| {
+        Error::new(
+            "peerChanged",
+            format!("The shared state could not be checked in {witness}: {said} Nothing further was run in the target distribution."),
+        )
+    })
+}
+
+/// Runs `work` (one command into the target) between two looks; a change the
+/// witness saw is the error, whether it is seen before the command or after
+/// it, whatever `work` came to.
+#[cfg(windows)]
+async fn guarded<T, F>(guard: &mut Guard, work: F) -> Result<T, Error>
+where
+    F: std::future::Future<Output = Result<T, Error>>,
+{
+    guard.after().await?;
+    let result = work.await;
+    guard.after().await?;
+    result
+}
+
+#[cfg(windows)]
 async fn check_target(window: &WebviewWindow, target: &Target) -> Result<Check, Error> {
-    let report = run_check(target, "default", "default").await?;
+    let situation = Situation::read().await?;
+    situation.may_start(&target.id)?;
+    let mut guard = Guard::open(&situation, &target.id).await?;
+    let report = guarded(&mut guard, run_check(target, "default", "default")).await?;
     let port = free_port(window).await;
-    Ok(build_check(&target.id, &report, port))
+    Ok(build_check(&target.id, &report, port, target.is_default))
 }
 
 /// Runs the read-only check in `target` for these folders (`default`, or
@@ -456,9 +712,9 @@ fn installation(report: &Report) -> (Option<Installation>, Found) {
 
 /// The check's answer to the page. Only WSL 2 targets are checked.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn build_check(target: &str, report: &Report, port: Port) -> Check {
+fn build_check(target: &str, report: &Report, port: Port, is_default: bool) -> Check {
     let (installation, found) = installation(report);
-    let items = check_rules::judge(report, true, &port, found);
+    let items = check_rules::judge(report, true, &port, found, is_default);
     let installable = check_rules::installable(&items, found);
     let text = |key: &str| report.get(key).unwrap_or_default().to_owned();
     Check {
@@ -956,9 +1212,16 @@ async fn install(
     let cancel = Cancellable::open(local)?;
     let mut receiver = cancel.receiver.clone();
 
+    // Rule R1, then the witness for the shared state (rule G): every command
+    // into the target is compared with one look before it.
+    let situation = Situation::read().await?;
+    situation.may_start(&target.id)?;
+    let mut guard = Guard::open(&situation, &target.id).await?;
+
     // The folders and port as they are now: the same check, for these.
     port_free(window, place.port).await?;
-    let now = build_check(&target.id, &run_check(target, &place.install_dir, &place.data_dir).await?, Port::Free(place.port));
+    let report = guarded(&mut guard, run_check(target, &place.install_dir, &place.data_dir)).await?;
+    let now = build_check(&target.id, &report, Port::Free(place.port), target.is_default);
     if now.user != checked.user || now.home != checked.home {
         return Err(Error::new("checkChanged", "The distribution's account changed since it was checked. Check it again."));
     }
@@ -995,15 +1258,17 @@ async fn install(
 
     // Into the distribution: only these verified bytes, on tar's stdin.
     send(Progress::bytes("copy", 0, total));
-    let stage = prepare(&steps, &place.install_dir).await?;
-    let unpacked = unpack(&steps, &stage, archive, &cancel, progress.clone(), total).await;
+    let stage = guarded(&mut guard, prepare(&steps, &place.install_dir)).await?;
+    let unpacked = guarded(&mut guard, unpack(&steps, &stage, archive, &cancel, progress.clone(), total)).await;
     cancel.end();
     if let Err(error) = unpacked {
         return Err(cleaned_up(error, clean(&steps, &stage).await));
     }
     send(Progress::phase("register"));
-    let installed = register(&steps, &stage, &place.install_dir, &verified).await;
+    let installed = guarded(&mut guard, register(&steps, &stage, &place.install_dir, &verified)).await;
     let left = clean(&steps, &stage).await;
+    // The temporary folder is removed by the same step; look once more after.
+    guard.after().await?;
     let installed = installed.map_err(|error| cleaned_up(error, left))?;
     let place = Place { install_dir: installed.install_dir.clone(), ..place };
     if let Ok(mut placed) = local.placed.lock() {
@@ -1011,7 +1276,7 @@ async fn install(
     }
 
     send(Progress::phase("start"));
-    let started = first_start(&steps, &installed.install_dir, &installed.release_id, &place, &now.home).await?;
+    let started = guarded(&mut guard, first_start(&steps, &installed.install_dir, &installed.release_id, &place, &now.home)).await?;
     send(Progress { detail: started.note.clone(), ..Progress::phase("open") });
     open(window, target, &now.user, place.port, &started).await
 }
@@ -1122,6 +1387,8 @@ async fn start_found(
     installation: &Installation,
 ) -> Result<String, Error> {
     let name = crate::entries::name_for_wsl(&target.id);
+    let situation = Situation::read().await?;
+    situation.may_start(&target.id)?;
     if let (true, Some(port), Some(workspace)) = (installation.recorded, installation.port, installation.workspace_id.as_deref()) {
         // Started before: as its record says, like a saved start.
         let profile = crate::connection::StartProfile::new(&loopback(port)?, &target.id, &checked.user, &installation.install_dir, workspace)
@@ -1137,8 +1404,37 @@ async fn start_found(
     };
     port_free(window, place.port).await?;
     let steps = Steps::new(&target.id, &checked.user)?;
-    let started = first_start(&steps, &installation.install_dir, &installation.release_id, &place, &checked.home).await?;
+    let mut guard = Guard::open(&situation, &target.id).await?;
+    let started = guarded(&mut guard, first_start(&steps, &installation.install_dir, &installation.release_id, &place, &checked.home)).await?;
     open(window, target, &checked.user, place.port, &started).await
+}
+
+/// Starts `profile`'s Core with rule G around it: the shared state is looked
+/// at before the start and after it, from other running distributions, and a
+/// change stops the work (the Core itself may already be running). Rule R1
+/// is checked first: a stopped distribution is started only as the default
+/// one or while no other one runs.
+#[cfg(windows)]
+pub async fn start_guarded(profile: &StartProfile) -> StartOutcome {
+    let situation = match Situation::read().await {
+        Ok(situation) => situation,
+        Err(error) => return StartOutcome::Failed(error.message),
+    };
+    if let Err(error) = situation.may_start(&profile.wsl_distro) {
+        return StartOutcome::Failed(error.message);
+    }
+    let mut guard = match Guard::open(&situation, &profile.wsl_distro).await {
+        Ok(guard) => guard,
+        Err(error) => return StartOutcome::Failed(error.message),
+    };
+    let profile = profile.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || wsl::start(&profile))
+        .await
+        .unwrap_or_else(|error| StartOutcome::Failed(error.to_string()));
+    match guard.after().await {
+        Ok(()) => outcome,
+        Err(error) => StartOutcome::Failed(error.message),
+    }
 }
 
 #[cfg(test)]
@@ -1149,28 +1445,53 @@ mod tests {
     #[test]
     fn targets_have_the_shared_shape() {
         let list = "  NAME            STATE           VERSION\r\n* main-distro     Running         2\r\n  old-distro      Stopped         1\r\n  odd,name        Stopped         2\r\n";
-        let targets = wsl_targets(true, list.as_bytes(), b"");
+        let running = vec!["main-distro".to_string()];
+        let targets = wsl_targets(true, list.as_bytes(), b"", Some(&running));
+        let value = serde_json::to_value(&targets).unwrap();
+        assert_eq!(value["platform"], "wsl");
+        assert_eq!(value["available"], true);
+        let listed = value["targets"].as_array().unwrap();
+        assert_eq!(listed.len(), 3);
         assert_eq!(
-            serde_json::to_value(&targets).unwrap(),
-            json!({
-                "platform": "wsl",
-                "available": true,
-                "targets": [
-                    {"id": "main-distro", "label": "main-distro", "kind": "wsl", "selectable": true, "isDefault": true},
-                    {"id": "old-distro", "label": "old-distro", "kind": "wsl", "selectable": false, "isDefault": false,
-                     "note": "WSL 1: run `wsl --set-version old-distro 2` in Windows first."},
-                    {"id": "odd,name", "label": "odd,name", "kind": "wsl", "selectable": false, "isDefault": false,
-                     "note": "Its name has characters this app does not pass to WSL."}
-                ]
-            })
+            listed[0],
+            json!({"id": "main-distro", "label": "main-distro", "kind": "wsl", "selectable": true,
+                   "isDefault": true, "running": true, "boot": "running"})
         );
+        assert_eq!(listed[1]["id"], "old-distro");
+        assert_eq!(listed[1]["selectable"], false);
+        assert_eq!(listed[1]["running"], false);
+        assert_eq!(listed[1]["boot"], "risky");
+        assert!(listed[1]["bootDetail"].as_str().unwrap().contains("stopped and another WSL distribution is running"));
+        assert!(listed[1]["note"].as_str().unwrap().contains("wsl --set-version"));
+        assert_eq!(listed[2]["id"], "odd,name");
+        assert_eq!(listed[2]["boot"], "risky");
+        assert!(listed[2]["note"].as_str().unwrap().contains("characters this app does not pass"));
+    }
+
+    #[test]
+    fn a_stopped_distribution_is_alone_or_risky_by_what_runs_now() {
+        let list = "  NAME       STATE     VERSION\r\n* main     Running   2\r\n  other    Stopped   2\r\n";
+        let boot = |running: Option<&[String]>| {
+            let targets = wsl_targets(true, list.as_bytes(), b"", running);
+            let value = serde_json::to_value(&targets).unwrap();
+            let targets = value["targets"].as_array().unwrap().clone();
+            (targets[0]["boot"].as_str().unwrap().to_owned(), targets[1]["boot"].as_str().unwrap().to_owned())
+        };
+        let none: Vec<String> = Vec::new();
+        let other = vec!["other".to_string()];
+        let main = vec!["main".to_string()];
+        assert_eq!(boot(Some(&none)), ("own".into(), "alone".into()));
+        assert_eq!(boot(Some(&other)), ("own".into(), "running".into()));
+        assert_eq!(boot(Some(&main)), ("running".into(), "risky".into()));
+        // Unreadable running names: only the default may start.
+        assert_eq!(boot(None), ("own".into(), "risky".into()));
     }
 
     #[test]
     fn a_failed_or_empty_list_shows_what_wsl_said() {
         let error = |targets: Targets| serde_json::to_value(&targets).unwrap();
         assert_eq!(
-            error(wsl_targets(false, b"", b"<3>WSL (8) ERROR: something.\r\n")),
+            error(wsl_targets(false, b"", b"<3>WSL (8) ERROR: something.\r\n", None)),
             json!({"platform": "wsl", "available": false, "reason": "wslError", "message": "WSL (8) ERROR: something", "targets": []})
         );
         // UTF-16LE, as an older WSL prints it.
@@ -1179,10 +1500,10 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         assert_eq!(
-            error(wsl_targets(false, &said, b""))["message"],
+            error(wsl_targets(false, &said, b"", None))["message"],
             "Windows Subsystem for Linux has no installed distributions"
         );
-        assert_eq!(error(wsl_targets(true, b"  NAME STATE VERSION\r\n", b""))["message"], "WSL listed no distributions.");
+        assert_eq!(error(wsl_targets(true, b"  NAME STATE VERSION\r\n", b"", None))["message"], "WSL listed no distributions.");
     }
 
     #[test]
@@ -1217,7 +1538,7 @@ mod tests {
 
     #[test]
     fn a_check_has_the_shared_shape() {
-        let check = serde_json::to_value(build_check("main-distro", &report("root.state=absent\n"), Port::Free(4318))).unwrap();
+        let check = serde_json::to_value(build_check("main-distro", &report("root.state=absent\n"), Port::Free(4318), true)).unwrap();
         let keys: Vec<_> = check.as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys.len(), 8);
         for key in ["target", "platform", "user", "home", "checks", "installation", "defaults", "installable"] {
@@ -1234,8 +1555,8 @@ mod tests {
         );
         assert_eq!(check["installable"], true);
         assert_eq!(check["checks"][0], json!({"id": "wsl2", "level": "required", "state": "ok"}));
-        assert_eq!(check["checks"][6], json!({"id": "port", "level": "required", "state": "ok", "detail": "4318"}));
-        assert_eq!(check["checks"].as_array().unwrap().len(), 14);
+        assert_eq!(check["checks"][7], json!({"id": "port", "level": "required", "state": "ok", "detail": "4318"}));
+        assert_eq!(check["checks"].as_array().unwrap().len(), 15);
     }
 
     #[test]
@@ -1248,6 +1569,7 @@ mod tests {
             "main-distro",
             &report(&format!("root.state=installed\nroot.current={current}\nroot.launch={launch}\nroot.entry=yes\n")),
             Port::Free(4318),
+            true,
         ))
         .unwrap();
         assert_eq!(
@@ -1268,7 +1590,7 @@ mod tests {
             // A record whose start entry is gone does not count.
             format!("root.state=installed\nroot.current={current}\nroot.launch={launch}\nroot.entry=no\n"),
         ] {
-            let check = serde_json::to_value(build_check("main-distro", &report(&extra), Port::Free(4317))).unwrap();
+            let check = serde_json::to_value(build_check("main-distro", &report(&extra), Port::Free(4317), true)).unwrap();
             assert_eq!(
                 check["installation"],
                 json!({"installDir": "/home/someone/.local/share/yuzuno-core", "releaseId": "20261113-b870c92", "port": null, "workspaceId": null, "recorded": false})
@@ -1284,12 +1606,13 @@ mod tests {
                 "main-distro",
                 &report(&format!("root.state=installed\nroot.current={current}\nroot.entry=no\n")),
                 Port::Free(4317),
+                true,
             ))
             .unwrap();
             assert_eq!(check["installation"], Value::Null);
             assert_eq!(check["installable"], false);
-            assert_eq!(check["checks"][4]["id"], "paths");
-            assert_eq!(check["checks"][4]["state"], "missing");
+            assert_eq!(check["checks"][5]["id"], "paths");
+            assert_eq!(check["checks"][5]["state"], "missing");
         }
     }
 
@@ -1308,7 +1631,7 @@ mod tests {
             Err(wsl::Failure::Run(message)) => panic!("{message}"),
             Err(wsl::Failure::Cancelled) => panic!("listing was stopped"),
         };
-        let targets = wsl_targets(output.success, &output.stdout, &output.stderr);
+        let targets = wsl_targets(output.success, &output.stdout, &output.stderr, None);
         println!("real wsl list: {}", serde_json::to_string(&targets).unwrap());
         assert!(targets.available, "{targets:?}");
         assert!(!targets.targets.is_empty());
@@ -1317,14 +1640,14 @@ mod tests {
 
     #[test]
     fn no_free_port_is_shown_as_the_default_and_refused() {
-        let check = serde_json::to_value(build_check("main-distro", &report("root.state=absent\n"), Port::NoneFree)).unwrap();
+        let check = serde_json::to_value(build_check("main-distro", &report("root.state=absent\n"), Port::NoneFree, true)).unwrap();
         assert_eq!(check["defaults"]["port"], 4317);
-        assert_eq!(check["checks"][6]["state"], "missing");
+        assert_eq!(check["checks"][7]["state"], "missing");
         assert_eq!(check["installable"], false);
     }
 
     fn checked() -> Check {
-        build_check("main-distro", &report("root.state=absent\n"), Port::Free(4318))
+        build_check("main-distro", &report("root.state=absent\n"), Port::Free(4318), true)
     }
 
     #[test]
@@ -1521,7 +1844,7 @@ mod tests {
 
     #[test]
     fn a_place_that_cannot_take_core_says_each_required_item() {
-        let check = build_check("main-distro", &report("root.state=other\n"), Port::NoneFree);
+        let check = build_check("main-distro", &report("root.state=other\n"), Port::NoneFree, true);
         let error = not_installable(&check);
         assert_eq!(error.code, "notInstallable");
         assert!(error.message.contains("paths: /home/someone/.local/share/yuzuno-core exists but is not a Yuzuno installation."), "{}", error.message);
