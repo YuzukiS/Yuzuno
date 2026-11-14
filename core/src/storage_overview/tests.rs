@@ -36,6 +36,8 @@ fn fixture() -> (tempfile::TempDir, Arc<Workspace>, PathBuf) {
     let ws = Workspace::new(data.clone(), "/tmp".into(), "unused".into()).unwrap();
     write(&data.join("input-images/a/one.png"), 1000);
     write(&data.join("home-images/p/one.png"), 1000);
+    write(&data.join(format!("input-files/a/{}/q3-report.pdf", "0".repeat(64))), 1000);
+    write(&data.join(format!("home-files/p/{}/notes.txt", "1".repeat(64))), 1000);
     write(&tmp.path().join("outside/big.bin"), 1 << 20);
     write(&data.join("jobs/j1/log-0.bin"), 2000);
     write(&data.join("claude-runtime/key/runtime.js"), 500);
@@ -66,6 +68,8 @@ fn the_overview_names_each_entry_without_walking_it_and_says_what_a_backup_copie
     for (name, what, backup) in [
         ("input-images", "inputImages", "copied"),
         ("home-images", "homeImages", "copied"),
+        ("input-files", "inputFiles", "copied"),
+        ("home-files", "homeFiles", "copied"),
         ("jobs", "jobs", "copied"),
         ("claude-runtime", "claudeRuntime", "excluded"),
         ("someone-elses", "unknown", "notCopied"),

@@ -76,6 +76,8 @@ const entryLabelsZh: Record<string, string> = {
   lock: "Workspace 锁",
   inputImages: "发送给 Agent 的图片",
   homeImages: "在 Home 写的图片",
+  inputFiles: "会话里附的文件",
+  homeFiles: "在 Home 附的文件",
   briefAttachments: "Brief 附件",
   reviews: "代码审查源",
   jobs: "Job 记录与输出日志",

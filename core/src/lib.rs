@@ -73,6 +73,7 @@ pub mod pr_operations;
 pub mod merge_queue;
 pub mod jobs;
 pub mod ci_monitor;
+pub mod input_files;
 pub mod input_images;
 mod clarifications;
 pub mod older_cores;
