@@ -1407,6 +1407,19 @@ export function App() {
     heldPlace.current = () => { if (restore()) still = 0; };
     return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
+  // A newer page's room comes in above the window with its read, while the
+  // page target makes the reading anchor stand aside (ConversationWindow),
+  // and nothing holds the place until the page is in. It moved what was
+  // being read a screen down, and the place the reader then scrolled to was
+  // the one held when the page came in: their scroll was lost (YN-114). The
+  // conversation moves by the same height in the same commit instead. Once
+  // the newer window is shown, putting the place back is the page target's.
+  const roomAbove = !!(pageSpace?.before && currentDetail?.conversation?.hasBefore);
+  useLayoutEffect(() => {
+    const room = beforeSpace.current, el = scroll.current, shown = currentDetail?.conversation;
+    if (!roomAbove || !room || !el || !pageTarget || !shown || shown.start !== pageTarget.start || shown.end !== pageTarget.end) return;
+    el.scrollTop += room.offsetHeight;
+  }, [roomAbove]);
   // The newest window is the one shown, with no read of another on its way
   // (Back to latest's pin waits for it, YN-19).
   const newestShown = useRef(false);
