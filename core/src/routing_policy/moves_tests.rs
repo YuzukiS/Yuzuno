@@ -229,33 +229,57 @@ async fn an_executor_the_user_disconnected_on_another_machine_or_with_routing_of
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
 }
 
-/// #966 R1 P2: a move runs in a task of its own, so a restart that does not end
-/// holds no pass, and a later pass starts no second move of it; the Workspace's
-/// start time limit cuts it off, its failure shown, its connection kept. Here the
-/// test holds the executor's gate, as a move that never finishes would.
+/// #966 R3 P2: the wait for the executor's gate and the idle checks are not
+/// within the start time limit. Another lifecycle operation holding the gate
+/// longer than it must never mark a live executor failed; once the gate is
+/// free the move runs within the limit, and a later pass leaves it to its task.
 #[tokio::test]
-async fn a_move_that_does_not_finish_holds_no_pass_and_is_cut_off_by_the_start_limit() {
+async fn a_move_waiting_on_the_gate_is_not_cut_off_by_the_start_limit() {
     let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
     lab.pool(&[3]);
     lab.set_status("idle");
-    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(std::time::Duration::from_secs(1));
+    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(std::time::Duration::from_secs(2));
     let gate = lab.ws.gate(ID).await;
     let held = gate.lock().await;
     let moving = tokio::time::timeout(std::time::Duration::from_secs(5), lab.ws.move_off_left_accounts()).await
         .expect("the pass does not wait for the move");
     assert_eq!(moving.len(), 1);
     assert!(lab.ws.move_off_left_accounts().await.is_empty(), "one being moved is left to its task");
+    // Past the limit while another holder has the gate: nothing was detached,
+    // and the executor stays as it was.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    let agent = lab.agent();
+    assert_eq!((agent.status.as_str(), agent.error.as_deref()), ("idle", None), "a gate held past the limit is not its failure");
+    assert_eq!(lab.starts().len(), 1, "nothing was detached");
+    assert!(lab.ws.executor_slots.moving.lock().unwrap().contains(ID));
+    drop(held);
+    for task in moving {
+        tokio::time::timeout(std::time::Duration::from_secs(10), task).await.expect("the move ends once the gate is free").unwrap();
+    }
+    assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
+    assert!(lab.ws.executor_slots.moving.lock().unwrap().is_empty());
+}
+
+/// #966 R1 P2, kept: a detach-and-restart that does not end is cut off by the
+/// Workspace's start time limit, its failure shown; a restart that never
+/// answers holds no pass.
+#[tokio::test]
+async fn a_restart_that_does_not_answer_is_cut_off_by_the_start_limit() {
+    let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
+    lab.pool(&[3]);
+    lab.set_status("idle");
+    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(std::time::Duration::from_secs(1));
+    // The bridge the restart spawns never answers, after the detach has begun.
+    fs::write(lab.dir.path().join("runtime").join("bridge.mjs"), "process.stdin.resume(); setInterval(() => {}, 1000);\n").unwrap();
+    let moving = tokio::time::timeout(std::time::Duration::from_secs(5), lab.ws.move_off_left_accounts()).await
+        .expect("the pass does not wait for the move");
+    assert_eq!(moving.len(), 1);
     for task in moving {
         task.await.unwrap();
     }
     let agent = lab.agent();
-    assert_eq!((agent.status.as_str(), agent.connection_state.as_str()), ("error", "connected"));
+    assert_eq!(agent.status, "error");
     assert!(agent.error.as_deref().is_some_and(|e| e.contains("did not finish within 1 s") && e.contains("已中止")), "{:?}", agent.error);
-    assert_eq!((lab.starts().len(), lab.profile()), (1, Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) })));
+    assert_eq!(lab.starts().len(), 1, "the restart never ran");
     assert!(lab.ws.executor_slots.moving.lock().unwrap().is_empty());
-    drop(held);
-    // In error, it is idle enough: the next pass moves it.
-    lab.pass().await;
-    assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
-    assert_eq!(lab.agent().status, "idle");
 }

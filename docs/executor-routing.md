@@ -212,12 +212,15 @@ profile, refreshes its tokens and guards the default login.
     started again, and that launch changes the account as above. It is idle
     after, its error cleared, and mail waiting for it is delivered. No Turn
     is started for it;
-  - each move runs on its own, within the Workspace's start time limit
-    ([the start time limit](executor-model.md#executors-at-once), as a start is), so the pass never waits for it and
-    starts no second move of the same executor. A start that fails, or a
-    move the limit cuts off, is its failure, as a Reconnect's is: it is shown
-    with why and left to you, never closed. No other account to move to
-    leaves it connected as it is.
+  - each move runs on its own, so the pass never waits for it and starts no
+    second move of the same executor. Its detach and restart run within the
+    Workspace's start time limit ([the start time
+    limit](executor-model.md#executors-at-once), as a start is); waiting for
+    its gate and the idle checks above are not counted, since a live executor
+    held by another operation longer than the limit must not be marked
+    failed. A start that fails, or a detach and restart the limit cuts off, is
+    its failure, as a Reconnect's is: it is shown with why and left to you,
+    never closed. No other account to move to leaves it connected as it is.
 
   One you disconnected moves at your Reconnect; one whose bridge already
   ended moves at its next start. Codex homes and API keys are not changed

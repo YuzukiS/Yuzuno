@@ -7,19 +7,22 @@
 //! when the readings, fresh and available, give another account of the pool
 //! (`pick_other`). None to move to leaves it connected as it is.
 //!
-//! Each move runs in a task of its own, under a work permit and within the
-//! Workspace's start time limit, as a slot start does: the pass never waits
-//! for a restart, and a later pass leaves one being moved. The move waits for
-//! it to be idle: under its gate, read again, no Turn running, request shown,
-//! approval waited for, background task or sub-agent still able to report,
-//! and its status idle or error. Then its
-//! bridge is detached as an update detaches one (`detach_idle_claude`: the
-//! bridge confirms it is idle, its events are drained, only this generation is
-//! closed) and started again (`claude_ensure`), whose start moves its account
+//! Each move runs in a task of its own, under a work permit: the pass never
+//! waits for a restart, and a later pass leaves one being moved. The move
+//! waits for it to be idle: under its gate, read again, no Turn running,
+//! request shown, approval waited for, background task or sub-agent still able
+//! to report, and its status idle or error. Only its detach and restart then
+//! run within the Workspace's start time limit, as a slot start does; the wait
+//! for its gate and the idle checks are not counted, since the executor is
+//! live and running one of them longer than the limit must never mark it
+//! failed. Its bridge is detached as an update detaches one
+//! (`detach_idle_claude`: the bridge confirms it is idle, its events are
+//! drained, only this generation is closed) and started again
+//! (`claude_ensure`), whose start moves its account
 //! (routing_launch.rs `move_account`) and resumes its session there. A Turn
 //! under way is never cut short: a later pass, at most a tick later, moves it
-//! once it has ended. A start that fails, or a move the limit cuts off, is the
-//! executor's failure, as a Reconnect's is.
+//! once it has ended. A start that fails, or a detach-and-restart the limit
+//! cuts off, is the executor's failure, as a Reconnect's is.
 use super::evaluate::{pick_other, Assume, Gathered};
 use super::left::account_left;
 use crate::{routing_launch::RuntimeProfile, store::Store, workspace::Workspace};
@@ -118,11 +121,12 @@ impl Workspace {
         moves
     }
 
-    /// One executor's move in a task of its own, under its work permit, within
-    /// the Workspace's start time limit, as a slot start is (executor_slots.rs
-    /// `start_and_settle`). A move cut off by the limit is its failure, shown
-    /// to the user as a Reconnect's would be, and nothing else is done to it:
-    /// a started executor is never closed for it.
+    /// One executor's move in a task of its own, under its work permit, its
+    /// detach and restart within the Workspace's start time limit, as a slot
+    /// start is (executor_slots.rs `start_and_settle`). A detach and restart
+    /// cut off by the limit is its failure, shown to the user as a Reconnect's
+    /// would be, and nothing else is done to it: a started executor is never
+    /// closed for it.
     fn spawn_move(self: &Arc<Self>, id: String, permit: crate::updates::admission::Permit, policy: Arc<Value>, gathered: Arc<Gathered>)
         -> tokio::task::JoinHandle<()> {
         let ws = self.clone();
@@ -131,17 +135,16 @@ impl Workspace {
                 eprintln!("Executor {id}: its start time limit could not be read, so the default holds: {error:#}");
                 std::time::Duration::from_secs(crate::executor_slots::DEFAULT_START_LIMIT.unsigned_abs())
             });
-            match tokio::time::timeout(limit, ws.move_when_idle(&id, &policy, &gathered)).await {
-                Ok(Ok(true)) => eprintln!("Routing: executor {id} was moved to another claude-swap account of its pool"),
-                Ok(Ok(false)) => {}
-                Ok(Err(error)) => eprintln!("Routing: executor {id} could not be moved to another account: {error:#}"),
-                Err(_) => {
-                    let seconds = limit.as_secs();
+            match ws.move_when_idle(&id, &policy, &gathered, limit).await {
+                Ok(MoveEnd::Moved) => eprintln!("Routing: executor {id} was moved to another claude-swap account of its pool"),
+                Ok(MoveEnd::NotIdle) => {}
+                Ok(MoveEnd::CutOff(seconds)) => {
                     let why = anyhow::anyhow!("Its move to another claude-swap account of its pool did not finish within {seconds} s, \
                         so it was cut off: reconnect it / 它换到同一账号池里另一个 claude-swap 账号没有在 {seconds} 秒内完成，已中止：请重新连接它");
                     eprintln!("Routing: executor {id}: {why}");
                     ws.failed(&id, &why).await;
                 }
+                Err(error) => eprintln!("Routing: executor {id} could not be moved to another account: {error:#}"),
             }
             ws.executor_slots.moving.lock().unwrap().remove(&id);
             drop(permit);
@@ -149,15 +152,17 @@ impl Workspace {
     }
 
     /// One executor's move, if it is idle now, under its gate: whether it was
-    /// detached and started again.
-    async fn move_when_idle(self: &Arc<Self>, id: &str, policy: &Value, gathered: &Gathered) -> Result<bool> {
+    /// detached and started again. The wait for its gate and the idle checks
+    /// are not within `limit`; only the detach and restart are, so a live
+    /// executor held by another lifecycle operation is never marked failed.
+    async fn move_when_idle(self: &Arc<Self>, id: &str, policy: &Value, gathered: &Gathered, limit: std::time::Duration) -> Result<MoveEnd> {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         // Read again under its gate: its start, a Reconnect or another pass may have moved it.
         let agent = id.to_owned();
-        let Some(on) = self.stored(move |store| Ok(store.routing_on_accounts(Some(&agent))?.pop())).await? else { return Ok(false) };
+        let Some(on) = self.stored(move |store| Ok(store.routing_on_accounts(Some(&agent))?.pop())).await? else { return Ok(MoveEnd::NotIdle) };
         if !movable(policy, gathered, &on) {
-            return Ok(false);
+            return Ok(MoveEnd::NotIdle);
         }
         let detail = self.disconnect_view(id).await?;
         let a = &detail.agent;
@@ -166,22 +171,49 @@ impl Workspace {
             || !matches!(a.status.as_str(), "idle" | "error")
             || detail.turns.iter().any(crate::disconnect::claude_task_running);
         if busy || a.remote.is_some() || a.disconnected_at.is_some() {
-            return Ok(false);
+            return Ok(MoveEnd::NotIdle);
         }
-        let Some(connection) = self.claudes.lock().unwrap().get(id).cloned() else { return Ok(false) };
+        let Some(connection) = self.claudes.lock().unwrap().get(id).cloned() else { return Ok(MoveEnd::NotIdle) };
         if self.background_shells.claude_active(id, connection.generation).is_some_and(|count| count > 0) {
-            return Ok(false);
+            return Ok(MoveEnd::NotIdle);
         }
-        // The bridge confirms it is idle, or this is refused with the connection kept.
-        self.detach_idle_claude(id, &connection).await?;
-        match self.claude_ensure(id).await {
-            Ok(_) => Ok(true),
-            Err(error) => {
-                self.failed(id, &error).await;
-                Err(error)
+        let restart = async {
+            // The bridge confirms it is idle, or this is refused with the connection kept.
+            match self.detach_idle_claude(id, &connection).await {
+                Ok(()) => {}
+                Err(why) => return Restart::Refused(why),
             }
+            match self.claude_ensure(id).await {
+                Ok(_) => Restart::Moved,
+                Err(why) => Restart::Failed(why),
+            }
+        };
+        match tokio::time::timeout(limit, restart).await {
+            Ok(Restart::Moved) => Ok(MoveEnd::Moved),
+            Ok(Restart::Refused(why)) => Err(why),
+            Ok(Restart::Failed(why)) => {
+                self.failed(id, &why).await;
+                Err(why)
+            }
+            Err(_) => Ok(MoveEnd::CutOff(limit.as_secs())),
         }
     }
+}
+
+/// How one move ended: moved, left as it is now, or the start time limit cut
+/// its detach and restart off.
+enum MoveEnd {
+    Moved,
+    NotIdle,
+    CutOff(u64),
+}
+
+/// How the bounded part of a move ended: started again, refused before the
+/// detach (nothing is touched), or its start failed.
+enum Restart {
+    Moved,
+    Refused(anyhow::Error),
+    Failed(anyhow::Error),
 }
 
 #[cfg(test)]
