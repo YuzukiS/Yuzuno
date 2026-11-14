@@ -364,6 +364,26 @@ async fn a_card_route_creates_the_task_dispatches_its_executor_and_puts_its_card
     assert_eq!(mail[0]["sender"]["id"], "desk");
 }
 
+// YN-136: a card is a task's and leaves with it, so it takes none of the
+// Brief's 12 topics: with 12 a lead wrote, the front desk still routes a
+// card, and the lead's next topic of its own is still refused.
+#[tokio::test]
+async fn a_card_is_routed_when_the_brief_has_twelve_topics() {
+    let lab = lab();
+    let topic = |n: usize| json!({"op":"put","key":format!("t{n}"),"kind":"report","title":format!("Topic {n}"),"markdown":"Hello."});
+    let changes: Vec<Value> = (0..crate::project_brief::MAX_TOPICS).map(topic).collect();
+    lab.ws.collaboration_call(Some("lead"), "brief_update", json!({"requestId":"twelve","expectedVersion":0,"changes":changes})).await.unwrap();
+    let n = lab.say("设置页重新排版", "m1").await;
+    let answer = lab.route("desk", n, "设置页排版", "好，交给设计。", vec![design("设置页排版", "先出两版布局")]).await.unwrap();
+    assert_eq!(answer["routes"][0]["state"], "done", "{answer}");
+    let key = answer["routes"][0]["task"].as_str().unwrap().to_lowercase();
+    assert_eq!(lab.section(&key).await.expect("the card is live")["card"]["task"]["id"], answer["routes"][0]["task"]);
+    let version = lab.ws.collaboration_call(Some("lead"), "brief_get", json!({"keys":[]})).await.unwrap()["version"].clone();
+    let refused = lab.ws.collaboration_call(Some("lead"), "brief_update",
+        json!({"requestId":"thirteen","expectedVersion":version,"changes":[topic(12)]})).await.unwrap_err().to_string();
+    assert!(refused.contains("topic_limit"), "{refused}");
+}
+
 // YN-135: a card route's materials and body go to its executor's dispatch,
 // as the front desk's own task_dispatch would take them: it starts in the
 // worktree, its SHA asked of GitHub (once before the route is recorded, once
