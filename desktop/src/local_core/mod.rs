@@ -1535,7 +1535,7 @@ mod tests {
             "format=1\nuser=someone\nuid=1000\nhome=/home/someone\nshell=/bin/bash\narch=x86_64\nglibc=2.39\ntools.missing=\nenv.source=login\n\
              root=/home/someone/.local/share/yuzuno-core\ndata=/home/someone/.local/share/yuzuno-core-data\ndata.state=absent\n\
              tool.node=v22.11.0\ntool.git=git version 2.43.0\ntool.gh=gh version 2.45.0\ntool.claude=2.1.3\ntool.codex=codex-cli 0.80.0\n\
-             tool.python3=Python 3.12.3\ngh.auth=ok\nsystemd=running\ncgroup=cpu memory pids\n{extra}"
+             tool.python3=Python 3.12.3\ngh.auth=ok\ninit=init\nsystemd=running\ncgroup=cpu memory pids\n{extra}"
         ))
         .unwrap()
     }
