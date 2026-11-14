@@ -30,7 +30,7 @@ import { BriefCollection } from "./Collection";
 import { BriefTabs, TAB_PAGES, tabPages } from "./Tabs";
 import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
 import { useSectionStore } from "./brief-state";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import type { BlockChanges } from "./block-changes";
 import { briefText } from "./brief-text";
 import { useStrings } from "../../i18n";

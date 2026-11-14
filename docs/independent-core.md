@@ -23,7 +23,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 |---|---|---|
 | Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks, and the public core.13's first Claude start, which downloads the Agent SDK (no sign-in). Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 and the public core.13, each with registration, Core and UI file serving, restart and data-preserving reinstall; no real login, Claude start, browser rendering or systemd Jobs in that rootfs. |
 | Core on Linux aarch64 | Planned | No package yet. |
-| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, but local Jobs and managed updates are refused and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
+| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, and the release's helper installs, starts and stops a managed Core there ([on macOS](#install-start-and-stop-on-macos)); Jobs on its own host run in limited mode (limits declared only), and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
 | Core on Windows | Unavailable | On Windows, run Core in WSL2. |
 | Core as a systemd service | Planned | Start it as shown below; see the note there. |
 | Browser on the Core host | Tested | Chromium. |
@@ -125,7 +125,7 @@ The Windows desktop app is to install and start Core in a WSL distribution you c
     --port 4317 --data-dir "$DATA" --cwd "$HOME"
   ```
 
-  It starts Core as the start command below does, with the environment your login shell sets, so that Core finds `node`, `claude` and `codex` where your profile puts them, as in a terminal. It runs your shell from the user database (`/bin/sh` when there is none) as an interactive login shell with no input, and keeps only the values Core records. It knows the options of bash, zsh, sh, dash, ksh, mksh, fish, csh and tcsh; another shell is not run, and a shell that has not finished within 10 seconds is ended, with the processes it started in its process group. Core then starts with the helper's own environment, and the result says so (`"environment":"inherited"` and an `environmentNote`).
+  It starts Core as the start command below does, with the environment your login shell sets, so that Core finds `node`, `claude` and `codex` where your profile puts them, as in a terminal. It runs your shell from the user database (`/bin/sh` when there is none; `/bin/zsh` on macOS) as an interactive login shell with no input, and keeps only the values Core records. It knows the options of bash, zsh, sh, dash, ksh, mksh, fish, csh and tcsh; another shell is not run, and a shell that has not finished within 10 seconds is ended, with the processes it started in its process group. Core then starts with the helper's own environment, and the result says so (`"environment":"inherited"` and an `environmentNote`).
 
   It refuses an installation whose Core has recorded a start already (it names its port and Workspace; use `updates/start start`), a port on which a Core or another program answers, and a Workspace folder inside the release packages. Once Core answers, it checks that the Core it started holds the port, and says whether Core `recorded` how it started; later starts use `updates/start` (below).
 - **Results:** each prints one JSON line with a `state`: `installed`, or `started` (with `workspaceId`) or `starting` (Core runs but has not answered within two minutes; nothing is stopped). `refused` (nothing done) and `failed` come with a `code` and `message`, and exit with code 3.
@@ -148,7 +148,7 @@ setsid nohup "$ROOT/releases/$RELEASE/bin/yuzuno-workspace" --install-dir "$ROOT
 - **Working directory:** `--cwd` is the default folder new Agents start in.
 - **Codex location:** add `--codex /path/to/codex` if Codex is not on `PATH`.
 - **Check it:** `curl -s http://127.0.0.1:4317/api/health` shows the release and Workspace.
-- **Stop:** `"$ROOT/updates/start" stop --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>` (the Workspace ID is in `curl -s http://127.0.0.1:4317/api/health`). It interrupts this installation's Core, on which Core shuts down cleanly, and waits up to a minute for it to exit. It does so only when that Core is the one process of this installation, runs the release it says it runs and holds the port; otherwise it says why and signals nothing. It never kills: a Core still running after the wait is reported as `stopping`. Releases whose `updates/start --help` lists no `stop` don't have it: there, `pkill -INT -f "$ROOT/releases/"`.
+- **Stop:** `"$ROOT/updates/start" stop --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>` (the Workspace ID is in `curl -s http://127.0.0.1:4317/api/health`). It interrupts this installation's Core, on which Core shuts down cleanly, and waits up to a minute for it to exit. It does so only when that Core is the one process of this installation, runs the release it says it runs and holds the port; otherwise it says why and signals nothing. On a Mac it sends SIGTERM and cannot check who holds the port ([on macOS](#install-start-and-stop-on-macos)). It never kills: a Core still running after the wait is reported as `stopping`. Releases whose `updates/start --help` lists no `stop` don't have it: there, `pkill -INT -f "$ROOT/releases/"`.
 - **After a reboot:** run the start command again; it picks up the release an update left in `current.json`.
 - **From the Windows desktop app:** each Core records how it started (`$ROOT/updates/launch.json`). After a reboot, the desktop app's connection page can then start it again with the same settings; see [Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl). Releases up to core.15 do not record this.
 
@@ -328,13 +328,40 @@ Settings → Updates checks the publisher's releases, downloads and verifies one
 
 Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno does not touch it.
 
+## Install, start and stop on macOS
+
+**No release has a macOS package yet:** building and publishing one are YN-108's slices M3a and M3b ([macOS Core: status and gaps](macos-core.md)). Until a release has `yuzuno-core-macos-aarch64.*` files, these steps cannot be followed with a published release. They say what the release's helper does on a Mac at this commit, which is what it does on Linux except where it says otherwise. Apple silicon only.
+
+- **Prerequisites:** as [on Linux](#prerequisites-on-the-core-host), without systemd: Jobs on the Mac itself are refused for now ([below](#macos-core-current-gaps)). `/usr/bin/python3` and `git` come with Apple's command line tools (`xcode-select --install`); Node, `gh` and `minisign` with their own installers or Homebrew (`brew install node gh minisign`).
+- **Folders:** these are the ones the Mac app is to use. The Workspace folder is also where a Core started without `--data-dir` keeps it on a Mac. Both paths contain a space, so keep the quotes:
+
+  ```sh
+  ROOT="$HOME/Library/Application Support/yuzuno/managed-core"
+  DATA="$HOME/Library/Application Support/yuzuno/workspace"
+  ```
+
+- **Download and verify** as in steps 1 and 2 [above](#install), with `yuzuno-core-macos-aarch64` in place of `yuzuno-core-linux-x86_64`. Download with `gh` or `curl` in Terminal: a browser marks what it downloads as coming from the internet, and macOS may then refuse to run the release's programs, which are signed ad hoc and not notarized.
+- **Install** with the unpacked release's helper (`install`, as [above](#installed-by-the-desktop-app)), unpacking with macOS's own `tar`.
+- **First start:** `first-start`, as above. For `--cwd`, choose a folder of your own outside Desktop, Documents, Downloads and iCloud Drive: macOS asks for permission when an Agent reads those. It reads the environment your login shell sets: the shell the user database names (macOS's default is zsh; `/bin/zsh` when it names none). So Core finds what your profile adds to `PATH`, such as `/opt/homebrew/bin`. A Core started some other way, for example by a launchd agent, has only the `PATH` it inherits. Core records the environment in `$ROOT/updates/launch.json`, and every later start uses it.
+- **Start it again** (after a restart, or after a stop):
+
+  ```sh
+  "$ROOT/updates/start" start --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>
+  ```
+
+  It starts the release `current.json` names, as Core last started, unless Core already answers on the port. It returns once it has printed its result. Core runs in a session of its own, so closing Terminal does not stop it. When you log out or shut down, macOS sends it SIGTERM, on which it shuts down cleanly. While the Mac sleeps, Core and its Agents pause. The Linux command above does not work on a Mac, which has no `setsid` command; `updates/start` detaches Core itself.
+- **Stop:** `"$ROOT/updates/start" stop --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>`. It sends SIGTERM only to the one process that runs this installation's Core: `$ROOT/releases/<release>/bin/yuzuno-workspace`, started with `--install-dir "$ROOT"` and `--port 4317`. Before that, the Core on that port must answer with this Workspace and name that release. It finds the process through libproc and reads its arguments from the kernel (`KERN_PROCARGS2`). Then it waits up to a minute for the process to exit, telling the process by its ID and start time, and never kills it. Unlike on Linux, macOS cannot tell which process holds a port, so that check is not made: the installation's one process started with the port is taken to be the Core that answers there.
+- **Start profile:** once Core has recorded how it starts, it answers `/api/desktop/start-profile` with `"platform":"macos"`, its user, installation folder, port and Workspace. The Mac app does not use that yet (slice M4).
+- **Uninstall** as [above](#uninstall).
+
 ## macOS Core: current gaps
 
 A macOS Core is being built (YN-108). Remote Codex Agents on a Mac (over SSH) already work, but that is not a macOS Core. Today:
 
 - **Tests:** Core and its tests build on Apple silicon, and CI runs the tests there on every change to Core (`.github/workflows/core-macos.yml`).
-- **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither, so they are refused there. Jobs on registered machines work.
-- **Managed updates:** identify the running process through Linux-only process identity (`core/src/updates/state.rs`). They are refused on other systems.
+- **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither. A macOS Core runs them on This Mac in limited mode instead, as on a Mac over SSH: their CPU and RAM queue and are recorded, nothing enforces them, and runs of stages, checkpoints and guardGit are refused ([macOS Core](macos-core.md)). It needs the Xcode Command Line Tools. Jobs on registered machines work.
+- **Managed updates:** identify the running Core through libproc on macOS (`core/src/updates/state.rs`), but there is no macOS package to update to yet.
+- **Start and stop:** through the release's helper, [as above](#install-start-and-stop-on-macos).
 - **Packages:** release packaging and signing build Linux x86_64 only (`tools/build-core-artifact.py`, `tools/package-release.py`).
 
 Until those slices are done, a source build on macOS is not supported. [macOS Core: status and gaps](macos-core.md) lists every gap with its code and the slice that closes it.

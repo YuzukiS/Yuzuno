@@ -39,6 +39,8 @@ mod image_header;
 mod presentation;
 /// Home cards that refresh themselves (YN-113 R1): the timer that wakes their owners.
 pub(crate) mod refresh;
+/// What writes those refreshes (YN-113 R2): brief_update's `refresh`, the user's routes.
+mod refresh_writes;
 mod refs;
 mod research;
 mod sections;
@@ -49,6 +51,8 @@ mod writes;
 mod preview_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod refresh_write_tests;
 #[cfg(test)]
 mod tests;
 
@@ -272,7 +276,8 @@ fn update_properties(project: Value) -> Value {
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
             "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
-            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."}}}}
+            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
+            "refresh":{"type":["object","null"],"description":"put or edit of a report, by a lead: {every: day|hours|week, at?, hours?, days?, zone?, instruction, paused?} makes it refresh itself; null removes it; a put without it keeps it. Creating, speeding up or a new instruction only in a Turn the user started. See brief_guide refresh."}}}}
     })
 }
 

@@ -36,7 +36,11 @@ wait for agents; during preparation it only stops the steps after it.
    private control socket. It starts the candidate against the same data and
    restores only the native sessions attached at the handoff.
 5. After release, Workspace and full record health checks pass, the page offers
-   to load the matching UI. The existing draft remains available.
+   to load the matching UI. The existing draft remains available. Once an
+   update ends (installed, rolled back, cancelled, timed out or failed) and
+   admission reopens, each Agent that yielded its Turn because the update asked
+   it to pause gets one message to continue that work; the rules are in
+   `core/src/updates/resume.rs`.
 
 Closing a browser does not cancel an accepted operation. Reopening reads its
 durable progress. A timed-out POST is an uncertain response: inspect saved

@@ -214,6 +214,11 @@ pub(super) struct Change {
     /// put and edit (YN-86 S2a): None leaves the section's task as it is;
     /// Some(None) unbinds it; Some(Some(reference)) binds it to that task.
     pub task: Option<Option<String>>,
+    /// put and edit of a report (YN-113 R2, refresh_writes.rs), as `task`:
+    /// None leaves the card's refresh as it is; Some(None) removes it;
+    /// Some(Some(value)) sets it from `value` as sent. Never in `section`:
+    /// the validator checks the card, refresh_writes the refresh.
+    pub refresh: Option<Option<Value>>,
 }
 
 pub(super) struct Request {
@@ -355,16 +360,17 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
         return None;
     };
     if op == Op::Edit {
-        if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "elements" | "status" | "task")) {
+        if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "elements" | "status" | "task" | "refresh")) {
             problems.push(problem("invalid_change", format!("{at}.{extra}"),
-                "edit takes op, key, elements, task and, for a status section, status; put the section to change anything else.", "sections"));
+                "edit takes op, key, elements, task, refresh and, for a status section, status; put the section to change anything else.", "sections"));
             return None;
         }
         let Ok(task) = parse_task(&at, object, problems) else { return None };
-        // An edit of the binding alone changes no block.
+        let Ok(refresh) = super::refresh_writes::parse(&at, object, problems) else { return None };
+        // An edit of the binding or the refresh alone changes no block.
         let none = serde_json::Map::new();
         let elements = match object.get("elements") {
-            None if task.is_some() => Some(&none),
+            None if task.is_some() || refresh.is_some() => Some(&none),
             sent => sent.and_then(Value::as_object).filter(|blocks| !blocks.is_empty()),
         };
         let Some(elements) = elements.filter(|blocks| blocks.len() <= MAX_EDITED) else {
@@ -377,7 +383,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task, refresh });
     }
     if op == Op::Patch {
         return parse_patch(&at, key, object, problems);
@@ -387,7 +393,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             problems.push(problem("invalid_change", format!("{at}.{extra}"), "resolve, remove and claim take only op and key.", "sections"));
             return None;
         }
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None, refresh: None });
     }
     let kind = object.get("kind").and_then(Value::as_str).filter(|kind| matches!(*kind, "ask" | "report" | "status"));
     let Some(kind) = kind else {
@@ -410,9 +416,12 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
         }
     }
     let Ok(task) = parse_task(&at, object, problems) else { return None };
+    let Ok(refresh) = super::refresh_writes::parse(&at, object, problems) else { return None };
     let mut section = Value::Object(object.clone());
     section.as_object_mut().unwrap().remove("op");
-    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task })
+    // The card's refresh is Core's (refresh_writes.rs), not the section's.
+    section.as_object_mut().unwrap().remove("refresh");
+    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task, refresh })
 }
 
 /// A put's or edit's `task` (YN-86 S2a), as Change keeps it: None when left
@@ -480,7 +489,7 @@ fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, pro
         }
     }
     let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None })
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None, refresh: None })
 }
 
 pub(super) struct Caller {
@@ -904,7 +913,9 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
     if let Some(rejected) = conflict(store, &db, &ctx, &request)? {
         return Ok(Start::Reject(rejected));
     }
-    let problems = rules(store, &db, &ctx, &request)?;
+    let mut problems = rules(store, &db, &ctx, &request)?;
+    let checked = problems.is_empty();
+    problems.extend(super::refresh_writes::rules(store, &db, &ctx, &request.changes, checked)?);
     if !problems.is_empty() {
         return Ok(Start::Reject(rejection(problems, None)));
     }
@@ -1184,6 +1195,8 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
         collect(ws).await;
         return Ok(Err(rejection(problems, None)));
     }
+    // A refresh this update changes is looked at once it is written (refresh.rs `Timer`).
+    let refreshes = request.changes.iter().any(|change| change.refresh.is_some() || change.op == Op::Remove);
     let (store, who) = (ws.store.clone(), actor.to_owned());
     let answer = crate::db::blocking(move || commit(&store, &who, &id, &input, &turn, &request, &normalized, &staged)).await;
     drop(hold);
@@ -1191,6 +1204,9 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
     let (answer, project) = answer?;
     if let (Ok(_), Some(project)) = (&answer, project) {
         announce(ws, Some(&project));
+        if refreshes {
+            ws.brief_refresh.wake.notify_one();
+        }
     }
     Ok(answer)
 }
@@ -1235,7 +1251,10 @@ fn commit(
     if let Some(rejected) = conflict(store, &tx, &ctx, request)? {
         return Ok((Err(rejected), None));
     }
-    let problems = rules(store, &tx, &ctx, request)?;
+    let mut problems = rules(store, &tx, &ctx, request)?;
+    // Read in the write: a refresh, a limit or a lead changed meanwhile is the one judged.
+    let checked = problems.is_empty();
+    problems.extend(super::refresh_writes::rules(store, &tx, &ctx, &request.changes, checked)?);
     if !problems.is_empty() {
         return Ok((Err(rejection(problems, None)), None));
     }
@@ -1415,7 +1434,26 @@ fn apply(
                     ("ask", _) => (Some("open".into()), Some(at.clone()), None, None, None),
                     _ => (None, None, None, None, None),
                 };
-                let (seq, version) = match &current {
+                let (seq, version, identity) = match &current {
+                    // A report that refreshes itself keeps the version this
+                    // put replaces as history (YN-113 §3.4): its past issue,
+                    // under the same identity on Home, as a report the user
+                    // marked seen is continued (below).
+                    Some(row) if row.kind == "report" && change.kind == "report"
+                        && super::refresh_writes::keeps_history(tx, &ctx.project, row.identity, change)? => {
+                        tx.execute(
+                            "UPDATE project_brief_sections SET live=0,history_reason='refreshed',history_at=?2 WHERE seq=?1",
+                            params![row.seq, at],
+                        )?;
+                        tx.execute(
+                            "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END)",
+                            params![ctx.project, change.key, change.kind, row.version + 1, ctx.agent, ctx.agent_name, data.to_string(),
+                                at, ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id],
+                        )?;
+                        (tx.last_insert_rowid(), row.version + 1, row.identity)
+                    }
                     Some(row) => {
                         tx.execute(
                             "UPDATE project_brief_sections SET kind=?2,version=?3,owner_name=?4,data=?5,ask_state=?6,ask_since=?7,
@@ -1424,7 +1462,7 @@ fn apply(
                             params![row.seq, change.kind, row.version + 1, ctx.agent_name, data.to_string(), state, since,
                                 replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
                         )?;
-                        (row.seq, row.version + 1)
+                        (row.seq, row.version + 1, row.identity)
                     }
                     None => {
                         // Versions keep rising across history and its expiry
@@ -1465,11 +1503,16 @@ fn apply(
                             params![ctx.project, change.key, change.kind, previous + 1, ctx.agent, ctx.agent_name,
                                 data.to_string(), state, since, at, ctx.turn.turn, lineage, task_id],
                         )?;
-                        (tx.last_insert_rowid(), previous + 1)
+                        let seq = tx.last_insert_rowid();
+                        (seq, previous + 1, lineage.unwrap_or(seq))
                     }
                 };
                 attachments::index(tx, seq, &ctx.project, &staged[index])?;
-                changed.push(bound(version));
+                let mut entry = bound(version);
+                if let Some(refresh) = super::refresh_writes::apply(tx, ctx, change, identity)? {
+                    entry["refresh"] = refresh;
+                }
+                changed.push(entry);
             }
             Op::Edit | Op::Patch => {
                 let row = row()?;
@@ -1494,7 +1537,11 @@ fn apply(
                      task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END WHERE seq=?1",
                     params![row.seq, row.version + 1, ctx.agent_name, data.to_string(), at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
                 )?;
-                changed.push(bound(row.version + 1));
+                let mut entry = bound(row.version + 1);
+                if let Some(refresh) = super::refresh_writes::apply(tx, ctx, change, row.identity)? {
+                    entry["refresh"] = refresh;
+                }
+                changed.push(entry);
             }
             Op::Resolve => {
                 let row = row()?;
@@ -1513,7 +1560,12 @@ fn apply(
                     params![row.seq, at],
                 )?;
                 sections::record_ending(tx, row, row.version, "removed", &at)?;
-                changed.push(json!({"key":change.key,"version":row.version}));
+                let mut entry = json!({"key":change.key,"version":row.version});
+                // Its refresh goes with it (YN-113 §5).
+                if super::refresh_writes::removed(tx, &ctx.project, row.identity)? {
+                    entry["refresh"] = Value::Null;
+                }
+                changed.push(entry);
             }
             Op::Claim => {
                 let row = row()?;

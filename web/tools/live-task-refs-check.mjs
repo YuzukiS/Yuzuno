@@ -115,11 +115,11 @@ const home = (round) => {
 const browser = await launchBrowser();
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
-async function open({ width, height, touch, theme, density }) {
+async function open({ width, height, touch, theme }) {
   const state = { reads: 0, failFrom: Infinity, phase: 1 };
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(([theme, density]) => {
+  await page.addInitScript(([theme]) => {
     // A stand-in for Core's event stream, which the check speaks through.
     window.EventSource = class {
       constructor() { window.__events = this; this.readyState = 0; }
@@ -128,8 +128,7 @@ async function open({ width, height, touch, theme, density }) {
     };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette: "garden" }));
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
-    localStorage.setItem("yuzuno.homeDensity.ws", JSON.stringify(density));
-  }, [theme, density]);
+  }, [theme]);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -165,7 +164,7 @@ async function open({ width, height, touch, theme, density }) {
       return route.fulfill({ status: 404, body: "" });
     }
   });
-  page.on("pageerror", (error) => report.errors.push(`${width} ${density}: ${error.message}`));
+  page.on("pageerror", (error) => report.errors.push(`${width} ${theme}: ${error.message}`));
   await page.goto(`https://${HOST}/`);
   await page.locator(".toolbar-nav .catchup-nav").first().click();
   await page.locator('.home-view [data-section-key="work"]').first().waitFor({ timeout: 10_000 });
@@ -209,12 +208,10 @@ async function closeReport(page) {
 
 try {
   for (const view of [
-    // A report page reads at high density whatever Home's density (T-18).
-    { name: "desktop-high", width: 1440, height: 1000, touch: false, theme: "light", density: "high" },
-    { name: "desktop-high-dark", width: 1440, height: 1000, touch: false, theme: "dark", density: "high" },
-    { name: "phone-high", width: 393, height: 852, touch: true, theme: "light", density: "high" },
-    // Home's default density, on a phone: the page is the same.
-    { name: "phone-low", width: 393, height: 852, touch: true, theme: "light", density: "low" },
+    // A report page reads at high density (T-18).
+    { name: "desktop-high", width: 1440, height: 1000, touch: false, theme: "light" },
+    { name: "desktop-high-dark", width: 1440, height: 1000, touch: false, theme: "dark" },
+    { name: "phone-high", width: 393, height: 852, touch: true, theme: "light" },
   ].filter((view) => !process.env.YUZUNO_CHECK_VIEWS || process.env.YUZUNO_CHECK_VIEWS.split(",").includes(view.name))) {
     const { context, page, state } = await open(view);
     const drafting = view.name === "desktop-high" || view.name === "phone-high";

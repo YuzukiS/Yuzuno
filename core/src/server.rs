@@ -315,9 +315,9 @@ async fn health(State(ws): State<Arc<Workspace>>, updates: Option<Extension<Arc<
         "workspaceId":ws.stored(|store| store.workspace_id()).await?})))
 }
 
-/// Where this Core is installed in WSL, which the Windows desktop app keeps
-/// to start it again when it does not answer (T-171). Paths and names only;
-/// it starts nothing.
+/// Where this Core is installed, in WSL or on macOS (`platform`), which a
+/// desktop app keeps to start it again when it does not answer (T-171,
+/// YN-108). Paths and names only; it starts nothing.
 async fn start_profile(updates: Option<Extension<Arc<crate::updates::controller::Controller>>>) -> ApiResult<Json<Value>> {
     let Some(Extension(controller)) = updates else {
         return Ok(Json(json!({"available":false,"reason":"notManaged"})));
