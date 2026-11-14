@@ -2,10 +2,17 @@
 #[allow(unused_imports)]
 use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
-use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use yuzuno_workspace::{codex_sessions::ImportSession, workspace::Workspace};
 
 const THREAD: &str = "01912345-6789-7890-abcd-0123456789ab";
+/// Whether process `pid` is gone and reaped: the kernel knows no such process
+/// (ESRCH). A zombie its parent has not reaped is still there.
+fn reaped(pid: u64) -> bool {
+    let pid = rustix::process::Pid::from_raw(pid as i32).expect("a process id");
+    rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH)
+}
+
 struct Lab { root: tempfile::TempDir, ws: Arc<Workspace> }
 impl Lab {
     fn new() -> Self {
@@ -111,7 +118,7 @@ async fn preview_import_and_pages_are_read_only_preserve_settings_and_bound_cach
     assert!(lab.calls().iter().all(|r| !["thread/resume", "thread/start", "turn/start", "turn/steer"].contains(&r["method"].as_str().unwrap_or(""))));
     assert!(lab.calls().iter().filter(|r| r["method"] == "thread/read").all(|r| r["params"]["includeTurns"] == false));
     for pid in lab.calls().iter().filter_map(|r| r["pid"].as_u64()) {
-        assert!(!Path::new(&format!("/proc/{pid}")).exists(), "read subprocess must be reaped");
+        assert!(reaped(pid), "read subprocess must be reaped");
     }
     let db = rusqlite::Connection::open(lab.root.path().join("data/workspace.sqlite")).unwrap();
     let (count, size): (i64,i64) = db.query_row("SELECT count(*),sum(length(data)) FROM journal", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
@@ -231,7 +238,7 @@ async fn missing_original_rollout_never_creates_a_replacement_and_cancelled_read
     }).await.unwrap();
     task.abort();let _=task.await;
     tokio::time::timeout(std::time::Duration::from_secs(3),async{
-        while Path::new(&format!("/proc/{pid}")).exists(){tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
+        while !reaped(pid){tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
     }).await.unwrap();
 }
 

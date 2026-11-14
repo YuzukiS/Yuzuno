@@ -1381,19 +1381,15 @@ async fn source_process_output_and_cancellation_are_bounded() {
     .await;
     assert!(aborted.is_err());
     let pid: i32 = fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
-    #[cfg(target_os = "linux")]
-    {
-        // A killed descendant can briefly be a zombie awaiting init's reap.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let state = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        if !state.is_empty() {
-            let state = state.split(") ").nth(1).unwrap().chars().next().unwrap();
-            assert!(
-                matches!(state, 'Z' | 'X'),
-                "source descendant still executing: {state}"
-            );
-        }
-    }
+    // A killed descendant can briefly be a zombie awaiting init's reap. `ps`
+    // tells its state on Linux and macOS alike, and nothing once it is gone.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let ps = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let state = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+    assert!(
+        state.is_empty() || state.starts_with(['Z', 'X']),
+        "source descendant still executing: {state}"
+    );
 }
 
 #[tokio::test]

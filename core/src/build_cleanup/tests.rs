@@ -44,6 +44,7 @@ fn target(dir: &Path, profiles: &[&str]) -> PathBuf {
 }
 
 struct Lab {
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code, reason = "held for its Drop; read only by tests of Linux mechanisms"))]
     dir: tempfile::TempDir,
     ws: Arc<Workspace>,
     /// The Project's folder, a checkout of its repository.
@@ -97,6 +98,7 @@ fn executor(lab: &Lab, id: &str, cwd: &Path, released: Option<i64>) {
     ).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn job(lab: &Lab, agent: &str, id: &str, data: Value) {
     let mut data = data;
     data["id"] = json!(id);
@@ -108,6 +110,7 @@ fn job(lab: &Lab, agent: &str, id: &str, data: Value) {
     ).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn pull_request(lab: &Lab, number: i64, branch: &str) {
     let db = lab.ws.store.db.write().unwrap();
     let id = format!("42:pull:{number}");
@@ -116,17 +119,20 @@ fn pull_request(lab: &Lab, number: i64, branch: &str) {
     db.execute("INSERT INTO github_task_links(task_id,object_id) VALUES(?1,?2)", params![lab.task, id]).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn turn(lab: &Lab, enabled: bool, keep_days: u32, earlier: bool) -> Policy {
     let db = lab.ws.store.db.write().unwrap();
     let version = policy(&db).unwrap().version;
     change_policy(&db, Change { enabled, keep_days, earlier, expected_version: version }).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 async fn pass(lab: &Lab) -> usize {
     lab.ws.build_cleanup_pass().await.unwrap()
 }
 
 /// Its saved state and outcome.
+#[cfg(target_os = "linux")]
 fn record(lab: &Lab, agent: &str) -> Option<(String, Value)> {
     lab.ws.store.db.read().unwrap()
         .query_row("SELECT state, data FROM build_cleanups WHERE agent_id=?1", [agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -134,12 +140,14 @@ fn record(lab: &Lab, agent: &str) -> Option<(String, Value)> {
         .map(|(state, data)| (state, serde_json::from_str(&data).unwrap()))
 }
 
+#[cfg(target_os = "linux")]
 fn comments(lab: &Lab) -> Vec<String> {
     let db = lab.ws.store.db.read().unwrap();
     let mut q = db.prepare("SELECT json_extract(data,'$.body') FROM collaboration_task_activity WHERE task_id=?1 AND json_extract(data,'$.source.buildCleanup') IS NOT NULL").unwrap();
     q.query_map([&lab.task], |r| r.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect()
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn nothing_goes_while_it_is_off_or_within_the_days_kept() {
     let lab = lab();
@@ -161,6 +169,7 @@ async fn nothing_goes_while_it_is_off_or_within_the_days_kept() {
     assert_eq!(pass(&lab).await, 0, "done once");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn only_executors_released_after_it_was_turned_on_unless_earlier_ones_too() {
     let lab = lab();
@@ -177,6 +186,7 @@ async fn only_executors_released_after_it_was_turned_on_unless_earlier_ones_too(
     assert!(!debug.exists());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn its_records_name_its_folders_and_only_their_debug_output_goes() {
     let lab = lab();
@@ -233,6 +243,7 @@ async fn its_records_name_its_folders_and_only_their_debug_output_goes() {
     assert!(notes[0].contains("Core removed 4 Cargo debug folder(s)"), "{}", notes[0]);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_process_waits_for_another_try_and_what_cargo_did_not_make_is_kept_once() {
     let lab = lab();
@@ -286,6 +297,7 @@ async fn a_process_waits_for_another_try_and_what_cargo_did_not_make_is_kept_onc
 /// One released executor whose profiles, known only through its task (its
 /// pull request's branch, a worktree registered on the task), another open
 /// executor of the task may still use: they wait (review 912c501e).
+#[cfg(target_os = "linux")]
 async fn lab_with_waiting() -> Lab {
     let lab = lab();
     let branch = worktree(&lab, "pr", "feat/pr");
@@ -313,6 +325,7 @@ async fn lab_with_waiting() -> Lab {
 
 /// An executor whose task names no Project folder here is done at once, with
 /// nothing to do, and holds up no executor released after it.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn one_without_a_project_folder_is_done_and_the_others_go_on() {
     let lab = lab();

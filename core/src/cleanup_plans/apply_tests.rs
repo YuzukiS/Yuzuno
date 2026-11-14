@@ -55,6 +55,7 @@ async fn apply_as(lab: &Lab, actor: &str, request: &str, plan: &Value, key: &str
 }
 
 /// Waits for Core to finish applying a plan; its state then.
+#[cfg(target_os = "linux")]
 async fn applied(lab: &Lab, plan: &Value) -> Value {
     for _ in 0..400 {
         let read = lab.ws.collaboration_call(None, "cleanup_plan_get", json!({"planId": plan["planId"]})).await.unwrap();
@@ -75,6 +76,7 @@ fn old_entry(lab: &Lab, name: &str) -> PathBuf {
     entry
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_approved_plan_removes_only_its_chosen_groups_after_checking_each_again() {
     let lab = lab();
@@ -189,6 +191,7 @@ async fn approvals_core_cannot_take_remove_nothing() {
     assert_eq!(read["state"], "submitted", "nothing started");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn at_apply_what_changed_is_in_use_or_cannot_be_checked_stays() {
     let lab = lab();
@@ -235,6 +238,7 @@ async fn at_apply_what_changed_is_in_use_or_cannot_be_checked_stays() {
 
 /// Design 7's red test: an item listed in the plan that is outside every
 /// root when it is applied is refused then, whatever the plan said.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_item_outside_the_roots_when_it_is_applied_is_refused() {
     let lab = lab();
@@ -261,6 +265,7 @@ async fn an_item_outside_the_roots_when_it_is_applied_is_refused() {
     assert!(entry.exists() && protected.exists());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
     let lab = lab();
@@ -284,6 +289,7 @@ async fn a_plan_a_stopped_core_left_applying_is_finished_without_retrying() {
 }
 
 /// An executor at auto that may get a temporary directory.
+#[cfg(target_os = "linux")]
 fn auto_agent(lab: &Lab, id: &str) {
     agent(&lab.ws, id);
     lab.ws.store.db.write().unwrap().execute(
@@ -294,6 +300,7 @@ fn auto_agent(lab: &Lab, id: &str) {
 
 /// A hold on the next apply's file system step, and both ends of its two
 /// signals.
+#[cfg(target_os = "linux")]
 fn pause() -> (crate::cleanup_plans::FsPause, tokio::sync::oneshot::Sender<()>, tokio::sync::mpsc::Receiver<()>) {
     let (entered_tx, entered_rx) = tokio::sync::mpsc::channel(1);
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -305,6 +312,7 @@ fn pause() -> (crate::cleanup_plans::FsPause, tokio::sync::oneshot::Sender<()>, 
 /// its waiters, that it is queued there now. Each poll is checked as it
 /// returns, so how long the work takes to get there does not matter. Work
 /// that ends without being parked drops the sender.
+#[cfg(target_os = "linux")]
 fn spawn_parked<T: Send + 'static>(
     work: impl std::future::Future<Output = T> + Send + 'static,
     parked: impl Fn() -> bool + Send + 'static,
@@ -326,6 +334,7 @@ fn spawn_parked<T: Send + 'static>(
 /// YN-78 S2b-1: the gate is taken per entry, so a root added while one entry
 /// is being removed is seen by the next; and an allocation started then waits
 /// for the gate instead of racing the removal.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn protection_added_during_one_entry_is_seen_by_the_next_and_registration_waits() {
     let lab = lab();
@@ -373,6 +382,7 @@ async fn protection_added_during_one_entry_is_seen_by_the_next_and_registration_
 
 /// YN-78 S2b-1: a caller cancelled while its blocking removal runs releases
 /// no guard; the gate stays held until the worker itself ends.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cancelled_caller_leaves_the_gate_held_until_the_blocking_removal_ends() {
     let lab = lab();

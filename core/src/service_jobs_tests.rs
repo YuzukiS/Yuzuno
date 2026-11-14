@@ -1,3 +1,5 @@
+//! Which listener is a Job's is told from Linux's socket tables and the
+//! Job's cgroup (v2); those tests run on Linux only.
 use super::*;
 use std::io::{Read, Write};
 
@@ -31,6 +33,7 @@ fn a_connection_to_127_0_0_1_reaches_the_most_specific_ipv4_listener_first() {
 
 /// An IPv6-only (IPV6_V6ONLY) socket listening on [::]:port; None where this
 /// host has no IPv6.
+#[cfg(target_os = "linux")]
 fn v6only_listener(port: u16) -> Option<std::net::TcpListener> {
     use std::os::fd::FromRawFd;
     // SAFETY: plain socket calls on a descriptor this function owns until
@@ -55,12 +58,14 @@ fn v6only_listener(port: u16) -> Option<std::net::TcpListener> {
 }
 
 /// This test process's own cgroup (v2) and boot, to stand for a Job.
+#[cfg(target_os = "linux")]
 fn own_group() -> Option<(String, String)> {
     let group = std::fs::read_to_string("/proc/self/cgroup").ok()?.lines().find_map(|l| l.strip_prefix("0::").map(str::to_owned))?;
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?.trim().to_owned();
     Some((group, boot))
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn an_ipv6_only_wildcard_never_counts_for_127_0_0_1() {
     let Some((group, boot)) = own_group() else {
@@ -97,6 +102,7 @@ fn an_ipv6_only_wildcard_never_counts_for_127_0_0_1() {
 }
 
 /// A Job folder whose start record names `group` on `boot`.
+#[cfg(target_os = "linux")]
 fn started(data: &Path, group: &str, boot: &str) -> Value {
     let id = uuid::Uuid::new_v4().to_string();
     let folder = data.join("jobs").join(&id);
@@ -105,6 +111,7 @@ fn started(data: &Path, group: &str, boot: &str) -> Value {
     json!({"id": id, "status": "running"})
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_listener_is_the_jobs_only_if_a_process_of_its_control_group_holds_it() {
     let data = tempfile::tempdir().unwrap();

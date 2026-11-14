@@ -3,8 +3,10 @@ use super::{
     api, catalog,
     controller::{Blocker, Controller, Runtime},
     package,
-    state::{Launch, Layout, Phase, ReleaseRef, SessionRef},
+    state::{Launch, Layout, ReleaseRef, SessionRef},
 };
+#[cfg(target_os = "linux")]
+use super::state::Phase;
 use anyhow::Result;
 use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
@@ -82,6 +84,7 @@ impl Runtime for FakeRuntime {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelled_helpers_yield_to_a_new_operation_with_a_bounded_wait() {
     let f = fixture();
@@ -103,6 +106,7 @@ async fn cancelled_helpers_yield_to_a_new_operation_with_a_bounded_wait() {
     drop(acquired);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn failed_final_flush_never_accepts_stop_or_changes_the_old_core_phase() {
     use super::control::{self, Command, Request};
@@ -138,6 +142,7 @@ struct Fixture {
     _temp: tempfile::TempDir,
     controller: Arc<Controller>,
     layout: Layout,
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code, reason = "read only by tests that need Linux's process identity (YN-108 M2a)"))]
     runtime: Arc<FakeRuntime>,
 }
 fn fixture() -> Fixture {
@@ -182,6 +187,7 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn update_probe_socket_timeout_and_verifier_spawn_keep_distinct_evidence() {
     use std::{io::{BufRead, BufReader}, os::unix::{net::UnixListener, process::CommandExt}, time::Duration};
@@ -230,6 +236,7 @@ async fn update_probe_socket_timeout_and_verifier_spawn_keep_distinct_evidence()
     assert!(!diagnostic.contains("Timed out reading"));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn preparation_survives_request_end_without_closing_admission() {
     let f = fixture();
@@ -256,6 +263,7 @@ async fn preparation_survives_request_end_without_closing_admission() {
     assert!(public["operation"].get("launch").is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn helper_launch_failure_reopens_admission_and_retry_does_not_repeat_operation() {
     let f = fixture();
@@ -339,6 +347,7 @@ fn catalog_registration_never_replaces_an_existing_release_identity() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn accepted_requests_prevent_seal_and_cancel_reopens_work() {
     use super::control::{self, Command, Request};
@@ -379,6 +388,7 @@ async fn accepted_requests_prevent_seal_and_cancel_reopens_work() {
     assert_eq!(f.controller.admission.snapshot().in_flight, 0);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn private_control_requires_operation_secret_before_any_transition() {
     use super::control::{self, Command, Request};
@@ -405,6 +415,7 @@ async fn private_control_requires_operation_secret_before_any_transition() {
     panic!("Preparation did not finish");
 }
 
+#[cfg(target_os = "linux")]
 async fn prepared(f: &Fixture) -> super::state::Operation {
     f.controller.prepare("b").await.unwrap();
     for _ in 0..200 {
@@ -418,6 +429,7 @@ async fn prepared(f: &Fixture) -> super::state::Operation {
     op
 }
 
+#[cfg(target_os = "linux")]
 async fn waiting(f: &Fixture) -> super::state::Operation {
     let op = prepared(f).await;
     f.layout
@@ -430,6 +442,7 @@ async fn waiting(f: &Fixture) -> super::state::Operation {
     f.layout.journal().unwrap().operation.unwrap()
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn partial_detach_and_failed_restore_are_visible_and_reopen_admission() {
     use super::control::{self, Command, Request};
@@ -472,6 +485,7 @@ async fn partial_detach_and_failed_restore_are_visible_and_reopen_admission() {
     assert!(!f.controller.admission.snapshot().sealed);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn busy_turns_and_completion_responses_prevent_native_detach() {
     use super::control::{self, Command, Request};
@@ -502,6 +516,7 @@ async fn busy_turns_and_completion_responses_prevent_native_detach() {
     assert!(f.controller.admission.enter_completion().is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelling_a_stalled_seal_releases_transition_and_allows_recovery() {
     use super::control::{self, Command, Request};
@@ -538,6 +553,7 @@ async fn cancelling_a_stalled_seal_releases_transition_and_allows_recovery() {
     assert!(f.controller.admission.enter_work().is_ok());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn expired_wait_reopens_while_busy_turn_keeps_running() {
     let f = fixture();
@@ -565,6 +581,7 @@ async fn expired_wait_reopens_while_busy_turn_keeps_running() {
     assert!(f.controller.admission.enter_work().is_ok());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn preparation_prunes_unused_packages_and_failed_backups_do_not_accumulate() {
     let f = fixture();
@@ -619,6 +636,7 @@ async fn preparation_prunes_unused_packages_and_failed_backups_do_not_accumulate
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn locked_backup_has_a_deadline_and_never_replaces_source_records() {
     let f = fixture();
@@ -643,6 +661,7 @@ async fn locked_backup_has_a_deadline_and_never_replaces_source_records() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn restarted_core_recovers_stopping_for_old_or_failed_candidate() {
     for candidate_stopped in [false, true] {
@@ -692,6 +711,7 @@ async fn restarted_core_recovers_stopping_for_old_or_failed_candidate() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stopping_recovery_never_races_live_helper_or_stopping_process() {
     let f = fixture();
@@ -784,6 +804,7 @@ fn interrupted_registration_stage_does_not_poison_the_catalog() {
     assert!(!stage.exists());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn recovery_reopens_even_if_current_pointer_cannot_be_written() {
     let f = fixture();
@@ -808,6 +829,7 @@ async fn recovery_reopens_even_if_current_pointer_cannot_be_written() {
 /// enterable, apply refuses before new work pauses, saying where and why. No
 /// operation begins, no helper starts, nothing stops, and the Core keeps
 /// taking work.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn apply_refuses_before_pausing_when_the_launch_directory_cannot_be_used() {
     use std::os::unix::fs::PermissionsExt;
@@ -850,6 +872,7 @@ async fn apply_refuses_before_pausing_when_the_launch_directory_cannot_be_used()
 /// is refused, saying where and why: the Core stays Flushing and doesn't shut
 /// down, and the helper's Abort gives it back its sessions and new work. With
 /// the directory there, the same Stop goes on as before.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stop_is_refused_when_the_launch_directory_went_away_while_waiting() {
     use super::control::{self, Command, Request};
@@ -889,6 +912,7 @@ async fn stop_is_refused_when_the_launch_directory_went_away_while_waiting() {
 /// A Core that can't start says which release, where and why (T-11): the
 /// candidate, or after it fails, the previous release, which starts in the
 /// same directory.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_core_that_cannot_start_names_its_release_and_launch_directory() {
     let f = fixture_in(|temp| temp.join("launch"));

@@ -54,9 +54,12 @@ def interrupt(signum, _frame):
 
 
 def kill_group(process, signum):
+    """Signals what is left of a test process's group. A group that is gone
+    (ESRCH), or on macOS one left only with zombies (EPERM), has nothing to
+    stop."""
     try:
         os.killpg(process.pid, signum)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 

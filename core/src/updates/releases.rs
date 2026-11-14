@@ -1,9 +1,12 @@
-//! Signed GitHub Release discovery/download. Installation remains entirely T-12's
-//! catalog -> prepare -> explicit apply path. No HTTP caller chooses a source/key.
+//! Signed GitHub Release discovery/download, through gh or, when gh is missing
+//! or not signed in, GitHub's public endpoints (public_github). Installation
+//! remains entirely T-12's catalog -> prepare -> explicit apply path. No HTTP
+//! caller chooses a source/key.
 use super::{
     catalog,
     controller::Controller,
     package::{self, Bundle, Manifest},
+    public_github::{PublicGithub, Route, Via},
     state::{self, Layout},
 };
 use crate::github::client::Client;
@@ -89,14 +92,17 @@ struct Descriptor {
 struct Candidate {
     descriptor: Descriptor,
     asset_id: u64,
+    /// How its check reached GitHub.
+    via: Via,
 }
 impl Candidate {
     fn public(&self) -> Value {
         let mut summary = serde_json::to_value(&self.descriptor.manifest).unwrap();
         summary.as_object_mut().unwrap().remove("files");
         summary["bytes"] = json!(self.descriptor.archive_bytes);
+        let public = if self.via == Via::Public { " · public download" } else { "" };
         summary["source"] = json!(format!(
-            "{} · {} · Signature verified",
+            "{} · {} · Signature verified{public}",
             self.descriptor.repository, self.descriptor.tag
         ));
         summary
@@ -118,6 +124,8 @@ struct Status {
     error: Option<String>,
     checked_at: Option<String>,
     job: Option<Arc<Job>>,
+    /// How the last check or download reached GitHub.
+    via: Option<Via>,
 }
 pub struct Releases {
     config: Option<Config>,
@@ -125,6 +133,8 @@ pub struct Releases {
     state: Mutex<Status>,
     received: AtomicU64,
     client: Client,
+    /// Used only when gh is missing or not signed in (YN-110).
+    public: PublicGithub,
 }
 impl Releases {
     pub fn new(layout: Option<&Layout>) -> Self {
@@ -138,15 +148,16 @@ impl Releases {
             Err(e) => (None, Some(e.to_string())),
         };
         Self { config, reason, state: Mutex::new(Status {
-            phase: if interrupted { "failed" } else { "idle" }, candidate: None, checked_at: None, job: None,
+            phase: if interrupted { "failed" } else { "idle" }, candidate: None, checked_at: None, job: None, via: None,
             error: interrupted.then(|| "Download was interrupted by a Core restart. Check for updates and download again.".into()),
-        }), received: AtomicU64::new(0), client: Client::default() }
+        }), received: AtomicU64::new(0), client: Client::default(), public: PublicGithub::default() }
     }
     pub fn status(&self) -> Value {
         let s = self.state.lock().unwrap();
         json!({"configured":self.config.is_some(),"repository":self.config.as_ref().map(|c| &c.repository),"reason":self.reason,
             "phase":s.phase,"candidate":s.candidate.as_ref().map(Candidate::public),"error":s.error,"checkedAt":s.checked_at,
-            "receivedBytes":self.received.load(Ordering::Relaxed),"totalBytes":s.candidate.as_ref().map(|c| c.descriptor.archive_bytes)})
+            "receivedBytes":self.received.load(Ordering::Relaxed),"totalBytes":s.candidate.as_ref().map(|c| c.descriptor.archive_bytes),
+            "via":s.via.map(Via::name)})
     }
     fn begin(&self, phase: &'static str) -> Option<Arc<Job>> {
         let mut s = self.state.lock().unwrap();
@@ -206,7 +217,9 @@ impl Releases {
         tokio::spawn(async move {
             let _permit = permit;
             let source = &controller.releases;
-            let outcome = source.discover(&controller).await;
+            let mut route = Route::new(&source.client, &source.public);
+            let outcome = source.discover(&controller, &mut route).await;
+            source.state.lock().unwrap().via = Some(route.via());
             let phase = match outcome {
                 Ok(candidate) => {
                     let mut s = source.state.lock().unwrap();
@@ -227,11 +240,10 @@ impl Releases {
         });
         Ok(())
     }
-    async fn discover(&self, controller: &Controller) -> Result<Option<Candidate>> {
+    async fn discover(&self, controller: &Controller, route: &mut Route<'_>) -> Result<Option<Candidate>> {
         let config = self.config.as_ref().context("No release source")?;
         let (layout, running) = controller.managed()?;
-        let releases = self
-            .client
+        let releases = route
             .get(&format!(
                 "repos/{}/releases?per_page=100",
                 config.repository
@@ -273,7 +285,7 @@ impl Releases {
             (index_id, &index, index_bytes),
             (signature_id, &signature, signature_bytes),
         ] {
-            self.client
+            route
                 .download(
                     &format!("repos/{}/releases/assets/{id}", config.repository),
                     path,
@@ -299,6 +311,7 @@ impl Releases {
         Ok(Some(Candidate {
             descriptor,
             asset_id: archive_id,
+            via: route.via(),
         }))
     }
     pub fn download(controller: &Arc<Controller>, release_id: &str) -> Result<()> {
@@ -392,7 +405,8 @@ impl Releases {
             "repos/{}/releases/assets/{}",
             config.repository, candidate.asset_id
         );
-        let transfer = self.client.download(
+        let mut route = Route::new(&self.client, &self.public);
+        let transfer = route.download(
             &endpoint,
             &archive,
             candidate.descriptor.archive_bytes,
@@ -403,6 +417,7 @@ impl Releases {
             result = transfer => result,
             _ = job.wake.notified() => Err(anyhow::anyhow!("Download cancelled")),
         };
+        self.state.lock().unwrap().via = Some(route.via());
         if let Err(error) = result {
             let _ = tokio::task::spawn_blocking(move || temporary.close()).await;
             return Err(error);

@@ -77,6 +77,7 @@ async fn listed(lab: &Lab, id: &str) -> Value {
         .clone()
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_services_list_says_which_job_serves_a_service_and_an_external_one_has_none() {
     let lab = lab();

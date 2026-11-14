@@ -66,6 +66,7 @@ pub mod project_requests;
 pub(crate) mod task_keys;
 pub mod github;
 pub mod guide;
+pub(crate) mod https;
 pub mod pr_review;
 pub mod pr_operations;
 pub mod merge_queue;
@@ -106,6 +107,9 @@ mod test_alloc;
 /// Free loopback ports every test module shares (YN-20).
 #[cfg(test)]
 mod test_ports;
+/// What tests see of Linux and macOS alike: processes, home folders (YN-108).
+#[cfg(test)]
+pub(crate) mod test_platform;
 /// Python 3.6 compatibility of the Jobs helpers (YN-83).
 #[cfg(test)]
 mod python_compat_tests;

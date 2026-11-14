@@ -526,6 +526,7 @@ mod tests {
         assert_eq!((value["cpu"]["agentsPct"].clone(), value["cpu"]["otherPct"].clone()), (Value::Null, Value::Null));
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn endpoint_answers_in_the_shape_home_reads() {
         let dir = tempfile::tempdir().unwrap();

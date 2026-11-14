@@ -533,6 +533,23 @@ test("development installations explain why applying is unavailable", async () =
   }
 });
 
+// YN-108: the system is the one Core says it runs on, not always Linux.
+test("the Workspace service names the system its Core reports: Linux / WSL or macOS", async () => {
+  for (const [platform, system] of [["linux-x86_64", "Linux / WSL"], ["macos-aarch64", "macOS"]]) {
+    const f = await mount({ current: { ...release("A"), platform } });
+    try {
+      await f.open();
+      const text = f.w.document.body.textContent;
+      assert.ok(text.includes(`The Workspace service, Core + Web UI on ${system}, changes only`), `${platform}: the intro`);
+      assert.ok(text.includes(`Workspace service · Core + Web UI · ${system}`), `${platform}: runs as`);
+      const other = system === "macOS" ? "Linux / WSL" : "macOS";
+      assert.ok(!text.includes(`Core + Web UI on ${other}`) && !text.includes(`Core + Web UI · ${other}`), `${platform}: not ${other}`);
+    } finally {
+      f.dom.window.close();
+    }
+  }
+});
+
 // What the next test can see when the storage report is missing, built only
 // then. Stored or reported text never appears: the saved draft is given by the
 // kinds of its parts, update requests by method and path, a value that cannot

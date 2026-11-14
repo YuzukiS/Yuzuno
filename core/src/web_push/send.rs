@@ -1,27 +1,20 @@
-//! Sending one message to a push service: Core's only HTTPS client. It
-//! trusts the roots webpki-roots carries (the push services' certificates
-//! chain to them), follows no redirect and waits a bounded time.
+//! Sending one message to a push service through Core's HTTPS client
+//! (crate::https). It trusts the roots webpki-roots carries (the push
+//! services' certificates chain to them), follows no redirect and waits a
+//! bounded time.
 use anyhow::{Context, Result};
 use axum::{body::Bytes, http};
 use http_body_util::{BodyExt, Full, Limited};
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 const WAIT: Duration = Duration::from_secs(15);
 /// What is read of an answer's body: enough for a push service's reason.
 const ANSWER_BYTES: usize = 1024;
 
-pub(super) type Https = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+pub(super) type Https = crate::https::Direct<Full<Bytes>>;
 
 pub(super) fn client() -> Result<Https> {
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .context("TLS for push notifications")?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let https = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls).https_only().enable_http1().build();
-    Ok(Client::builder(hyper_util::rt::TokioExecutor::new()).build(https))
+    crate::https::direct(crate::https::roots()).context("TLS for push notifications")
 }
 
 /// One message as the push service gets it (RFC 8030 §5, RFC 8292 §3).

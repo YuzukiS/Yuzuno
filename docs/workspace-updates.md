@@ -63,6 +63,43 @@ backup is never restored over newer records. Once native restoration has begun,
 the helper does not forcibly kill an uncertain session to attempt fallback.
 Interrupted tools are not advertised as resumable.
 
+## Where releases come from
+
+A check or download reads the GitHub repository named in the managed root's
+`release-source.json`; the desktop app's updates (relayed by Core) read the
+fixed `YuzukiS/Yuzuno`. Core asks the host's `gh` first, with its sign-in. Only
+when `gh` answers that it is not installed or not signed in does that one check
+or download read GitHub's public releases itself, without a sign-in:
+
+- It reads two things from `https://api.github.com`, an address no setting or
+  environment variable changes: the release list
+  (`repos/<owner>/<repo>/releases?per_page=100`) and one release asset
+  (`repos/<owner>/<repo>/releases/assets/<id>`). It sends no token, cookie or
+  other credential.
+- It follows GitHub's redirect to an asset's file only to an `https://`
+  address, at most five times.
+- TLS trusts the roots built into Core (webpki-roots), not the host's
+  certificate store.
+- Behind a proxy it uses `HTTPS_PROXY` (or `https_proxy`), except for hosts
+  that `NO_PROXY` (or `no_proxy`) names, as `gh` does. Only an `http://` proxy
+  works, through CONNECT, so TLS still runs to GitHub; a sign-in in its address
+  goes to the proxy alone. A proxy that is set but cannot be used stops the
+  read: Core does not go around it. No other proxy variable or system setting
+  is read.
+- Nothing is trusted for coming this way. A Core release still needs the
+  publisher's minisign signature on its descriptor, the archive's signed
+  SHA-256 and every file's signed hash; a desktop installer still needs the
+  desktop app's own signature.
+- Any other answer from `gh` (not found, forbidden, rate limited, unreachable,
+  timed out) is reported as it is, without trying the public way.
+- GitHub allows 60 requests an hour per address without a sign-in. A check
+  makes three (the list, the descriptor and its signature) and a download one
+  more; past the limit the check says so. A repository that is not public
+  answers "not found" this way: sign in with `gh` on the Core host.
+- A release found this way shows "· public download" after its source in
+  Settings → Updates. `releaseSource.via` in the updates status says which way
+  (`gh` or `public`) the last check or download went.
+
 ## Preparing reviewed packages
 
 For the normal developer release path, use the

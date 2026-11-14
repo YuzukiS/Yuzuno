@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -139,6 +140,26 @@ test('its own state is published before its socket accepts anyone, replacing wha
   const published = JSON.parse(readFileSync(join(root, 'state.json'), 'utf8'));
   assert.equal(published.pid, process.pid);
   assert.equal(published.busy, undefined);
+});
+
+test('started through a path with a symbolic link in it, the host still serves (YN-108)', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'remote-host-link-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'real', 'root'), { recursive: true, mode: 0o700 });
+  copyFileSync(new URL('./remote-host.mjs', import.meta.url), join(dir, 'real', 'remote-host.mjs'));
+  writeFileSync(join(dir, 'real', 'bridge.mjs'), 'process.stdin.resume();');
+  symlinkSync('real', join(dir, 'link'));
+  const child = spawn(process.execPath, [join(dir, 'link', 'remote-host.mjs'), 'serve', join(dir, 'link', 'root')], { stdio: 'ignore' });
+  t.after(() => child.kill('SIGKILL'));
+  const exited = new Promise(resolve => child.once('exit', code => resolve(`exited ${code}`)));
+  const listening = (async () => {
+    for (let i = 0; i < 100; i++) {
+      if (existsSync(join(dir, 'real', 'root', 'claude.sock'))) return 'listening';
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return 'no socket';
+  })();
+  assert.equal(await Promise.race([listening, exited]), 'listening');
 });
 
 test('a connection that sends nothing (a liveness check) neither attaches nor stops the host', async t => {

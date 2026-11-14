@@ -1163,7 +1163,23 @@ with tempfile.TemporaryDirectory() as directory:
             child.wait_with_output().unwrap()
         };
         let first = ensure("agent-one");
-        assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+        // What the host said, when it ended before its socket was ready.
+        let host_out = || {
+            let mut said = String::new();
+            let mut folders = vec![home.clone()];
+            while let Some(folder) = folders.pop() {
+                for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        folders.push(path);
+                    } else if path.file_name().is_some_and(|name| name == "host.out") {
+                        said += &std::fs::read_to_string(&path).unwrap_or_default();
+                    }
+                }
+            }
+            said
+        };
+        assert!(first.status.success(), "{}\nhost.out: {}", String::from_utf8_lossy(&first.stderr), host_out());
         let host: ClaudeHost = serde_json::from_slice(&first.stdout).unwrap();
         struct Stop(u32);
         impl Drop for Stop {
@@ -1389,7 +1405,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert!(runtime.root.starts_with(&*home.join("jobs-lab/.yuzuno/runtimes").to_string_lossy()), "{}", runtime.root);
         let mode = std::fs::metadata(home.join("jobs-lab/.yuzuno")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
-        let names: Vec<_> = std::fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names = crate::test_platform::home_entries(&home);
         assert_eq!(names, ["jobs-lab"], "nothing in the home folder outside that root");
         // Asked again in that root, the same runtime: one per Agent.
         let again: RuntimeRef = serde_json::from_slice(&ensure("~/jobs-lab/.yuzuno").stdout).unwrap();
@@ -1467,7 +1483,7 @@ with tempfile.TemporaryDirectory() as directory:
             let mode = std::fs::metadata(root.join(name)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700, "{name}");
         }
-        let names: Vec<_> = std::fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names = crate::test_platform::home_entries(&home);
         assert_eq!(names, ["jobs-lab"], "nothing of the session outside the root");
         // Codex keeps its sessions in ~/.codex: not run on such a machine.
         let codex = call(json!({"action":"ensure","codex":"true","workspaceKey":"w","agentId":"a","root":"~/jobs-lab/.yuzuno","contained":true}));
@@ -1487,7 +1503,8 @@ with tempfile.TemporaryDirectory() as directory:
         let remote = command.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         let (assignments, program) = remote.split_once(" exec ").unwrap();
         assert_eq!(program, format!("'/home/lab_host/jobs-lab/.yuzuno/tools/node/bin/node' \"$HOME\"/'jobs-lab/.yuzuno/claude-runtime/{digest}/bridge.mjs'"));
-        let output = std::process::Command::new("sh")
+        // /bin/sh: with PATH /usr/bin, a bare `sh` is not found on macOS.
+        let output = std::process::Command::new("/bin/sh")
             .args(["-c", &format!("{assignments} exec /bin/sh -c 'printf \"%s\\n\" \"$PATH\" \"$CLAUDE_CONFIG_DIR\" \"$TMPDIR\" \"$XDG_CACHE_HOME\" \"$DISABLE_AUTOUPDATER\"'")])
             .env_clear()
             .env("HOME", "/h")

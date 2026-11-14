@@ -141,13 +141,13 @@ impl Watch {
     }
 
     /// Tests: as a Core that just started, which has seen nothing.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn reset(&self) {
         self.seen.lock().unwrap().clear();
     }
 
     /// Tests: as if `by` had passed since every first sight and question.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn rewind(&self, by: Duration) {
         for seen in self.seen.lock().unwrap().values_mut() {
             seen.first -= by;

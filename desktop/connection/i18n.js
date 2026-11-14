@@ -147,6 +147,8 @@ window.YUZUNO_I18N = {
     'fail.portInUse': '端口被别的程序占着。用「更改位置…」换一个端口，或者停掉占着它的程序。',
     'fail.tooOld': '最新的 Core 发布还不支持从应用安装。等下一个发布，或者先照文档在 WSL 里手动安装。',
     'fail.starting': 'Core 已经启动，但两分钟内没有应答。等一会儿再点「启动本机 Core」。',
+    'fail.checkChanged': '检查之后发行版里有了变化。重新检查一下再装。',
+    'fail.rateLimited': 'GitHub 暂时限制了这台电脑的请求。过一会儿再试。',
     'cleaned.none': '什么都没改。',
     'cleaned.release': '发行版里什么都没写；下载的内容只在内存里。',
     'cleaned.download': '发行版里什么都没写；下载的内容只在内存里。',
@@ -162,6 +164,7 @@ window.YUZUNO_I18N = {
     'cleaned.invalidPort': '什么都没改。',
     'cleaned.tooOld': '没有装上任何东西；这次在发行版里建的临时文件夹清没清掉，「详情」末尾写着。',
     'cleaned.starting': '安装保留着，Core 可能还在启动。',
+    'cleaned.checkChanged': '什么都没改。',
 
     connectTitle: '连接别的 Core',
     connectDesc: '另一台电脑经 SSH 隧道的本机地址，或 HTTPS 入口。',
@@ -352,6 +355,8 @@ window.YUZUNO_I18N = {
     'fail.portInUse': 'Another program holds the port. Choose another port with Change location…, or stop that program.',
     'fail.tooOld': 'The latest Core release cannot be installed from the app yet. Wait for the next release, or install it in WSL by hand as the documentation describes.',
     'fail.starting': "Core started but did not answer within two minutes. Wait a moment, then use Start this computer's Core.",
+    'fail.checkChanged': 'Something in the distribution changed after the check. Check again, then install.',
+    'fail.rateLimited': 'GitHub is limiting requests from this computer for now. Try again in a while.',
     'cleaned.none': 'Nothing was changed.',
     'cleaned.release': 'Nothing was written into the distribution; the download was only in memory.',
     'cleaned.download': 'Nothing was written into the distribution; the download was only in memory.',
@@ -367,6 +372,7 @@ window.YUZUNO_I18N = {
     'cleaned.invalidPort': 'Nothing was changed.',
     'cleaned.tooOld': "Nothing was installed; the end of Details says whether this install's temporary folder in the distribution was removed.",
     'cleaned.starting': 'The installation stays, and Core may still be starting.',
+    'cleaned.checkChanged': 'Nothing was changed.',
 
     connectTitle: 'Connect to another Core',
     connectDesc: "An SSH tunnel's local address to another computer, or an HTTPS entry.",

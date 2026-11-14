@@ -879,6 +879,7 @@ fn only_job_submit_describes_machines_and_keeps_their_limits() {
     assert!(text(&job, "artifacts").contains("minBytes (default 1)"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn host_artifact_cost_and_upstream_checks() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -140,6 +140,7 @@ fn a_checkout_is_never_a_cache_and_an_in_source_cmake_build_is_none() {
     assert_eq!(check::recognize(&build, &on, false, true).unwrap(), None, "a .git file, as a worktree has, too");
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_scratch_root_s_clone_is_never_rebuildable_in_a_plan() {
     let lab = lab();
@@ -236,6 +237,7 @@ fn settings_switch_known_rules_only() {
     assert_eq!(settings::overview(&db).unwrap()["rules"].as_array().unwrap().len(), rules::ids().len());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn in_a_plan_a_rule_file_in_the_repository_adds_nothing_and_a_rule_off_says_so() {
     let lab = lab();
@@ -272,6 +274,7 @@ async fn in_a_plan_a_rule_file_in_the_repository_adds_nothing_and_a_rule_off_say
 /// removed, a target triple's, doc, package and tmp go; what Cargo didn't
 /// make, and a profile holding something of someone's, stay; and Cargo's own
 /// top-level files with the folder itself.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cargo_s_target_keeps_what_cargo_did_not_make_and_takes_a_half_profile() {
     let lab = lab();
@@ -309,6 +312,7 @@ async fn cargo_s_target_keeps_what_cargo_did_not_make_and_takes_a_half_profile()
 
 /// Lead mail 10772: a merge Git can't tell is not known, never merged, and
 /// the user is told.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_merge_git_cannot_tell_is_never_clean_and_merged() {
     let lab = lab();
@@ -420,6 +424,7 @@ fn a_pycache_over_its_cap_is_never_only_pyc_files() {
 
 /// Lead activity 8080 P2-2: of Cargo's target, a subtree that holds a Git
 /// working tree or repository (doc, package, tmp or build by name) stays.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cargo_s_named_subtrees_holding_git_stay() {
     let lab = lab();

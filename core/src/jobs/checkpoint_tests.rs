@@ -304,6 +304,7 @@ fn a_verified_checkpoint_ends_the_job_and_resumes_as_a_new_linked_job_once() {
     assert!(s.link_resumed(other["id"].as_str().unwrap(), next_id).is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn wrapper_forwards_the_stop_and_verifies_the_checkpoint() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

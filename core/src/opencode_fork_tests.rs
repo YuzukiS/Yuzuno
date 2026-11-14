@@ -182,6 +182,7 @@ fn the_copy_keeps_ids_rewrites_images_and_refuses_unknown_fields() {
     refused(json!({"id": "c", "status": "completed", "_opencodeCompact": {"state": "completed", "input": "msg_c", "_new": 1}}), "_new");
 }
 
+#[cfg(target_os = "linux")]
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 /// One `opencode` for the whole test process, as the Agent tests have it.
@@ -211,6 +212,7 @@ async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
 }
 
 /// The stand-in serving `agent`, by its control (`start.json`).
+#[cfg(target_os = "linux")]
 async fn control(data: &Path, agent: &str, name: &str, body: Value) -> Value {
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(agent).join("start.json")).unwrap()).unwrap();
     reqwest::Client::builder().no_proxy().build().unwrap()
@@ -219,42 +221,50 @@ async fn control(data: &Path, agent: &str, name: &str, body: Value) -> Value {
 }
 
 /// What `agent`'s stand-ins were asked, every process there in turn.
+#[cfg(target_os = "linux")]
 fn calls(data: &Path, agent: &str) -> Vec<Value> {
     std::fs::read_to_string(data.join("opencode").join(agent).join("calls.jsonl")).unwrap_or_default().lines()
         .map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
+#[cfg(target_os = "linux")]
 fn asked(data: &Path, agent: &str, method: &str, path: &str) -> Vec<Value> {
     calls(data, agent).into_iter().filter(|c| c["method"] == method && c["path"].as_str().is_some_and(|p| p.ends_with(path))).collect()
 }
 
 /// How many requests `agent`'s stand-ins were asked that may write.
+#[cfg(target_os = "linux")]
 fn writes(data: &Path, agent: &str) -> usize {
     calls(data, agent).iter().filter(|c| c["method"] != "GET").count()
 }
 
 /// How many times an OpenCode was started for `agent`.
+#[cfg(target_os = "linux")]
 fn starts(data: &Path, agent: &str) -> usize {
     std::fs::read_to_string(data.join("opencode").join(agent).join("starts.jsonl")).unwrap_or_default().lines().count()
 }
 
 /// What `agent`'s stand-in keeps, as it saved it.
+#[cfg(target_os = "linux")]
 fn held(data: &Path, agent: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(agent).join("state.json")).unwrap_or_else(|_| "{}".into())).unwrap()
 }
 
 /// How many sessions `agent`'s stand-in keeps.
+#[cfg(target_os = "linux")]
 fn sessions_held(data: &Path, agent: &str) -> usize {
     held(data, agent)["sessions"].as_object().map(Map::len).unwrap_or(0)
 }
 
 /// Modes for the next OpenCode started on a new database: a fork's target,
 /// whose folder a test cannot know beforehand.
+#[cfg(target_os = "linux")]
 fn plan_new(data: &Path, modes: Value) {
     std::fs::write(data.join("opencode/fixture-new.json"), modes.to_string()).unwrap();
 }
 
 /// A Turn sent to `agent` and answered (with `answer`'s extra fields): its ID, once Core has it completed.
+#[cfg(target_os = "linux")]
 async fn turn_on(ws: &Arc<Workspace>, data: &Path, agent: &str, text: &str, answer: Value) -> String {
     ws.opencode_send(agent, text.into()).await.unwrap();
     let session = ws.opencodes.lock().unwrap().get(agent).cloned().unwrap().session;
@@ -272,6 +282,7 @@ async fn turn_on(ws: &Arc<Workspace>, data: &Path, agent: &str, text: &str, answ
     panic!("Turn {id} did not complete: {:#?}", ws.store.detail(agent).unwrap().turns);
 }
 
+#[cfg(target_os = "linux")]
 fn request(id: &str, turn: &str, name: &str) -> Request {
     Request { request_id: id.into(), turn_id: turn.into(), name: name.into() }
 }
@@ -290,6 +301,7 @@ async fn three(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::P
 }
 
 /// The source's session and messages as its OpenCode holds them now.
+#[cfg(target_os = "linux")]
 async fn source_session(ws: &Arc<Workspace>) -> (String, Vec<Value>) {
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
     (c.session.clone(), c.server.messages(&c.session).await.unwrap().as_array().unwrap().clone())

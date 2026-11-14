@@ -1,8 +1,9 @@
 //! Local Jobs on a Core whose host cannot run them (T-88): macOS, as
 //! `host::NOT_LINUX` makes one Core's data folder look while these tests run
-//! on Linux. Local work is refused before the helper is written or run and
-//! before anything is saved; a Job for a registered machine, the history and
-//! the answers already given are unchanged.
+//! on Linux, and as it is when they run on macOS (core-macos.yml, YN-108).
+//! Local work is refused before the helper is written or run and before
+//! anything is saved; a Job for a registered machine, the history and the
+//! answers already given are unchanged.
 use super::runs::{self, Prepared, RunSubmit};
 use super::*;
 use crate::{model::AgentDetail, remote::RemoteMachine};
@@ -198,9 +199,16 @@ async fn on_such_a_host_a_registered_machine_the_history_and_answers_already_giv
     assert_eq!(another.map_err(|e| e.to_string()), Err(refusal), "a new retry");
     assert_eq!(lab.saved(), before, "repeats saved nothing new");
     // `r` runs on m1: its alias resolves there, and the Job is queued for m1.
+    // Queued for a remote machine, it keeps Cores before data roots out
+    // (older_cores.rs): on macOS through its own check, not a lease.
     let remote = lab.call(Some("r"), "job_submit", job("on-m1", json!({"machineId":"agent","cwd":"/home/u","guardGit":false}))).await.unwrap();
     assert_eq!(remote["target"], json!({"requested":"agent","kind":"ssh","machineId":"m1","machineName":"lab box"}));
     assert_eq!((remote["status"].clone(), remote["executor"]["machineId"].clone()), (json!("queued"), json!("m1")));
+    if !rustix::process::geteuid().is_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(lab.data.join("workspace.lock")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o400, "the Workspace lock is read-only");
+    }
     assert_eq!(lab.saved().0, before.0 + 1);
     // The history still reads.
     let listed = lab.call(None, "job_list", json!({})).await.unwrap();
@@ -211,6 +219,7 @@ async fn on_such_a_host_a_registered_machine_the_history_and_answers_already_giv
     assert_eq!(lab.helpers(), Vec::<String>::new());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn on_linux_the_same_requests_go_on_as_before() {
     let lab = lab();

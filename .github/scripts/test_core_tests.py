@@ -357,5 +357,20 @@ class CoreTests(unittest.TestCase):
                 self.assertIn('CORE_TEST_JOBS must be a positive integer', r.stderr)
 
 
+class KillGroup(unittest.TestCase):
+    def test_a_group_that_is_gone_or_refused_leaves_the_runner_going(self):
+        # macOS answers EPERM for a group left only with zombies (YN-108).
+        import importlib.util
+        import types
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location('core_tests_under_test', SOURCE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for error in (ProcessLookupError, PermissionError):
+            with self.subTest(error.__name__), mock.patch.object(module.os, 'killpg', side_effect=error) as killpg:
+                module.kill_group(types.SimpleNamespace(pid=4242), signal.SIGKILL)
+                killpg.assert_called_once_with(4242, signal.SIGKILL)
+
+
 if __name__ == '__main__':
     unittest.main()

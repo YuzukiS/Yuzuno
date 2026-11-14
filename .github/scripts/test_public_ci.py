@@ -29,6 +29,12 @@ triggers it; its token reads contents only; no secret, cache or other
 runner. Its one upload is the Simulator smoke's two screenshots of the
 connection page, exactly as IOS_UPLOAD names them and kept for 3 days, after
 a step that checks there are only those two PNG files.
+
+.github/workflows/core-macos.yml (YN-108) builds and tests Core on the
+standard GitHub-hosted macos-26 runner. Only push to main and pull_request
+trigger it, for the same Core paths; its token reads contents only; no
+secret, upload, general cache or other runner, and the Cargo cache is saved
+only from main, as in CI.
 """
 from pathlib import Path
 import os
@@ -46,6 +52,7 @@ DISK_PRECHECK = ROOT / '.github/scripts/disk-precheck.sh'
 RELEASE_INPUTS = ROOT / '.github/workflows/release-inputs.yml'
 DESKTOP_MACOS = ROOT / '.github/workflows/desktop-macos.yml'
 IOS = ROOT / '.github/workflows/ios.yml'
+CORE_MACOS = ROOT / '.github/workflows/core-macos.yml'
 JOB = re.compile(r'^  ([A-Za-z0-9_-]+):\s*$')
 
 
@@ -294,6 +301,64 @@ def ios_problems(text):
     return found
 
 
+def trigger_paths(top, trigger):
+    """The paths: filter listed under one trigger of on:."""
+    start = top.index(f'  {trigger}:')
+    found, inside = [], False
+    for line in top[start + 1:]:
+        if not line.startswith('    '):
+            break
+        if line.strip() == 'paths:':
+            inside = True
+        elif inside and line.strip().startswith('- '):
+            found.append(line.strip()[2:])
+        elif not line.startswith('      '):
+            inside = False
+    return found
+
+
+def core_macos_problems(text):
+    lines = code_lines(text)
+    found = []
+    body = '\n'.join(lines)
+    top = lines[:lines.index('jobs:')]
+    triggers = [key for key, _ in section(top, 'on')]
+    if triggers != ['push', 'pull_request']:
+        found.append(f'triggers are {triggers}, not push and pull_request')
+    elif 'core/**' not in trigger_paths(top, 'push') or trigger_paths(top, 'push') != trigger_paths(top, 'pull_request'):
+        found.append('push and pull_request do not watch the same Core paths')
+    if sorted(section(top, 'permissions')) != [('contents', 'read')]:
+        found.append('the top-level permissions are not contents: read only')
+    for pattern, what in [(r'pull_request_target|workflow_run', 'a privileged trigger'),
+                          (r'secrets\.', 'a secret'),
+                          (r':\s*write\b', 'a write permission'),
+                          (r'self-hosted', 'a self-hosted label'),
+                          (r'upload-artifact|upload-pages-artifact|actions/cache/save', 'an upload or cache save')]:
+        if re.search(pattern, body):
+            found.append(f'it uses {what}')
+    found += unpinned(lines)
+    all_jobs = jobs(lines)
+    if len(all_jobs) != 1:
+        found.append(f'{len(all_jobs)} jobs, not one')
+    for name, job in all_jobs.items():
+        found += runner_problems(name, job, 'macos-26')
+        steps = '\n'.join(job)
+        checkout = next((step for step in steps_of(job) if 'actions/checkout@' in step), None)
+        if checkout is None or 'persist-credentials: false' not in checkout:
+            found.append(f'job {name} keeps the checkout credentials')
+        node = steps.count('actions/setup-node@')
+        if node and (steps.count('package-manager-cache: false') != node or re.search(r'^\s+cache(-dependency-path)?:', steps, re.M)):
+            found.append(f'job {name} may cache npm packages')
+        if re.search(r'actions/cache(/restore)?@', steps):
+            found.append(f'job {name} uses a general cache')
+        saves = re.findall(r'save-if:\s*(.+)', steps)
+        if saves != ["${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"] * steps.count('rust-cache@'):
+            found.append(f'job {name} may save the Rust cache outside a push to main')
+        if '.github/scripts/core_tests.py' not in steps or 'cargo build --locked --all-targets' not in steps:
+            found.append(f'job {name} does not build and test Core as CI does')
+    return found
+
+
 class PublicCi(unittest.TestCase):
     def test_the_public_workflow_keeps_the_rules(self):
         self.assertEqual(problems(workflow().read_text()), [])
@@ -415,6 +480,34 @@ class PublicCi(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotEqual(text, good, 'the fixture edit did not apply')
                 self.assertTrue(any(message in problem for problem in ios_problems(text)), ios_problems(text))
+
+    def test_the_core_macos_workflow_keeps_its_rules(self):
+        self.assertEqual(core_macos_problems(CORE_MACOS.read_text()), [])
+
+    def test_each_broken_core_macos_rule_is_reported(self):
+        good = CORE_MACOS.read_text()
+        cases = {
+            'a request trigger': (good.replace('  pull_request:\n', '  workflow_dispatch:\n  pull_request:\n', 1), 'triggers'),
+            'pull_request_target': (good.replace('  pull_request:\n', '  pull_request_target:\n', 1), 'triggers'),
+            'other paths for PRs': (good.replace('      - core/**\n', '      - docs/**\n', 2).replace('      - docs/**\n', '      - core/**\n', 1), 'same Core paths'),
+            'a write permission': (good.replace('  contents: read', '  contents: write', 1), 'permissions'),
+            'a wider token': (good.replace('  contents: read\n', '  contents: read\n  actions: read\n', 1), 'permissions'),
+            'a secret': (good.replace('          persist-credentials: false\n', '          persist-credentials: false\n          token: ${{ secrets.X }}\n', 1), 'a secret'),
+            'a larger runner': (good.replace('runs-on: macos-26\n', 'runs-on: macos-26-xlarge\n', 1), 'not macos-26'),
+            'a self-hosted runner': (good.replace('runs-on: macos-26\n', 'runs-on: [self-hosted, macOS, ARM64]\n', 1), 'self-hosted'),
+            'an upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - name: Runner details', 1), 'upload'),
+            'a general cache': (good.replace('      - name: Runner details', '      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n      - name: Runner details', 1), 'general cache'),
+            'a cache saved from PRs': (good.replace("save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", 'save-if: true', 1), 'Rust cache'),
+            'an npm cache': (good.replace('package-manager-cache: false', 'cache: npm', 1), 'npm packages'),
+            'no test runner': (good.replace('          .github/scripts/core_tests.py\n', '          cargo test --locked\n', 1), 'as CI does'),
+            'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
+            'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
+            'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
+        }
+        for label, (text, message) in cases.items():
+            with self.subTest(label):
+                self.assertNotEqual(text, good, 'the fixture edit did not apply')
+                self.assertTrue(any(message in problem for problem in core_macos_problems(text)), core_macos_problems(text))
 
     def test_the_guard_refuses_any_runner_but_a_github_hosted_one(self):
         for environment, code in [('self-hosted', 1), ('', 1), ('github-hosted', 0)]:

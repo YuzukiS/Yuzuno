@@ -24,7 +24,8 @@
 //! Every Snapshot and Terminal carries the generation it was started with,
 //! so a caller can drop what an older generation says late. The remote's
 //! values are only shown: none enters a command, a path or admission.
-#![cfg_attr(not(test), allow(dead_code))]
+// What only its tests read, built where they are (mod.rs).
+#![cfg_attr(not(all(test, target_os = "linux", target_env = "gnu")), allow(dead_code))]
 
 use super::package;
 use super::protocol::{self, After, BootLine, Bye, Code, Exit, Facts, Frame, Hello, Load, Stderr};
