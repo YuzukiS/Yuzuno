@@ -11,9 +11,11 @@ Before the public snapshot it is ci/public/ci.yml, inactive here; after it,
 
 .github/workflows/release-inputs.yml (T-159) builds release inputs on request:
 only workflow_dispatch triggers it; its token reads contents and actions
-only; no secret, cache or other runner; it builds only main whose push CI
-passed, checks the inputs (never the Claude Agent SDK) before uploading the
-one core-inputs artifact.
+only; no secret, cache or other runner. It has one job per platform, each on
+its own standard runner (YN-108): Linux on ubuntu-24.04, macOS on macos-26.
+Each builds only main whose push CI passed, checks the inputs (never the
+Claude Agent SDK) before uploading its one core-inputs artifact; the Mac job
+also smokes its binaries before that.
 
 .github/workflows/desktop-macos.yml (T-165) builds the macOS app on the
 standard GitHub-hosted macOS 26 runners, one per architecture: arm64 on
@@ -168,6 +170,12 @@ def problems(text):
 
 
 UPLOAD_NAME = 'name: core-inputs-${{ github.sha }}-${{ github.run_attempt }}'
+# Each platform's job: its runner and the name of its one artifact. Linux's
+# keeps the name tools/core-release.py reads until both are released (M3b).
+RELEASE_INPUT_JOBS = {
+    'inputs': ('ubuntu-24.04', UPLOAD_NAME),
+    'macos-aarch64': ('macos-26', 'name: core-inputs-macos-aarch64-${{ github.sha }}-${{ github.run_attempt }}'),
+}
 
 
 def release_inputs_problems(text):
@@ -189,10 +197,11 @@ def release_inputs_problems(text):
             found.append(f'it uses {what}')
     found += unpinned(lines)
     all_jobs = jobs(lines)
-    if len(all_jobs) != 1:
-        found.append(f'{len(all_jobs)} jobs, not one')
+    if sorted(all_jobs) != sorted(RELEASE_INPUT_JOBS):
+        found.append(f'the jobs are {sorted(all_jobs)}, not {sorted(RELEASE_INPUT_JOBS)}')
     for name, job in all_jobs.items():
-        found += runner_problems(name, job)
+        image, upload_name = RELEASE_INPUT_JOBS.get(name, ('ubuntu-24.04', UPLOAD_NAME))
+        found += runner_problems(name, job, image)
         steps = steps_of(job)
         def first(predicate):
             return next((i for i, step in enumerate(steps) if predicate(step)), None)
@@ -205,10 +214,14 @@ def release_inputs_problems(text):
             found.append(f'job {name} does not require main with passed CI before checkout')
         if checkout is not None and 'persist-credentials: false' not in steps[checkout]:
             found.append(f'job {name} keeps the checkout credentials')
-        if len(uploads) != 1 or UPLOAD_NAME not in steps[uploads[0]]:
-            found.append(f'job {name} does not upload exactly the one core-inputs artifact')
+        if len(uploads) != 1 or upload_name not in steps[uploads[0]]:
+            found.append(f'job {name} does not upload exactly its one core-inputs artifact')
         elif check is None or check > uploads[0]:
             found.append(f'job {name} does not check the inputs before uploading')
+        if name == 'macos-aarch64':
+            smoke = first(lambda step: 'tools/release-inputs-smoke.py' in step)
+            if smoke is None or (len(uploads) == 1 and smoke > uploads[0]):
+                found.append(f'job {name} does not smoke its binaries before uploading')
     return found
 
 
@@ -471,6 +484,14 @@ class PublicCi(unittest.TestCase):
             'another artifact name': (good.replace('name: core-inputs-${{ github.sha }}', 'name: inputs-${{ github.sha }}', 1), 'one core-inputs artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one core-inputs artifact'),
             'no check before upload': (good.replace('-I tools/release-inputs-check.py', '-I tools/other.py', 1), 'check the inputs'),
+            'the Mac job on a paid runner': (good.replace('runs-on: macos-26', 'runs-on: macos-26-xlarge', 1), 'not macos-26'),
+            'the Mac job on Linux': (good.replace('runs-on: macos-26', 'runs-on: ubuntu-24.04', 1), 'not macos-26'),
+            "the Mac artifact under Linux's name": (good.replace('name: core-inputs-macos-aarch64-', 'name: core-inputs-', 1), 'macos-aarch64 does not upload'),
+            'no Mac check before upload': (good.replace('-I tools/release-inputs-check.py --platform macos-aarch64', '-I tools/other.py', 1), 'macos-aarch64 does not check'),
+            'no Mac smoke': (good.replace('-I tools/release-inputs-smoke.py', '-I tools/other.py', 1), 'smoke its binaries'),
+            'any branch on the Mac': (good.replace('[ "$GITHUB_REF" = refs/heads/main ] ||', 'true ||').replace('true ||', '[ "$GITHUB_REF" = refs/heads/main ] ||', 1), 'macos-aarch64 does not require main'),
+            'a third job': (good.replace('\n  macos-aarch64:\n', '\n  windows:\n    runs-on: windows-2025\n    steps:\n      - run: true\n\n  macos-aarch64:\n', 1), 'the jobs are'),
+            'one job only': (good[:good.index('\n  macos-aarch64:\n')] + '\n', 'the jobs are'),
         }
         for label, (text, message) in cases.items():
             with self.subTest(label):

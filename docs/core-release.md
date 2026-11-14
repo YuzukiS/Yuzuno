@@ -52,9 +52,11 @@ those bytes. A `bundled-release` build without the value does not compile, and
 `tools/package-release.py` refuses a bundle whose SHA-256 the Core binary does
 not carry, so no release ships an unpinned validator.
 
-**Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted ubuntu-24.04, with a token that reads contents and actions and no secret:
-- It builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
-- It runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before `core-inputs-<SHA>-<run attempt>` is uploaded for 14 days.
+**Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted runners, with a token that reads contents and actions and no secret. It has one job per platform: Linux x86_64 on ubuntu-24.04, and macOS on Apple silicon on the standard macos-26 runner (YN-108):
+- Each job builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
+- Each runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs for another platform, from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before the job's artifact is uploaded for 14 days: `core-inputs-<SHA>-<run attempt>` for Linux, `core-inputs-macos-aarch64-<SHA>-<run attempt>` for macOS.
+- The Mac job also smokes the two binaries it built (`tools/release-inputs-smoke.py`), since the Linux release host cannot run them: Core answers `/api/health` and `/api/updates` says `macos-aarch64`; the update helper installs an unsigned local package of the inputs into a new managed root (`register --initialize`); `updates/start start` and `stop` start and stop that root's Core; every Core it started itself exits 0 after SIGTERM. It uses a new folder, HOME and ports of its own.
+- The run passes only when both jobs pass. Packaging, signing and publishing the macOS inputs are not done yet (YN-108 M3b); until then a release uses only the Linux artifact.
 - `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
 
 **Every main commit's runs finish:**
@@ -64,17 +66,36 @@ not carry, so no release ships an unpinned validator.
 - Nothing reruns or releases automatically.
 
 Historical release inputs were built by the former private repository's self-hosted WSL Rust lane; the public repository builds them only on request, as above. The retained build tooling uses Rust 1.97.1, Node
-22.23.2 and Python >= 3.11. Pinned cargo-zigbuild 0.23.4 and Zig 0.15.2
+22.23.2 and Python >= 3.11 (on the Mac, the command line tools' own
+`/usr/bin/python3`, 3.9; the scripts it runs keep to 3.9). Pinned cargo-zigbuild 0.23.4 and Zig 0.15.2
 cross-link for `x86_64-unknown-linux-gnu.2.35`, independent of the host's newer
 glibc. Both linker versions and the target are recorded in `build.json`.
 `tools/build-release-inputs-ci.py` prepares fresh toolchains and caches with
-checksum-locked bootstrap downloads; it never adopts PR build caches. The
+checksum-locked bootstrap downloads (rustup-init and Node, pinned by SHA-256 per
+platform); it never adopts PR build caches. The
 persistent host remains trusted.
 ELF checks reject glibc requirements newer than 2.35 and unexpected shared
 libraries; the required library list and tool versions are recorded. Target
 hosts are Linux/WSL x86_64 with glibc >= 2.35, Node 22 and installed authenticated
 official CLIs. Alpine/musl, older glibc, ARM and the Windows desktop binary are
 not covered by this artifact. SQLite is bundled; no secret is sent to CI.
+
+The macOS inputs are built for `aarch64-apple-darwin` with Apple's linker,
+`MACOSX_DEPLOYMENT_TARGET=11.0` and `SDKROOT` set to the selected Xcode's (or
+command line tools') macOS SDK (`xcrun --sdk macosx --show-sdk-path`), and carry
+no Windows Jobs helper. Four checks of
+each binary, as it ships, fail the build: `lipo -archs` is `arm64` alone;
+`vtool -show-build` and the file's own load command say macOS 11.0; `otool -L`
+lists only libSystem, libiconv and CoreFoundation (`MACOS_LIBRARIES` in
+`tools/build-core-artifact.py`; any other library needs a review); and
+`codesign --verify --strict` passes on the linker's own ad hoc signature
+(`adhoc,linker-signed`). Nothing changes a binary after the link: the build
+checks that the shipped bytes are cargo's own output (SHA-256). Signing again
+drops `linker-signed` and any other change breaks the signature, but Apple's
+`strip` signs again as the linker did, so the signature alone cannot show a
+strip. `build.json` records the SDK's version and path, `ld -v`
+and `sw_vers` among the toolchains, and per binary the minimum, architectures,
+libraries and signature as its compatibility. Intel Macs are not covered.
 The isolated smoke additionally exercises the production binary on the release
 host; it is not a claim of a complete Linux distribution matrix.
 

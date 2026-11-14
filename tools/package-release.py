@@ -17,8 +17,13 @@ import tempfile
 
 
 def digest(path):
+    # Read in chunks, not with hashlib.file_digest: tools/build-core-artifact.py
+    # loads this file on a Mac, whose /usr/bin/python3 is Python 3.9.
+    value = hashlib.sha256()
     with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
+        while chunk := handle.read(1024 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
 
 
 def copy_tree(source, target):
