@@ -253,13 +253,12 @@ try {
   }
 
   await step("390: Home's card shows the summary only, no tabs", async () => {
-    await open(390, 844, "/");
-    // A phone opens on the Agent list: back to it, then Home (as home-cards-check does).
-    const back = page.locator(".phone-back, [aria-label='All agents'], [aria-label='Back to agents']").first();
-    await page.locator(".catchup-nav:not(.collab-nav)").first().waitFor({ timeout: 15_000 });
-    if (await back.isVisible().catch(() => false)) await back.click();
-    if (!(await page.locator(".home-view").isVisible().catch(() => false))) await page.locator(".catchup-nav:not(.collab-nav)").first().click();
-    const card = page.locator('.home-view [data-section-key="digest"]');
+    // Home, as a link names it; its project glance opens the project's page, where its cards are (YN-86).
+    await open(390, 844, `/#/home?w=${WS}`);
+    await page.locator('[data-glance-project="p1"] .project-glance-open').click();
+    const project = page.locator('[data-project-home="p1"]');
+    await project.waitFor({ timeout: 15_000 });
+    const card = project.locator('.home-section[data-section-key="digest"]');
     await card.waitFor({ timeout: 15_000 });
     assert.ok(await card.getByText("worth reading today").isVisible());
     assert.equal(await card.locator('[role="tablist"], [role="tabpanel"]').count(), 0);
