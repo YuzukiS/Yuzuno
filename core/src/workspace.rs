@@ -58,7 +58,9 @@ pub(crate) struct Attachment {
 ///    replacement. Every insert into or removal from `rpcs`/`claudes` for that
 ///    Agent happens under it as well. Held only across store work, never
 ///    across a native request or response, and never two Agents' at once. It
-///    is per Agent, so one Agent's slow event never delays another's.
+///    is per Agent, so one Agent's slow event never delays another's. Never
+///    held while waiting for that Agent's events (`EventBarrier::drain`):
+///    applying them takes it.
 /// 3. `rpcs` / `claudes`: lookups only; std locks, never held across `.await`.
 /// 4. Store's own: the Agent's record lock, then one SQLite connection (the
 ///    single writer or a reader), then its in-memory state (see `store::Store`
@@ -762,7 +764,22 @@ impl Workspace {
         let agent = id.to_owned();
         anyhow::ensure!(!self.stored(move |store| store.codex_handoff_pending(&agent)).await?, "导入会话尚未接续；请结束原客户端当前 Turn，然后点击重新连接或发送消息");
         anyhow::ensure!(a.harness == "codex", "此操作需要 Codex 原生会话；不会为其他 Harness 创建 Codex 会话");
-        let existing = self.rpcs.lock().unwrap().get(id).cloned();
+        let mut existing = self.rpcs.lock().unwrap().get(id).cloned();
+        // A stopped transport queued its `yuzuno/disconnected` before it said
+        // it stopped (rpc.rs), but stays in `rpcs` until the event loop applies
+        // that event. Wait for it there, so this attaches anew instead of
+        // handing out a closed channel (YN-130). `dispatch_event` takes the
+        // owner lock, which no caller of `ensure` holds. An unfinished attach
+        // still finishes from the reply it kept, as before.
+        if let Some(stopped) = existing.clone().filter(|c| !c.rpc.is_running()) {
+            if stopped.attachment.lock().await.is_none() {
+                if let Some(events) = &stopped.events {
+                    // Not applied in time: as before, its first request fails.
+                    let _ = events.drain().await;
+                }
+                existing = self.rpcs.lock().unwrap().get(id).cloned();
+            }
+        }
         if let Some(connection) = existing {
             let attaching = connection.attachment.lock().await.is_some();
             if attaching { return self.finish_attach(id, connection).await; }
