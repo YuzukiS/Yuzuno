@@ -3369,7 +3369,7 @@ test("without a system frame the toolbar moves the window and carries its own wi
     assert.deepEqual(calls, ["minimize", "toggleMaximize", "close"]);
     calls.length = 0;
     const press = (target, detail = 1) => target.dispatchEvent(new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail }));
-    press(toolbar.querySelector(".workspace-name"));
+    press(toolbar.querySelector(".toolbar-middle"));
     press(toolbar, 2);
     press(toolbar.querySelector('[aria-label="Settings and updates"]'));
     press(toolbar.querySelector(".catchup-nav"));
@@ -3433,7 +3433,7 @@ test("on macOS the toolbar leaves the system's window buttons their room, none i
     assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
     const press = (type, target, detail = 1, clientX = 300) => target.dispatchEvent(
       new page.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail, clientX, clientY: 20 }));
-    press("mousedown", toolbar.querySelector(".workspace-name"));
+    press("mousedown", toolbar.querySelector(".toolbar-middle"));
     press("mousedown", toolbar.querySelector('[aria-label="Settings and updates"]'));
     press("mousedown", toolbar.querySelector(".catchup-nav"));
     assert.deepEqual(calls, ["startDragging"], "buttons keep their own clicks");
@@ -3492,7 +3492,7 @@ test("a browser, another system or an older shell keeps the toolbar as it is", a
       assert.equal(toolbar.classList.contains("title-bar-overlay"), false);
       assert.equal(toolbar.classList.contains("window-frame"), false);
       assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "");
-      toolbar.querySelector(".workspace-name").dispatchEvent(
+      toolbar.querySelector(".toolbar-middle").dispatchEvent(
         new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
       assert.deepEqual(calls, [], "the toolbar does not move the window");
     } finally { page.close(); }
