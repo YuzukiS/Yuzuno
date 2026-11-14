@@ -78,6 +78,22 @@ pub fn ensure_agent_open(agent: &Agent) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The most an Agent's name takes, in UTF-8 bytes as `str::len` counts them,
+/// once its surrounding whitespace is trimmed (web/src/core-limits.ts
+/// `agentName` reads this line).
+pub const AGENT_NAME_MAX: usize = 100;
+
+/// An Agent's name as Core keeps it: trimmed, 1 to `AGENT_NAME_MAX` bytes and
+/// without control characters. Every way of making an Agent and a rename
+/// check a name here, so one rule holds for all of them (YN-112). A name
+/// saved before this rule is not checked again until it is changed.
+pub fn agent_name(raw: &str) -> anyhow::Result<String> {
+    let name = raw.trim();
+    anyhow::ensure!(!name.is_empty() && name.len() <= AGENT_NAME_MAX && !name.chars().any(char::is_control),
+        "请填写名称（最多 100 字节，不含控制字符）");
+    Ok(name.to_owned())
+}
+
 /// Refuses to start an OpenCode Agent made with OpenCode 1.19.3 (T-32): it is
 /// kept to read, and its database is never opened by 2.x, which would
 /// migrate it in place (2.2.5 core/src/database/v1-migration.bun.ts). Its
