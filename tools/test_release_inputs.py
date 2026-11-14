@@ -28,7 +28,7 @@ class ReleaseInputsCheck(unittest.TestCase):
         self.env = {'GITHUB_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'owner/repo',
                     'GITHUB_RUN_ID': '51', 'GITHUB_RUN_ATTEMPT': '1'}
 
-    def product(self, extra=(), contents=()):
+    def product(self, extra=(), contents=(), platform='linux-x86_64'):
         base = Path(tempfile.mkdtemp(dir=self.base))
         source = base / 'inputs'
         for name in ('bin/yuzuno-workspace', 'claude/bridge.mjs',
@@ -41,7 +41,7 @@ class ReleaseInputsCheck(unittest.TestCase):
         product = base / 'product'
         product.mkdir()
         files = archive_tree(source, product / 'inputs.tar.gz')
-        write(product / 'build.json', {'source': 'a' * 40, 'repository': 'owner/repo', 'runId': '51',
+        write(product / 'build.json', {'platform': platform, 'source': 'a' * 40, 'repository': 'owner/repo', 'runId': '51',
                                        'runAttempt': '1', 'files': files,
                                        'archiveSha256': digest(product / 'inputs.tar.gz')})
         return product
@@ -59,6 +59,20 @@ class ReleaseInputsCheck(unittest.TestCase):
                 self.assertIn(variable, found[0])
         with self.subTest('outside a workflow run'):
             self.assertEqual(len(check.problems(product, {})), 4)
+
+    def test_inputs_for_another_platform_are_reported(self):
+        mac = self.product(platform='macos-aarch64')
+        self.assertEqual(check.problems(mac, self.env, 'macos-aarch64'), [])
+        for product, platform in [(mac, 'linux-x86_64'), (self.product(), 'macos-aarch64')]:
+            with self.subTest(platform):
+                found = check.problems(product, self.env, platform)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(f"not {platform!r}", found[0])
+        run = subprocess.run([sys.executable, str(CHECK), str(mac)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        run = subprocess.run([sys.executable, str(CHECK), '--platform', 'macos-aarch64', str(mac)],
+                             env=self.env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_a_changed_archive_is_reported(self):
         product = self.product()
