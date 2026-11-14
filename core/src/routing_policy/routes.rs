@@ -59,7 +59,12 @@ async fn write(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     // A 5-hour share an older page sent is not kept (YN-60).
     let policy = super::without_five_hour(&policy, true);
     match ws.stored(move |store| store.save_routing_policy(expected, policy)).await {
-        Ok(Ok(saved)) => answer(StatusCode::OK, saved.view()),
+        Ok(Ok(saved)) => {
+            // A pass now, not at the next tick: a queued executor whose candidate or
+            // account the save took away is routed again before it starts (YN-138).
+            ws.wake_executor_slots();
+            answer(StatusCode::OK, saved.view())
+        }
         Ok(Err(current)) => answer(StatusCode::CONFLICT, json!({"code": "version_conflict",
             "error": "version_conflict: the routing policy changed after you read it; review it and save again",
             "current": {"version": current.version, "policy": super::without_five_hour(&current.policy, false), "updatedAt": current.updated_at}})),

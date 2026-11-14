@@ -25,6 +25,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- reason. An older Core ignores it and runs its own four.
         CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
     super::runs::migrate(db)?;
+    super::history::migrate(db)?;
     super::gpu::migrate(db)?;
     super::queue::migrate(db)
 }
@@ -137,11 +138,12 @@ fn saved_max_active(db: &Connection) -> Result<Option<u32>> {
 /// What holds this host's budget, and how many of its own jobs hold it. The
 /// Windows of the PC this Core's WSL runs on is the same physical machine, so
 /// its jobs hold this budget too (never counted twice, never added to it);
-/// an SSH machine's jobs hold that machine's own.
+/// an SSH machine's jobs hold that machine's own. This Mac's are a macOS
+/// Core's own Jobs: they hold its budget and its maxActive slots.
 pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
     let mut q = db.prepare(
         "SELECT data FROM local_jobs WHERE reserved=1 AND (json_extract(data,'$.executor') IS NULL
-         OR json_extract(data,'$.executor.kind')='windows')",
+         OR json_extract(data,'$.executor.kind') IN ('windows','mac'))",
     )?;
     let mut total = Resources::default();
     let mut count = 0;
@@ -151,7 +153,7 @@ pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
             value["reservation"].clone(),
         )?);
         // Only this host's own jobs take an execution/collector slot here.
-        if value["executor"].is_null() {
+        if value["executor"].is_null() || value["executor"]["kind"] == super::remote::MAC {
             count += 1;
         }
     }
@@ -292,7 +294,7 @@ fn previous(
         "idempotency_conflict: requestId already names a different job submission"
     );
     let response: Value = serde_json::from_str(&response)?;
-    Ok(Some(QueueState::read(db)?.view(get(
+    Ok(Some(QueueState::read(db)?.view(super::history::replayed(
         db,
         response["jobId"].as_str().context("Invalid job receipt")?,
     )?)))
@@ -424,11 +426,7 @@ pub(super) fn new_job(
         task_data["archivedAt"].is_null(),
         "Archived tasks cannot accept new jobs"
     );
-    let count: i64 = tx.query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0))?;
-    ensure!(
-        count < 5000,
-        "Local job history limit reached (5000); this version has no automatic history pruning"
-    );
+    // Room in the Job history is made by each insert's caller (history.rs).
     // Stages waiting for their upstream count as queued work too.
     let waiting: i64 = tx.query_row(
         "SELECT COUNT(*) FROM local_jobs WHERE status IN ('queued','waiting')",
@@ -438,12 +436,18 @@ pub(super) fn new_job(
     ensure!(waiting < 200, "Local job queue is full (200)");
     let remote = input.machine_id.is_some();
     let windows = input.machine_id.as_deref() == Some(super::remote::WINDOWS);
+    let mac = input.machine_id.as_deref() == Some(super::remote::MAC);
     let reservation = input.resources.point().reservation();
     // Windows on this PC holds this host's budget (see reserved): it must be
     // able to fit it. job_submit sets the budget first if none is stored.
     if windows {
         let limit = budget(tx, None).context("This PC's Jobs budget is not set yet; nothing was queued")?;
         ensure!(reservation.fits(&limit), "Job can never fit this PC's Jobs budget, which its Linux and Windows jobs share (including 64 MiB / 100 millicore collector overhead); reduce resources or change the machine budget");
+    }
+    // So does This Mac: it is a macOS Core's own host.
+    if mac {
+        let limit = budget(tx, None).context("This Mac's Jobs budget is not set yet; nothing was queued")?;
+        ensure!(reservation.fits(&limit), "Job can never fit this Mac's Jobs budget (including 64 MiB / 100 millicore for its supervisor); reduce resources or change the budget in Settings → Jobs");
     }
     // A remote machine's declared resources are recorded, not admitted here.
     if !remote {
@@ -478,6 +482,7 @@ pub(super) fn new_job(
     let (kind, machine_id) = match input.machine_id.as_deref() {
         None => ("local", super::CORE_HOST),
         Some(super::remote::WINDOWS) => ("windows", super::remote::WINDOWS),
+        Some(super::remote::MAC) => ("mac", super::remote::MAC),
         Some(id) => ("ssh", id),
     };
     value["target"] = json!({"requested": input.named_machine(), "kind": kind, "machineId": machine_id,
@@ -499,8 +504,16 @@ pub(super) fn new_job(
     value["unit"] = json!(format!("yuzuno-job-{id}.service"));
     value["supervisorUnit"] = json!(format!("yuzuno-job-{id}-collector.service"));
     if remote {
-        let kind = if value["machine"]["kind"] == "windows" { "windows" } else { "ssh" };
+        let kind = match value["machine"]["kind"].as_str() {
+            Some("windows") => "windows",
+            Some(super::remote::MAC) => super::remote::MAC,
+            _ => "ssh",
+        };
         value["executor"] = json!({"kind": kind, "machineId": value["machine"]["id"], "machineName": value["machine"]["name"]});
+        // This Mac holds no limit: its attempts always run limited (YN-104).
+        if kind == super::remote::MAC {
+            value["executor"]["limitMode"] = json!("limited");
+        }
         value["reason"] = json!(format!("Waiting for a slot on {}", value["machine"]["name"].as_str().unwrap_or("the remote machine")));
         value["unit"] = Value::Null;
         value["supervisorUnit"] = Value::Null;
@@ -517,6 +530,9 @@ pub(super) fn new_job(
 
 /// Insert a job record; its cursor is its queue position.
 pub(super) fn insert_job(tx: &Connection, mut value: Value) -> Result<Value> {
+    // Each caller made room first (history::make_room); this only keeps the limit.
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0))?;
+    ensure!(count < super::history::LIMIT, "Local job history limit reached ({})", super::history::LIMIT);
     tx.execute(
         "INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,?3,?4,?5)",
         params![value["id"].as_str(), value["taskId"].as_str(), value["agentId"].as_str(), value["status"].as_str(), value.to_string()],
@@ -579,10 +595,17 @@ impl Store {
     /// runs on, read from that Agent's own record and never from the
     /// request: its registered SSH machine, or this host for an Agent here.
     /// The Job keeps what this returns; its retry is matched as it was sent.
-    pub(super) fn resolve_machine(&self, actor: Option<&str>, mut input: Submit) -> Result<Submit> {
-        let named = input.machine_id.clone().unwrap_or_default();
+    /// On a macOS Core (`mac`), this host is This Mac (YN-108 M2c), also
+    /// for a submission that names no machine.
+    pub(super) fn resolve_machine(&self, actor: Option<&str>, mut input: Submit, mac: bool) -> Result<Submit> {
+        let here = mac.then(|| super::remote::MAC.to_owned());
+        let Some(named) = input.machine_id.clone() else {
+            input.machine_id = here;
+            input.requested_machine = Some(None);
+            return Ok(input);
+        };
         let resolved = match named.as_str() {
-            super::CORE_HOST => None,
+            super::CORE_HOST => here,
             super::AGENT_MACHINE => {
                 let actor = actor.context(
                     "machineId agent is the machine of the Agent that submits, and this submission has none; name the machine, or local for this Core's host",
@@ -590,7 +613,7 @@ impl Store {
                 let db = self.db.read()?;
                 let agent = self.brief_in(&db, actor)?.context("agent_not_found: calling Agent does not exist")?.agent;
                 match agent.remote {
-                    None => None,
+                    None => here,
                     Some(remote) => {
                         let registered: Option<String> = db
                             .query_row("SELECT data FROM machines WHERE id=?1", [&remote.machine.id], |r| r.get(0))
@@ -605,7 +628,7 @@ impl Store {
             _ => return Ok(input),
         };
         input.machine_id = resolved;
-        input.requested_machine = Some(named);
+        input.requested_machine = Some(Some(named));
         Ok(input)
     }
     pub(super) fn create_job(
@@ -669,6 +692,7 @@ impl Store {
         // table and kept with it, its request beside it (YN-6 S2).
         let query = super::suggestion::Query { task_id: input.task_id.clone(), name: input.name.clone(), argv: input.argv.clone() };
         let suggestion = super::suggestion::for_job(&tx, &query, actor, input.resources.memory_mi_b)?;
+        super::history::make_room(&tx, 1, &super::history::Keep::default())?;
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;
         value["identity"] = identity;
         value["suggestion"] = suggestion;
@@ -794,7 +818,7 @@ impl Store {
     /// most 16 (a remote job's are on its machine).
     pub(super) fn live_job_cwds(&self) -> Result<Vec<String>> {
         let db = self.db.read()?;
-        let mut q = db.prepare("SELECT json_extract(data,'$.cwd') AS cwd FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting')) AND cwd IS NOT NULL AND json_extract(data,'$.executor') IS NULL GROUP BY cwd ORDER BY MIN(seq) LIMIT 16")?;
+        let mut q = db.prepare("SELECT json_extract(data,'$.cwd') AS cwd FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting')) AND cwd IS NOT NULL AND (json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind')='mac') GROUP BY cwd ORDER BY MIN(seq) LIMIT 16")?;
         let cwds = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(cwds)
     }
@@ -1400,8 +1424,11 @@ impl Store {
         let db = self.db.read()?;
         let limit = budget(&db, Some(&machine["suggestedBudget"]))?;
         let (used, count) = reserved(&db)?;
+        // This Mac's Jobs are a macOS Core's own (YN-108 M2c): counted as its
+        // host's, as reserved() counts them.
         let queued: i64 = db.query_row(
-            "SELECT COUNT(*) FROM local_jobs WHERE status='queued' AND json_extract(data,'$.executor') IS NULL",
+            "SELECT COUNT(*) FROM local_jobs WHERE status='queued' AND (json_extract(data,'$.executor') IS NULL
+             OR json_extract(data,'$.executor.kind')='mac')",
             [],
             |r| r.get(0),
         )?;
@@ -1421,7 +1448,8 @@ impl Store {
             json!({"count": saved["count"], "since": saved["since"]})
         };
         let running: i64 = db.query_row(
-            "SELECT COUNT(*) FROM local_jobs WHERE status='running' AND json_extract(data,'$.executor') IS NULL",
+            "SELECT COUNT(*) FROM local_jobs WHERE status='running' AND (json_extract(data,'$.executor') IS NULL
+             OR json_extract(data,'$.executor.kind')='mac')",
             [],
             |r| r.get(0),
         )?;

@@ -28,6 +28,12 @@
 //! the same requests and replies, so everything above holds there too; only
 //! how a call reaches the machine differs (see `Machine`).
 //!
+//! A macOS Core runs its own Jobs the same way, as the built-in machine
+//! `mac` (YN-108 M2c): the same helper, run by the Mac's own python3 instead
+//! of over SSH, in the limited mode a Mac reached over SSH has (YN-104). They
+//! hold this Core's Jobs budget and its maxActive, as local Jobs do on Linux;
+//! macOS holds none of their limits.
+//!
 //! Each attempt lives under a data root on its machine: the absolute folder
 //! the helper reports when Core pins the machine (or, pinned by an older
 //! Core, the machine's root as configured), recorded before the start is
@@ -87,6 +93,14 @@ const WINDOWS_ROOT: &str = r"%LOCALAPPDATA%\YuzunoData\windows-jobs";
 /// YUZUNO_WINDOWS_JOBS_ROOT named one.
 pub(crate) const WINDOWS_LEGACY_ROOT: &str = r"%LOCALAPPDATA%\yuzuno-next";
 const NO_WINDOWS_HELPER: &str = "this Core has no Windows Jobs helper (its release ships none, or a development Core was not given YUZUNO_WINDOWS_JOBS_HELPER with YUZUNO_WINDOWS_JOBS_HELPER_SHA256)";
+/// The built-in machine of a macOS Core: the Mac it runs on (YN-108 M2c).
+pub(super) const MAC: &str = "mac";
+const MAC_NAME: &str = "This Mac";
+/// The folder of the Core's data directory a Mac's attempts live in.
+const MAC_ROOT: &str = "local-jobs";
+/// Without the Command Line Tools, /usr/bin/python3 is Apple's stand-in,
+/// which only offers to install them; it is never run then.
+const NO_MAC_TOOLS: &str = "Jobs on This Mac need the Xcode Command Line Tools, and xcode-select names none (install them with xcode-select --install); without them /usr/bin/python3 is Apple's stand-in, so it was not run";
 
 /// A machine a remote Job runs on, and how a call reaches it.
 #[derive(Clone, Debug)]
@@ -95,6 +109,10 @@ pub(super) enum Machine {
     Ssh(RemoteMachine),
     /// Windows on this PC: the native helper through WSL interop, no SSH.
     Windows,
+    /// The Mac a macOS Core runs on: the same helper as over SSH, run by its
+    /// own python3, with its attempts under `root` (the Core's data folder's
+    /// local-jobs).
+    Local { root: String },
 }
 
 impl Machine {
@@ -102,7 +120,13 @@ impl Machine {
         match self {
             Machine::Ssh(machine) => &machine.name,
             Machine::Windows => WINDOWS_NAME,
+            Machine::Local { .. } => MAC_NAME,
         }
+    }
+    /// This Mac, with its attempts in this Core's data folder.
+    pub(super) fn local(data: &std::path::Path) -> Machine {
+        let data = std::path::absolute(data).unwrap_or_else(|_| data.to_owned());
+        Machine::Local { root: data.join(MAC_ROOT).to_string_lossy().into_owned() }
     }
 }
 
@@ -113,7 +137,20 @@ pub(super) struct Programs<'a> {
     pub windows: Option<&'a WindowsHelper>,
     /// The connections SSH calls share (T-163); None: each its own.
     pub mux: Option<&'a super::ssh_mux::Mux>,
+    /// What a call to This Mac runs.
+    pub mac: MacTools<'a>,
 }
+
+/// The python3 a call to This Mac runs the helper with, and the program that
+/// says whether the Command Line Tools are there first.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MacTools<'a> {
+    pub python: &'a str,
+    pub xcode_select: &'a str,
+}
+
+/// The system's own: never one from PATH.
+pub(super) const MAC_TOOLS: MacTools<'static> = MacTools { python: "/usr/bin/python3", xcode_select: "/usr/bin/xcode-select" };
 
 /// The native Windows helper, and the SHA-256 its bytes must have each time
 /// it is run.
@@ -292,7 +329,7 @@ fn framed(code: i32, out: &[u8], stderr: &str, nonce: &str) -> std::result::Resu
 
 #[cfg(test)]
 pub(super) async fn invoke(program: &str, machine: &RemoteMachine, request: Value) -> Reply {
-    call(&Programs { ssh: program, windows: None, mux: None }, &Machine::Ssh(machine.clone()), request).await
+    call(&Programs { ssh: program, windows: None, mux: None, mac: MAC_TOOLS }, &Machine::Ssh(machine.clone()), request).await
 }
 
 /// One helper call on the machine, through its own transport.
@@ -353,6 +390,20 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
             }
             command
         }
+        // The helper itself, run by the Mac's own python3 once the Command
+        // Line Tools are there. It gets only what it needs of Core's
+        // environment; the command it starts gets only its Job's own.
+        Machine::Local { .. } => {
+            if !mac_tools_installed(programs.mac.xcode_select).await {
+                return Reply::Unusable(NO_MAC_TOOLS.into());
+            }
+            let mut command = tokio::process::Command::new(programs.mac.python);
+            command.arg("-c").arg(HELPER).env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+            if let Some(home) = std::env::var_os("HOME") {
+                command.env("HOME", home);
+            }
+            command
+        }
     };
     let spawned = command
         .stdin(Stdio::piped())
@@ -368,6 +419,10 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
             return Reply::Unusable(format!("the Windows Jobs helper cannot be run from this Core's WSL ({path}: {error})"))
         }
         (Err(error), Machine::Ssh(_)) => return Reply::NoAnswer(format!("could not start OpenSSH: {error}")),
+        // Nothing ran.
+        (Err(error), Machine::Local { .. }) => {
+            return Reply::Unusable(format!("{} cannot be run on this Mac: {error}", programs.mac.python))
+        }
     };
     let run = async move {
         let mut stdin = child.stdin.take().context("no stdin")?;
@@ -406,15 +461,31 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
             match machine {
                 Machine::Ssh(_) => parse_reply(code, &out, &stderr, &nonce),
                 Machine::Windows => parse_windows_reply(code, &out, &stderr, &nonce),
+                // Read as over SSH, but no SSH ended it.
+                Machine::Local { .. } if code.is_none() => Reply::NoAnswer("the helper on This Mac ended by a signal".into()),
+                Machine::Local { .. } => parse_reply(code, &out, &stderr, &nonce),
             }
         }
     }
 }
 
+/// Whether xcode-select names the Command Line Tools (or Xcode): it exits 0
+/// with their folder, and non-zero, asking nothing, without them.
+async fn mac_tools_installed(xcode_select: &str) -> bool {
+    let status = tokio::process::Command::new(xcode_select)
+        .arg("-p")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    matches!(tokio::time::timeout(Duration::from_secs(10), status).await, Ok(Ok(status)) if status.success())
+}
+
 /// What the attempt runs, as sent to the machine. It also carries the
 /// declared resources and the mode: an SSH machine's, taken when its slot was
-/// (see reserve_remote), strict on Windows, whose Job Object holds both. The
-/// helper holds them or refuses.
+/// (see reserve_remote), strict on Windows, whose Job Object holds both, and
+/// limited on This Mac, which holds neither. The helper holds them or refuses.
 pub(super) fn spec(job: &Value) -> Value {
     let mut spec = json!({"argv": job["argv"], "cwd": job["cwd"],
         "env": if job["env"].is_object() { job["env"].clone() } else { json!({}) },
@@ -427,15 +498,16 @@ pub(super) fn spec(job: &Value) -> Value {
     // them (v1): the start must match what was pinned.
     let pinned_v1 = kind == Some(WINDOWS) && job["remote"]["digest"].as_str() == Some(digest(&spec).as_str());
     let legacy = kind == Some(SSH) && matches!(mode, None | Some(LEGACY)) || pinned_v1;
-    if matches!(kind, Some(SSH | WINDOWS)) && !legacy {
+    if matches!(kind, Some(SSH | WINDOWS | MAC)) && !legacy {
         let declared = &job["resources"];
-        spec["limits"] = json!({"mode": mode.unwrap_or(STRICT),
+        let mode = mode.unwrap_or(if kind == Some(MAC) { LIMITED } else { STRICT });
+        spec["limits"] = json!({"mode": mode,
             "cpuMillis": declared["cpuMillis"], "memoryMiB": declared["memoryMiB"], "swapMiB": declared["swapMiB"]});
     }
-    // On an SSH machine or Windows, the inputs frozen at submit and the
-    // declared artifacts go with the start (v3): the supervisor checks the
-    // inputs again before the command runs and the artifacts after it exits.
-    if matches!(kind, Some(SSH | WINDOWS)) {
+    // On an SSH machine, Windows or This Mac, the inputs frozen at submit and
+    // the declared artifacts go with the start (v3): the supervisor checks
+    // the inputs again before the command runs and the artifacts after it exits.
+    if matches!(kind, Some(SSH | WINDOWS | MAC)) {
         if let Some(files) = job["snapshot"]["files"].as_array().filter(|files| !files.is_empty()) {
             spec["inputs"] = files
                 .iter()
@@ -464,7 +536,7 @@ pub(super) fn spec(job: &Value) -> Value {
 pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     let nonempty = |value: &Value| value.as_array().is_some_and(|items| !items.is_empty());
     let kind = job["executor"]["kind"].as_str();
-    if !matches!(kind, Some(SSH | WINDOWS)) || !(nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
+    if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
         return;
     }
     if kind == Some(SSH) {
@@ -578,6 +650,9 @@ pub(super) fn attempt_root(job: &Value) -> Value {
     match job["remote"]["root"].as_str() {
         Some(root) => json!(root),
         None if job["executor"]["kind"] == "windows" => json!(windows_named_root().unwrap_or_else(|| WINDOWS_LEGACY_ROOT.into())),
+        // Recorded with every start on This Mac, which has no older root:
+        // none, which the helper refuses, before one was sent.
+        None if job["executor"]["kind"] == MAC => Value::Null,
         None => json!(crate::remote::LEGACY_ROOT),
     }
 }
@@ -587,11 +662,13 @@ fn new_root(machine: &Machine) -> String {
     match machine {
         Machine::Ssh(machine) => machine.root().to_owned(),
         Machine::Windows => windows_named_root().unwrap_or_else(|| WINDOWS_ROOT.to_owned()),
+        Machine::Local { root } => root.clone(),
     }
 }
 
 /// The absolute root a hello reported, if it is one Core can name again:
-/// plain names (remote::validate_root) or a local Windows drive folder.
+/// plain names (remote::validate_root), a local Windows drive folder, or on
+/// This Mac the one Core named (its data folder may have spaces).
 fn pinned_root(machine: &Machine, reply: &Value) -> Option<String> {
     match machine {
         Machine::Ssh(_) => reply["root"].as_str()
@@ -604,6 +681,7 @@ fn pinned_root(machine: &Machine, reply: &Value) -> Option<String> {
                     && !root.chars().any(|c| c.is_control() || "\"<>|?*".contains(c))
             })
             .map(str::to_owned),
+        Machine::Local { root } => (reply["root"].as_str() == Some(root.as_str())).then(|| root.clone()),
     }
 }
 
@@ -804,7 +882,7 @@ impl Store {
         let db = self.db.read()?;
         let mut q = db.prepare(
             "SELECT id FROM local_jobs WHERE (reserved=1 OR status='queued')
-             AND json_extract(data,'$.executor.kind') IN ('ssh','windows') ORDER BY seq",
+             AND json_extract(data,'$.executor.kind') IN ('ssh','windows','mac') ORDER BY seq",
         )?;
         let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         ids.iter().map(|id| get(&db, id)).collect()
@@ -850,29 +928,56 @@ impl Store {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut job = get(&tx, id)?;
-        if job["status"] != "queued" || !matches!(job["executor"]["kind"].as_str(), Some("ssh" | "windows")) {
+        if job["status"] != "queued" || !matches!(job["executor"]["kind"].as_str(), Some(SSH | WINDOWS | MAC)) {
             return Ok(None);
         }
         let machine = job["executor"]["machineId"].as_str().context("Missing machine")?.to_owned();
-        let used: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.executor.machineId')=?1",
-            [&machine],
-            |r| r.get(0),
-        )?;
+        let mac = job["executor"]["kind"] == MAC;
+        // This Mac's attempts are this host's Jobs: they take its maxActive
+        // slots, as local Jobs do on Linux.
+        let used: i64 = if mac {
+            super::store::reserved(&tx)?.1 as i64
+        } else {
+            tx.query_row(
+                "SELECT COUNT(*) FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.executor.machineId')=?1",
+                [&machine],
+                |r| r.get(0),
+            )?
+        };
         // An SSH machine as registered now: its ceiling, budget and mode apply
         // to each attempt that takes a slot from here on. Windows has its own
         // ceiling, set in this host's Jobs settings, beside the shared budget.
         let settings = if job["executor"]["kind"] == SSH { machine_settings(&tx, &machine)? } else { None };
-        let ceiling = if job["executor"]["kind"] == WINDOWS {
-            super::store::windows_max_jobs(&tx)?
+        let ceiling = if mac {
+            super::store::max_active(&tx)? as i64
+        } else if job["executor"]["kind"] == WINDOWS {
+            super::store::windows_max_jobs(&tx)?.map_or(SLOTS, i64::from)
         } else {
-            settings.as_ref().and_then(|m| m.max_jobs)
-        }
-        .map_or(SLOTS, i64::from);
+            settings.as_ref().and_then(|m| m.max_jobs).map_or(SLOTS, i64::from)
+        };
         let need: super::Resources = serde_json::from_value(job["reservation"].clone())?;
         let mut wait = None;
         if used >= ceiling {
-            wait = Some(format!("Waiting for a slot on {}: {used} of {ceiling} in use", machine_name(&job)));
+            wait = Some(if mac {
+                format!("Waiting for a slot on {}: {used} of its {ceiling} Jobs at once (maxActive) in use", machine_name(&job))
+            } else {
+                format!("Waiting for a slot on {}: {used} of {ceiling} in use", machine_name(&job))
+            });
+        } else if mac {
+            // This Core's own Jobs budget, held by its attempts there: only
+            // for admission, since macOS holds none of it.
+            let limit = budget(&tx, None)?;
+            let (taken, _) = reserved(&tx)?;
+            let free = limit.available(&taken);
+            if !need.fits(&limit) {
+                wait = Some(format!(
+                    "Cannot start under this Mac's Jobs budget: needs {} mCPU / {} MiB RAM / {} MiB swap including its supervisor, more than the whole budget of {} mCPU / {} MiB RAM / {} MiB swap. Raise the budget or cancel this job",
+                    need.cpu_millis, need.memory_mi_b, need.swap_mi_b, limit.cpu_millis, limit.memory_mi_b, limit.swap_mi_b));
+            } else if !need.fits(&free) {
+                wait = Some(format!(
+                    "Waiting for this Mac's Jobs budget: needs {} mCPU / {} MiB RAM / {} MiB swap including its supervisor; {} mCPU / {} MiB RAM / {} MiB swap free",
+                    need.cpu_millis, need.memory_mi_b, need.swap_mi_b, free.cpu_millis, free.memory_mi_b, free.swap_mi_b));
+            }
         } else if job["executor"]["kind"] == WINDOWS {
             // Windows on this PC is the same physical machine as this host:
             // its jobs hold this host's budget beside the Linux jobs.
@@ -978,7 +1083,7 @@ pub(super) fn start(ws: &Arc<Workspace>) {
     let busy = ws.store.remote_jobs().map_or(true, |jobs| !jobs.is_empty());
     tokio::spawn(run(weak.clone(), wake, busy, |ws| async move {
         let helper = windows_helper();
-        let programs = Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
+        let programs = Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux), mac: MAC_TOOLS };
         tick_with(&ws, &programs).await
     }));
     // Ends the shared connections that are no longer used (ssh_mux).
@@ -1034,7 +1139,7 @@ fn due(ws: &Workspace, job: &Value) -> bool {
 #[cfg(test)]
 pub(super) async fn tick(ws: &Arc<Workspace>, program: &str) -> Result<bool> {
     let helper = WindowsHelper::trusting(program);
-    tick_with(ws, &Programs { ssh: program, windows: Some(&helper), mux: None }).await
+    tick_with(ws, &Programs { ssh: program, windows: Some(&helper), mux: None, mac: MAC_TOOLS }).await
 }
 
 /// One pass over the remote jobs; false when there is none, so the loop
@@ -1062,10 +1167,10 @@ pub(super) async fn tick_with(ws: &Arc<Workspace>, programs: &Programs<'_>) -> R
     let Ok(_work) = ws.admission.enter_work() else {
         return Ok(true);
     };
-    // Windows jobs hold this host's budget. One queued before any job here
-    // stored it (a Workspace that never ran a local job, an older Core)
-    // gets this host's suggested budget first, as a submission would.
-    if jobs.iter().any(|job| job["status"] == "queued" && job["executor"]["kind"] == WINDOWS) {
+    // Windows and This Mac's jobs hold this host's budget. One queued before
+    // any job here stored it (a Workspace that never ran a local job, an
+    // older Core) gets this host's suggested budget first, as a submission would.
+    if jobs.iter().any(|job| job["status"] == "queued" && matches!(job["executor"]["kind"].as_str(), Some(WINDOWS | MAC))) {
         match super::host::machine_info().await {
             Ok(host) => {
                 if let Err(error) = ws.stored(move |s| s.init_job_budget(&host["suggestedBudget"])).await {
@@ -1098,6 +1203,9 @@ pub(super) async fn tick_with(ws: &Arc<Workspace>, programs: &Programs<'_>) -> R
 async fn machine_of(ws: &Arc<Workspace>, job: &Value) -> Result<Machine> {
     if job["executor"]["kind"] == "windows" {
         return Ok(Machine::Windows);
+    }
+    if job["executor"]["kind"] == MAC {
+        return Ok(Machine::local(&ws.data_dir));
     }
     let id = job["executor"]["machineId"].as_str().context("Missing machine")?.to_owned();
     ws.stored(move |s| s.machine(&id)).await.map(Machine::Ssh)
@@ -1210,6 +1318,8 @@ pub(super) fn pause_refusal(job: &Value) -> Option<String> {
             "Pause is not available for jobs on {name}: it is a Mac, where an attempt has no scope of its own (macOS has no cgroup), and pause freezes only an attempt's own scope; nothing was changed")),
         Some(SSH) => Some(format!(
             "Pause is not available for this job on {name}: it runs without a scope of its own there (no limits are held for it: a record-only machine, or an account that does not linger), and pause freezes only an attempt's own scope; nothing was changed")),
+        Some(MAC) => Some(format!(
+            "Pause is not available for jobs on {name}: macOS gives an attempt no scope of its own (it has no cgroup), and pause freezes only an attempt's own scope; nothing was changed")),
         Some(_) => Some(format!("Pause is not available for jobs on {name}: this executor has no pause, so nothing was changed")),
     }
 }
@@ -1218,7 +1328,7 @@ pub(super) fn pause_refusal(job: &Value) -> Option<String> {
 /// {state, reason, evidence}, as host::control answers for local jobs. A lost
 /// reply is unknown, settled later by what the machine reports (answered).
 pub(super) async fn control(ws: &Arc<Workspace>, job: &Value, mode: &str) -> Value {
-    control_with(ws, job, mode, &Programs { ssh: SSH, windows: None, mux: Some(&ws.jobs.ssh_mux) }).await
+    control_with(ws, job, mode, &Programs { ssh: SSH, windows: None, mux: Some(&ws.jobs.ssh_mux), mac: MAC_TOOLS }).await
 }
 
 pub(super) async fn control_with(ws: &Arc<Workspace>, job: &Value, mode: &str, programs: &Programs<'_>) -> Value {
@@ -1311,8 +1421,9 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
             Reply::Answer(reply) if reply["status"] == "hello" && reply["hostId"].is_string() => {
                 let mut facts = json!({"hostId": reply["hostId"], "helloBootId": reply["bootId"], "digest": digest(&spec(&job))});
                 // What it runs on decides what the attempt is told it gets
-                // (T-186); a helper that does not say is a Linux one.
-                if let Machine::Ssh(_) = &machine {
+                // (T-186); a helper that does not say is a Linux one. This
+                // Mac's are told at submit; its platform is only recorded.
+                if let Machine::Ssh(_) | Machine::Local { .. } = &machine {
                     facts["platform"] = json!(reply["platform"].as_str().unwrap_or("Linux"));
                 }
                 if let Some(root) = pinned_root(&machine, &reply) {
@@ -1359,9 +1470,11 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
     // root goes with it: every later request finds the attempt there.
     // A root older Cores do not know keeps them out of this Workspace until
     // the attempt ends (older_cores.rs), before the record that names it.
+    // None knows This Mac: no Core before data roots ran on macOS (2.2).
     let sent = now();
     let root = new_root(&machine);
-    let why = (!crate::older_cores::legacy_root(matches!(machine, Machine::Windows), &root))
+    let older = !matches!(machine, Machine::Local { .. });
+    let why = (older && !crate::older_cores::legacy_root(matches!(machine, Machine::Windows), &root))
         .then(|| format!("a Job is started in {root} on {}", machine.name()));
     let (id, attempt) = (job["id"].as_str().context("Missing job")?.to_owned(), job["attempt"].clone());
     let facts = json!({"startSentAt": sent, "root": root});
@@ -1403,7 +1516,7 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
 
 pub(super) async fn logs(ws: &Arc<Workspace>, job: &Value, offset: Option<u64>) -> Result<Value> {
     let helper = windows_helper();
-    logs_with(ws, job, offset, &Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) }).await
+    logs_with(ws, job, offset, &Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux), mac: MAC_TOOLS }).await
 }
 
 pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u64>, programs: &Programs<'_>) -> Result<Value> {
@@ -1455,6 +1568,8 @@ pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>
     }
     let (machine, frozen_on) = if machine_id == WINDOWS {
         (Machine::Windows, windows_snapshot())
+    } else if machine_id == MAC {
+        (Machine::local(&ws.data_dir), mac_snapshot())
     } else {
         let id = machine_id.to_owned();
         let machine = ws.stored(move |s| s.machine(&id)).await?;
@@ -1531,6 +1646,24 @@ pub(super) fn darwin_capabilities() -> Value {
     value
 }
 
+/// The same for This Mac, a macOS Core's own Jobs (YN-108 M2c): a Mac's
+/// helper and limits, this Core's budget, and what needs Linux refused.
+pub(super) fn mac_capabilities() -> Value {
+    let mut value = darwin_capabilities();
+    value["executor"] = json!(MAC);
+    value["limits"] = json!("Every attempt runs in the limited mode, as on a Mac reached over SSH (YN-104): declared CPU, RAM and swap are reserved from this Core's Jobs budget for admission and recorded with each attempt, and macOS holds none of them: it has no cgroup, so nothing caps the command's CPU share or memory, and one Job can use the whole Mac");
+    value["admission"] = json!("This Core's Jobs budget and its maxActive (Settings → Jobs), as local Jobs on Linux: at most maxActive attempts at once, within the budget, which is used only to queue and record them");
+    if let Some(fields) = value.as_object_mut() {
+        // Its slots are this Core's maxActive, not a machine's own.
+        fields.remove("slots");
+    }
+    value["inputs"] = json!("Files on this Mac, frozen by SHA-256 at submit by the Jobs helper and checked again before the command runs; one that changed stops the start. guardGit is not available: list the files to freeze as inputs");
+    value["artifacts"] = json!("Checked on this Mac after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran");
+    value["outputs"] = json!("unavailable: declare the files as artifacts");
+    value["unavailable"] = json!("GPU admission, pause, a CPU range, exclusive, guardGit, outputs, runs of stages, services and checkpoints need Linux with a systemd user manager: they are refused, with the reason, before anything is queued");
+    value
+}
+
 /// What a job is told before its machine has named its platform (T-186):
 /// what is held there depends on it, so nothing is promised yet.
 pub(super) fn unknown_capabilities() -> Value {
@@ -1574,6 +1707,17 @@ pub(super) fn windows_snapshot() -> Value {
     json!({"id": WINDOWS, "name": WINDOWS_NAME, "kind": "windows"})
 }
 
+/// What This Mac is recorded as on a Job.
+pub(super) fn mac_snapshot() -> Value {
+    json!({"id": MAC, "name": MAC_NAME, "kind": MAC})
+}
+
+/// Whether this Core runs on a Mac, so that the built-in machine `mac` can
+/// be offered at all.
+pub(super) fn mac_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// The machine a remote Job is accepted for, with the SSH destination it was
 /// registered with then.
 pub(super) fn machine_snapshot(machine: &RemoteMachine) -> Value {
@@ -1608,6 +1752,12 @@ pub(super) fn registered_machine(tx: &rusqlite::Connection, id: &str) -> Result<
             "machineId windows is Windows on the PC this Core's WSL runs on; this Core does not run in WSL with Windows interop on");
         return Ok(windows_snapshot());
     }
+    if id == MAC {
+        // Tests drive it with a stand-in for the Mac's python3 on any host.
+        anyhow::ensure!(cfg!(test) || mac_available(),
+            "machineId mac is the Mac a macOS Core runs on; this Core runs on {}", std::env::consts::OS);
+        return Ok(mac_snapshot());
+    }
     let raw: Option<String> = tx
         .query_row("SELECT data FROM machines WHERE id=?1", [id], |r| r.get(0))
         .optional()?;
@@ -1635,7 +1785,7 @@ pub(crate) async fn python_there(ws: &Workspace, ssh: &str, machine_id: &str) ->
     let machine = Machine::Ssh(machine);
     let name = machine.name().to_owned();
     // A stand-in program (tests) shares no connection, as tick's does not.
-    let programs = Programs { ssh, windows: None, mux: (ssh == SSH).then_some(&ws.jobs.ssh_mux) };
+    let programs = Programs { ssh, windows: None, mux: (ssh == SSH).then_some(&ws.jobs.ssh_mux), mac: MAC_TOOLS };
     let reply = match call(&programs, &machine, json!({"action": "hello", "root": new_root(&machine)})).await {
         Reply::Answer(reply) if reply["status"] == "hello" => reply,
         Reply::Answer(_) => return Err(format!("{name} did not answer as the Jobs helper does")),
