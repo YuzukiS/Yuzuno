@@ -40,6 +40,8 @@ export const RequestCard = forwardRef<
   const merged = mergedInto(request);
   const trail = requestTrail(request);
   const title = request.title?.trim() || "";
+  // Answered with no card (YN-136): the answer is the project's newest note.
+  const answer = state === "answered" ? request.notes.at(-1)?.note ?? "" : "";
   const label = title || t.untitled(untitledHint(request.text));
   return (
     <div
@@ -108,9 +110,13 @@ export const RequestCard = forwardRef<
             );
           })}
         </ol>
-      ) : (
-        state === "waiting" && <p className="request-card-wait">{t.noCard}</p>
-      )}
+      ) : state === "waiting" ? (
+        <p className="request-card-wait">{t.noCard}</p>
+      ) : answer ? (
+        <Tip content={<TipText title={answer} />} cut describe={false}>
+          <p className="request-card-answer">{t.answerLine(answer)}</p>
+        </Tip>
+      ) : null}
       {trailOpen && (
         <div className="request-card-trail">
           <RoutingEvents events={trail} onCard={onCard} />

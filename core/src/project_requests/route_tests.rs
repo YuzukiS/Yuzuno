@@ -110,6 +110,10 @@ fn join(card: &str, why: &str) -> Value {
     json!({"kind":"existing","cardKey":card,"why":why})
 }
 
+fn answer(why: &str) -> Value {
+    json!({"kind":"answer","why":why})
+}
+
 impl Lab {
     fn words(&self, text: &str, id: &str) -> Words {
         Words { workspace_id: self.workspace.clone(), text: text.into(), text_blocks: None, client_message_id: id.into() }
@@ -876,4 +880,76 @@ async fn a_reassignment_dispatches_the_new_responsible_then_the_user_releases_th
     let (status, answer) = reassign_on_page(&lab, &section, body(json!({"agentId":"member"}), "r4"), false).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["released"], Value::Null);
+}
+
+// YN-136: an answer closes a request with no task or card. The call's note
+// is the answer and the request shows as answered; Core makes no task, no
+// card and no Brief write, and sends nothing.
+#[tokio::test]
+async fn an_answer_closes_the_request_with_no_task_or_card() {
+    let lab = lab();
+    let n = lab.say("README 做完了吗", "m1").await;
+    let brief = || async { lab.ws.collaboration_call(Some("desk"), "brief_get", json!({"keys":[]})).await.unwrap()["version"].clone() };
+    let (tasks, version, desk) = (lab.count("SELECT COUNT(*) FROM collaboration_tasks"), brief().await, lab.sent("desk"));
+    let made = lab.route("desk", n, "README 进度", "做完了：YN-115 已合入。", vec![answer("只问进度；YN-115 已合入")]).await.unwrap();
+    let route = &made["routes"][0];
+    assert_eq!((route["kind"].clone(), route["state"].clone(), route["why"].clone()), (json!("answer"), json!("done"), json!("只问进度；YN-115 已合入")), "{made}");
+    assert_eq!((route["task"].clone(), route["sectionId"].clone(), route["to"].clone()), (Value::Null, Value::Null, Value::Null));
+    assert_eq!((lab.count("SELECT COUNT(*) FROM collaboration_tasks"), brief().await), (tasks, version), "no task, no card");
+    let request = lab.request(n);
+    assert_eq!((request["state"].clone(), request["cards"].clone(), request["progress"].clone()), (json!("answered"), json!([]), json!({"cards":0,"ended":0})));
+    assert_eq!(request["notes"].as_array().unwrap().last().unwrap()["note"], "做完了：YN-115 已合入。");
+    assert_eq!(request["routes"][0]["kind"], "answer");
+    assert_eq!((lab.sent("desk"), lab.sent("lead"), lab.sent("member")), (desk, 0, 0), "nothing sent");
+    assert!(lab.mail("lead").is_empty() && lab.mail("member").is_empty());
+}
+
+// A follow-up to an answered request goes to the front desk and reopens it
+// (waiting); the same note again is no new note, so it stays waiting; a new
+// note answers it again; an answer followed by a card is in progress.
+#[tokio::test]
+async fn a_follow_up_reopens_an_answered_request_until_the_desk_answers_again() {
+    let lab = lab();
+    let n = lab.say("README 做完了吗", "m1").await;
+    lab.route("desk", n, "README 进度", "做完了。", vec![answer("只问进度")]).await.unwrap();
+    assert_eq!(lab.request(n)["state"], "answered");
+
+    let more = follow_up(&lab.ws, &lab.project, n, lab.words("英文版呢？", "f1")).await.unwrap();
+    assert_eq!(more["reply"]["deliveredTo"].as_array().unwrap().iter().map(|d| d["agentId"].clone()).collect::<Vec<_>>(), [json!("desk")]);
+    assert_eq!(lab.request(n)["state"], "waiting", "reopened for the front desk");
+    lab.route("desk", n, "README 进度", "做完了。", vec![answer("只问进度")]).await.unwrap();
+    assert_eq!(lab.request(n)["state"], "waiting", "the same note is no new answer");
+    lab.route("desk", n, "README 进度", "英文版也做完了。", vec![answer("只问进度")]).await.unwrap();
+    assert_eq!(lab.request(n)["state"], "answered");
+
+    let made = lab.route("desk", n, "README 进度", "要改的话开张卡。", vec![answer("只问进度"), design("README 英文版", "要改文档")]).await.unwrap();
+    assert_eq!((made["routes"][0]["state"].clone(), made["routes"][1]["kind"].clone(), made["routes"][1]["state"].clone()), (json!("done"), json!("card"), json!("done")), "{made}");
+    assert_eq!((lab.request(n)["state"].clone(), lab.request(n)["progress"]["cards"].clone()), (json!("doing"), json!(1)));
+}
+
+// An answer route is {kind, why}: anything more, or no why, refuses the
+// call whole.
+#[tokio::test]
+async fn an_answer_route_takes_only_why() {
+    let lab = lab();
+    let n = lab.say("README 做完了吗", "m1").await;
+    let mut titled = answer("只问进度");
+    titled["title"] = json!("README");
+    let refused = lab.route("desk", n, "README 进度", "做完了。", vec![titled]).await.unwrap_err().to_string();
+    assert!(refused.starts_with("invalid_input: routes[0].title is not a field of a answer route"), "{refused}");
+    let refused = lab.route("desk", n, "README 进度", "做完了。", vec![json!({"kind":"answer"})]).await.unwrap_err().to_string();
+    assert!(refused.starts_with("invalid_input: routes[0].why is required"), "{refused}");
+    assert_eq!(lab.count("SELECT COUNT(*) FROM project_routes"), 0, "nothing was recorded");
+    assert_eq!(lab.request(n)["state"], "waiting");
+}
+
+// The tool's description, the answer route's lines in it, fits the
+// shortest supported client (results.rs checks every tool the same way).
+#[test]
+fn the_route_tools_description_fits_2048_utf16_units() {
+    let tool = tool_definition();
+    let description = tool["description"].as_str().unwrap();
+    assert!(description.encode_utf16().count() <= 2048, "{}", description.encode_utf16().count());
+    assert!(description.contains("- answer: no task, no card"));
+    assert_eq!(tool["inputSchema"]["properties"]["routes"]["items"]["properties"]["kind"]["enum"], json!(["card", "existing", "answer"]));
 }
