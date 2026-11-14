@@ -138,8 +138,10 @@ def build(out, target_platform='linux-x86_64'):
         raise ValueError('CI SHA differs from checkout')
     toolchains = {tool: command([tool, '--version']) for tool in ('rustc', 'cargo', 'node', 'npm')}
     if macos:
-        # Apple's linker and SDK, from the runner's command line tools.
-        toolchains.update({'sdk': command(['xcrun', '--show-sdk-version']),
+        # Apple's linker, and the SDK rustc and the cc crate build with: they
+        # ask for the macosx SDK, not xcrun's default, which can be another
+        # one (on a Mac with both Xcode and the command line tools).
+        toolchains.update({'sdk': command(['xcrun', '--sdk', 'macosx', '--show-sdk-version']),
                            'ld': tool_output(['ld', '-v']), 'macos': tool_output(['sw_vers'])})
     else:
         # Detect missing/wrong linker setup before doing a production build.
