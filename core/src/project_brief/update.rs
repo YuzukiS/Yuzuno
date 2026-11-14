@@ -612,34 +612,40 @@ fn departed(state: &str) -> &'static str {
 struct Planned {
     owner: String,
     open_ask: bool,
-    /// Its own `task` names a task (YN-86 S2a).
-    bound: bool,
+    /// The open task its own `task` binds it to (YN-86 S2a), by internal
+    /// ID: None when it names none, or names one that is done, cancelled or
+    /// archived (cards.rs task_ended).
+    card_of: Option<String>,
 }
 
-/// The topics that count toward MAX_TOPICS (YN-136): all but those whose
-/// own section is bound to a task. A task's card leaves the Brief with its
-/// task (cards.rs task_closed), so the limit keeps to the topics a lead
-/// keeps by hand.
-fn counted_topics(planned: &BTreeMap<String, Planned>) -> BTreeSet<&str> {
-    planned.keys().map(|key| topic(key)).filter(|top| !planned.get(*top).is_some_and(|p| p.bound)).collect()
+/// How many topics count toward MAX_TOPICS (YN-136): all but one for each
+/// open task that a topic's own section is bound to. Such a card leaves the
+/// Brief when its task ends (cards.rs task_closed), so the topics left out
+/// are at most the Project's open tasks. A second topic bound to the same
+/// task, or one bound to a task that has ended (which never archives it),
+/// counts like any other.
+fn counted_topics(planned: &BTreeMap<String, Planned>) -> usize {
+    let topics: BTreeSet<&str> = planned.keys().map(|key| topic(key)).collect();
+    let cards: BTreeSet<&str> = topics.iter().filter_map(|top| planned.get(*top)?.card_of.as_deref()).collect();
+    topics.len() - cards.len()
 }
 
 /// Why planning `entry` at `key` is refused for the topic limit: it makes
 /// more topics count than before, and more than MAX_TOPICS. A change that
-/// adds none is never refused, so a Brief a remove left above the limit
-/// (a card's section removed under its sub-topics) takes everything else.
-fn topic_limit(planned: &BTreeMap<String, Planned>, key: &str, entry: &Planned) -> Option<String> {
-    let before = counted_topics(planned).len();
-    let unbinds = planned.get(key).is_some_and(|p| p.bound) && !entry.bound;
+/// adds none is never refused, so a Brief left above the limit (a card's
+/// section removed under its sub-topics, or a card kept live after its task
+/// ended) takes everything else. `unbinding`: the change's task is null.
+fn topic_limit(planned: &BTreeMap<String, Planned>, key: &str, entry: &Planned, unbinding: bool) -> Option<String> {
+    let before = counted_topics(planned);
     let mut next = planned.clone();
     next.insert(key.into(), entry.clone());
-    let after = counted_topics(&next).len();
+    let after = counted_topics(&next);
     (after > before && after > MAX_TOPICS).then(|| {
-        if unbinds {
-            format!("Unbinding {key} makes its topic count among the {MAX_TOPICS} topics not bound to a task, and the Brief has {before}; remove one first.")
+        if unbinding {
+            format!("Unbinding {key} makes its topic count toward the Brief's {MAX_TOPICS} topics, and {before} already count; remove one first.")
         } else {
-            format!("The Brief already has {before} topics not bound to a task; put this under an existing topic, or remove one. \
-                     A task's card (a section a lead binds with task) does not count.")
+            format!("{before} of the Brief's {MAX_TOPICS} topics already count; put this under an existing topic, or remove one. \
+                     A card does not count: a topic whose own section a lead binds with task to an open task, one per task.")
         }
     })
 }
@@ -651,10 +657,14 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
     // revocation during validation cannot authorize a stale write.
     let can_edit = editors::can_edit(store, db, &ctx.project, &ctx.agent)?;
     let live = sections::live(db, &ctx.project)?;
-    let mut planned: BTreeMap<String, Planned> = live
-        .iter()
-        .map(|row| (row.key.clone(), Planned { owner: row.owner_id.clone(), open_ask: row.unresolved_ask(), bound: row.task_id.is_some() }))
-        .collect();
+    let mut planned: BTreeMap<String, Planned> = BTreeMap::new();
+    for row in &live {
+        let card_of = match &row.task_id {
+            Some(task) if !cards::task_ended(db, task)? => Some(task.clone()),
+            _ => None,
+        };
+        planned.insert(row.key.clone(), Planned { owner: row.owner_id.clone(), open_ask: row.unresolved_ask(), card_of });
+    }
     let rows: BTreeMap<&str, &Row> = live.iter().map(|row| (row.key.as_str(), row)).collect();
     let mut owners = Owners::default();
     let mut problems = vec![];
@@ -664,6 +674,8 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         let existing = planned.get(key).cloned();
         // The task a section is the card of (YN-86 S2a): a lead binds it to
         // a task of this Project that is not archived, or unbinds it.
+        // `binds`: the task this change binds it to, while that is open.
+        let mut binds = None;
         if let Some(task) = &change.task {
             if !can_edit {
                 problems.push(problem("invalid_task", format!("{at}.task"),
@@ -671,12 +683,17 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 continue;
             }
             if let Some(reference) = task {
-                if let Err(why) = cards::bindable(db, &ctx.project, reference)? {
-                    problems.push(problem("invalid_task", format!("{at}.task"), why, "sections"));
-                    continue;
+                match cards::bindable(db, &ctx.project, reference)? {
+                    Err(why) => {
+                        problems.push(problem("invalid_task", format!("{at}.task"), why, "sections"));
+                        continue;
+                    }
+                    Ok(id) if !cards::task_ended(db, &id)? => binds = Some(id),
+                    Ok(_) => {}
                 }
             }
         }
+        let unbinding = matches!(change.task, Some(None));
         if !can_edit {
             let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
             let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
@@ -767,12 +784,12 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
                 // A put without task keeps the binding it has (apply);
                 // a new key has none.
-                let bound = match &change.task {
-                    Some(task) => task.is_some(),
-                    None => existing.as_ref().is_some_and(|p| p.bound),
+                let card_of = match &change.task {
+                    Some(_) => binds.clone(),
+                    None => existing.as_ref().and_then(|p| p.card_of.clone()),
                 };
-                let entry = Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask", bound };
-                if let Some(why) = topic_limit(&planned, key, &entry) {
+                let entry = Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask", card_of };
+                if let Some(why) = topic_limit(&planned, key, &entry, unbinding) {
                     let field = if existing.is_some() { "task" } else { "key" };
                     problems.push(problem("topic_limit", format!("{at}.{field}"), why, "limits"));
                     continue;
@@ -797,9 +814,9 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }, "sections")),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(p) => {
-                    if let Some(task) = &change.task {
-                        let entry = Planned { bound: task.is_some(), ..p.clone() };
-                        if let Some(why) = topic_limit(&planned, key, &entry) {
+                    if change.task.is_some() {
+                        let entry = Planned { card_of: binds.clone(), ..p.clone() };
+                        if let Some(why) = topic_limit(&planned, key, &entry, unbinding) {
                             problems.push(problem("topic_limit", format!("{at}.task"), why, "limits"));
                             continue;
                         }

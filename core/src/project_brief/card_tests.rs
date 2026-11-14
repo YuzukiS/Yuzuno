@@ -434,7 +434,7 @@ async fn a_tasks_card_does_not_count_toward_the_topic_limit() {
     for (request, key) in [("a3", "t12"), ("a4", "t12/part")] {
         let refused = reject(&ws, "a", input(request, 2, vec![put(key, "status")])).await;
         assert_eq!((codes(&refused), refused["problems"][0]["path"].clone()), (vec!["topic_limit".to_owned()], json!("changes[0].key")), "{key}");
-        assert!(refused["problems"][0]["reason"].as_str().unwrap().contains("not bound to a task"), "{refused}");
+        assert!(refused["problems"][0]["reason"].as_str().unwrap().starts_with("12 of the Brief's 12 topics already count"), "{refused}");
     }
     accept(&ws, "c", input("c1", 2, vec![put("yn-1/result", "report")])).await;
     // A put of the card without task keeps it bound, so it adds no topic.
@@ -467,4 +467,37 @@ async fn unbinding_a_card_at_the_limit_is_refused() {
 
     accept(&ws, "a", input("a4", 1, vec![op("remove", "t0"), unbind])).await;
     assert!(section(&brief(&ws, "a"), "yn-1").get("card").is_none(), "unbound");
+}
+
+/// Only one card per open task is left out of the count (review of #962):
+/// a second topic bound to the same task, or a topic bound to a task that
+/// has already ended (which never archives it), counts like any other and
+/// is refused at the limit. A card whose task ends while it stays live (a
+/// report not read yet) counts again: the Brief stands above the limit,
+/// takes no new topic until enough leave, and still takes every change that
+/// adds none.
+#[tokio::test]
+async fn only_one_card_per_open_task_is_left_out_of_the_topic_count() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Design the page");
+    let (ended, _) = task_in(&ws, &project, "Old work");
+    task_set(&ws, &ended, json!({"status":"done"}));
+    let mut changes: Vec<Value> = (0..MAX_TOPICS).map(|n| put(&format!("t{n}"), "status")).collect();
+    changes.push(bound("yn-1", "report", &task));
+    accept(&ws, "a", input("a1", 0, changes)).await;
+    for (request, key, reference) in [("a2", "yn-1-again", task.as_str()), ("a3", "old", ended.as_str())] {
+        let refused = reject(&ws, "a", input(request, 1, vec![bound(key, "status", reference)])).await;
+        assert_eq!((codes(&refused), refused["problems"][0]["path"].clone()), (vec!["topic_limit".to_owned()], json!("changes[0].key")), "{key}: {refused}");
+    }
+    // Rebinding the card to the ended task makes it count too.
+    let rebind = json!({"op":"edit","key":"yn-1","task":ended});
+    assert_eq!(codes(&reject(&ws, "a", input("a4", 1, vec![rebind])).await), ["topic_limit"]);
+
+    task_set(&ws, &task, json!({"status":"done"}));
+    assert_eq!(row(&ws, &project, "yn-1"), (true, None), "a report not read yet stays live after its task ends");
+    assert_eq!(codes(&reject(&ws, "a", input("a5", 1, vec![put("t12", "status")])).await), ["topic_limit"], "13 count now");
+    accept(&ws, "a", input("a6", 1, vec![put("t0", "status")])).await;
+    assert_eq!(codes(&reject(&ws, "a", input("a7", 2, vec![op("remove", "t1"), put("t12", "status")])).await), ["topic_limit"]);
+    accept(&ws, "a", input("a8", 2, vec![op("remove", "t1"), op("remove", "t2"), put("t12", "status")])).await;
 }

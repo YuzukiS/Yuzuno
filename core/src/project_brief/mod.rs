@@ -179,7 +179,7 @@ Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
 Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
-At most 12 topics not bound to a task (a task's card does not count: it leaves with its task), with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
+At most 12 topics with 4 sub-topics each; a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
