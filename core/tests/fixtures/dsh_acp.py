@@ -16,13 +16,20 @@ entry "<id>" not found`), with exit 0. The schema has dsh's shape
 config refers to `$defs.configN`), cut down to the rows Core writes.
 
 ACP is JSON-RPC 2.0, one object per line. `initialize`, `session/new` and
-`session/close` answer as rc.3 does; an unknown method gets rc.3's -32601. A
-`session/prompt` whose text holds one of these words runs that scene:
+`session/close` answer as rc.3 does; an unknown method gets rc.3's -32601.
+`session/resume` of a session ID it is given answers with its options, as
+`session/new` does (resumed sessions are logged, kind `resumed`), and
+`session/set_config_option` sets an option's current value (logged, kind
+`set`), refusing a value the option does not list. A `session/prompt` whose
+text holds one of these words runs that scene:
   ASK     sends session/request_permission (as dsh does past its sandbox),
           then, once answered, an agent_message_chunk quoting the answer
   SLEEP   answers only after session/cancel, with stopReason `cancelled`
   EXIT    writes "fixture: exiting" on stderr and exits 3 without answering
   NOISE   writes a line that is not JSON
+  TOOL    three tool calls, each started then finished: `bash` (its output
+          and exit code in rawOutput), `mcp__yuzuno__peers_list` (a text
+          content block) and `read` (failed), then a message and end_turn
 anything else: an agent_thought_chunk, an agent_message_chunk and a
 usage_update, then stopReason `end_turn`. `fixture/hang` is never answered.
 It exits when its stdin ends, as dsh does.
@@ -298,6 +305,17 @@ CONFIG_OPTIONS = [
 ]
 
 
+def listed(options):
+    """Every value of an option's choices, grouped or not."""
+    out = []
+    for choice in options:
+        if "value" in choice:
+            out.append(choice["value"])
+        else:
+            out.extend(listed(choice.get("options") or []))
+    return out
+
+
 def merged(base, over):
     out = dict(base)
     for key, value in over.items():
@@ -344,6 +362,18 @@ def serve():
         elif method == "session/new":
             sessions += 1
             send({"id": mid, "result": {"sessionId": "ses-%d" % sessions, "configOptions": CONFIG_OPTIONS}})
+        elif method == "session/resume":
+            log({"kind": "resumed", "sessionId": params.get("sessionId")})
+            send({"id": mid, "result": {"configOptions": CONFIG_OPTIONS}})
+        elif method == "session/set_config_option":
+            option = next((o for o in CONFIG_OPTIONS if o["id"] == params.get("configId")), None)
+            values = [] if option is None else listed(option["options"])
+            if params.get("value") not in values:
+                send({"id": mid, "error": {"code": -32602, "message": "Invalid value for %s" % params.get("configId")}})
+            else:
+                option["currentValue"] = params["value"]
+                log({"kind": "set", "configId": params["configId"], "value": params["value"]})
+                send({"id": mid, "result": {"configOptions": CONFIG_OPTIONS}})
         elif method == "session/close":
             send({"id": mid, "result": {}})
         elif method == "session/cancel":
@@ -370,6 +400,21 @@ def serve():
                 sys.stderr.write("fixture: exiting\n")
                 sys.stderr.flush()
                 sys.exit(3)
+            elif "TOOL" in text:
+                for call, title, kind, raw in (("call-b", "bash", "execute", {"command": "ls"}),
+                                               ("call-m", "mcp__yuzuno__peers_list", "other", {}),
+                                               ("call-r", "read", "read", {"path": "a.txt"})):
+                    update(session, {"sessionUpdate": "tool_call", "toolCallId": call, "title": title, "kind": kind,
+                                     "status": "pending", "rawInput": raw})
+                update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "call-b", "status": "completed",
+                                 "rawOutput": {"stdout": "a.txt\n", "exitCode": 0}})
+                update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "call-m", "status": "completed",
+                                 "content": [{"type": "content", "content": {"type": "text", "text": "{\"peers\":[]}"}}]})
+                update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "call-r", "status": "failed",
+                                 "rawOutput": "no such file"})
+                update(session, {"sessionUpdate": "agent_message_chunk", "messageId": "m-3",
+                                 "content": {"type": "text", "text": "done"}})
+                send({"id": mid, "result": {"stopReason": "end_turn"}})
             elif "NOISE" in text:
                 sys.stdout.write("this is not JSON\n")
                 sys.stdout.flush()

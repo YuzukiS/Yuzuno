@@ -622,9 +622,12 @@ async fn backlog(State(ws): State<Arc<Workspace>>) -> Json<Value> {
 
 async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
+    // The dsh this Core would start (YN-119 S2a): {available, version, label}.
+    let dsh = crate::dsh_agent::status(&ws.data_dir).await;
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
             "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
+            "dsh":dsh,
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await
@@ -661,6 +664,14 @@ struct Create {
     /// This Agent's own Claude Code permission mode, likewise.
     #[serde(default)]
     permission_mode: Option<String>,
+    /// A dsh Agent's permission level (YN-119 §3.6): ask, auto or full; left
+    /// out, ask.
+    #[serde(default)]
+    permission_level: Option<String>,
+    /// The DeepSeek routing key a dsh Agent runs with (§3.10), as
+    /// `{"kind":"apiKey","keyId":…}`.
+    #[serde(default)]
+    runtime_profile: Option<crate::routing_launch::RuntimeProfile>,
 }
 
 #[cfg(test)]
@@ -672,6 +683,17 @@ mod create_tests {
         assert!(fresh.goal.is_empty());
         let legacy: Create = serde_json::from_value(json!({"name":"Dev","cwd":"/tmp","goal":"historical purpose"})).unwrap();
         assert_eq!(legacy.goal,"historical purpose");
+    }
+
+    /// A dsh Agent as the web asks for one (YN-125 W1): its level and its
+    /// DeepSeek key, as RuntimeProfile's own JSON.
+    #[test]
+    fn a_dsh_agent_is_asked_for_with_its_level_and_key() {
+        let asked: Create = serde_json::from_value(json!({"name":"D","cwd":"/tmp","machineId":"local","harness":"dsh","model":"deepseek-flash",
+            "permissionLevel":"auto","runtimeProfile":{"kind":"apiKey","keyId":"deepseek"}})).unwrap();
+        assert_eq!((asked.harness.as_deref(), asked.permission_level.as_deref()), (Some("dsh"), Some("auto")));
+        assert_eq!(asked.runtime_profile, Some(crate::routing_launch::RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
+        assert!(serde_json::from_value::<Create>(json!({"name":"D","cwd":"/tmp","runtimeProfile":{"kind":"apiKey","keyId":"k","extra":1}})).is_err());
     }
 }
 #[cfg(test)]
@@ -780,6 +802,9 @@ fn executor_request(template: &crate::executor_templates::Template, name: String
         save_project_default: false,
         permission_preset: template.permission_preset.clone(),
         permission_mode: template.permission_mode.clone(),
+        // An executor's level and key are its dispatch's (routing).
+        permission_level: None,
+        runtime_profile: None,
     }
 }
 
@@ -787,10 +812,15 @@ fn executor_request(template: &crate::executor_templates::Template, name: String
 /// came from; an executor with `birth`.
 async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::workspace::Birth>) -> anyhow::Result<(crate::model::Agent, Value)> {
     let Settled { harness, model, settings, sources } = settle(ws, &p).await?;
+    anyhow::ensure!(harness == "dsh" || (p.permission_level.is_none() && p.runtime_profile.is_none()),
+        "permissionLevel and runtimeProfile are for dsh Agents");
     let agent = match harness.as_str() {
         "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
         "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
         "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
+        // Its own effort, level and DeepSeek key (YN-119 §3.6, §3.9, §3.10).
+        "dsh" => ws.dsh_create_on(p.name, p.cwd, model, p.reasoning_effort.flatten(), p.machine_id, p.project_id, birth,
+            p.permission_level, p.runtime_profile).await?,
         _ => anyhow::bail!("未知 Harness"),
     };
     Ok((agent, sources))
@@ -1377,6 +1407,10 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 }
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
+    if harness == "dsh" {
+        // Chosen when it is created; changing them comes with YN-119 S2b.
+        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型、推理强度和权限暂时只能在新建时选择。A DeepSeek Harness Agent's model, effort and permissions are chosen when it is created, for now.").into());
+    }
     if harness == "opencode" {
         // The model and its variant only (T-10, `effort` names the variant);
         // permissions stay OpenCode's own configuration's.
@@ -1396,6 +1430,7 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
         if input.permission_mode.is_some() { return Err(anyhow::anyhow!("Claude 权限模式不适用于 Codex").into()); }
         if input.effort.is_some() { return Err(anyhow::anyhow!("Codex 推理强度通过设置传入").into()); }
         let settings = input.settings.ok_or_else(|| anyhow::anyhow!("Codex 设置缺失"))?;
+        if settings.permission_level.is_some() { return Err(anyhow::anyhow!("permissionLevel is a dsh Agent's").into()); }
         ws.update_settings(&id, input.model, settings).await?
     };
     Ok(Json(serde_json::to_value(agent)?))
@@ -1403,8 +1438,11 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
 /// The composer's `/compact`: a Codex Agent's own compaction, or an OpenCode
 /// Agent's (T-10).
 async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    if ws.listed(&id).await?.harness == "opencode" {
-        return Ok(Json(ws.opencode_compact(&id).await?));
+    match ws.listed(&id).await?.harness.as_str() {
+        "opencode" => return Ok(Json(ws.opencode_compact(&id).await?)),
+        // dsh compacts by itself; ACP has no manual compaction (YN-119 §4).
+        "dsh" => return Err(anyhow::anyhow!("dsh 会自己压缩上下文；它没有手动 /compact。dsh compacts its context by itself; it has no manual /compact.").into()),
+        _ => {}
     }
     Ok(Json(ws.codex_compact(&id).await?))
 }
@@ -1445,6 +1483,9 @@ async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) 
         ws.claude_agent_catalog(&id).await?
     } else if harness == "opencode" {
         ws.opencode_agent_catalog(&id).await?
+    } else if harness == "dsh" {
+        // Read from the Agent's dsh with YN-119 S2b.
+        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型目录暂不可读。A DeepSeek Harness Agent's models can't be read yet.").into());
     } else {
         ws.agent_catalog(&id).await?
     }))
@@ -1483,6 +1524,8 @@ async fn models(State(ws): State<Arc<Workspace>>, Query(query): Query<ModelsQuer
     match query.harness.as_deref().unwrap_or("codex") {
         "claude" => return Ok(Json(ws.claude_catalog().await?)),
         "opencode" if crate::opencode_agent::enabled() => return Ok(Json(crate::opencode_agent::catalog())),
+        // Read from a dsh of its own with YN-119 S2b (§3.9).
+        "dsh" => return Err(anyhow::anyhow!("DeepSeek Harness 的模型目录暂不可读。DeepSeek Harness's models can't be read yet.").into()),
         "codex" => {},
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     }

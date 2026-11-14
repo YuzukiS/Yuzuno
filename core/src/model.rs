@@ -66,10 +66,14 @@ pub struct AgentSettings {
     /// Codex Agents never carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// A dsh Agent's permission level (YN-119 §3.6), as its start reads it
+    /// from `agent_permission_levels`: shown here, decided there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<String>,
 }
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { context_window: None, auto_compact_token_limit: None, reasoning_effort: None, approval_policy: "on-request".into(), sandbox: "workspace-write".into(), permission_preset: None, permission_mode: None }
+        Self { context_window: None, auto_compact_token_limit: None, reasoning_effort: None, approval_policy: "on-request".into(), sandbox: "workspace-write".into(), permission_preset: None, permission_mode: None, permission_level: None }
     }
 }
 
@@ -385,6 +389,12 @@ pub struct Agent {
     /// 070d0f95 of #575).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_major: Option<String>,
+    /// A dsh Agent's ACP session (YN-119 §3.8), resumed by each later start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_session_id: Option<String>,
+    /// The dsh version its newest start found (§5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_version: Option<String>,
     pub thread_id: Option<String>,
     pub status: String,
     #[serde(default)]

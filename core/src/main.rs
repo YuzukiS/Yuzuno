@@ -272,6 +272,8 @@ async fn run(
     // What OpenCode's tools run outlives its process group: each OpenCode is
     // asked to end it before the Workspace goes (opencode.rs).
     opencode.opencode_stop_all().await;
+    // Each dsh too, ending what stays in its group (dsh.rs).
+    opencode.dsh_stop_all().await;
     // Each SSH machine's remote session, asked to close when the shutdown
     // was sent, gets 14 s with all the others (YN-83 S1); a child not
     // reaped by then stays with its reaper.

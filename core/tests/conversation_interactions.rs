@@ -357,7 +357,7 @@ async fn managed_permissions_disable_and_reject_modes_without_changing_saved_set
 async fn settings_are_validated_persisted_and_only_used_on_next_start_or_resume() {
     let (dir, ws) = fixture().await;
     ws.send_message("a", input("start", "hello", None)).await.unwrap();
-    let settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort:Some("high".into()), approval_policy:"never".into(), sandbox:"read-only".into(), permission_preset:None, permission_mode:None };
+    let settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort:Some("high".into()), approval_policy:"never".into(), sandbox:"read-only".into(), permission_preset:None, permission_mode:None, permission_level:None };
     assert!(ws.update_settings("a", "not-on-this-machine".into(), settings.clone()).await.is_err());
     let mut invalid = settings.clone(); invalid.reasoning_effort = Some("ultra".into());
     assert!(ws.update_settings("a", "test-model".into(), invalid).await.is_err());
