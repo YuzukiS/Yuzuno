@@ -473,8 +473,9 @@ Each machine has a number of executors that run on it at once: this Core
 host, and each registered machine. It is 3 unless you change it, a whole
 number from 1 to 64, in **Machines**: a registered machine's in its editor,
 this Core host's on its card (`PUT /api/machines/{id}/executor-slots`, `local`
-for this Core host; null for the default). There is no other limit: the
-Workspace runs at most the machines' numbers added up, and a Project or a
+for this Core host; null for the default). There is no other limit, apart
+from the one slot over it an urgent dispatch may take (below): the Workspace
+runs at most the machines' numbers added up, plus that, and a Project or a
 template has none of its own. Settings, under **Executor templates**, lists
 each machine's number and the total. Only you change them. Lowering a number
 under the executors running on that machine stops none of them: no more start
@@ -498,9 +499,23 @@ there until fewer hold a slot.
   their turn together. One whose machine is full is passed by the next that
   has room on its own machine, so a full machine holds back none bound for
   another.
+- **Urgent dispatches (YN-137).** A dispatch with `priority: "urgent"` queues
+  its executor first: urgent ones go before every other, the aged ones too,
+  and among themselves in the order they were dispatched. It may also start
+  while its machine holds fewer than its number + 1, so it never waits for a
+  normal executor to close; any other starts only under the number. A machine
+  therefore runs at most its number + 1, and the one over it is always
+  urgent. The 1 is fixed, not a setting: it is the least that lets an urgent
+  executor start at once (Settings reads it as `limits.urgentExtra`). Taking
+  an urgent one leaves the Projects' turns as they were. A reopened urgent
+  executor, and the one Core rebuilds for it, are urgent too; one already
+  queued can't be made urgent (release it and dispatch again). Jobs have no
+  urgent lane: an urgent executor's Jobs queue as any other's. Keep it for a
+  release and what a release waits on.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first) and
   the machine it waits for (`waitsFor`: `{machine, name, running, limit}`),
+  and `urgent: true` for an urgent dispatch's,
   starting (with `reason` when its start did not finish), or running. On a
   machine `auto` chose, the card's executor chip names it, with every
   candidate's numbers, or why it was left out, in its title: the lifecycle
@@ -769,7 +784,7 @@ first that holds names the state:
 | 2 | `archiving` | 归档中 · Archiving | It was released and waits for its work to end, or for its close to be confirmed. `reason` says what it waits for. |
 | 3 | `failed` | 失败 · Failed | Its start stopped short: it is held open with its slot and a reason (an uncertain start, or a reopened executor's start that failed), or it is closed while its task is blocked and the task's newest dispatch is still its own. |
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
-| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
+| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first, and `urgent` is true for an urgent dispatch's (shown as 排队中 · 加急 · Queued · urgent). |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
 | 7 | `delivering` | 已交 · Handed in | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |

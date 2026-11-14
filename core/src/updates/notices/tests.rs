@@ -2,7 +2,7 @@ use super::super::state::{Launch, Layout, ReleaseRef};
 use super::*;
 use crate::collaboration_runtime::tests::{finish, fixture, working};
 
-fn waiting(dir: &std::path::Path, ws: &Workspace, id: &str) -> Operation {
+pub(crate) fn waiting(dir: &std::path::Path, ws: &Workspace, id: &str) -> Operation {
     let root = dir.join("managed");
     std::fs::create_dir_all(&root).unwrap();
     let layout = Layout::open(&root).unwrap();

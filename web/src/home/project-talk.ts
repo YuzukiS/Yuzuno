@@ -31,7 +31,7 @@ export const shownView = (view: TalkView, narrow: boolean): TalkView =>
 /** Whether a side is open in a view. */
 export const sideOpen = (view: TalkView, side: "requests" | "chat") => view === "both" || view === side;
 
-// Kept per Project on this device, as Home's density is (home-density.ts): nothing goes to Core.
+// Kept per Project on this device (device-storage.ts): nothing goes to Core.
 const viewKey = (workspaceId: string, projectId: string) => `yuzuno.projectTalkView.${workspaceId}.${projectId}`;
 
 /** This device's choice for a Project: "both" until one is made (§4.1). */

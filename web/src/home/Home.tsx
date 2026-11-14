@@ -14,7 +14,7 @@ import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { ProjectGlance } from "./ProjectGlance";
 import { ProjectHome } from "./ProjectHome";
-import { HomeDensity, RefreshHome } from "./home-tools";
+import { RefreshHome } from "./home-tools";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
 import { arrangeWidgets, HomeWidgets, type HomeWidget } from "./HomeWidgets";
@@ -33,7 +33,6 @@ import { CardAgents } from "./card-responsible";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
-import { BriefDensity, useHomeDensity, useHomeDensityRefusal } from "./home-density";
 import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
@@ -139,11 +138,6 @@ export function Home({
 }) {
   const language = useLanguage();
   const t = homeText(language);
-  // How much each card shows, kept on this device for each Workspace (the
-  // preview keeps none): the same content either way.
-  const densityWorkspace = readOnly ? "" : workspaceId;
-  const density = useHomeDensity(densityWorkspace);
-  const densityRefusal = useHomeDensityRefusal(densityWorkspace);
   // A late read from a previous Workspace must never seed the new
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
@@ -856,7 +850,6 @@ export function Home({
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
     <DeckSizes.Provider value={deckSizes}>
-    <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
     <ReportOpen.Provider value={cardReport}>
     <div className="home-stage">
@@ -864,7 +857,6 @@ export function Home({
       ref={view}
       className={`home-view${report ? " is-under-report" : ""}`}
       lang={langTag(language)}
-      data-density={density}
       inert={report ? true : undefined}
     >
       {!project && (
@@ -874,7 +866,6 @@ export function Home({
             {t.home}
           </h1>
           <span className="home-header-tools">
-            <HomeDensity workspaceId={densityWorkspace} />
             {data && panels.length > 1 && !readOnly && (
               <button
                 type="button"
@@ -900,11 +891,6 @@ export function Home({
           onWidgets={toWidgets}
         />
       )}
-      {densityRefusal && !densityRefusal.saved && (
-        <p className="home-note home-density-note" role="status">
-          {t.densityNotKept(densityRefusal.detail)}
-        </p>
-      )}
       {banner.shown && bannerError && (
         <div className="home-error-slot">
           <p className={`inline-error home-error-banner${banner.leaving ? " is-leaving" : ""}`} role="alert">
@@ -929,7 +915,6 @@ export function Home({
           agents={projectAgents(project)}
           needsYou={data.needsYou.filter((item) => item.projectId === project)}
           readOnly={readOnly}
-          densityWorkspace={densityWorkspace}
           refreshing={refreshing}
           onRefresh={() => {
             setRefreshing(true);
@@ -1024,7 +1009,6 @@ export function Home({
     </div>
     </ReportOpen.Provider>
     </HomeReadContext.Provider>
-    </BriefDensity.Provider>
     </DeckSizes.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>

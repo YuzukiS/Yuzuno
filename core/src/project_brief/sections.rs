@@ -27,7 +27,8 @@ pub(super) struct Row {
     pub deferred_until: Option<String>,
     pub updated_at: String,
     pub updated_turn_id: Option<String>,
-    /// Why a section is history: seen, removed or resolved.
+    /// Why a section is history: seen, removed, resolved, archived, or
+    /// refreshed (a past issue of a card that refreshes itself, YN-113).
     pub history_reason: Option<String>,
     /// When it became history.
     pub history_at: Option<String>,
@@ -138,12 +139,25 @@ pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
     )
 }
 
-/// Seen reports, removed and resolved sections of the last 30 days, newest first.
+/// Seen reports, removed and resolved sections of the last 30 days, newest
+/// first: Home's history. Not a card's past issues (`refreshed`, YN-113 §3.4):
+/// a card refreshed every 2 hours would put 360 of them here in 30 days; they
+/// are read by the card's identity (`of_identity`).
 pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
     read(
         db,
-        "project_id=?1 AND live=0 AND history_at>=?2 ORDER BY history_at DESC, seq DESC",
+        "project_id=?1 AND live=0 AND history_at>=?2 AND history_reason IS NOT 'refreshed' ORDER BY history_at DESC, seq DESC",
         params![project, history_cutoff()],
+    )
+}
+
+/// Every version of the section with this identity on Home that is live or
+/// that history still keeps, newest first (YN-113 §3.4, a card's issues).
+pub(super) fn of_identity(db: &Connection, project: &str, identity: i64) -> Result<Vec<Row>> {
+    read(
+        db,
+        "project_id=?1 AND COALESCE(lineage,seq)=?2 AND (live=1 OR history_at>=?3) ORDER BY version DESC, seq DESC",
+        params![project, identity, history_cutoff()],
     )
 }
 

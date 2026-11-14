@@ -93,12 +93,12 @@ pub(super) fn raises(free: u64, cpu_waiting: usize, running: &[Running]) -> Vec<
 }
 
 /// What the Jobs holding this host's budget hold of its CPU now: each one's
-/// current grant and its collector, or, without a grant (a Windows Job, or
-/// one reserved before T-64), its reservation.
+/// current grant and its collector, or, without a grant (a Windows Job, one
+/// on This Mac, or one reserved before T-64), its reservation.
 pub(super) fn held(db: &Connection) -> Result<u64> {
     let mut q = db.prepare_cached(
         "SELECT json_extract(data,'$.cpuCurrent'), json_extract(data,'$.reservation.cpuMillis') FROM local_jobs
-         WHERE reserved=1 AND (json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind')='windows')",
+         WHERE reserved=1 AND (json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind') IN ('windows','mac'))",
     )?;
     let mut total = 0u64;
     for row in q.query_map([], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)))? {

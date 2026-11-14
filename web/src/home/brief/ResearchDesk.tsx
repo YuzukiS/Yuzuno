@@ -3,7 +3,7 @@ import { api, errorText } from "../../api";
 import { useStrings } from "../../i18n";
 import { useTimeDisplay } from "../../time-preferences";
 import { CardFoldWorkspace } from "../card-fold";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import { useBrief } from "./BriefContext";
 import { BriefLiveRefs } from "./LiveRefs";
 import { formatTime, researchPath, type ResearchDeskProps } from "./brief-catalog";

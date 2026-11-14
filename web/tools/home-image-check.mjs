@@ -207,7 +207,7 @@ try {
     check(`${viewport.name}: a report's image, on its page, opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 
     // Open, from the picture's folded details, then Mark up: the image shown, marked, into its author's draft.
-    // At low density only the first attachment shows: show them all, as a person would.
+    // Where the block folds some attachments away, show them all, as a person would.
     const showAll = opened.locator("button.brief-attachments-more");
     if ((await showAll.count()) && (await showAll.getAttribute("aria-expanded")) === "false") await showAll.click();
     // The file name is in the folded details now; the picture's own name says which one it is.

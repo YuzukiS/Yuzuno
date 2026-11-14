@@ -28,7 +28,7 @@ import {createRoot} from 'react-dom/client';
 import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
 import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
 import {checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
-import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/brief/density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});

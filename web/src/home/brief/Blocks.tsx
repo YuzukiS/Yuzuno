@@ -18,7 +18,7 @@ import {
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import { Tip, TipText } from "../../Tip";
 import {
   metricDelta,

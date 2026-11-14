@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 mod store;
 #[cfg(all(test, unix))]
-mod tests;
+pub(super) mod tests;
+
+pub(super) use store::Starter;
 
 fn active_turn(detail: &AgentDetail) -> Option<&str> {
     detail
@@ -19,7 +21,7 @@ fn active_turn(detail: &AgentDetail) -> Option<&str> {
         .find(|turn| turn["status"] == "inProgress")?["id"]
         .as_str()
 }
-fn session(detail: &AgentDetail) -> Option<&str> {
+pub(super) fn session(detail: &AgentDetail) -> Option<&str> {
     match detail.agent.harness.as_str() {
         "claude" => detail.agent.claude_session_id.as_deref(),
         "opencode" => detail.agent.opencode_session_id.as_deref(),
