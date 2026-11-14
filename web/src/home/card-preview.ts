@@ -200,6 +200,9 @@ export function shownSize(section: Section, content: CardContent, chosen: CardSi
 export function cardSize(section: Section, content: CardContent = cardContent(section)): CardSize {
   // A card sizes to its picture where its author named no size, as one named without a size does (YN-3).
   if (content.kind === "named" && content.size) return content.size;
+  // A refreshing card is wide unless its author named another size (YN-113 §3.1): its first visual must be
+  // readable beside the schedule, and a small card draws only part of one.
+  if (section.refresh) return "wide";
   if (!content.figure) return "small";
   const figure = content.figure;
   // A picture needs area: an image, a page shown working (YN-3).

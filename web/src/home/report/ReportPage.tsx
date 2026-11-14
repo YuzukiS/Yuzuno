@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Eye, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
+import { ArrowLeft, AlarmClock, ChevronRight, Eye, Info, LoaderCircle, MessageSquareReply } from "lucide-react";
 import { errorText } from "../../api";
 import { CopyButton } from "../../components";
 import { useMessageLinks, type ReportLink } from "../../deep-link";
@@ -22,6 +22,11 @@ import type { HomeData, Section, SectionAttachment } from "../types";
 import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
 import { reportText } from "./report-text";
 import { useOpenedReceipt } from "./report-opened";
+import { RefreshPanel } from "../RefreshPanel";
+import { RefreshVersions } from "../RefreshVersions";
+import { useRefreshChanged } from "../refresh-changed";
+import { refreshDateTime } from "../refresh-state";
+import { refreshText } from "../refresh-text";
 import "./report.css";
 import { Tip, TipText } from "../../Tip";
 
@@ -52,6 +57,7 @@ export function ReportPage({
   onShowProject,
   onSeen,
   onOpened,
+  onRefreshChanged,
   readError = null,
   onRetry,
 }: {
@@ -70,6 +76,8 @@ export function ReportPage({
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
   /** Records that this page showed a live report's version whole (YN-86); the page says when. */
   onOpened?: (projectId: string, section: Section) => Promise<void>;
+  /** Reads Home again after the user changed this card's refresh schedule (YN-113 R3). */
+  onRefreshChanged?: () => void;
   /** Home's read failure, as Home words it ("" when it has no reason). */
   readError?: { reason: string } | null;
   /** Reads Home again, as Home's own Refresh does. */
@@ -90,26 +98,46 @@ export function ReportPage({
   const shown = place?.kind === "found" ? place.section : kept;
   const live = place?.kind === "found" && !place.section.history;
   const liveNow = panel && [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((s) => s.key === link.key);
+  // A refreshing report (YN-113 R3): its live issue's schedule, and past issues Core keeps out of Home's history.
+  // A past issue is read whole from Core and shown read only, above the page's own words (design §3.4).
+  const [oldIssue, setOldIssue] = useState<Section | null>(null);
+  const [issueAt, setIssueAt] = useState<string | null>(null);
+  const [refreshOpen, setRefreshOpen] = useState(false);
+  const refreshPanelId = useId();
+  const banner = useRef<HTMLDivElement>(null);
+  const refreshChangedFromHome = useRefreshChanged();
+  const refreshDates = useMemo(() => refreshDateTime(time), [time]);
+  const tRefresh = useStrings(refreshText);
+  // The schedule is Core's for this card's identity: the live issue's, or the live one's when the page shows a
+  // version kept in history (a card the user marked seen keeps its schedule; design §3.2).
+  const refreshHolder = shown?.refresh ? shown : liveNow && (typeof shown?.id !== "number" || liveNow.id === shown.id) ? liveNow : null;
+  const refreshOf = refreshHolder?.refresh ?? null;
+  const refreshIdentity = refreshOf && typeof refreshHolder?.id === "number" ? refreshHolder.id : null;
+  /** What the page reads: the past issue on screen, else the version linked. */
+  const page = oldIssue ?? shown;
+  useEffect(() => {
+    if (oldIssue) banner.current?.focus({ preventScroll: true });
+  }, [oldIssue]);
   const newer =
     place?.kind === "found" ? place.newer
       : shown && liveNow && liveNow.id === shown.id && liveNow.version > shown.version ? liveNow : null;
-  const parts = useMemo(() => (shown ? partsOf(shown) : null), [shown]);
-  const outline = useMemo(() => (shown && parts ? outlineOf(shown, parts.flow) : []), [shown, parts]);
+  const parts = useMemo(() => (page ? partsOf(page) : null), [page]);
+  const outline = useMemo(() => (page && parts ? outlineOf(page, parts.flow) : []), [page, parts]);
   const figures = useMemo(() => {
-    if (!shown || !parts) return [];
-    return [...(parts.summary?.visual ? figuresOf(shown, [parts.summary.visual]) : []), ...figuresOf(shown, parts.flow)];
-  }, [shown, parts]);
+    if (!page || !parts) return [];
+    return [...(parts.summary?.visual ? figuresOf(page, [parts.summary.visual]) : []), ...figuresOf(page, parts.flow)];
+  }, [page, parts]);
   // The blocks changed since the user last read it, as the page opened at this version: they stay marked while it is
   // on screen, after Core has recorded it opened (YN-86) or a read brings the same version again.
   const heldChanges = useRef<{ id: number | undefined; key: string; version: number; changes: BlockChanges | null } | null>(null);
   const changes = useMemo(() => {
-    if (!shown || !live) return null;
+    if (!page || !live || page !== shown) return null;
     const held = heldChanges.current;
-    if (held && held.id === shown.id && held.key === shown.key && held.version === shown.version) return held.changes;
-    const found = changedBlocks(workspaceId, link.projectId, shown);
-    heldChanges.current = { id: shown.id, key: shown.key, version: shown.version, changes: found };
+    if (held && held.id === page.id && held.key === page.key && held.version === page.version) return held.changes;
+    const found = changedBlocks(workspaceId, link.projectId, page);
+    heldChanges.current = { id: page.id, key: page.key, version: page.version, changes: found };
     return found;
-  }, [shown, live, workspaceId, link.projectId]);
+  }, [page, shown, live, workspaceId, link.projectId]);
   // Whether this version's body drew on the page (YN-86): every block it shows has told what it showed, none that
   // the section could not be drawn at all, and at least one drew real content; a block that shows only its unreadable
   // note is tolerated beside them, never counted as the body. Only then, for the live version on this Workspace's
@@ -129,26 +157,26 @@ export function ReportPage({
       let tell = tellers.get(id);
       if (!tell)
         tellers.set(id, (tell = (what: BodyDrawn) => {
-          if (drawing.current.of !== shown) drawing.current = { of: shown, told: new Map() };
+          if (drawing.current.of !== page) drawing.current = { of: page, told: new Map() };
           const { told } = drawing.current;
           told.set(id, what);
           const blocks = expected.current;
           const whole = blocks.length > 0 && blocks.every((block) => told.has(block))
             && blocks.every((block) => told.get(block) !== "failed") && blocks.some((block) => told.get(block) === "drawn");
-          setDrawn((was) => (whole ? shown : was === shown ? null : was));
+          setDrawn((was) => (whole ? page : was === page ? null : was));
         }));
       return tell;
     };
-  }, [shown]);
+  }, [page]);
   const receipt = useOpenedReceipt(
-    !readOnly && live && shown && drawn === shown && link.workspaceId === workspaceId ? { workspaceId, projectId: link.projectId, section: shown } : null,
+    !readOnly && live && shown && page === shown && drawn === shown && link.workspaceId === workspaceId ? { workspaceId, projectId: link.projectId, section: shown } : null,
     onOpened,
   );
-  const dataFiles = (shown?.attachments ?? []).filter((file) => file.kind === "data");
+  const dataFiles = (page?.attachments ?? []).filter((file) => file.kind === "data");
   const railed = !!parts && (parts.sources.length > 0 || parts.attachments.length > 0 || dataFiles.length > 0);
   // A reply where Home takes one (T-174): on the live version, or on a report marked seen that a reply can still
   // refer to (replyableIn), as its card and pin do (Lead 2655). Never another version kept in History.
-  const replyable = !readOnly && place?.kind === "found" && replyableIn(panel, place.section);
+  const replyable = !readOnly && !oldIssue && place?.kind === "found" && replyableIn(panel, place.section);
   const [replying, setReplying] = useState(false);
   // Only ever opened by the user here; closed, focus goes back to Reply (T-19 HM:S7).
   const replyButton = useRef<HTMLButtonElement>(null);
@@ -160,7 +188,7 @@ export function ReportPage({
   // The page takes focus as it opens, and gives it to its title once there
   // is one, unless the user has moved it meanwhile.
   useEffect(() => root.current?.focus({ preventScroll: true }), []);
-  const titled = !!shown;
+  const titled = !!page;
   useEffect(() => {
     if (titled && document.activeElement === root.current) heading.current?.focus({ preventScroll: true });
   }, [titled]);
@@ -177,7 +205,7 @@ export function ReportPage({
     }
   }
   const open = (section: Section) => onOpenVersion({ workspaceId: link.workspaceId, ...linkTo(link.projectId, section) });
-  const title = shown?.title ?? (place?.kind === "unavailable" ? place.versions[0].title : undefined);
+  const title = page?.title ?? (place?.kind === "unavailable" ? place.versions[0].title : undefined);
   const href = shown && links?.reportHref(linkTo(link.projectId, shown));
   const toProject = (
     <button type="button" className="report-notice-main" onClick={() => onShowProject(link.projectId)}>
@@ -213,7 +241,7 @@ export function ReportPage({
   ) : place?.kind === "gone" ? (
     <Notice actions={null}>{t.gone}</Notice>
   ) : null;
-  const block = (id: string) => <SectionBody section={shown!} projectId={link.projectId} changes={changes} only={[id]} onDrawn={drawnBlock(id)} />;
+  const block = (id: string) => <SectionBody section={page!} projectId={link.projectId} changes={changes} only={[id]} onDrawn={drawnBlock(id)} />;
   const retry = onRetry && (
     <button type="button" className="report-notice-main" onClick={onRetry}>
       {t.retry}
@@ -246,8 +274,8 @@ export function ReportPage({
         </p>
         <span className="report-actions" role="group" aria-label={t.actions}>
           {href && <CopyButton text={href} label={t.copyLink} />}
-          {shown?.kind === "report" && <CopyButton text={() => reportMarkdown(shown, link.projectId, language, time)} label={home.copyReport} />}
-          {live && shown && changedSinceSeen(shown) && !readOnly && (
+          {page?.kind === "report" && <CopyButton text={() => reportMarkdown(page, link.projectId, language, time)} label={home.copyReport} />}
+          {live && !oldIssue && shown && changedSinceSeen(shown) && !readOnly && (
             <button type="button" className="quiet-button home-seen" disabled={seeing} onClick={() => void seen()} aria-label={home.seenLabel(shown.title)}>
               {seeing ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
               {home.seen}
@@ -271,6 +299,19 @@ export function ReportPage({
         </span>
       </header>
       <div className="report-page">
+        {/* A past issue is read from Core, read only, and says which it is (YN-113 §3.4). */}
+        {oldIssue && (
+          <div className="report-issue-banner" ref={banner} role="status" tabIndex={-1}>
+            <Info size={15} aria-hidden="true" />
+            <p>
+              {tRefresh.issues.banner(refreshDates(issueAt ?? oldIssue.updatedAt))}{" "}
+              <small>{tRefresh.issues.readOnly}</small>
+            </p>
+            <button type="button" className="quiet-button" onClick={() => setOldIssue(null)}>
+              {tRefresh.issues.back}
+            </button>
+          </div>
+        )}
         {/* A failed read is said, with a way to read again; never shown as
             still reading. With an earlier reading, that one stays. */}
         {readFailed && data && (
@@ -289,7 +330,7 @@ export function ReportPage({
             {t.reading}
           </div>
         )}
-        {notice}
+        {!oldIssue && notice}
         {replyable && shown && replying && (
           <CardReply
             section={shown}
@@ -310,40 +351,80 @@ export function ReportPage({
         )}
         {/* The page's variables (YN-16): every block of this version reads
             the same, and none of them is its card's. */}
-        {shown && parts && (
-          <BriefStateScope section={shown}>
+        {page && parts && (
+          <BriefStateScope section={page}>
             <article className="report-article" aria-labelledby={headingId}>
               <div className="report-layout">
                 <div className="report-main">
                   <header className="report-head">
                     <p className="report-kicker">
-                      <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
-                      {live && unreadChange(shown) && <span className="home-changed">{readBefore(shown) ? home.updated : home.new}</span>}
-                      {unmaintained(shown) && <span className="home-unmaintained">{home.notMaintained}</span>}
-                      {!!shown.repairs?.length && <span className="home-repaired">{home.repaired}</span>}
+                      <span className={`home-kind kind-${page.kind}`}>{home.kind[page.kind]}</span>
+                      {live && unreadChange(page) && <span className="home-changed">{readBefore(page) ? home.updated : home.new}</span>}
+                      {unmaintained(page) && <span className="home-unmaintained">{home.notMaintained}</span>}
+                      {!!page.repairs?.length && <span className="home-repaired">{home.repaired}</span>}
                       {panel && <span>{panel.project.name}</span>}
                     </p>
                     <h1 id={headingId} ref={heading} tabIndex={-1}>
-                      {shown.title}
+                      {page.title}
                     </h1>
+                    {refreshOf && refreshIdentity !== null && (
+                      <div className="report-issue-row">
+                        <RefreshVersions
+                          projectId={link.projectId}
+                          identity={refreshIdentity}
+                          linkedVersion={shown?.version ?? page.version}
+                          liveVersion={refreshHolder?.version ?? shown?.version ?? page.version}
+                          liveAt={refreshHolder?.updatedAt ?? shown?.updatedAt ?? page.updatedAt}
+                          selected={oldIssue?.version ?? null}
+                          onSelect={(section, at) => {
+                            setOldIssue(section);
+                            setIssueAt(at);
+                          }}
+                        />
+                        {!oldIssue && (
+                          <button
+                            type="button"
+                            className="quiet-button report-refresh-toggle"
+                            aria-expanded={refreshOpen}
+                            aria-controls={refreshPanelId}
+                            onClick={() => setRefreshOpen((open) => !open)}
+                          >
+                            <AlarmClock size={13} aria-hidden="true" />
+                            {tRefresh.panel.title}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {!oldIssue && refreshOf && refreshOpen && (
+                      <RefreshPanel
+                        section={shown ?? page}
+                        projectId={link.projectId}
+                        refresh={refreshOf}
+                        readOnly={readOnly}
+                        variant="report"
+                        panelId={refreshPanelId}
+                        onChanged={() => (onRefreshChanged ?? refreshChangedFromHome)?.()}
+                        onClose={() => setRefreshOpen(false)}
+                      />
+                    )}
                     {summary && <div className="report-lead">{block(summary.lead)}</div>}
                     <p className="report-meta">
-                      <span>{shown.owner.name}</span>
-                      <Tip content={<TipText title={absolute(shown.updatedAt, time)} />}>
-                        <span>{relative(shown.updatedAt, language)}</span>
+                      <span>{page.owner.name}</span>
+                      <Tip content={<TipText title={absolute(page.updatedAt, time)} />}>
+                        <span>{relative(page.updatedAt, language)}</span>
                       </Tip>
-                      <span>{t.version(shown.version)}</span>
-                      {shown.status && (
+                      <span>{t.version(page.version)}</span>
+                      {page.status && (
                         // Its time is in its words in full: no tip repeats it.
-                        <span className={shown.status.stale ? "home-stale" : ""}>
-                          {home.dataAsOf(absolute(shown.status.asOf, time))}
-                          {shown.status.stale && home.pastValidity(duration(shown.status.validFor, language))}
+                        <span className={page.status.stale ? "home-stale" : ""}>
+                          {home.dataAsOf(absolute(page.status.asOf, time))}
+                          {page.status.stale && home.pastValidity(duration(page.status.validFor, language))}
                         </span>
                       )}
                       {/* The card says when its data is from; the page also says what is due and next. */}
-                      <SectionTime label={home.due} iso={shown.time?.due} />
-                      <SectionTime label={home.expected} iso={shown.time?.eta} />
-                      <SectionTime label={home.nextUpdate} iso={shown.time?.nextUpdate} />
+                      <SectionTime label={home.due} iso={page.time?.due} />
+                      <SectionTime label={home.expected} iso={page.time?.eta} />
+                      <SectionTime label={home.nextUpdate} iso={page.time?.nextUpdate} />
                       {changes && changes.size > 0 && <span className="report-changes">{t.blocksUpdated(changes.size)}</span>}
                     </p>
                     {/* Not recorded as read (YN-86): said, never retried here; it stays marked as changed. */}
@@ -353,14 +434,14 @@ export function ReportPage({
                       </p>
                     )}
                     {/* What Core repaired to keep it, in Core's words (YN-14). */}
-                    {!!shown.repairs?.length && <RepairedNote section={shown} />}
+                    {!!page.repairs?.length && <RepairedNote section={page} />}
                     {/* Who left it and that it can be claimed, in words, not only in the card's tip (T-173). */}
-                    {unmaintained(shown) && (
+                    {unmaintained(page) && (
                       <p className="home-note home-unmaintained-note">
                         {home.notMaintainedNote(
-                          shown.owner.name,
-                          home.gone[shown.owner.state as keyof typeof home.gone] ?? home.inactive,
-                          home.kindInSentence[shown.kind],
+                          page.owner.name,
+                          home.gone[page.owner.state as keyof typeof home.gone] ?? home.inactive,
+                          home.kindInSentence[page.kind],
                         )}
                       </p>
                     )}
@@ -387,11 +468,11 @@ export function ReportPage({
                   )}
                   {parts.flow.map((id) =>
                     parts.details.has(id) ? (
-                      <Detail key={id} id={id} title={groupTitle(shown, id)}>
+                      <Detail key={id} id={id} title={groupTitle(page, id)}>
                         {block(id)}
                       </Detail>
                     ) : (
-                      <section key={id} className="report-block" id={reportBlockDomId(id)} data-block={nodeType(shown, id)} tabIndex={-1}>
+                      <section key={id} className="report-block" id={reportBlockDomId(id)} data-block={nodeType(page, id)} tabIndex={-1}>
                         {block(id)}
                       </section>
                     ),
@@ -437,9 +518,11 @@ export function ReportPage({
                   <section className="report-rail-part report-wide">
                     <h2>{t.versionPart}</h2>
                     <p>
-                      {shown.version} · {live ? t.current : shown.history ? t.inHistory : t.version(shown.version)}
+                      {page.version} · {page === shown && live ? t.current : page.history || page !== shown ? t.inHistory : t.version(page.version)}
                     </p>
-                    {live && (readVersion(shown) ?? shown.version) < shown.version && <p className="report-rail-note">{t.lastSaw(readVersion(shown)!)}</p>}
+                    {page === shown && live && (readVersion(shown) ?? shown.version) < shown.version && (
+                      <p className="report-rail-note">{t.lastSaw(readVersion(shown)!)}</p>
+                    )}
                   </section>
                 </aside>
               </div>
