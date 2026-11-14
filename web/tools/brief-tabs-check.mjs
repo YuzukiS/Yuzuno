@@ -21,7 +21,7 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-tabs.test";
 const WS = "ws-tabs";
-const report = { task: "YN-129", checks: [], failures: [], errors: [], unexpected: [], writes: [], shots: [],
+const report = { task: "YN-129", checks: [], failures: [], errors: [], unexpected: [], writes: [], receipts: [], shots: [],
   limits: ["Chromium only: not iOS Safari, not a real iPhone, not the native desktop window.", "Synthetic report; no screen reader was run."] };
 let page;
 async function step(name, run) {
@@ -99,6 +99,14 @@ async function serve(route) {
   }
   const path = url.pathname;
   if (path === "/api/agents/a/reading") return route.fulfill({ json: request.method() === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+  // A live report's page, drawn whole, says that version was opened (YN-86): answered for this report at its version only.
+  if (request.method() === "POST" && path === "/api/projects/p1/brief/opened") {
+    const sent = JSON.parse(request.postData() || "null");
+    if (sent?.key === section.key && sent.version === section.version && sent.sectionId === section.id && sent.workspaceId === WS) {
+      report.receipts.push(`${sent.key}@${sent.version}`);
+      return route.fulfill({ json: { projectId: "p1", sectionId: section.id, key: section.key, version: section.version, at: new Date().toISOString(), recorded: true } });
+    }
+  }
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     report.writes.push(`${request.method()} ${path}`);
@@ -122,6 +130,8 @@ async function serve(route) {
     "/api/backlog": () => ({ observedAt: new Date().toISOString(), agents: {} }),
     "/api/machines": () => ({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture" }] }),
     "/api/models": () => ({ models: [] }),
+    "/api/waits/live": () => ({ agents: {} }),
+    "/api/machine-live": () => ({ machines: [] }),
   }[path];
   if (json) return route.fulfill({ json: json() });
   if (path.startsWith("/api/")) {
@@ -244,9 +254,11 @@ try {
 
   await step("390: Home's card shows the summary only, no tabs", async () => {
     await open(390, 844, "/");
-    const nav = page.locator(".toolbar-nav .catchup-nav").first();
-    await nav.waitFor({ timeout: 15_000 });
-    if (!(await page.locator(".home-view").isVisible())) await nav.click();
+    // A phone opens on the Agent list: back to it, then Home (as home-cards-check does).
+    const back = page.locator(".phone-back, [aria-label='All agents'], [aria-label='Back to agents']").first();
+    await page.locator(".catchup-nav:not(.collab-nav)").first().waitFor({ timeout: 15_000 });
+    if (await back.isVisible().catch(() => false)) await back.click();
+    if (!(await page.locator(".home-view").isVisible().catch(() => false))) await page.locator(".catchup-nav:not(.collab-nav)").first().click();
     const card = page.locator('.home-view [data-section-key="digest"]');
     await card.waitFor({ timeout: 15_000 });
     assert.ok(await card.getByText("worth reading today").isVisible());

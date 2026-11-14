@@ -1,4 +1,4 @@
-import { Children, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Children, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useStrings } from "../../i18n";
 import { useBrief } from "./BriefContext";
 import { briefText } from "./brief-text";
@@ -49,7 +49,22 @@ export function BriefTabs(props: TabsProps & { [TAB_PAGES]?: TabPage[]; children
   const [open, setOpen] = useState({ version, index: 0 });
   const count = pages.length;
   const index = open.version === version && open.index < count ? open.index : 0;
-  const choose = (to: number) => setOpen({ version, index: to });
+  // The tab the reader just chose, and whether the keys chose it (the focus then moves to it).
+  const chosen = useRef<{ at: number; focus: boolean } | null>(null);
+  const choose = (at: number, focus: boolean) => {
+    chosen.current = { at, focus };
+    setOpen({ version, index: at });
+  };
+  // Once it is drawn as chosen (bold, so a little wider), a row wider than the
+  // window scrolls it whole into view; nothing moves as the page opens.
+  useLayoutEffect(() => {
+    const moved = chosen.current;
+    chosen.current = null;
+    const tab = moved ? tabs.current[moved.at] : null;
+    if (!moved || !tab) return;
+    if (moved.focus) tab.focus({ preventScroll: true });
+    tab.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [open]);
   const keys = (event: KeyboardEvent<HTMLButtonElement>, at: number) => {
     const to =
       event.key === "ArrowRight" ? (at + 1) % count
@@ -59,8 +74,7 @@ export function BriefTabs(props: TabsProps & { [TAB_PAGES]?: TabPage[]; children
       : null;
     if (to === null || count === 0) return;
     event.preventDefault();
-    choose(to);
-    tabs.current[to]?.focus();
+    choose(to, true);
   };
   const tabId = (at: number) => `${base}-tab-${at}`;
   const panelId = (at: number) => `${base}-panel-${at}`;
@@ -80,7 +94,7 @@ export function BriefTabs(props: TabsProps & { [TAB_PAGES]?: TabPage[]; children
             aria-selected={at === index}
             aria-controls={panelId(at)}
             tabIndex={at === index ? 0 : -1}
-            onClick={() => choose(at)}
+            onClick={() => choose(at, false)}
             onKeyDown={(event) => keys(event, at)}
           >
             {page.title}
