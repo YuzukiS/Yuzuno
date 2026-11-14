@@ -30,8 +30,8 @@ impl Lab {
         std::os::unix::fs::symlink(FIXTURE, &program).unwrap();
         let ws = Workspace::new(root.join("data"), root.to_string_lossy().into(), "unused-codex".into()).unwrap();
         *ws.dsh_test.lock().unwrap() = Some((program, Some("http://127.0.0.1:9/v1".into())));
-        // As a started Core has it, for its mail (nothing listens there: S2a's dsh is given no MCP).
-        ws.collaboration_url.set("http://127.0.0.1:4999".into()).unwrap();
+        // No collaboration URL: mail waits for a confirmed Workspace MCP where there is one,
+        // and dsh is given its MCP by S2b (YN-119 §3.7), not yet here.
         KeyStore::of(&ws.data_dir).put_local("deepseek", Provider::Deepseek, Secret::new(KEY.into())).unwrap();
         let project = ws.store.create_project("Lab", BTreeMap::from([("local".into(), folder.to_string_lossy().into_owned())])).unwrap().id;
         let lead: AgentDetail = serde_json::from_value(json!({"agent":{"id":"lead","name":"Lead","cwd":"/synthetic/work","model":"",
