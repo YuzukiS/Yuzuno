@@ -63,6 +63,21 @@ function readOnlyOption(value) {
   }
   return { disallowedTools: [...value.disallowedTools], allowedTools: new Set(value.allowedTools) };
 }
+
+/**
+ * The folders a message's attached files are read from (YN-145 F3a): absolute
+ * paths Core names, readable without a prompt and never writable. A relative
+ * path, a pattern or a `..` is refused: Core joins these as the Agent's rules.
+ */
+const MAX_READABLE_DIRS = 8;
+function readableDirsOption(value) {
+  if (value === undefined) return undefined;
+  const valid = Array.isArray(value) && value.length > 0 && value.length <= MAX_READABLE_DIRS
+    && value.every(dir => typeof dir === 'string' && isAbsolute(dir) && dir.length <= 1000
+      && !dir.includes('\0') && !dir.includes('*') && !dir.split('/').includes('..'));
+  if (!valid) throw new Error('Invalid readable directories');
+  return [...value];
+}
 // Reasoning effort levels the Agent SDK accepts (`Options.effort`,
 // `applyFlagSettings({ effortLevel })`); each model lists those it supports.
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -599,6 +614,10 @@ export class ClaudeBridge {
     if (readOnly && command.permissionMode !== undefined && command.permissionMode !== 'default') {
       throw new Error('A read-only runtime starts in default mode');
     }
+    const readable = readableDirsOption(command.readableDirs);
+    // Readable, never writable: one Edit deny a folder (Edit covers Claude's
+    // own Write, Edit and NotebookEdit; `//…` is an absolute path).
+    const editDenies = (readable ?? []).map(dir => `Edit(/${dir.replace(/\/+$/, '')}/**)`);
     if (command.sessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(command.sessionId)) throw new Error('Invalid native session UUID');
     const located = this.resolveCli(command.executable);
     // A test's resolver may give only the path.
@@ -660,7 +679,11 @@ export class ClaudeBridge {
       // Read-only (YN-74 ④b): its tools removed, the mode fixed at default,
       // and below a hook that lets only its own tools run and no request
       // that would ask the user.
-      ...(readOnly ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...readOnly.disallowedTools], permissionMode: 'default' } : {}),
+      ...(readOnly ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...readOnly.disallowedTools, ...editDenies], permissionMode: 'default' } : {}),
+      // Folders of attached files: readable without a prompt, and no tool
+      // that writes may touch them (a read-only level already removed them).
+      ...(readable ? { additionalDirectories: [...(this.internalOptions.additionalDirectories ?? []), ...readable] } : {}),
+      ...(!readOnly && editDenies.length ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...editDenies] } : {}),
       hooks: {
         ...this.internalOptions.hooks,
         Stop: [...(this.internalOptions.hooks?.Stop ?? []), { hooks: [(input, toolUseId, context) => this.stopHook(input, context)] }],

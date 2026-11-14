@@ -826,3 +826,32 @@ test("a machine condition's chip in either language, and its machines by id whil
   assert.equal(card(unread, "mac").querySelector(".routing-fix"), null, "a machine it can't name is no problem to fix");
   for (const page of [en, zh, both, unread]) assert.deepEqual(page.errors, []);
 });
+
+test("a pool's own choice of which account first, and the card says which (YN-150)", async () => {
+  const server = core();
+  const page = mount(server);
+  await opened(page);
+  assert.ok(chips(card(page, "cl")).includes("The account with most left"), "as saved, before");
+  button(page, "Edit Claude Code · opus").click();
+  await until(() => card(page, "cl").querySelector(".routing-pick"), "the pool's choice");
+  const pick = () => card(page, "cl").querySelector(".routing-pick");
+  assert.equal(pick().querySelector("legend").textContent, "Which account first");
+  assert.equal(pick().querySelector(".settings-row-meta"), null, "no note while it takes the fullest");
+  [...pick().querySelectorAll("label")].find((l) => l.textContent.includes("resets soonest")).querySelector("input").click();
+  await tick();
+  assert.match(pick().querySelector(".settings-row-meta").textContent, /^Among the accounts whose conditions hold/, "says what it does");
+  // The card follows at once: its chip and the line under its name.
+  assert.ok(chips(card(page, "cl")).includes("The account that resets soonest"));
+  assert.equal(card(page, "cl").querySelector(".routing-cand-sub").textContent.trim(), "claude-swap pool · the account that resets soonest · all accounts");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.policy.candidates[1].credential.pick, "soonestReset");
+  // And back: the note goes, and the credential is the fuller account again.
+  [...pick().querySelectorAll("label")].find((l) => l.textContent.includes("most left")).querySelector("input").click();
+  await tick();
+  assert.equal(pick().querySelector(".settings-row-meta"), null);
+  await save(page);
+  await until(() => puts(page).length === 2, "the second save");
+  assert.equal(puts(page)[1].body.policy.candidates[1].credential.pick, "mostRemaining");
+  assert.deepEqual(page.errors, []);
+});

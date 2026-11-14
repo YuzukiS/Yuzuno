@@ -455,8 +455,13 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
 }
 
 /// A pool's account: among its listed accounts, those for which each quota
-/// condition holds; the one with the most of its week left, ties to the lower
-/// number. Answers each account's state too.
+/// condition holds. `credential.pick` chooses between them (YN-150):
+/// `mostRemaining` (the default, and what no `pick` means) takes the one with
+/// the most of its week left, ties to the lower number; `soonestReset` takes the
+/// one whose week resets at the earliest known time still ahead, ties to the
+/// most left, then the lower number, and counts an account whose reading shows
+/// 0% left as used up. Answers each account's state, and its week left and
+/// reset time when the reading is known.
 fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Check, Value)> {
     let wanted = &candidate["credential"]["accounts"];
     let accounts: Vec<&Value> = inputs.cswap["accounts"].as_array().into_iter().flatten()
@@ -464,8 +469,9 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
         .collect();
     let quotas: Vec<&Value> = candidate["conditions"].as_array().into_iter().flatten().filter(|c| c["kind"] == "quota").collect();
     let stale = inputs.cswap.is_null() || inputs.cswap["stale"] == true;
+    let soonest = candidate["credential"]["pick"] == "soonestReset";
     let mut states = Vec::new();
-    let mut best: Option<(f64, u64, String)> = None;
+    let mut best: Option<(Option<DateTime<Utc>>, f64, u64, String)> = None;
     let mut any_unknown = stale || accounts.is_empty();
     for a in &accounts {
         let fingerprint = a["fingerprint"].as_str().unwrap_or_default().to_owned();
@@ -484,16 +490,23 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
         if used_up {
             state = "low";
         }
+        // YN-150: under `soonestReset`, a reading that shows nothing left is
+        // used up even with no quota condition (or one at 0%), so the pool moves
+        // on to the next account rather than staying on a spent one.
+        if soonest && state == "ok" && reading_known(&reading) && left(&reading["week"]).is_some_and(|have| have <= 0.0) {
+            state = "low";
+        }
         let score = left(&reading["week"]).unwrap_or(if state == "ok" && quotas.is_empty() { 0.0 } else { -1.0 });
         if state == "unknown" {
             any_unknown = true;
         }
-        if state == "ok" && best.as_ref().is_none_or(|(s, n, _)| score > *s || (score == *s && number < *n)) {
-            best = Some((score, number, fingerprint.clone()));
+        let reset = if soonest { reset_ahead(&reading, inputs.now) } else { None };
+        if state == "ok" && best.as_ref().is_none_or(|b| earlier(&(reset, score, number), &(b.0, b.1, b.2))) {
+            best = Some((reset, score, number, fingerprint.clone()));
         }
-        states.push(json!({"number": number, "fingerprint": fingerprint, "state": state}));
+        states.push(account_row(number, fingerprint, state, &reading));
     }
-    if let Some((_, number, fingerprint)) = best {
+    if let Some((_, _, number, fingerprint)) = best {
         for s in &mut states {
             if s["fingerprint"] == fingerprint.as_str() {
                 s["state"] = "pick".into();
@@ -509,6 +522,54 @@ fn pick(candidate: &Value, inputs: &Inputs) -> Result<(String, u64, Value), (Che
             json!({"params": {"until": until}})))
     };
     Err((why, Value::Array(states)))
+}
+
+/// Whether a reading can be read as a reading: present, not stale and with no
+/// unknown part (YN-150).
+fn reading_known(reading: &Value) -> bool {
+    !reading.is_null() && reading["stale"] != true && reading.get("unknown").is_none_or(|u| u.is_null())
+}
+
+/// When an account's week resets, if that is known and still ahead: its reading
+/// is known, `week.resetsAt` parses, and it is after `now`. A reset at or before
+/// `now` has happened, its reading simply not refreshed yet, so the next one is
+/// about a week away (YN-150).
+fn reset_ahead(reading: &Value, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if !reading_known(reading) {
+        return None;
+    }
+    let at = DateTime::parse_from_rfc3339(reading["week"]["resetsAt"].as_str()?).ok()?.with_timezone(&Utc);
+    (at > now).then_some(at)
+}
+
+/// Whether `a` comes before `b` when a pool picks by `soonestReset` (YN-150):
+/// an account whose week resets at a known time ahead comes before one whose
+/// reset is unknown or past, the earliest reset first; then the most of the
+/// week left; then the lower number. No reset on either side is exactly
+/// `mostRemaining`'s order.
+fn earlier(a: &(Option<DateTime<Utc>>, f64, u64), b: &(Option<DateTime<Utc>>, f64, u64)) -> bool {
+    match (a.0, b.0) {
+        (Some(x), Some(y)) if x != y => x < y,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        _ => a.1 > b.1 || (a.1 == b.1 && a.2 < b.2),
+    }
+}
+
+/// A pool account's row in the route record: its number, fingerprint and state,
+/// and, when its reading is known, the share of its week left and when it resets
+/// (YN-150; fields a page from before ignores).
+fn account_row(number: u64, fingerprint: String, state: &str, reading: &Value) -> Value {
+    let mut row = json!({"number": number, "fingerprint": fingerprint, "state": state});
+    if reading_known(reading) {
+        if let Some(have) = left(&reading["week"]) {
+            row["weekLeftPct"] = json!(have);
+        }
+        if let Some(at) = reading["week"]["resetsAt"].as_str() {
+            row["resetsAt"] = json!(at);
+        }
+    }
+    row
 }
 
 /// Another account of the pool `candidate` for a started executor whose account

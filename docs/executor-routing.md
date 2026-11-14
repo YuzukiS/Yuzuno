@@ -185,8 +185,8 @@ profile, refreshes its tokens and guards the default login.
   executor's route chose a pool candidate (on or off), an account taken out
   of that pool's `accounts`, or no longer in the list just read, is changed
   at that launch for another account of the pool: among the accounts the
-  list has, each `quota` condition holding, the one with the most of its week
-  left, ties to the lower number, as a dispatch picks one. That account
+  list has, each `quota` condition holding, by the pool's `pick`, as a
+  dispatch picks one. That account
   becomes its runtime profile and its route's `account`, and its route's
   `accountChanged` keeps a line `{code, message, messageZh, from, to, at}`
   (the last 10). None to change to refuses the launch, saying so. The
@@ -447,7 +447,7 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 
 `credential` takes one of these forms:
 - `{ "kind": "login" }`: the host's own login for that harness.
-- `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" }`: Claude Code only.
+- `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" | "soonestReset" }`: Claude Code only. `pick` is which of the pool's accounts it uses first, and is optional: `mostRemaining` (the one with the most of its week left, the default) or `soonestReset` (the one whose week resets soonest). Any other value is refused (`path: "candidates[0].credential.pick"`).
 - `{ "kind": "apiKey", "keyId": "<routing key id>" }`. Its provider comes from the key; a provider that doesn't fit the harness is refused:
   - Claude Code takes `anthropic`;
   - Codex takes `openai`;
@@ -485,7 +485,7 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
       "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
-      "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
+      "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low", "weekLeftPct": 12, "resetsAt": "…" } ] } ],   // pick | ok | low | unknown; the last two only when the reading is known
   "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds:
                                                                   // from its candidate before, when that left (YN-138), else null
                       "fromAccount": { "number": 2, "fingerprint": "3f2a…" }, // only when it had an account then
@@ -510,7 +510,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
-- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of its week left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, by its `pick` (YN-150). `mostRemaining` (the default) takes the one with the most of its week left, ties to the lower number. `soonestReset` takes the one whose week resets at the earliest known time still ahead; an account whose reset time is unknown, or has already passed, comes after one still ahead, and those are ordered by the week left and then the lower number. Under `soonestReset`, an account whose reading shows 0% left counts as used up even with no `quota` condition. Either way each account is marked `pick`, `ok`, `low` or `unknown`, and carries the share of its week left (`weekLeftPct`) and when it resets (`resetsAt`) when its reading is known.
 - **Its conditions hold:**
   - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
   - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);

@@ -137,6 +137,25 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
 }
 
 #[tokio::test]
+async fn a_pool_is_saved_with_either_pick_rule_and_no_other() {
+    let lab = lab();
+    let pool = |pick: Value| json!({"enabled": true, "whenNone": "wait", "dailyApiCapUsd": 5, "candidates": [
+        {"id": "c-pool", "enabled": true, "harness": "claude", "model": "opus",
+         "credential": {"kind": "pool", "manager": "cswap", "accounts": "all", "pick": pick}, "conditions": []}]});
+    let mut version = 0;
+    for pick in [json!("mostRemaining"), json!("soonestReset")] {
+        let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": version, "policy": pool(pick.clone())})), vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{pick}: {saved}");
+        assert_eq!(saved["policy"]["candidates"][0]["credential"]["pick"], pick, "kept as sent");
+        version = saved["version"].as_u64().unwrap();
+    }
+    let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": version, "policy": pool(json!("fullest"))})), vec![]).await;
+    assert_eq!((status, refused["code"].clone(), refused["path"].clone()),
+        (StatusCode::BAD_REQUEST, json!("invalid"), json!("candidates[0].credential.pick")), "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("soonestReset"), "{refused}");
+}
+
+#[tokio::test]
 async fn a_saved_five_hour_share_is_not_read_back_and_an_older_pages_save_is_taken_without_it() {
     let lab = lab();
     // As a Core before YN-60 saved it: quota conditions with a 5-hour share, one with nothing else.

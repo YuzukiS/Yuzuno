@@ -233,8 +233,8 @@ fn check_credential<'a>(value: &'a Value, path: &str, harness: &str, known: &Kno
             }
             match c.get("pick") {
                 None => {}
-                Some(v) if v == "mostRemaining" => {}
-                Some(_) => return refuse(format!("{path}.pick"), "pick is \"mostRemaining\""),
+                Some(v) if v == "mostRemaining" || v == "soonestReset" => {}
+                Some(_) => return refuse(format!("{path}.pick"), "pick is \"mostRemaining\" or \"soonestReset\""),
             }
         }
         "apiKey" => {

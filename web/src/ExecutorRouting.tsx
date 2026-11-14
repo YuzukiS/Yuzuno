@@ -374,7 +374,7 @@ function CandidateList({ policy, t, keys, accounts, machines, live, open, proble
                         body={cond.schedule.slots.map((slot) => slotWords(slot, t)).join(t.slotJoin)} />}>{chip}</Tip>
                     : chip;
                 })}
-                {c.credential.kind === "pool" && <span className="routing-chip"><Layers size={13} aria-hidden="true" /><span>{t.chipPick}</span></span>}
+                {c.credential.kind === "pool" && <span className="routing-chip"><Layers size={13} aria-hidden="true" /><span>{t.chipPick(c.credential.pick)}</span></span>}
                 {readingBound && <span className="routing-chip"><CircleHelp size={13} aria-hidden="true" /><span>{c.unknown === "pass" ? t.chipPass : t.chipSkip}</span></span>}
                 {/* YN-70: only when it takes one kind of work; both is as before, and says nothing. */}
                 {tiersOf(c).length === 1 && <span className="routing-chip routing-chip-tier"><Tag size={13} aria-hidden="true" />
