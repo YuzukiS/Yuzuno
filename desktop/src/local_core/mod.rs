@@ -37,6 +37,8 @@ pub mod wsl;
 mod wsl_list;
 
 use check_rules::{Found, Level, Port, Report, State};
+#[cfg(windows)]
+use crate::connection::{StartOutcome, StartProfile};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -416,22 +418,14 @@ impl Situation {
     /// default one and another distribution runs (or that cannot be read).
     /// A distribution that already runs is not started again by this.
     fn may_start(&self, distro: &str) -> Result<(), Error> {
-        if self.is_running(distro) {
-            return Ok(());
-        }
-        if self.default.as_deref() == Some(distro) {
-            return Ok(());
-        }
-        match &self.running {
-            Some(running) => {
-                let peers: Vec<String> = running.iter().filter(|name| name.as_str() != distro).cloned().collect();
-                if peers.is_empty() {
-                    Ok(())
-                } else {
-                    Err(not_started(distro, Some(&peers), self.default.as_deref()))
-                }
-            }
-            None => Err(not_started(distro, None, self.default.as_deref())),
+        let peers: Option<Vec<String>> = self.running.as_ref().map(|running| {
+            running.iter().filter(|name| name.as_str() != distro).cloned().collect()
+        });
+        let peers_running = peers.as_ref().map_or(true, |peers| !peers.is_empty());
+        if check_rules::boot(self.is_default(distro), self.is_running(distro), peers_running).can_start() {
+            Ok(())
+        } else {
+            Err(not_started(distro, peers.as_deref(), self.default.as_deref()))
         }
     }
 
@@ -513,8 +507,8 @@ impl Guard {
             return Err(Error::new(
                 "peerChanged",
                 format!(
-                    "The shared state could not be checked: {witness} stopped while this app was working on {}. Nothing further was run in {}. Check Windows interop and the cgroups yourself; this app changes neither.",
-                    self.target
+                    "The shared state could not be checked: {witness} stopped while this app was working on {target}. Nothing further was run in {target}. Check Windows interop and the cgroups yourself; this app changes neither.",
+                    target = self.target
                 ),
             ));
         }
