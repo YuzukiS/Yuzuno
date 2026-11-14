@@ -726,11 +726,16 @@ fn pause_if_failing(next: &mut Refresh, limits: &Limits) {
     }
 }
 
+/// A test's stand-in for Core's message path: the owner, the message and its
+/// origin in, the receipt out.
+#[cfg(test)]
+pub(super) type FakeSend = Box<dyn Fn(&str, &MessageInput, &Value) -> Result<MessageReceipt> + Send + Sync>;
+
 /// How a refresh's message goes out: Core's ordinary path, or a test's.
 pub(super) enum Sender {
     Core,
     #[cfg(test)]
-    Fake(Box<dyn Fn(&str, &MessageInput, &Value) -> Result<MessageReceipt> + Send + Sync>),
+    Fake(FakeSend),
 }
 
 impl Sender {
@@ -771,11 +776,17 @@ async fn look_enabled(ws: &Arc<Workspace>, sender: &Sender, next: &mut Refresh, 
     let current = next.clone();
     let card = match ws.stored(move |store| card(store, &*store.db.read()?, &current)).await? {
         Ok(card) => card,
-        Err(why) => return Ok(pause(next, why)),
+        Err(why) => {
+            pause(next, why);
+            return Ok(());
+        }
     };
     let times = match next.times() {
         Ok(times) => times,
-        Err(error) => return Ok(pause(next, reason("refresh_invalid", format!("{error:#}"), format!("定时设置读不出来：{error:#}")))),
+        Err(error) => {
+            pause(next, reason("refresh_invalid", format!("{error:#}"), format!("定时设置读不出来：{error:#}")));
+            return Ok(());
+        }
     };
     // 3. The latest slot, if it is later than the last one handled.
     let Some(slot) = times.latest(now).filter(|slot| next.baseline().is_none_or(|last| *slot > last)) else {
