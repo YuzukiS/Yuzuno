@@ -129,16 +129,24 @@ function RenameDialog({
   const t = text(language);
   const rename = useRename(agent, onRenamed);
   const field = useRef<HTMLInputElement>(null);
+  // Where focus was as it opened: the row or button its menu opened from.
+  const returnTo = useRef<HTMLElement | null>(null);
   return (
     <Modal
       open={open}
       onOpenChange={(next) => !rename.busy && onOpenChange(next)}
-      // The name, selected, ready to be typed over. Not `autoFocus`: the
-      // dialog then gives focus back to where its menu opened from.
+      // The name, selected, ready to be typed over.
       onOpenAutoFocus={(event) => {
         event.preventDefault();
+        returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         field.current?.focus();
         field.current?.select();
+      }}
+      // Closed, focus goes back there. A dialog with no trigger of its own
+      // would otherwise leave it on the page itself.
+      onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        if (returnTo.current?.isConnected) returnTo.current.focus();
       }}
       title={t.title}
       description={t.description}
