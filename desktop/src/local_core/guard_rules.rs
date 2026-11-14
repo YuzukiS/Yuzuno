@@ -34,7 +34,7 @@ pub struct Snapshot {
     pub interop: Vec<Interop>,
     /// How many other binfmt_misc entries were registered.
     pub others: Option<u32>,
-    /// Each cgroup's `subtle_control` value by path; None where the file is
+    /// Each cgroup's `subtree_control` value by path; None where the file is
     /// absent. Values are kept as printed (for example `+cpu +memory +pids`).
     pub cgroups: BTreeMap<String, Option<String>>,
 }
@@ -140,19 +140,34 @@ impl Change {
     }
 
     /// How to put one thing back, for the page to show as text. Nothing here
-    /// runs it.
+    /// runs it. An entry that still exists is enabled or replaced in place:
+    /// registering the same name again would be refused.
     pub fn restore(&self) -> Option<String> {
         match self {
-            Change::InteropGone { name, flags }
-            | Change::InteropDisabled { name, flags }
-            | Change::InteropFlags { name, before: flags, .. } => {
+            Change::InteropGone { name, flags } => {
                 if !named(name) || !flags_ok(flags) || flags == "-" {
                     return None;
                 }
                 Some(format!("printf '%s' ':{name}:M::MZ::/init:{flags}' > /proc/sys/fs/binfmt_misc/register"))
             }
-            Change::Cgroup { path, before, .. } => {
-                if !path.starts_with("/sys/fs/cgroup/") || !path.contains("/user@") {
+            Change::InteropDisabled { name, .. } => {
+                if !named(name) {
+                    return None;
+                }
+                Some(format!("printf '%s' 1 > /proc/sys/fs/binfmt_misc/{name}"))
+            }
+            Change::InteropFlags { name, before: flags, .. } => {
+                if !named(name) || !flags_ok(flags) || flags == "-" {
+                    return None;
+                }
+                Some(format!(
+                    "printf '%s' -1 > /proc/sys/fs/binfmt_misc/{name} && printf '%s' ':{name}:M::MZ::/init:{flags}' > /proc/sys/fs/binfmt_misc/register"
+                ))
+            }
+            Change::Cgroup { path, before, after } => {
+                // A user manager that is gone has no file to write: starting
+                // a session as that user makes a new one.
+                if !path.starts_with("/sys/fs/cgroup/") || !path.contains("/user@") || after == "(absent)" {
                     return None;
                 }
                 if !before.chars().all(|c| c == '+' || c == ' ' || c.is_ascii_lowercase()) || before.trim().is_empty() {
@@ -166,9 +181,13 @@ impl Change {
     }
 
     /// Advice that has no one command: the root and system slices belong to
-    /// the distribution's own systemd.
+    /// the distribution's own systemd, and a user manager that stopped starts
+    /// again with its next session.
     pub fn advice(&self) -> Option<String> {
         match self {
+            Change::Cgroup { path, after, .. } if path.starts_with("/sys/fs/cgroup/user.slice/") && after == "(absent)" => {
+                Some("That user manager stopped; running a command as that user in the distribution starts it again.".into())
+            }
             Change::Cgroup { path, .. } if path.starts_with("/sys/fs/cgroup/user.slice/") => {
                 Some("Running Jobs in that distribution have lost those limits; they keep running.".into())
             }
@@ -382,13 +401,25 @@ user.1000.app=+cpu +memory +pids
             gone.restore(),
             Some("printf '%s' ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register".into())
         );
+        assert_eq!(
+            Change::InteropDisabled { name: "WSLInterop".into(), flags: "P".into() }.restore(),
+            Some("printf '%s' 1 > /proc/sys/fs/binfmt_misc/WSLInterop".into())
+        );
+        let reflagged = Change::InteropFlags { name: "WSLInterop".into(), before: "P".into(), after: "PO".into() };
+        assert_eq!(
+            reflagged.restore(),
+            Some(
+                "printf '%s' -1 > /proc/sys/fs/binfmt_misc/WSLInterop && printf '%s' ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register".into()
+            )
+        );
         assert_eq!(Change::InteropGone { name: "bad name".into(), flags: "P".into() }.restore(), None);
         assert_eq!(Change::InteropGone { name: "WSLInterop".into(), flags: "P; rm".into() }.restore(), None);
         assert_eq!(Change::InteropGone { name: "WSLInterop".into(), flags: "-".into() }.restore(), None);
+        assert_eq!(Change::InteropDisabled { name: "bad name".into(), flags: "P".into() }.restore(), None);
         let user = Change::Cgroup {
             path: "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service".into(),
             before: "+cpu +memory +pids".into(),
-            after: "(absent)".into(),
+            after: "+cpu".into(),
         };
         assert_eq!(
             user.restore(),
@@ -397,6 +428,16 @@ user.1000.app=+cpu +memory +pids
             )
         );
         assert!(user.advice().unwrap().contains("lost those limits"));
+        let stopped = Change::Cgroup {
+            path: "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service".into(),
+            before: "+cpu +memory +pids".into(),
+            after: "(absent)".into(),
+        };
+        assert_eq!(stopped.restore(), None);
+        assert!(stopped.advice().unwrap().contains("user manager stopped"));
+        let stopped_text = message("archlinux", "Ubuntu-24.04", &[stopped]);
+        assert!(stopped_text.contains("user manager stopped"));
+        assert!(!stopped_text.contains("Restore commands"));
         let root = Change::Cgroup { path: "/sys/fs/cgroup".into(), before: "+cpu".into(), after: "+memory".into() };
         assert_eq!(root.restore(), None);
         assert!(root.advice().unwrap().contains("restart it"));
