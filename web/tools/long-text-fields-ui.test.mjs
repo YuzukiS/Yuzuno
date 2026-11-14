@@ -684,7 +684,7 @@ test("each one-line field's limit is the one Core checks", async (t) => {
   // every_way_of_making_an_agent_refuses_a_name_the_rule_refuses); here the
   // page's number is that rule's.
   assert.equal(page.window.coreLimits.agentName.max,
-    one(model, /pub const AGENT_NAME_MAX: usize = ([\d_]+);/g, "an Agent's name"), "an Agent's name");
+    await one("model.rs", /pub const AGENT_NAME_MAX: usize = ([\d_]+);/g, "an Agent's name"), "an Agent's name");
   assert.equal(page.window.coreLimits.agentName.trim, true, "the rule counts a name trimmed");
   for (const [key, max] of Object.entries(core)) {
     assert.equal(page.window.coreLimits[key].max, max, `${key} is Core's ${max}`);

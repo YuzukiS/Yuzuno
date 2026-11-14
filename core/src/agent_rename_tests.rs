@@ -202,9 +202,10 @@ async fn links_by_id_survive_a_rename_and_old_records_keep_the_name_they_had() {
     let jobs: Vec<Value> = home["projects"].as_array().unwrap().iter().flat_map(|p| p["jobs"].as_array().unwrap().clone()).collect();
     assert_eq!((jobs[0]["agentId"].clone(), jobs[0]["agentName"].clone()), (json!("worker"), json!("Trainer")));
 
-    // The task still names the same Agent; its assignee as assigned.
-    let read = store.collaboration_call(Some("lead"), "task_get", json!({"taskId":task_id})).unwrap();
-    assert_eq!(read["current"]["assignee"]["id"], "worker");
+    // The task still names the same Agent, by its ID.
+    let held = crate::collaboration_store::load_task(&store.db.read().unwrap(), &internal).unwrap();
+    assert_eq!(held.assignee_agent_id.as_deref(), Some("worker"));
+    store.collaboration_call(Some("lead"), "task_get", json!({"taskId":task_id})).unwrap();
     // Mail still reaches it by its ID; what it sent before keeps its old
     // name, what it sends now has the new one.
     store.collaboration_call(Some("lead"), "peer_send", json!({"requestId":"after","toAgentId":"worker","body":"Thanks"})).unwrap();
