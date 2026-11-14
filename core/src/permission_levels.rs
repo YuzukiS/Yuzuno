@@ -7,15 +7,21 @@
 //!
 //! - `ask`: what isn't already allowed asks the user. Codex's `ask` preset
 //!   (its workspace-write sandbox; leaving it asks the user), Claude Code's
-//!   `default` mode.
+//!   `default` mode, dsh's `workspace-write` sandbox with approval `ask`.
 //! - `auto`: an automatic reviewer decides instead of the user. Codex's `auto`
 //!   preset (the same sandbox; `auto_review` decides leaving it), Claude
-//!   Code's `auto` mode (its classifier).
-//! - `full`: nothing asks. Codex's `full` preset. Claude Code doesn't keep it:
-//!   Yuzuno never starts it in a mode that skips its checks
-//!   (`claude::SELECTABLE_PERMISSION_MODES`).
+//!   Code's `auto` mode (its classifier). dsh has no reviewer: the same
+//!   sandbox as at `ask`, and Core refuses whatever would leave it, asking no
+//!   one (YN-119 §3.6, Q2; `dsh_agent::level_of`).
+//! - `full`: nothing asks. Codex's `full` preset, dsh's `danger-full-access`
+//!   with approval `never`. Claude Code doesn't keep it: Yuzuno never starts
+//!   it in a mode that skips its checks (`claude::SELECTABLE_PERMISSION_MODES`).
 //!
-//! No level is each harness's own default for new Agents, as before.
+//! dsh's sandbox limits file writes only: its network, `web_fetch` and MCP
+//! tools are open at every level, so it doesn't keep `read-only`.
+//!
+//! No level is each harness's own default for new Agents, as before (dsh's:
+//! `ask`).
 //!
 //! - `read-only` (YN-74 ④b; design YN-72 v3 4.1): no shell but one in a
 //!   read-only sandbox, no tool that writes a file, no Job and no network. Of
@@ -135,6 +141,7 @@ pub(crate) fn harness_name(harness: &str) -> &str {
         "codex" => "Codex",
         "claude" => "Claude Code",
         "opencode" => "OpenCode",
+        "dsh" => "DeepSeek Harness",
         other => other,
     }
 }
@@ -147,7 +154,8 @@ pub(crate) fn check(id: &str) -> Result<()> {
 
 /// What `id` is on `harness`: a Codex permission preset (`agent_defaults::CODEX_PRESETS`),
 /// a Claude Code permission mode (`agent_defaults::CLAUDE_MODES`), or for OpenCode the
-/// level itself, which its rules say (`opencode_config`); None when that harness
+/// level itself, which its rules say (`opencode_config`), and for dsh the level itself,
+/// which each start of its dsh reads (`dsh_agent::level_of`); None when that harness
 /// doesn't keep it, or `id` is no level.
 pub(crate) fn native(id: &str, harness: &str) -> Option<&'static str> {
     let level = level(id)?;
@@ -155,8 +163,27 @@ pub(crate) fn native(id: &str, harness: &str) -> Option<&'static str> {
         "codex" => level.codex,
         "claude" => level.claude,
         "opencode" => opencode_rules(level.id).map(|_| level.id),
+        "dsh" => crate::dsh_agent::level_of(level.id).map(|_| level.id),
         _ => None,
     }
+}
+
+/// What level `id` is on dsh, as its start applies it (`dsh_agent::Level`):
+/// its sandbox preset and approval policy (dsh's `sandbox-policy` `mode` and
+/// `approval` `policy`), and inside that sandbox what becomes of a request to
+/// leave it: `ask`, it asks you; `refuse`, Core refuses it. None for a level
+/// dsh doesn't keep.
+fn dsh_column(id: &str) -> Option<Value> {
+    use crate::dsh_agent::Level;
+    let level = crate::dsh_agent::level_of(id)?;
+    let access = level.access();
+    let mut column = json!({"sandbox": access.mode(), "approval": access.policy()});
+    match level {
+        Level::Ask => column["outsideSandbox"] = "ask".into(),
+        Level::Auto => column["outsideSandbox"] = "refuse".into(),
+        Level::Full => {}
+    }
+    Some(column)
 }
 
 /// One entry of OpenCode's `permission` configuration: an action's effect, or
@@ -306,6 +333,15 @@ fn check_rules<'p>(id: &str, ours: &[(&str, &str, &str)], probes: impl Iterator<
     Ok(())
 }
 
+/// Whether an executor of `harness` keeps level `id` as a level, in
+/// `agent_permission_levels`, for each start to read: OpenCode's and dsh's
+/// starts apply the level itself (`opencode_config`, `dsh_agent::level_of`), and
+/// read-only is kept on every harness, whose start applies more than a mode. Codex
+/// and Claude Code take any other level as their own permission instead.
+pub(crate) fn kept_as_level(harness: &str, id: &str) -> bool {
+    matches!(harness, "opencode" | "dsh") || id == READ_ONLY
+}
+
 /// Whether `harness` keeps `id`. No level is kept everywhere: each harness's own default.
 pub(crate) fn keeps(id: Option<&str>, harness: &str) -> bool {
     id.is_none_or(|id| native(id, harness).is_some())
@@ -335,6 +371,7 @@ pub(crate) fn table() -> Value {
         "codex": l.codex.map(|p| json!({"permissionPreset": p})),
         "claude": l.claude.map(|m| json!({"permissionMode": m})),
         "opencode": opencode_config(l.id).and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+        "dsh": dsh_column(l.id),
     })).collect()
 }
 
@@ -407,9 +444,32 @@ mod tests {
         assert!(CODEX_PRESETS.contains(&"read-only") && keeps(Some(READ_ONLY), "codex") && keeps(Some(READ_ONLY), "claude"));
     }
 
+    /// dsh keeps ask, auto and full, as each start applies them (dsh_agent::level_of),
+    /// and not read-only: its network is open at every level (YN-119 §3.6).
+    #[test]
+    fn dsh_keeps_ask_auto_and_full_as_its_sandbox_and_not_read_only() {
+        assert_eq!(["ask", "auto", "full", READ_ONLY].map(|id| native(id, "dsh")), [Some("ask"), Some("auto"), Some("full"), None]);
+        for id in ["ask", "auto", "full"] {
+            assert!(keeps(Some(id), "dsh"), "{id}");
+            assert_eq!(crate::dsh_agent::level_of(id).map(|l| l.id()), Some(id), "the level its start reads");
+        }
+        assert!(!keeps(Some(READ_ONLY), "dsh") && keeps(None, "dsh"));
+        assert_eq!(native("readonly", "dsh"), None, "not a level");
+        assert_eq!(of_native("dsh", Some("ask"), Some("default")), None, "dsh has no permission of its own a template named before");
+        let why = not_kept(READ_ONLY, "dsh");
+        assert_eq!(why["message"], "Its permission level is Read only, which DeepSeek Harness doesn't keep");
+        assert_eq!(why["messageZh"], "它的权限等级是「只读」，DeepSeek Harness 不支持这个等级");
+        assert_eq!(why["params"], json!({"level": "read-only", "harness": "dsh"}));
+        let table = table();
+        assert_eq!(table[0]["dsh"], json!({"sandbox": "workspace-write", "approval": "ask", "outsideSandbox": "ask"}));
+        assert_eq!(table[1]["dsh"], json!({"sandbox": "workspace-write", "approval": "ask", "outsideSandbox": "refuse"}));
+        assert_eq!(table[2]["dsh"], json!({"sandbox": "danger-full-access", "approval": "never"}));
+        assert_eq!(table[3]["dsh"], Value::Null);
+    }
+
     #[test]
     fn no_level_is_kept_everywhere_opencode_keeps_each_and_an_unknown_harness_none() {
-        for harness in ["codex", "claude", "opencode", "later"] {
+        for harness in ["codex", "claude", "opencode", "dsh", "later"] {
             assert!(keeps(None, harness), "{harness}");
         }
         assert!(["ask", "auto", "full"].into_iter().all(|id| keeps(Some(id), "codex")));

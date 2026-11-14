@@ -113,8 +113,8 @@ fn left_out(db: &Connection, template: &Template, project: Option<&str>, worktre
         };
         return Ok((worktree.is_none() && !folder).then(|| "this dispatch has no worktree, and its Project no folder here".into()));
     };
-    if template.harness() == "opencode" {
-        return Ok(Some("OpenCode executors run on this Core host only".into()));
+    if matches!(template.harness(), "opencode" | "dsh") {
+        return Ok(Some(format!("{} executors run on this Core host only", crate::permission_levels::harness_name(template.harness()))));
     }
     if template.harness() == "codex" && remote.contained {
         return Ok(Some("it keeps its Agents contained, and runs no Codex Agent there".into()));

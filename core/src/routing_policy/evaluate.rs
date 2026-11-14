@@ -233,6 +233,18 @@ fn assumed_used_up(reading: &Value, inputs: &Inputs) -> bool {
         || reading["fingerprint"].as_str().is_some_and(|f| inputs.assume.accounts_used_up.iter().any(|u| u == f))
 }
 
+/// Why a spend cap can't be judged for a candidate of `harness`: Core counts
+/// no API spend of Codex yet, and dsh reports none (its ACP gives the context
+/// only, YN-119 §1, §4). None: it is counted.
+fn spend_not_counted(harness: &str) -> Option<Value> {
+    match harness {
+        "codex" => Some(reason("spendNotCounted", "Codex API spend is not counted yet", "Codex 的 API 花费暂不计入")),
+        "dsh" => Some(reason("spendNotCounted", "DeepSeek Harness reports no API spend, so none is counted",
+            "DeepSeek Harness 不报告 API 花费，所以不计入")),
+        _ => None,
+    }
+}
+
 fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Check {
     match condition["kind"].as_str().unwrap_or_default() {
         "timeWindow" => time_window(condition, inputs.now),
@@ -256,8 +268,8 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
             quota_holds(condition, reading)
         }
         "dailyApiCap" => {
-            if candidate["harness"] == "codex" {
-                return Check::Unknown(reason("spendNotCounted", "Codex API spend is not counted yet", "Codex 的 API 花费暂不计入"));
+            if let Some(why) = spend_not_counted(candidate["harness"].as_str().unwrap_or_default()) {
+                return Check::Unknown(why);
             }
             let key = candidate["credential"]["keyId"].as_str().unwrap_or_default();
             let spent = inputs.spend.by_key.get(key).copied().unwrap_or(0.0);
@@ -367,7 +379,7 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
         return ("skipped", vec![with(reason("tierNotServed", format!("It doesn't serve the {en} tier this executor wants"),
             format!("它不接这个执行者要的「{zh}」档")), json!({"params": {"tier": tier}}))], None, None, None);
     }
-    let host_only = kind != "login" || harness == "opencode";
+    let host_only = kind != "login" || matches!(harness, "opencode" | "dsh");
     if host_only && inputs.machine.is_some_and(|m| m != "local") {
         return ("skipped", vec![reason("hostOnly", "It runs on this Core host only", "它只能在 Core 所在的这台主机上跑")], None, None, None);
     }
@@ -425,8 +437,8 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
     // The Workspace's daily API cap, on every API-key candidate.
     if kind == "apiKey" {
         if let Some(cap) = cap {
-            if harness == "codex" {
-                unknowns.push(reason("spendNotCounted", "Codex API spend is not counted yet", "Codex 的 API 花费暂不计入"));
+            if let Some(why) = spend_not_counted(harness) {
+                unknowns.push(why);
             } else if inputs.assume.spend_cap_reached || inputs.spend.total_usd >= cap {
                 fails.push(with(reason("workspaceCapReached", format!("${:.2} spent today, at the Workspace's ${cap:.2} cap", inputs.spend.total_usd),
                     format!("今天已花 ${:.2}，达到工作区上限 ${cap:.2}", inputs.spend.total_usd)), json!({"params": {"spentUsd": inputs.spend.total_usd, "capUsd": cap}})));

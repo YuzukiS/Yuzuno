@@ -783,9 +783,31 @@ pub(crate) async fn executor_born(ws: &Arc<Workspace>, template: &crate::executo
             crate::opencode_agent::check_new(machine, &model)?;
             crate::model::AgentSettings::default()
         }
+        // As dsh_create_on keeps them (YN-119 S3): its effort and its level, shown in its
+        // settings, decided by its own row, which the caller writes beside its key.
+        "dsh" => dsh_born(machine, p.reasoning_effort.flatten(), p.permission_level)?,
         _ => anyhow::bail!("未知 Harness"),
     };
     Ok(Born { harness, model, settings })
+}
+
+/// A dsh executor's settings as `dsh_create_on` makes and checks them (YN-119
+/// §3.6, §3.9): on this Core host only, its effort one of dsh's, and its level
+/// one dsh keeps (none is Ask you first).
+fn dsh_born(machine: &str, effort: Option<String>, level: Option<String>) -> anyhow::Result<crate::model::AgentSettings> {
+    anyhow::ensure!(machine == "local", "dsh Agent 目前只在 Core 所在的本机运行。dsh Agents run on this Core host only.");
+    if let Some(effort) = &effort {
+        anyhow::ensure!(crate::dsh_agent::EFFORTS.contains(&effort.as_str()),
+            "dsh 的推理强度是 off、low、high 或 max，不是 {effort}。dsh's reasoning effort is off, low, high or max.");
+    }
+    let level = match level.as_deref() {
+        Some(level) => anyhow::Context::with_context(crate::dsh_agent::level_of(level), || {
+            let (label, label_zh) = crate::permission_levels::label(level);
+            format!("DeepSeek Harness 不支持权限等级「{label_zh}」。DeepSeek Harness doesn't keep the permission level {label}.")
+        })?,
+        None => crate::dsh_agent::Level::Ask,
+    };
+    Ok(crate::model::AgentSettings { reasoning_effort: effort, permission_level: Some(level.id().into()), ..Default::default() })
 }
 
 /// What an executor from `template` asks of POST /api/agents' creation.
@@ -803,8 +825,9 @@ fn executor_request(template: &crate::executor_templates::Template, name: String
         save_project_default: false,
         permission_preset: template.permission_preset.clone(),
         permission_mode: template.permission_mode.clone(),
-        // An executor's level and key are its dispatch's (routing).
-        permission_level: None,
+        // A dsh executor is made with its template's level (YN-119 S3), which it keeps
+        // as its own row and each start reads; its key is its dispatch's (routing).
+        permission_level: template.permission_level.clone().filter(|_| template.harness() == "dsh"),
         runtime_profile: None,
     }
 }
@@ -855,8 +878,11 @@ async fn settle(ws: &Arc<Workspace>, p: &Create) -> anyhow::Result<Settled> {
     // on this host does (YN-81): that machine's app-server receives it in the
     // same place, and this host's catalog says nothing of that machine's Codex.
     let remote_codex = new.harness == "codex" && !local;
+    // A dsh Agent's effort is dsh's own (off, low, high or max), which its create
+    // checks and keeps (YN-119 §3.9), not one of a Codex catalog's.
+    let own_effort = remote_codex || new.harness == "dsh";
     let plan = crate::agent_defaults::resolve_model(&defaults, project_defaults.as_ref(), new.harness == "codex" && local,
-        &p.model, if remote_codex { None } else { p.reasoning_effort.as_ref().map(|effort| effort.as_deref()) })?
+        &p.model, if own_effort { None } else { p.reasoning_effort.as_ref().map(|effort| effort.as_deref()) })?
         .or_else(|| (new.harness == "claude" && local).then(|| crate::agent_defaults::resolve_claude_model(&defaults, project_defaults.as_ref(), &p.model)));
     let mut settings = new.settings;
     let mut sources = new.sources;

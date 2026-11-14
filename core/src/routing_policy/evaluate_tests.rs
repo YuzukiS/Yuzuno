@@ -224,6 +224,48 @@ fn a_candidate_whose_harness_does_not_keep_the_permission_level_is_skipped_with_
     assert_eq!((claude.record["chosen"].clone(), codes(&claude, "c-pool")), (Value::Null, vec!["levelNotKept".to_owned()]));
 }
 
+/// YN-119 S3: a dsh candidate starts on its DeepSeek key, on this Core host only, at
+/// the levels dsh keeps (not read-only); dsh reports no spend, so a spend cap is
+/// unknown for it and its `unknown` rule decides (design §4), as for Codex.
+#[test]
+fn a_dsh_candidate_runs_here_on_its_key_at_the_levels_dsh_keeps_and_its_spend_is_unknown() {
+    let f = Fixture::new();
+    let at = utc(9, 12, 0);
+    let none = Assume::default();
+    let dsh = |cap: Option<f64>, unknown: &str, conditions: Value| json!({"enabled": true, "whenNone": "wait", "dailyApiCapUsd": cap, "candidates": [
+        {"id": "c-dsh", "enabled": true, "harness": "dsh", "model": "deepseek-v4-pro", "reasoningEffort": "high", "unknown": unknown,
+         "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": conditions},
+        {"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "conditions": []}]});
+    let plain = dsh(None, "skip", json!([]));
+    let route = f.run(&plain, at, Some("local"), &[], &none);
+    assert_eq!((route.record["chosen"].clone(), route.profile.clone()), (json!("c-dsh"), Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() })));
+    assert!(codes(&route, "c-dsh").is_empty());
+    // Not on another machine: its key stays on this Core host, and dsh runs only here.
+    let elsewhere = f.run(&plain, at, Some("lab-mac"), &[], &none);
+    assert_eq!((codes(&elsewhere, "c-dsh"), elsewhere.record["chosen"].clone()), (vec!["hostOnly".to_owned()], json!("c-codex")));
+    // Read only is not a level dsh keeps; the others are.
+    let read_only = f.run_level(&plain, at, None, Some(crate::permission_levels::READ_ONLY));
+    assert_eq!((codes(&read_only, "c-dsh"), read_only.record["chosen"].clone()), (vec!["levelNotKept".to_owned()], json!("c-codex")));
+    assert_eq!(read_only.record["candidates"][0]["reasons"][0]["params"], json!({"level": "read-only", "harness": "dsh"}));
+    for level in ["ask", "auto", "full"] {
+        assert_eq!(f.run_level(&plain, at, Some("dsh"), Some(level)).record["chosen"], "c-dsh", "{level}");
+    }
+    // The Workspace's cap and its own: spend not counted, so unknown, skipped by default and chosen with pass.
+    for policy in [dsh(Some(5.0), "skip", json!([])), dsh(None, "skip", json!([{"kind": "dailyApiCap", "usd": 2}]))] {
+        let route = f.run(&policy, at, Some("local"), &[], &none);
+        assert_eq!((states(&route)[0].1.as_str(), codes(&route, "c-dsh"), route.record["chosen"].clone()),
+            ("unknown", vec!["spendNotCounted".to_owned()], json!("c-codex")), "{policy}");
+    }
+    let mut spent = Fixture::new();
+    spent.spend.total_usd = 9.0;
+    spent.spend.by_key.insert("deepseek".into(), 9.0);
+    let pass = spent.run(&dsh(Some(5.0), "pass", json!([{"kind": "dailyApiCap", "usd": 2}])), at, Some("local"), &[], &none);
+    assert_eq!((pass.record["chosen"].clone(), codes(&pass, "c-dsh")), (json!("c-dsh"), vec!["spendNotCounted".to_owned(), "spendNotCounted".to_owned()]),
+        "never judged by a spend it doesn't report");
+    let why = &pass.record["candidates"][0]["reasons"][0];
+    assert_eq!(why["messageZh"], "DeepSeek Harness 不报告 API 花费，所以不计入");
+}
+
 /// The host's Codex login with what is left of its week (YN-60: Codex reads weeks only).
 fn codex_login(week: f64) -> Value {
     json!({"home": "login", "source": "codex", "stale": false, "observedAt": "x",

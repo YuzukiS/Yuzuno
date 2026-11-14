@@ -170,6 +170,10 @@ fn a_machine_that_cant_run_it_is_named_with_why() {
     let (chosen, choice) = lab.choose("opencode", Some(&project), Some("/synthetic/worktree")).unwrap();
     assert_eq!(chosen, "local", "{choice}");
     assert!(why(&choice, "near").is_some_and(|w| w.contains("OpenCode executors run on this Core host only")), "{choice}");
+    // YN-119 S3: dsh, too.
+    let (chosen, choice) = lab.choose("dsh", Some(&project), Some("/synthetic/worktree")).unwrap();
+    assert_eq!(chosen, "local", "{choice}");
+    assert!(why(&choice, "near").is_some_and(|w| w.contains("DeepSeek Harness executors run on this Core host only")), "{choice}");
 
     let refused = lab.choose("codex", None, None).unwrap_err().to_string();
     assert!(refused.starts_with("no_machine: no machine can run this executor"), "{refused}");
