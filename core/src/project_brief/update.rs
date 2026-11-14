@@ -1457,7 +1457,7 @@ fn apply(
                     Some(row) => {
                         tx.execute(
                             "UPDATE project_brief_sections SET kind=?2,version=?3,owner_name=?4,data=?5,ask_state=?6,ask_since=?7,
-                             replied_at=?8,reply_text=?9,reply_form=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12,
+                             replied_at=?8,reply_text=?9,reply_form=NULL,reply_images=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12,
                              task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END WHERE seq=?1",
                             params![row.seq, change.kind, row.version + 1, ctx.agent_name, data.to_string(), state, since,
                                 replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten()],

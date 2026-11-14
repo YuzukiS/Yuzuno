@@ -1248,7 +1248,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
         text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![] };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -1267,7 +1267,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
     let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None };
+        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None, images: vec![] };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -1325,10 +1325,10 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
         snapshot(json!({"sectionKind":"report","title":"About news","text":"Thanks"}))));
     let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
         client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![] };
     let _ = home::reply(&ws, project.clone(), answer).await;
     assert_eq!(origin("r7"), (json!({"kind":"home","projectId":project,"key":"decide","version":1,
-        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "", None)}),
+        "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "", None, &[])}),
         snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
             "choice":{"id":"left","label":"Left"}}))));
 }
@@ -1347,7 +1347,7 @@ async fn a_long_reply_from_home_is_handed_to_the_agent_whole() {
     for (id, words) in [("chinese", "长".repeat(8_000)), ("ascii", "a".repeat(30_000))] {
         let reply = home::ReplyInput {
             key: Some("news".into()), agent_id: "b".into(), text: words.clone(), client_message_id: id.into(),
-            choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None };
+            choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![] };
         let result = home::reply(&ws, project.clone(), reply).await;
         let receipt = ws.store.receipt("b", id).unwrap();
         assert!(receipt.is_some(), "{id}: a reply of {} bytes is handed to the Agent, not refused: {:?}", words.len(), result.err());
@@ -1373,7 +1373,7 @@ async fn a_reply_over_the_limit_is_refused_and_says_its_bytes() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report")])).await;
     let reply = |id: &str, text: String| home::ReplyInput {
         key: Some("news".into()), agent_id: "b".into(), text, client_message_id: id.into(),
-        choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None };
+        choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![] };
     let _ = home::reply(&ws, project.clone(), reply("most", longest_reply())).await;
     assert!(ws.store.receipt("b", "most").unwrap().is_some(), "the longest reply is handed to the Agent");
     let error = home::reply(&ws, project.clone(), reply("over", longest_reply() + "a")).await.unwrap_err();
@@ -1402,6 +1402,7 @@ fn the_longest_quote_fits_beside_the_longest_reply() {
             data: json!({"title": wide(120), "ask": {"question": question, "reply": {}}}),
             ask_state: Some("open".into()), ask_since: None, replied_at: None, reply_text: None, deferred_until: None,
             updated_at: String::new(), updated_turn_id: None, history_reason: None, history_at: None, identity: 1, task_id: None,
+            reply_images: vec![],
         };
         let report = sections::Row { kind: "report".into(), ..row.clone() };
         for message in [
@@ -1432,7 +1433,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |version: Option<i64>, choice: Option<&str>, text: &str, id: &str| home::ReplyInput {
         key: Some("decide".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None };
+        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None, images: vec![] };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -1466,7 +1467,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // A reply to version 1 already sent under m1: its retry returns it and marks version 1.
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
-            "reply":home::reply_digest(Some("left"), "Go", None)})),
+            "reply":home::reply_digest(Some("left"), "Go", None, &[])})),
         input: crate::model::MessageInput { client_message_id: "m1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -1500,7 +1501,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     // recorded with its version, Workspace and words.
     let _ = home::reply(&ws, project.clone(), reply(Some(2), None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", "m3")).await;
     assert_eq!(sent_from(&ws, "b", "m3"), (json!({"kind":"home","projectId":project,"key":"decide","version":2,
-        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", None)}),
+        "workspaceId":workspace,"reply":home::reply_digest(None, "Answers to \u{201c}Form\u{201d}:\n- Way: left", None, &[])}),
         snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way now?","options":two_ways(),
             "text":"Answers to \u{201c}Form\u{201d}:\n- Way: left"}))));
     // A choice the version doesn't offer.
@@ -1542,12 +1543,12 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
     let message = home::compose_ask(&workspace, "Code", &project, &row, None, &text);
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,
-            "reply":home::reply_digest(None, &text, Some(&form))})),
+            "reply":home::reply_digest(None, &text, Some(&form), &[])})),
         input: crate::model::MessageInput { client_message_id: "f1".into(), text: message, text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
     let reply = home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.clone(), client_message_id: "f1".into(),
-        choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()) };
+        choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()), images: vec![] };
     home::reply(&ws, project.clone(), reply).await.unwrap();
     assert_eq!(kept(&ws), Some(json!({"version":1,"formId":"prefs","answers":{"checks":["wide","keys"]}})));
     // Asked again: the earlier reply's answers never count for the new question.
@@ -1576,7 +1577,7 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     let ask = |key: &str, choice: Option<&str>, text: &str, form: Option<&Value>, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: choice.map(str::to_owned),
         version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
-        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()) };
+        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()), images: vec![] };
     let card = |text: &str, id: &str| {
         let mut card = ask("news", None, text, None, id);
         (card.version, card.title, card.ask_version, card.workspace_id) = (Some(1), Some("About news".into()), None, None);
@@ -1632,8 +1633,8 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     let (origin, kept) = sent_from(&ws, "b", "f1");
     let setup_id = identity(&ws, &project, "setup");
     assert_eq!(section_id(&ws, "b", "f1"), json!(setup_id), "the receipt names the section answered");
-    let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()));
-    assert_ne!(digest, home::reply_digest(None, &text, None));
+    let digest = home::reply_digest(None, &text, Some(&serde_json::from_value(form.clone()).unwrap()), &[]);
+    assert_ne!(digest, home::reply_digest(None, &text, None, &[]));
     assert_eq!(origin, json!({"kind":"home","projectId":project,"key":"setup","version":1,"workspaceId":workspace,"reply":digest}));
     assert_eq!(kept, snapshot(json!({"sectionKind":"ask","title":"About setup","question":"Which way?","options":[],
         "form":{"id":"prefs","title":"Preview setup","fields":[
@@ -1710,7 +1711,7 @@ async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothi
     let sent = fixture["sent"]["text"].as_str().unwrap();
     let reply = |text: &str, id: &str, answers: bool| home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.into(),
         client_message_id: id.into(), choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
-        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()) };
+        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()), images: vec![] };
     for (id, other) in [("x1", format!("{sent}\n")), ("x2", sent.replacen("\u{6df1}\u{8272}", "\u{6d45}\u{8272}", 1)),
         ("x3", sent.replacen("(no answer)", "", 1)), ("x4", sent.replacen("\u{5bbd}\u{5b57}, \u{952e}\u{76d8}", "\u{952e}\u{76d8}, \u{5bbd}\u{5b57}", 1))] {
         assert_ne!(other, sent, "{id}");
@@ -1747,7 +1748,7 @@ fn round_text(review: &str, note: &str) -> String {
 fn round_reply(workspace: &str, text: &str, review: &str, id: &str) -> home::ReplyInput {
     home::ReplyInput { key: Some("after".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: None,
         version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.into()),
-        form: Some(serde_json::from_value(json!({"formId":"round","answers":{"review":review,"note":""}})).unwrap()) }
+        form: Some(serde_json::from_value(json!({"formId":"round","answers":{"review":review,"note":""}})).unwrap()), images: vec![] }
 }
 
 /// YN-103: a form's text answer is as long as the reply it is in may be, no
@@ -1770,7 +1771,7 @@ async fn a_form_reply_takes_a_long_pasted_answer_whole() {
         json!([{"id":"review","label":"Codex review","type":"text","answer":review},{"id":"note","label":"Note","type":"text","answer":""}]));
     // Delivered: Home's retry of a send Core accepted marks the ask with the answers by id.
     let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "after").unwrap().unwrap();
-    let digest = home::reply_digest(None, &text, round_reply(&workspace, &text, &review, "f2").form.as_ref());
+    let digest = home::reply_digest(None, &text, round_reply(&workspace, &text, &review, "f2").form.as_ref(), &[]);
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         origin: Some(json!({"kind":"home","projectId":project,"key":"after","version":1,"workspaceId":workspace,"reply":digest})),
         input: crate::model::MessageInput { client_message_id: "f2".into(), text: home::compose_ask(&workspace, "Code", &project, &row, None, &text),
@@ -1829,10 +1830,10 @@ async fn a_reply_names_its_section_so_home_tells_it_from_a_later_one_under_its_k
     let (plan, decide) = (identity(&ws, &project, "plan"), identity(&ws, &project, "decide"));
     assert_ne!(plan, decide);
     let card = home::ReplyInput { key: Some("plan".into()), agent_id: "b".into(), text: "Looks right".into(), client_message_id: "r1".into(),
-        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None };
+        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None, images: vec![] };
     let _ = home::reply(&ws, project.clone(), card).await;
     let ask = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(), client_message_id: "r2".into(),
-        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None };
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None, images: vec![] };
     let _ = home::reply(&ws, project.clone(), ask).await;
     assert_eq!((section_id(&ws, "b", "r1"), section_id(&ws, "b", "r2")), (json!(plan), json!(decide)));
     // The ask asked again, then resolved; the card removed, its key written as an ask, which is resolved.
@@ -2119,6 +2120,8 @@ mod cas_tests;
 mod opened_tests;
 #[path = "card_tests.rs"]
 mod card_tests;
+#[path = "reply_image_tests.rs"]
+mod reply_image_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {
