@@ -1311,6 +1311,11 @@ export function App() {
   // Which way the reader last scrolled, by their own wheel, keys, finger or
   // scrollbar, never by the app's own scrolling: pages load only that way.
   const readerWay = useRef<"up" | "down" | null>(null);
+  // When that scroll of the reader's last moved the conversation; the scroll
+  // it sets going (a fling, a smooth wheel) keeps it current while it runs.
+  // Only a scroll down of the reader's, still going, takes the conversation
+  // back to following the end (YN-114).
+  const readerScrolledAt = useRef(0);
   const lastTop = useRef(0);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
@@ -3075,6 +3080,21 @@ export function App() {
   useEffect(() => {
     if (!detailError) setWindowPage(page => (page?.failed ? null : page));
   }, [detailError]);
+  /** The reader's own scroll up, by wheel, finger, key or scrollbar: the
+   * conversation stops following the end at once, however short the scroll
+   * (YN-114). Before, a scroll up that stayed within 72px of the end left it
+   * following, and the next output took the reader back down. */
+  function readerScrollsUp() {
+    readerWay.current = "up";
+    readerScrolledAt.current = performance.now();
+    stopLatestPin();
+    live.pinWindow();
+    stickToBottom.current = false;
+  }
+  function readerScrollsDown() {
+    readerWay.current = "down";
+    readerScrolledAt.current = performance.now();
+  }
   function readerScrollIntent() {
     requestAnimationFrame(() => {
       const el = scroll.current;
@@ -4190,14 +4210,9 @@ export function App() {
                 data-agent-id={selected}
                 onWheel={(e) => {
                   if (!ownEvent(e)) return;
-                  if (e.deltaY < 0) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (e.deltaY < 0) readerScrollsUp();
                   if (e.deltaY > 0) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
                 }}
@@ -4206,13 +4221,14 @@ export function App() {
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false, y: e.touches[0]?.clientY };
                 }}
                 // Which way a finger moves the conversation; one moving it
-                // back up ends Back to latest's pin, as a wheel up does.
+                // back up stops following and ends Back to latest's pin, as a
+                // wheel up does (YN-114: it used to leave following on).
                 onTouchMove={(e) => {
                   const now = touch.current, y = e.touches[0]?.clientY;
                   if (!ownEvent(e) || !now || y === undefined) return;
                   if (now.y !== undefined && Math.abs(y - now.y) >= 2) {
-                    readerWay.current = y < now.y ? "down" : "up";
-                    if (y > now.y) stopLatestPin();
+                    if (y > now.y) readerScrollsUp();
+                    else readerScrollsDown();
                   }
                   now.y = y;
                 }}
@@ -4246,15 +4262,10 @@ export function App() {
                   // Space on a disclosure opens or closes it rather than scrolling.
                   if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
                     (e.key === " " && !(e.target as Element).closest?.("summary"))) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
-                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) readerScrollsUp();
                 }}
                 onClickCapture={(e) => {
                   // The reader opens or closes a disclosure (by pointer, key or
@@ -4292,7 +4303,15 @@ export function App() {
                       noteReading(true);
                       return;
                     }
-                    if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
+                    if (draggingScrollbar.current && Math.abs(moved) >= 1) {
+                      if (moved > 0) readerScrollsDown();
+                      else readerScrollsUp();
+                    }
+                    // The reader's scroll still going (a fling, a smooth
+                    // wheel) is still the reader's.
+                    const now = performance.now();
+                    const readers = now - readerScrolledAt.current < 250;
+                    if (readers) readerScrolledAt.current = now;
                     // Still scrolling while a page is on its way: the place
                     // to hold is where the reader is now (pageHold).
                     const shown = currentDetail?.conversation;
@@ -4314,7 +4333,16 @@ export function App() {
                     const latest = bottom && !elsewhere;
                     setAtBottomState(latest);
                     setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
-                    stickToBottom.current = latest;
+                    // Following the end is the reader's to start and stop
+                    // (YN-114). A scroll stops it once the end is out of view;
+                    // only the reader's own scroll down, reaching the end,
+                    // starts it again (or Back to latest). Within 72px of the
+                    // end counts as the end, but never for a scroll the reader
+                    // did not make: a tool group folding above clamped the
+                    // pane to the end, and the next output took what was being
+                    // read off the screen.
+                    if (!latest) stickToBottom.current = false;
+                    else if (readers && readerWay.current === "down") stickToBottom.current = true;
                     noteReading(latest);
                     autoPage();
                   }
