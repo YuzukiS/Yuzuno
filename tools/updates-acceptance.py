@@ -340,8 +340,11 @@ def main(args):
                 assert after == agents, 'Native identity/history/read cursor/settings changed'
             assert old_process and identity(old_process['pid']) != old_process, 'the old packaged Core must really exit'
             with sqlite3.connect(f'file:{data / "workspace.sqlite"}?mode=ro', uri=True) as db:
-                layouts = [row[0] for row in db.execute('SELECT DISTINCT layout FROM agents')]
-                assert all(layout == 1 for layout in layouts)
+                # Since T-140 the Agents' rows have one layout, marked once in
+                # workspace_meta (record_rows::STORE_KEY, STORE_VERSION "2"),
+                # not an `agents` column; core-release-smoke.py reads it so too.
+                layouts = [int(value) for (value,) in db.execute("SELECT value FROM workspace_meta WHERE key='sessionStore'")]
+                assert layouts == [2], layouts
             receipt.setdefault('storage', []).append({'phase': expected_phase, 'layouts': layouts, 'recordsReady': final['operation']['recordsProof']['recordsReady'], 'proof': final['operation']['recordsProof']})
             for a in agents:
                 restored = request(f'/api/agents/{a["id"]}')
