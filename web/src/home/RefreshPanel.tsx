@@ -3,6 +3,7 @@ import { errorText, HttpError } from "../api";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { randomId } from "../random-id";
+import { Tip, TipText } from "../Tip";
 import { changeRefresh, refreshNow, removeRefresh } from "./home-api";
 import { cadenceLabel, recentLabel, refreshClock, refreshDateTime, reasonText, weeklyRunsOf } from "./refresh-state";
 import { refreshText } from "./refresh-text";
@@ -254,14 +255,18 @@ export function RefreshPanel({
               const state = recentLabel(run, language);
               const reason = reasonText(run.reason, language);
               return (
-                <li
+                <Tip
                   key={`${run.slot} ${index}`}
-                  data-state={run.state === "refreshed" && run.missed > 0 ? "caughtUp" : run.state}
-                  title={t.panel.recentItem(dates(run.slot), state, reason)}
-                  aria-label={t.panel.recentItem(dates(run.slot), state, reason)}
+                  content={<TipText title={dates(run.slot)} body={reason ? `${state} · ${reason}` : state} />}
+                  describe={false}
                 >
-                  <span aria-hidden="true" />
-                </li>
+                  <li
+                    data-state={run.state === "refreshed" && run.missed > 0 ? "caughtUp" : run.state}
+                    aria-label={t.panel.recentItem(dates(run.slot), state, reason)}
+                  >
+                    <span aria-hidden="true" />
+                  </li>
+                </Tip>
               );
             })}
           </ol>
