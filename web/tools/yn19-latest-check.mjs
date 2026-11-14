@@ -144,6 +144,8 @@ async function open(viewport, lang, theme, fixture) {
       "/api/agents/a/conversation/inputs": noConversationInputs,
       "/api/reviews": noReviews,
       "/api/catchup": { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } },
+      // Read since this check was written (who waits on what, live).
+      "/api/waits/live": { agents: {} },
     }[url.pathname];
     if (json) return route.fulfill({ json });
     if (url.pathname.startsWith("/api/")) { report.unexpected.push(url.pathname); return route.fulfill({ json: {} }); }
@@ -167,6 +169,15 @@ async function open(viewport, lang, theme, fixture) {
   // A frame as it was drawn: a task posted from the frame's callback runs
   // once the frame is drawn, after the page's own callbacks in it.
   await page.addScriptTag({ content: "window.drawn = (look) => requestAnimationFrame(() => { const c = new MessageChannel(); c.port1.onmessage = look; c.port2.postMessage(null); });" });
+  // How far the app itself has scrolled the pane (its scrollTop writes), so
+  // a step's movement can be split into the reader's scroll and the app's.
+  await pane(page).evaluate((el) => {
+    const d = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+    window.appScrolled = 0;
+    const note = (fn) => { const was = d.get.call(el); const r = fn(); window.appScrolled += d.get.call(el) - was; return r; };
+    Object.defineProperty(el, "scrollTop", { configurable: true, get() { return d.get.call(this); }, set(v) { note(() => d.set.call(this, v)); } });
+    for (const name of ["scrollTo", "scrollBy"]) { const orig = el[name]; el[name] = function (...a) { return note(() => orig.apply(this, a)); }; }
+  });
   const cdp = await context.newCDPSession(page);
   return { context, page, cdp };
 }
@@ -262,6 +273,18 @@ async function jumpToFirstTurn(page, viewport, fixture) {
   return fixture.reads.slice(reads).map((r) => r.direction);
 }
 
+/** The message being read (or `id`), where it is in the pane, the pane's
+ * scrollTop and how far the app has scrolled it so far. */
+const placeOfReading = async (page, id) => {
+  const at = id ? null : await reading(page);
+  const which = id ?? at?.id;
+  if (!which) return null;
+  return pane(page).evaluate((el, which) => {
+    const item = el.querySelector(`[data-item-id="${which}"]`);
+    return { id: which, top: item ? item.getBoundingClientRect().top - el.getBoundingClientRect().top : null, scrollTop: el.scrollTop, app: window.appScrolled };
+  }, which);
+};
+
 /** A reader's scroll toward the end, a wheel or finger step at a time,
  * until a newer page starts loading by itself or the end of what is loaded
  * is reached. A step the pane did not take is said in `stalled`. */
@@ -271,6 +294,10 @@ async function scrollTowardEnd(page, cdp, viewport, fixture, run) {
   run.stalled = 0;
   for (let step = 0; step < 160; step++) {
     const before = await pane(page).evaluate((el) => el.scrollTop);
+    // Where the message being read was before this step: the place to hold
+    // if this step starts a newer page's read (YN-114: taken after the read
+    // began, a drop already made was the baseline, and the check passed).
+    const pre = await placeOfReading(page);
     const x = Math.round(view.x + view.width / 2), y = Math.round(view.y + view.height * 0.6);
     if (viewport.touch) {
       // A finger: touch moves through Chromium's input pipeline pan the pane
@@ -292,7 +319,12 @@ async function scrollTowardEnd(page, cdp, viewport, fixture, run) {
     }
     await page.waitForTimeout(40);
     if (await pane(page).evaluate((el, before) => el.scrollTop === before, before)) run.stalled++;
-    if (fixture.reads.slice(reads).some((r) => r.direction === "after")) return "loading";
+    if (fixture.reads.slice(reads).some((r) => r.direction === "after")) {
+      const post = pre && await placeOfReading(page, pre.id);
+      run.readStep = { pre, post, jump: pre && post?.top != null
+        ? Math.round(((post.top - pre.top) + ((post.scrollTop - pre.scrollTop) - (post.app - pre.app))) * 10) / 10 : null };
+      return "loading";
+    }
     if (await gap(page) < 2) { await page.waitForTimeout(400); return fixture.reads.slice(reads).some((r) => r.direction === "after") ? "loading" : "end"; }
     if (run.stalled > 6) return "stuck";
   }
@@ -348,6 +380,10 @@ for (const viewport of VIEWPORTS) for (const lang of LANGS) for (const theme of 
     check(!near.continueLink, `${tag}: (1) no "${t.newer}" link`, { how });
     check(!!near.pill && near.ways.length === 1 && near.ways[0] === "floating", `${tag}: (a) at the end of an older window the pill shows, the one way back`, { ways: near.ways, how });
     if (how === "loading") {
+      // The step that started the read: what is being read moves only as far
+      // as the reader scrolled it (the room kept above for the page included).
+      check(run.readStep?.jump != null && Math.abs(run.readStep.jump) <= 2,
+        `${tag}: (1) the message being read does not move by itself as the newer page starts loading`, run.readStep ?? {});
       const moved = trace.filter((f) => f.top !== null).map((f) => Math.abs(f.top - atBoundary.top));
       run.boundary = { anchor: atBoundary, maxMove: Math.max(0, ...moved), lostFrames: trace.filter((f) => f.top === null).length };
       check(!!atBoundary && moved.length === trace.length && Math.max(...moved) <= 2,

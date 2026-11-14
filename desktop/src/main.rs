@@ -142,14 +142,17 @@ fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
 
 /// Written whole, then renamed over the old record, so a crash leaves one or
 /// the other. Failing to save only means the next launch asks again.
+/// `auto_start` is the record's own switch: callers changing the list pass
+/// what they read, and only `local_core_auto_start` changes it.
 fn write_entries(
     app: &AppHandle,
     entries: &[entries::Entry],
     selected: Option<&str>,
     remembered: &[entries::Remembered],
+    auto_start: bool,
 ) -> Result<(), String> {
     let path = saved_core_file(app).ok_or("this app has no data folder to keep it in")?;
-    let text = entries::record(entries, selected, remembered)?;
+    let text = entries::record(entries, selected, remembered, auto_start)?;
     let staged = path.with_extension("json.new");
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(&path))
         .and_then(|()| std::fs::write(&staged, text))
@@ -162,13 +165,14 @@ fn write_entries(
 }
 
 /// Remembers the Workspace just opened at `core`: the entry already saved at
-/// that address, or a new one. Its `workspaceId` is what answered, and its
-/// start profile is `start` when that profile is for this very address.
+/// that address, or a new one, called `name` when given (else its address).
+/// Its `workspaceId` is what answered, and its start profile is `start` when
+/// that profile is for this very address.
 ///
 /// The list is read again here rather than taken from anything held in
 /// memory: between opening a Core and writing this, the saved list may have
 /// been renamed, added to or removed from.
-fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: Option<&StartProfile>) {
+fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: Option<&StartProfile>, name: Option<&str>) {
     let saved = read_entries(app);
     if let Some(reason) = entries::unusable(&saved) {
         // Never write a list built from a record that could not be read: it
@@ -192,7 +196,7 @@ fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: 
             let id = entries::next_id(&list);
             list.push(entries::Entry {
                 id: id.clone(),
-                name: entries::name_for(core),
+                name: name.map_or_else(|| entries::name_for(core), str::to_owned),
                 url: core.clone(),
                 workspace_id: workspace.map(str::to_owned),
                 start: None,
@@ -210,7 +214,7 @@ fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: 
         list[at].start = None;
     }
     let remembered = entries::remembering(&saved, &list);
-    if let Err(error) = write_entries(app, &list, Some(&id), &remembered) {
+    if let Err(error) = write_entries(app, &list, Some(&id), &remembered, saved.auto_start()) {
         eprintln!("Unable to remember the workspace for the next launch: {error}");
     }
 }
@@ -237,7 +241,7 @@ fn remember_start(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
     };
     list[at].start = start.filter(|start| start.core == *core).cloned();
     let remembered = entries::remembering(&saved, &list);
-    if let Err(error) = write_entries(app, &list, selected.as_deref(), &remembered) {
+    if let Err(error) = write_entries(app, &list, selected.as_deref(), &remembered, saved.auto_start()) {
         eprintln!("Unable to remember the start profile: {error}");
     }
 }
@@ -267,6 +271,13 @@ struct ConnectionInfo {
     start_distro: Option<String>,
     /// This computer's start entry has accepted that installation before.
     start_confirmed: bool,
+    /// Which local Core back end starts the shown Core: `"wsl"` on Windows,
+    /// `"macos"` once YN-108 connects the Mac's; `None` when there is no
+    /// start this app can run here (YN-107 design section 6, part 1).
+    start_platform: Option<&'static str>,
+    /// Whether the page starts that Core by itself, once, when the app opens
+    /// and it does not answer, if this computer has confirmed it.
+    auto_start_local_core: bool,
     /// The Workspaces saved here, and which one was last opened. Saved is
     /// not reachable: this says what is written down, never that any of it
     /// answers. `savedError` says the list could not be read, which is not
@@ -365,6 +376,12 @@ fn require_connection_page(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// The local Core back end that would run `start`: only the Windows app
+/// starts a Core so far, in WSL.
+fn start_platform(_start: &StartProfile) -> Option<&'static str> {
+    cfg!(windows).then_some("wsl")
+}
+
 #[tauri::command]
 fn connection_info(
     window: WebviewWindow,
@@ -395,7 +412,9 @@ fn connection_info(
     Ok(ConnectionInfo {
         core_url,
         start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
+        start_platform: shown.as_ref().and_then(start_platform),
         start_confirmed: shown.is_some_and(|start| start.confirmed),
+        auto_start_local_core: saved.auto_start(),
         error: startup
             .as_ref()
             .err()
@@ -477,13 +496,15 @@ fn forget_address(window: WebviewWindow, url: String) -> Result<ConnectionInfo, 
         entries::Saved::Entries { selected, .. } => selected.clone(),
         _ => None,
     };
-    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered, saved.auto_start())
         .map_err(|error| format!("This computer could not save the change ({error}). What is remembered is as it was."))?;
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url: String::new(),
         start_distro: None,
+        start_platform: None,
         start_confirmed: false,
+        auto_start_local_core: saved.auto_start(),
         error: None,
         auto_connect: false,
         saved: saved.entries().iter().map(SavedEntry::of).collect(),
@@ -518,13 +539,15 @@ fn change_entries(
     change(&mut list)?;
     let selected = selected.filter(|id| list.iter().any(|kept| kept.id == *id));
     let remembered = entries::remembering(&saved, &list);
-    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered, saved.auto_start())
         .map_err(|error| format!("This computer could not save the change ({error}). The list is as it was."))?;
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url: String::new(),
         start_distro: None,
+        start_platform: None,
         start_confirmed: false,
+        auto_start_local_core: saved.auto_start(),
         error: None,
         auto_connect: false,
         saved: saved.entries().iter().map(SavedEntry::of).collect(),
@@ -586,18 +609,19 @@ async fn connect_core(
 ) -> Result<String, String> {
     require_connection_page(&window)?;
     let core = parse_core_url(&url)?;
-    open_core(&window, &state, &updates, core, None).await
+    open_core(&window, &state, &updates, core, None, None).await
 }
 
 /// Opens `core` once its health says it is a Yuzuno Core (and, after a
-/// start, the expected Workspace); remembers it, and on Windows where it is
-/// installed in WSL if it says so.
+/// start, the expected Workspace); remembers it (a new entry called `name`,
+/// when given), and on Windows where it is installed in WSL if it says so.
 async fn open_core(
     window: &WebviewWindow,
     state: &ConnectionState,
     updates: &update::DesktopUpdates,
     core: Url,
     expected: Option<&str>,
+    name: Option<&str>,
 ) -> Result<String, String> {
     let workspace = core_health(&state.client, &core).await.unwrap_or_else(|| {
         Err("Core is not reachable yet. Start it in WSL or on your chosen host, then try again.".into())
@@ -754,7 +778,7 @@ async fn open_core(
         None => previous.filter(|saved| saved.core == core && saved.workspace_id == workspace),
     };
     *start = kept;
-    remember_opened(window.app_handle(), &core, answered.as_deref(), start.as_ref());
+    remember_opened(window.app_handle(), &core, answered.as_deref(), start.as_ref(), name);
     Ok(desktop_url(&core).into())
 }
 
@@ -823,20 +847,33 @@ async fn start_core(
         }
     }
     let _done = Done(&state.starting);
+    start_profile(&window, &state, &updates, &profile, None).await
+}
+
+/// Starts `profile`'s Core unless it answers already, and opens it (a new
+/// entry called `name`, when given). The caller holds `state.starting`.
+async fn start_profile(
+    window: &WebviewWindow,
+    state: &ConnectionState,
+    updates: &update::DesktopUpdates,
+    profile: &StartProfile,
+    name: Option<&str>,
+) -> Result<String, String> {
+    let core = profile.core.clone();
     match core_health(&state.client, &core).await {
         // Answering over HTTP says nothing about where it runs: opened,
         // never counted as this computer's (settle keeps the profile).
         Some(Ok(workspace)) if workspace == profile.workspace_id => {
-            settle_start(&window, &state, &profile, &Attempt::Answering)?;
-            return open_core(&window, &state, &updates, core, Some(&profile.workspace_id)).await;
+            settle_start(window, state, profile, &Attempt::Answering)?;
+            return open_core(window, state, updates, core, Some(&profile.workspace_id), name).await;
         }
         Some(Ok(_)) => return Err("Another Workspace's Core answers at this address. Nothing was started.".into()),
         Some(Err(error)) => return Err(format!("{error} Nothing was started.")),
         None => {}
     }
-    let outcome = run_start(&profile).await;
+    let outcome = run_start(profile).await;
     let attempt = Attempt::Ran(outcome);
-    settle_start(&window, &state, &profile, &attempt)?;
+    settle_start(window, state, profile, &attempt)?;
     let Attempt::Ran(outcome) = attempt else { unreachable!() };
     match outcome {
         StartOutcome::Started | StartOutcome::Running => {}
@@ -851,10 +888,21 @@ async fn start_core(
         }
         StartOutcome::NotHere(message) | StartOutcome::Failed(message) => return Err(message),
     }
-    // WSL's forwarding to Windows can lag the Core's own answer slightly.
+    open_started(window, state, updates, profile, name).await
+}
+
+/// Opens `profile`'s Core just after WSL said it started. WSL's forwarding
+/// to Windows can lag the Core's own answer slightly.
+async fn open_started(
+    window: &WebviewWindow,
+    state: &ConnectionState,
+    updates: &update::DesktopUpdates,
+    profile: &StartProfile,
+    name: Option<&str>,
+) -> Result<String, String> {
     let mut tries = 0;
     loop {
-        match open_core(&window, &state, &updates, core.clone(), Some(&profile.workspace_id)).await {
+        match open_core(window, state, updates, profile.core.clone(), Some(&profile.workspace_id), name).await {
             Err(error) if tries < 10 && error.starts_with("Core is not reachable") => {
                 tries += 1;
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -862,6 +910,84 @@ async fn start_core(
             result => return result,
         }
     }
+}
+
+/// One start or installation from the connection page at a time.
+struct Starting<'r>(tauri::State<'r, ConnectionState>);
+
+impl<'r> Starting<'r> {
+    fn take(window: &'r WebviewWindow) -> Option<Self> {
+        let state = window.state::<ConnectionState>();
+        (!state.starting.swap(true, Ordering::SeqCst)).then(|| Self(state))
+    }
+}
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        self.0.starting.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Makes `profile` the start profile shown with its Core: what this
+/// computer's own `wsl.exe` installed or read in that distribution, so it
+/// is confirmed (connection.rs, `StartProfile`). Opening keeps it for the
+/// same target and saves it with the Workspace's entry. What it replaced,
+/// to put back when nothing opened.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn adopt_start(window: &WebviewWindow, profile: &StartProfile) -> Result<Option<StartProfile>, String> {
+    let state = window.state::<ConnectionState>();
+    let mut start = state.start.lock().map_err(|_| "Connection state unavailable.")?;
+    Ok(start.replace(StartProfile { confirmed: true, ..profile.clone() }))
+}
+
+/// Puts back what [`adopt_start`] replaced, unless something else was
+/// saved since.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn restore_start(window: &WebviewWindow, profile: &StartProfile, previous: Option<StartProfile>) {
+    let state = window.state::<ConnectionState>();
+    if let Ok(mut start) = state.start.lock() {
+        if start.as_ref().is_some_and(|saved| saved.same_target(profile)) {
+            *start = previous;
+        }
+    };
+}
+
+/// Opens the Core a local installation's first start just started, with
+/// its start profile, as an entry called `name` (YN-107 design 4.6).
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn open_first_started(window: &WebviewWindow, profile: &StartProfile, name: &str) -> Result<String, String> {
+    let previous = adopt_start(window, profile)?;
+    let state = window.state::<ConnectionState>();
+    let updates = window.state::<update::DesktopUpdates>();
+    let opened = open_started(window, &state, &updates, profile, Some(name)).await;
+    if opened.is_err() {
+        restore_start(window, profile, previous);
+    }
+    opened.map_err(|error| {
+        if error.starts_with("Core is not reachable") {
+            format!(
+                "Core started in WSL, but Windows cannot reach it at {}. Check WSL's localhost forwarding (localhostForwarding and networkingMode in .wslconfig), then connect to that address.",
+                profile.core.as_str().trim_end_matches('/')
+            )
+        } else {
+            error
+        }
+    })
+}
+
+/// Starts and opens an installation the check found with its start record,
+/// as `start_core` starts a saved one (YN-107 design 4.6).
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn start_found(window: &WebviewWindow, profile: &StartProfile, name: &str) -> Result<String, String> {
+    let previous = adopt_start(window, profile)?;
+    let profile = StartProfile { confirmed: true, ..profile.clone() };
+    let state = window.state::<ConnectionState>();
+    let updates = window.state::<update::DesktopUpdates>();
+    let started = start_profile(window, &state, &updates, &profile, Some(name)).await;
+    if started.is_err() {
+        restore_start(window, &profile, previous);
+    }
+    started
 }
 
 fn main() {
@@ -913,6 +1039,10 @@ fn main() {
             set_appearance,
             local_core::local_core_targets,
             local_core::local_core_check,
+            local_core::local_core_install,
+            local_core::local_core_start,
+            local_core::local_core_cancel,
+            local_core::auto_start::local_core_auto_start,
             update::desktop_update_status,
             update::desktop_update_check,
             update::desktop_update_install,

@@ -32,6 +32,14 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 url = "2.5"
 tauri-plugin-opener = "2"
+# Verifies a Core release before the connection page installs it in WSL
+# (YN-107, local_core/release.rs), as Core verifies one: the versions this
+# lock already has through the updater.
+minisign-verify = "=0.3.0"
+sha2 = "0.10"
+# The TLS crypto the updater's HTTP client needs, which the updater plugin
+# also installs before building one; release.rs downloads with that client.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # System notifications (T-188): its Rust API only, through notify.rs.
 tauri-plugin-notification = "=2.7.0"
 

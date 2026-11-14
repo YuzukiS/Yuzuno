@@ -170,9 +170,8 @@ impl Workspace {
     }
 
     pub async fn claude_session_import(&self, input: ImportSession) -> Result<Imported> {
+        let name = crate::model::agent_name(&input.name)?;
         let session = native_session(&input.session_id)?;
-        let name = input.name.trim().to_owned();
-        anyhow::ensure!(!name.is_empty() && name.len() <= 100, "请填写名称（最多 100 字节）");
         let _permit = self.admission.enter_work()?;
         if let Some(project) = input.project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;

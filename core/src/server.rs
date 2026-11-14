@@ -204,7 +204,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/fork/preview",post(preview_fork))
         .route("/api/agents/{id}/codex/fork",post(fork_session))
         .route("/api/agents",post(create))
-        .route("/api/agents/{id}",get(detail).delete(delete_agent))
+        .route("/api/agents/{id}",get(detail).patch(rename_agent).delete(delete_agent))
         .route("/api/agents/{id}/items/{item_id}/payload",get(item_payload))
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
@@ -985,6 +985,17 @@ async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentProject {
     project_id: Option<String>,
+}
+/// What a rename sends (YN-112): the new name, and nothing else.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentRename {
+    name: String,
+}
+/// The user renames an Agent from its menu or its settings, on Core's own
+/// port or the phone entry (`Workspace::rename_agent`).
+async fn rename_agent(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<AgentRename>) -> ApiResult<Json<Value>> {
+    Ok(Json(serde_json::to_value(ws.rename_agent(&id, &input.name).await?)?))
 }
 async fn set_agent_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<AgentProject>) -> ApiResult<Json<Value>> {
     let agent = id.clone();

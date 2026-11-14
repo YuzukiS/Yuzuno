@@ -449,9 +449,9 @@ impl Workspace {
     /// import a moment before (false). The fact is the answer's alone; the
     /// Agent keeps no mark of it (T-19 SH:R11).
     pub async fn import_codex_session_outcome(&self, input: ImportSession) -> Result<(Agent, bool)> {
+        let name = crate::model::agent_name(&input.name)?;
         let _admission = self.admission.enter_work()?;
         validate_thread_id(&input.thread_id)?;
-        anyhow::ensure!(!input.name.trim().is_empty() && input.name.len() <= 100, "请填写名称（最多 100 字节）");
         anyhow::ensure!(["ask", "auto", "full", "config"].contains(&input.permission_preset.as_str()), "请选择有效的后续权限");
         // One read/import at a time bounds subprocess and memory use. The SQL
         // transaction below independently enforces duplicate-session adoption.
@@ -481,7 +481,7 @@ impl Workspace {
         session.close().await?;
         let mut detail = AgentDetail {
             agent: Agent {
-                id: uuid::Uuid::new_v4().to_string(), name: input.name.trim().into(), goal: String::new(),
+                id: uuid::Uuid::new_v4().to_string(), name, goal: String::new(),
                 work_summary: None, turn_wait: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
                 claude_session_id: None, thread_id: Some(input.thread_id), status: "offline".into(),
                 opencode_session_id: None,
@@ -665,13 +665,12 @@ impl Workspace {
     /// except for a link to the continuation. Retrying the same request (or
     /// clicking again for the same boundary) settles that same attempt.
     pub async fn fork_codex_session(self: &Arc<Self>, agent_id: &str, input: ForkSession) -> Result<ForkOutcome> {
+        let name = crate::model::agent_name(&input.name)?;
         let _admission = self.admission.enter_work()?;
         self.refuse_profiled_fork(agent_id).await?;
         anyhow::ensure!(uuid::Uuid::parse_str(&input.request_id).is_ok(), "fork 请求编号无效");
         anyhow::ensure!(!input.through_turn_id.is_empty() && input.through_turn_id.len() <= 200
             && !input.through_turn_id.chars().any(char::is_control), "fork 历史边界无效");
-        let name = input.name.trim().to_owned();
-        anyhow::ensure!(!name.is_empty() && name.len() <= 100, "请填写名称（最多 100 字节）");
         // The source gate also serializes against its reconnect and send.
         let gate = self.gate(agent_id).await;
         let held = gate.lock().await;

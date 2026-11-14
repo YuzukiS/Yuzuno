@@ -518,14 +518,12 @@ impl Workspace {
         self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
+        let name = crate::model::agent_name(&name)?;
         validate_settings(&settings)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
-        if name.trim().is_empty() || name.len() > 100 {
-            bail!("请填写名称（最多 100 字节）");
-        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -545,7 +543,7 @@ impl Workspace {
         let count = self.stored(|store| store.agents()).await?.len();
         let a = Agent {
             id: id.clone(),
-            name: name.trim().into(),
+            name,
             goal: String::new(),
             work_summary: None, turn_wait: None,
             project_id,
@@ -2076,6 +2074,32 @@ impl Workspace {
         self.finish_attach(id, connection).await
     }
 
+    /// The user renames an Agent (YN-112): its name only, by the rule every
+    /// way of making one checks (`model::agent_name`). Its ID stays, and with
+    /// it its tasks, mail and Home; records that keep the name it had then
+    /// (mail, task activity, results) keep that name. Nothing starts or
+    /// stops, so it takes no work permit, as moving it to a Project takes
+    /// none, and a closed Agent can be renamed too. Under its ownership lock,
+    /// so the comparison and the write are one step: an unchanged name writes
+    /// nothing and announces nothing.
+    pub async fn rename_agent(self: &Arc<Self>, id: &str, raw: &str) -> Result<Agent> {
+        let name = crate::model::agent_name(raw)?;
+        let owned = self.owner(id).await;
+        let agent = id.to_owned();
+        let renamed = self.stored_owned(owned, move |store| {
+            if store.agent(&agent)?.name == name {
+                return Ok(false);
+            }
+            store.update_meta(&agent, "agent/renamed", &json!({"name":name}), |m| m.agent.name = name.clone())?;
+            Ok(true)
+        }).await?;
+        if renamed {
+            // Every open page, a phone's too, reads the list again.
+            self.changed(id);
+        }
+        self.listed(id).await
+    }
+
     pub async fn update_settings(self: &Arc<Self>, id: &str, model: String, mut settings: AgentSettings) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         validate_settings(&settings)?;
@@ -3257,6 +3281,10 @@ pub fn validate_response(request: &PendingRequest, response: &Value) -> Result<(
 #[cfg(test)]
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
+
+#[cfg(test)]
+#[path = "agent_rename_tests.rs"]
+mod agent_rename_tests;
 
 #[cfg(all(test, unix))]
 #[path = "collaboration_admission_tests.rs"]

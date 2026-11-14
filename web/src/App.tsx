@@ -109,6 +109,7 @@ import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
+import { useReadingHold } from "./useReadingHold";
 import { MessageLinks, agentLinkHref, homeLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
@@ -125,6 +126,7 @@ import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { EndMissingTurnDialog } from "./EndMissingTurn";
 import { DisconnectAgentDialog } from "./DisconnectAgent";
+import { RenameAgentDialog } from "./RenameAgent";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
@@ -492,6 +494,8 @@ export function App() {
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
+  // The Agent the rename dialog is open on (YN-112), from its actions menu.
+  const [renameFor, setRenameFor] = useState<string | null>(null);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
@@ -933,6 +937,10 @@ export function App() {
     if (inner.parentElement) observer.observe(inner.parentElement);
     return () => observer.disconnect();
   }, [measureLatest]);
+  // The column changing width under the reader, as the work dock comes or
+  // goes on a wide pane, or what is below them folding away near the end,
+  // keeps what they are reading where it is (YN-114).
+  useReadingHold(scroller, stickToBottom);
   const fileReturn = useRef<{
     agentId: string;
     scrollTop: number;
@@ -1311,6 +1319,11 @@ export function App() {
   // Which way the reader last scrolled, by their own wheel, keys, finger or
   // scrollbar, never by the app's own scrolling: pages load only that way.
   const readerWay = useRef<"up" | "down" | null>(null);
+  // When that scroll of the reader's last moved the conversation; the scroll
+  // it sets going (a fling, a smooth wheel) keeps it current while it runs.
+  // Only a scroll down of the reader's, still going, takes the conversation
+  // back to following the end (YN-114).
+  const readerScrolledAt = useRef(0);
   const lastTop = useRef(0);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
@@ -1407,6 +1420,19 @@ export function App() {
     heldPlace.current = () => { if (restore()) still = 0; };
     return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
+  // A newer page's room comes in above the window with its read, while the
+  // page target makes the reading anchor stand aside (ConversationWindow),
+  // and nothing holds the place until the page is in. It moved what was
+  // being read a screen down, and the place the reader then scrolled to was
+  // the one held when the page came in: their scroll was lost (YN-114). The
+  // conversation moves by the same height in the same commit instead. Once
+  // the newer window is shown, putting the place back is the page target's.
+  const roomAbove = !!(pageSpace?.before && currentDetail?.conversation?.hasBefore);
+  useLayoutEffect(() => {
+    const room = beforeSpace.current, el = scroll.current, shown = currentDetail?.conversation;
+    if (!roomAbove || !room || !el || !pageTarget || !shown || shown.start !== pageTarget.start || shown.end !== pageTarget.end) return;
+    el.scrollTop += room.offsetHeight;
+  }, [roomAbove]);
   // The newest window is the one shown, with no read of another on its way
   // (Back to latest's pin waits for it, YN-19).
   const newestShown = useRef(false);
@@ -2509,6 +2535,8 @@ export function App() {
       setEndMissingFor(id);
     },
     disconnect: (id) => setDisconnectFor(id),
+    // In place, without opening the Agent: only its name changes.
+    rename: previewMode ? undefined : (id) => setRenameFor(id),
     copyLink: linkBase && workspaceId && !previewMode ? copyAgentLink : undefined,
   };
   useEffect(() => {
@@ -3075,6 +3103,21 @@ export function App() {
   useEffect(() => {
     if (!detailError) setWindowPage(page => (page?.failed ? null : page));
   }, [detailError]);
+  /** The reader's own scroll up, by wheel, finger, key or scrollbar: the
+   * conversation stops following the end at once, however short the scroll
+   * (YN-114). Before, a scroll up that stayed within 72px of the end left it
+   * following, and the next output took the reader back down. */
+  function readerScrollsUp() {
+    readerWay.current = "up";
+    readerScrolledAt.current = performance.now();
+    stopLatestPin();
+    live.pinWindow();
+    stickToBottom.current = false;
+  }
+  function readerScrollsDown() {
+    readerWay.current = "down";
+    readerScrolledAt.current = performance.now();
+  }
   function readerScrollIntent() {
     requestAnimationFrame(() => {
       const el = scroll.current;
@@ -3593,7 +3636,6 @@ export function App() {
               <PanelLeft size={17} />
             </button>
           </Tip>
-          <span className="workspace-name">{shell.workspace}</span>
           <span className="toolbar-context">
             {isNative ? shell.desktop : shell.web}
           </span>
@@ -4044,6 +4086,10 @@ export function App() {
                     // Only Codex has context settings to apply.
                     setNotice(shell.settingsSaved(agent.harness !== "codex"));
                   }}
+                  onRenamed={(name) => {
+                    refresh();
+                    setNotice(shell.renamed(name));
+                  }}
                 />
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
@@ -4191,14 +4237,9 @@ export function App() {
                 data-agent-id={selected}
                 onWheel={(e) => {
                   if (!ownEvent(e)) return;
-                  if (e.deltaY < 0) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (e.deltaY < 0) readerScrollsUp();
                   if (e.deltaY > 0) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
                 }}
@@ -4207,13 +4248,14 @@ export function App() {
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false, y: e.touches[0]?.clientY };
                 }}
                 // Which way a finger moves the conversation; one moving it
-                // back up ends Back to latest's pin, as a wheel up does.
+                // back up stops following and ends Back to latest's pin, as a
+                // wheel up does (YN-114: it used to leave following on).
                 onTouchMove={(e) => {
                   const now = touch.current, y = e.touches[0]?.clientY;
                   if (!ownEvent(e) || !now || y === undefined) return;
                   if (now.y !== undefined && Math.abs(y - now.y) >= 2) {
-                    readerWay.current = y < now.y ? "down" : "up";
-                    if (y > now.y) stopLatestPin();
+                    if (y > now.y) readerScrollsUp();
+                    else readerScrollsDown();
                   }
                   now.y = y;
                 }}
@@ -4247,15 +4289,10 @@ export function App() {
                   // Space on a disclosure opens or closes it rather than scrolling.
                   if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
                     (e.key === " " && !(e.target as Element).closest?.("summary"))) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
-                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) readerScrollsUp();
                 }}
                 onClickCapture={(e) => {
                   // The reader opens or closes a disclosure (by pointer, key or
@@ -4293,7 +4330,15 @@ export function App() {
                       noteReading(true);
                       return;
                     }
-                    if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
+                    if (draggingScrollbar.current && Math.abs(moved) >= 1) {
+                      if (moved > 0) readerScrollsDown();
+                      else readerScrollsUp();
+                    }
+                    // The reader's scroll still going (a fling, a smooth
+                    // wheel) is still the reader's.
+                    const now = performance.now();
+                    const readers = now - readerScrolledAt.current < 250;
+                    if (readers) readerScrolledAt.current = now;
                     // Still scrolling while a page is on its way: the place
                     // to hold is where the reader is now (pageHold).
                     const shown = currentDetail?.conversation;
@@ -4315,7 +4360,16 @@ export function App() {
                     const latest = bottom && !elsewhere;
                     setAtBottomState(latest);
                     setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
-                    stickToBottom.current = latest;
+                    // Following the end is the reader's to start and stop
+                    // (YN-114). A scroll stops it once the end is out of view;
+                    // only the reader's own scroll down, reaching the end,
+                    // starts it again (or Back to latest). Within 72px of the
+                    // end counts as the end, but never for a scroll the reader
+                    // did not make: a tool group folding above clamped the
+                    // pane to the end, and the next output took what was being
+                    // read off the screen.
+                    if (!latest) stickToBottom.current = false;
+                    else if (readers && readerWay.current === "down") stickToBottom.current = true;
                     noteReading(latest);
                     autoPage();
                   }
@@ -5272,6 +5326,15 @@ export function App() {
           }}
         />
       )}
+      <RenameAgentDialog
+        agent={workspace?.agents.find((candidate) => candidate.id === renameFor) ?? null}
+        open={!!renameFor}
+        onOpenChange={(open) => { if (!open) setRenameFor(null); }}
+        onRenamed={(name) => {
+          setNotice(shell.renamed(name));
+          refresh();
+        }}
+      />
       <DisconnectAgentDialog
         agent={workspace?.agents.find((candidate) => candidate.id === disconnectFor) ?? null}
         open={!!disconnectFor}

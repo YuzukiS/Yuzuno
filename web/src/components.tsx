@@ -172,6 +172,7 @@ export function Modal({
   children,
   wide = false,
   className = "",
+  onOpenAutoFocus,
   onCloseAutoFocus,
   onEscapeKeyDown,
   lang,
@@ -186,6 +187,9 @@ export function Modal({
   wide?: boolean;
   /** More classes for the dialog box, such as a fixed size. */
   className?: string;
+  /** Where focus goes as it opens; `preventDefault()` and focus a field.
+      Unlike `autoFocus`, focus goes back where it was when it closes. */
+  onOpenAutoFocus?: (event: Event) => void;
   onCloseAutoFocus?: (event: Event) => void;
   /** Escape inside it; `preventDefault()` keeps the dialog open, for a part
       of it that Escape closes first. */
@@ -214,6 +218,7 @@ export function Modal({
         <Dialog.Content
           ref={box}
           className={`modal ${wide ? "modal-wide" : ""} ${entrance.confirm ? "modal-confirm" : ""} ${className}`.trim()}
+          onOpenAutoFocus={onOpenAutoFocus}
           onCloseAutoFocus={onCloseAutoFocus}
           onEscapeKeyDown={onEscapeKeyDown}
           lang={lang}
