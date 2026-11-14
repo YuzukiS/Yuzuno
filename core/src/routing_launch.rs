@@ -14,9 +14,15 @@
 //! - **A claude-swap account** is resolved from a fresh `cswap list` at each
 //!   start (routing_accounts::resolve): the host's current default login
 //!   starts on the plain host login; another listed account starts through
-//!   runtimes/claude/cswap-claude; one no longer listed does not start, and
-//!   never as another account. Except at the read-only level, the launcher
-//!   is asked to name Claude's auto memory folder by its real path (YN-93).
+//!   runtimes/claude/cswap-claude; one no longer listed does not start as
+//!   it. Except at the read-only level, the launcher is asked to name
+//!   Claude's auto memory folder by its real path (YN-93).
+//! - **One whose account left its pool** (YN-138): while routing is on and
+//!   the executor's candidate is a claude-swap pool, an account taken out of
+//!   the pool's accounts, or no longer listed, is changed at that start for
+//!   another account of the pool (`move_account`), chosen as routing picks
+//!   one, and the session resumes there: claude-swap shares chat history
+//!   between its accounts. None to change to refuses that start.
 //! - **An API key**, local or from 1Password (read once, here, per start):
 //!   Claude Code gets ANTHROPIC_API_KEY with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1,
 //!   so its Bash commands, hooks and stdio MCP servers don't inherit it.
@@ -153,6 +159,7 @@ impl Workspace {
                 let settings = self.stored(|store| store.cswap_settings()).await?;
                 let accounts = routing_accounts::cswap_accounts(&settings.command).await
                     .map_err(|why| anyhow::anyhow!("{} / {}", why.message, why.message_zh))?;
+                let fingerprint = self.move_account(id, &fingerprint, &accounts).await?;
                 match routing_accounts::resolve(&accounts, &fingerprint) {
                     AccountLaunch::HostLogin => Ok(ClaudeLaunch::default()),
                     AccountLaunch::Session { number } => {
@@ -191,6 +198,60 @@ impl Workspace {
                 })
             }
         }
+    }
+
+    /// The claude-swap account Agent `id`, bound to `fingerprint`, starts on now
+    /// (YN-138): `fingerprint` itself, unless routing is on, its route chose a
+    /// pool candidate and that account left it by `accounts` (claude-swap's list
+    /// just read): taken out of the pool, or not listed. Then another account
+    /// of the pool, as routing picks one from that list (its quota conditions
+    /// holding), becomes its profile, its route's `account`, and a line of its
+    /// route's `accountChanged`; none refuses the start.
+    async fn move_account(&self, id: &str, fingerprint: &str, accounts: &[routing_accounts::Account]) -> Result<String> {
+        use crate::routing_policy::{evaluate::{pick_other, Assume}, left::account_left};
+        let agent = id.to_owned();
+        let (stored, route) = self.stored(move |store| Ok((store.routing_policy()?, store.routing_route(&agent)?))).await?;
+        let kept = Ok(fingerprint.to_owned());
+        let Some(mut route) = route.filter(|_| stored.policy["enabled"] == true) else { return kept };
+        let Some(chosen) = route["chosen"].as_str() else { return kept };
+        let pool = stored.policy["candidates"].as_array().into_iter().flatten()
+            .find(|c| c["id"] == chosen && c["credential"]["kind"] == "pool");
+        let Some(pool) = pool else { return kept };
+        let mut listed = crate::routing_readings::quota::cswap_reading(accounts);
+        listed["stale"] = false.into();
+        let Some(why) = account_left(&stored.policy, &route, fingerprint, &listed) else { return kept };
+        let gathered = self.routing_gathered().await?;
+        let assume = Assume::default();
+        let mut inputs = gathered.inputs(chrono::Utc::now(), Some("local"), &[], Some("claude"), None, &assume);
+        inputs.cswap = &listed;
+        let Some((to, number)) = pick_other(pool, &inputs, fingerprint) else {
+            bail!("The claude-swap account this executor is bound to has left its pool ({}), and no other account of the pool can be used now: it does not start, and not on that account / \
+                它绑定的 claude-swap 账号已离开账号池（{}），池里此刻没有能用的别的账号：这次不启动，也不会用那个账号启动", why.message, why.message_zh);
+        };
+        let from = match accounts.iter().find(|a| a.fingerprint == fingerprint) {
+            Some(a) => serde_json::json!({"number": a.number, "fingerprint": fingerprint}),
+            None => serde_json::json!({"number": route["account"]["number"], "fingerprint": fingerprint}),
+        };
+        let to_account = serde_json::json!({"number": number, "fingerprint": to});
+        let mut line = why.reason();
+        line["from"] = from.clone();
+        line["to"] = to_account.clone();
+        line["at"] = chrono::Utc::now().to_rfc3339().into();
+        let mut lines = route["accountChanged"].as_array().cloned().unwrap_or_default();
+        lines.push(line);
+        let over = lines.len().saturating_sub(10);
+        lines.drain(..over);
+        route["account"] = to_account.clone();
+        route["accountChanged"] = serde_json::Value::Array(lines);
+        let (agent, profile) = (id.to_owned(), RuntimeProfile::ClaudeAccount { fingerprint: to.clone() });
+        self.stored(move |store| {
+            store.set_runtime_profile(&agent, Some(&profile))?;
+            store.set_routing_route(&agent, &route)
+        }).await?;
+        self.record_meta(id, "routing/accountChanged", serde_json::json!({"from": from, "to": to_account, "code": why.code}), |_| {}).await?;
+        eprintln!("Routing: executor {id} moved to claude-swap account {number} ({})", why.code);
+        self.changed(id);
+        Ok(to)
     }
 
     /// What Agent `id`'s `opencode serve` starts with: its provider's key

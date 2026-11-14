@@ -804,6 +804,8 @@ impl Workspace {
         self.settle_ended_starts(&mut started).await;
         self.finish_rebuilds(&mut started).await;
         self.route_waiting().await;
+        // A started Claude executor whose account left its pool moves once idle (YN-138).
+        self.move_off_left_accounts().await;
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
             let in_flight = self.executor_slots.in_flight.clone();

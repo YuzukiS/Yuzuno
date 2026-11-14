@@ -217,8 +217,97 @@ async fn a_claude_swap_binding_resolves_at_each_start_and_never_to_another_accou
     set_list(list(2, "org-1"));
     let launch = ws.claude_launch("cl").await.unwrap();
     assert!(launch.env.is_empty() && launch.executable.is_none());
-    // No longer listed: it does not start, and never as account 1.
+    // No longer listed: it does not start, and never as account 1. Routing is off
+    // here (no policy, no route): an account changes only for a pool's executor (YN-138, below).
     set_list(list(1, "org-2"));
+    let error = format!("{:#}", ws.claude_launch("cl").await.unwrap_err());
+    assert!(error.contains("no longer listed") && error.contains("never as another account"), "{error}");
+    std::env::remove_var("YUZUNO_NODE");
+    std::env::remove_var("YUZUNO_CLAUDE_BRIDGE");
+}
+
+/// YN-138: a routed executor whose claude-swap account left its pool candidate
+/// (taken out of the pool, or no longer listed) is changed at its start for
+/// another account of the pool, as routing picks one from the list just read;
+/// with none, the start is refused and says why. Its profile, its route's
+/// account and `accountChanged` say what it runs on now.
+#[tokio::test]
+async fn a_claude_swap_account_that_left_its_pool_is_changed_at_the_start_for_another_of_the_pool() {
+    let Some(python) = python3() else {
+        eprintln!("skipped: no python3 on PATH");
+        return;
+    };
+    let _env = crate::claude::BRIDGE_ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    stub_bridge(dir.path());
+    script(&dir.path().join("runtime").join("cswap-claude"), "#!/bin/sh\n");
+    // Account 1 is the host's default login; each account is n@example.com, no organization.
+    let fp = |n: u32| routing_accounts::fingerprint(&format!("{n}@example.com"), None);
+    let cswap = dir.path().join("cswap");
+    let set_list = |numbers: &[u32]| {
+        let accounts: Vec<Value> = numbers.iter().map(|n| json!({"number": n, "email": format!("{n}@example.com"),
+            "organizationUuid": null, "active": *n == 1})).collect();
+        let text = json!({"schemaVersion": 1, "activeAccountNumber": 1, "accounts": accounts}).to_string();
+        script(&cswap, &format!("#!{}\nprint({:?})\n", python.display(), text));
+    };
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.store.insert(&agent("cl", "claude", "/tmp")).unwrap();
+    ws.store.save_cswap_settings(&routing_accounts::CswapSettings { command: cswap.display().to_string() }).unwrap();
+    let on = |n: u32| {
+        let route = json!({"at": "dispatch", "chosen": "c-claude", "account": {"number": n, "fingerprint": fp(n)}, "candidates": []});
+        ws.store.db.write().unwrap().execute("DELETE FROM executor_dispatches WHERE agent_id='cl'", []).unwrap();
+        ws.store.db.write().unwrap().execute(
+            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,route_json)
+             VALUES('user','r-cl','{}','T-1','writer',NULL,'local','{}','cl','dispatched','now','now',?1)", [route.to_string()]).unwrap();
+        ws.store.set_runtime_profile("cl", Some(&RuntimeProfile::ClaudeAccount { fingerprint: fp(n) })).unwrap();
+    };
+    let pool = |numbers: &[u32], enabled: bool| {
+        let version = ws.store.routing_policy().unwrap().version;
+        let accounts: Vec<String> = numbers.iter().map(|n| fp(*n)).collect();
+        ws.store.save_routing_policy(version, json!({"enabled": enabled, "whenNone": "wait", "candidates": [
+            {"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus",
+             "credential": {"kind": "pool", "manager": "cswap", "accounts": accounts}, "conditions": []}]})).unwrap().unwrap();
+    };
+    let account = |launch: &ClaudeLaunch| launch.env.iter().find(|(n, _)| n == "YUZUNO_CSWAP_ACCOUNT").map(|(_, v)| v.expose().to_string());
+    let route = || ws.store.routing_route("cl").unwrap().unwrap();
+    let changed = || route()["accountChanged"].as_array().cloned().unwrap_or_default();
+
+    // Still in its pool and listed: as it was.
+    set_list(&[1, 2, 3]);
+    on(2);
+    pool(&[2, 3], true);
+    assert_eq!(account(&ws.claude_launch("cl").await.unwrap()).as_deref(), Some("2"));
+    assert!(changed().is_empty());
+    // Taken out of the pool: account 3, kept as its profile and route.
+    pool(&[3], true);
+    assert_eq!(account(&ws.claude_launch("cl").await.unwrap()).as_deref(), Some("3"));
+    assert_eq!(ws.store.runtime_profile("cl").unwrap(), Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(3) }));
+    assert_eq!(route()["account"], json!({"number": 3, "fingerprint": fp(3)}));
+    let lines = changed();
+    assert_eq!((lines.len(), lines[0]["code"].clone(), lines[0]["from"]["number"].clone(), lines[0]["to"]["number"].clone()),
+        (1, json!("accountLeftPool"), json!(2), json!(3)), "{lines:?}");
+    assert_eq!(account(&ws.claude_launch("cl").await.unwrap()).as_deref(), Some("3"), "its own account now: not changed again");
+    assert_eq!(changed().len(), 1);
+
+    // No longer listed by claude-swap: the same, among the pool's listed accounts.
+    on(2);
+    pool(&[2, 3], true);
+    set_list(&[1, 3]);
+    assert_eq!(account(&ws.claude_launch("cl").await.unwrap()).as_deref(), Some("3"));
+    assert_eq!(changed().last().unwrap()["code"], "accountNotListed");
+
+    // No other account of the pool is listed: refused, saying why in both languages, and nothing changes.
+    on(2);
+    pool(&[3], true);
+    set_list(&[1, 2]);
+    let error = format!("{:#}", ws.claude_launch("cl").await.unwrap_err());
+    assert!(error.contains("left its pool") && error.contains("no other account of the pool") && error.contains("池里此刻没有能用的别的账号"), "{error}");
+    assert_eq!(ws.store.runtime_profile("cl").unwrap(), Some(RuntimeProfile::ClaudeAccount { fingerprint: fp(2) }));
+    assert!(changed().is_empty());
+
+    // Routing off: never another account, as before.
+    pool(&[3], false);
+    set_list(&[1, 3]);
     let error = format!("{:#}", ws.claude_launch("cl").await.unwrap_err());
     assert!(error.contains("no longer listed") && error.contains("never as another account"), "{error}");
     std::env::remove_var("YUZUNO_NODE");
