@@ -78,7 +78,7 @@ const LONG = `${"A long line of pasted log text, 0123456789.\n".repeat(60)}end`;
 const done = (status) => ({ id: "YN-90", status, archived: false });
 /** Four requests, newest first as Core gives them: R-1 done (joined to a card), R-2 not confirmed, R-3 in progress
  * with two cards, a follow-up and an Ask, R-4 just said and long. */
-const requests = (t39 = ago(39)) => [
+const requests = (t39 = ago(39), t119 = ago(119)) => [
   { id: "r4", n: 4, text: LONG, textBlocks: null, title: null, createdAt: ago(5), frontAgentId: "d", messageId: "m4",
     delivery: "accepted", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r3", n: 3, text: "Rework the settings page and make the copy casual", textBlocks: null, title: "Settings page layout",
@@ -103,8 +103,8 @@ const requests = (t39 = ago(39)) => [
   { id: "r2", n: 2, text: "Make the backup faster please", textBlocks: null, title: null, createdAt: ago(50), frontAgentId: "d",
     messageId: "m2", delivery: "uncertain", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r1", n: 1, text: "Compare export formats again", textBlocks: null, title: "Export formats", createdAt: ago(120), frontAgentId: "d",
-    messageId: "m1", delivery: "accepted", replies: [], notes: [{ note: "Same thing as the export card", by: desk, at: ago(119) }],
-    routes: [{ kind: "existing", index: 0, request: 1, at: ago(119), state: "done", why: "The same thing as the earlier request", by: desk,
+    messageId: "m1", delivery: "accepted", replies: [], notes: [{ note: "Same thing as the export card", by: desk, at: t119 }],
+    routes: [{ kind: "existing", index: 0, request: 1, at: t119, state: "done", why: "The same thing as the earlier request", by: desk,
       to: { agentId: "x", name: "YN-91 · Design" }, task: "YN-90", cardKey: "yn-90", sectionId: 20 }],
     cards: [{ sectionId: 20, key: "yn-90", title: "Export research", live: false, task: done("done"), responsible: null }],
     state: "done", progress: { cards: 1, ended: 1 },
@@ -292,12 +292,18 @@ test("the requests show the project's titles, states, cards and handoffs; never 
 
 // YN-136: a question the front desk answers with no card. R-5 is answered: settled with the done ones,
 // its answer on the card, its handoff saying no card was opened, and no "All done".
-const answered = (state = "answered") => ({ id: "r5", n: 5, text: "Is the README done?", textBlocks: null, title: "README status",
-  createdAt: ago(3), frontAgentId: "d", messageId: "m5", delivery: "accepted", replies: [],
-  notes: [{ note: "Yes: YN-115 merged it this morning.", by: desk, at: ago(2) }],
-  routes: [{ kind: "answer", index: 0, request: 5, at: ago(2), state: "done", why: "Only asks for progress", by: desk,
-    to: null, task: null, cardKey: null, sectionId: null }],
-  cards: [], state, progress: { cards: 0, ended: 0 }, lines: [] });
+const answered = (state = "answered") => {
+  // One time for the note and the answer it is about: the trail is sorted by
+  // time, and two `ago(2)` calls can land 1 ms apart, which puts the note
+  // first (main 6e9a3cfa, run 43648337865).
+  const at = ago(2);
+  return { id: "r5", n: 5, text: "Is the README done?", textBlocks: null, title: "README status",
+    createdAt: ago(3), frontAgentId: "d", messageId: "m5", delivery: "accepted", replies: [],
+    notes: [{ note: "Yes: YN-115 merged it this morning.", by: desk, at }],
+    routes: [{ kind: "answer", index: 0, request: 5, at, state: "done", why: "Only asks for progress", by: desk,
+      to: null, task: null, cardKey: null, sectionId: null }],
+    cards: [], state, progress: { cards: 0, ended: 0 }, lines: [] };
+};
 
 async function answeredTalk(options, state) {
   const page = mount(options);
