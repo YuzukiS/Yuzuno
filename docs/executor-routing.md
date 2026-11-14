@@ -21,7 +21,8 @@ version; a later slice adds to it.
 | YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
 | YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
 | YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | Done |
-| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | This version |
+| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | Done |
+| YN-138 PR 1 | [A queued executor whose candidate, account or key left](#routing-at-dispatch-s3b2) is routed again before it starts | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -179,7 +180,9 @@ profile, refreshes its tokens and guards the default login.
   - an account no longer listed is gone, and the executor does not start.
     Core never starts it as another account. A refusal at launch (the account
     became the default login after the list was read) fails that start the
-    same way: an executor is never moved to another account during its life.
+    same way. Before its first start, routing gives an executor whose account
+    left another candidate (YN-138, [Routing at dispatch](#routing-at-dispatch-s3b2));
+    once started, it is not moved to another account.
 - **The launcher.** claude-swap 1.0.0's `run` has no quiet or JSON option and
   prints a notice to stdout before it execs Claude Code, while the Agent SDK
   reads Claude's JSON from that stdout. So a Claude executor on an account
@@ -233,7 +236,7 @@ Core runs.
 
 [An executor's account or key](executor-model.md#an-executors-account-or-key)
 has the rules: where the profile lives, that each start reads it again, and
-that an executor is never moved to another account. This is what each harness
+that a started executor is not moved to another account. This is what each harness
 gets, and what its tools can see. The key goes to that executor's process only:
 Core's own environment never holds it, so no other Agent, Job, review run or
 catalog read sees it.
@@ -433,8 +436,12 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
       "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
-  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds
+  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds:
+                                                                  // from its candidate before, when that left (YN-138), else null
+                      "fromAccount": { "number": 2, "fingerprint": "3f2a…" }, // only when it had an account then
                       "harnessFrom": "opencode" },                // only when its harness changed then (YN-66)
+  "left": { "code": "accountLeftPool", "message": "…", "messageZh": "…", "at": "…", // only when what it was routed to left
+            "from": "c-claude", "fromAccount": { "number": 2, "fingerprint": "3f2a…" } }, // before it started (YN-138)
   "applyFailed": { "candidate": "c-codex", "message": "…", "at": "…" }, // still waiting: it could not be given that one now
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
@@ -478,7 +485,7 @@ this evaluator, with the readings as Core last observed them.
 A permission level is a permission said once for every harness. Core maps it
 to each harness's own setting, so it holds whichever harness routing chooses.
 
-| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
+| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode (support stops at 2.2.5) |
 | --- | --- | --- | --- | --- |
 | `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
 | `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
@@ -530,8 +537,9 @@ Every other Agent and level starts as the table says.
 
 - **Only on OpenCode 2.2.5.** Core's answers were checked against that
   release's own source, so they are its alone. This is kept apart from the
-  release Core is otherwise verified with: verifying a newer OpenCode for
-  the rest of Core does not widen it. On any other release, an executor at
+  release the rest of Core's OpenCode support stops at, also 2.2.5 (YN-119,
+  [OpenCode Agents](opencode.md)): a newer release that starts at another
+  level does not widen it. On any other release, an executor at
   Auto-approve gets no working connection, and its error says which release
   it found and that only 2.2.5 is supported. Ask you first, Full access,
   Read only and an Agent that is not an executor are not affected.
@@ -714,8 +722,29 @@ dispatch is routed:
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.
-- **An executor already routed is not routed again at its start,** nor ever
-  moved to another account once started.
+- **An executor routed but not started yet keeps what it was given while it
+  is there (YN-138).** When it has left, the executor is routed again before
+  it starts, among every candidate, as one that waited from its dispatch.
+  It has left, for certain, when:
+  - its candidate was removed (`candidateRemoved`) or turned off (`candidateOff`);
+  - its claude-swap account was taken out of its pool's `accounts`
+    (`accountLeftPool`), or a fresh claude-swap list no longer lists it
+    (`accountNotListed`);
+  - its candidate runs on another account or key now (`credentialChanged`),
+    or its key or Codex home is gone (`keyMissing`, `homeMissing`).
+
+  A quota running low or a time window closing is not leaving, and a
+  reading that is missing, stale or unavailable decides nothing. Routing
+  off, nothing is judged. At each slot pass, under the executor's own lock
+  and only while its slot still waits, one transaction writes its route
+  `waiting` with `left` (why, and the candidate and account it had) and
+  removes its runtime profile. The same pass then routes it: the first
+  candidate that holds, whatever its harness, and its route's
+  `changedAtStart` says `from` (with `fromAccount`) and `left`'s reason; none
+  now, it waits, keeping `left`; none it could ever be given, it is
+  released onto the host's own login. Saving the policy wakes a pass at
+  once. One a pass took to start first starts as it was routed.
+- **Once started, an executor is not moved to another account.**
 
 ### A real DeepSeek executor: the lab check (S3b3)
 

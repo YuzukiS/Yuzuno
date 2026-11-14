@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yuzuno — your workspace is close</title>
     <link rel="stylesheet" href="connection.css" />
+    <script src="i18n.js" defer></script>
     <script src="connection.js" defer></script>
   </head>
   <body>
@@ -22,33 +23,111 @@
 </svg>
 <span>yuzuno<span class="wordmark-dot">.</span></span></header>
     <main>
-      <div class="eyebrow"><span class="status-dot"></span> A little room for your agents</div>
-      <h1>Your workspace<br />is close.</h1>
-      <p class="intro">Connect to where your agents live.<br />Everything will be right where you left it.</p>
-      <section id="saved-cores" class="saved" aria-labelledby="saved-heading" hidden>
-        <h2 id="saved-heading">Your workspaces</h2>
-        <p class="hint">Saved on this computer. Whether one answers is known only when you open it.</p>
-        <ul id="saved-list"></ul>
+      <div class="eyebrow"><span class="status-dot"></span> <span data-t="eyebrow">A little room for your agents</span></div>
+      <h1 data-t="title" data-html>Your workspace<br />is close.</h1>
+      <p id="intro" class="intro">Connect to where your agents live.<br />Everything will be right where you left it.</p>
+
+      <!-- First run (YN-111): until someone dismisses it, while nothing is
+           saved here and the default address does not answer. -->
+      <section id="guide" class="guide" aria-labelledby="guide-title" hidden>
+        <div class="guide-head"><h2 id="guide-title" data-t="guideTitle"></h2><button id="guide-dismiss" class="quiet" type="button" data-t="guideDismiss"></button></div>
+        <ol><li><b>1</b><span data-t="guide1"></span></li><li><b>2</b><span data-t="guide2"></span></li><li><b>3</b><span data-t="guide3"></span></li></ol>
+        <p data-t="guideNote"></p>
       </section>
-      <section id="remembered" class="saved" aria-labelledby="remembered-heading" hidden>
-        <h2 id="remembered-heading">Addresses this computer remembers</h2>
-        <p class="hint">No workspace is saved at these addresses, but this computer remembers which one was there, so a different workspace is not opened onto what is stored for that address.</p>
-        <ul id="remembered-list"></ul>
-      </section>
-      <form id="connection-form" novalidate>
-        <label for="core-url">Workspace address</label>
-        <div class="address-row"><input id="core-url" name="url" type="url" value="http://127.0.0.1:4317" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="address-hint connection-message" required /><button id="connect-button" type="submit">Connect <span aria-hidden="true">↗</span></button></div>
-        <p id="address-hint" class="hint">Core on this computer, or in WSL? The default address usually works. On another computer, use your SSH tunnel's local address.</p>
-        <div id="connection-message" class="message" role="status" aria-live="polite">Getting ready…</div>
-        <div id="start-row" class="start-row" hidden><button id="start-button" type="button" class="secondary">Start in this computer's WSL</button><p id="start-hint" class="hint">Starts this Workspace's Core in this computer's WSL.</p></div>
-      </form>
-      <div class="connection-note"><span aria-hidden="true">↳</span><p>Your agents keep working when this window closes.<br /><span>The Workspace Core runs separately.</span></p></div>
+
+      <div class="actions">
+        <!-- 1. Start this computer's Core: the saved one, or one found in a
+             distribution. Hidden where this app cannot start one. -->
+        <section class="action" id="act-start" aria-labelledby="start-title">
+          <div class="action-head">
+            <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg></span>
+            <div class="action-text"><h2 class="action-title" id="start-title"><span data-t="startTitle">Start this computer's Core</span><span class="badge" id="start-badge" data-t="startBadge" hidden></span></h2><p class="action-desc" id="start-desc"></p></div>
+            <button type="button" id="start-button" class="secondary"></button>
+          </div>
+          <div class="action-foot" id="auto-start-row" hidden><label class="toggle"><input type="checkbox" id="auto-start" /><span data-t="autoStart"></span></label><span id="auto-start-message" class="message" role="status" aria-live="polite"></span></div>
+          <div class="action-body" id="start-body" hidden><div id="start-message" class="message" role="status" aria-live="polite"></div></div>
+        </section>
+
+        <!-- 2. Install Core on this computer. -->
+        <section class="action" id="act-install" aria-labelledby="install-title">
+          <div class="action-head">
+            <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg></span>
+            <div class="action-text"><h2 class="action-title" id="install-title" data-t="installTitle"></h2><p class="action-desc" data-t="installDesc"></p></div>
+            <button type="button" id="install-button" class="secondary" data-t="installButton"></button>
+          </div>
+          <div class="action-body" id="install-body" hidden></div>
+        </section>
+
+        <!-- 3. Connect to another Core: the address and the saved list. -->
+        <section class="action" id="act-connect" aria-labelledby="connect-title" data-open="true">
+          <div class="action-head">
+            <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg></span>
+            <div class="action-text"><h2 class="action-title" id="connect-title" data-t="connectTitle"></h2><p class="action-desc" data-t="connectDesc"></p></div>
+          </div>
+          <div class="action-body">
+            <form id="connection-form" novalidate>
+              <label for="core-url" data-t="addressLabel">Workspace address</label>
+              <div class="address-row"><input id="core-url" name="url" type="url" value="http://127.0.0.1:4317" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="address-hint connection-message" required /><button id="connect-button" type="submit" class="secondary"><span id="connect-label" data-t="connect">Connect</span> <span aria-hidden="true">↗</span></button></div>
+              <p id="address-hint" class="hint" data-t="addressHint"></p>
+              <div id="connection-message" class="message" role="status" aria-live="polite">Getting ready…</div>
+            </form>
+            <section id="saved-cores" class="saved" aria-labelledby="saved-heading" hidden>
+              <h3 id="saved-heading" data-t="savedHeading"></h3>
+              <p class="hint" data-t="savedHint"></p>
+              <ul id="saved-list"></ul>
+            </section>
+            <section id="remembered" class="saved" aria-labelledby="remembered-heading" hidden>
+              <h3 id="remembered-heading" data-t="rememberedHeading"></h3>
+              <p class="hint" data-t="rememberedHint"></p>
+              <ul id="remembered-list"></ul>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <!-- Finding or installing Core in one of this computer's distributions.
+           Drawn inside the start or the install action, whichever opened it. -->
+      <div id="local-panel" class="local-panel" hidden>
+        <div id="pane-check">
+          <label for="distro" id="distro-label"></label>
+          <div class="pick-row"><select id="distro"></select><button class="secondary" type="button" id="recheck" data-t="recheck"></button></div>
+          <div id="check-message" class="message" role="status" aria-live="polite"></div>
+          <p id="not-found" class="note" hidden></p>
+          <div class="checks" id="checks" hidden></div>
+          <div class="found" id="found" hidden><h3 id="found-title"></h3><p id="found-body"></p></div>
+          <p id="existing-data" class="note" data-t="existingData" hidden></p>
+          <dl class="where" id="where" hidden>
+            <dt data-t="whereProgram"></dt><dd id="where-install"></dd>
+            <dt data-t="whereData"></dt><dd id="where-data"></dd>
+            <dt data-t="wherePort"></dt><dd id="where-port"></dd>
+          </dl>
+          <div class="where where-edit" id="where-edit" hidden>
+            <label for="edit-install" data-t="whereProgram"></label><input id="edit-install" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <label for="edit-data" data-t="whereData"></label><input id="edit-data" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <label for="edit-port" data-t="wherePort"></label><input id="edit-port" type="text" inputmode="numeric" autocomplete="off" />
+            <p id="where-error" class="where-error" role="alert" hidden></p>
+          </div>
+          <div class="row-end" id="check-actions"><button class="quiet" type="button" id="change" data-t="change" hidden></button><div class="buttons"><button class="secondary" type="button" id="panel-close" data-t="cancel"></button><button type="button" id="go" hidden></button></div></div>
+        </div>
+        <div id="pane-progress" hidden>
+          <ol class="steps" id="steps"></ol>
+          <div class="problem" id="problem" hidden>
+            <h3 id="problem-title"></h3>
+            <p id="problem-body"></p>
+            <p class="cleaned" id="problem-cleaned"></p>
+            <details><summary data-t="details"></summary><code id="problem-detail"></code></details>
+          </div>
+          <div class="row-end"><p class="hint" id="progress-hint"></p><div class="buttons"><button class="secondary" type="button" id="progress-close" data-t="close" hidden></button><button class="secondary" type="button" id="progress-cancel"></button><button type="button" id="retry" data-t="retry" hidden></button></div></div>
+        </div>
+      </div>
+
+      <div class="connection-note"><span aria-hidden="true">↳</span><p data-t="note" data-html>Your agents keep working when this window closes.<br /><span>The Workspace Core runs separately.</span></p></div>
     </main>
-    <footer><span>YOUR SPACE, YOUR PACE</span><span class="footer-tag">Desktop</span></footer>
-    <div class="window-controls" role="group" aria-label="Window" hidden>
-      <button type="button" data-window="minimize" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
-      <button type="button" data-window="maximize" aria-label="Maximize" title="Maximize"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
-      <button type="button" data-window="close" aria-label="Close window" title="Close window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
+    <footer><span data-t="footer">YOUR SPACE, YOUR PACE</span><span class="footer-right"><span class="lang" role="group" data-t-label="language" aria-label="Language"><button type="button" data-lang="zh">中文</button><button type="button" data-lang="en">EN</button></span><span class="footer-tag" data-t="tag">Desktop</span></span></footer>
+    <div class="window-controls" role="group" data-t-label="windowLabel" aria-label="Window" hidden>
+      <button type="button" data-window="minimize" data-t-label="minimize" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+      <button type="button" data-window="maximize" data-t-label="maximize" aria-label="Maximize" title="Maximize"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+      <button type="button" data-window="close" data-t-label="closeWindow" aria-label="Close window" title="Close window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
     </div>
   </body>
 </html>

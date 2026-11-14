@@ -18,7 +18,7 @@ import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import type { SectionAttachment } from "../types";
 import { useBrief } from "./BriefContext";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
 import { OpenChoice } from "../../portal/OpenChoice";
 import { htmlFile } from "../../portal/html-file";

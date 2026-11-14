@@ -12,7 +12,7 @@ import { homeText } from "./home-text";
 import type { HomeTarget } from "./home-navigation";
 import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
-import { HomeDensity, RefreshHome } from "./home-tools";
+import { RefreshHome } from "./home-tools";
 import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
 import { ProjectTalk } from "./ProjectTalk";
 import type { ProjectRequest } from "./project-talk-api";
@@ -48,7 +48,6 @@ export function ProjectHome({
   agents,
   needsYou,
   readOnly,
-  densityWorkspace,
   refreshing,
   onRefresh,
   onNavigate,
@@ -68,8 +67,6 @@ export function ProjectHome({
   /** Core's Needs you, for this project only. */
   needsYou: NeedsYouItem[];
   readOnly: boolean;
-  /** Where Home keeps its density choice: "" in the preview, as on Home. */
-  densityWorkspace: string;
   refreshing: boolean;
   onRefresh: () => void;
   onNavigate: (target: HomeTarget) => void;
@@ -277,7 +274,6 @@ export function ProjectHome({
           </span>
         </h1>
         <span className="home-header-tools">
-          <HomeDensity workspaceId={densityWorkspace} />
           {changed > 0 && !readOnly && (
             <button type="button" className="quiet-button" disabled={seeingAll} onClick={() => void seenAll()}>
               {seeingAll ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}

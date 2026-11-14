@@ -76,6 +76,8 @@ export type ExecutorSlot = {
   machine: string;
   position?: number | null;
   reason?: string | null;
+  /** Its dispatch was urgent (YN-137): first in the queue, one slot over its machine's limit. Absent otherwise. */
+  urgent?: boolean;
   /** How `auto` chose its machine, when it did (T-35 S3b). */
   choice?: ExecutorChoice | null;
 };
@@ -1012,13 +1014,15 @@ export function CollaborationBoard({
             // The machine `auto` chose, and how, when it did (T-35 S3).
             const choice = executorChoiceText(task.executorSlot.choice, language);
             const help = t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason);
+            const urgent = task.executorSlot.urgent ? ` · ${t.executorSlotUrgent}` : "";
             return (
-              <Tip content={<TipLines text={`${t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}${choice ? ` · ${choice.text}` : ""}\n${choice ? `${help}\n${choice.title}` : help}`} />} size="wide">
+              <Tip content={<TipLines text={`${t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}${urgent}${choice ? ` · ${choice.text}` : ""}\n${choice ? `${help}\n${choice.title}` : help}`} />} size="wide">
                 <span
                   className="collab-executor-slot"
                   data-slot-state={task.executorSlot.state}
                 >
                   {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
+                  {urgent}
                   {choice && ` · ${choice.text}`}
                 </span>
               </Tip>
@@ -1717,7 +1721,8 @@ function TaskPane({
                 {task.result ? t.updateResult : t.addResult}
               </button>
             </div>
-            <TaskOutcome task={task} onOpenAgent={onOpenAgent} availableAgents={agents.map(agent => agent.id)} />
+            <TaskOutcome task={task} onOpenAgent={onOpenAgent} availableAgents={agents.map(agent => agent.id)}
+              ownerName={agents.find((agent) => agent.id === task.assigneeAgentId)?.name} />
             {reporting && (
               <MutationForm
                 pending={mutation.pending}

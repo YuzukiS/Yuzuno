@@ -58,7 +58,9 @@ pub(crate) struct Attachment {
 ///    replacement. Every insert into or removal from `rpcs`/`claudes` for that
 ///    Agent happens under it as well. Held only across store work, never
 ///    across a native request or response, and never two Agents' at once. It
-///    is per Agent, so one Agent's slow event never delays another's.
+///    is per Agent, so one Agent's slow event never delays another's. Never
+///    held while waiting for that Agent's events (`EventBarrier::drain`):
+///    applying them takes it.
 /// 3. `rpcs` / `claudes`: lookups only; std locks, never held across `.await`.
 /// 4. Store's own: the Agent's record lock, then one SQLite connection (the
 ///    single writer or a reader), then its in-memory state (see `store::Store`
@@ -117,6 +119,10 @@ pub struct Workspace {
     pub(crate) next_generation: AtomicU64,
     #[cfg(test)]
     pub(crate) reconnect_timeout_ms: AtomicU64,
+    /// While true, each connection's event loop holds `yuzuno/disconnected`
+    /// before applying it, as a loaded host can (YN-130).
+    #[cfg(test)]
+    pub(crate) disconnects_held: tokio::sync::watch::Sender<bool>,
     /// Native events Core has received but not yet applied, per connection.
     pub(crate) backlogs: crate::backlog::Backlogs,
     pub(crate) collaboration_url: OnceLock<String>,
@@ -148,6 +154,8 @@ pub struct Workspace {
     pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
     /// The daily backup (T-196); see `workspace_backup::schedule`.
     pub(crate) backup_schedule: Arc<crate::workspace_backup::schedule::Planner>,
+    /// Home cards that refresh themselves (YN-113); see `project_brief::refresh`.
+    pub(crate) brief_refresh: Arc<crate::project_brief::refresh::Timer>,
     /// The phone entry's listener and its last check (T-185); see `remote_access`.
     pub(crate) remote_access: crate::remote_access::State,
     /// Push notifications to Home Screen web apps (T-200); see `web_push`.
@@ -200,6 +208,7 @@ impl Workspace {
             default_cwd: cwd,
             backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             backup_schedule: Arc::new(crate::workspace_backup::schedule::Planner::open(&data_dir)),
+            brief_refresh: Default::default(),
             data_dir,
             program,
             session_reads: tokio::sync::Semaphore::new(1),
@@ -213,6 +222,8 @@ impl Workspace {
             next_generation: AtomicU64::new(1),
             #[cfg(test)]
             reconnect_timeout_ms: AtomicU64::new(45_000),
+            #[cfg(test)]
+            disconnects_held: tokio::sync::watch::Sender::new(false),
             backlogs: Default::default(),
             collaboration_url: OnceLock::new(),
             collaboration_wakeup: Notify::new(),
@@ -518,14 +529,12 @@ impl Workspace {
         self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
+        let name = crate::model::agent_name(&name)?;
         validate_settings(&settings)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
-        if name.trim().is_empty() || name.len() > 100 {
-            bail!("请填写名称（最多 100 字节）");
-        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -545,7 +554,7 @@ impl Workspace {
         let count = self.stored(|store| store.agents()).await?.len();
         let a = Agent {
             id: id.clone(),
-            name: name.trim().into(),
+            name,
             goal: String::new(),
             work_summary: None, turn_wait: None,
             project_id,
@@ -701,6 +710,10 @@ impl Workspace {
             while let Some(message) = rx.recv().await {
                 let native = crate::backlog::is_native(&message);
                 if event_barrier.upgrade().is_some_and(|barrier| barrier.acknowledge(&message)) { continue; }
+                #[cfg(test)]
+                if message["method"] == "yuzuno/disconnected" {
+                    let _ = this.disconnects_held.subscribe().wait_for(|held| !held).await;
+                }
                 let _event = this.admission.enter_event();
                 this.dispatch_event(&agent_id, generation, message).await;
                 if native { backlog.applied(); }
@@ -754,7 +767,22 @@ impl Workspace {
         let agent = id.to_owned();
         anyhow::ensure!(!self.stored(move |store| store.codex_handoff_pending(&agent)).await?, "导入会话尚未接续；请结束原客户端当前 Turn，然后点击重新连接或发送消息");
         anyhow::ensure!(a.harness == "codex", "此操作需要 Codex 原生会话；不会为其他 Harness 创建 Codex 会话");
-        let existing = self.rpcs.lock().unwrap().get(id).cloned();
+        let mut existing = self.rpcs.lock().unwrap().get(id).cloned();
+        // A stopped transport queued its `yuzuno/disconnected` before it said
+        // it stopped (rpc.rs), but stays in `rpcs` until the event loop applies
+        // that event. Wait for it there, so this attaches anew instead of
+        // handing out a closed channel (YN-130). `dispatch_event` takes the
+        // owner lock, which no caller of `ensure` holds. An unfinished attach
+        // still finishes from the reply it kept, as before.
+        if let Some(stopped) = existing.clone().filter(|c| !c.rpc.is_running()) {
+            if stopped.attachment.lock().await.is_none() {
+                if let Some(events) = &stopped.events {
+                    // Not applied in time: as before, its first request fails.
+                    let _ = events.drain().await;
+                }
+                existing = self.rpcs.lock().unwrap().get(id).cloned();
+            }
+        }
         if let Some(connection) = existing {
             let attaching = connection.attachment.lock().await.is_some();
             if attaching { return self.finish_attach(id, connection).await; }
@@ -1730,6 +1758,19 @@ impl Workspace {
     /// (`codex_skills`): typed `skill` items after its text, kept on its
     /// receipt beside the input.
     pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
+        // Boxed: the send's state is large, and a caller's future (a Home
+        // reply's, inside a test's block_on) would otherwise hold it on the
+        // stack, one level deeper than before the guard (YN-131).
+        Box::pin(self.send_message_guarded(id, input, skills, origin, |_| Ok(()))).await
+    }
+
+    /// `send_message_from` with one more check, `guard`: it reads the Agent
+    /// as the send's own checks do, with the Agent's gate held, before
+    /// anything is recorded. When it refuses, nothing is sent, and the
+    /// `MessageNotSubmitted` returned holds its error (YN-131, resume.rs).
+    /// An ID that has a receipt already returns it without the guard.
+    pub(crate) async fn send_message_guarded(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>,
+        guard: impl FnOnce(&AgentDetail) -> Result<()> + Send) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -1761,6 +1802,7 @@ impl Workspace {
             crate::codex_skills::check(&skills)?;
             ensure_agent_open(&detail.agent)?;
             ensure_not_disconnected(&detail.agent)?;
+            guard(&detail)?;
             anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
                 "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";
@@ -2074,6 +2116,32 @@ impl Workspace {
             same_thread_only: true, initial_params, reply,
         });
         self.finish_attach(id, connection).await
+    }
+
+    /// The user renames an Agent (YN-112): its name only, by the rule every
+    /// way of making one checks (`model::agent_name`). Its ID stays, and with
+    /// it its tasks, mail and Home; records that keep the name it had then
+    /// (mail, task activity, results) keep that name. Nothing starts or
+    /// stops, so it takes no work permit, as moving it to a Project takes
+    /// none, and a closed Agent can be renamed too. Under its ownership lock,
+    /// so the comparison and the write are one step: an unchanged name writes
+    /// nothing and announces nothing.
+    pub async fn rename_agent(self: &Arc<Self>, id: &str, raw: &str) -> Result<Agent> {
+        let name = crate::model::agent_name(raw)?;
+        let owned = self.owner(id).await;
+        let agent = id.to_owned();
+        let renamed = self.stored_owned(owned, move |store| {
+            if store.agent(&agent)?.name == name {
+                return Ok(false);
+            }
+            store.update_meta(&agent, "agent/renamed", &json!({"name":name}), |m| m.agent.name = name.clone())?;
+            Ok(true)
+        }).await?;
+        if renamed {
+            // Every open page, a phone's too, reads the list again.
+            self.changed(id);
+        }
+        self.listed(id).await
     }
 
     pub async fn update_settings(self: &Arc<Self>, id: &str, model: String, mut settings: AgentSettings) -> Result<Agent> {
@@ -3258,6 +3326,10 @@ pub fn validate_response(request: &PendingRequest, response: &Value) -> Result<(
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
 
+#[cfg(test)]
+#[path = "agent_rename_tests.rs"]
+mod agent_rename_tests;
+
 #[cfg(all(test, unix))]
 #[path = "collaboration_admission_tests.rs"]
 mod collaboration_admission_tests;
@@ -3309,6 +3381,10 @@ mod metadata_event_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_reads_tests.rs"]
 mod reconnect_reads_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_exit_tests.rs"]
+mod reconnect_exit_tests;
 
 #[cfg(test)]
 mod tests {

@@ -70,6 +70,15 @@ pub fn saved_record(core: &Url, start: Option<&StartProfile>) -> String {
     record.to_string()
 }
 
+/// A start (saved, or a Core's start-profile answer) for WSL: its `platform`
+/// is `wsl`, or absent as before there was one (YN-107 design section 6).
+pub fn wsl_platform(start: &serde_json::Value) -> bool {
+    match start.get("platform") {
+        None => true,
+        Some(platform) => platform == "wsl",
+    }
+}
+
 fn saved_json(bytes: &[u8]) -> Option<serde_json::Value> {
     if bytes.len() > 4096 {
         return None;
@@ -88,6 +97,9 @@ pub fn saved_start(bytes: &[u8]) -> Option<StartProfile> {
     let record = saved_json(bytes)?;
     let core = parse_core_url(record["coreUrl"].as_str()?).ok()?;
     let start = &record["start"];
+    if !wsl_platform(start) {
+        return None;
+    }
     let profile = StartProfile::new(
         &core,
         start["wslDistro"].as_str()?,
@@ -151,9 +163,11 @@ impl StartProfile {
     }
 
     /// From a Core's start-profile answer, for the Core at `core` whose
-    /// health named `workspace_id`; None when it offers none or it differs.
+    /// health named `workspace_id`; None when it offers none, offers a start
+    /// on another platform than WSL, or it differs.
     pub fn offered(core: &Url, workspace_id: &str, profile: &serde_json::Value) -> Option<Self> {
         if profile["available"] != true
+            || !wsl_platform(profile)
             || profile["workspaceId"] != workspace_id
             || profile["port"].as_u64() != core.port_or_known_default().map(u64::from)
         {
@@ -587,6 +601,24 @@ mod tests {
         let mut stale: serde_json::Value = serde_json::from_str(&saved).unwrap();
         stale["start"]["installDir"] = "/mnt/c/core".into();
         assert_eq!(saved_start(stale.to_string().as_bytes()), None);
+    }
+
+    #[test]
+    fn only_a_start_in_wsl_is_offered_or_read() {
+        let core = parse_core_url("http://127.0.0.1:4317").unwrap();
+        let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
+        let offered = serde_json::json!({"available":true,"wslDistro":"Ubuntu-24.04","user":"ada",
+            "installDir":"/home/ada/.local/share/yuzuno-core","port":4317,"workspaceId":workspace});
+        for (platform, kept) in [(None, true), (Some("wsl"), true), (Some("macos"), false), (Some(""), false)] {
+            let mut answer = offered.clone();
+            let mut record: serde_json::Value = serde_json::from_str(&saved_record(&core, Some(&profile()))).unwrap();
+            if let Some(platform) = platform {
+                answer["platform"] = platform.into();
+                record["start"]["platform"] = platform.into();
+            }
+            assert_eq!(StartProfile::offered(&core, workspace, &answer).is_some(), kept, "{platform:?}");
+            assert_eq!(saved_start(record.to_string().as_bytes()).is_some(), kept, "{platform:?}");
+        }
     }
 
     #[test]

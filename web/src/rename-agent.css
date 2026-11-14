@@ -1,0 +1,51 @@
+/* Renaming an Agent (YN-112). The dialog's field is the create dialog's
+   (.create-form); the reason under it sits close to it. */
+.rename-agent-form > label {
+  margin-top: 4px;
+}
+.rename-agent-form .agent-name-problem,
+.rename-agent-form .long-text-note,
+.rename-agent-form .recovery-error {
+  margin: 10px 0 0;
+}
+
+/* In Agent settings, first: the name and its own Rename button on one line, the
+   field taking what is left. On a narrow screen the field has the line and
+   the button goes under it, at its end. */
+.agent-name-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-name-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input);
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.agent-name-row input[aria-invalid="true"] {
+  border-color: var(--red, #b34e48);
+}
+.agent-name-row .secondary-button {
+  padding: 8px 12px;
+}
+.agent-name-setting .agent-name-problem,
+.agent-name-setting .inline-error {
+  margin: 0;
+}
+@media (max-width: 520px) {
+  .agent-name-row {
+    flex-wrap: wrap;
+  }
+  .agent-name-row input {
+    flex-basis: 100%;
+  }
+  .agent-name-row .secondary-button {
+    margin-left: auto;
+  }
+}

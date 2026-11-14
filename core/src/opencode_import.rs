@@ -361,11 +361,10 @@ impl Workspace {
     /// with the same request, it goes on from where that import is, and
     /// never writes twice.
     pub async fn opencode_import_create(self: &Arc<Self>, create: Create) -> Result<Value> {
+        let name = crate::model::agent_name(&create.name)?;
         let permit = self.admission.enter_work()?;
         ensure!(enabled(), "此 Core 启动时关闭了 OpenCode Agent（YUZUNO_EXPERIMENTAL_OPENCODE=0）；没有导入");
         ensure!(uuid::Uuid::parse_str(&create.request_id).is_ok(), "导入请求编号无效");
-        let name = create.name.trim().to_owned();
-        ensure!(!name.is_empty() && name.len() <= 100, "请填写名称（最多 100 字节）");
         let ws = self.clone();
         tokio::spawn(async move {
             let _permit = permit;

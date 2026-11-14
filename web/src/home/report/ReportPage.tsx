@@ -13,7 +13,6 @@ import { unmaintained } from "../card-summary";
 import { CardReply, replyableIn } from "../CardReply";
 import { absolute, duration, relative } from "../format";
 import type { SeenMark } from "../home-api";
-import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
 import type { BodyDrawn } from "../brief/BriefSectionBody";
@@ -313,7 +312,6 @@ export function ReportPage({
             the same, and none of them is its card's. */}
         {shown && parts && (
           <BriefStateScope section={shown}>
-          <BriefDensity.Provider value="high">
             <article className="report-article" aria-labelledby={headingId}>
               <div className="report-layout">
                 <div className="report-main">
@@ -446,7 +444,6 @@ export function ReportPage({
                 </aside>
               </div>
             </article>
-          </BriefDensity.Provider>
           </BriefStateScope>
         )}
       </div>

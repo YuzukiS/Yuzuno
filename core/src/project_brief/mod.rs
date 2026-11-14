@@ -37,6 +37,10 @@ mod http;
 /// A kept image's size from its header alone, within a budget (T-19 HM:B14).
 mod image_header;
 mod presentation;
+/// Home cards that refresh themselves (YN-113 R1): the timer that wakes their owners.
+pub(crate) mod refresh;
+/// What writes those refreshes (YN-113 R2): brief_update's `refresh`, the user's routes.
+mod refresh_writes;
 mod refs;
 mod research;
 mod sections;
@@ -45,6 +49,10 @@ mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+mod refresh_tests;
+#[cfg(test)]
+mod refresh_write_tests;
 #[cfg(test)]
 mod tests;
 
@@ -268,7 +276,8 @@ fn update_properties(project: Value) -> Value {
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
             "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
-            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."}}}}
+            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
+            "refresh":{"type":["object","null"],"description":"put or edit of a report, by a lead: {every: day|hours|week, at?, hours?, days?, zone?, instruction, paused?} makes it refresh itself; null removes it; a put without it keeps it. Creating, speeding up or a new instruction only in a Turn the user started. See brief_guide refresh."}}}}
     })
 }
 
@@ -417,6 +426,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
          WHERE live=1 AND task_id IS NOT NULL;",
     )?;
+    // The cards that refresh themselves (YN-113), by their identity on Home.
+    // Older Cores ignore it.
+    refresh::migrate(db)?;
     Ok(())
 }
 
@@ -576,7 +588,8 @@ pub fn turn_outcome(store: &Store, agent_id: &str, turn_id: &str) -> Result<Opti
     ).optional()?)
 }
 
-/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache.
+/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache,
+/// /api/brief-refreshes.
 pub fn router() -> axum::Router<Arc<Workspace>> {
     http::routes()
 }

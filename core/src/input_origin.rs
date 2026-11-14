@@ -35,6 +35,8 @@ pub(crate) fn navigable(by: &str) -> bool {
 ///   as `form` with answers to a form, `answer` to a native question; `home`,
 ///   a reply from Home or a request or follow-up to a Project from its page
 ///   there (`project_request`); `resume`, a Claude automatic continue;
+///   `schedule`, a Home card's refresh (YN-113, project_brief::refresh);
+///   `update`, a continue after an update (YN-131, updates::resume);
 /// - `resume`, too: an automatic continue's client ID with its own row;
 /// - `native`: without a receipt, in a Claude Turn Claude says it started
 ///   itself (its origin neither `human` nor `outside`, a terminal's prompt);
@@ -86,6 +88,8 @@ pub(crate) fn annotate(db: &Connection, agent: &str, conversation: &mut [Value])
                     // The user's words to a Project, from its page on Home (YN-86 S3a).
                     "home" | crate::project_requests::ORIGIN => "home",
                     "resume" => "resume",
+                    crate::project_brief::refresh::ORIGIN => "schedule",
+                    crate::updates::resume::ORIGIN => "update",
                     _ => "unconfirmed",
                 },
                 _ if client.is_some_and(|id| resumes.contains(id)) => "resume",

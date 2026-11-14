@@ -154,6 +154,22 @@ async fn the_listing_and_its_task_show_each_executors_lifecycle() {
     assert_eq!(listed(s, "e1")["state"], "failed", "closed while its task is blocked on it");
 }
 
+/// YN-137: a queued urgent dispatch's executor says so with its place; a
+/// normal one's lifecycle is as before.
+#[tokio::test]
+async fn a_queued_urgent_executor_says_it_is_urgent_with_its_place() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    let (_, normal) = task(s, "Normal work");
+    let (_, release) = task(s, "Release");
+    executor(s, "e1", &normal, "user", "d1", "waiting", None);
+    executor(s, "e2", &release, "user", "d2", "waiting", None);
+    s.db.write().unwrap().execute("UPDATE executor_slots SET urgent=1 WHERE agent_id='e2'", []).unwrap();
+    let (e1, e2) = (listed(s, "e1"), listed(s, "e2"));
+    assert_eq!((e2["state"].as_str(), e2["position"].as_i64(), e2["urgent"].as_bool()), (Some("queued"), Some(1), Some(true)), "{e2}");
+    assert_eq!((e1["position"].as_i64(), e1.get("urgent")), (Some(2), None), "{e1}");
+}
+
 /// YN-92: an executor at work with a result in on its own dispatch says when
 /// (`resultAt`), so its row can say "Result in" once its Turn ends; a result
 /// on another dispatch, none, or one its task reviews (handed in) says nothing.

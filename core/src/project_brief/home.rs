@@ -110,7 +110,9 @@ fn live_jobs(db: &Connection, agents: &HashMap<String, Agent>) -> Result<Vec<Liv
         let mut data: Value = serde_json::from_str(&data)?;
         // The key its task has now, not the one stored when it was submitted (T-56).
         crate::task_keys::refresh(db, &mut data);
-        let name = data["agent"]["name"].as_str().map(str::to_owned).or_else(|| agents.get(&agent).map(|a| a.name.clone()));
+        // Its Agent's name now (a rename shows at once, YN-112); the one the
+        // Job kept only when that Agent is gone, as machine_load.rs does.
+        let name = agents.get(&agent).map(|a| a.name.clone()).or_else(|| data["agent"]["name"].as_str().map(str::to_owned));
         jobs.push(LiveJob {
             project: task_project.or(agent_project),
             shown: json!({"id":id,"name":data["name"],"status":status,"agentId":agent,"agentName":name,"taskRef":data["taskRef"]}),
@@ -287,6 +289,11 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let current = |row: &sections::Row| -> Result<bool> {
             Ok(row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)?)
         };
+        // A card's refresh (YN-113), on the one entry Home shows of its
+        // identity: the live section, else its newest history entry.
+        let name = |agent: &str| by_id.get(agent).map(|a| a.name.clone());
+        let refreshes = super::refresh::shown(&db, id, &name, at)?;
+        let mut refreshed = std::collections::HashSet::new();
         let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -301,6 +308,9 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
                     section["currentSource"] = json!(current(row)?);
+                }
+                if let Some(refresh) = refreshes.get(&row.identity).filter(|_| refreshed.insert(row.identity)) {
+                    section["refresh"] = refresh.clone();
                 }
                 Ok(section)
             }).collect()

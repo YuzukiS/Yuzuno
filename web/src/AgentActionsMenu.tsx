@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CircleStop, Link2, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
+import { CircleStop, Link2, MoreHorizontal, Pencil, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
 import { agentMenuItems, agentMenuLabel, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import { langTag, strings, useLanguage } from "./i18n";
 import { Tip, TipText } from "./Tip";
@@ -60,6 +60,7 @@ const icons: Record<AgentMenuAction, typeof RotateCw> = {
   endMissing: CircleStop,
   interrupt: Square,
   disconnect: Unplug,
+  rename: Pencil,
   settings: SlidersHorizontal,
   copyLink: Link2,
   manage: Settings2,
@@ -125,9 +126,9 @@ export function AgentActionsMenu({
     (at: MenuPoint, align: OpenMenu["align"], returnTo: HTMLElement | null, focus: OpenMenu["focus"] = "first") => {
       setPlaced(null);
       setLeaving(null);
-      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect, link: !!handlers.copyLink }), at, align, returnTo, focus });
+      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect, link: !!handlers.copyLink, rename: !!handlers.rename }), at, align, returnTo, focus });
     },
-    [agent, missingTurns, handlers.endMissing, handlers.disconnect, handlers.copyLink],
+    [agent, missingTurns, handlers.endMissing, handlers.disconnect, handlers.copyLink, handlers.rename],
   );
   // `animate` false for a close the user did not ask for here (Tab, a scroll or
   // resize that moved its button, another Agent): those go at once.
@@ -233,8 +234,9 @@ export function AgentActionsMenu({
   function run(item: AgentMenuItem) {
     const target = current.current;
     if (!target || item.disabled) return;
-    // A view it opens takes the focus; otherwise focus returns.
-    close(item.action === "reconnect" || item.action === "check" || item.action === "interrupt");
+    // A view it opens takes the focus; otherwise focus returns. The rename
+    // dialog gives it back to where the menu opened from when it closes.
+    close(item.action === "reconnect" || item.action === "check" || item.action === "interrupt" || item.action === "rename");
     switch (item.action) {
       case "reconnect":
       case "check":
@@ -254,6 +256,9 @@ export function AgentActionsMenu({
         break;
       case "disconnect":
         handlers.disconnect?.(target.id);
+        break;
+      case "rename":
+        handlers.rename?.(target.id);
         break;
       case "copyLink":
         handlers.copyLink?.(target.id);

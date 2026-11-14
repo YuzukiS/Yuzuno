@@ -505,7 +505,7 @@ impl Workspace {
     }
 }
 
-fn receipt_state(status: &str, error: Option<&str>) -> (&'static str, Option<String>) {
+pub(crate) fn receipt_state(status: &str, error: Option<&str>) -> (&'static str, Option<String>) {
     match status {
         "accepted" | "queued" => ("sent", None),
         "uncertain" | "sending" => ("uncertain", Some(error.unwrap_or("The message's delivery is unconfirmed; reconnect to check").to_owned())),

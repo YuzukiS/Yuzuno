@@ -7,7 +7,8 @@
 //! `/api/health`. A copy at another name (standing in for the release's
 //! helper) records nothing. It notes each start in `<data-dir>/started`. Files in
 //! `--data-dir` change it: `exit-early` (it exits before listening),
-//! `ignore-interrupt` (it ignores SIGINT), `no-listen` (it runs without
+//! `ignore-interrupt` (it ignores SIGINT and SIGTERM, with which a stop
+//! asks it to shut down on Linux and on macOS), `no-listen` (it runs without
 //! listening), `release-id` (the release its health names, instead of its
 //! own), `hand-over` (it shares its listening socket with a copy of itself
 //! at `bin/port-keeper`, which answers the same health after it has gone;
@@ -101,8 +102,11 @@ fn main() {
         }
     }
     if data.join("ignore-interrupt").exists() {
-        // SIGINT is 2, SIG_IGN is 1.
-        unsafe { signal(2, 1) };
+        // SIGINT is 2 and SIGTERM 15 on Linux and macOS; SIG_IGN is 1.
+        unsafe {
+            signal(2, 1);
+            signal(15, 1);
+        }
     }
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let _remote = env::var("YUZUNO_REMOTE_PORT")

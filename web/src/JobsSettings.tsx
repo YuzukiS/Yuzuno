@@ -94,6 +94,7 @@ export function JobsBudgetEditor({ active }: { active: boolean }) {
             maxActive={maxActiveOf(view)}
             reserved={view.reserved}
             active={view.activeCount}
+            mac={view.mac?.available === true}
             onSaved={refresh}
           />
           {view.disk && <DiskReserveSettings disk={view.disk} onSaved={refresh} />}

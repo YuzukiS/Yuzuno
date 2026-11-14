@@ -1,7 +1,7 @@
 //! Home's HTTP API (acceptance/t85/spec/interfaces.md section 3). Section
 //! keys may hold '/' (topic/sub): clients send them percent-encoded as one
 //! path segment (encodeURIComponent), which Path decodes.
-use super::{attachments, editors, home, presentation, sections};
+use super::{attachments, editors, home, presentation, refresh_writes, sections};
 use crate::{server::ApiError, workspace::Workspace};
 use axum::{
     body::Body,
@@ -31,6 +31,12 @@ pub(super) fn routes() -> Router<Arc<Workspace>> {
         .route("/api/projects/{id}/brief/chart/{section}/{element}", get(chart))
         .route("/api/projects/{id}/brief/research/{section}/{element}", get(research))
         .route("/api/brief-cache/clear", post(clear))
+        .route("/api/brief-refreshes", get(refreshes))
+        .route("/api/brief-refreshes/limits", get(refresh_limits).put(save_refresh_limits))
+        .route("/api/projects/{id}/brief/refreshes/{identity}", axum::routing::put(change_refresh).delete(remove_refresh))
+        .route("/api/projects/{id}/brief/refreshes/{identity}/now", post(refresh_now))
+        .route("/api/projects/{id}/brief/refreshes/{identity}/versions", get(refresh_versions))
+        .route("/api/projects/{id}/brief/refreshes/{identity}/versions/{version}", get(refresh_version))
 }
 
 impl IntoResponse for attachments::Missing {
@@ -202,6 +208,92 @@ async fn research(
         Ok(desk) => Json(desk).into_response(),
         Err(missing) => missing.into_response(),
     })
+}
+
+/// Every card that refreshes itself, with the limits and totals (YN-113):
+/// for Settings and notifications. Read-only.
+async fn refreshes(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.stored(super::refresh::list).await?))
+}
+
+/// A refused change of a refresh or its limits: its status, code and
+/// message, and the refresh (or limits) as they are now when the page's copy
+/// is out of date.
+impl IntoResponse for refresh_writes::Refused {
+    fn into_response(self) -> Response {
+        let mut body = json!({"error":format!("{}: {}", self.code, self.message),"code":self.code});
+        if let Some(current) = self.current {
+            body["current"] = current;
+        }
+        (self.status, Json(body)).into_response()
+    }
+}
+
+/// A user's change of a refresh: its answer; Home's pages are told, and the
+/// timer looks at it now.
+fn refreshed(ws: &Arc<Workspace>, project: Option<&str>, answer: Result<Value, refresh_writes::Refused>) -> Response {
+    match answer {
+        Ok(value) => {
+            super::announce(ws, project);
+            ws.brief_refresh.wake.notify_one();
+            Json(value).into_response()
+        }
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// The user's change of a card's refresh from the card or Settings (YN-113
+/// §6.3): cadence, zone, instruction, on or off, against the version read.
+async fn change_refresh(
+    State(ws): State<Arc<Workspace>>,
+    Path((id, identity)): Path<(String, i64)>,
+    Json(input): Json<refresh_writes::UserChange>,
+) -> ApiResult<Response> {
+    let project = id.clone();
+    let answer = ws.stored(move |store| refresh_writes::change(store, &project, identity, input)).await?;
+    Ok(refreshed(&ws, Some(&id), answer))
+}
+
+/// Removes a card's refresh; the card stays.
+async fn remove_refresh(State(ws): State<Arc<Workspace>>, Path((id, identity)): Path<(String, i64)>) -> ApiResult<Response> {
+    let project = id.clone();
+    let answer = ws.stored(move |store| refresh_writes::delete(store, &project, identity)).await?;
+    Ok(refreshed(&ws, Some(&id), answer))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Now {
+    request_id: String,
+}
+
+/// Refreshes a card once now, outside its cadence.
+async fn refresh_now(State(ws): State<Arc<Workspace>>, Path((id, identity)): Path<(String, i64)>, Json(input): Json<Now>) -> ApiResult<Response> {
+    let project = id.clone();
+    let answer = ws.stored(move |store| refresh_writes::refresh_now(store, &project, identity, &input.request_id)).await?;
+    Ok(refreshed(&ws, Some(&id), answer))
+}
+
+/// A card's issues of the last 30 days, newest first. Read-only.
+async fn refresh_versions(State(ws): State<Arc<Workspace>>, Path((id, identity)): Path<(String, i64)>) -> ApiResult<Response> {
+    let answer = ws.stored(move |store| refresh_writes::versions(store, &id, identity)).await?;
+    Ok(answer.map_or_else(IntoResponse::into_response, |value| Json(value).into_response()))
+}
+
+/// One issue of a card, whole. Read-only.
+async fn refresh_version(State(ws): State<Arc<Workspace>>, Path((id, identity, version)): Path<(String, i64, i64)>) -> ApiResult<Response> {
+    let answer = ws.stored(move |store| refresh_writes::version(store, &id, identity, version)).await?;
+    Ok(answer.map_or_else(IntoResponse::into_response, |value| Json(value).into_response()))
+}
+
+async fn refresh_limits(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.stored(refresh_writes::limits).await?))
+}
+
+/// The user's limits on refreshes (YN-113 §3.3), against the version read.
+async fn save_refresh_limits(State(ws): State<Arc<Workspace>>, Json(input): Json<refresh_writes::LimitsInput>) -> ApiResult<Response> {
+    let answer = ws.stored(move |store| refresh_writes::save_limits(store, input)).await?;
+    Ok(refreshed(&ws, None, answer))
 }
 
 async fn clear(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {

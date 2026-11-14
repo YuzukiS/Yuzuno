@@ -4,9 +4,9 @@
 //! no permission rule of its own.
 //!
 //! OpenCode 2.x (T-32): it is started, checked and stopped as 2.x is, and
-//! any 2.x from `MIN` its `/api/info` reports is spoken to (`MAJOR`; the
-//! release this was checked against is `VERIFIED`); an older 2.x or another
-//! major is stopped. The calls
+//! any 2.x from `MIN` its `/api/info` reports is spoken to (`MAJOR`; Yuzuno's
+//! support stops at `VERIFIED`, YN-119); an older 2.x or another major is
+//! stopped. The calls
 //! past start and stop are still those of 1.19.3 until their slices of T-32
 //! move them to 2.x. Native requests, events and
 //! results come back as OpenCode sent them. What OpenCode did not say is not
@@ -49,9 +49,14 @@ use tokio::{
 /// The OpenCode major this module speaks (T-32: the latest 2.x, not one
 /// release): any version `/api/info` reports in it from `MIN` is taken.
 pub const MAJOR: &str = "2";
-/// The newest release the stand-in and tests were checked against (T-32). A
-/// later 2.x that breaks a call is a bug to fix here, not a refusal.
+/// The release Yuzuno's OpenCode support stops at (YN-119): the last one the
+/// stand-in and tests are checked against, and the last whose problems are
+/// fixed here. No newer release is probed or followed. A later 2.x still
+/// starts, said to be unverified (`newer_note`), and is not refused.
 pub const VERIFIED: &str = "2.2.5";
+/// The npm package OpenCode 2.x is published as (T-32: 1.x was `opencode-ai`),
+/// which `newer_note` names to install VERIFIED from.
+const PACKAGE: &str = "@opencode/cli";
 /// The oldest 2.x Core reads (T-32, R2 59b5e3c6): its `/api/info` (2.0.6),
 /// the `idle` message among a session's messages (2.0.4) and a step's own
 /// start (`started`, 2.0.7) are there, as are every other route and event
@@ -1854,7 +1859,7 @@ async fn diagnosis(launch: &Launch, said: &[u8]) -> String {
         Some(version) if older_than_min(&version) => out.push_str(&format!(
             " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", older_note())),
         Some(version) if newer_than_verified(&version) => out.push_str(&format!(
-            " (the installed OpenCode says \u{201c}{version}\u{201d}, {})", newer_note())),
+            " (the installed OpenCode says \u{201c}{version}\u{201d}; {})", newer_note())),
         _ => {}
     }
     let lines = reason(said);
@@ -1902,7 +1907,7 @@ fn release(version: &str) -> Option<(u64, u64, u64, bool)> {
 }
 
 /// Whether `version` is a release after VERIFIED (T-32): taken, and said to
-/// be newer than the one checked against.
+/// be unverified (YN-119).
 pub fn newer_than_verified(version: &str) -> bool {
     matches!((release(version), release(VERIFIED)), (Some(v), Some(w)) if v > w)
 }
@@ -1934,9 +1939,11 @@ fn unreadable_note() -> String {
     format!("cannot read its version; {MIN} is the oldest Core reads")
 }
 
-/// What a start or the Agent says of a version newer than VERIFIED.
+/// What a start or the Agent says of a version newer than VERIFIED (YN-119):
+/// it runs, but support stops at VERIFIED, and how to install that one.
 pub fn newer_note() -> String {
-    format!("newer than the verified {VERIFIED}")
+    format!("OpenCode support stops at {VERIFIED}: this release is unverified, and problems with it are not fixed; \
+        to be safe, install {VERIFIED} with npm i -g {PACKAGE}@{VERIFIED}")
 }
 
 /// The first line `<program> --version` prints, within VERSION_LIMIT: 1.x

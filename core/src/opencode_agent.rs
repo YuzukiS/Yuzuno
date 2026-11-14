@@ -578,7 +578,7 @@ pub(crate) fn compaction_blocks(d: &AgentDetail, what: &str) -> Option<String> {
 /// provider with where it gets its access, the model OpenCode runs with none
 /// chosen, and which OpenCode it is.
 pub(crate) async fn catalog_of(server: &Server, models: &[ModelChoice]) -> Value {
-    // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+    // Which OpenCode it runs, and, as a note, when that is newer than the one support stops at (T-32, YN-119).
     let version = server.version();
     let mut native = json!({"version":version,"verified":opencode::VERIFIED});
     if opencode::newer_than_verified(version) {
@@ -665,14 +665,12 @@ impl Workspace {
         self: &Arc<Self>, name: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>, birth: Option<crate::workspace::Birth>,
     ) -> Result<crate::model::Agent> {
+        let name = crate::model::agent_name(&name)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         ensure!(enabled(), "此 Core 启动时关闭了 OpenCode Agent（YUZUNO_EXPERIMENTAL_OPENCODE=0）");
-        if name.trim().is_empty() || name.len() > 100 {
-            bail!("请填写名称（最多 100 字节）");
-        }
         check_new(machine_id.as_deref().unwrap_or("local"), &model)?;
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
@@ -684,7 +682,7 @@ impl Workspace {
         let count = self.stored(|store| store.agents()).await?.len();
         let agent = crate::model::Agent {
             id: id.clone(),
-            name: name.trim().into(),
+            name,
             goal: String::new(),
             work_summary: None, turn_wait: None,
             project_id,

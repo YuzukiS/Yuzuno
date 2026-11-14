@@ -68,7 +68,7 @@ const machineRow = (id, name, slots, saved) => ({ id, name, version: saved ? 1 :
 const slotsView = ({ version = 0, inUse = { waiting: 0, starting: 0, running: 0 }, startLimitSeconds = 300,
   machines = [machineRow("local", "this Core host", 3, false)] } = {}) => ({
   workspace: { version, startLimitSeconds },
-  limits: { min: 1, max: 64, default: 3, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
+  limits: { min: 1, max: 64, default: 3, urgentExtra: 1, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
   inUse,
   machines,
   total: machines.reduce((sum, m) => sum + m.slots, 0),
@@ -575,7 +575,7 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, keeping 
     const options = [...field(page, "Runs with").options].map((o) => o.value);
     assert.deepEqual(options, enabled ? ["", "claude", "codex", "opencode"] : ["", "claude", "codex"], String(enabled));
     if (enabled) {
-      assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
+      assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode (stops at 2.2.5, experimental)", "marked experimental (YN-27), with where its support stops (YN-127)");
       await type(page, "Runs with", "opencode");
       assert.equal(field(page, "Model").placeholder, "Its own configuration’s model", "a model is its own unless named (YN-34 S1c)");
       // OpenCode keeps no level here: only the defaults, its own configuration, can be chosen.
@@ -616,7 +616,7 @@ test("OpenCode is marked experimental in a Chinese page's harness choice too (YN
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
   await openTemplate(page, "A");
-  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
+  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（停在 2.2.5，实验性）");
   assert.deepEqual(page.errors, []);
 });
 
@@ -630,6 +630,8 @@ test("Executors at once (YN-2 S5): each machine's number is shown, with their su
   assert.match(group().textContent, /Executors at once is set for each machine: this Core host 6, Mac mini 3 \(default\); 9 in all\./,
     "each machine's number, the default marked, and their sum");
   assert.match(group().textContent, /Change a machine's number in Settings → Machines\./);
+  assert.match(group().textContent, /An urgent dispatch \(a release, say\) may start one more when a machine is full\./,
+    "YN-137: Core's urgentExtra, as a sentence");
   assert.match(group().textContent, /In this Workspace now: 3 running, 1 starting, 2 waiting\./);
   assert.equal(Boolean(field(page, "Executors at once")), false, "no Workspace number to set: it is each machine's");
   assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots");
@@ -644,6 +646,7 @@ test("Executors at once (T-35): an answer without its fields reads as Core's def
   const group = page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
   assert.match(group.textContent, /0 running, 0 starting, 0 waiting/);
   assert.match(group.textContent, /; 0 in all\./, "no machine listed: none counted");
+  assert.doesNotMatch(group.textContent, /urgent/, "an older Core's answer has no urgentExtra: nothing said of it");
   assert.deepEqual(page.errors, []);
 });
 

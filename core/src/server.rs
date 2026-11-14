@@ -64,6 +64,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_delivery();
     ws.start_merge_queue();
     ws.start_backup_schedule();
+    ws.start_brief_refresh();
     ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())
@@ -204,7 +205,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/fork/preview",post(preview_fork))
         .route("/api/agents/{id}/codex/fork",post(fork_session))
         .route("/api/agents",post(create))
-        .route("/api/agents/{id}",get(detail).delete(delete_agent))
+        .route("/api/agents/{id}",get(detail).patch(rename_agent).delete(delete_agent))
         .route("/api/agents/{id}/items/{item_id}/payload",get(item_payload))
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
@@ -314,9 +315,9 @@ async fn health(State(ws): State<Arc<Workspace>>, updates: Option<Extension<Arc<
         "workspaceId":ws.stored(|store| store.workspace_id()).await?})))
 }
 
-/// Where this Core is installed in WSL, which the Windows desktop app keeps
-/// to start it again when it does not answer (T-171). Paths and names only;
-/// it starts nothing.
+/// Where this Core is installed, in WSL or on macOS (`platform`), which a
+/// desktop app keeps to start it again when it does not answer (T-171,
+/// YN-108). Paths and names only; it starts nothing.
 async fn start_profile(updates: Option<Extension<Arc<crate::updates::controller::Controller>>>) -> ApiResult<Json<Value>> {
     let Some(Extension(controller)) = updates else {
         return Ok(Json(json!({"available":false,"reason":"notManaged"})));
@@ -985,6 +986,17 @@ async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentProject {
     project_id: Option<String>,
+}
+/// What a rename sends (YN-112): the new name, and nothing else.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentRename {
+    name: String,
+}
+/// The user renames an Agent from its menu or its settings, on Core's own
+/// port or the phone entry (`Workspace::rename_agent`).
+async fn rename_agent(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<AgentRename>) -> ApiResult<Json<Value>> {
+    Ok(Json(serde_json::to_value(ws.rename_agent(&id, &input.name).await?)?))
 }
 async fn set_agent_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<AgentProject>) -> ApiResult<Json<Value>> {
     let agent = id.clone();
