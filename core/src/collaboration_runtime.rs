@@ -330,6 +330,11 @@ impl Workspace {
                 if let Err(error) = ws.deliver_update_notices().await {
                     eprintln!("Update pause delivery: {error:#}");
                 }
+                // After an update ends, before mail: the continue it owes
+                // an Agent it paused starts that Agent's next Turn (YN-131).
+                if let Err(error) = ws.resume_after_update().await {
+                    eprintln!("Continue after update: {error:#}");
+                }
                 // Before mail: a Brief reminder belongs to the Turn that just
                 // ended, so it goes before the next mailbox wake-up.
                 if let Err(error) = ws.check_brief_turns().await {

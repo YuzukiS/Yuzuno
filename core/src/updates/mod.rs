@@ -15,6 +15,7 @@ pub(crate) mod notices;
 pub mod package;
 pub mod public_github;
 pub mod releases;
+pub(crate) mod resume;
 #[cfg(unix)]
 pub mod setup;
 #[cfg(unix)]
