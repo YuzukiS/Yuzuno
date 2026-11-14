@@ -1906,7 +1906,7 @@ export function App() {
   // This device's system notifications, where it chose them and its system
   // allows them (T-188). A preview's sample Workspace has none.
   const backupRun = useBackupRun(backupRevision, !previewMode);
-  const refreshRuns = useRefreshRuns(refreshRevision, !previewMode);
+  const refreshRuns = useRefreshRuns(workspaceId, refreshRevision, !previewMode);
   useSystemNotifications(workspaceId, previewMode ? undefined : workspace?.agents, previewMode ? null : needsYouItems, (notice) => {
     if (notice.backup) {
       // Only this Workspace's Backup status: retrying or anything else is the user's to choose there.

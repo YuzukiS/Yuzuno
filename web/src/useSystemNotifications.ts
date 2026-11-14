@@ -48,28 +48,29 @@ export function useBackupRun(revision: number, enabled = true): BackupRun | null
  * this device (YN-113 R4). Otherwise nothing is read and `undefined` is
  * returned, so the next read starts afresh.
  */
-export function useRefreshRuns(revision: number, enabled = true): RefreshItem[] | undefined {
+export function useRefreshRuns(workspaceId: string, revision: number, enabled = true): RefreshItem[] | undefined {
   const prefs = useNotificationPrefs();
   const desktop = useDesktopNotifier();
   const wanted = enabled && prefs.enabled && !prefs.muted && (prefs.categories.finished || prefs.categories.failed)
     && reachesSystem(notificationAccess(browserHost(isNative, desktop)));
-  const [items, setItems] = useState<RefreshItem[] | undefined>(undefined);
+  // The Workspace it was read for: another Workspace's list is no baseline.
+  const [read, setRead] = useState<{ workspaceId: string; items: RefreshItem[] } | null>(null);
   useEffect(() => {
     if (!wanted) {
-      setItems(undefined);
+      setRead(null);
       return;
     }
     let current = true;
     readRefreshes().then(
-      (read) => current && setItems(read.items),
+      (list) => current && setRead({ workspaceId, items: list.items }),
       // A read that fails changes nothing: the next one compares with the last.
       () => undefined,
     );
     return () => {
       current = false;
     };
-  }, [wanted, revision]);
-  return wanted ? items : undefined;
+  }, [wanted, revision, workspaceId]);
+  return wanted && read?.workspaceId === workspaceId ? read.items : undefined;
 }
 
 /**
@@ -131,8 +132,15 @@ export function useSystemNotifications(
       void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice), whenAway: !inView });
   };
   useEffect(() => {
-    if (!refreshes) return;
     const seen = before();
+    // No read (notifications off, another Workspace): the next read starts
+    // from nothing, as the backup's does, and no run that ended meanwhile
+    // notifies.
+    if (!refreshes) {
+      seen.refreshes = null;
+      seen.refreshTurnIds = new Set();
+      return;
+    }
     const notices = refreshNotices(seen.refreshes, refreshes, prefs.current.preview);
     seen.refreshes = refreshes;
     seen.refreshTurnIds = refreshTurns(refreshes);
