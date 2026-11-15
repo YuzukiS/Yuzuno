@@ -336,7 +336,7 @@ test("Point & Fix adds to the field itself: no Agent to choose, the notes after 
   page.button("Add", page.compose()).click();
   await until(() => page.button("Mark up an image"), "the menu opens");
   assert.deepEqual([...page.document.querySelectorAll(".composer-add-item")].map((item) => item.getAttribute("aria-label")),
-    ["Add images", "Mark up an image"]);
+    ["Add images", "Mark up an image", "Add files"]);
   page.button("Mark up an image").click();
   page.choose("Choose an image to mark", [page.file("screen.png", "png-bytes")]);
   await until(() => dialog()?.querySelector(".point-fix-image svg"), "the chosen image opens for marking");
