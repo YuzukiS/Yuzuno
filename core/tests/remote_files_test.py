@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -221,6 +222,14 @@ class Files(unittest.TestCase):
     def key(self):
         return hashlib.sha256("\0".join(self.owner[k] for k in
             ("workspace", "agent", "machine", "target", "harness")).encode()).hexdigest()
+
+    def test_delete_with_no_runtime_folder_or_cache_succeeds(self):
+        # An Agent whose data root was wiped, or whose runtime folder is gone,
+        # still deletes when there is nothing to remove (review 95b22f32).
+        self.stop_runtime()
+        shutil.rmtree(self.runtime)
+        self.assertEqual(self.call(dict(self.owner, op="delete")), {"deleted": True})
+        self.assertEqual(self.call(dict(self.owner, op="delete")), {"deleted": True})
 
     def test_copies_go_only_into_the_root_the_request_names(self):
         data = b"file"

@@ -422,6 +422,24 @@ def remove_cache(base, cache_name, key, owner):
         os.close(caches)
 
 
+def cache_exists(base, cache_name, key):
+    """Whether one owner's cache is there. A cache folder that is missing or
+    unsafe is not followed: there is nothing to remove through it."""
+    try:
+        caches = os.open(cache_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=base)
+    except FileNotFoundError:
+        return False
+    try:
+        private(caches, True)
+        try:
+            os.stat(key, dir_fd=caches, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+    finally:
+        os.close(caches)
+
+
 def run(stream):
     header = stream.readline(16385)
     require(len(header) <= 16384 and header.endswith(b"\n"), "Oversized image transfer header")
@@ -433,10 +451,17 @@ def run(stream):
     parent_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         with directory(parent_fd, name) as base:
+            key = key_for(owner)
+            # Nothing to remove is not a failure: an Agent whose data root was
+            # wiped, whose copies never started, or whose runtime record is
+            # gone must still be deletable. Checked before the runtime folder:
+            # an earlier delete already returned here without it.
+            if deleting and not any(cache_exists(base, cache_name, key)
+                                    for cache_name in ("image-cache", "file-cache")):
+                return {"deleted": True}
             runtime_key = hashlib.sha256(json.dumps([owner["workspace"], owner["agent"]]).encode()).hexdigest()[:24]
             with directory(base, "claude" if owner["harness"] == "claude" else "runtimes", False) as runtimes:
                 with directory(runtimes, runtime_key, False) as runtime, locked(runtime):
-                    key = key_for(owner)
                     if deleting:
                         runtime_check(runtime, request, True)
                         # Both kinds of copies belong to the same owner, and
