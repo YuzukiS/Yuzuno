@@ -20,8 +20,12 @@ export interface Agent {
   workSummary?: WorkSummary | null;
   /** Absent from a Core without it (before YN-51), and while nothing holds its Turn. */
   turnWait?: TurnWait | null;
-  harness?: "codex" | "claude" | "opencode";
+  harness?: "codex" | "claude" | "opencode" | "dsh";
   claudeSessionId?: string;
+  /** A DeepSeek Harness Agent's ACP session, once it has one (YN-119 S2a). */
+  dshSessionId?: string;
+  /** The dsh version Core found when it last started this Agent (design §5.1). */
+  dshVersion?: string;
   opencodeSessionId?: string;
   /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
   opencodeVersion?: string;
@@ -120,6 +124,8 @@ export interface Workspace {
   /** Whether this Core creates OpenCode Agents: yes unless it was started
    * with `YUZUNO_EXPERIMENTAL_OPENCODE=0` (YN-27). They stay experimental. */
   opencode?: { enabled: boolean; version?: string };
+  /** Whether this Core starts DeepSeek Harness Agents (YN-119): absent from a Core without them. */
+  dsh?: import("./dsh").DshStatus;
 }
 export interface NativeItem {
   _yuzunoTextBlocks?: import("./message-content").TextBlock[];
@@ -505,6 +511,8 @@ export interface AgentSettings {
   permissionPreset?: "config" | "ask" | "auto" | "full" | null;
   /** Claude Code native permission mode, as last selected or reported. */
   permissionMode?: string | null;
+  /** A DeepSeek Harness Agent's permission level (YN-119 §3.6): ask, auto or full. */
+  permissionLevel?: string | null;
 }
 export interface PermissionCatalog {
   presets: {

@@ -44,7 +44,7 @@ import {
   type ComposerDraft,
   type PastedText,
 } from "./composer-draft";
-import { slashCommands, withCodexSkills, withModelControl, withOpencodeControls, type CommandList, type SlashCommand } from "./slash-commands";
+import { dshControls, slashCommands, withCodexSkills, withModelControl, withOpencodeControls, type CommandList, type SlashCommand } from "./slash-commands";
 import type { LineExtent } from "./composer-shape";
 import { api } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -68,8 +68,9 @@ type Props = {
   readOnly?: boolean;
   /** When the draft starts with "/": a Claude Agent's commands, the
    * controls Yuzuno runs for a Codex Agent and the skills its Codex lists
-   * (also after "$"), or an OpenCode Agent's own commands (T-10). */
-  slashCommands?: "claude" | "codex" | "opencode" | false;
+   * (also after "$"), an OpenCode Agent's own commands (T-10), or the
+   * controls Yuzuno runs for a DeepSeek Harness Agent (YN-119). */
+  slashCommands?: "claude" | "codex" | "opencode" | "dsh" | false;
   onChange: (draft: ComposerDraft) => void;
   /** A Codex skill chosen from the list: for the draft's chosen skills. */
   onSkill?: (skill: SlashCommand) => void;
@@ -232,7 +233,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                   ).then(withOpencodeControls),
                 "opencode",
               )
-            : [],
+            : callbacks.current.slashCommands === "dsh" && !callbacks.current.readOnly
+              // Yuzuno's own controls only: nothing is read for a DeepSeek Harness Agent (YN-119).
+              ? slashCommands(() => Promise.resolve(dshControls), "dsh")
+              : [],
     ];
     function stateFor(draft: ComposerDraft) {
       const initial = draftDocument(draft);

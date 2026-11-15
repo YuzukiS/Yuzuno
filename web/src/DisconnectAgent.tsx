@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { agentHarnessName } from "./machine-checks";
 import { LoaderCircle, Unplug } from "lucide-react";
 import { Modal } from "./components";
 import { disconnectAgent, errorText } from "./api";
@@ -70,7 +71,8 @@ export function DisconnectAgentDialog({
     setError("");
   }, [agentId, open]);
   if (!agent) return null;
-  const harness = agent.harness === "claude" ? "Claude Code" : "Codex";
+  // Named as it is: an Agent from before harnesses were named ran Codex.
+  const harness = agentHarnessName(agent);
   const machine = agent.remote?.machine.name;
   async function confirm() {
     if (busy || !agent) return;
