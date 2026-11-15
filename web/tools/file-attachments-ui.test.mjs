@@ -336,13 +336,30 @@ test("an Agent that takes no files keeps the entry, quieted, and says why (YN-14
   } finally { page.close(); }
 });
 
-test("a remote Agent is quieted until files can be copied to its machine (YN-145 F5/F4)", async () => {
+test("a remote Codex or Claude Agent takes files, as Core carries them to its machine (YN-145 F4)", async () => {
   const page = await mount("claude", { remote: true });
   try {
     const items = await page.menu();
     const addFiles = items.find((item) => item.getAttribute("aria-label") === "Add files");
+    assert.equal(addFiles.getAttribute("aria-disabled"), null);
+    assert.equal(addFiles.hasAttribute("data-unavailable"), false);
+    page.choose([file(page.window, "q3 report.pdf")]);
+    await until(() => page.chips().length === 1, "the file is saved to the remote Agent's own files");
+    assert.match(page.chips()[0].textContent, /q3 report\.pdf/);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a remote Agent Core never puts on a machine is still quieted (YN-145)", async () => {
+  // Only Codex and Claude run on another machine, so this rule alone keeps an
+  // OpenCode or dsh Agent out of a state Core cannot copy files into.
+  const page = await mount("opencode", { remote: true });
+  try {
+    const items = await page.menu();
+    const addFiles = items.find((item) => item.getAttribute("aria-label") === "Add files");
     assert.equal(addFiles.getAttribute("aria-disabled"), "true");
-    assert.match(addFiles.textContent, /Files can't go to a remote Agent yet/);
+    assert.equal(addFiles.hasAttribute("data-unavailable"), true);
+    assert.match(addFiles.textContent, /Files go to Codex, Claude and OpenCode Agents/);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

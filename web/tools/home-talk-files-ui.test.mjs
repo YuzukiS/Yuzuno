@@ -67,6 +67,9 @@ const agents = [
   { ...base, id: "d", name: "Dev Lead", kind: "lead", harness: "codex" },
   // A harness that takes no files (none of today's three): the page says so before Core would.
   { ...base, id: "z", name: "Lab Lead", kind: "lead", harness: "other" },
+  // On another machine, where Core copies files to a Codex or Claude Agent (F4).
+  { ...base, id: "far", name: "Far Lead", kind: "lead", harness: "claude",
+    remote: { machine: { id: "m", name: "Mac", target: "x", codex: "", defaultCwd: "/w" } } },
 ];
 const file = (n, name, bytes = 20) => ({ id: id(n), name, bytes });
 const request = (n, extra = {}) => ({
@@ -307,4 +310,16 @@ test("nothing is sent with files the front desk can't take, nor while they save;
   assert.equal(older.window.localStorage.getItem(OUTBOX), null, "not kept for a retry");
   assert.equal(older.chips().length, 1, "the files stay in the draft");
   assert.deepEqual([...page.errors, ...older.errors], []);
+});
+
+test("a remote Claude front desk takes files, as Core carries them to its machine (YN-145 F4)", async (t) => {
+  const page = await talk({ front: { version: 1, agentId: "far", effectiveAgentId: "far" } });
+  t.after(page.close);
+  setComposerText(page.field(), "Look at this");
+  page.paste([page.newFile("plan.pdf", "plan")]);
+  await until(() => page.chips().length === 1, "saved");
+  assert.equal(page.document.querySelector('.project-talk-field .home-composer-note[role="status"]'), null,
+    "nothing said against a front desk that takes files");
+  assert.equal(page.send().disabled, false, "the files go with the words");
+  assert.deepEqual(page.errors, []);
 });
