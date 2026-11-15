@@ -284,6 +284,7 @@ test("nothing is sent with files the front desk can't take, nor while they save;
   setComposerText(older.field(), "An older Core");
   older.paste([older.newFile("kept.pdf", "kept")]);
   await until(() => older.chips().length === 1, "saved");
+  await until(() => !older.send().disabled, "it can be sent");
   older.send().click();
   await until(() => older.compose().querySelector('[role="alert"]'), "the refusal is shown");
   assert.match(older.compose().querySelector('[role="alert"]').textContent,

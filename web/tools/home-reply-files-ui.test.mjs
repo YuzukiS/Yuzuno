@@ -179,7 +179,9 @@ test("a card's reply saves files to the project, shows them, keeps them with the
   assert.deepEqual(page.stored(CARD_DRAFTS, slot).files.map((file) => [file.id, file.name, file.bytes]),
     [[id(1), "q3 report.pdf", 12], [id(2), "log.csv", 9]], "kept with the draft in this browser");
 
-  page.document.querySelector(".home-card-reply button[type=submit]").click();
+  const sendCard = () => page.document.querySelector(".home-card-reply button[type=submit]");
+  await until(() => sendCard() && !sendCard().disabled, "the reply can be sent");
+  sendCard().click();
   await until(() => page.postsTo("/brief/reply").length === 1, "the reply is sent");
   const [sent] = page.postsTo("/brief/reply");
   assert.deepEqual(sent.body.files, [{ id: id(1), name: "q3 report.pdf", bytes: 12 }, { id: id(2), name: "log.csv", bytes: 9 }]);
@@ -193,7 +195,9 @@ test("a card's reply saves files to the project, shows them, keeps them with the
 
   setComposerText(page.field(), "No files this time");
   await tick();
-  page.document.querySelector(".home-card-reply button[type=submit]").click();
+  const nextSend = () => page.document.querySelector(".home-card-reply button[type=submit]");
+  await until(() => nextSend() && !nextSend().disabled, "the second reply can be sent");
+  nextSend().click();
   await until(() => page.postsTo("/brief/reply").length === 2, "the second reply is sent");
   assert.equal("files" in page.postsTo("/brief/reply")[1].body, false, "no files, no field: an older Core takes it as before");
   assert.deepEqual(page.errors, []);
@@ -245,7 +249,9 @@ test("who can't take files is said before sending; an older Core's refusal sends
   setComposerText(older.field(), "Older Core");
   older.choose([older.file("a.txt", "a", "text/plain")]);
   await until(() => older.chips().length === 1, "saved");
-  older.document.querySelector(".home-card-reply button[type=submit]").click();
+  const olderSend = () => older.document.querySelector(".home-card-reply button[type=submit]");
+  await until(() => olderSend() && !olderSend().disabled, "the reply can be sent");
+  olderSend().click();
   await until(() => older.document.querySelector(".home-card-reply .inline-error"), "the refusal is shown");
   assert.equal(older.document.querySelector(".home-card-reply .inline-error").textContent,
     "This Core can't take files with a reply yet, so nothing was sent. Update Core, or remove the files and send again.");
@@ -259,10 +265,13 @@ test("who can't take files is said before sending; an older Core's refusal sends
   retry.choose([retry.file("b.txt", "b", "text/plain")]);
   await until(() => retry.chips().length === 1, "saved");
   retry.state.fail = 1;
-  retry.document.querySelector(".home-card-reply button[type=submit]").click();
+  const retrySend = () => retry.document.querySelector(".home-card-reply button[type=submit]");
+  await until(() => retrySend() && !retrySend().disabled, "the reply can be sent");
+  retrySend().click();
   await until(() => retry.document.querySelector(".home-card-reply .inline-error"), "the failure is shown");
   await tick();
-  retry.document.querySelector(".home-card-reply button[type=submit]").click();
+  await until(() => !retrySend().disabled, "it can go again");
+  retrySend().click();
   await until(() => retry.postsTo("/brief/reply").length === 2, "it goes again");
   const [first, second] = retry.postsTo("/brief/reply");
   assert.deepEqual(second.body.files, first.body.files);
