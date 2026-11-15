@@ -102,7 +102,7 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
         (policy(vec![deepseek(), deepseek()]), "candidates[1].id", "used twice"),
         (with(&|c| c["id"] = json!("C_1")), "candidates[0].id", "a-z, 0-9"),
         (with(&|c| c["label"] = json!("x".repeat(61))), "candidates[0].label", "60"),
-        (with(&|c| c["harness"] = json!("gemini")), "candidates[0].harness", "claude, codex or opencode"),
+        (with(&|c| c["harness"] = json!("gemini")), "candidates[0].harness", "claude, codex, opencode or dsh"),
         (with(&|c| c["model"] = json!("deepseek-flash")), "candidates[0].model", "<provider>/<model>"),
         (with(&|c| c["reasoningEffort"] = json!("high")), "candidates[0].reasoningEffort", "Only a Codex"),
         (with(&|c| c["unknown"] = json!("wait")), "candidates[0].unknown", "skip"),
@@ -328,4 +328,41 @@ async fn a_machine_condition_is_saved_as_sent_and_each_bad_list_is_refused_at_it
         json!({"id": "c-bad", "enabled": true, "harness": "codex", "model": "", "credential": {"kind": "login"}, "conditions": [{"kind": "Not a kind"}]})])})), vec![]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(refused["error"].as_str().unwrap().contains("dailyApiCap or machine"), "{refused}");
+}
+
+/// YN-119 S3: a dsh candidate runs with a DeepSeek routing key only (dsh has no
+/// login here, §3.10), with one of dsh's own efforts (§3.9) or none.
+#[test]
+fn a_dsh_candidate_takes_a_deepseek_key_and_one_of_its_own_efforts() {
+    let known = Known { keys: vec![("deepseek".into(), Provider::Deepseek), ("openai".into(), Provider::Openai)], codex_homes: vec!["work".into()] };
+    let dsh = |change: &dyn Fn(&mut Value)| {
+        let mut c = json!({"id": "c-dsh", "enabled": true, "harness": "dsh", "model": "deepseek-v4-pro", "tiers": ["strong"],
+            "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": [{"kind": "dailyApiCap", "usd": 3}]});
+        change(&mut c);
+        policy(vec![c])
+    };
+    check(&dsh(&|_| {}), &known).unwrap();
+    for effort in ["off", "low", "high", "max"] {
+        check(&dsh(&|c| c["reasoningEffort"] = json!(effort)), &known).unwrap_or_else(|e| panic!("{effort}: {e:?}"));
+    }
+    check(&dsh(&|c| c["model"] = json!(r#"["deepseek-official","deepseek-flash"]"#)), &known).expect("dsh's own option value, as its session names a model");
+    let cases: Vec<(Value, &str, &str)> = vec![
+        (dsh(&|c| c["reasoningEffort"] = json!("medium")), "candidates[0].reasoningEffort", "off, low, high or max"),
+        (dsh(&|c| c["reasoningEffort"] = json!("")), "candidates[0].reasoningEffort", "off, low, high or max"),
+        (dsh(&|c| c["credential"] = json!({"kind": "login"})), "candidates[0].credential.kind", "DeepSeek routing key"),
+        (dsh(&|c| c["credential"]["keyId"] = json!("openai")), "candidates[0].credential.keyId", "not one a dsh candidate can use"),
+        (dsh(&|c| c["credential"] = json!({"kind": "codexHome", "id": "work"})), "candidates[0].credential.kind", "Codex candidates only"),
+        (dsh(&|c| c["credential"] = json!({"kind": "pool", "manager": "cswap", "accounts": "all"})), "candidates[0].credential.kind",
+            "Claude Code candidates only"),
+        (dsh(&|c| c["conditions"] = json!([{"kind": "quota", "weekLeftPct": 30}])), "candidates[0].conditions[0].kind", "login, a pool"),
+    ];
+    for (sent, path, said) in cases {
+        let why = check(&sent, &known).unwrap_err();
+        assert_eq!(why.path, path, "{why:?}");
+        assert!(why.error.contains(said), "{path}: {why:?}");
+    }
+    // Another harness still takes none: only Codex and dsh do.
+    let opencode = json!({"id": "c-oc", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash", "reasoningEffort": "high",
+        "credential": {"kind": "apiKey", "keyId": "deepseek"}});
+    assert_eq!(check(&policy(vec![opencode]), &known).unwrap_err().error, "Only a Codex or dsh candidate takes a reasoning effort");
 }

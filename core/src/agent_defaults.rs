@@ -38,6 +38,9 @@ const KEY: &str = "agents.defaults";
 pub(crate) fn project_key(project: &str) -> String {
     format!("agents.defaults.project:{project}")
 }
+/// The harnesses a new Agent can have by default. Not OpenCode, nor dsh
+/// (YN-119 §4): a dsh Agent needs a DeepSeek key of its own, chosen when it
+/// is created or given by routing.
 const HARNESSES: [&str; 2] = ["codex", "claude"];
 /// `config` follows the machine's Codex configuration; the others are
 /// Yuzuno's own choice (`permissions::resolve`).
@@ -574,7 +577,7 @@ mod tests {
         let next = change(json!({"codexPermissionPreset":null,"claudePermissionMode":"auto"})).apply(saved);
         assert_eq!(next, AgentDefaults { harness: Some("claude".into()), codex_permission_preset: None, claude_permission_mode: Some("auto".into()), ..Default::default() });
         assert!(serde_json::from_value::<Change>(json!({"model":"x"})).is_err(), "an unknown default is refused");
-        for wrong in [json!({"harness":"opencode"}), json!({"codexPermissionPreset":"yolo"}), json!({"claudePermissionMode":"bypassPermissions"})] {
+        for wrong in [json!({"harness":"opencode"}), json!({"harness":"dsh"}), json!({"codexPermissionPreset":"yolo"}), json!({"claudePermissionMode":"bypassPermissions"})] {
             assert!(change(wrong.clone()).apply(AgentDefaults::default()).validate().is_err(), "{wrong}");
         }
     }
@@ -613,6 +616,13 @@ mod tests {
         assert!(resolve(&none, None, Some("opencode"), Some("ask"), None).is_err());
         let opencode = resolve(&AgentDefaults { codex_permission_preset: Some("full".into()), ..Default::default() }, None, Some("opencode"), None, None).unwrap();
         assert_eq!(opencode.settings, AgentSettings::default());
+        // dsh, as OpenCode: its level is its own row (YN-119 S3), never a Codex or Claude Code default.
+        assert!(resolve(&none, None, Some("dsh"), Some("ask"), None).is_err() && resolve(&none, None, Some("dsh"), None, Some("default")).is_err());
+        let set = AgentDefaults { codex_permission_preset: Some("full".into()), claude_permission_mode: Some("auto".into()), ..Default::default() };
+        let dsh = resolve(&set, None, Some("dsh"), None, None).unwrap();
+        assert_eq!((dsh.harness.as_str(), dsh.settings), ("dsh", AgentSettings::default()));
+        assert!(resolve_model(&set, None, false, &ModelAsk::Named("deepseek-flash".into()), Some(Some("high"))).is_err(),
+            "the create passes dsh's own effort to its own check, not this one (server.rs settle)");
     }
 
     #[test]

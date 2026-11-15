@@ -52,16 +52,17 @@ fn failed_before(tx: &Connection, request_id: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A template made to start as `candidate` says: its harness, model and effort,
-/// and the template's permission level as that harness's own permission (YN-56).
-/// No level, or one the harness doesn't keep (the evaluator passes over such a
-/// candidate), is that harness's defaults for new Agents.
+/// A template made to start as `candidate` says: its harness, model and effort
+/// (Codex's and dsh's, YN-119 §3.9), and the template's permission level as that
+/// harness's own permission (YN-56). No level, or one the harness doesn't keep
+/// (the evaluator passes over such a candidate), is that harness's defaults for
+/// new Agents.
 pub(crate) fn apply(template: &Template, candidate: &Value) -> Template {
     let mut t = template.clone();
     let harness = candidate["harness"].as_str().unwrap_or("codex").to_owned();
     let model = candidate["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned);
     t.model = model;
-    t.reasoning_effort = if harness == "codex" { candidate["reasoningEffort"].as_str().map(str::to_owned) } else { None };
+    t.reasoning_effort = if matches!(harness.as_str(), "codex" | "dsh") { candidate["reasoningEffort"].as_str().map(str::to_owned) } else { None };
     let native = template.permission_level.as_deref().and_then(|level| crate::permission_levels::native(level, &harness));
     t.permission_preset = native.filter(|_| harness == "codex").map(str::to_owned);
     t.permission_mode = native.filter(|_| harness == "claude").map(str::to_owned);
@@ -69,8 +70,10 @@ pub(crate) fn apply(template: &Template, candidate: &Value) -> Template {
     t
 }
 
+/// Whether `candidate` runs on this Core host only: an account pool, a key or a
+/// Codex home, and OpenCode and dsh whatever their credential (YN-119 §4).
 fn host_only(candidate: &Value) -> bool {
-    candidate["credential"]["kind"] != "login" || candidate["harness"] == "opencode"
+    candidate["credential"]["kind"] != "login" || matches!(candidate["harness"].as_str(), Some("opencode" | "dsh"))
 }
 
 /// Whether a dispatch to `machine` that gives its executor `candidate` fixes it on this
@@ -193,7 +196,7 @@ fn unstarted(data: &Value, turns: bool, receipts: bool) -> bool {
     let agent = &data["agent"];
     let remote = &agent["remote"];
     !turns && !receipts && agent["closedAt"].is_null() && agent["threadId"].is_null()
-        && agent["claudeSessionId"].is_null() && agent["opencodeSessionId"].is_null()
+        && agent["claudeSessionId"].is_null() && agent["opencodeSessionId"].is_null() && agent["dshSessionId"].is_null()
         && agent.get("connectionState").is_none_or(|state| state == "disconnected")
         && remote["runtime"].is_null() && remote["launchRequested"] != true && remote["hostInstance"].is_null()
         && data["pending"].as_array().is_none_or(Vec::is_empty)
@@ -581,7 +584,7 @@ impl crate::workspace::Workspace {
 
     /// `waiting` given `candidate` at its start: its Agent record's harness, model
     /// and settings as a dispatch choosing that candidate makes them (YN-66), its
-    /// account or key, and an OpenCode executor's permission level, then its route,
+    /// account or key, and an OpenCode or dsh executor's permission level, then its route,
     /// last, which lets a slot pass start it. A candidate it can't be made as now
     /// (its model can't be checked, say) leaves it waiting, with why, for the next pass.
     async fn start_as(self: &Arc<Self>, waiting: &WaitingExecutor, candidate: &Value, profile: Option<RuntimeProfile>, mut record: Value) -> Result<()> {
@@ -617,7 +620,7 @@ impl crate::workspace::Workspace {
         record["changedAtStart"] = changed;
         // As a dispatch's executor keeps it (collaboration_store/executor_dispatch.rs `Plan::then`).
         // Read-only on every harness: each start applies it (permission_levels.rs, YN-74 ④b).
-        let level = waiting.level().filter(|level| born.harness == "opencode" || *level == crate::permission_levels::READ_ONLY).map(str::to_owned);
+        let level = waiting.level().filter(|level| crate::permission_levels::kept_as_level(&born.harness, level)).map(str::to_owned);
         let crate::server::Born { harness, model, settings } = born;
         self.record_meta(&agent, "routing/chosen", event, move |m| {
             m.agent.harness = harness;

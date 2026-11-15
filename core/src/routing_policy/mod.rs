@@ -35,7 +35,8 @@ const MAX_CONDITIONS: usize = 16;
 const MAX_POOL: usize = 16;
 /// The machines a machine condition may name (YN-139).
 const MAX_MACHINES: usize = 16;
-pub const HARNESSES: &[&str] = &["claude", "codex", "opencode"];
+/// dsh, DeepSeek Harness (YN-119 S3), runs on this Core host only, with a DeepSeek routing key.
+pub const HARNESSES: &[&str] = &["claude", "codex", "opencode", "dsh"];
 
 /// The policy as stored, and its version (0 before the first save).
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +163,7 @@ pub fn check(policy: &Value, known: &Known) -> Result<(), Invalid> {
         boolean(c, &path, "enabled", None)?;
         let harness = c.get("harness").and_then(Value::as_str).unwrap_or_default();
         if !HARNESSES.contains(&harness) {
-            return refuse(format!("{path}harness"), "harness is claude, codex or opencode");
+            return refuse(format!("{path}harness"), "harness is claude, codex, opencode or dsh");
         }
         let model = match c.get("model") {
             None | Some(Value::Null) => "",
@@ -172,10 +173,13 @@ pub fn check(policy: &Value, known: &Known) -> Result<(), Invalid> {
         if harness == "opencode" && !model.is_empty() && crate::opencode_agent::check_model_id(model).is_err() {
             return refuse(format!("{path}model"), "An OpenCode model is named <provider>/<model>, such as deepseek/deepseek-flash");
         }
+        // Codex's, a word its catalog names; dsh's, one of its own (YN-119 §3.9).
         match c.get("reasoningEffort") {
             None | Some(Value::Null) => {}
             Some(Value::String(e)) if harness == "codex" && !e.is_empty() && e.len() <= 32 && e.bytes().all(|b| b.is_ascii_lowercase()) => {}
-            Some(_) if harness != "codex" => return refuse(format!("{path}reasoningEffort"), "Only a Codex candidate takes a reasoning effort"),
+            Some(Value::String(e)) if harness == "dsh" && crate::dsh_agent::EFFORTS.contains(&e.as_str()) => {}
+            Some(_) if harness == "dsh" => return refuse(format!("{path}reasoningEffort"), "A dsh reasoning effort is off, low, high or max"),
+            Some(_) if harness != "codex" => return refuse(format!("{path}reasoningEffort"), "Only a Codex or dsh candidate takes a reasoning effort"),
             Some(_) => return refuse(format!("{path}reasoningEffort"), "A reasoning effort is a word such as high"),
         }
         match c.get("unknown") {
@@ -210,6 +214,8 @@ fn check_credential<'a>(value: &'a Value, path: &str, harness: &str, known: &Kno
     let c = object(value, path, "A credential")?;
     let kind = c.get("kind").and_then(Value::as_str).unwrap_or_default();
     match kind {
+        // dsh has no login of its own here: it starts with a DeepSeek key only (YN-119 §3.10).
+        "login" if harness == "dsh" => return refuse(format!("{path}.kind"), "A dsh candidate runs with a DeepSeek routing key (apiKey)"),
         "login" => {}
         "pool" => {
             if harness != "claude" {
@@ -239,6 +245,7 @@ fn check_credential<'a>(value: &'a Value, path: &str, harness: &str, known: &Kno
             let fits = match harness {
                 "claude" => *provider == Provider::Anthropic,
                 "codex" => *provider == Provider::Openai,
+                "dsh" => *provider == Provider::Deepseek,
                 _ => true,
             };
             if !fits {
@@ -374,3 +381,5 @@ impl Store {
 mod tests;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(all(test, unix))]
+mod dsh_start_tests;

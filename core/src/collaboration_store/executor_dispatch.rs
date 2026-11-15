@@ -125,11 +125,12 @@ impl Plan {
         // A general executor (YN-2) has no template: its role names none.
         let template = Some(self.template.id.clone()).filter(|id| !id.is_empty());
         let (project, task) = (self.project_id.clone(), self.task_id.clone());
-        // An OpenCode executor's permission level, which each start of its server reads
-        // (permission_levels.rs, YN-56 S3); another harness takes it as its own permission,
-        // but read-only is kept on every harness: each start applies more than a mode (YN-74 ④b).
+        // An OpenCode or dsh executor's permission level, which each start of its server
+        // or its dsh reads (permission_levels.rs, YN-56 S3, YN-119 §3.6); another harness
+        // takes it as its own permission, but read-only is kept on every harness: each
+        // start applies more than a mode (YN-74 ④b).
         let level = self.template.permission_level.clone()
-            .filter(|level| self.template.harness() == "opencode" || level == crate::permission_levels::READ_ONLY);
+            .filter(|level| crate::permission_levels::kept_as_level(self.template.harness(), level));
         Box::new(move |db| {
             let at = now();
             let moved = db.execute(
@@ -386,6 +387,13 @@ impl Store {
                     Some(harness) => harness,
                     None => crate::agent_defaults::new_agent_harness(&tx, project.as_deref())?.0,
                 };
+                // dsh has no login of its own: its DeepSeek key is a routing candidate's (YN-119
+                // §3.10), so one not routed would never start (dsh_agent::NO_KEY). Refused now,
+                // before any executor exists.
+                ensure!(harness != "dsh", "dsh_needs_key: {} runs DeepSeek Harness, whose DeepSeek key comes from a routing candidate, \
+                    and routing gives this dispatch none. Use a template that follows routing, with routing on and a DeepSeek Harness \
+                    candidate with a DeepSeek key in Settings → Routing. dsh 执行者的 DeepSeek 密钥来自路由候选，这次派发没有拿到密钥。\
+                    请用跟随路由的模板，加一个 dsh 候选", template.label);
                 (template.resolved(&harness)?, None, None)
             }
         };

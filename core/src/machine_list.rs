@@ -20,18 +20,19 @@ pub(crate) const TOOL: &str = "machines_list";
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": TOOL,
-        "description": "List the machines a dispatch can name, to choose where an executor runs: task_dispatch executor {templateId?, machineId} takes a machine's id from here (or auto, for Core to choose). The machine is a dispatch's choice; a template's machine is only its default. Each machine has id; name; kind: local (this Core host, id local) or ssh (a machine Core reaches over SSH); harnesses, those its executors can use (OpenCode on this Core host only, no Codex on a machine that keeps its Agents contained); executors {limit, running, waiting}: its executor slots, set by the user (running counts those starting or running there, waiting those queued for a slot there); connected: whether Core holds a live connection to an Agent there now (always true for this Core host; false means only that none is connected, not that the machine is down); lastCheck {checkedAt, reachable}: the user's newest manual check, or null, which is no live status; projectFolder: whether your Project has a folder there, which an executor on another machine works in (a dispatch there without one is refused). No address, user, port, key or other connection detail is given. Windows on this PC runs Jobs only and is not listed. For leads of a Project only: executors and other members are refused (not_lead). Reading changes nothing. The user adds machines and sets each one's executor limit in Settings → Machines, where each machine's page shows its id to copy.",
+        "description": "List the machines a dispatch can name, to choose where an executor runs: task_dispatch executor {templateId?, machineId} takes a machine's id from here (or auto, for Core to choose). The machine is a dispatch's choice; a template's machine is only its default. Each machine has id; name; kind: local (this Core host, id local) or ssh (a machine Core reaches over SSH); harnesses, those its executors can use (OpenCode and dsh on this Core host only, no Codex on a machine that keeps its Agents contained); executors {limit, running, waiting}: its executor slots, set by the user (running counts those starting or running there, waiting those queued for a slot there); connected: whether Core holds a live connection to an Agent there now (always true for this Core host; false means only that none is connected, not that the machine is down); lastCheck {checkedAt, reachable}: the user's newest manual check, or null, which is no live status; projectFolder: whether your Project has a folder there, which an executor on another machine works in (a dispatch there without one is refused). No address, user, port, key or other connection detail is given. Windows on this PC runs Jobs only and is not listed. For leads of a Project only: executors and other members are refused (not_lead). Reading changes nothing. The user adds machines and sets each one's executor limit in Settings → Machines, where each machine's page shows its id to copy.",
         "inputSchema": {"type":"object","properties":{},"required":[],"additionalProperties":false},
     })
 }
 
 /// The executor harnesses that can run on a machine: this Core host's (None)
 /// or a registered one's. The same rules a dispatch applies
-/// (executor_templates::machine_named, executor_dispatch remote_machine).
+/// (executor_templates::machine_named, executor_dispatch remote_machine):
+/// OpenCode (while this Core has it on) and dsh on this Core host only.
 fn harnesses(remote: Option<&RemoteMachine>, opencode: bool) -> Vec<&'static str> {
     match remote {
-        None if opencode => vec!["codex", "claude", "opencode"],
-        None => vec!["codex", "claude"],
+        None if opencode => vec!["codex", "claude", "opencode", "dsh"],
+        None => vec!["codex", "claude", "dsh"],
         Some(machine) if machine.contained => vec!["claude"],
         Some(_) => vec!["codex", "claude"],
     }

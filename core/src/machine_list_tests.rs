@@ -79,7 +79,8 @@ async fn a_lead_lists_the_machines_without_connection_details() {
     let (_dir, ws) = fixture().await;
     let listed = ws.collaboration_call(Some("lead"), TOOL, json!({})).await.unwrap();
     let opencode = crate::opencode_agent::enabled();
-    let here: Vec<&str> = if opencode { vec!["codex", "claude", "opencode"] } else { vec!["codex", "claude"] };
+    // dsh runs on this Core host only (YN-119 S3).
+    let here: Vec<&str> = if opencode { vec!["codex", "claude", "opencode", "dsh"] } else { vec!["codex", "claude", "dsh"] };
     assert_eq!(listed, json!({"machines":[
         {"id":"local","name":"this Core host","kind":"local","harnesses":here,
             "executors":{"limit":3,"running":2,"waiting":1},"connected":true,"lastCheck":null,"projectFolder":true},

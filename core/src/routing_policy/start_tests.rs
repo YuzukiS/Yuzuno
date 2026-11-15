@@ -31,6 +31,12 @@ fn claude() -> Value {
     json!({"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"}, "conditions": []})
 }
 
+/// dsh on DeepSeek's key, with one of its own efforts (YN-119 S3).
+fn dsh() -> Value {
+    json!({"id": "c-dsh", "enabled": true, "harness": "dsh", "model": "deepseek-v4-pro", "reasoningEffort": "high",
+        "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": []})
+}
+
 /// A stand-in that never holds: OpenCode on a key that isn't set, or Codex in a home that isn't listed.
 fn stand_in(harness: &str) -> Value {
     match harness {
@@ -167,7 +173,7 @@ async fn an_executor_given_another_harness_at_its_start_is_made_as_a_dispatch_ch
         }
         data
     };
-    for (target, stand) in [(codex(), "opencode"), (claude(), "opencode"), (deepseek(), "codex")] {
+    for (target, stand) in [(codex(), "opencode"), (claude(), "opencode"), (deepseek(), "codex"), (dsh(), "codex")] {
         // A Lab for each: a later target's policy, without this one, would route this
         // one's executors again while they are queued, as their candidate left (YN-138).
         let lab = Lab::new();
@@ -197,13 +203,46 @@ async fn an_executor_given_another_harness_at_its_start_is_made_as_a_dispatch_ch
                     (json!("auto"), json!("gpt-test"), None), "the level auto, as Codex's own"),
                 "claude" => assert_eq!((data["agent"]["settings"]["permissionMode"].clone(), data["agent"]["model"].clone(), level),
                     (json!("auto"), json!("opus"), None), "the level auto, as Claude Code's own"),
-                _ => {
+                "opencode" => {
                     assert_eq!((data["agent"]["model"].clone(), level.as_deref()), (json!("deepseek/deepseek-flash"), Some("auto")),
                         "OpenCode's level is its own row");
                     assert!(profile.is_some_and(|p| p.contains("deepseek")), "and DeepSeek's key is its profile");
                 }
+                // YN-119 S3: dsh's level is its own row, which each start reads, shown in its
+                // settings with its effort; its DeepSeek key is its profile.
+                _ => {
+                    let settings = &data["agent"]["settings"];
+                    assert_eq!((data["agent"]["model"].clone(), settings["reasoningEffort"].clone(), settings["permissionLevel"].clone(), level.as_deref()),
+                        (json!("deepseek-v4-pro"), json!("high"), json!("auto"), Some("auto")), "Auto-approve, not dsh's default Ask you first");
+                    assert_eq!(profile.map(|p| serde_json::from_str::<RuntimeProfile>(&p).unwrap()),
+                        Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
+                }
             }
         }
+    }
+}
+
+/// YN-119 S3: dsh has no login of its own here, and its DeepSeek key is a routing
+/// candidate's: a dispatch that routing gives none (a fixed dsh template, with routing
+/// off or on) is refused before any executor exists, rather than making one that never
+/// starts.
+#[tokio::test]
+async fn a_dsh_executor_routing_gives_no_key_is_refused_before_it_exists() {
+    let lab = Lab::new();
+    lab.ws.store.db.write().unwrap().execute("UPDATE workspace_meta SET value=?1 WHERE key='executors.templates'",
+        [json!({"version": 2, "templates": [{"id": "fixed-dsh", "label": "Fixed dsh", "harness": "dsh", "routing": "fixed",
+            "permissionLevel": "auto"}]}).to_string()]).unwrap();
+    let project = lab.ws.store.projects().unwrap()[0].id.clone();
+    for (n, routing) in [false, true].into_iter().enumerate() {
+        if routing {
+            lab.policy(vec![dsh()]);
+        }
+        let task = lab.ws.collaboration_call(None, "task_create", json!({"requestId": format!("create {n}"), "title": format!("Fixed {n}"), "projectId": project}))
+            .await.unwrap()["task"]["id"].as_str().unwrap().to_owned();
+        let input = json!({"requestId": format!("dispatch {n}"), "taskId": task, "expectedVersion": 1, "executor": {"templateId": "fixed-dsh"}});
+        let refused = lab.ws.collaboration_call(Some("lead"), "task_dispatch", input).await.unwrap_err().to_string();
+        assert!(refused.contains("dsh_needs_key: Fixed dsh runs DeepSeek Harness"), "routing {routing}: {refused}");
+        assert_eq!(lab.ws.store.agents().unwrap().len(), 1, "routing {routing}: no executor was made, only the lead is there");
     }
 }
 
@@ -220,6 +259,11 @@ fn the_template_a_start_settles_with_asks_what_the_dispatchs_template_asks() {
     let asks = |t: &Template| (t.harness.clone(), t.model.clone(), t.reasoning_effort.clone(), t.permission_preset.clone(), t.permission_mode.clone());
     assert_eq!(asks(&apply(&at_start, &candidate)), asks(&apply(&dispatched, &candidate)));
     assert_eq!(asks(&apply(&at_start, &candidate)).2.as_deref(), Some("high"));
+    // dsh's effort is given as Codex's is (YN-119 S3); another harness's candidate gives none.
+    assert_eq!(asks(&apply(&at_start, &dsh())), (Some("dsh".into()), Some("deepseek-v4-pro".into()), Some("high".into()), None, None));
+    let mut opencode = deepseek();
+    opencode["reasoningEffort"] = json!("high");
+    assert_eq!(asks(&apply(&at_start, &opencode)).2, None);
 }
 
 /// The Lead's rule for YN-66 (mail 10254), one way round: a pass that read the

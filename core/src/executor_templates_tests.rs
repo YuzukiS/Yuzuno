@@ -151,7 +151,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"extra":1})), "Unknown template field: extra"),
         (with(json!({"id":"Not ok"})), "A template's id is 1 to 48 lowercase letters"),
         (with(json!({"label":" "})), "A template's label is a line of at most 80 characters"),
-        (with(json!({"harness":"gemini"})), "A template's harness is Codex, Claude Code or OpenCode, not gemini"),
+        (with(json!({"harness":"gemini"})), "A template's harness is Codex, Claude Code, OpenCode or DeepSeek Harness (dsh), not gemini"),
         (with(json!({"permissionMode":"auto"})), "A template takes a permission level (permissionLevel), not a Claude Code permission mode"),
         (with(json!({"permissionPreset":"root"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
         (with(json!({"permissionPreset":"auto"})), "A template takes a permission level (permissionLevel); of Codex's own permissions only config"),
@@ -174,6 +174,11 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         // T-35 S3a: a machine is named by its id.
         (with(json!({"machineId":""})), "A machine is named by its id, at most 128 characters"),
         (with(json!({"harness":"opencode","machineId":"lab-mac"})), "OpenCode executors run on this Core host only, not on lab-mac"),
+        // YN-119 S3: a fixed dsh template, on this Core host only, at a level dsh keeps, with one of its own efforts.
+        (with(json!({"harness":"dsh","machineId":"lab-mac"})), "DeepSeek Harness executors run on this Core host only, not on lab-mac"),
+        (with(json!({"harness":"dsh","permissionLevel":"read-only"})), "DeepSeek Harness doesn't keep the permission level read-only (Read only)"),
+        (with(json!({"harness":"dsh","reasoningEffort":"medium"})), "A DeepSeek Harness template's reasoning effort is off, low, high or max, not medium"),
+        (with(json!({"harness":"dsh","permissionPreset":"config"})), "DeepSeek Harness takes a permission level (permissionLevel), not a Codex permission"),
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
         (with(json!({"namePattern":"{title} done"})), "A name pattern can use {task} and {label}, not {title}"),
         (with(json!({"namePattern":"{task"})), "A name pattern's `{` is not closed"),
@@ -184,7 +189,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     let named = parse_save(&[with(json!({"machineId":"lab-mac"}))], true, &[]).unwrap();
     assert_eq!(named[0].machine_id.as_deref(), Some("lab-mac"), "a template may name a machine (T-35 S3a)");
     // T-35 S3b: or say `auto`, for Core to choose at each dispatch; an OpenCode one's chooses this Core host.
-    for harness in ["codex", "opencode"] {
+    for harness in ["codex", "opencode", "dsh"] {
         let auto = parse_save(&[with(json!({"harness":harness,"machineId":"auto"}))], true, &[]).unwrap();
         assert_eq!(auto[0].machine_id.as_deref(), Some("auto"), "{harness}: a template may say auto");
     }
@@ -225,13 +230,21 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     assert_eq!(read.templates, vec![serde_json::from_value::<Template>(json!({"id":"a","label":"Label a","formerHarness":"codex"})).unwrap()],
         "a template a Core before YN-56 kept follows routing, its harness kept as the way back (an unknown harness is a later Core's)");
     assert!(refused(with(json!({"formerHarness":"codex"}))).starts_with("A fixed template names its harness; formerHarness is for one that follows routing"));
-    assert!(refused(follows_with(json!({"formerHarness":"gemini"}))).starts_with("formerHarness is Codex, Claude Code or OpenCode, not gemini"));
+    assert!(refused(follows_with(json!({"formerHarness":"gemini"}))).starts_with("formerHarness is Codex, Claude Code, OpenCode or DeepSeek Harness (dsh), not gemini"));
     assert!(parse_save(&[follows_with(json!({"formerHarness":"claude"}))], true, &[]).is_ok());
     for level in ["ask", "auto", "full"] {
         assert!(parse_save(&[follows_with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "{level}");
         assert!(parse_save(&[with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "Codex keeps {level}");
         assert!(parse_save(&[with(json!({"harness":"opencode","permissionLevel":level}))], true, &[]).is_ok(), "OpenCode keeps {level} (S3)");
+        assert!(parse_save(&[with(json!({"harness":"dsh","permissionLevel":level}))], true, &[]).is_ok(), "dsh keeps {level} (YN-119 S3)");
     }
+    // A fixed dsh template: a model as dsh names one, any of its efforts with or without a model, OpenCode on or off.
+    for effort in ["off", "low", "high", "max"] {
+        let fixed = parse_save(&[with(json!({"harness":"dsh","model":"deepseek-v4-pro","reasoningEffort":effort,"permissionLevel":"auto"}))], false, &[]).unwrap();
+        assert_eq!((fixed[0].harness(), fixed[0].reasoning_effort.as_deref()), ("dsh", Some(effort)));
+        assert!(parse_save(&[with(json!({"harness":"dsh","reasoningEffort":effort}))], true, &[]).is_ok(), "{effort} without a model: dsh's own default model");
+    }
+    assert!(readable(&with(json!({"harness":"dsh","permissionLevel":"full"}))).is_some(), "this Core's own, not a later Core's");
     assert!(parse_save(&[with(json!({"permissionPreset":"config"}))], true, &[]).is_ok(), "a fixed Codex template on its machine's configuration");
     assert!(parse_save(&[with(json!({"harness":"claude","permissionLevel":"auto","model":"opus"}))], true, &[]).is_ok());
     assert_eq!(read_list(None).unwrap(), Templates::default());

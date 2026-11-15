@@ -47,7 +47,10 @@ pub(crate) const KEY: &str = "executors.templates";
 pub(crate) fn project_key(project: &str) -> String {
     format!("executors.templates.project:{project}")
 }
-const HARNESSES: [&str; 3] = ["codex", "claude", "opencode"];
+/// dsh, DeepSeek Harness (YN-119 S3), runs on this Core host only.
+const HARNESSES: [&str; 4] = ["codex", "claude", "opencode", "dsh"];
+/// The harnesses' names as a refusal lists them.
+const HARNESS_NAMES: &str = "Codex, Claude Code, OpenCode or DeepSeek Harness (dsh)";
 /// An executor's name: `{task}` is the task's ID, `{label}` the template's.
 pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
 /// The general executor's label (YN-2), so its name is `{task} · Executor`.
@@ -96,12 +99,13 @@ pub struct Template {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     /// A fixed template's: for Codex or Claude Code a model of this Core
-    /// host's catalog, for OpenCode as it names one. Unset inherits the
+    /// host's catalog, for OpenCode and dsh as each names one. Unset inherits the
     /// defaults for new Agents (the Project's, then the Workspace's), as an
     /// Agent created without one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// A fixed Codex template's, with a model: one of that model's efforts.
+    /// A fixed dsh template's: off, low, high or max (dsh_agent::EFFORTS).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     /// Its permission level (permission_levels): `ask`, `auto` or `full`.
@@ -280,13 +284,16 @@ fn check_pattern(pattern: &str) -> Result<()> {
 /// A machine a template or a dispatch names for its executors: `local`, a
 /// registered machine's id, which a dispatch checks against the Machines
 /// list, or `auto`, for Core to choose one at each dispatch
-/// (collaboration_store/executor_choice.rs, T-35 S3b). OpenCode runs on this
-/// Core host only (`opencode_create_on`): `auto` chooses it.
+/// (collaboration_store/executor_choice.rs, T-35 S3b). OpenCode and dsh run
+/// on this Core host only (`opencode_create_on`, `dsh_create_on`): `auto`
+/// chooses it.
 pub(crate) fn machine_named(machine: Option<&str>, harness: &str) -> Result<()> {
     let Some(machine) = machine else { return Ok(()) };
     ensure!(!machine.is_empty() && machine.len() <= 128 && !machine.chars().any(char::is_control),
         "A machine is named by its id, at most 128 characters");
-    ensure!(matches!(machine, "local" | "auto") || harness != "opencode", "OpenCode executors run on this Core host only, not on {machine}");
+    if matches!(harness, "opencode" | "dsh") {
+        ensure!(matches!(machine, "local" | "auto"), "{} executors run on this Core host only, not on {machine}", permission_levels::harness_name(harness));
+    }
     Ok(())
 }
 
@@ -312,18 +319,18 @@ impl Template {
             permission_levels::check(level)?;
         }
         let Some(harness) = self.harness.as_deref() else {
-            ensure!(!fixed, "A fixed template names its harness: Codex, Claude Code or OpenCode");
+            ensure!(!fixed, "A fixed template names its harness: {HARNESS_NAMES}");
             ensure!(self.model.is_none() && self.reasoning_effort.is_none(),
                 "A template that follows routing names no model or reasoning effort: routing gives them, or the defaults for new Agents while routing is off. Fix it (routing: fixed) to name them");
             ensure!(self.permission_preset.is_none() && self.permission_mode.is_none(),
                 "A template that follows routing takes a permission level (permissionLevel: ask, auto, full or read-only), not one harness's own permission");
             if let Some(former) = self.former_harness.as_deref() {
-                ensure!(HARNESSES.contains(&former), "formerHarness is Codex, Claude Code or OpenCode, not {former}");
+                ensure!(HARNESSES.contains(&former), "formerHarness is {HARNESS_NAMES}, not {former}");
             }
             machine_named(self.machine_id.as_deref(), "")?;
             return self.validate_rest();
         };
-        ensure!(HARNESSES.contains(&harness), "A template's harness is Codex, Claude Code or OpenCode, not {harness}");
+        ensure!(HARNESSES.contains(&harness), "A template's harness is {HARNESS_NAMES}, not {harness}");
         ensure!(fixed, "A template that follows routing names no harness: routing chooses it, or the default for new Agents while routing is off. Fix it (routing: fixed) to name one");
         ensure!(self.former_harness.is_none(), "A fixed template names its harness; formerHarness is for one that follows routing");
         if let Some(level) = self.permission_level.as_deref().filter(|level| !permission_levels::keeps(Some(*level), harness)) {
@@ -344,7 +351,7 @@ impl Template {
                 ensure!(self.permission_preset.is_none(), "A Codex permission mode does not apply to a Claude Code template");
                 ensure!(self.reasoning_effort.is_none(), "A Claude Code template takes no reasoning effort; each Agent keeps its own");
             }
-            _ => {
+            "opencode" => {
                 ensure!(opencode, "OpenCode Agents aren't enabled on this Core");
                 // A model as OpenCode names it, `<provider>/<model>`, checked against what its
                 // providers offer when the executor first sends (YN-34 S1c); unset is its own default.
@@ -354,6 +361,16 @@ impl Template {
                 ensure!(self.reasoning_effort.is_none(), "An OpenCode template takes no reasoning effort");
                 ensure!(self.permission_preset.is_none(), "OpenCode takes its permissions from its own configuration");
             }
+            // YN-119 S3: a model as dsh names one, checked against what its session offers
+            // at each start (dsh_agent.rs); unset is dsh's own default. Its level was checked
+            // above: dsh keeps ask, auto and full, not read-only.
+            "dsh" => {
+                if let Some(effort) = self.reasoning_effort.as_deref() {
+                    ensure!(crate::dsh_agent::EFFORTS.contains(&effort), "A DeepSeek Harness template's reasoning effort is off, low, high or max, not {effort}");
+                }
+                ensure!(self.permission_preset.is_none(), "DeepSeek Harness takes a permission level (permissionLevel), not a Codex permission");
+            }
+            other => bail!("A template's harness is {HARNESS_NAMES}, not {other}"),
         }
         machine_named(self.machine_id.as_deref(), harness)?;
         self.validate_rest()
