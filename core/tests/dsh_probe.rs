@@ -7,7 +7,8 @@
 //! interrupt, Core starting again and resuming its session, a close and a
 //! delete. And (S2b) the Workspace MCP Core serves, reached by dsh with the
 //! Agent's credential, and a request past dsh's sandbox the user allows once
-//! and then declines. And (S2b-2) its models, listed by a dsh of Core's
+//! and then declines, and whether dsh keeps the Workspace MCP's credential
+//! on disk. And (S2b-2) its models, listed by a dsh of Core's
 //! own and by the Agent's, a model, effort and level set, and an image sent.
 //! Run as opencode_probe.rs is:
 //! `cargo test --test dsh_probe -- --ignored --test-threads=1 --nocapture`.
@@ -261,9 +262,58 @@ async fn a_real_dsh_agent_reaches_the_workspace_mcp_and_asks_past_its_sandbox() 
         assert!(d.pending.is_empty());
     }
 
+    // 3. What dsh keeps on disk (the Lead's question on #988): every file of the Agent's dsh folder, after
+    // a restart that resumed the session with the Workspace MCP named again and its close, searched for
+    // the credential as written and inside dsh's zstd session files, with each file's mode.
+    ws.dsh_stop_all().await;
+    ws.reconnect(&id).await.unwrap();
+    // Read before the close, which may end the credential.
+    let config = ws.collaboration_http_config(&ws.store.agent(&id).unwrap()).await.unwrap().expect("the Workspace MCP");
+    let token = config["headers"]["Authorization"].as_str().unwrap().trim_start_matches("Bearer ").to_owned();
+    assert!(token.len() > 16);
     ws.close_agent(&id).await.unwrap();
+    let folder = data.join("dsh").join(&id);
+    let (files, holding) = kept_on_disk(&folder, &token);
+    for (path, mode, bytes) in &files {
+        println!("probe: on disk {:o} {bytes} {}", mode, path.strip_prefix(&folder).unwrap().display());
+    }
+    println!("probe: the credential on disk: {holding:?} (folder {:o}, home {:o})", mode_of(&folder), mode_of(&folder.join("home")));
     ws.delete_agent(&id).await.unwrap();
+    assert!(!folder.exists(), "its dsh folder went with it");
     println!("probe: closed and deleted");
+}
+
+/// Each file under `dir`, its mode and size, and those holding `secret`: as
+/// written, or once decompressed when it is zstd (dsh's sessions are
+/// `session.v4.jsonl.zstd`, design §1), with zstd's own decoder.
+fn kept_on_disk(dir: &Path, secret: &str) -> (Vec<(PathBuf, u32, u64)>, Vec<String>) {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut files, mut holding, mut todo) = (Vec::new(), Vec::new(), vec![dir.to_path_buf()]);
+    while let Some(at) = todo.pop() {
+        for entry in std::fs::read_dir(&at).unwrap().flatten() {
+            let (path, meta) = (entry.path(), entry.metadata().unwrap());
+            if meta.is_dir() {
+                todo.push(path);
+                continue;
+            }
+            files.push((path.clone(), meta.permissions().mode() & 0o7777, meta.len()));
+            let raw = std::fs::read(&path).unwrap_or_default();
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).contains(secret);
+            let unpacked = path.extension().is_some_and(|e| e == "zstd" || e == "zst")
+                .then(|| std::process::Command::new("zstd").args(["-dc", "--"]).arg(&path).output().ok())
+                .flatten().filter(|out| out.status.success()).map(|out| out.stdout);
+            if text(&raw) || unpacked.as_deref().is_some_and(text) {
+                holding.push(path.strip_prefix(dir).unwrap().display().to_string());
+            }
+        }
+    }
+    files.sort();
+    (files, holding)
+}
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).map_or(0, |m| m.permissions().mode() & 0o7777)
 }
 
 #[tokio::test]
