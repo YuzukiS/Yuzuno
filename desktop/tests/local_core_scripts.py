@@ -47,7 +47,7 @@ KEYS = [
     "format", "user", "uid", "home", "shell", "arch", "glibc", "tools.missing",
     "env.source", "env.note", "root", "root.state", "data", "data.state",
     "tool.node", "tool.git", "tool.gh", "tool.claude", "tool.codex",
-    "tool.python3", "gh.auth", "systemd", "cgroup",
+    "tool.python3", "gh.auth", "init", "systemd", "cgroup",
 ]
 INSTALLED_KEYS = ["root.current", "root.launch", "root.entry"]
 
