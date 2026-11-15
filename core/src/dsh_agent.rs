@@ -1234,8 +1234,10 @@ impl Workspace {
         self.changed(id);
         // Claimed first, so the prompt's end, which drops them, can't come between.
         let open = self.dsh_claim_requests(id, &c).await;
-        c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await?;
+        let cancel = c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await;
+        // Answered whether or not the cancel went: a claimed request nobody else may answer is never left (#988 R1).
         self.dsh_answer_cancelled(id, &c, open).await;
+        cancel?;
         let events = c.events.clone();
         tokio::spawn(async move {
             tokio::time::sleep(STOP_LIMIT).await;
@@ -1486,8 +1488,9 @@ impl Workspace {
         let Some(c) = self.dshs.lock().unwrap().get(id).cloned() else { return Ok(()) };
         let running = c.prompt.lock().unwrap().is_some();
         let open = if running { self.dsh_claim_requests(id, &c).await } else { Vec::new() };
-        if running && c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await.is_ok() {
-            self.dsh_answer_cancelled(id, &c, open).await;
+        let cancelled = running && c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await.is_ok();
+        self.dsh_answer_cancelled(id, &c, open).await;
+        if cancelled {
             // Until its end is recorded: the connection is removed only after.
             let _ = tokio::time::timeout(STOP_LIMIT, async {
                 while self.dsh_current(id, c.generation).is_some()
