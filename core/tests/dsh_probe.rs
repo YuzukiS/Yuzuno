@@ -305,6 +305,11 @@ fn kept_on_disk(dir: &Path, secret: &str) -> (Vec<(PathBuf, u32, u64)>, Vec<Stri
             if text(&raw) || unpacked.as_deref().is_some_and(text) {
                 holding.push(path.strip_prefix(dir).unwrap().display().to_string());
             }
+            // That the search read what dsh wrote: the session's own words are in it once unpacked.
+            if let Some(unpacked) = &unpacked {
+                println!("probe: unpacked {} to {} bytes, holding this session's prompt: {}", path.strip_prefix(dir).unwrap().display(),
+                    unpacked.len(), String::from_utf8_lossy(unpacked).contains("YUZUNO-MCP"));
+            }
         }
     }
     files.sort();
