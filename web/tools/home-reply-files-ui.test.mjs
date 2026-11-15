@@ -250,7 +250,9 @@ test("who can't take files is said before sending; an older Core's refusal sends
   await until(() => far.chips().length === 1, "saved");
   assert.equal(far.document.querySelector(".home-card-reply .home-composer-note[role=status]"), null,
     "a remote Claude Agent takes files now that Core carries them there");
-  assert.equal(far.document.querySelector(".home-card-reply button[type=submit]").disabled, false);
+  // The chip shows before the upload finishes; the reply waits for it.
+  await until(() => !far.document.querySelector(".home-card-reply button[type=submit]").disabled,
+    "the files go with the reply");
 
   // An OpenCode Agent is refused on another machine, where Core copies files to Codex and Claude only.
   const way = await card({ section: { ...report, owner: { agentId: "way", name: "Way", state: "active" } } });
