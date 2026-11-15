@@ -1,4 +1,5 @@
 import { validDraftImages, type DraftImage } from "./image-input.ts";
+import { validDraftFiles, type DraftFile } from "./file-input.ts";
 import { randomId } from "./random-id.ts";
 /** Draft text stays ordered. Paste bodies are immutable values, never labels sent to a Harness. */
 export type PastedText = {
@@ -29,6 +30,7 @@ export type ComposerDraft = {
   nextNumber: number;
   parts: readonly DraftPart[];
   images?: readonly DraftImage[];
+  files?: readonly DraftFile[];
   skills?: readonly DraftSkill[];
   /**
    * Where text added to it from elsewhere came from (an OpenCode revert's
@@ -60,7 +62,7 @@ export function copiedDraft(draft: ComposerDraft): ComposerDraft {
 export const draftText = (draft: ComposerDraft) =>
   draft.parts.map((p) => p.text).join("");
 export const hasDraftContent = (draft: ComposerDraft) =>
-  !!draft.images?.length || draft.parts.some((p) =>
+  !!draft.images?.length || !!draft.files?.length || draft.parts.some((p) =>
     p.kind === "paste" ? p.hasContent : !!p.text.trim(),
   );
 export const lineCount = (text: string) =>
@@ -150,7 +152,7 @@ export function draftIdentityParts(identity: string): { workspace: string; agent
 type SavedPart =
   | { kind: "text"; text: string }
   | Pick<PastedText, "kind" | "id" | "number" | "bodyId">;
-type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; skills?: DraftSkill[]; origins?: string[] };
+type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; files?: DraftFile[]; skills?: DraftSkill[]; origins?: string[] };
 
 /**
  * What an Agent's saved draft holds, read from its manifest alone (T-193): no
@@ -167,7 +169,7 @@ type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?:
  */
 export type SavedDraftSummary =
   | { state: "none" }
-  | { state: "saved" | "legacy"; textChars: number; pastes: number; images: number; skills: number }
+  | { state: "saved" | "legacy"; textChars: number; pastes: number; images: number; files: number; skills: number }
   | { state: "damaged"; reason: string };
 export function savedDraftSummary(storage: Pick<Storage, "getItem">, agent: string): SavedDraftSummary {
   const raw = storage.getItem(prefix + agent);
@@ -178,13 +180,14 @@ export function savedDraftSummary(storage: Pick<Storage, "getItem">, agent: stri
       const texts = saved.parts.filter((p: SavedPart) => p?.kind === "text" && typeof p.text === "string") as { text: string }[];
       const pastes = saved.parts.filter((p: SavedPart) => p?.kind === "paste").length;
       const images = Array.isArray(saved.images) ? saved.images.length : 0;
+      const files = Array.isArray(saved.files) ? saved.files.length : 0;
       const skills = Array.isArray(saved.skills) ? saved.skills.length : 0;
-      if (!texts.some((p) => p.text.trim()) && !pastes && !images) return { state: "none" };
-      return { state: "saved", textChars: texts.reduce((n, p) => n + p.text.length, 0), pastes, images, skills };
+      if (!texts.some((p) => p.text.trim()) && !pastes && !images && !files) return { state: "none" };
+      return { state: "saved", textChars: texts.reduce((n, p) => n + p.text.length, 0), pastes, images, files, skills };
     }
     const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
     const text = typeof legacy?.[agent] === "string" ? legacy[agent] : "";
-    return text.trim() ? { state: "legacy", textChars: text.length, pastes: 0, images: 0, skills: 0 } : { state: "none" };
+    return text.trim() ? { state: "legacy", textChars: text.length, pastes: 0, images: 0, files: 0, skills: 0 } : { state: "none" };
   } catch (error) {
     return { state: "damaged", reason: error instanceof Error ? error.message : String(error) };
   }
@@ -283,6 +286,7 @@ export class DraftStorage {
     )
       throw new Error("Invalid saved draft");
     if (saved.images !== undefined && !validDraftImages(saved.images)) throw new Error("Invalid saved image references");
+    if (saved.files !== undefined && !validDraftFiles(saved.files)) throw new Error("Invalid saved file references");
     if (saved.skills !== undefined && !validDraftSkills(saved.skills)) throw new Error("Invalid saved skill references");
     if (saved.origins !== undefined && !validDraftOrigins(saved.origins)) throw new Error("Invalid saved draft origins");
     // A skill is this Agent's: one saved for another is never offered here.
@@ -312,6 +316,7 @@ export class DraftStorage {
     this.bodies.set(agent, keys);
     this.manifests.set(agent, raw);
     return { version: 1, nextNumber: saved.nextNumber, parts, ...(saved.images?.length ? { images: saved.images } : {}),
+      ...(saved.files?.length ? { files: saved.files } : {}),
       ...(skills.length ? { skills } : {}), ...(saved.origins?.length ? { origins: saved.origins } : {}) };
   }
 
@@ -366,6 +371,7 @@ export class DraftStorage {
         nextNumber: draft.nextNumber,
         parts,
         ...(draft.images?.length ? { images: draft.images } : {}),
+        ...(draft.files?.length ? { files: draft.files } : {}),
         ...(draft.skills?.length ? { skills: draft.skills } : {}),
         ...(draft.origins?.length ? { origins: draft.origins } : {}),
       });

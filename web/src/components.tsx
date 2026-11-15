@@ -6,6 +6,7 @@ import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff"
 import { parseMessageLink, parseReportLink, useMessageLinks } from "./deep-link";
 import { usePointFix } from "./point-fix";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { FileAttachments } from "./FileAttachments";
 import { ImageViewer } from "./ImageViewer";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
@@ -1043,6 +1044,7 @@ export function Turn({
               return response.blob();
             },
           }))} />
+          <FileAttachments files={item._yuzunoFiles || []} agentId={agent.id} />
         </>
       )}
     </div>

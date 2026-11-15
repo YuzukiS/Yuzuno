@@ -1,5 +1,5 @@
 import { textLabel } from "./message-content";
-import { clipboardImages } from "./image-input";
+import { splitDropped } from "./file-input";
 import { touchKeyboard } from "./touch-input";
 import { returnKey, type SendKey } from "./device-preferences";
 import {
@@ -75,6 +75,7 @@ type Props = {
   onSkill?: (skill: SlashCommand) => void;
   onSubmit: () => void;
   onImages?: (files: File[]) => void;
+  onFiles?: (files: File[]) => void;
   /** Which key sends (device-preferences.ts); unset, as `auto`. */
   sendKey?: SendKey;
   /** More attributes of the field itself (YN-103): a form's text answer
@@ -344,12 +345,13 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 return true;
               },
               paste(event, v) {
-                const files = clipboardImages(event.clipboardData);
-                if (files.length && !v.state.readOnly) {
+                const dropped = splitDropped(event.clipboardData);
+                if ((dropped.images.length || dropped.files.length) && !v.state.readOnly) {
                   event.preventDefault();
                   const text = event.clipboardData?.getData("text/plain");
                   if (text) v.dispatch(shouldFoldPaste(text) ? insertPaste(v.state, text) : v.state.update(v.state.replaceSelection(text), { userEvent: "input.paste" }));
-                  callbacks.current.onImages?.(files);
+                  if (dropped.images.length) callbacks.current.onImages?.(dropped.images);
+                  if (dropped.files.length) callbacks.current.onFiles?.(dropped.files);
                   return true;
                 }
                 const text = event.clipboardData?.getData("text/plain");
@@ -382,12 +384,15 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
               drop(event, v) {
                 const internal = dragSource.current === v;
                 dragSource.current = null;
-                // Images dropped in go with the draft, as pasted ones do
-                // (T-44); CodeMirror would read them as text.
-                const images = clipboardImages(event.dataTransfer);
-                if (!internal && images.length) {
+                // Images and files dropped in go with the draft, as pasted
+                // ones do (T-44); CodeMirror would read them as text.
+                const dropped = splitDropped(event.dataTransfer);
+                if (!internal && (dropped.images.length || dropped.files.length)) {
                   event.preventDefault();
-                  if (!v.state.readOnly) callbacks.current.onImages?.(images);
+                  if (!v.state.readOnly) {
+                    if (dropped.images.length) callbacks.current.onImages?.(dropped.images);
+                    if (dropped.files.length) callbacks.current.onFiles?.(dropped.files);
+                  }
                   return true;
                 }
                 // Let CodeMirror move/copy ordinary text using its normal drag
@@ -412,7 +417,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 update.state.field(pasteField).anchors
             )
               return;
-            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images, skills: callbacks.current.draft.skills };
+            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images, files: callbacks.current.draft.files, skills: callbacks.current.draft.skills };
             published.current = next;
             callbacks.current.onChange(next);
           }),

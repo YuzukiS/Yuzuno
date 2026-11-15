@@ -55,6 +55,7 @@ const words = strings({
   chars: (count: number) => `${count} ${count === 1 ? "character" : "characters"} of text`,
   pastes: (count: number) => `${count} pasted ${count === 1 ? "text" : "texts"}`,
   images: (count: number) => `${count} ${count === 1 ? "image" : "images"} (referenced; not saved in the file)`,
+  files: (count: number) => `${count} ${count === 1 ? "file" : "files"} (referenced; not saved in the file)`,
   skills: (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`,
   join: ", ",
   legacy: "Saved by an earlier version: ",
@@ -95,6 +96,7 @@ const words = strings({
   chars: (count) => `文本 ${count} 个字符`,
   pastes: (count) => `粘贴的文本 ${count} 段`,
   images: (count) => `图片 ${count} 张（仅引用；不保存在文件中）`,
+  files: (count) => `文件 ${count} 个（仅引用；不保存在文件中）`,
   skills: (count) => `技能 ${count} 个`,
   join: "，",
   legacy: "由早期版本保存：",
@@ -340,6 +342,7 @@ function describe(row: DraftRow, t: Text): string {
   const parts = [t.chars(summary.textChars)];
   if (summary.pastes) parts.push(t.pastes(summary.pastes));
   if (summary.images) parts.push(t.images(summary.images));
+  if (summary.files) parts.push(t.files(summary.files));
   if (summary.skills) parts.push(t.skills(summary.skills));
   return `${row.attributed ? "" : t.noWorkspace}${summary.state === "legacy" ? t.legacy : ""}${parts.join(t.join)}`;
 }
