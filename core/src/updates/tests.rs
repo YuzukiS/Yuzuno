@@ -23,8 +23,22 @@ struct FakeRuntime {
     restore_failed: AtomicBool,
     restored: AtomicUsize,
     flush_failed: AtomicBool,
+    /// Its Workspace's admission, for the late writer below.
+    admission: std::sync::OnceLock<Arc<Admission>>,
+    /// The flush (counted from 1) after which a late event-lane writer
+    /// enters and ends on its own 200 ms later (YN-169); 0 for none.
+    writer_on_flush: AtomicUsize,
+    /// Native work shows up while detaching (YN-169).
+    busy_after_detach: AtomicBool,
+    /// One connected native session to detach and restore.
+    session: AtomicBool,
+    restored_ids: std::sync::Mutex<Vec<String>>,
+    ended: AtomicUsize,
 }
 impl Runtime for FakeRuntime {
+    fn update_ended(&self) {
+        self.ended.fetch_add(1, Ordering::SeqCst);
+    }
     fn workspace_id(&self) -> Result<String> {
         Ok("same-workspace".into())
     }
@@ -40,14 +54,29 @@ impl Runtime for FakeRuntime {
         })
     }
     fn sessions(&self) -> Result<Vec<SessionRef>> {
-        Ok(vec![])
+        Ok(if self.session.load(Ordering::SeqCst) {
+            vec![SessionRef {
+                agent_id: "agent".into(),
+                harness: "codex".into(),
+                native_id: "thread-1".into(),
+            }]
+        } else {
+            vec![]
+        })
     }
     fn health(&self) -> Result<Value> {
         Ok(json!({"storageReady":true,"apiReady":true,"schema":2,"recordsReady":true}))
     }
     fn flush(&self) -> BoxFuture<'_, Result<()>> {
         async {
-            self.flushed.fetch_add(1, Ordering::SeqCst);
+            let flush = self.flushed.fetch_add(1, Ordering::SeqCst) + 1;
+            if flush == self.writer_on_flush.load(Ordering::SeqCst) {
+                let writer = self.admission.get().unwrap().enter_event();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    drop(writer);
+                });
+            }
             anyhow::ensure!(
                 !self.flush_failed.load(Ordering::SeqCst),
                 "injected pending record write failure"
@@ -65,6 +94,9 @@ impl Runtime for FakeRuntime {
                 !self.detach_failed.load(Ordering::SeqCst),
                 "transport stopped but consumer did not acknowledge"
             );
+            if self.busy_after_detach.load(Ordering::SeqCst) {
+                self.busy.store(true, Ordering::SeqCst);
+            }
             Ok(())
         }
         .boxed()
@@ -72,6 +104,10 @@ impl Runtime for FakeRuntime {
     fn restore<'a>(&'a self, sessions: &'a [SessionRef]) -> BoxFuture<'a, Result<usize>> {
         async move {
             self.restored.fetch_add(1, Ordering::SeqCst);
+            self.restored_ids
+                .lock()
+                .unwrap()
+                .extend(sessions.iter().map(|s| s.native_id.clone()));
             anyhow::ensure!(
                 !self.restore_failed.load(Ordering::SeqCst),
                 "one session is unavailable"
@@ -161,6 +197,8 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
     std::fs::create_dir(&data).unwrap();
     drop(crate::store::Store::open(&data.join("workspace.sqlite")).unwrap());
     let runtime = Arc::new(FakeRuntime::default());
+    let admission = Arc::new(Admission::default());
+    runtime.admission.set(admission.clone()).ok().unwrap();
     let controller = Controller::new(
         Some(layout.clone()),
         Some(a),
@@ -171,7 +209,7 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
             codex: "fixture".into(),
         },
         runtime.clone(),
-        Arc::new(Admission::default()),
+        admission,
     )
     .unwrap();
     Fixture {
@@ -969,4 +1007,127 @@ fn the_files_the_desktop_app_reads_keep_their_names_and_fields() {
     );
     let current = serde_json::to_value(ReleaseRef { release_id: "core-a".into(), manifest_sha256: "0".repeat(64) }).unwrap();
     assert_eq!(current["releaseId"], "core-a");
+}
+
+async fn send(f: &Fixture, op: &super::state::Operation, command: super::control::Command) -> Result<Value> {
+    let request = super::control::Request { operation_id: op.id.clone(), token: op.token.clone(), command };
+    super::control::dispatch(&f.controller, request).await
+}
+
+/// On 2026-11-15 a seal failed the update: a background read entered on the
+/// event lane, which sealing does not close, just as the final barrier
+/// looked (YN-169). The barrier now waits such a writer out.
+#[tokio::test]
+async fn a_writer_that_enters_after_the_final_flush_is_waited_out() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    // Flush 1 is before the first seal, flush 2 the final barrier's.
+    f.runtime.writer_on_flush.store(2, Ordering::SeqCst);
+    let sealed = send(&f, &op, Command::Seal).await.unwrap();
+    assert_eq!(sealed["sealed"], true);
+    assert!(f.runtime.flushed.load(Ordering::SeqCst) >= 3, "flushed again after the writer ended");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert!(f.controller.admission.snapshot().sealed);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 0, "nothing was reattached");
+}
+
+/// Native work found after detach takes the seal back to Waiting with its
+/// sessions reattached; the helper's next Seal then holds (YN-169). The
+/// update has not ended, so no continue-after-update notice is due (YN-131).
+#[tokio::test]
+async fn native_work_after_detach_goes_back_to_waiting_and_the_next_seal_holds() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.session.store(true, Ordering::SeqCst);
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    let back = send(&f, &op, Command::Seal).await.unwrap();
+    assert_eq!(back["sealed"], false);
+    assert_eq!(back["retry"], 1);
+    assert!(back["reason"].as_str().unwrap().contains("Mori: Turn is running"), "{back}");
+    assert_eq!(*f.runtime.restored_ids.lock().unwrap(), vec!["thread-1".to_owned()]);
+    let again = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(again.phase, Phase::Waiting);
+    assert!(again.sessions.is_empty() && again.total_sessions == 0 && again.error.is_none());
+    assert!(again.old_process == op.old_process && again.deadline == op.deadline);
+    let admission = f.controller.admission.snapshot();
+    assert!(!admission.sealed);
+    assert_eq!(admission.operation_id.as_deref(), Some(op.id.as_str()));
+    assert!(f.controller.admission.enter_work().is_err(), "new work still waits");
+    drop(f.controller.admission.enter_completion().unwrap());
+    assert_eq!(f.runtime.ended.load(Ordering::SeqCst), 0);
+    // The Agent's Turn ends; the helper's next round seals.
+    f.runtime.busy_after_detach.store(false, Ordering::SeqCst);
+    f.runtime.busy.store(false, Ordering::SeqCst);
+    assert_eq!(send(&f, &again, Command::Seal).await.unwrap()["sealed"], true);
+    let flushing = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(flushing.phase, Phase::Flushing);
+    assert_eq!(flushing.sessions.len(), 1);
+    assert_eq!(f.runtime.ended.load(Ordering::SeqCst), 0);
+}
+
+/// Three returns to Waiting at most (YN-169); the fourth seal that meets
+/// native work fails as before, naming it, and Abort reopens this Core.
+#[tokio::test]
+async fn a_seal_goes_back_to_waiting_at_most_three_times_then_fails_as_before() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    for attempt in 1..=3 {
+        f.runtime.busy.store(false, Ordering::SeqCst);
+        assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["retry"], attempt);
+    }
+    f.runtime.busy.store(false, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Seal).await.unwrap_err().to_string();
+    assert!(error.contains("Native work arrived during final flush (Mori: Turn is running)"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 3);
+    send(&f, &op, Command::Abort).await.unwrap();
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Failed);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 4, "Abort gives the sessions back");
+    assert!(f.controller.admission.enter_work().is_ok());
+}
+
+/// A seal that cannot reattach stays Flushing, sealed, and fails as before:
+/// the helper's Abort restores the sessions again and reopens (YN-169).
+#[tokio::test]
+async fn a_seal_that_cannot_reattach_stays_flushing_for_abort() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    f.runtime.restore_failed.store(true, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Seal).await.unwrap_err().to_string();
+    assert!(error.contains("one session is unavailable"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert!(f.controller.admission.snapshot().sealed);
+    send(&f, &op, Command::Abort).await.unwrap();
+    let failed = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(failed.phase, Phase::Failed);
+    assert!(failed.error.unwrap().contains("Reconnect affected sessions manually"));
+    assert!(f.controller.admission.enter_work().is_ok());
+}
+
+/// Stop's barrier waits a late writer out too, and still refuses native
+/// work (YN-169).
+#[tokio::test]
+async fn stop_waits_out_a_late_writer_and_still_refuses_native_work() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["sealed"], true);
+    // Flushes 1 and 2 were the seal's; Stop's barrier flushes next.
+    f.runtime.writer_on_flush.store(3, Ordering::SeqCst);
+    assert_eq!(send(&f, &op, Command::Stop).await.unwrap()["stopping"], true);
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Stopping);
+
+    let f = fixture();
+    let op = waiting(&f).await;
+    assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["sealed"], true);
+    f.runtime.busy.store(true, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Stop).await.unwrap_err().to_string();
+    assert!(error.contains("Core still has accepted work"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
 }
