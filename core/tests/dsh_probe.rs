@@ -7,7 +7,9 @@
 //! interrupt, Core starting again and resuming its session, a close and a
 //! delete. And (S2b) the Workspace MCP Core serves, reached by dsh with the
 //! Agent's credential, and a request past dsh's sandbox the user allows once
-//! and then declines. Run as opencode_probe.rs is:
+//! and then declines. And (S2b-2) its models, listed by a dsh of Core's
+//! own and by the Agent's, a model, effort and level set, and an image sent.
+//! Run as opencode_probe.rs is:
 //! `cargo test --test dsh_probe -- --ignored --test-threads=1 --nocapture`.
 #![cfg(target_os = "linux")]
 
@@ -262,4 +264,94 @@ async fn a_real_dsh_agent_reaches_the_workspace_mcp_and_asks_past_its_sandbox() 
     ws.close_agent(&id).await.unwrap();
     ws.delete_agent(&id).await.unwrap();
     println!("probe: closed and deleted");
+}
+
+#[tokio::test]
+#[ignore = "needs a real dsh, named by YUZUNO_DSH_BIN, python3, and no network"]
+async fn a_real_dsh_lists_its_models_takes_settings_and_an_image() {
+    assert!(std::env::var_os("YUZUNO_DSH_BIN").is_some(), "YUZUNO_DSH_BIN names the dsh to probe");
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (data, work) = (root.join("data"), root.join("work"));
+    std::fs::create_dir(&work).unwrap();
+    let model = Model::start(&root);
+    std::env::set_var("YUZUNO_DSH_BASE_URL", format!("http://127.0.0.1:{}/v1", model.port));
+    let ws = open(&data, &work);
+    routing_keys::Store::of(&data).put_local("deepseek", routing_keys::Provider::Deepseek,
+        routing_keys::Secret::new("sk-placeholder-not-a-key".into())).unwrap();
+    let names = |listed: &Value| -> Vec<String> { listed["models"].as_array().unwrap().iter().map(|m| m["model"].as_str().unwrap().to_owned()).collect() };
+
+    // 1. A new Agent's list: a dsh of Core's own, its folder gone after.
+    let catalog = ws.dsh_catalog().await.unwrap();
+    println!("probe: catalog {catalog}");
+    let listed = names(&catalog);
+    assert!(listed.contains(&"deepseek-flash".to_owned()) && listed.contains(&"deepseek-v4-pro".to_owned()), "{listed:?}");
+    assert!(std::fs::read_dir(data.join("dsh-catalog")).unwrap().next().is_none(), "the catalog's folder is removed");
+
+    let agent = ws.dsh_create_on("Probe".into(), work.to_string_lossy().into(), String::new(), None, None, None, None,
+        Some("ask".into()), Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() })).await.unwrap();
+    let id = agent.id.clone();
+    let d = until(&ws, &id, "connected", 60, |d| d.agent.connection_state == "connected" || d.agent.error.is_some()).await;
+    assert_eq!(d.agent.connection_state, "connected", "{:?}", d.agent.error);
+    let home = data.join("dsh").join(&id).join("home");
+    let live = ws.dsh_agent_models(&id).await.unwrap();
+    println!("probe: its dsh's models {live}");
+    assert_eq!(names(&live), listed, "its own dsh lists the same");
+    let send = |ws: &Arc<Workspace>, id: &str, client: &str, text: &str, images: Vec<String>| {
+        let (ws, id) = (ws.clone(), id.to_owned());
+        let input = serde_json::from_value::<MessageInput>(json!({"clientMessageId": client, "text": text, "images": images})).unwrap();
+        async move { ws.send_message(&id, input).await.unwrap_or_else(|refused| panic!("refused: {refused:#}")) }
+    };
+    let ended = |ws: Arc<Workspace>, id: String, turn: String| async move {
+        let d = until(&ws, &id, "the Turn ends", 60, |d| turn_status(d, &turn) != "inProgress").await;
+        turn_status(&d, &turn)
+    };
+
+    // 2. A model and an effort, set on its live session: its next request asks for that model.
+    ws.dsh_settings(&id, "deepseek-v4-pro".into(), Some(Some("low".into())), None).await.unwrap();
+    let pro = send(&ws, &id, "s1", "Say hello.", vec![]).await.turn_id.unwrap();
+    assert_eq!(ended(ws.clone(), id.clone(), pro).await, "completed");
+    let asked = model.requests().last().unwrap()["model"].clone();
+    println!("probe: after the model was set, the request asked for {asked}");
+    assert!(asked.as_str().unwrap_or_default().contains("v4-pro"), "{asked}");
+
+    // 3. A level: a new dsh in the new sandbox, the same session.
+    let before = holding(&home);
+    let session = ws.store.detail(&id).unwrap().agent.dsh_session_id.clone();
+    ws.dsh_settings(&id, "deepseek-flash".into(), None, Some("full".into())).await.unwrap();
+    let after = holding(&home);
+    let d = ws.store.detail(&id).unwrap();
+    println!("probe: level full: dsh pids {before:?} -> {after:?}, session {:?}", d.agent.dsh_session_id);
+    assert!(!after.is_empty() && before.iter().all(|pid| !after.contains(pid)), "a new dsh");
+    assert_eq!((d.agent.connection_state.as_str(), &d.agent.dsh_session_id), ("connected", &session), "resumed");
+    let flash = send(&ws, &id, "s2", "Say hello again.", vec![]).await.turn_id.unwrap();
+    assert_eq!(ended(ws.clone(), id.clone(), flash).await, "completed");
+
+    // 4. An image, as dsh's model takes it: uploaded first, then named in the request.
+    let saved = data.join("input-images").join(&id);
+    std::fs::create_dir_all(&saved).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 6).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    use sha2::Digest;
+    let picture = format!("{}.png", sha2::Sha256::digest(&png).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    std::fs::write(saved.join(&picture), &png).unwrap();
+    let looked = send(&ws, &id, "s3", "What is in this image?", vec![picture]).await.turn_id.unwrap();
+    let status = ended(ws.clone(), id.clone(), looked.clone()).await;
+    let d = ws.store.detail(&id).unwrap();
+    let last = model.requests().last().unwrap().clone();
+    let uploads: Vec<Value> = std::fs::read_to_string(&model.log).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|r| r["kind"] == "upload").collect();
+    println!("probe: image turn {status}: {}; uploads {uploads:?}; last request images {} files {}",
+        d.turns.iter().find(|t| t["id"] == looked.as_str()).unwrap()["items"], last["imageBlocks"], last["fileRefs"]);
+    assert_eq!(status, "completed");
+    assert!(last["imageBlocks"].as_u64().unwrap_or(0) + last["fileRefs"].as_u64().unwrap_or(0) > 0, "the image reached the model: {last}");
+
+    ws.close_agent(&id).await.unwrap();
+    ws.delete_agent(&id).await.unwrap();
+    println!("probe: closed and deleted");
+}
+
+fn turn_status(d: &AgentDetail, id: &str) -> String {
+    d.turns.iter().find(|t| t["id"] == id).map_or_else(String::new, |t| t["status"].as_str().unwrap_or_default().to_owned())
 }

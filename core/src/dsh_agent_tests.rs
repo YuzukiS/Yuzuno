@@ -596,3 +596,150 @@ async fn the_workspace_says_whether_dsh_can_start_and_which() {
     assert_eq!(installed(&program, &home).await["available"], false, "older than MIN");
     assert_eq!(installed(&lab.root.join("missing"), &home).await, json!({"available": false, "version": null, "label": null}));
 }
+
+/// Settings between Turns (§3.9, §3.6): a model and an effort its dsh offers
+/// are set on its live session and saved; one it doesn't, or any during a
+/// Turn, is refused with nothing saved; a level takes a new dsh, which
+/// resumes the session in the new sandbox.
+#[cfg(unix)]
+#[tokio::test]
+async fn settings_go_to_the_live_session_and_a_level_to_a_new_dsh() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.turn_ended(&first).await;
+    let agent = lab.ws.dsh_settings(ID, "deepseek-v4-pro".into(), Some(Some("max".into())), None).await.unwrap();
+    assert_eq!((agent.model.as_str(), agent.settings.reasoning_effort.as_deref()), ("deepseek-v4-pro", Some("max")));
+    let set: Vec<(String, String)> = lab.log(ID).iter().filter(|r| r["kind"] == "set")
+        .map(|r| (r["configId"].as_str().unwrap().into(), r["value"].as_str().unwrap().into())).collect();
+    assert_eq!(set, [("model".into(), "[\"deepseek-official\",\"deepseek-v4-pro\"]".into()), ("reasoning_effort".into(), "max".into())], "on its live session");
+    for (model, effort, why) in [("gpt-9", None, "dsh 不提供模型"), ("deepseek-v4-pro", Some(Some("ultra")), "off、low、high 或 max"),
+        ("deepseek-v4-pro", Some(None), "不能回到默认"), ("", None, "不能留空")] {
+        let refused = lab.ws.dsh_settings(ID, model.into(), effort.map(|e: Option<&str>| e.map(str::to_owned)), None).await.unwrap_err();
+        assert!(refused.to_string().contains(why), "{why}: {refused}");
+    }
+    let running = lab.send("c2", "SLEEP").await.unwrap().turn_id.unwrap();
+    let busy = lab.ws.dsh_settings(ID, "deepseek-flash".into(), None, None).await.unwrap_err();
+    assert!(busy.to_string().contains("一轮进行中"), "{busy}");
+    lab.ws.interrupt(ID).await.unwrap();
+    lab.turn_ended(&running).await;
+    let d = lab.ws.store.detail(ID).unwrap();
+    assert_eq!((d.agent.model.as_str(), d.agent.settings.reasoning_effort.as_deref()), ("deepseek-v4-pro", Some("max")), "nothing refused was saved");
+    let refused = lab.ws.dsh_settings(ID, "deepseek-v4-pro".into(), None, Some("read-only".into())).await.unwrap_err();
+    assert!(refused.to_string().contains("read-only"), "{refused}");
+
+    let agent = lab.ws.dsh_settings(ID, "deepseek-v4-pro".into(), None, Some("full".into())).await.unwrap();
+    assert_eq!(agent.settings.permission_level.as_deref(), Some("full"));
+    assert_eq!(lab.ws.store.permission_level(ID).unwrap().as_deref(), Some("full"));
+    let runs = lab.acp_runs(ID);
+    assert_eq!(runs.len(), 2, "a new dsh");
+    assert_eq!(runs[1]["env"]["DSH_PERMISSION_MODE"], "danger-full-access");
+    assert!(lab.log(ID).iter().any(|r| r["kind"] == "resumed" && r["sessionId"] == "ses-1"), "the same session");
+    let d = lab.ws.store.detail(ID).unwrap();
+    assert_eq!((d.agent.connection_state.as_str(), d.agent.status.as_str()), ("connected", "idle"));
+    let after = lab.send("c3", "after").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.turn_ended(&after).await["status"], "completed");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What a dsh Agent may choose (§3.9): its live dsh's models, by name, its
+/// current one the default; before it has a dsh, and for a new Agent, a dsh
+/// of Core's own lists them, its folder gone after.
+#[cfg(unix)]
+#[tokio::test]
+async fn models_come_from_the_agents_dsh_or_a_dsh_of_cores_own() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let names = |listed: &Value| -> Vec<(String, String, bool)> { listed["models"].as_array().unwrap().iter()
+        .map(|m| (m["model"].as_str().unwrap().into(), m["displayName"].as_str().unwrap().into(), m["isDefault"] == true)).collect() };
+    let expected = vec![("deepseek-flash".to_owned(), "DeepSeek-V4.1-Flash".to_owned(), true), ("deepseek-v4-pro".into(), "DeepSeek-V4-Pro".into(), false)];
+    let catalog = lab.ws.dsh_agent_models(ID).await.unwrap();
+    assert_eq!(names(&catalog), expected, "before it has a dsh: Core's own");
+    assert_eq!(catalog["version"], "0.2.2-rc.3");
+    let left: Vec<_> = std::fs::read_dir(lab.root.join("data/dsh-catalog")).unwrap().collect();
+    assert!(left.is_empty(), "the catalog's dsh folder is removed");
+    assert!(lab.acp_runs(ID).is_empty(), "the Agent's own dsh did not start");
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.turn_ended(&first).await;
+    lab.ws.dsh_settings(ID, "deepseek-v4-pro".into(), None, None).await.unwrap();
+    let live = lab.ws.dsh_agent_models(ID).await.unwrap();
+    let mut chosen = expected.clone();
+    chosen[0].2 = false;
+    chosen[1].2 = true;
+    assert_eq!(names(&live), chosen, "its live dsh's, the one it set the default");
+    assert_eq!(lab.ws.dsh_catalog().await.unwrap()["models"], catalog["models"], "a new Agent's list");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message's images go to dsh as ACP image blocks after its text (§3.9),
+/// shown as Codex's are; a dsh whose initialize says it takes none is sent
+/// none, and nothing is recorded.
+#[cfg(unix)]
+#[tokio::test]
+async fn images_go_as_acp_image_blocks_to_a_dsh_that_takes_them() {
+    let lab = Lab::new();
+    let saved = lab.root.join("data/input-images").join(ID);
+    std::fs::create_dir_all(&saved).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(4, 3).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    let picture = format!("{}.png", sha256_bytes(&png));
+    std::fs::write(saved.join(&picture), &png).unwrap();
+    let with = |client: &str| serde_json::from_value::<crate::model::MessageInput>(json!({"clientMessageId": client, "text": "look", "images": [picture]})).unwrap();
+
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let turn = lab.ws.send_message(ID, with("c1")).await.unwrap().turn_id.unwrap();
+    let ended = lab.turn_ended(&turn).await;
+    assert_eq!(ended["status"], "completed");
+    let prompt = lab.log(ID).into_iter().find(|r| r["kind"] == "prompt").unwrap();
+    assert_eq!(prompt["blocks"][0]["type"], "text");
+    assert_eq!((&prompt["blocks"][1]["type"], &prompt["blocks"][1]["mimeType"]), (&json!("image"), &json!("image/png")));
+    assert!(prompt["blocks"][1]["bytes"].as_u64().unwrap() > 0);
+    let shown = &item(&ended, "userMessage")[0]["content"];
+    assert_eq!(shown[1], json!({"type": "localImage", "path": saved.canonicalize().unwrap().join(&picture)}));
+    lab.ws.close_agent(ID).await.unwrap();
+
+    const OTHER: &str = "dsh-blind";
+    let lab = Lab::new();
+    let saved = lab.root.join("data/input-images").join(OTHER);
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(saved.join(&picture), &png).unwrap();
+    lab.agent(OTHER, Some("ask"), Some("deepseek"), json!({"initialize": {"agentCapabilities": {"promptCapabilities": {"image": false}}}}), json!({}));
+    let refused = lab.ws.send_message(OTHER, with("c1")).await.unwrap_err();
+    assert!(refused.to_string().contains("不接收图片"), "{refused}");
+    assert!(!lab.log(OTHER).iter().any(|r| r["kind"] == "prompt"), "nothing was sent");
+    let d = lab.ws.store.detail(OTHER).unwrap();
+    assert!(d.turns.is_empty() && d.message_receipts.is_empty(), "no Turn or receipt was recorded");
+    lab.ws.close_agent(OTHER).await.unwrap();
+}
+
+/// The user's disconnect (§3.8): only while idle; its dsh stopped, nothing
+/// starts it again until they reconnect, and that resumes the session.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_idle_dsh_agent_can_be_disconnected_and_reconnected() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let running = lab.send("c1", "SLEEP").await.unwrap().turn_id.unwrap();
+    let refused = lab.ws.disconnect_agent(ID).await.unwrap_err();
+    assert!(refused.to_string().contains("Not disconnected"), "{refused}");
+    lab.ws.interrupt(ID).await.unwrap();
+    lab.turn_ended(&running).await;
+    let agent = lab.ws.disconnect_agent(ID).await.unwrap();
+    assert!(agent.disconnected_at.is_some());
+    assert!(lab.ws.dshs.lock().unwrap().get(ID).is_none());
+    assert!(lab.log(ID).iter().any(|r| r["kind"] == "stdinEnded"), "its dsh stopped");
+    let refused = lab.send("c2", "hello").await.unwrap_err();
+    assert!(refused.to_string().contains("Reconnect"), "{refused}");
+    assert_eq!(lab.acp_runs(ID).len(), 1, "nothing started it again");
+    let d = lab.ws.reconnect(ID).await.unwrap();
+    assert_eq!(d.agent.connection_state, "connected");
+    assert!(lab.log(ID).iter().any(|r| r["kind"] == "resumed" && r["sessionId"] == "ses-1"));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+#[cfg(unix)]
+fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}

@@ -1424,7 +1424,10 @@ struct SettingsInput {
     settings: Option<AgentSettings>,
     #[serde(default, rename = "permissionMode")]
     permission_mode: Option<String>,
-    /// Claude only. Absent keeps the saved effort; null returns to default.
+    /// dsh only: ask, auto or full (YN-119 §3.6).
+    #[serde(default, rename = "permissionLevel")]
+    permission_level: Option<String>,
+    /// Claude, OpenCode (its variant) and dsh. Absent keeps the saved effort; null returns to default.
     #[serde(default, deserialize_with = "present")]
     effort: Option<Option<String>>,
 }
@@ -1435,8 +1438,14 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
     if harness == "dsh" {
-        // Chosen when it is created; changing them comes with YN-119 S2b.
-        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型、推理强度和权限暂时只能在新建时选择。A DeepSeek Harness Agent's model, effort and permissions are chosen when it is created, for now.").into());
+        // Its model, effort and level (YN-119 §3.6, §3.9); nothing of Codex's or Claude's.
+        if input.settings.is_some() || input.permission_mode.is_some() {
+            return Err(anyhow::anyhow!("dsh Agent 只接受模型、推理强度和权限级别。A dsh Agent takes a model, an effort and a permission level only.").into());
+        }
+        return Ok(Json(serde_json::to_value(ws.dsh_settings(&id, input.model, input.effort, input.permission_level).await?)?));
+    }
+    if input.permission_level.is_some() {
+        return Err(anyhow::anyhow!("permissionLevel is a dsh Agent's").into());
     }
     if harness == "opencode" {
         // The model and its variant only (T-10, `effort` names the variant);
@@ -1511,8 +1520,7 @@ async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) 
     } else if harness == "opencode" {
         ws.opencode_agent_catalog(&id).await?
     } else if harness == "dsh" {
-        // Read from the Agent's dsh with YN-119 S2b.
-        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型目录暂不可读。A DeepSeek Harness Agent's models can't be read yet.").into());
+        ws.dsh_agent_models(&id).await?
     } else {
         ws.agent_catalog(&id).await?
     }))
@@ -1551,8 +1559,8 @@ async fn models(State(ws): State<Arc<Workspace>>, Query(query): Query<ModelsQuer
     match query.harness.as_deref().unwrap_or("codex") {
         "claude" => return Ok(Json(ws.claude_catalog().await?)),
         "opencode" if crate::opencode_agent::enabled() => return Ok(Json(crate::opencode_agent::catalog())),
-        // Read from a dsh of its own with YN-119 S2b (§3.9).
-        "dsh" => return Err(anyhow::anyhow!("DeepSeek Harness 的模型目录暂不可读。DeepSeek Harness's models can't be read yet.").into()),
+        // Read from a dsh of Core's own (YN-119 §3.9).
+        "dsh" => return Ok(Json(ws.dsh_catalog().await?)),
         "codex" => {},
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     }

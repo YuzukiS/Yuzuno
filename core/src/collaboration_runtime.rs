@@ -484,7 +484,7 @@ impl Workspace {
             }
             // A new Turn while dsh is idle (YN-119 §3.5).
             PeerDeliveryTarget::Start if detail.agent.harness == "dsh" => {
-                self.dsh_send_locked(id, text, Some(&client_id)).await
+                self.dsh_send_locked(id, text, Some(&client_id), &[]).await
             }
             PeerDeliveryTarget::Start => self.send_locked(id, text, Some(&client_id)).await,
         };
