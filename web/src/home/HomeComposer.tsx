@@ -1,11 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { ImagePlus, SquareDashedMousePointer } from "lucide-react";
+import { ImagePlus, Paperclip, SquareDashedMousePointer } from "lucide-react";
 import { PastedTextComposer, type ComposerHandle } from "../PastedTextComposer";
 import { ComposerAddMenu, type ComposerAddItem } from "../ComposerAddMenu";
 import { ImageAttachments } from "../ImageAttachments";
+import { FileAttachments } from "../FileAttachments";
+import { splitDropped } from "../file-input";
 import { PointFix, type PointFixInto } from "../PointFix";
 import type { PointFixSource } from "../point-fix";
-import { clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL } from "../image-input";
+import { MAX_IMAGES, MAX_IMAGE_TOTAL } from "../image-input";
 import { useDevicePreferences, type SendKey } from "../device-preferences";
 import { draftText, type ComposerDraft } from "../composer-draft";
 import { draftFromTextBlocks, draftTextBlocks, type TextBlock } from "../message-content";
@@ -13,15 +15,16 @@ import { strings, useLanguage, useStrings } from "../i18n";
 import { shellText } from "../shell-text";
 import { TipText } from "../Tip";
 import { homeImageUrl, sameImages, useHomeImages, type HomeImage } from "./home-images";
-
+import { homeFileUrl, sameFiles, useHomeFiles, type HomeFile } from "./home-files";
 /**
  * A reply's words as Home keeps them (YN-91): the whole text, as it is sent,
  * and where each paste block is in it, as the conversation marks pastes on a
  * message (`draftTextBlocks`). Without blocks it is plain text, as replies
  * kept before this were. With the images the user attached (YN-134), saved
- * to the Project's images, when its field takes them (`attach`).
+ * to the Project's images, and the files (YN-145), saved to its files, when
+ * its field takes them (`attach`).
  */
-export type ReplyWords = { text: string; blocks?: TextBlock[]; images?: HomeImage[] };
+export type ReplyWords = { text: string; blocks?: TextBlock[]; images?: HomeImage[]; files?: HomeFile[] };
 
 export function replyWords(draft: ComposerDraft): ReplyWords {
   const blocks = draftTextBlocks(draft);
@@ -29,7 +32,8 @@ export function replyWords(draft: ComposerDraft): ReplyWords {
 }
 
 const sameWords = (a: ReplyWords, b: ReplyWords) =>
-  a.text === b.text && JSON.stringify(a.blocks ?? []) === JSON.stringify(b.blocks ?? []) && sameImages(a.images, b.images);
+  a.text === b.text && JSON.stringify(a.blocks ?? []) === JSON.stringify(b.blocks ?? []) && sameImages(a.images, b.images) &&
+  sameFiles(a.files, b.files);
 
 /** `words` with these images, and without the field when there are none. */
 function withImages(words: ReplyWords, images: readonly HomeImage[]): ReplyWords {
@@ -38,14 +42,23 @@ function withImages(words: ReplyWords, images: readonly HomeImage[]): ReplyWords
   return images.length ? { ...rest, images: [...images] } : rest;
 }
 
+/** `words` with these files, and without the field when there are none. */
+function withFiles(words: ReplyWords, files: readonly HomeFile[]): ReplyWords {
+  const rest = { ...words };
+  delete rest.files;
+  return files.length ? { ...rest, files: [...files] } : rest;
+}
+
 /** The field's handle: its editor's, and Point & Fix on an image to add to it (YN-134), when it takes images. */
 export type HomeComposerHandle = ComposerHandle & { markUp?: (image: { id: string; name?: string }, provenance: string) => void };
 
-/** Where a field's images go (YN-134): the Project's images, and why the message can't take them now. */
+/** Where a field's images and files go (YN-134, YN-145): the Project's own, and why the message can't take them now. */
 export type HomeAttach = {
   projectId: string;
   /** Why who the message goes to can't take images, when the page knows it; shown, with images, under them. */
   refusal?: string | null;
+  /** Takes files too (YN-145); `refusal` says why who it goes to can't, when the page knows it. */
+  files?: { refusal?: string | null };
 };
 
 const text = strings({
@@ -91,9 +104,9 @@ export const HomeComposer = forwardRef<
      * text makes Return a new line (`modEnter`). Unset, as this device sends
      * from the conversation. */
     sendKey?: SendKey;
-    /** Takes images, saved to this Project's images (YN-134). */
+    /** Takes images and files, saved to this Project's own (YN-134, YN-145). */
     attach?: HomeAttach;
-    /** Whether its images are being saved: nothing is sent until they are. */
+    /** Whether its images or files are being saved: nothing is sent until they are. */
     onUploading?: (busy: boolean) => void;
   }
 >(function HomeComposer(
@@ -117,24 +130,44 @@ export const HomeComposer = forwardRef<
     onWords(next);
   };
   const current = () => kept.current?.words.images ?? [];
+  const currentFiles = () => kept.current?.words.files ?? [];
 
   const uploads = useHomeImages(attach?.projectId ?? "");
-  const busy = uploads.busy(slot);
+  const files = useHomeFiles(attach?.projectId ?? "");
+  const filesOn = !!attach?.files;
+  const busy = uploads.busy(slot) || files.busy(slot);
   useEffect(() => {
     onUploading?.(busy);
     // Told when it changes; the callback is the caller's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
-  const add = (files: readonly File[]) => {
+  const add = (picked: readonly File[]) => {
     if (!attach || readOnly) return;
-    void uploads.add(slot, files, current, (image) => {
-      if (!current().some((saved) => saved.id === image.id)) emit(withImages(kept.current!.words, [...current(), image]));
+    void uploads.add(slot, picked, current, (image) => {
+      if (!current().some((saved) => saved.id === image.id))
+        emit(withFiles(withImages(kept.current!.words, [...current(), image]), currentFiles()));
     });
   };
-  const remove = (id: string) => emit(withImages(kept.current!.words, current().filter((image) => image.id !== id)));
+  const addFiles = (picked: readonly File[]) => {
+    if (!attach || readOnly) return;
+    void files.add(slot, picked, currentFiles, (file) => {
+      if (!currentFiles().some((saved) => saved.id === file.id && saved.name === file.name))
+        emit(withFiles(withImages(kept.current!.words, current()), [...currentFiles(), file]));
+    });
+  };
+  const remove = (id: string) =>
+    emit(withFiles(withImages(kept.current!.words, current().filter((image) => image.id !== id)), currentFiles()));
+  const removeFile = (file: { id: string; name: string }) =>
+    emit(
+      withFiles(
+        withImages(kept.current!.words, current()),
+        currentFiles().filter((saved) => !(saved.id === file.id && saved.name === file.name)),
+      ),
+    );
 
   const [pointFix, setPointFix] = useState<PointFixSource | null>(null);
   const imagePicker = useRef<HTMLInputElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
   function markUp(image: { id: string; name?: string }, provenance: string) {
     if (!attach || readOnly) return;
@@ -169,7 +202,7 @@ export const HomeComposer = forwardRef<
           const full = room(fresh);
           if (full) return full;
           editor.current?.append(notes);
-          emit(withImages(kept.current!.words, [...current(), ...fresh]));
+          emit(withFiles(withImages(kept.current!.words, [...current(), ...fresh]), currentFiles()));
           requestAnimationFrame(() => editor.current?.focusEnd());
           return null;
         },
@@ -187,7 +220,10 @@ export const HomeComposer = forwardRef<
   }));
 
   const images = words.images ?? [];
+  const keptFiles = words.files ?? [];
   const error = attach ? uploads.error(slot) : "";
+  const fileError = filesOn ? files.error(slot) : "";
+  const fileRefusal = attach?.files?.refusal ?? null;
   const items: ComposerAddItem[] = attach
     ? [
         {
@@ -205,7 +241,20 @@ export const HomeComposer = forwardRef<
           tip: <TipText title="Point & Fix" body={shell.markUpBody} />,
           onSelect: () => pointFixPicker.current?.click(),
         },
-        // More go here (a file, YN-145 F7).
+        ...(filesOn
+          ? [
+              {
+                key: "files",
+                label: files.busy(slot) ? shell.savingFiles : shell.addFiles,
+                icon: <Paperclip size={16} />,
+                tip: fileRefusal ? undefined : <TipText body={shell.fileRules} />,
+                note: fileRefusal ?? undefined,
+                unavailable: !!fileRefusal,
+                disabled: files.busy(slot),
+                onSelect: () => filePicker.current?.click(),
+              },
+            ]
+          : []),
       ]
     : [];
   return (
@@ -225,10 +274,12 @@ export const HomeComposer = forwardRef<
         if (event.dataTransfer.types.includes("Files")) event.preventDefault();
       } : undefined}
       onDrop={attach ? (event) => {
-        // Images dropped on the box go with the words, as pasted ones do; the editor takes those dropped on its text.
+        // Images and files dropped on the box go with the words, as pasted ones do; the editor takes those dropped on its text.
         if (event.defaultPrevented || !event.dataTransfer.types.includes("Files") || !event.currentTarget.contains(event.target as Node)) return;
         event.preventDefault();
-        add(clipboardImages(event.dataTransfer));
+        const dropped = splitDropped(event.dataTransfer);
+        if (dropped.images.length) add(dropped.images);
+        if (filesOn && dropped.files.length) addFiles(dropped.files);
       } : undefined}
     >
       <PastedTextComposer
@@ -243,7 +294,8 @@ export const HomeComposer = forwardRef<
         attributes={attributes}
         onSubmit={onSubmit}
         onImages={attach ? add : undefined}
-        onChange={(draft) => emit(withImages(replyWords(draft), current()))}
+        onFiles={filesOn ? addFiles : undefined}
+        onChange={(draft) => emit(withFiles(withImages(replyWords(draft), current()), currentFiles()))}
       />
       {attach && (
         <>
@@ -254,8 +306,17 @@ export const HomeComposer = forwardRef<
             annotateThumbnails
             onAnnotate={readOnly ? undefined : (image) => markUp(image, attachedImage(image.name || PASTED))}
           />
+          {filesOn && (
+            <FileAttachments
+              files={keptFiles}
+              href={(file) => homeFileUrl(attach.projectId, file.id, file.name)}
+              onRemove={readOnly ? undefined : removeFile}
+            />
+          )}
           {error && <p className="inline-error home-composer-note" role="alert">{error}</p>}
+          {fileError && <p className="inline-error home-composer-note" role="alert">{fileError}</p>}
           {images.length > 0 && attach.refusal && <p className="inline-error home-composer-note" role="status">{attach.refusal}</p>}
+          {keptFiles.length > 0 && fileRefusal && <p className="inline-error home-composer-note" role="status">{fileRefusal}</p>}
           {!readOnly && (
             <div className="home-composer-tools">
               <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages}
@@ -264,6 +325,12 @@ export const HomeComposer = forwardRef<
                   event.target.value = "";
                   add(files);
                 }} />
+              {filesOn && <input ref={filePicker} type="file" multiple hidden aria-label={shell.chooseFiles}
+                onChange={(event) => {
+                  const files = Array.from(event.target.files || []);
+                  event.target.value = "";
+                  addFiles(files);
+                }} />}
               <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
@@ -272,7 +339,7 @@ export const HomeComposer = forwardRef<
                 }} />
               <ComposerAddMenu
                 label={shell.addMenu}
-                tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp]} />}
+                tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, ...(filesOn ? [shell.addFiles] : [])]} />}
                 menuLabel={shell.addMenuLabel}
                 busy={busy}
                 items={items}

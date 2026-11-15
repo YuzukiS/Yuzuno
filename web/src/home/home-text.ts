@@ -254,6 +254,10 @@ export const homeText = strings({
   sentImages: (n: number) => `${n} image${n === 1 ? "" : "s"} went with it.`,
   cantTakeImages: (agent: string) => `${agent} can't receive images; Codex, Claude and OpenCode Agents can. Remove the images or choose someone else.`,
   olderCoreImages: "This Core can't take images with a reply yet, so nothing was sent. Update Core, or remove the images and send again.",
+  // Files on a reply (YN-145).
+  sentFiles: (n: number) => `${n} file${n === 1 ? "" : "s"} went with it.`,
+  cantTakeFiles: (agent: string) => `${agent} can't receive files; Codex, Claude and OpenCode Agents can. Remove the files or choose someone else.`,
+  olderCoreFiles: "This Core can't take files with a reply yet, so nothing was sent. Update Core, or remove the files and send again.",
   olderCore:
     "This Core can't bind a reply to a card version yet, so nothing was sent. Update Core to reply to cards, or write to the Agent in its conversation.",
   repliesNotSent: "Replies not sent",
@@ -633,6 +637,9 @@ export const homeText = strings({
   sentImages: (n) => `带了 ${n} 张图片。`,
   cantTakeImages: (agent) => `${agent} 不能接收图片（Codex、Claude 和 OpenCode Agent 可以）。移除图片，或换一个收件人。`,
   olderCoreImages: "这个 Core 还不能随回复发送图片，所以什么都没有发出。请更新 Core，或移除图片后再发。",
+  sentFiles: (n) => `带了 ${n} 个文件。`,
+  cantTakeFiles: (agent) => `${agent} 不能接收文件（Codex、Claude 和 OpenCode Agent 可以）。移除文件，或换一个收件人。`,
+  olderCoreFiles: "这个 Core 还不能随回复发送文件，所以什么都没有发出。请更新 Core，或移除文件后再发。",
   olderCore: "此 Core 还不能把回复绑定到卡片版本，因此没有发送任何内容。请更新 Core 后再回复卡片，或在会话中写给该 Agent。",
   repliesNotSent: "未发送的回复",
   keptInHistory: (title) => `你对“${title}”的回复已保留：那张卡片现在在历史中，已标为已看。`,

@@ -47,11 +47,15 @@ function fileKind(name: string, fallback: string) {
 export function FileAttachments({
   files,
   agentId,
+  href,
   onRemove,
 }: {
   files: readonly PreviewFile[];
   /** The Agent whose files these are, for a sent message's download. */
   agentId?: string;
+  /** Where a sent message's file downloads from, when not its Agent's own
+   * route: Home keeps its files on the Project (home-files.ts). */
+  href?: (file: PreviewFile) => string;
   onRemove?: (file: PreviewFile) => void;
 }) {
   const t = useStrings(text);
@@ -83,7 +87,7 @@ export function FileAttachments({
               >
                 <a
                   className="input-file-body"
-                  href={fileUrl(owner, file.id, file.name)}
+                  href={href?.(file) ?? fileUrl(owner, file.id, file.name)}
                   download={file.name}
                   aria-label={t.download(name)}
                 >

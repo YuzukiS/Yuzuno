@@ -5,6 +5,7 @@
 import { api, errorText, HttpError, post, remove } from "../api";
 import type { MessageReceipt } from "../types";
 import type { HomeData, MachineLive, MachineLoad, RefreshCadence, Section, SectionRefresh } from "./types";
+import type { HomeFile } from "./home-files";
 import { randomId } from "../random-id";
 
 const project = (id: string) => `/projects/${encodeURIComponent(id)}/brief`;
@@ -39,6 +40,9 @@ export type HomeReplyInput = {
    * Project's images: Core copies them to whoever the reply goes to. Only
    * sent with any, so a reply without goes to an older Core as before. */
   images?: string[];
+  /** Files the user attached on Home (YN-145), as the Project's files saved
+   * them: Core copies them to whoever the reply goes to. Only sent with any. */
+  files?: HomeFile[];
 };
 
 export type LinkedRepositories = {
@@ -216,6 +220,10 @@ export const olderCore = (error: unknown) =>
 export const olderCoreImages = (error: unknown) =>
   error instanceof HttpError && /unknown field `images`/.test(errorText(error));
 
+/** A Core from before Home's files (YN-145) refuses a reply or a request that has any: nothing was sent. */
+export const olderCoreFiles = (error: unknown) =>
+  error instanceof HttpError && /unknown field `files`/.test(errorText(error));
+
 /** Core's reason without its code, or that an older Core refused the reply. */
 export function explain(error: unknown) {
   if (olderCore(error)) return OLDER_CORE;
@@ -238,6 +246,8 @@ export async function sendReply(
     askVersion?: number; workspaceId?: string; form?: HomeReplyInput["form"]; shown?: string;
     /** Images the user attached (YN-134), by their IDs in the Project's images. */
     images?: string[];
+    /** Files the user attached (YN-145), as the Project's files saved them. */
+    files?: HomeFile[];
   },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
@@ -252,7 +262,8 @@ export async function sendReply(
     (kept.askVersion ?? null) === (reply.askVersion ?? null) &&
     (kept.workspaceId ?? null) === (reply.workspaceId ?? null) &&
     JSON.stringify(kept.form ?? null) === JSON.stringify(reply.form ?? null) &&
-    JSON.stringify(kept.images ?? []) === JSON.stringify(reply.images ?? []);
+    JSON.stringify(kept.images ?? []) === JSON.stringify(reply.images ?? []) &&
+    JSON.stringify(kept.files ?? []) === JSON.stringify(reply.files ?? []);
   const input: Outbound = same
     ? kept
     : {
@@ -263,8 +274,9 @@ export async function sendReply(
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),
         ...(reply.form ? { form: reply.form } : {}),
-        // Only with images: a reply without goes to an older Core as before.
+        // Only with images or files: a reply without goes to an older Core as before.
         ...(reply.images?.length ? { images: reply.images } : {}),
+        ...(reply.files?.length ? { files: reply.files } : {}),
         shown: reply.shown ?? reply.text,
         sentAt: new Date().toISOString(),
       };
