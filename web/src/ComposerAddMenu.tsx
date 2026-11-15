@@ -36,7 +36,7 @@ export function ComposerAddMenu({ label, tip, menuLabel, items, disabled, busy }
   menuLabel: string;
   items: ComposerAddItem[];
   disabled?: boolean;
-  /** Images are being saved: "+" turns while they are. */
+  /** Images or files are being saved: "+" turns while they are. */
   busy?: boolean;
 }) {
   const [open, setOpen] = useState(false);

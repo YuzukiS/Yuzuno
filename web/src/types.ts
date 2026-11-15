@@ -130,6 +130,11 @@ export interface Workspace {
 export interface NativeItem {
   _yuzunoTextBlocks?: import("./message-content").TextBlock[];
   _yuzunoInputText?: string;
+  /**
+   * The files a user message carried (YN-145), as Core restored them from its
+   * receipt: each with the path its Agent reads it at.
+   */
+  _yuzunoFiles?: (import("./file-input").SavedFile & { path: string })[];
   id: string;
   type: string;
   /** A particular collaboration reminder added to an existing turn, or
@@ -548,6 +553,8 @@ export interface MessageInput {
   textBlocks?: import("./message-content").TextBlock[];
   /** Codex only. Sent beside the input; Core keeps them on the receipt. */
   skills?: SkillRef[];
+  /** Files attached to the message (YN-145), sent beside the input. */
+  files?: import("./file-input").SavedFile[];
   clarification?: import("./intelligent-ui/clarification").ClarificationAnswer;
   images?: string[];
   clientMessageId: string;
@@ -559,6 +566,9 @@ export interface MessageReceipt {
   binding?: { turnId: string; itemId: string; userIndex: number };
   input: MessageInput;
   skills?: SkillRef[];
+  /** The files the message carried, and where each Agent reads it (YN-145). */
+  files?: import("./file-input").SavedFile[];
+  file_paths?: string[];
   /**
    * Claude adds "queued" (sent to Claude, not yet read) and "unknown" (its
    * connection ended before it said it read it; never sent again).

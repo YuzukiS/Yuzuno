@@ -2325,7 +2325,7 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
     await pause();
     assert.deepEqual(
       [...row.querySelectorAll('.composer-add-menu [role="menuitem"]')].map((b) => b.getAttribute("aria-label")),
-      ["Add images", "Mark up an image", "Ask for an interactive result"],
+      ["Add images", "Mark up an image", "Add files", "Ask for an interactive result"],
     );
     row.querySelector('.composer-tools button[aria-label="Add"]').click();
     await pause();
