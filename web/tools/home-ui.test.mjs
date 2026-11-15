@@ -3427,13 +3427,14 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   } finally {
     p.close();
   }
-  // A lone answer card takes its row, so the row has no hole.
+  // A lone answer card takes two columns, not the row: from three columns a card grows to at most twice its own
+  // size and the rest of the row stays empty (YN-157).
   home.projects.find((entry) => entry.project.id === "p-app").brief.sections.splice(2, 1);
   const q = await mount({ open: "p-app", home, before: fourColumns });
   try {
     await waitFor(() => card(q, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     assert.equal(card(q, "p-app", "draft"), null);
-    assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "4", "a lone answer card spans its row");
+    assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "2", "a lone answer card takes two columns");
     assert.deepEqual(q.errors, []);
   } finally {
     q.close();
