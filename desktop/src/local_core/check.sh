@@ -248,3 +248,5 @@ out tool.python3 "$(version_of /usr/bin/python3)"
 out gh.auth "$gh_auth"
 out systemd "$systemd"
 out cgroup "$cgroup"
+# DeepSeek Harness (YN-119 S4b), last, so that a reader of the keys before it reads them as before.
+out tool.dsh "$(version_of dsh)"

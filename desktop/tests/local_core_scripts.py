@@ -50,6 +50,8 @@ KEYS = [
     "tool.python3", "gh.auth", "systemd", "cgroup",
 ]
 INSTALLED_KEYS = ["root.current", "root.launch", "root.entry"]
+# DeepSeek Harness (YN-119 S4b), printed last.
+KEYS += ["tool.dsh"]
 
 # Real programs the stand-in PATH links to: what the script and the
 # installation use.
@@ -192,6 +194,7 @@ class CheckScript(unittest.TestCase):
                 self.assertEqual(printed["tool.gh"], "gh version 2.45.0")
                 self.assertEqual(printed["tool.claude"], "-")
                 self.assertEqual(printed["tool.codex"], "-")
+                self.assertEqual(printed["tool.dsh"], "-")
                 python = "/usr/bin/python3"
                 self.assertEqual(printed["tool.python3"].startswith("Python 3"), os.access(python, os.X_OK))
                 self.assertEqual(printed["gh.auth"], "ok")

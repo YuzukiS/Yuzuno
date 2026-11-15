@@ -63,7 +63,7 @@ The Windows desktop installer is published there too, from `desktop-0.3.0`; the 
 | --- | --- |
 | **Core host** | Linux x86_64, including WSL2; release bundles require glibc 2.35+. macOS Core is planned. |
 | **Client** | Chromium-based browsers; the Windows desktop app ([installer](https://github.com/YuzukiS/Yuzuno/releases) or [built from source](desktop/README.md)); a phone's browser through the [phone entry](docs/independent-core.md#connect-from-a-phone-tailscale-serve). The Mac and iPhone apps are built from source only; there is no Linux desktop app. |
-| **Agent runtimes** | Installed, authenticated Codex CLI and/or Claude Code through the Claude Agent SDK bridge. |
+| **Agent runtimes** | Installed, authenticated Codex CLI and/or Claude Code through the Claude Agent SDK bridge. Optionally [DeepSeek Harness](docs/dsh.md) (`dsh`, Node.js 24.9+), on the Core host only, with a DeepSeek routing key. |
 | **Remote Agents** | Codex and Claude on prepared Linux/macOS SSH hosts, using each host's files and CLI login. |
 | **Local Jobs** | A systemd user manager and delegated cgroup v2 resources on the Linux Core host. Jobs execute as the Core OS user, outside the Agent sandbox. |
 

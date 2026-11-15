@@ -10,7 +10,7 @@ Which part of Yuzuno updates how, what is released, and what to try first when s
 | **Windows desktop app** | The native window and its connection page; it shows the web UI that Core serves | Settings → Updates → Desktop app, for a copy installed by its own installer, through a Core at a loopback address. Otherwise, run the installer by hand ([Desktop updates](../desktop/README.md#desktop-updates)). | `Yuzuno Desktop 0.3.0 for Windows` (tag `desktop-0.3.0`) |
 
 - **What a desktop update changes:** the window draws the web UI from Core, so most of what you see changes with a **Core** update, in the browser and the desktop app alike: Home, Settings, the recovery page. A desktop update changes only the native shell: the window, the connection page, link handling and the desktop's own updater.
-- **What neither update changes:** the native Codex and Claude CLIs and their sign-ins.
+- **What neither update changes:** the native Codex and Claude CLIs and their sign-ins, and the OpenCode and DeepSeek Harness (`dsh`) you installed: each is yours to update.
 
 ## What core.12 brought (2026-10-19)
 

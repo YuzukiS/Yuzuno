@@ -287,6 +287,12 @@ pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item
         items.push(present(report, id, key, "Not found on PATH"));
     }
 
+    // DeepSeek Harness (YN-119 S4b): optional, as Codex and Claude Code are,
+    // and only in a report that names it (a check script from before it doesn't).
+    if report.get("tool.dsh").is_some() {
+        items.push(dsh(report));
+    }
+
     items.push(match (tool(report, "tool.gh"), report.get("gh.auth")) {
         (None, _) => item("gh", Recommended, State::Unknown, None),
         (Some("-"), _) => item("gh", Recommended, State::Missing, Some(format!("gh is not found on PATH{}.", path_note(report)))),
@@ -307,6 +313,24 @@ fn present(report: &Report, id: &'static str, key: &str, missing: &str) -> Item 
         Some(version) => (State::Ok, Some(version.to_owned())),
     };
     Item { id, level: Level::Recommended, state, detail }
+}
+
+/// DeepSeek Harness on the distribution's PATH (YN-119 S4b): there when it
+/// answers `--version`, and usable only with Node.js 24.9 or newer, which its
+/// CLI needs (`engines` of @deepseek-ai/dsh).
+fn dsh(report: &Report) -> Item {
+    let found = present(report, "dsh", "tool.dsh", "Not found on PATH");
+    if found.state != State::Ok {
+        return found;
+    }
+    match tool(report, "tool.node").and_then(major_minor) {
+        Some(node) if node < (24, 9) => Item {
+            state: State::Missing,
+            detail: Some(format!("{}; DeepSeek Harness needs Node.js 24.9 or newer.", found.detail.clone().unwrap_or_default())),
+            ..found
+        },
+        _ => found,
+    }
 }
 
 fn systemd(report: &Report) -> Item {
@@ -593,6 +617,25 @@ cgroup=cpu memory pids
         }
         assert!(same_or_nested("/a/b", "/a/b") && same_or_nested("/a/b/c", "/a/b") && same_or_nested("/a", "/a/b"));
         assert!(!same_or_nested("/a/b", "/a/bc"));
+    }
+
+    /// DeepSeek Harness (YN-119 S4b): an optional item after Codex, in a report
+    /// that names it; there with its version, missing without it, and missing
+    /// with a Node.js older than 24.9, which its CLI needs.
+    #[test]
+    fn dsh_is_an_optional_item_that_needs_node_24_9() {
+        assert!(judged(&[]).iter().all(|item| item.id != "dsh"), "a report from before dsh names none");
+        let items = judged(&[("tool.dsh", "0.2.2-rc.3"), ("tool.node", "v24.9.0")]);
+        let ids: Vec<_> = items.iter().map(|item| item.id).collect();
+        assert_eq!(ids[ids.iter().position(|id| *id == "codex").unwrap() + 1], "dsh");
+        assert_eq!(items.iter().find(|item| item.id == "dsh").unwrap().level, Level::Recommended);
+        assert_eq!(state(&items, "dsh"), (State::Ok, Some("0.2.2-rc.3".into())));
+        assert_eq!(state(&judged(&[("tool.dsh", "-")]), "dsh").0, State::Missing);
+        assert_eq!(state(&judged(&[("tool.dsh", "?")]), "dsh").0, State::Unknown);
+        let (old, detail) = state(&judged(&[("tool.dsh", "0.2.2-rc.3"), ("tool.node", "v22.11.0")]), "dsh");
+        assert_eq!(old, State::Missing);
+        assert!(detail.unwrap().contains("needs Node.js 24.9 or newer"));
+        assert!(installable(&judged(&[("tool.dsh", "-")]), Found::Nothing), "it is not required");
     }
 
     #[test]

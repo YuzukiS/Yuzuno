@@ -255,7 +255,36 @@ async fn check_local(ws: &Workspace) -> (HostFacts, Vec<HarnessCheck>, FolderChe
         Ok(_) => FolderCheck { path: ws.default_cwd.clone(), resolved: None, error: Some("Not a folder".into()) },
         Err(error) => FolderCheck { path: ws.default_cwd.clone(), resolved: None, error: Some(error.to_string()) },
     };
-    (host, vec![codex, claude], folder)
+    let dsh = dsh_check(&ws.data_dir).await;
+    (host, vec![codex, claude, dsh], folder)
+}
+
+/// DeepSeek Harness (YN-119 S4b), on the Core host only: the dsh this Core
+/// starts (`YUZUNO_DSH_BIN`, else `dsh` on Core's PATH), its `--version` read
+/// in Core's own folder and judged as each start judges it (§5.1): found when
+/// a start would take it, with its note when it is newer than the verified one.
+async fn dsh_check(data: &Path) -> HarnessCheck {
+    dsh_check_of(&crate::dsh::program(), data).await
+}
+
+async fn dsh_check_of(program: &Path, data: &Path) -> HarnessCheck {
+    let mut check = HarnessCheck { harness: "dsh".into(), supported: true, ..Default::default() };
+    let Some(executable) = find_executable(&program.to_string_lossy()) else {
+        check.error = Some("DeepSeek Harness (dsh) was not found on Core's PATH or at YUZUNO_DSH_BIN".into());
+        return check;
+    };
+    check.executable = Some(executable);
+    match crate::dsh_agent::version_in(program, &crate::dsh_agent::version_home(data)).await {
+        Ok((version, standing)) => {
+            check.found = true;
+            check.version = Some(match standing.note() {
+                Some(note) => format!("{version} ({note})"),
+                None => version.to_string(),
+            });
+        }
+        Err(error) => check.error = Some(format!("{error:#}")),
+    }
+    check
 }
 
 /// `claude auth status --json` run as Core runs Claude: the executable the
@@ -459,6 +488,42 @@ fn upsert_check(db: &Connection, check: &MachineCheck, started_ms: i64) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Core host's dsh (YN-119 S4b), as each start judges its version:
+    /// found with it; newer than the verified one, with that note; too old or
+    /// unreadable, with why; not there, with where it was looked for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_core_hosts_dsh_is_found_with_its_version_as_a_start_judges_it() {
+        const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/dsh_acp.py");
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let program = dir.path().join("dsh");
+        std::os::unix::fs::symlink(FIXTURE, &program).unwrap();
+        let home = crate::dsh_agent::version_home(&data);
+        let with = |control: Option<serde_json::Value>| {
+            std::fs::create_dir_all(&home).unwrap();
+            match control {
+                Some(control) => std::fs::write(home.join("fixture.json"), control.to_string()).unwrap(),
+                None => { let _ = std::fs::remove_file(home.join("fixture.json")); }
+            }
+        };
+        with(None);
+        let found = dsh_check_of(&program, &data).await;
+        assert_eq!((found.harness.as_str(), found.found, found.version.as_deref()), ("dsh", true, Some("0.2.2-rc.3")), "{found:?}");
+        assert!(found.executable.is_some() && found.error.is_none());
+        with(Some(serde_json::json!({"version": "0.2.9"})));
+        let newer = dsh_check_of(&program, &data).await;
+        assert_eq!(newer.version.as_deref(), Some("0.2.9 (newer than the verified 0.2.2-rc.3)"), "{newer:?}");
+        for (control, why) in [(serde_json::json!({"version": "0.2.2-rc.0"}), "npm i -g @deepseek-ai/dsh@latest"),
+            (serde_json::json!({"versionExit": 2}), "--version")] {
+            with(Some(control));
+            let refused = dsh_check_of(&program, &data).await;
+            assert!(!refused.found && refused.error.as_deref().unwrap_or_default().contains(why), "{why}: {refused:?}");
+        }
+        let missing = dsh_check_of(&dir.path().join("no-dsh"), &data).await;
+        assert!(!missing.found && missing.error.as_deref().unwrap().contains("YUZUNO_DSH_BIN"), "{missing:?}");
+    }
 
     /// What the Machines page shows a machine as (YN-104): its check when that
     /// reached it, else its newest attempt at its current address, else

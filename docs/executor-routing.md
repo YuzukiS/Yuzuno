@@ -24,6 +24,7 @@ version; a later slice adds to it.
 | YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | Done |
 | YN-138 PR 1 | [A queued executor whose candidate, account or key left](#routing-at-dispatch-s3b2) is routed again before it starts | Done |
 | YN-138 PR 2 | [A started Claude executor whose account left its pool](#claude-swap-accounts) moves to another account of it and resumes its session | This version |
+| YN-119 S3 | [DeepSeek Harness](dsh.md) (`dsh`) candidates: a DeepSeek key only, on this Core host, with dsh's own reasoning effort; the [levels](#permission-levels-yn-56) dsh keeps | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -32,7 +33,8 @@ routing policy is on ([Routing at dispatch](#routing-at-dispatch-s3b2)).
 ## Routing keys
 
 A routing key is an API key an executor may later be started with: for
-Anthropic (Claude Code), OpenAI (Codex) or DeepSeek (OpenCode). Each key has an
+Anthropic (Claude Code), OpenAI (Codex) or DeepSeek (OpenCode and
+[DeepSeek Harness](dsh.md)). Each key has an
 id (1 to 48 of `a-z`, `0-9` and `-`) and chooses its source:
 
 - **local**: you enter the value, and Core keeps it in the key file.
@@ -288,6 +290,7 @@ catalog read sees it.
 | Claude Code | API key (Anthropic) | `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` | Not the key: with the scrub, Claude Code strips credentials from the environment of its Bash commands, hooks and stdio MCP servers ([env vars](https://code.claude.com/docs/en/env-vars)). On Linux the scrub also runs Bash commands in their own PID namespace. |
 | Claude Code | claude-swap account | `YUZUNO_CSWAP_PYTHON` and `YUZUNO_CSWAP_ACCOUNT` for the launcher, which `cswap run` turns into that account's `CLAUDE_CONFIG_DIR` | The profile folder's path, as with any `CLAUDE_CONFIG_DIR`. Its login files are files, readable by anything running as you. |
 | OpenCode | API key | Its provider's variable: `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | **The key.** OpenCode's shell tool runs with the server's environment. Its per-session environment setting covers the main session but not sub-sessions, so it is not used. This is a known limit. A login saved in that Agent's OpenCode takes precedence over the variable. |
+| DeepSeek Harness (`dsh`) | API key (DeepSeek) | `DEEPSEEK_API_KEY`, and nothing else of Core's `DSH_*` or `DEEPSEEK_*` variables | Not the key: dsh's subprocess service leaves credential-shaped variables (`*KEY*`, `*PASSWORD*`, `*SECRET*`, `*TOKEN*`) out of every command its tools run. That is dsh's own rule, by name; see [DeepSeek Harness](dsh.md#a-dsh-agent). |
 | Codex | Codex home | `CODEX_HOME` set to that home | The home's path. Its login file (`auth.json`, or the system keyring if the home is set up so) is readable by anything running as you. |
 | Codex | API key (OpenAI) | `CODEX_HOME` set to Core's own `codex-api-home` folder in the Workspace folder (mode 0700), `-c cli_auth_credentials_store="ephemeral"`, and the key sent once over its connection, after `initialize`, with `account/login/start {"type": "apiKey"}` ([app-server](https://developers.openai.com/codex/app-server)) | Not the key: it is in no environment variable, and the ephemeral store keeps it in that app-server's memory only, never in `auth.json` ([authentication](https://developers.openai.com/codex/auth)). `codex app-server` does not read `CODEX_API_KEY`, which is for `codex exec`. |
 
@@ -329,6 +332,7 @@ cost, as its harness reports it:
 - **Claude Code:** what the turn added to its result's `total_cost_usd`. Claude Code reports that as the running total of its session, so Core keeps the last total it saw from each executor, across restarts, and counts the increase. A total below the last (after `/clear`, or in a new session) counts from zero. A zero total, as a crashed turn reports, counts nothing.
 - **OpenCode:** each finished step's `cost`, the executor's sub-agents' too.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
+- **DeepSeek Harness (dsh):** not counted: dsh reports no spend, only the context it uses. Routing treats a dsh candidate's spend as unknown too (`spendNotCounted`).
 
 Each entry is counted once, by key id, on the Core host's local date.
 
@@ -424,9 +428,9 @@ executors as it says, whatever the policy is.
     "candidates": [
       { "id": "c-deepseek", "label": "DeepSeek off-peak", // label optional, at most 60; empty shows "harness · model"
         "enabled": true,
-        "harness": "opencode",                        // "claude" | "codex" | "opencode"
+        "harness": "opencode",                        // "claude" | "codex" | "opencode" | "dsh"
         "model": "deepseek/deepseek-flash",           // as that harness names it; empty is its default
-        "reasoningEffort": "high",                    // Codex only, optional
+        "reasoningEffort": "high",                    // Codex (its catalog's) or dsh (off, low, high or max), optional
         "tiers": ["fast"],                            // optional (YN-70): "strong", "fast" or both; left out serves both
         "credential": { "kind": "apiKey", "keyId": "deepseek" },
         "conditions": [                               // all must hold
@@ -451,7 +455,8 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 - `{ "kind": "apiKey", "keyId": "<routing key id>" }`. Its provider comes from the key; a provider that doesn't fit the harness is refused:
   - Claude Code takes `anthropic`;
   - Codex takes `openai`;
-  - OpenCode takes `deepseek`, `anthropic` or `openai`.
+  - OpenCode takes `deepseek`, `anthropic` or `openai`;
+  - DeepSeek Harness (`dsh`) takes `deepseek` only. It has no `login` of its own here: a dsh candidate needs an `apiKey`. A dispatch from a template fixed to dsh that routing gives no key is refused (`dsh_needs_key`).
 - `{ "kind": "codexHome", "id": "<Codex home id>" }`: Codex only. Use one candidate per home.
 
 `conditions[]` entries take one of these forms:
@@ -504,7 +509,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
 - **Of a harness it can be given:** at dispatch (YN-70) and at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. At dispatch `machine` is null when the dispatch and its template name none (this Core host) or `auto`. An executor something of which already ran is given its own harness only (`otherHarness`).
-- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`). A candidate whose `machine` condition doesn't name the executor's machine is `otherMachine`, with `params: { machine }` (null when none is named: this Core host).
+- **Runs on the machine:** a credential other than `login`, and any OpenCode or dsh candidate, runs on this Core host only (`hostOnly`). A candidate whose `machine` condition doesn't name the executor's machine is `otherMachine`, with `params: { machine }` (null when none is named: this Core host).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Serves the tier:** with a [tier](#tiers-yn-70), a candidate whose `tiers` don't include it is `skipped`, with `tierNotServed` and `params: { tier }`.
 - **Its credential is there:**
@@ -518,7 +523,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
 A reading that is missing, stale or unknown, or a kind this Core doesn't
-know, is unknown. Codex API-key spend is unknown too. The candidate's
+know, is unknown. Codex and dsh API-key spend is unknown too. The candidate's
 `unknown` rule then decides: `skip`, the default, marks it `unknown`, and
 `pass` lets it be chosen, with the unknowns kept as its reasons.
 
@@ -535,16 +540,20 @@ this evaluator, with the readings as Core last observed them.
 A permission level is a permission said once for every harness. Core maps it
 to each harness's own setting, so it holds whichever harness routing chooses.
 
-| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode (support stops at 2.2.5) |
-| --- | --- | --- | --- | --- |
-| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
-| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
-| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
-| `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below |
+| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode (support stops at 2.2.5) | DeepSeek Harness (`dsh`) |
+| --- | --- | --- | --- | --- | --- |
+| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list | `workspace-write` sandbox, approval `ask`: leaving it asks you (a card) |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks | The same sandbox: Core refuses leaving it and asks no one. dsh has no reviewer |
+| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed | `danger-full-access`, approval `never`: nothing is sandboxed |
+| `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below | Doesn't keep it: its network, `web_fetch` and MCP tools are open at every level |
 
 No level is each harness's own default for new Agents, kept everywhere. On
 OpenCode that is its own configuration: its default agent allows everything
-but reading a `.env` file.
+but reading a `.env` file. On dsh it is Ask you first.
+
+dsh keeps a level as its sandbox and approval policy, written in Core's own
+configuration patch at each start and read back before dsh runs; a level
+change starts a new dsh ([DeepSeek Harness](dsh.md#permission-levels-and-approvals)).
 
 OpenCode keeps a level as rules of its own. Each start of an OpenCode
 executor that has a level gives that executor's `opencode serve`, and no
