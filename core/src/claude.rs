@@ -857,12 +857,16 @@ impl Workspace {
         });
         let mut start = start_params(&d.agent);
         // The Agent's own attached files, readable without a prompt and never
-        // writable (YN-145 F3a): the folder is made before the rule names it,
-        // and only on this machine (a remote one gets its copy in F4).
+        // writable (YN-145): on this machine its own folder, made before the
+        // rule names it; on a machine, the file cache the helper copies them
+        // to, which the bridge resolves as the helper resolves its data root.
         if d.agent.remote.is_none() {
             let (root, agent) = (self.data_dir.clone(), d.agent.id.clone());
             let dir = tokio::task::spawn_blocking(move || crate::input_files::readable_agent_dir(&root, &agent)).await??;
             start["readableDirs"] = json!([dir]);
+        } else {
+            let workspace = self.stored(|store| store.workspace_id()).await?;
+            start["readableDirs"] = json!([crate::remote_files::readable_dir(&workspace, &d.agent)?]);
         }
         // The read-only level (YN-74 ④b): `default` mode, and the tools the
         // bridge removes and the only ones its hook lets run.

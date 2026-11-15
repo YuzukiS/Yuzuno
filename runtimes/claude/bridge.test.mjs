@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeBridge, PromptQueue, briefReceiptKind, compatibility, locateExecutable, runtimeProvenance, sdkFacts, sessionPermissions, supportsThinkingDisplay } from './bridge.mjs';
+import { fileURLToPath } from 'node:url';
+import { ClaudeBridge, PromptQueue, briefReceiptKind, compatibility, locateExecutable, resolvedDirectory, runtimeProvenance, sdkFacts, sessionPermissions, supportsThinkingDisplay } from './bridge.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -98,28 +100,61 @@ test('Core\'s capability notice joins the collaboration append once and only wit
 
 test('attached-file folders are readable without a prompt and never writable', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'yuzuno-attachments-'));
+  const real = realpathSync(dir);
   try {
     // Without collaboration too: the folder is the Agent's own, nothing else.
     const f = await fixture({}, { readableDirs: [dir] });
     assert.equal(f.response('start').error, undefined);
-    assert.deepEqual(f.state.options.additionalDirectories, [dir]);
-    assert.deepEqual(f.state.options.disallowedTools, [`Edit(/${dir}/**)`]);
+    assert.deepEqual(f.state.options.additionalDirectories, [real]);
+    assert.deepEqual(f.state.options.disallowedTools, [`Edit(/${real}/**)`]);
     f.bridge.close(); await f.bridge.reader;
     // A read-only level keeps its own list and adds the deny; neither replaces the other.
     const readOnly = { disallowedTools: ['Bash', 'Write'], allowedTools: ['Read'] };
     const r = await fixture({}, { readableDirs: [dir], readOnly });
     assert.equal(r.response('start').error, undefined);
-    assert.deepEqual(r.state.options.additionalDirectories, [dir]);
-    assert.deepEqual(r.state.options.disallowedTools, ['Bash', 'Write', `Edit(/${dir}/**)`]);
+    assert.deepEqual(r.state.options.additionalDirectories, [real]);
+    assert.deepEqual(r.state.options.disallowedTools, ['Bash', 'Write', `Edit(/${real}/**)`]);
     r.bridge.close(); await r.bridge.reader;
-    // A relative path, a pattern, a `..` or an empty list is refused before any start.
-    for (const bad of [['relative/dir'], [`${dir}/*`], ['/a/../b'], [''], [7], []]) {
+    // A relative path, a pattern, a `..`, a home or an empty list is refused
+    // before any start.
+    for (const bad of [['relative/dir'], [`${dir}/*`], ['/a/../b'], [''], [7], [], ['~'], ['~/'],
+      ['~/../x'], ['~/*']]) {
       const rejected = await fixture({}, { readableDirs: bad });
       assert.match(rejected.response('start').error, /readable directories/, JSON.stringify(bad));
       rejected.bridge.close(); await rejected.bridge.reader;
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a remote file folder resolves as the helper resolves the data root', () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'yuzuno-remote-')));
+  const helper = fileURLToPath(new URL('../../core/src/remote_images.py', import.meta.url));
+  // The helper's own resolution of the Agent's data root, with this HOME.
+  const dataRoot = (root, home) => execFileSync('python3', ['-c', `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("remote_images", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+parent, name = helper.data_root({"root": sys.argv[2]})
+print(str(parent / name))
+`, helper, root], { env: { ...process.env, HOME: home } }).toString().trim();
+  try {
+    const home = join(base, 'home');
+    mkdirSync(join(home, 'real', 'jobs-lab', '.yuzuno', 'file-cache'), { recursive: true });
+    symlinkSync(join(home, 'real', 'jobs-lab'), join(home, 'jobs-lab'));
+    const root = '~/jobs-lab/.yuzuno';
+    const resolved = dataRoot(root, home);
+    // A folder that exists below the link, and one not made yet: the bridge
+    // names the same folder the helper writes into both times.
+    for (const key of ['a'.repeat(64), 'b'.repeat(64)]) {
+      assert.equal(resolvedDirectory(`${root}/file-cache/${key}`, home), join(resolved, 'file-cache', key));
+    }
+    // An absolute folder without links is its own real path.
+    assert.equal(resolvedDirectory(join(home, 'real'), home), realpathSync(join(home, 'real')));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });
 

@@ -387,6 +387,22 @@ pub fn check(dir: &FsPath, refs: &[FileRef]) -> Result<Vec<PathBuf>> {
     }).collect()
 }
 
+/// The bytes of a message's files, in order: each checked as `check` does and
+/// hashed again as it is read, for a copy to a remote Agent (remote_files).
+/// Blocking.
+pub(crate) fn message_bytes(dir: &FsPath, refs: &[FileRef]) -> Result<Vec<Vec<u8>>> {
+    check(dir, refs)?.into_iter().zip(refs).map(|(path, file)| {
+        let changed = || format!("Saved file {} changed; attach it again", file.name);
+        let (opened, len) = open_plain(&path)?;
+        ensure!(len == file.bytes && len <= MAX_TOTAL, changed());
+        let mut bytes = Vec::with_capacity(len as usize);
+        opened.take(len + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 == len, changed());
+        ensure!(format!("{:x}", Sha256::digest(&bytes)) == file.id, changed());
+        Ok(bytes)
+    }).collect()
+}
+
 /// Removes a deleted Agent's attached files: its own folder only, and not a
 /// link put in its place. Blocking.
 pub(crate) fn remove_agent_dir(root: &FsPath, agent: &str) -> Result<()> {

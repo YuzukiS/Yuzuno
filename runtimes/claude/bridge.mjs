@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { CredentialMask } from './credentials.mjs';
@@ -65,18 +66,46 @@ function readOnlyOption(value) {
 }
 
 /**
- * The folders a message's attached files are read from (YN-145 F3a): absolute
- * paths Core names, readable without a prompt and never writable. A relative
- * path, a pattern or a `..` is refused: Core joins these as the Agent's rules.
+ * The folder `dir` names on this machine, resolved the way `remote_images.py`
+ * resolves an Agent's data root (YN-145 §2.5): a leading `~/` is this user's
+ * home, and the deepest existing ancestor is replaced by its real path, with
+ * the rest appended as given. Core names a remote Agent's
+ * `<root>/file-cache/<key>`, which need not exist before its first file does.
+ */
+export function resolvedDirectory(dir, home = homedir()) {
+  const expanded = dir.startsWith('~/') ? join(home, dir.slice(2)) : dir;
+  if (!isAbsolute(expanded) || expanded === '/' || expanded === home) throw new Error('Invalid readable directories');
+  const rest = [];
+  let current = expanded;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      if (!statSync(real).isDirectory()) throw new Error('Invalid readable directories');
+      return join(real, ...rest);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+      const parent = dirname(current);
+      if (parent === current) throw new Error('Invalid readable directories');
+      rest.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The folders a message's attached files are read from (YN-145 F3a, F4):
+ * absolute paths Core names, or one below the Agent's home on its machine,
+ * readable without a prompt and never writable. A relative path, a pattern or
+ * a `..` is refused: Core joins these as the Agent's rules.
  */
 const MAX_READABLE_DIRS = 8;
 function readableDirsOption(value) {
   if (value === undefined) return undefined;
   const valid = Array.isArray(value) && value.length > 0 && value.length <= MAX_READABLE_DIRS
-    && value.every(dir => typeof dir === 'string' && isAbsolute(dir) && dir.length <= 1000
-      && !dir.includes('\0') && !dir.includes('*') && !dir.split('/').includes('..'));
+    && value.every(dir => typeof dir === 'string' && (isAbsolute(dir) || dir.startsWith('~/'))
+      && dir.length <= 1000 && !dir.includes('\0') && !dir.includes('*') && !dir.split('/').includes('..'));
   if (!valid) throw new Error('Invalid readable directories');
-  return [...value];
+  return value.map(dir => resolvedDirectory(dir));
 }
 // Reasoning effort levels the Agent SDK accepts (`Options.effort`,
 // `applyFlagSettings({ effortLevel })`); each model lists those it supports.

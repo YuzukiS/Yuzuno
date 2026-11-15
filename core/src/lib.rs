@@ -119,6 +119,7 @@ pub(crate) mod test_platform;
 mod python_compat_tests;
 mod service_jobs;
 mod remote_images;
+mod remote_files;
 pub mod results;
 mod runtime_paths;
 pub mod rpc;

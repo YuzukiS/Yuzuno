@@ -551,8 +551,10 @@ async fn attached_files_are_saved_sent_by_path_and_kept_exact_on_the_receipt() {
     assert!(ws.send_message_from("a", input("with-files", "Inspect both", None), Vec::new(), changed, None).await.is_err(),
         "the same ID with other files");
     assert_eq!(calls(&dir, "turn/start").len(), 1);
-    // A form answer, an Agent that takes no files, and a remote Agent are
-    // refused before anything is recorded or sent.
+    // A form answer and an Agent that takes no files are refused before
+    // anything is recorded or sent. A remote Agent is no longer refused for
+    // being remote (F4): it gets its files copied to its machine first, and
+    // only Codex and Claude may be remote at all.
     let form = form_input("form-files", "r", "valid");
     assert!(ws.send_message_from("a", form, Vec::new(), saved.clone(), None).await.unwrap_err().to_string().contains("Attach files to a message"));
     let mut other = detail();
@@ -561,13 +563,27 @@ async fn attached_files_are_saved_sent_by_path_and_kept_exact_on_the_receipt() {
     ws.store.insert(&other).unwrap();
     assert!(ws.send_message_from("d", input("unsupported", "hi", None), Vec::new(), saved.clone(), None)
         .await.unwrap_err().to_string().contains("can't receive files"));
+    let remote_agent = || serde_json::from_value(json!({"machine": {
+        "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/tmp"}})).unwrap();
     let mut remote = detail();
     remote.agent.id = "r".into();
-    remote.agent.remote = Some(serde_json::from_value(json!({"machine": {
-        "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/tmp"}})).unwrap());
+    remote.agent.remote = Some(remote_agent());
     ws.store.insert(&remote).unwrap();
-    assert!(ws.send_message_from("r", input("remote", "hi", None), Vec::new(), saved.clone(), None)
-        .await.unwrap_err().to_string().contains("远程 Agent 暂不能接收附件"));
+    // A remote Codex is no longer refused for being remote (F4): its files
+    // would be copied to the machine first. With no machine answer the send
+    // stops at the connection, and no receipt is recorded.
+    let error = ws.send_message_from("r", input("remote", "hi", None), Vec::new(), saved.clone(), None)
+        .await.unwrap_err().to_string();
+    assert!(!error.contains("暂不能接收附件"), "{error}");
+    assert!(ws.store.detail("r").unwrap().message_receipts.is_empty());
+    // Only Codex and Claude may be remote at all.
+    let mut opencode = detail();
+    opencode.agent.id = "o".into();
+    opencode.agent.harness = "opencode".into();
+    opencode.agent.remote = Some(remote_agent());
+    ws.store.insert(&opencode).unwrap();
+    assert!(ws.send_message_from("o", input("remote-opencode", "hi", None), Vec::new(), saved.clone(), None)
+        .await.unwrap_err().to_string().contains("只有 Codex 和 Claude"));
     assert_eq!(calls(&dir, "turn/start").len(), 1);
     // The receipt keeps the user's words and each Agent path; the bubble
     // shows the files and the original text, never the notice.

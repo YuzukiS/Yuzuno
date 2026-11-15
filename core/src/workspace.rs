@@ -1551,12 +1551,16 @@ impl Workspace {
             // Even a rejected/uncertain attempt may have installed a partial
             // batch before failing; pure drafts have no message/requested.
             let agent = id.to_owned();
-            let image_attempted = self.stored(move |store| {
-                let mut any = false;
-                store.each_receipt(&agent, |r| any |= !r.input.images.is_empty())?;
-                Ok(any)
+            let (image_attempted, file_attempted) = self.stored(move |store| {
+                let (mut images, mut files) = (false, false);
+                store.each_receipt(&agent, |r| {
+                    images |= !r.input.images.is_empty();
+                    files |= !r.files.is_empty();
+                })?;
+                Ok((images, files))
             }).await?;
-            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed, image_attempted).await?;
+            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed,
+                image_attempted, file_attempted).await?;
         }
         let agent = id.to_owned();
         self.stored(move |store| store.delete_closed_agent(&agent)).await?;
@@ -1851,8 +1855,9 @@ impl Workspace {
                 "{} can't receive files; Codex, Claude and OpenCode Agents can", detail.agent.name);
             anyhow::ensure!(files.is_empty() || (input.question.is_none() && input.clarification.is_none()),
                 "Attach files to a message, not to an answer or form reply");
-            anyhow::ensure!(files.is_empty() || detail.agent.remote.is_none(),
-                "远程 Agent 暂不能接收附件；消息未发送，草稿保留");
+            anyhow::ensure!(files.is_empty() || detail.agent.remote.is_none()
+                || matches!(detail.agent.harness.as_str(), "codex" | "claude"),
+                "远程 Agent 只有 Codex 和 Claude 能接收附件；消息未发送，草稿保留");
             anyhow::ensure!(input.clarification.is_none() || (input.question.is_none() && input.images.is_empty()),
                 "Submit form answers separately from image attachments and native questions");
             if !input.images.is_empty() { crate::input_images::supported(&detail.agent)?; }
@@ -1906,9 +1911,35 @@ impl Workspace {
             }
             // What the Agent reads: the user's words, then the notice naming
             // the path of each file; without files, exactly the user's words.
-            // Each file is checked again now, under the Agent's gate.
+            // Each file is checked again now, under the Agent's gate. A remote
+            // Agent's copies are made first (F4), so a failure is a message
+            // that was not submitted and a draft kept (design D14).
             let (text, file_paths) = if files.is_empty() {
                 (input.text.clone(), Vec::new())
+            } else if let Some(remote) = &detail.agent.remote {
+                let claude_connection = if claude {
+                    Some(self.claudes.lock().unwrap().get(id).cloned()
+                        .context("远程 Claude 连接尚未确认，文件未发送；草稿保留")?)
+                } else {
+                    None
+                };
+                let instance = match &claude_connection {
+                    Some(connection) => connection.remote_instance.clone()
+                        .context("远程 Claude 运行实例尚未确认，文件未发送；草稿保留")?,
+                    None => remote.runtime.as_ref()
+                        .context("远程运行实例尚未确认，文件未发送；草稿保留")?
+                        .instance_id.clone(),
+                };
+                let workspace = self.stored(|store| store.workspace_id()).await?;
+                let paths = crate::remote_files::transfer(self.data_dir.clone(), &workspace,
+                    &detail.agent, &instance, &files).await?;
+                let current = self.listed(id).await?;
+                anyhow::ensure!(crate::remote_images::destination(&detail.agent)
+                    == crate::remote_images::destination(&current)
+                    && claude_connection.as_ref().is_none_or(|c| self.claudes.lock().unwrap()
+                        .get(id).is_some_and(|now| now.generation == c.generation)),
+                    "远程文件目标已变化，消息未发送；草稿保留");
+                (crate::input_files::with_notice(&input.text, &paths, &files), paths)
             } else {
                 let (root, agent, refs) = (self.data_dir.clone(), id.to_owned(), files.clone());
                 let paths = tokio::task::spawn_blocking(move || crate::input_files::send_paths(&root, &agent, &refs)).await??;
