@@ -18,6 +18,11 @@ use yuzuno_workspace::opencode_login::{KeyLogin, OAuthLogin};
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 const ID: &str = "oc";
 
+/// How long a wait here may go. It is a bound on a condition, not on a count
+/// of slices: a stand-in that answers late on a loaded machine is not a
+/// failure, and one that never does still fails the test.
+const WAIT: Duration = Duration::from_secs(120);
+
 /// One `opencode` for the whole test process: YUZUNO_OPENCODE_BIN is the
 /// process's, and every Agent's stand-in keeps its state in its own folder.
 fn program() -> &'static PathBuf {
@@ -138,14 +143,15 @@ impl Lab {
     }
 
     async fn until(&self, what: &str, done: impl Fn(&AgentDetail) -> bool) -> AgentDetail {
-        for _ in 0..400 {
-            let d = self.detail();
-            if done(&d) {
-                return d;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let d = self.detail();
+                if done(&d) {
+                    return d;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("timed out waiting for {what}: {:#?}", self.detail());
+        }).await.unwrap_or_else(|_| panic!("timed out waiting for {what}: {:#?}", self.detail()))
     }
 
     async fn send(&self, client: &str, text: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
@@ -177,13 +183,11 @@ fn ended(pid: u64) -> bool {
 }
 
 async fn ends(pid: u64) -> bool {
-    for _ in 0..200 {
-        if ended(pid) {
-            return true;
+    tokio::time::timeout(WAIT, async {
+        while !ended(pid) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    false
+    }).await.is_ok()
 }
 
 fn journal(lab: &Lab) -> Vec<String> {

@@ -31,8 +31,26 @@ use tokio::process::Command;
 /// The oldest op that has service accounts.
 pub const MIN_VERSION: (u32, u32, u32) = (2, 18, 0);
 /// How long one op run may take; a run past it counts as 1Password unreachable.
-const TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(2) } else { Duration::from_secs(30) };
+const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REFERENCE: usize = 1024;
+
+/// The limit `run` applies. A test build lets the test lower it for the one
+/// case that has to run past it (`op_tests`): a stand-in's own start on a
+/// loaded machine is not 1Password being unreachable, so every other run gets
+/// the production limit. The release binary reads only `TIMEOUT`.
+#[cfg(test)]
+static TEST_TIMEOUT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(TIMEOUT.as_millis() as u64);
+
+#[cfg(test)]
+fn limit() -> Duration {
+    Duration::from_millis(TEST_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[cfg(not(test))]
+fn limit() -> Duration {
+    TIMEOUT
+}
 
 /// Why a 1Password key cannot be had now. A routing candidate that uses it
 /// counts as unavailable, and the next one is tried.
@@ -93,7 +111,7 @@ async fn run(args: &[&str], token: Option<&Secret>) -> std::io::Result<Option<st
         command.env("OP_SERVICE_ACCOUNT_TOKEN", token.expose());
     }
     let child = command.spawn()?;
-    match tokio::time::timeout(TIMEOUT, child.wait_with_output()).await {
+    match tokio::time::timeout(limit(), child.wait_with_output()).await {
         Ok(output) => output.map(Some),
         Err(_) => Ok(None),
     }
