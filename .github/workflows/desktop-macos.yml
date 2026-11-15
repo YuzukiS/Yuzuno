@@ -1,14 +1,15 @@
 # Builds the macOS desktop app (T-165) with scripts/desktop-macos.sh on
-# standard GitHub-hosted runners, one per architecture: Apple silicon (arm64)
-# and Intel (x86_64). Each runs the desktop tests and checks what it packed:
+# standard GitHub-hosted runners, for Apple silicon (arm64) only: Intel Macs
+# are not supported (YN-161). Each runs the desktop tests and checks what it
+# packed:
 # - A pull request that changes desktop/, the script or this workflow builds
 #   and tests it. Nothing is uploaded; the checksums, build.json and where
 #   the window's buttons stand are in the run's log and summary.
 # - Run on request (workflow_dispatch) for the current head of main, after
 #   the CI workflow has passed on that commit's push to main, it is a
-#   candidate: per architecture, the disk image, the app as a ZIP,
-#   build.json and SHA256SUMS, with a picture of its window and where its
-#   buttons stand, one artifact kept 14 days. Never a Release.
+#   candidate: the disk image, the app as a ZIP, build.json and SHA256SUMS,
+#   with a picture of its window and where its buttons stand, one artifact
+#   kept 14 days. Never a Release.
 #
 # The app is signed ad hoc and not notarized: there is no Developer ID, and
 # this workflow uses no secret. See desktop/README.md.
@@ -43,18 +44,16 @@ env:
 jobs:
   app:
     name: macOS app (${{ matrix.arch }})
-    # The standard macOS 26 runners, free for public repositories: Apple
-    # silicon (macos-26) and Intel (macos-26-intel). Not a paid -large or
-    # -xlarge one, nor a self-hosted one. Each builds for its own
-    # architecture only; there is no universal app.
+    # The standard macOS 26 runner, free for public repositories: Apple
+    # silicon (macos-26). Not a paid -large or -xlarge one, nor a
+    # self-hosted one. Intel Macs are not supported (YN-161); there is no
+    # universal app.
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
             runner: macos-26
-          - arch: x86_64
-            runner: macos-26-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:

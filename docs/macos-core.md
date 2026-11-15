@@ -94,4 +94,4 @@ Each slice is its own pull request. M1, M2a, M2b and M2c are in this commit; the
 | M3b | Packaging, signing and publishing both platforms in one release. |
 | M4 | The Mac desktop app downloads, verifies, installs and starts Core. |
 
-**Not planned in YN-108:** Intel Macs (`macos-x86_64`), Developer ID signing and notarization, starting Core at login, and phone access to a macOS Core.
+**Not planned in YN-108:** Developer ID signing and notarization, starting Core at login, and phone access to a macOS Core. macOS is Apple silicon (arm64) only (YN-161): Intel Macs (`macos-x86_64`) are not supported.

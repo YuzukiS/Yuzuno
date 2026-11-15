@@ -61,7 +61,7 @@ The Windows desktop installer is published there too, from `desktop-0.3.0`; the 
 
 | Part | Current support |
 | --- | --- |
-| **Core host** | Linux x86_64, including WSL2; release bundles require glibc 2.35+. macOS Core is planned. |
+| **Core host** | Linux x86_64, including WSL2; release bundles require glibc 2.35+. macOS Core is planned (Apple silicon only). |
 | **Client** | Chromium-based browsers; the Windows desktop app ([installer](https://github.com/YuzukiS/Yuzuno/releases) or [built from source](desktop/README.md)); a phone's browser through the [phone entry](docs/independent-core.md#connect-from-a-phone-tailscale-serve). The Mac and iPhone apps are built from source only; there is no Linux desktop app. |
 | **Agent runtimes** | Installed, authenticated Codex CLI and/or Claude Code through the Claude Agent SDK bridge. |
 | **Remote Agents** | Codex and Claude on prepared Linux/macOS SSH hosts, using each host's files and CLI login. |
