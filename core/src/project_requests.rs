@@ -249,11 +249,14 @@ pub(crate) async fn adopt_files(ws: &Workspace, project: &str, agent: &str, file
     if !crate::input_files::takes_files(&found.harness) {
         return Err(refused(format!("{} can't receive files", found.name)));
     }
-    // A remote Agent's files are not copied here (a later slice carries them
-    // to its machine); the hand-off goes without them, as with an Agent that
-    // takes none.
-    if found.remote.is_some() {
-        return Err(refused(format!("{} is on another machine, which cannot receive files yet", found.name)));
+    // A remote Agent's files are copied to its own folder here and carried to
+    // its machine at the send (F4); an OpenCode or dsh Agent cannot be on one,
+    // so its files still make the hand-off go on without them.
+    if found.remote.is_some() && !matches!(found.harness.as_str(), "codex" | "claude") {
+        return Err(refused(format!(
+            "{} is on another machine, where only Codex and Claude Agents can receive files",
+            found.name
+        )));
     }
     let (root, project, agent, files) = (ws.data_dir.clone(), project.to_owned(), agent.to_owned(), files.to_vec());
     tokio::task::spawn_blocking(move || crate::input_files::adopt(&root, &project, &agent, &files))
