@@ -15,8 +15,7 @@ import { strings, useLanguage, useStrings } from "../i18n";
 import { shellText } from "../shell-text";
 import { TipText } from "../Tip";
 import { homeImageUrl, sameImages, useHomeImages, type HomeImage } from "./home-images";
-import { sameFiles, useHomeFiles, type HomeFile } from "./home-files";
-
+import { homeFileUrl, sameFiles, useHomeFiles, type HomeFile } from "./home-files";
 /**
  * A reply's words as Home keeps them (YN-91): the whole text, as it is sent,
  * and where each paste block is in it, as the conversation marks pastes on a
@@ -307,7 +306,13 @@ export const HomeComposer = forwardRef<
             annotateThumbnails
             onAnnotate={readOnly ? undefined : (image) => markUp(image, attachedImage(image.name || PASTED))}
           />
-          {filesOn && <FileAttachments files={keptFiles} onRemove={readOnly ? undefined : removeFile} />}
+          {filesOn && (
+            <FileAttachments
+              files={keptFiles}
+              href={(file) => homeFileUrl(attach.projectId, file.id, file.name)}
+              onRemove={readOnly ? undefined : removeFile}
+            />
+          )}
           {error && <p className="inline-error home-composer-note" role="alert">{error}</p>}
           {fileError && <p className="inline-error home-composer-note" role="alert">{fileError}</p>}
           {images.length > 0 && attach.refusal && <p className="inline-error home-composer-note" role="status">{attach.refusal}</p>}

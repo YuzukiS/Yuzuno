@@ -263,6 +263,21 @@ test("a request and a follow-up send their files, only when there are any; the c
   assert.deepEqual(page.errors, []);
 });
 
+test("a field held for a missing front desk still downloads its kept files from the project", async (t) => {
+  const kept = { id: id(800), name: "kept.pdf", bytes: 10 };
+  const page = await talk({
+    front: { version: 1, agentId: null, effectiveAgentId: null },
+    storage: { [DRAFTS]: JSON.stringify({ [SLOT]: { text: "Kept words", files: [kept], at: new Date().toISOString() } }) },
+  });
+  t.after(page.close);
+  assert.equal(page.send().disabled, true, "no front desk: nothing can be sent");
+  const link = page.document.querySelector(".project-talk-field .input-file a");
+  assert.equal(link.getAttribute("href"), `/api/projects/p1/files/${id(800)}/kept.pdf`,
+    "a read-only draft downloads from the project, never /api/agents//files/...");
+  assert.equal(link.getAttribute("download"), "kept.pdf");
+  assert.deepEqual(page.errors, []);
+});
+
 test("nothing is sent with files the front desk can't take, nor while they save; an older Core's files stay here", async (t) => {
   const page = await talk({ front: { version: 1, agentId: "z", effectiveAgentId: "z" } });
   t.after(page.close);
