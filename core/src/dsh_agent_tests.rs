@@ -213,9 +213,12 @@ async fn a_new_dsh_agent_keeps_its_level_and_key_and_starts_with_its_model_and_e
     }
     assert!(lab.ws.store.agents().unwrap().is_empty(), "nothing refused was made");
 
-    let agent = create("deepseek-v4-pro", Some("low"), Some("local"), Some("auto"), key()).await.unwrap();
+    let project = lab.ws.store.create_project("Lab", Default::default()).unwrap();
+    let agent = lab.ws.dsh_create_on("dsh".into(), work.clone(), "deepseek-v4-pro".into(), Some("low".into()), Some("local".into()),
+        Some(project.id.clone()), None, Some("auto".into()), key()).await.unwrap();
     assert_eq!((agent.harness.as_str(), agent.settings.permission_level.as_deref(), agent.settings.reasoning_effort.as_deref()),
         ("dsh", Some("auto"), Some("low")));
+    assert_eq!(lab.ws.store.agent(&agent.id).unwrap().project_id.as_deref(), Some(project.id.as_str()), "in its Project");
     assert_eq!(lab.ws.store.permission_level(&agent.id).unwrap().as_deref(), Some("auto"));
     assert_eq!(lab.ws.store.runtime_profile(&agent.id).unwrap(), key());
     let started = loop {

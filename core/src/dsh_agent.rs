@@ -589,6 +589,9 @@ impl Workspace {
             "createdAt": now(), "updatedAt": now(), "unreadCount": 0, "pendingCount": 0, "lastSeq": 0, "reviewedSeq": 0,
             "connectionState": "disconnected",
         }))?;
+        // Kept apart from the record (`project_agents`), so never read from JSON: set as OpenCode's create sets it.
+        let mut agent = agent;
+        agent.project_id = project_id;
         let detail = AgentDetail {
             agent: agent.clone(), turns: vec![], history: None, pending: vec![], artifacts: vec![], context_usage: None,
             message_receipts: vec![], claude_runtime: None, codex_handoff: None, opencode_usage_seen: None,
