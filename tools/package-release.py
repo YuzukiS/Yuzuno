@@ -167,7 +167,7 @@ def assemble(args):
         # Core runs it only if its bytes match this manifest. Optional to Core,
         # so older releases without it stay valid previous/rollback targets. A
         # macOS bundle does not carry it: it runs under WSL only.
-        if target_platform == "linux-x86_64":
+        if target_platform.startswith("linux-"):
             (staging / "runtimes/windows-jobs").mkdir()
             for name in WINDOWS_HELPER:
                 if (args.windows_helper / name).is_symlink():

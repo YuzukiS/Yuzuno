@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("package_release", Path(__file__).with_name("package-release.py"))
 packager = importlib.util.module_from_spec(spec)
@@ -100,6 +101,15 @@ class PackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not a released platform"):
                     packager.assemble(self.args)
                 self.assertFalse(self.args.out.exists())
+
+    def test_a_linux_aarch64_lab_bundle_keeps_the_windows_helper(self):
+        with patch.object(packager.platform, "system", return_value="Linux"), \
+             patch.object(packager.platform, "machine", return_value="aarch64"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                packager.assemble(self.args)
+        manifest = json.loads((self.args.out / "manifest.json").read_text())
+        self.assertEqual(manifest["platform"], "linux-aarch64")
+        self.assertIn("runtimes/windows-jobs/yuzuno-jobs-helper.exe", manifest["files"])
 
     def test_a_release_without_a_matching_windows_helper_is_not_packaged(self):
         helper = self.args.windows_helper / "yuzuno-jobs-helper.exe"
