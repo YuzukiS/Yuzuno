@@ -2,6 +2,7 @@ import { Download, X } from "lucide-react";
 import { API_BASE } from "./api";
 import { fileSize } from "./file-input";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./file-input.css";
 
 /** A file to show: one in a draft, or one a message carried. */
@@ -64,9 +65,7 @@ export function FileAttachments({
             <span className="input-file-kind" aria-hidden="true">
               {fileKind(file.name, t.kind)}
             </span>
-            <span className="input-file-name" title={name}>
-              {name}
-            </span>
+            <span className="input-file-name">{name}</span>
             <span className="input-file-size">{fileSize(file.bytes)}</span>
           </>
         );
@@ -76,16 +75,22 @@ export function FileAttachments({
             {onRemove ? (
               <div className="input-file-body">{content}</div>
             ) : (
-              <a
-                className="input-file-body"
-                href={fileUrl(owner, file.id, file.name)}
-                download={file.name}
-                title={file.path || name}
-                aria-label={t.download(name)}
+              <Tip
+                side="top"
+                align="start"
+                describe={false}
+                content={<TipText title={name} body={file.path} />}
               >
-                {content}
-                <Download className="input-file-download" size={12} aria-hidden="true" />
-              </a>
+                <a
+                  className="input-file-body"
+                  href={fileUrl(owner, file.id, file.name)}
+                  download={file.name}
+                  aria-label={t.download(name)}
+                >
+                  {content}
+                  <Download className="input-file-download" size={12} aria-hidden="true" />
+                </a>
+              </Tip>
             )}
             {onRemove && (
               <button

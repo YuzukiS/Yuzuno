@@ -1,5 +1,5 @@
 import { sameMessageImages } from "./image-input";
-import { sameMessageFiles, type SavedFile } from "./file-input";
+import { sameMessageFiles, type SavedFile } from "./file-ref";
 import { useEffect, useRef, useState } from "react";
 import { HttpError, postWithin } from "./api";
 import type {

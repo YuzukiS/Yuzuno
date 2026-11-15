@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { setComposerText } from "./composer-driver.mjs";
+import { hoverTip } from "./tip-dom.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 
 // The conversation composer's files (YN-145 F5): the menu's Add files, the
@@ -296,7 +297,9 @@ test("a sent message shows its files as downloads, never the Agent's notice (YN-
     assert.ok(link, "the message shows a file");
     assert.equal(link.getAttribute("href"), `/api/agents/a/files/${id}/q3-report.pdf`);
     assert.equal(link.getAttribute("download"), "q3-report.pdf");
-    assert.equal(link.getAttribute("title"), path, "its tip is the path the Agent reads");
+    assert.equal(link.getAttribute("title"), null, "no native tooltip");
+    const tip = await hoverTip(page.window, link);
+    assert.ok(tip.some((line) => line.includes(path)), `its tip names the path the Agent reads: ${tip.join(" / ")}`);
     assert.match(link.textContent, /q3-report\.pdf/);
     assert.match(link.textContent, /2\.4 MB/);
     const message = page.document.querySelector(".user-message").textContent;

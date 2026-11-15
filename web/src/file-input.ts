@@ -2,10 +2,10 @@ import type { Language } from "./i18n.ts";
 import { strings } from "./i18n.ts";
 import type { ComposerDraft } from "./composer-draft.ts";
 import { IMAGE_TYPES } from "./image-input.ts";
+import type { SavedFile } from "./file-ref.ts";
 
-/** A file Core saved for a message: its content-addressed ID, the safe name
- * Core kept and its size (core/src/input_files.rs). */
-export type SavedFile = { id: string; name: string; bytes: number };
+export type { SavedFile } from "./file-ref.ts";
+
 /** A file in an Agent's draft, saved to that Agent's own files. */
 export type DraftFile = SavedFile & { agentId: string };
 export const fileIdPattern = /^[a-f0-9]{64}$/;
@@ -123,17 +123,3 @@ export function splitDropped(data: DataTransfer | null): {
   };
 }
 
-export function sameMessageFiles(
-  a: readonly SavedFile[] | undefined,
-  b: readonly SavedFile[],
-) {
-  return (
-    (a?.length || 0) === b.length &&
-    b.every(
-      (file, i) =>
-        a?.[i]?.id === file.id &&
-        a?.[i]?.name === file.name &&
-        a?.[i]?.bytes === file.bytes,
-    )
-  );
-}
