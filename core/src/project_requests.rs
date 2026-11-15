@@ -239,7 +239,7 @@ pub(crate) fn files_refused(error: &anyhow::Error) -> Option<&str> {
 
 /// Gives `agent` its own copy of a new message's files (input_files::adopt),
 /// when it takes files; refused (`FilesRefused`), nothing is sent.
-async fn adopt_files(ws: &Workspace, project: &str, agent: &str, files: &[crate::input_files::FileRef]) -> Result<()> {
+pub(crate) async fn adopt_files(ws: &Workspace, project: &str, agent: &str, files: &[crate::input_files::FileRef]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
@@ -248,6 +248,12 @@ async fn adopt_files(ws: &Workspace, project: &str, agent: &str, files: &[crate:
     let found = ws.stored(move |store| store.agent(&to)).await?;
     if !crate::input_files::takes_files(&found.harness) {
         return Err(refused(format!("{} can't receive files", found.name)));
+    }
+    // A remote Agent's files are not copied here (a later slice carries them
+    // to its machine); the hand-off goes without them, as with an Agent that
+    // takes none.
+    if found.remote.is_some() {
+        return Err(refused(format!("{} is on another machine, which cannot receive files yet", found.name)));
     }
     let (root, project, agent, files) = (ws.data_dir.clone(), project.to_owned(), agent.to_owned(), files.to_vec());
     tokio::task::spawn_blocking(move || crate::input_files::adopt(&root, &project, &agent, &files))
@@ -460,21 +466,25 @@ async fn lock(ws: &Workspace, project: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// one whose receipt names another `origin`, is not this one: refused,
 /// nothing sent. Refused before it was sent, `Err` says so.
 async fn send(ws: &Arc<Workspace>, project: &str, agent: &str, client: &str, files: &[crate::input_files::FileRef],
-    origin: Value, compose: impl FnOnce(Option<String>) -> MessageInput) -> Result<MessageReceipt> {
+    files_may_differ: bool, origin: Value, compose: impl FnOnce(Option<String>) -> MessageInput) -> Result<MessageReceipt> {
     let (to, id) = (agent.to_owned(), client.to_owned());
     let wanted = files.to_vec();
-    let input = match ws.stored(move |store| store.receipt(&to, &id)).await? {
-        // A retry is the same message: its words, images and files as they were.
-        Some(previous) if previous.origin.as_ref() == Some(&origin) && previous.files == wanted => previous.input,
+    let (input, sent_files) = match ws.stored(move |store| store.receipt(&to, &id)).await? {
+        // A retry is the same message: its words, images and files as they
+        // were. A route's hand-off may have dropped its files on the first
+        // try, so a route matches on its origin whatever files it carried,
+        // and keeps the files that first message carried.
+        Some(previous) if previous.origin.as_ref() == Some(&origin) && (files_may_differ || previous.files == wanted) =>
+            (previous.input, previous.files),
         Some(_) => return Err(not_submitted("This clientMessageId was already used for another message. Nothing was sent.".into())),
         None => {
             let input = compose(follow_up_turn(&ws.send_view(agent).await.map_err(|error| not_submitted(error.to_string()))?));
             adopt_images(ws, project, agent, &input.images).await?;
             adopt_files(ws, project, agent, files).await?;
-            input
+            (input, files.to_vec())
         }
     };
-    ws.send_message_from(agent, input, Vec::new(), files.to_vec(), Some(origin)).await
+    ws.send_message_from(agent, input, Vec::new(), sent_files, Some(origin)).await
 }
 
 fn announce(ws: &Workspace, project: &str) {
@@ -536,7 +546,7 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
     }).await?;
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"workspaceId":place.workspace});
     let head = request_head(&place.workspace, &place.name, project, request.n);
-    let sent = send(ws, project, &request.front_agent_id, &request.message_id, &request.files, origin, |turn| {
+    let sent = send(ws, project, &request.front_agent_id, &request.message_id, &request.files, false, origin, |turn| {
         message(&request.message_id, &head, &request.text, request.text_blocks.as_deref(), &request.images, turn)
     }).await;
     match sent {
@@ -652,7 +662,7 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"reply":reply.n,"workspaceId":place.workspace});
     let mut receipts = Vec::new();
     for agent in &reply.delivered_to {
-        let sent = send(ws, project, agent, &reply.message_id, &reply.files, origin.clone(), |turn| {
+        let sent = send(ws, project, agent, &reply.message_id, &reply.files, false, origin.clone(), |turn| {
             message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), &reply.images, turn)
         }).await;
         match sent {

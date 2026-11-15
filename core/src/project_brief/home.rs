@@ -784,6 +784,16 @@ async fn adopt_files(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) -> 
     if input.files.is_empty() {
         return Ok(());
     }
+    // A remote Agent's files are not copied here (a later slice carries them
+    // to its machine): refused before copying anything.
+    let agent = input.agent_id.clone();
+    let found = ws.stored(move |store| store.agent(&agent)).await?;
+    if found.remote.is_some() {
+        return Err(not_submitted(format!(
+            "files_unsupported: {} is on another machine, which cannot receive files yet. Nothing was sent, and your reply is kept.",
+            found.name
+        )));
+    }
     let (root, project, agent, files) = (ws.data_dir.clone(), project.to_owned(), input.agent_id.clone(), input.files.clone());
     tokio::task::spawn_blocking(move || crate::input_files::adopt(&root, &project, &agent, &files))
         .await?
