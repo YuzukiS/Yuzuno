@@ -377,6 +377,13 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_images {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_images TEXT")?;
     }
+    // reply_files: the files the user's reply to the replied version of an ask
+    // carried (YN-145), a JSON array of their references; NULL without any.
+    let has_reply_files: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_files')", [], |r| r.get(0))?;
+    if !has_reply_files {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_files TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

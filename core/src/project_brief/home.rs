@@ -368,6 +368,12 @@ pub(super) struct ReplyInput {
     /// with the message, as a conversation's do. Never with a form.
     #[serde(default)]
     pub images: Vec<String>,
+    /// Files the user attached on Home (YN-145), by their references in the
+    /// Project's files written on Home (input_files::home_dir). Once the
+    /// recipient is known they are copied to it (`adopt_files`) and go with
+    /// the message. Never with a form.
+    #[serde(default)]
+    pub files: Vec<crate::input_files::FileRef>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
@@ -605,6 +611,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     }
     let input = reply_target(ws, &project, input).await?;
     refuse_images(ws, &input).await?;
+    refuse_files(ws, &input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
         return card_reply(ws, project, input, version).await;
@@ -644,13 +651,15 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
-    // A retry keeps its first input, whatever Turn is running now.
-    let message = match previous {
-        Some(previous) if previous.input.text == text && previous.input.images == input.images => previous.input,
+    // A retry keeps its first input and files, whatever Turn is running now.
+    let (message, files) = match previous {
+        Some(previous) if previous.input.text == text && previous.input.images == input.images && previous.files == input.files =>
+            (previous.input, previous.files),
         Some(_) => bail!("This clientMessageId was already used for another message"),
         None => {
             adopt_images(ws, &project, &input).await?;
-            MessageInput {
+            adopt_files(ws, &project, &input).await?;
+            (MessageInput {
                 client_message_id: input.client_message_id.clone(),
                 text,
                 text_blocks: None,
@@ -658,10 +667,10 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
                 expected_turn_id: follow_up_turn(&detail),
                 question: None,
                 clarification: None,
-            }
+            }, input.files.clone())
         }
     };
-    ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await
+    ws.send_message_from(&input.agent_id, message, Vec::new(), files, Some(origin)).await
 }
 
 /// A reply meant for a released executor (from a Home that showed it as the
@@ -749,11 +758,45 @@ async fn adopt_images(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) ->
         .map_err(|error| not_submitted(format!("home_images: {error}. Nothing was sent, and your reply is kept.")))
 }
 
+/// Refuses a reply with files when its recipient takes none (YN-145), or the
+/// reply is a form's: nothing was sent, and the reply is kept.
+async fn refuse_files(ws: &Arc<Workspace>, input: &ReplyInput) -> Result<()> {
+    if input.files.is_empty() {
+        return Ok(());
+    }
+    if input.form.is_some() {
+        return Err(not_submitted("form_files: a form's answers go without files. Nothing was sent, and your reply is kept.".into()));
+    }
+    let agent = input.agent_id.clone();
+    let found = ws.stored(move |store| store.agent(&agent)).await?;
+    if !crate::input_files::takes_files(&found.harness) {
+        return Err(not_submitted(format!(
+            "files_unsupported: {} can't receive files; Codex, Claude and OpenCode Agents can. Nothing was sent, and your reply is kept.",
+            found.name
+        )));
+    }
+    Ok(())
+}
+
+/// Copies a new reply's files from the Project's files written on Home to its
+/// recipient's own (input_files::adopt), before the message is sent.
+async fn adopt_files(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) -> Result<()> {
+    if input.files.is_empty() {
+        return Ok(());
+    }
+    let (root, project, agent, files) = (ws.data_dir.clone(), project.to_owned(), input.agent_id.clone(), input.files.clone());
+    tokio::task::spawn_blocking(move || crate::input_files::adopt(&root, &project, &agent, &files))
+        .await?
+        .map_err(|error| not_submitted(format!("home_files: {error}. Nothing was sent, and your reply is kept.")))
+}
+
 /// What a reply to an ask says, whatever the ask is now: the option chosen
 /// and the user's words, and a form's answers when it sent them, as a digest
-/// its receipt keeps (T-9), then its images (YN-134). One without a form or
-/// images digests as it always has, so an earlier receipt still matches.
-pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormReply>, images: &[String]) -> String {
+/// its receipt keeps (T-9), then its images (YN-134), then its files
+/// (YN-145). One without a form, images or files digests as it always has,
+/// so an earlier receipt still matches.
+pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormReply>, images: &[String],
+    files: &[crate::input_files::FileRef]) -> String {
     use sha2::{Digest, Sha256};
     let mut said = match form {
         Some(form) => json!([choice, text, {"formId":form.form_id,"answers":form.answers}]),
@@ -762,6 +805,11 @@ pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormR
     if !images.is_empty() {
         if let Value::Array(said) = &mut said {
             said.push(json!({"images": images}));
+        }
+    }
+    if !files.is_empty() {
+        if let Value::Array(said) = &mut said {
+            said.push(json!({"files": files}));
         }
     }
     format!("{:x}", Sha256::digest(said.to_string().as_bytes()))
@@ -790,7 +838,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         ));
     }
     ensure!(input.choice.is_none() || input.form.is_none(), "A reply chooses an option or answers a form, not both");
-    let digest = reply_digest(input.choice.as_deref(), &input.text, input.form.as_ref(), &input.images);
+    let digest = reply_digest(input.choice.as_deref(), &input.text, input.form.as_ref(), &input.images, &input.files);
     // The ask as it is now, if it is still the version the user saw.
     let shown = current.as_ref().filter(|row| row.live && row.unresolved_ask() && row.version == version).cloned();
     let chosen = match (&input.choice, &shown) {
@@ -805,7 +853,8 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
                 && sent["version"] == version && sent["reply"] == digest
         });
         ensure!(same, "This clientMessageId was already used for another message");
-        ws.send_message(&input.agent_id, previous.input).await?
+        // The first send's files: a retry carries them again.
+        ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await?
     } else {
         let Some(row) = &shown else {
             let (code, why) = match &current {
@@ -824,6 +873,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text).filter(|_| form.is_none()), form)});
         let detail = ws.send_view(&input.agent_id).await?;
         adopt_images(ws, &project, &input).await?;
+        adopt_files(ws, &project, &input).await?;
         let message = MessageInput {
             client_message_id: input.client_message_id.clone(),
             text: compose_ask(&workspace, &name, &project, row, chosen.as_ref(), &input.text),
@@ -833,7 +883,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             question: None,
             clarification: None,
         };
-        ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await?
+        ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?
     };
     // Marked on that version only, if it is still the live ask now.
     if shown.is_some() && delivered(&receipt) {
@@ -849,8 +899,8 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             (Some(row), Some(form)) if form_answers(row, form, &input.text).is_ok() => Some(json!({"formId": form.form_id, "answers": form.answers})),
             _ => None,
         };
-        let (store, key, id, images) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone());
-        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images)).await? {
+        let (store, key, id, images, files) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone(), input.files.clone());
+        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images, &files)).await? {
             announce(ws, Some(&project));
         }
     }
@@ -893,9 +943,9 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
         let head = card_head(&workspace, &name, &project, &key, version, &title);
-        ensure!(same_card_reply(&previous.input.text, &head, &input.text) && previous.input.images == input.images,
-            "This clientMessageId was already used for another message");
-        return ws.send_message(&input.agent_id, previous.input).await;
+        ensure!(same_card_reply(&previous.input.text, &head, &input.text) && previous.input.images == input.images
+            && previous.files == input.files, "This clientMessageId was already used for another message");
+        return ws.send_message_from(&input.agent_id, previous.input, Vec::new(), previous.files, None).await;
     }
     let refused = |message: String| anyhow::Error::new(crate::collaboration_credentials::MessageNotSubmitted(anyhow::anyhow!(message)));
     let Some(row) = shown else {
@@ -913,6 +963,7 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
     let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"sectionId":row.identity,"workspaceId":workspace,
         "home":snapshot(&name, Some(&row), Some(&title), None, extra_text(None, &input.text), None)});
     adopt_images(ws, &project, &input).await?;
+    adopt_files(ws, &project, &input).await?;
     let message = MessageInput {
         client_message_id: input.client_message_id,
         text,
@@ -922,5 +973,5 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         question: None,
         clarification: None,
     };
-    ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await
+    ws.send_message_from(&input.agent_id, message, Vec::new(), input.files, Some(origin)).await
 }

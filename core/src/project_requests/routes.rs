@@ -13,7 +13,7 @@
 //! route, done once; one that failed is tried again where it stopped; a
 //! different one at a recorded index is refused. One route failing never
 //! undoes another.
-use super::{front_desk, images_refused, message, request_row, send, Request, ORIGIN, REQUEST};
+use super::{files_refused, front_desk, images_refused, message, request_row, send, Request, ORIGIN, REQUEST};
 use crate::{commit_sha::{self, Form}, model::MessageInput, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -726,21 +726,45 @@ async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, h
         false => MessageInput { client_message_id: client.clone(), text: head.to_owned(), text_blocks: None, images: images.to_vec(),
             expected_turn_id: turn, question: None, clarification: None },
     };
-    let error = match send(ws, &ctx.project, agent, &client, origin.clone(), |turn| compose(head, &request.images, turn)).await {
-        Ok(_) => return Ok(()),
-        Err(error) => error,
-    };
-    let Some(reason) = images_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) else {
+    // A file or image `agent` can't be given never holds the hand-off up: it
+    // goes without it, Core's head first saying why (YN-145 for files).
+    let (mut head, mut images, mut files) = (head.to_owned(), request.images.clone(), request.files.clone());
+    loop {
+        let (said, im, fl) = (head.clone(), images.clone(), files.clone());
+        let error = match send(ws, &ctx.project, agent, &client, &fl, origin.clone(), |turn| match words {
+            true => message(&client, &said, &request.text, request.text_blocks.as_deref(), &im, turn),
+            false => MessageInput { client_message_id: client.clone(), text: said, text_blocks: None, images: im,
+                expected_turn_id: turn, question: None, clarification: None },
+        }).await {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        if !files.is_empty() {
+            if let Some(reason) = files_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) {
+                let n = files.len();
+                let why = format!(
+                    "The user also attached {n} file{} to R-{} on Home, which could not be sent to you: {reason}.",
+                    if n == 1 { "" } else { "s" }, request.n
+                );
+                head = if words { format!("{why}\n{head}") } else { why };
+                files.clear();
+                continue;
+            }
+        }
+        if !images.is_empty() {
+            if let Some(reason) = images_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) {
+                let n = images.len();
+                let why = format!(
+                    "The user also attached {n} image{} to R-{} on Home, which could not be sent to you: {reason}.",
+                    if n == 1 { "" } else { "s" }, request.n
+                );
+                head = if words { format!("{why}\n{head}") } else { why };
+                images.clear();
+                continue;
+            }
+        }
         return Err(error);
-    };
-    let n = request.images.len();
-    let why = format!(
-        "The user also attached {n} image{} to R-{} on Home, which could not be sent to you: {reason}.",
-        if n == 1 { "" } else { "s" }, request.n
-    );
-    let head = if words { format!("{why}\n{head}") } else { why };
-    send(ws, &ctx.project, agent, &client, origin, |turn| compose(&head, &[], turn)).await?;
-    Ok(())
+    }
 }
 
 /// The line of a message that hands an Agent a request's images when its
