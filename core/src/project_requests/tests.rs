@@ -51,7 +51,7 @@ fn close(ws: &Workspace, id: &str) {
 }
 
 fn words(ws: &Workspace, text: &str, id: &str) -> Words {
-    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![] }
+    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![], files: vec![] }
 }
 
 fn receipt(ws: &Workspace, agent: &str, id: &str) -> Option<MessageReceipt> {
@@ -433,3 +433,5 @@ async fn another_messages_client_id_is_not_taken_for_this_one() {
 
 #[path = "image_tests.rs"]
 mod image_tests;
+#[path = "file_tests.rs"]
+mod file_tests;

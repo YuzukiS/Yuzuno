@@ -116,7 +116,7 @@ fn answer(why: &str) -> Value {
 
 impl Lab {
     fn words(&self, text: &str, id: &str) -> Words {
-        Words { workspace_id: self.workspace.clone(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![] }
+        Words { workspace_id: self.workspace.clone(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![], files: vec![] }
     }
 
     /// The user says `text`: its request number.
@@ -213,7 +213,7 @@ fn utf16(text: &str, start: usize, end: usize) -> String {
 fn kept_request(text: &str) -> Request {
     Request {
         id: "r".into(), n: 1, text: text.into(), text_blocks: None, title: None, created_at: String::new(),
-        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(), images: vec![],
+        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(), images: vec![], files: vec![],
     }
 }
 
@@ -976,3 +976,5 @@ fn the_route_tools_description_fits_2048_utf16_units() {
 
 #[path = "route_image_tests.rs"]
 mod route_image_tests;
+#[path = "route_file_tests.rs"]
+mod route_file_tests;

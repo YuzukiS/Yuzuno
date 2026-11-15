@@ -24,7 +24,7 @@ fn holds(ws: &Workspace, agent: &str, images: &[String]) -> bool {
 
 fn reply(agent: &str, text: &str, id: &str, images: &[String]) -> home::ReplyInput {
     home::ReplyInput { key: None, agent_id: agent.into(), text: text.into(), client_message_id: id.into(), choice: None,
-        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: images.to_vec() }
+        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: images.to_vec(), files: vec![] }
 }
 
 fn card(agent: &str, text: &str, id: &str, images: &[String]) -> home::ReplyInput {
@@ -57,8 +57,8 @@ async fn a_card_an_ask_and_a_plain_reply_carry_their_images_to_the_agent_they_go
     assert!(!ws.data_dir.join("input-images/d").exists(), "nobody else has them");
     // An ask's receipt says which images its reply carried.
     let origin = ws.store.receipt("c", "r2").unwrap().unwrap().origin.unwrap();
-    assert_eq!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &images));
-    assert_ne!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &[]));
+    assert_eq!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &images, &[]));
+    assert_ne!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &[], &[]));
 
     // The same reply again is the one sent; with other images it is another message.
     for (agent, again) in [("b", card("b", "Looks good", "r1", &images)), ("c", ask(&ws, "c", "Go", "r2", &images)), ("a", reply("a", "Hello", "r3", &images))] {
@@ -126,14 +126,14 @@ async fn a_reply_whose_images_cant_go_sends_nothing() {
 /// without images, so a receipt written before them still matches its retry.
 #[test]
 fn a_reply_without_images_digests_as_before() {
-    assert_eq!(home::reply_digest(Some("left"), "Go", None, &[]), "cdfbf01ca5b0be98d92aa3f8151510253aee6026fcdfe5e5d357a8f86c4adf4e");
-    assert_eq!(home::reply_digest(None, "Go", None, &[]), "b431b391ae8fd92b994d54b6cffaf896a634d2a6d8fec82d44a2163a4611ab5f");
+    assert_eq!(home::reply_digest(Some("left"), "Go", None, &[], &[]), "cdfbf01ca5b0be98d92aa3f8151510253aee6026fcdfe5e5d357a8f86c4adf4e");
+    assert_eq!(home::reply_digest(None, "Go", None, &[], &[]), "b431b391ae8fd92b994d54b6cffaf896a634d2a6d8fec82d44a2163a4611ab5f");
     let form: home::FormReply = serde_json::from_value(json!({"formId":"prefs","answers":{"theme":"dark"}})).unwrap();
-    assert_eq!(home::reply_digest(None, "x", Some(&form), &[]), "e6a0679cb173349eec7a45b205af95452588bbfcfa2732fe8edf9d985883d32e");
+    assert_eq!(home::reply_digest(None, "x", Some(&form), &[], &[]), "e6a0679cb173349eec7a45b205af95452588bbfcfa2732fe8edf9d985883d32e");
     // With images, they come last.
     let images = vec!["one.png".to_owned()];
     let said = r#"["left","Go",{"images":["one.png"]}]"#;
-    assert_eq!(home::reply_digest(Some("left"), "Go", None, &images), format!("{:x}", Sha256::digest(said.as_bytes())));
+    assert_eq!(home::reply_digest(Some("left"), "Go", None, &images, &[]), format!("{:x}", Sha256::digest(said.as_bytes())));
 }
 
 /// A replied ask shows the images its reply carried until its owner asks again.
@@ -142,7 +142,7 @@ async fn an_answered_ask_shows_its_replys_images_until_its_owner_asks_again() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("q1", 0, vec![put("decide", "ask")])).await;
     let images = vec![attached(&ws, &project, 1), attached(&ws, &project, 2)];
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[]).unwrap());
     let ask = |ws: &Workspace| section(&brief(ws, "a"), "decide")["ask"].clone();
     assert_eq!((ask(&ws)["state"].clone(), ask(&ws)["replyImages"].clone()), (json!("replied"), json!(images)));
     let kept: Option<String> = ws.store.db.read().unwrap().query_row(
@@ -151,7 +151,7 @@ async fn an_answered_ask_shows_its_replys_images_until_its_owner_asks_again() {
     // A reply without images clears any, as one without a form clears its answers.
     assert!(sections::mark_replied(&ws.store, &project, "decide", 1, "Right").unwrap());
     assert!(ask(&ws).get("replyImages").is_none(), "{}", ask(&ws));
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images).unwrap());
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", None, &images, &[]).unwrap());
     // The owner's next version is a new question: open, with no reply's images.
     accept(&ws, "a", input("q2", version(&ws, &project), vec![put("decide", "ask")])).await;
     let next = ask(&ws);

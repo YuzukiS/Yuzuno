@@ -378,3 +378,42 @@ async fn deleting_an_agent_removes_its_own_files_only() {
     assert!(remove_agent_dir(&ws.data_dir, "b-link").is_err());
     assert_eq!(contents(&b).len(), 1);
 }
+
+/// YN-145 F6: a Project's files written on Home are kept in its staging
+/// folder, checked, copied once to a recipient, and removed with the Project.
+#[tokio::test]
+async fn a_projects_files_are_kept_adopted_once_and_removed_with_the_project() {
+    let (_tmp, ws) = lab();
+    let project = ws.store.create_project("Files", Default::default()).unwrap().id;
+    let app = crate::server::router(ws.clone(), std::path::PathBuf::from("/nonexistent"));
+    let upload = format!("/api/projects/{project}/files?name=report.pdf");
+    let (status, _, body) = call(&app, "POST", &upload, Body::from("the report"), &[]).await;
+    assert_eq!(status, StatusCode::OK, "{}", error(&body));
+    let saved: FileRef = serde_json::from_slice(&body).unwrap();
+    assert_eq!(saved.name, "report.pdf");
+    // The user's page downloads it; an Agent's credential may not.
+    let (status, _, body) = call(&app, "GET",
+        &format!("/api/projects/{project}/files/{}/report.pdf", saved.id), Body::empty(), &[]).await;
+    assert_eq!((status, body), (StatusCode::OK, b"the report".to_vec()));
+    let (status, _, _) = call(&app, "GET",
+        &format!("/api/projects/{project}/files/{}/report.pdf", saved.id), Body::empty(),
+        &[("authorization", "Bearer agent")]).await;
+    assert_ne!(status, StatusCode::OK, "an Agent may not read the staging copy");
+    // Checked as it was saved; copied once to the recipient, read-only.
+    assert!(check_home(&ws.data_dir, &project, std::slice::from_ref(&saved)).is_ok());
+    adopt(&ws.data_dir, &project, "a", std::slice::from_ref(&saved)).unwrap();
+    adopt(&ws.data_dir, &project, "a", std::slice::from_ref(&saved)).unwrap();
+    let at = agent_dir(&ws.data_dir, "a").unwrap().join(&saved.id).join("report.pdf");
+    assert_eq!((std::fs::read(&at).unwrap(), mode(&at)), (b"the report".to_vec(), 0o400));
+    // An archived Project takes no new upload; a deleted one takes none and
+    // its staging folder goes with it.
+    let archived = ws.store.create_project("Archived", Default::default()).unwrap().id;
+    ws.store.update_project(&archived, crate::projects::ProjectChange { name: None, key: None,
+        default_dirs: std::collections::BTreeMap::new(), archived: Some(true) }).unwrap();
+    let (status, _, body) = call(&app, "POST", &format!("/api/projects/{archived}/files?name=x"),
+        Body::from("x"), &[]).await;
+    assert_eq!((status, error(&body)), (StatusCode::BAD_REQUEST, "project_archived: Archived is archived; unarchive it to attach files".into()));
+    let folder = home_dir(&ws.data_dir, &project).unwrap();
+    ws.delete_project(&project).await.unwrap();
+    assert!(!folder.exists(), "the Project's staging folder goes with it");
+}
