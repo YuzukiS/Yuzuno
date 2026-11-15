@@ -320,6 +320,7 @@ test("a remote Claude front desk takes files, as Core carries them to its machin
   await until(() => page.chips().length === 1, "saved");
   assert.equal(page.document.querySelector('.project-talk-field .home-composer-note[role="status"]'), null,
     "nothing said against a front desk that takes files");
-  assert.equal(page.send().disabled, false, "the files go with the words");
+  // The chip shows before the upload finishes; the send waits for it.
+  await until(() => !page.send().disabled, "the files go with the words");
   assert.deepEqual(page.errors, []);
 });
