@@ -173,7 +173,9 @@ signed macOS release to install.
      the working folder.
   7. Saves it as a confirmed entry named **This Mac** and opens it. The
      temporary file and folder are removed on every way out, including
-     failures.
+     failures. A force-quit in the middle of an install can leave one beside
+     the install folder; it is this user's, named `.yuzuno-download-…` or
+     `.yuzuno-core-install.…`, and can be deleted by hand.
 - **Cancel** stops the installation until the archive is unpacked; after that
   it runs to the end. Closing the window does not stop the step under way.
 - **Starting later.** A saved entry starts through its installation's own

@@ -69,12 +69,14 @@ pub fn same_or_nested(a: &str, b: &str) -> bool {
 /// part, and not an external volume. Spaces and non-ASCII characters are
 /// allowed: the path is never part of a shell command (YN-108 design 4.2).
 pub fn mac_path_shape_ok(path: &str) -> bool {
+    // The default Mac disk ignores case: `/volumes/x` is `/Volumes/x`.
+    let lowered = path.to_ascii_lowercase();
     path.starts_with('/')
         && path.len() <= 512
         && !path.chars().any(char::is_control)
         && path[1..].split('/').all(|part| !matches!(part, "" | "." | ".."))
-        && path != "/Volumes"
-        && !path.starts_with("/Volumes/")
+        && lowered != "/volumes"
+        && !lowered.starts_with("/volumes/")
 }
 
 /// Where the Mac app may put Core and its Workspace (YN-108 design 4.2): a
@@ -83,13 +85,16 @@ pub fn mac_path_shape_ok(path: &str) -> bool {
 /// `home` is the checked account's home folder.
 pub fn mac_path_ok(path: &str, home: &str) -> bool {
     let home = home.trim_end_matches('/');
-    let guarded = ["/Desktop", "/Documents", "/Downloads", "/Library/Mobile Documents"];
+    let guarded = ["/desktop", "/documents", "/downloads", "/library/mobile documents"];
+    // The default Mac disk ignores case, so the home and the guarded folders
+    // are compared that way: `~/desktop` is `~/Desktop`.
+    let (path_lower, home_lower) = (path.to_ascii_lowercase(), home.to_ascii_lowercase());
     mac_path_shape_ok(path)
         && mac_path_shape_ok(home)
-        && path.strip_prefix(home).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+        && path_lower.strip_prefix(&home_lower).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
         && !guarded.iter().any(|folder| {
-            let folder = format!("{home}{folder}");
-            path == folder || path.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('/'))
+            let folder = format!("{home_lower}{folder}");
+            path_lower == folder || path_lower.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('/'))
         })
 }
 
@@ -776,10 +781,14 @@ cgroup=cpu memory pids
             "/Users/someone/core/",
             "/Users/other/core",
             "/Volumes/External/yuzuno",
+            "/volumes/External/yuzuno",
             "/Users/someone/Desktop/core",
+            "/Users/someone/desktop/core",
             "/Users/someone/Documents/yuzuno",
+            "/Users/someone/documents/yuzuno",
             "/Users/someone/Downloads/yuzuno",
             "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/yuzuno",
+            "/Users/someone/library/mobile documents/com~apple~CloudDocs/yuzuno",
             "/Users/someone/a\nb",
         ] {
             assert!(!mac_path_ok(bad, home), "{bad:?}");
@@ -792,6 +801,8 @@ cgroup=cpu memory pids
             assert!(!mac_path_shape_ok(bad), "{bad:?}");
         }
         assert!(mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(500))));
+        // The same rules hold when the home is spelled in another case.
+        assert!(!mac_path_ok("/Users/Someone/desktop/core", "/Users/someone"));
         assert!(!mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(520))));
     }
 

@@ -1196,7 +1196,7 @@ fn main() {
                                 &PredefinedMenuItem::select_all(app, None)?,
                             ],
                         )?,
-                        &Submenu::with_items(app, "Workspace", true, &[&connect, &stop_local])?,
+                        &Submenu::with_id_and_items(app, "workspace-menu", "Workspace", true, &[&connect, &stop_local])?,
                         &Submenu::with_items(
                             app,
                             "Window",

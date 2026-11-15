@@ -769,11 +769,13 @@ impl Drop for TempPath {
     }
 }
 
-/// Eight letters or digits, for one install's temporary names.
+/// Eight letters or digits, for one install's temporary names. The low bits
+/// of the clock change every few nanoseconds; the process ID only keeps two
+/// calls in the same instant apart.
 fn suffix() -> String {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_nanos()).unwrap_or(0);
-    let pid = u128::from(std::process::id());
-    format!("{:016x}", nanos ^ (pid << 64)).chars().take(8).collect()
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_nanos()).unwrap_or(0) as u64;
+    let word = nanos ^ u64::from(std::process::id()).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    format!("{:08x}", word & 0xffff_ffff)
 }
 
 fn refs(arguments: &[String]) -> Vec<&str> {
@@ -1145,8 +1147,11 @@ fn confirmed_mac_start(app: &tauri::AppHandle) -> Option<StartProfile> {
 /// Offers the stop item only where it can act: a confirmed Core on this Mac
 /// for the selected Workspace (design 4.3).
 pub fn update_stop_item(app: &tauri::AppHandle) {
+    // A Menu's `get` looks only at its own items, never inside a submenu:
+    // the Workspace submenu is what holds the item (main.rs gives it an id).
     let Some(menu) = app.menu() else { return };
-    let Some(tauri::menu::MenuItemKind::MenuItem(item)) = menu.get("stop-local-core") else { return };
+    let Some(tauri::menu::MenuItemKind::Submenu(workspace)) = menu.get("workspace-menu") else { return };
+    let Some(tauri::menu::MenuItemKind::MenuItem(item)) = workspace.get("stop-local-core") else { return };
     let _ = item.set_enabled(confirmed_mac_start(app).is_some());
 }
 
