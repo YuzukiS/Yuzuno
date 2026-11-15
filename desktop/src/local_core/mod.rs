@@ -282,9 +282,29 @@ async fn platform_targets() -> Targets {
 #[cfg(windows)]
 async fn running_names() -> Option<Vec<String>> {
     match tauri::async_runtime::spawn_blocking(wsl::running).await {
-        Ok(Ok(output)) if output.success => Some(wsl_list::parse_running(&wsl_list::decode(&output.stdout))),
+        Ok(Ok(output)) => Some(running_result(
+            output.success,
+            output.code,
+            &wsl_list::decode(&output.stdout),
+            &wsl_list::decode(&output.stderr),
+        )?),
         _ => None,
     }
+}
+
+/// What `wsl --list --running --quiet` came to. WSL's own "no running
+/// distributions" path prints the message and returns -1 when not quiet
+/// (`WslClient.cpp`: `if ((!options.quiet) && distros.empty()) ... return -1;`);
+/// with `--quiet` it prints nothing and returns 0. Either way, a "-1" or that
+/// message is no running distribution, not a failure.
+fn running_result(success: bool, code: Option<i32>, stdout: &str, stderr: &str) -> Option<Vec<String>> {
+    if success {
+        return Some(wsl_list::parse_running(stdout));
+    }
+    let said = format!("{stdout}\n{stderr}");
+    let none = code == Some(-1)
+        || said.lines().any(|line| line.trim().eq_ignore_ascii_case("There are no running distributions."));
+    none.then(Vec::new)
 }
 
 /// `names` limited to the distributions `--list --verbose` knows. WSL may
@@ -1531,6 +1551,21 @@ mod tests {
         assert_eq!(targets[0]["boot"], "own");
         assert_eq!(targets[1]["boot"], "alone");
         assert_eq!(targets[1]["bootDetail"], Value::Null);
+    }
+
+    #[test]
+    fn a_no_running_result_is_an_empty_list_only_when_wsl_says_so() {
+        assert_eq!(running_result(true, Some(0), "", ""), Some(Vec::new()));
+        assert_eq!(running_result(true, Some(0), "main\n", ""), Some(vec!["main".to_string()]));
+        assert_eq!(
+            running_result(false, Some(-1), "There are no running distributions.\n", ""),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            running_result(false, Some(0), "There are no running distributions.\n", ""),
+            Some(Vec::new())
+        );
+        assert_eq!(running_result(false, Some(1), "WSL (1) ERROR: gone\n", ""), None);
     }
 
     #[test]
