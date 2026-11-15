@@ -214,17 +214,31 @@ function standing(facts: IslandFacts): Read {
   return out("idle", since(ended), summary);
 }
 
-/** A handed-in executor's pill, as its PR stands. */
-function handed(view: ExecutorView): IslandStay {
+/** A PR's pill where its state is someone else's move: merged, a request for
+ * changes, failed checks, an approved round, a review round under way. */
+function moved(view: ExecutorView): IslandStay | null {
   const status = view.pr?.status;
   switch (status?.kind) {
     case "merged": return { kind: "merged" };
     case "changes": return { kind: "changes" };
     case "ciFailed": return { kind: "ciFailed" };
     case "approved": return { kind: "ready" };
-    case "rounds": return status.running ? { kind: "review" } : { kind: "lead" };
-    default: return { kind: "lead" };
+    case "rounds": return status.running ? { kind: "review" } : null;
+    default: return null;
   }
+}
+
+/** A handed-in executor's pill, as its PR stands: whatever isn't someone
+ * else's move yet is the lead's. */
+function handed(view: ExecutorView): IslandStay {
+  return moved(view) ?? { kind: "lead" };
+}
+
+/** An executor still at work (nothing handed in): its PR's pill, and a PR
+ * with no review round yet is no one else's move (YN-168): its own CI
+ * pending or running says so, else it is between Turns. */
+function atWork(view: ExecutorView): IslandStay {
+  return moved(view) ?? (view.pr?.ci === "pending" ? { kind: "waits", on: "ci" } : { kind: "between" });
 }
 
 /** An executor's ring, pill, clock and line two: what it is doing, its
@@ -272,7 +286,7 @@ function executor(facts: IslandFacts, view: ExecutorView): Read {
       const turn = agent.status === "working" || agent.status === "uncertain" || !!facts.compacting;
       if (!turn) {
         const stay: IslandStay = facts.wait?.left ? { kind: "waits", on: facts.wait.kind }
-          : view.pr ? handed(view)
+          : view.pr ? atWork(view)
             : view.detail?.kind === "blocked" ? { kind: "blocked" }
               : lifecycle?.resultAt ? { kind: "resultIn" }
                 : { kind: "between" };
