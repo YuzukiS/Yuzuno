@@ -119,6 +119,20 @@ impl Admission {
         }
     }
 
+    /// A seal that met new work after detach drains again (YN-169): new work
+    /// is still refused, completions and update notices may enter as while
+    /// waiting, and permits in flight are kept.
+    pub fn unseal(&self, operation_id: &str) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        ensure!(
+            state.operation_id.as_deref() == Some(operation_id),
+            "Update does not own admission"
+        );
+        state.sealed = false;
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub fn reopen(&self, operation_id: &str) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         ensure!(
@@ -172,6 +186,27 @@ mod tests {
         assert_eq!(gate.snapshot().in_flight, 1);
         drop(accepted);
         assert_eq!(gate.snapshot().in_flight, 0);
+    }
+
+    #[test]
+    fn unseal_is_owned_keeps_permits_and_still_refuses_new_work() {
+        let gate = Arc::new(Admission::default());
+        gate.begin_drain("a").unwrap();
+        assert!(gate.try_seal("a").unwrap());
+        let writer = gate.enter_event();
+        assert!(gate.unseal("b").is_err());
+        assert!(gate.snapshot().sealed);
+        gate.unseal("a").unwrap();
+        let state = gate.snapshot();
+        assert!(!state.sealed);
+        assert_eq!(state.operation_id.as_deref(), Some("a"));
+        assert_eq!(state.in_flight, 1);
+        assert!(gate.enter_work().is_err());
+        drop(gate.enter_completion().unwrap());
+        drop(gate.enter_update_notice("a").unwrap());
+        assert!(!gate.try_seal("a").unwrap());
+        drop(writer);
+        assert!(gate.try_seal("a").unwrap());
     }
 
     #[tokio::test]
