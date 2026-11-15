@@ -28,6 +28,8 @@ spec.loader.exec_module(run)
 
 PREV, REPO = 'core-20261108-0cbd2fa', 'owner/repo'
 NAMES = ('yuzuno-core-linux-x86_64.json', 'yuzuno-core-linux-x86_64.json.minisig', 'yuzuno-core-linux-x86_64.tar.gz')
+SIGNED = tuple(f'yuzuno-core-{platform}{suffix}' for platform in run.release.PLATFORMS
+               for suffix in ('.json', '.json.minisig', '.tar.gz'))
 
 
 def git(cwd, *argv):
@@ -107,7 +109,8 @@ class EnvTests(ReleaseCase):
     def test_the_example_reads_with_its_later_values_blank(self):
         env = run.Env(TOOLS / 'release-run.env.example')
         self.assertEqual((env.MILESTONE, env.n), ('core.29', 29))
-        self.assertFalse({'INPUTS_RUN', 'ARTIFACT_ID', 'NOTES_SHA256', 'REVIEW_SHA256', 'BASE_SHA256'} & set(env.values))
+        self.assertFalse({'INPUTS_RUN', 'ARTIFACT_ID_LINUX_X86_64', 'ARTIFACT_ID_MACOS_AARCH64',
+                          'NOTES_SHA256', 'REVIEW_SHA256', 'BASE_SHA256'} & set(env.values))
 
     def test_refuses_what_is_not_a_plain_release_value(self):
         for line, why in (('FOO=1', 'not a release value'), ('SHA = x', 'not NAME=value'), ('W=/a b', 'not NAME=value'),
@@ -227,15 +230,23 @@ class InputsTests(ReleaseCase):
         self.assertIn('the hold can lift', out)
         self.assertEqual(read(self.rundir / 'inputs.json')['status'], 'in_progress')
 
-    def test_a_finished_build_names_its_one_artifact(self):
+    def test_a_finished_build_names_each_platforms_artifact(self):
         self.runs(self.a_run(run_attempt=2))
-        artifact = {'id': 77, 'name': f'core-inputs-{self.sha}-2', 'size_in_bytes': 9, 'digest': 'sha256:' + 'a' * 64, 'expired': False}
+        linux = {'id': 77, 'name': f'core-inputs-linux-x86_64-{self.sha}-2', 'size_in_bytes': 9,
+                 'digest': 'sha256:' + 'a' * 64, 'expired': False}
+        mac = {'id': 78, 'name': f'core-inputs-macos-aarch64-{self.sha}-2', 'size_in_bytes': 11,
+               'digest': 'sha256:' + 'b' * 64, 'expired': False}
         self.reads[f'repos/{REPO}/actions/runs/900/artifacts'] = {'json': {'artifacts': [
-            artifact, {**artifact, 'id': 78, 'name': f'core-inputs-{self.sha}-1'}]}}
+            linux, mac, {**linux, 'id': 79, 'name': f'core-inputs-linux-x86_64-{self.sha}-1'}]}}
         rc, out, _ = self.call('inputs')
         self.assertEqual(rc, 0)
-        self.assertIn('INPUTS_RUN=900\nARTIFACT_ID=77', out)
-        self.assertEqual(self.call('inputs', env=self.env(ARTIFACT_ID='78'))[0], 1)
+        self.assertIn(f'INPUTS_RUN=900\nARTIFACT_ID_LINUX_X86_64=77', out)
+        self.assertIn(f'ARTIFACT_ID_MACOS_AARCH64=78', out)
+        self.assertEqual(self.call('inputs', env=self.env(ARTIFACT_ID_LINUX_X86_64='79'))[0], 1)
+        # Each platform needs its own artifact: one cannot stand for both.
+        self.reads[f'repos/{REPO}/actions/runs/900/artifacts'] = {'json': {'artifacts': [
+            linux, {**mac, 'name': linux['name']}]}}
+        self.assertIn('Expected one', self.call('inputs')[2])
 
     def test_two_runs_or_another_commit_stop(self):
         self.runs(self.a_run(), self.a_run(id=901))
@@ -355,7 +366,8 @@ class FreezeCase(ReleaseCase):
         self.pub.write_text('key\n')
         self.key = self.temp / 'secret.key'
         self.key.write_text('never read')
-        self.values.update(INPUTS_RUN='900', ARTIFACT_ID='77', NOTES_SHA256=digest(self.rundir / 'notes-final.md'),
+        self.values.update(INPUTS_RUN='900', ARTIFACT_ID_LINUX_X86_64='77', ARTIFACT_ID_MACOS_AARCH64='78',
+                           NOTES_SHA256=digest(self.rundir / 'notes-final.md'),
                            REVIEW_SHA256=digest(self.rundir / 'review-string.txt'), BASE=str(self.base),
                            BASE_SHA256=digest(self.base / 'manifest.json'), PUB=str(self.pub), PUB_SHA256=digest(self.pub),
                            KEY=str(self.key))
@@ -370,7 +382,9 @@ class FreezeCase(ReleaseCase):
         work = self.t / 'release'
         if command == 'init':
             work.mkdir(parents=True)
-            write(work / 'release.json', {'repository': REPO, 'source': self.sha, 'ciRunId': 101, 'inputsRunId': 900, 'artifactId': 77,
+            write(work / 'release.json', {'repository': REPO, 'source': self.sha, 'ciRunId': 101, 'inputsRunId': 900,
+                                          'artifacts': {'linux-x86_64': 77, 'macos-aarch64': 78},
+                                          'platforms': list(run.release.PLATFORMS),
                                           'releaseId': self.tag, 'version': '2026.11.09-core.29', 'notesSha256': self.values['NOTES_SHA256'],
                                           'baselineManifestSha256': self.values['BASE_SHA256'], 'publicKeySha256': self.values['PUB_SHA256'],
                                           'acceptedReview': argv[argv.index('--review') + 1], 'baseline': str(self.base)})
@@ -378,11 +392,13 @@ class FreezeCase(ReleaseCase):
             o = self.outcome
             write(work / 'report.json', {'stages': {s: {'status': o.get(s, 'passed')} for s in ('fetch', 'package', 'sign', 'smoke')},
                                          'resumeAt': o.get('resumeAt', 'publish (only with release authorization)')})
-            (work / 'signed').mkdir(exist_ok=True)
-            for name in NAMES[:o.get('signed', 3)]:
-                (work / 'signed' / name).write_text(name)
-            (work / 'bundle').mkdir(exist_ok=True)
-            (work / 'bundle/manifest.json').write_text('{}')
+            for name in SIGNED[:o.get('signed', len(SIGNED))]:
+                path = work / 'signed' / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name)
+            for platform in run.release.PLATFORMS:
+                (work / 'bundle' / platform).mkdir(parents=True, exist_ok=True)
+                (work / 'bundle' / platform / 'manifest.json').write_text('{}')
             write(work / 'smoke.json', {'passed': o.get('smokePassed', True), 'inputs': {'mode': o.get('mode', 'inPlace')},
                                         'addedFields': {'core-20261109': {'project': ['key']}}})
             return o.get('rc', 0)
@@ -400,6 +416,8 @@ class FreezeTests(FreezeCase):
         argv = self.recorded[0]
         self.assertEqual(argv[argv.index('--review') + 1], 'Accepted.')
         self.assertEqual(argv[argv.index('--notes') + 1], str(self.rundir.resolve() / 'notes-final.md'))
+        self.assertEqual(argv[argv.index('--artifact-id') + 1], 'linux-x86_64=77')
+        self.assertEqual(argv[argv.index('--artifact-id', argv.index('--artifact-id') + 1) + 1], 'macos-aarch64=78')
         self.assertIn('exists: a new release needs a new work directory', self.call('init')[2])
 
     def test_init_refuses_a_dirty_or_other_checkout(self):
@@ -465,7 +483,7 @@ class VerifyTests(FreezeCase):
         self.resume()
         served = self.temp / 'served'
         served.mkdir()
-        for name in NAMES:
+        for name in SIGNED:
             (served / name).write_text(name)
         fake = self.temp / 'anon-bin'
         fake.mkdir()
@@ -475,10 +493,10 @@ class VerifyTests(FreezeCase):
             rc, out, err = self.call('verify')
             self.assertEqual(rc, 0, err)
             self.assertIn('verify-download', [c[0] for c in self.recorded])
-            (served / NAMES[2]).write_text('other bytes')
+            (served / SIGNED[2]).write_text('other bytes')
             self.assertIn('differs from the signed file', self.call('verify')[2])
             self.assertTrue((self.t / 'anonymous-download-2').is_dir(), 'a second attempt downloads into its own directory')
-            self.assertEqual((self.t / 'anonymous-download' / NAMES[2]).read_text(), NAMES[2], 'the first is kept')
+            self.assertEqual((self.t / 'anonymous-download' / SIGNED[2]).read_text(), SIGNED[2], 'the first is kept')
 
 
 class MilestoneTests(ReleaseCase):

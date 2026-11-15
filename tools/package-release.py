@@ -91,6 +91,18 @@ def check_windows_helper(folder, source=None):
     return record
 
 
+def release_platform(args):
+    """The platform the bundle is for: build.json's, from the CI build whose
+    files these are (YN-108 M3b), or the host's for a lab bundle made without one."""
+    if getattr(args, "build_json", None) is not None:
+        value = json.loads(Path(args.build_json).read_text())
+        platform_id = value.get("platform")
+        if platform_id not in ("linux-x86_64", "macos-aarch64"):
+            raise ValueError(f"{args.build_json} names platform {platform_id!r}, not a released platform")
+        return platform_id
+    return "linux-" + {"x86_64": "x86_64", "aarch64": "aarch64"}[platform.machine()]
+
+
 def assemble(args):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", args.release_id):
         raise ValueError("Invalid release ID")
@@ -98,6 +110,7 @@ def assemble(args):
         raise ValueError("Use the exact reviewed source commit")
     if platform.system() != "Linux":
         raise ValueError("This first release format targets Linux / WSL Core")
+    target_platform = release_platform(args)
     if not args.version.strip():
         raise ValueError("A human-readable release version is required")
     notes = args.notes_file.read_text()
@@ -152,14 +165,16 @@ def assemble(args):
             shutil.copy2(validator / name, staging / "runtimes/result-validator" / name)
         # Built on Windows from a fixed commit and committed (runtimes/windows-jobs);
         # Core runs it only if its bytes match this manifest. Optional to Core,
-        # so older releases without it stay valid previous/rollback targets.
-        (staging / "runtimes/windows-jobs").mkdir()
-        for name in WINDOWS_HELPER:
-            if (args.windows_helper / name).is_symlink():
-                raise ValueError(f"Release inputs must not contain symlinks: {args.windows_helper / name}")
-            if (args.windows_helper / name).is_file():
-                shutil.copy2(args.windows_helper / name, staging / "runtimes/windows-jobs" / name)
-        check_windows_helper(staging / "runtimes/windows-jobs")
+        # so older releases without it stay valid previous/rollback targets. A
+        # macOS bundle does not carry it: it runs under WSL only.
+        if target_platform.startswith("linux-"):
+            (staging / "runtimes/windows-jobs").mkdir()
+            for name in WINDOWS_HELPER:
+                if (args.windows_helper / name).is_symlink():
+                    raise ValueError(f"Release inputs must not contain symlinks: {args.windows_helper / name}")
+                if (args.windows_helper / name).is_file():
+                    shutil.copy2(args.windows_helper / name, staging / "runtimes/windows-jobs" / name)
+            check_windows_helper(staging / "runtimes/windows-jobs")
         files = {}
         for path in sorted(staging.rglob("*")):
             if path.is_file():
@@ -171,7 +186,7 @@ def assemble(args):
         manifest = {
             "format": 1, "releaseId": args.release_id, "version": args.version,
             "gitSha": args.git_sha, "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "notes": notes, "platform": "linux-" + {"x86_64": "x86_64", "aarch64": "aarch64"}[platform.machine()],
+            "notes": notes, "platform": target_platform,
             "protocol": 1, "schema": {"writes": 2, "readsMin": 2, "readsMax": 2},
             "records": {"writes": 2, "readsMin": 2, "readsMax": 2}, "files": files,
         }
@@ -190,6 +205,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["core", "helper", "licenses", "web", "claude", "result-validator", "windows-helper", "out", "notes-file"]:
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--build-json", type=Path,
+                        help="The CI build.json whose platform this bundle is for (required in the release flow)")
     for name in ["release-id", "version", "git-sha"]:
         parser.add_argument("--" + name, required=True)
     assemble(parser.parse_args())

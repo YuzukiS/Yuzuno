@@ -16,14 +16,36 @@ import urllib.parse
 import urllib.request
 import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_common import claude_sdk_files, digest, extract, inventory, read, verify_tree, write
+from release_common import (MACOS_MINIMUM, MACHO_ARM64, claude_sdk_files, digest, extract, inventory,
+                            macho_identity, read, verify_tree, write)
 
 TOOLS = Path(__file__).resolve().parent
+
+# Every release carries every platform (YN-108 M3b): new releases are fetched
+# from the newest published release, which is refused when it lacks the
+# platform of the Core asking. A release missing one would strand the others,
+# so this tool refuses to freeze, sign or publish it.
+PLATFORMS = ('linux-x86_64', 'macos-aarch64')
+# The platform-independent parts of the inputs: both CI jobs build them from
+# the same commit, and the release refuses two platforms whose files differ.
+SHARED_PREFIXES = ('web/', 'claude/', 'result-validator/')
+# The macOS job's functional smoke step in release-inputs.yml.
+MACOS_SMOKE_STEP = 'Smoke the binaries'
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def artifact_name(config, producer, platform):
+    return f"core-inputs-{platform}-{config['source']}-{producer['run_attempt']}"
+
+
+def shared_files(files):
+    """The platform-independent parts, by content: the two CI builds must
+    agree byte for byte (their modes may differ with the host)."""
+    return {name: info['sha256'] for name, info in files.items() if name.startswith(SHARED_PREFIXES)}
 
 
 def gh_json(endpoint):
@@ -59,35 +81,32 @@ def download(endpoint, target, *, accept=None):
 INPUTS_WORKFLOW = '.github/workflows/release-inputs.yml'
 
 
-def ci_identity(run, artifact, config, inputs_run=None):
-    """`run` is the main CI run that tested the source. The artifact is its
-    own or, for a release that names an inputs run, that run's: the
-    release-inputs workflow, run on request on main for the same commit.
-    Returns the run that built the artifact."""
+def ci_identity(run, artifact, config, inputs_run, platform):
+    """`run` is the main CI run that tested the source; `inputs_run` is the
+    release-inputs workflow run on main for the same commit, which built this
+    platform's artifact. Returns that run."""
     require(run['status'] == 'completed' and run['conclusion'] == 'success', 'Fixed CI has not passed')
     require(run['head_sha'] == config['source'] and run['head_repository']['full_name'].lower() == config['repository'].lower(), 'CI source/repository mismatch')
     require(run['event'] == 'push' and run['head_branch'] == 'main' and
             run['path'] == '.github/workflows/ci.yml', 'Use the reviewed main CI workflow')
-    producer = run
-    if 'inputsRunId' in config:
-        require(inputs_run is not None and inputs_run['id'] == config['inputsRunId'], 'The fixed release inputs run was not read')
-        require(inputs_run['status'] == 'completed' and inputs_run['conclusion'] == 'success', 'Fixed release inputs run has not passed')
-        require(inputs_run['head_sha'] == config['source'] and
-                inputs_run['head_repository']['full_name'].lower() == config['repository'].lower(), 'Release inputs source/repository mismatch')
-        require(inputs_run['event'] == 'workflow_dispatch' and inputs_run['head_branch'] == 'main' and
-                inputs_run['path'] == INPUTS_WORKFLOW, 'Use the release-inputs workflow run on main')
-        producer = inputs_run
+    require(inputs_run is not None and inputs_run['id'] == config['inputsRunId'], 'The fixed release inputs run was not read')
+    require(inputs_run['status'] == 'completed' and inputs_run['conclusion'] == 'success', 'Fixed release inputs run has not passed')
+    require(inputs_run['head_sha'] == config['source'] and
+            inputs_run['head_repository']['full_name'].lower() == config['repository'].lower(), 'Release inputs source/repository mismatch')
+    require(inputs_run['event'] == 'workflow_dispatch' and inputs_run['head_branch'] == 'main' and
+            inputs_run['path'] == INPUTS_WORKFLOW, 'Use the release-inputs workflow run on main')
     require(not artifact['expired'], 'Artifact expired; explicitly choose a new CI artifact, never silently rebuild')
-    require(artifact['workflow_run']['id'] == producer['id'] and artifact['workflow_run']['head_sha'] == config['source'], 'Artifact is from another run/source')
-    require(artifact['name'] == f"core-inputs-{config['source']}-{producer['run_attempt']}", 'Artifact is from a different CI attempt')
+    require(artifact['workflow_run']['id'] == inputs_run['id'] and artifact['workflow_run']['head_sha'] == config['source'], 'Artifact is from another run/source')
+    require(artifact['name'] == artifact_name(config, inputs_run, platform), 'Artifact is from another CI attempt or platform')
     require(re.fullmatch(r'sha256:[a-f0-9]{64}', artifact.get('digest', '')), 'Artifact SHA-256 digest is missing')
-    return producer
+    return inputs_run
 
 
-def bundle_identity(path, config):
+def bundle_identity(path, config, platform):
     manifest = read(path / 'manifest.json')
     require(manifest['gitSha'] == config['source'] and manifest['releaseId'] == config['releaseId'] and
             manifest['version'] == config['version'], 'Bundle identity differs from frozen release')
+    require(manifest['platform'] == platform, 'Bundle platform differs from the one it packages')
     actual = inventory(path)
     actual.pop('manifest.json')
     require(actual == manifest['files'], 'Bundle contents differ from its manifest')
@@ -98,6 +117,10 @@ class Flow:
     def __init__(self, root, signing_key=None, minisign='minisign'):
         self.root = root.resolve()
         self.config = read(self.root / 'release.json')
+        require(self.config.get('platforms') == list(PLATFORMS),
+                f'This release does not carry every required platform {list(PLATFORMS)}')
+        require(set(self.config.get('artifacts', {})) == set(PLATFORMS),
+                f'This release does not freeze one artifact per required platform {list(PLATFORMS)}')
         self.report_path = self.root / 'report.json'
         self.report = read(self.report_path) if self.report_path.exists() else {
             'format': 1, 'release': self.config, 'stages': {}, 'attempts': []}
@@ -161,125 +184,221 @@ class Flow:
     def fetch(self):
         c = self.config
         run = gh_json(f"repos/{c['repository']}/actions/runs/{c['ciRunId']}")
-        inputs_run = gh_json(f"repos/{c['repository']}/actions/runs/{c['inputsRunId']}") if 'inputsRunId' in c else None
-        artifact = gh_json(f"repos/{c['repository']}/actions/artifacts/{c['artifactId']}")
-        producer = ci_identity(run, artifact, c, inputs_run)
-        fetched = self.root / 'artifact'
-        # A completed rename is adopted after a process/receipt interruption.
-        if not fetched.exists():
-            with tempfile.TemporaryDirectory(prefix='.fetch-', dir=self.root) as temporary:
-                stage = Path(temporary)
-                archive = stage / 'artifact.zip'
-                download(f"repos/{c['repository']}/actions/artifacts/{c['artifactId']}/zip", archive)
-                require('sha256:' + digest(archive) == artifact['digest'], 'GitHub artifact digest mismatch')
-                with zipfile.ZipFile(archive) as zip_file:
-                    require(sorted(zip_file.namelist()) == ['build.json', 'inputs.tar.gz'], 'Unexpected artifact members')
-                    require(sum(i.file_size for i in zip_file.infolist()) <= 2 * 1024**3, 'Artifact is too large')
-                    zip_file.extractall(stage / 'product')
-                archive.rename(stage / 'product/artifact.zip')
-                (stage / 'product').rename(fetched)
-        require('sha256:' + digest(fetched / 'artifact.zip') == artifact['digest'], 'Saved artifact digest mismatch')
-        build = read(fetched / 'build.json')
-        require(build['source'] == c['source'] and str(build['runId']) == str(producer['id']) and
-                str(build['runAttempt']) == str(producer['run_attempt']) and
-                build['repository'].lower() == c['repository'].lower(), 'Build metadata differs from CI')
-        require(build['platform'] == 'linux-x86_64' and re.fullmatch('[a-f0-9]{40}', build['tree']), 'Unsupported artifact identity')
-        # Inputs built on request are public: they must not carry the Claude
-        # Agent SDK (docs/public-readiness.md).
-        require(inputs_run is None or not claude_sdk_files(build['files']), 'Release inputs carry the Claude Agent SDK')
-        require(digest(fetched / 'inputs.tar.gz') == build['archiveSha256'], 'Build input archive changed')
-        # The downloaded zip is the trust boundary, including recovered files.
-        with zipfile.ZipFile(fetched / 'artifact.zip') as archive:
-            for name in ('build.json', 'inputs.tar.gz'):
-                import hashlib
-                with archive.open(name) as stream:
-                    require(hashlib.file_digest(stream, 'sha256').hexdigest() == digest(fetched / name), 'Extracted artifact changed')
-        inputs = self.root / 'inputs'
-        if not inputs.exists():
-            with tempfile.TemporaryDirectory(prefix='.extract-', dir=self.root) as temp:
-                extracted = Path(temp) / 'inputs'
-                extract(fetched / 'inputs.tar.gz', extracted)
-                verify_tree(extracted, build['files'])
-                extracted.rename(inputs)
-        verify_tree(inputs, build['files'])
-        write(self.root / 'ci.json', {'run': run, 'artifact': artifact, **({'inputsRun': inputs_run} if inputs_run else {})})
-        return {'tree': build['tree'], 'ciUrl': run['html_url'], 'artifactDigest': artifact['digest'],
-                **({'inputsUrl': inputs_run['html_url']} if inputs_run else {}),
-                'outputs': self.outputs([fetched / n for n in ('build.json', 'inputs.tar.gz', 'artifact.zip')] + [self.root / 'ci.json'])}
+        inputs_run = gh_json(f"repos/{c['repository']}/actions/runs/{c['inputsRunId']}")
+        builds, artifacts, saved = {}, {}, []
+        for platform in c['platforms']:
+            # Each platform has an artifact of its own, frozen by ID at init.
+            artifact = gh_json(f"repos/{c['repository']}/actions/artifacts/{c['artifacts'][platform]}")
+            ci_identity(run, artifact, c, inputs_run, platform)
+            fetched = self.root / 'artifact' / platform
+            # A completed rename is adopted after a process/receipt interruption.
+            if not fetched.exists():
+                with tempfile.TemporaryDirectory(prefix='.fetch-', dir=self.root) as temporary:
+                    stage = Path(temporary)
+                    archive = stage / 'artifact.zip'
+                    download(f"repos/{c['repository']}/actions/artifacts/{artifact['id']}/zip", archive)
+                    require('sha256:' + digest(archive) == artifact['digest'], 'GitHub artifact digest mismatch')
+                    with zipfile.ZipFile(archive) as zip_file:
+                        require(sorted(zip_file.namelist()) == ['build.json', 'inputs.tar.gz'], 'Unexpected artifact members')
+                        require(sum(i.file_size for i in zip_file.infolist()) <= 2 * 1024**3, 'Artifact is too large')
+                        zip_file.extractall(stage / 'product')
+                    archive.rename(stage / 'product/artifact.zip')
+                    fetched.parent.mkdir(exist_ok=True)
+                    (stage / 'product').rename(fetched)
+            require('sha256:' + digest(fetched / 'artifact.zip') == artifact['digest'], 'Saved artifact digest mismatch')
+            build = read(fetched / 'build.json')
+            require(build['source'] == c['source'] and str(build['runId']) == str(inputs_run['id']) and
+                    str(build['runAttempt']) == str(inputs_run['run_attempt']) and
+                    build['repository'].lower() == c['repository'].lower(), 'Build metadata differs from CI')
+            require(build['platform'] == platform and re.fullmatch('[a-f0-9]{40}', build['tree']), 'Unsupported artifact identity')
+            # Inputs built on request are public: they must not carry the Claude
+            # Agent SDK (docs/public-readiness.md).
+            require(not claude_sdk_files(build['files']), 'Release inputs carry the Claude Agent SDK')
+            require(digest(fetched / 'inputs.tar.gz') == build['archiveSha256'], 'Build input archive changed')
+            # The downloaded zip is the trust boundary, including recovered files.
+            with zipfile.ZipFile(fetched / 'artifact.zip') as archive:
+                for name in ('build.json', 'inputs.tar.gz'):
+                    import hashlib
+                    with archive.open(name) as stream:
+                        require(hashlib.file_digest(stream, 'sha256').hexdigest() == digest(fetched / name), 'Extracted artifact changed')
+            inputs = self.root / 'inputs' / platform
+            if not inputs.exists():
+                with tempfile.TemporaryDirectory(prefix='.extract-', dir=self.root) as temp:
+                    extracted = Path(temp) / 'inputs'
+                    extract(fetched / 'inputs.tar.gz', extracted)
+                    verify_tree(extracted, build['files'])
+                    inputs.parent.mkdir(exist_ok=True)
+                    extracted.rename(inputs)
+            verify_tree(inputs, build['files'])
+            builds[platform] = build
+            artifacts[platform] = {'id': artifact['id'], 'name': artifact['name'],
+                                   'digest': artifact['digest'], 'bytes': artifact['size_in_bytes']}
+            saved += [fetched / name for name in ('build.json', 'inputs.tar.gz', 'artifact.zip')]
+        # Both jobs build these from the same commit, so they must be the same bytes.
+        shared = {platform: shared_files(build['files']) for platform, build in builds.items()}
+        first, *rest = c['platforms']
+        for platform in rest:
+            if shared[platform] != shared[first]:
+                different = sorted(name for name in set(shared[first]) | set(shared[platform])
+                                   if shared[first].get(name) != shared[platform].get(name))
+                raise ValueError(f'{first} and {platform} build different shared files: {different}')
+        write(self.root / 'ci.json', {'run': run, 'inputsRun': inputs_run, 'artifacts': artifacts,
+                                      'builds': builds})
+        return {'ciUrl': run['html_url'], 'inputsUrl': inputs_run['html_url'],
+                'trees': {platform: build['tree'] for platform, build in builds.items()},
+                'artifacts': artifacts,
+                'outputs': self.outputs(saved + [self.root / 'ci.json'])}
 
     def package(self):
-        c, inputs = self.config, self.root / 'inputs'
-        verify_tree(inputs, read(self.root / 'artifact/build.json')['files'])
-        target = self.root / 'bundle'
-        if not target.exists():
-            self.execute([sys.executable, TOOLS / 'package-release.py', '--core', inputs / 'bin/yuzuno-workspace',
-                '--helper', inputs / 'bin/yuzuno-update-helper', '--licenses', inputs / 'licenses',
-                '--web', inputs / 'web', '--claude', inputs / 'claude',
-                '--result-validator', inputs / 'result-validator', '--windows-helper', inputs / 'windows-jobs',
-                '--out', target, '--notes-file', self.root / 'notes.txt',
-                '--release-id', c['releaseId'], '--version', c['version'], '--git-sha', c['source']])
-        manifest = bundle_identity(target, c)
-        require(manifest['notes'] == (self.root / 'notes.txt').read_text(), 'Release notes changed')
-        expected = {}
-        for name, info in inventory(inputs).items():
-            if name.startswith('claude/'):
-                name = 'runtimes/' + name
-            elif name.startswith('result-validator/'):
-                if name not in ('result-validator/validator.mjs', 'result-validator/contract.json',
-                                'result-validator/THIRD_PARTY_NOTICES.txt'):
-                    continue
-                name = 'runtimes/' + name
-            elif name.startswith('windows-jobs/'):
-                name = 'runtimes/' + name
-            expected[name] = info
-        # package-release adds only this version marker to the raw Vite index.
-        expected_html = (inputs / 'web/index.html').read_text().replace('</head>', f'<meta name="yuzuno-release" content="{c["releaseId"]}">\n</head>', 1)
-        require((target / 'web/index.html').read_text() == expected_html, 'Packaged UI differs from built UI')
-        expected['web/index.html'] = manifest['files']['web/index.html']
-        require(manifest['files'] == expected, 'Packaged files differ from fixed build inputs')
-        return {'manifestSha256': digest(target / 'manifest.json'), 'outputs': self.outputs([target / 'manifest.json'])}
+        c = self.config
+        manifests, saved = {}, []
+        for platform in c['platforms']:
+            inputs = self.root / 'inputs' / platform
+            build = read(self.root / 'artifact' / platform / 'build.json')
+            verify_tree(inputs, build['files'])
+            if platform != 'linux-x86_64':
+                require(not any(name.startswith('windows-jobs/') for name in build['files']),
+                        'A macOS input carries the Windows Jobs helper')
+            target = self.root / 'bundle' / platform
+            if not target.exists():
+                target.parent.mkdir(exist_ok=True)
+                self.execute([sys.executable, TOOLS / 'package-release.py', '--core', inputs / 'bin/yuzuno-workspace',
+                    '--helper', inputs / 'bin/yuzuno-update-helper', '--licenses', inputs / 'licenses',
+                    '--web', inputs / 'web', '--claude', inputs / 'claude',
+                    '--result-validator', inputs / 'result-validator', '--windows-helper', inputs / 'windows-jobs',
+                    '--build-json', self.root / 'artifact' / platform / 'build.json',
+                    '--out', target, '--notes-file', self.root / 'notes.txt',
+                    '--release-id', c['releaseId'], '--version', c['version'], '--git-sha', c['source']])
+            manifest = bundle_identity(target, c, platform)
+            require(manifest['notes'] == (self.root / 'notes.txt').read_text(), 'Release notes changed')
+            expected = {}
+            for name, info in inventory(inputs).items():
+                if name.startswith('claude/'):
+                    name = 'runtimes/' + name
+                elif name.startswith('result-validator/'):
+                    if name not in ('result-validator/validator.mjs', 'result-validator/contract.json',
+                                    'result-validator/THIRD_PARTY_NOTICES.txt'):
+                        continue
+                    name = 'runtimes/' + name
+                elif name.startswith('windows-jobs/'):
+                    # The Windows Jobs helper runs under WSL: a macOS bundle
+                    # does not carry it (YN-108 design 3.1).
+                    if platform != 'linux-x86_64':
+                        continue
+                    name = 'runtimes/' + name
+                expected[name] = info
+            # package-release adds only this version marker to the raw Vite index.
+            expected_html = (inputs / 'web/index.html').read_text().replace('</head>', f'<meta name="yuzuno-release" content="{c["releaseId"]}">\n</head>', 1)
+            require((target / 'web/index.html').read_text() == expected_html, 'Packaged UI differs from built UI')
+            expected['web/index.html'] = manifest['files']['web/index.html']
+            require(manifest['files'] == expected, 'Packaged files differ from fixed build inputs')
+            manifests[platform] = {'manifestSha256': digest(target / 'manifest.json')}
+            saved.append(target / 'manifest.json')
+        return {'platforms': manifests, 'outputs': self.outputs(saved)}
 
     def signed(self, directory):
         c = self.config
-        manifest = bundle_identity(self.root / 'bundle', c)
-        prefix = 'yuzuno-core-' + manifest['platform']
-        paths = [directory / (prefix + suffix) for suffix in ('.json', '.json.minisig', '.tar.gz')]
-        require(sorted(p.name for p in directory.iterdir()) == sorted(p.name for p in paths), 'Expected exactly three signed assets')
-        descriptor = read(paths[0])
-        require(descriptor['manifest'] == manifest and descriptor['repository'] == c['repository'] and
-                descriptor['tag'] == c['releaseId'] and descriptor['manifestSha256'] == digest(self.root / 'bundle/manifest.json'), 'Signed identity mismatch')
-        require(descriptor['archiveSha256'] == digest(paths[2]) and descriptor['archiveBytes'] == paths[2].stat().st_size, 'Signed archive mismatch')
-        require(digest(self.root / 'publisher.pub') == c['publicKeySha256'], 'Publisher key changed')
-        self.execute([self.minisign, '-V', '-p', self.root / 'publisher.pub', '-m', paths[0], '-x', paths[1]])
-        with tempfile.TemporaryDirectory(prefix='.verify-', dir=self.root) as temp:
-            extracted = Path(temp) / 'bundle'
-            extract(paths[2], extracted)
-            verify_tree(extracted, inventory(self.root / 'bundle'))
+        paths = []
+        for platform in c['platforms']:
+            manifest = bundle_identity(self.root / 'bundle' / platform, c, platform)
+            prefix = 'yuzuno-core-' + platform
+            # The tool's own output keeps one directory per platform; a
+            # download-verification directory is flat, the names unique.
+            expected = [next((p for p in (directory / platform / (prefix + suffix),
+                                          directory / (prefix + suffix)) if p.is_file()),
+                             directory / (prefix + suffix))
+                        for suffix in ('.json', '.json.minisig', '.tar.gz')]
+            require(all(p.is_file() for p in expected), 'Expected exactly three signed assets per platform')
+            descriptor = read(expected[0])
+            require(descriptor['manifest'] == manifest and descriptor['repository'] == c['repository'] and
+                    descriptor['tag'] == c['releaseId'] and descriptor['manifestSha256'] == digest(self.root / 'bundle' / platform / 'manifest.json'), 'Signed identity mismatch')
+            require(descriptor['archiveSha256'] == digest(expected[2]) and descriptor['archiveBytes'] == expected[2].stat().st_size, 'Signed archive mismatch')
+            require(digest(self.root / 'publisher.pub') == c['publicKeySha256'], 'Publisher key changed')
+            self.execute([self.minisign, '-V', '-p', self.root / 'publisher.pub', '-m', expected[0], '-x', expected[1]])
+            with tempfile.TemporaryDirectory(prefix='.verify-', dir=self.root) as temp:
+                extracted = Path(temp) / 'bundle'
+                extract(expected[2], extracted)
+                verify_tree(extracted, inventory(self.root / 'bundle' / platform))
+            paths.extend(expected)
+        present = sorted(p.name for p in directory.rglob('*') if p.is_file())
+        require(present == sorted(p.name for p in paths), 'Expected exactly three signed assets per platform')
         return paths
 
     def sign(self):
-        directory = self.root / 'signed'
-        if not directory.exists():
-            require(self.signing_key is not None, 'Supply --signing-key to the existing publisher key; never generate a new identity')
-            self.execute([sys.executable, TOOLS / 'sign-core-release.py', '--bundle', self.root / 'bundle',
-                '--out', directory, '--signing-key', self.signing_key, '--public-key', self.root / 'publisher.pub',
-                '--repository', self.config['repository'], '--tag', self.config['releaseId'], '--minisign', self.minisign])
-        paths = self.signed(directory)
+        c = self.config
+        for platform in c['platforms']:
+            directory = self.root / 'signed' / platform
+            if not directory.exists():
+                require(self.signing_key is not None, 'Supply --signing-key to the existing publisher key; never generate a new identity')
+                directory.parent.mkdir(exist_ok=True)
+                self.execute([sys.executable, TOOLS / 'sign-core-release.py', '--bundle', self.root / 'bundle' / platform,
+                    '--out', directory, '--signing-key', self.signing_key, '--public-key', self.root / 'publisher.pub',
+                    '--repository', self.config['repository'], '--tag', self.config['releaseId'], '--minisign', self.minisign])
+        paths = self.signed(self.root / 'signed')
         return {'assets': [{'name': p.name, 'bytes': p.stat().st_size, 'sha256': digest(p)} for p in paths],
                 'outputs': self.outputs(paths)}
 
+    def ci_smoke(self, platform):
+        """The CI job's functional smoke of this platform's binaries
+        (tools/release-inputs-smoke.py in release-inputs.yml). The Linux
+        release host cannot run them, so this run is the functional check."""
+        c = self.config
+        jobs = gh_json(f"repos/{c['repository']}/actions/runs/{c['inputsRunId']}/jobs?per_page=100")['jobs']
+        smoking = [job for job in jobs
+                   if any(step.get('name') == MACOS_SMOKE_STEP and step.get('conclusion') == 'success'
+                          for step in job.get('steps', []))]
+        require(len(smoking) == 1, f'Expected one CI job that smoked the {platform} binaries, found {len(smoking)}')
+        job = smoking[0]
+        require(job['conclusion'] == 'success' and job.get('head_sha') == c['source'],
+                'The CI functional smoke did not pass on this source')
+        return {'runId': int(c['inputsRunId']), 'jobId': job['id'], 'job': job['name'],
+                'conclusion': job['conclusion'], 'url': job.get('html_url')}
+
+    def macos_smoke(self, platform):
+        """Static checks of the mach-o binaries on the Linux release host: the
+        packaged bytes are the CI build's, the Mach-O header is arm64 and the
+        load command says macOS 11.0. No Apple tool is needed."""
+        bundle = self.root / 'bundle' / platform
+        build = read(self.root / 'artifact' / platform / 'build.json')
+        binaries = {}
+        for name in ('bin/yuzuno-workspace', 'bin/yuzuno-update-helper'):
+            path = bundle / name
+            require(path.is_file(), f'The {platform} bundle is missing {name}')
+            require(digest(path) == build['files'][name]['sha256'],
+                    f'The packaged {name} differs from the CI build')
+            identity = macho_identity(path)
+            require(identity['cputype'] == MACHO_ARM64, f'{name} is {identity["arch"]}, not arm64')
+            require(identity['minos'] == MACOS_MINIMUM,
+                    f'{name} is built for macOS {identity["minos"]}, not {MACOS_MINIMUM}')
+            binaries[name] = identity
+        files = read(bundle / 'manifest.json')['files']
+        require(not any(name.startswith('runtimes/windows-jobs/') for name in files),
+                'The macOS bundle carries the Windows Jobs helper')
+        return {'platform': platform, 'binaries': binaries, 'ciSmoke': self.ci_smoke(platform)}
+
     def smoke(self):
+        c = self.config
         self.signed(self.root / 'signed')
-        require(digest(Path(self.config['baseline']) / 'manifest.json') == self.config['baselineManifestSha256'], 'Baseline manifest changed')
+        require(digest(Path(c['baseline']) / 'manifest.json') == c['baselineManifestSha256'], 'Baseline manifest changed')
+        platforms = {}
+        # Linux is smoked as before: one short baseline to candidate upgrade.
+        self.execute([sys.executable, TOOLS / 'core-release-smoke.py', '--baseline', c['baseline'],
+                      '--candidate', self.root / 'bundle' / 'linux-x86_64', '--state', self.root / 'smoke.json',
+                      *(['--new-data-directory'] if c.get('upgrade', 'inPlace') == 'newDataDirectory' else [])])
+        receipt = read(self.root / 'smoke.json')
         # A release frozen with --new-data-directory gets that smoke and no
         # other; the receipt says which it ran.
-        mode = self.config.get('upgrade', 'inPlace')
-        self.execute([sys.executable, TOOLS / 'core-release-smoke.py', '--baseline', self.config['baseline'],
-                      '--candidate', self.root / 'bundle', '--state', self.root / 'smoke.json',
-                      *(['--new-data-directory'] if mode == 'newDataDirectory' else [])])
-        receipt = read(self.root / 'smoke.json')
+        mode = c.get('upgrade', 'inPlace')
         require(receipt['inputs'].get('mode', 'inPlace') == mode, 'The smoke receipt is of another upgrade mode')
         require(receipt['passed'], 'Short upgrade smoke did not pass; inspect its preserved phases')
+        platforms['linux-x86_64'] = {'smoke': mode, 'passed': True}
+        # Every other platform is checked statically on the release host, and
+        # by the functional smoke of the CI job that built it.
+        for platform in c['platforms']:
+            if platform != 'linux-x86_64':
+                platforms[platform] = self.macos_smoke(platform)
+        receipt = {**receipt, 'passed': True, 'platforms': platforms}
+        write(self.root / 'smoke.json', receipt)
         return {'receipt': receipt, 'outputs': self.outputs([self.root / 'smoke.json'])}
 
     def prepare(self):
@@ -342,6 +461,7 @@ class Flow:
         require(self.report['stages'].get('smoke', {}).get('status') == 'passed', 'Prepare and smoke must pass before publishing')
         c = self.config
         paths = self.signed(self.root / 'signed')
+        require(len(paths) == 3 * len(c['platforms']), 'A platform is missing its signed assets')
         tag = optional_gh_json(f"repos/{c['repository']}/git/ref/tags/{c['releaseId']}")
         if tag is None:
             self.execute(['gh', 'api', '--method', 'POST', f"repos/{c['repository']}/git/refs",
@@ -380,10 +500,11 @@ class Flow:
             self.api(['--method', 'POST', '-H', f'Content-Type: {kind}',
                       f'{upload}?name={urllib.parse.quote(path.name)}', '--input', path])
         release = self.remote_release()
-        require(len(release['assets']) == 3, 'Remote upload is incomplete')
+        by_name = {p.name: p for p in paths}
+        require(len(release['assets']) == 3 * len(c['platforms']), 'Remote upload is incomplete')
         for asset in release['assets']:
-            path = self.root / 'signed' / asset['name']
-            require(asset.get('digest') == 'sha256:' + digest(path), 'Uploaded asset digest differs')
+            path = by_name.get(asset['name'])
+            require(path is not None and asset.get('digest') == 'sha256:' + digest(path), 'Uploaded asset digest differs')
         if release['draft']:
             self.api(['--method', 'PATCH', f"repos/{c['repository']}/releases/{release['id']}", '-F', 'draft=false'])
         release = self.remote_release()
@@ -438,11 +559,27 @@ class Flow:
         return {'receipt': values, 'outputs': self.outputs([self.root / 'health.json'])}
 
 
+def artifacts_option(values):
+    """--artifact-id PLATFORM=ID once per required platform."""
+    result = {}
+    for value in values or []:
+        platform, separator, number = value.partition('=')
+        require(separator and platform in PLATFORMS and platform not in result and
+                re.fullmatch('[1-9][0-9]{0,15}', number), 'Use --artifact-id PLATFORM=ID once for each platform')
+        result[platform] = int(number)
+    require(tuple(sorted(result)) == tuple(sorted(PLATFORMS)),
+            f'Name exactly one artifact for each required platform {list(PLATFORMS)}')
+    return result
+
+
 def initialize(args):
     require(re.fullmatch('[a-f0-9]{40}', args.sha), 'Use an exact commit SHA')
     require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args.repository), 'Use owner/repository')
     require(re.fullmatch(r'core-[A-Za-z0-9_-]{1,90}', args.release_id), 'Use a safe core-* release ID')
     require(args.version.strip() and args.review.strip(), 'Version and accepted review reference are required')
+    artifacts = artifacts_option(getattr(args, 'artifact_id', None))
+    inputs_run = getattr(args, 'inputs_run', None)
+    require(isinstance(inputs_run, int) and inputs_run > 0, 'Freeze the release-inputs run that built both artifacts')
     root = args.work_dir.resolve()
     require(not root.exists(), 'Release workspace exists; use resume instead of replacing frozen inputs')
     baseline = args.baseline.resolve(strict=True)
@@ -451,12 +588,11 @@ def initialize(args):
     require(len(notes) <= 32768, 'Release notes are too long')
     import hashlib
     config = {'format': 1, 'repository': args.repository, 'source': args.sha,
-              'ciRunId': args.ci_run, 'artifactId': args.artifact_id, 'releaseId': args.release_id,
+              'ciRunId': args.ci_run, 'inputsRunId': inputs_run, 'artifacts': artifacts,
+              'releaseId': args.release_id, 'platforms': list(PLATFORMS),
               'version': args.version, 'acceptedReview': args.review,
               'baseline': str(baseline), 'baselineManifestSha256': digest(baseline / 'manifest.json'),
               'publicKeySha256': hashlib.sha256(public).hexdigest(), 'notesSha256': hashlib.sha256(notes).hexdigest()}
-    if getattr(args, 'inputs_run', None) is not None:
-        config['inputsRunId'] = args.inputs_run
     if getattr(args, 'new_data_directory', False):
         config['upgrade'] = 'newDataDirectory'
     root.mkdir(parents=True, mode=0o700)
@@ -473,10 +609,10 @@ def parser():
     init.add_argument('--work-dir', type=Path, required=True)
     for name in ('repository', 'sha', 'release-id', 'version', 'review'):
         init.add_argument('--' + name, required=True)
-    for name in ('ci-run', 'artifact-id'):
+    for name in ('ci-run', 'inputs-run'):
         init.add_argument('--' + name, type=int, required=True)
-    init.add_argument('--inputs-run', type=int,
-                      help='The release-inputs workflow run that built the artifact; --ci-run is then the main CI run that tested the source')
+    init.add_argument('--artifact-id', action='append', required=True, metavar='PLATFORM=ID',
+                      help='The release-inputs artifact of one required platform, once per platform')
     for name in ('baseline', 'public-key', 'notes'):
         init.add_argument('--' + name, type=Path, required=True)
     init.add_argument('--new-data-directory', action='store_true',

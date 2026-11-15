@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -164,17 +165,26 @@ class ReleaseTests(unittest.TestCase):
         self.root = self.base / 'release'
         args = argparse.Namespace(work_dir=self.root, repository='owner/repo', sha=self.sha,
             release_id='core-test', version='test.1', review='Accepted PR review reference', ci_run=42,
-            artifact_id=7, baseline=self.baseline, public_key=self.base / 'publisher.pub', notes=self.base / 'notes.txt')
+            inputs_run=51, artifact_id=['linux-x86_64=7', 'macos-aarch64=8'],
+            baseline=self.baseline, public_key=self.base / 'publisher.pub', notes=self.base / 'notes.txt')
         release.initialize(args)
         self.flow = release.Flow(self.root)
         self.run = {'id': 42, 'head_sha': self.sha, 'head_repository': {'full_name': 'owner/repo'},
                     'status': 'completed', 'conclusion': 'success', 'event': 'push', 'head_branch': 'main',
                     'path': '.github/workflows/ci.yml', 'run_attempt': 2, 'html_url': 'https://github.com/owner/repo/actions/runs/42'}
-        self.artifact = {'expired': False, 'name': f'core-inputs-{self.sha}-2', 'digest': 'sha256:' + 'b' * 64,
-                         'workflow_run': {'id': 42, 'head_sha': self.sha}}
+        self.inputs_run = {'id': 51, 'head_sha': self.sha, 'head_repository': {'full_name': 'owner/repo'},
+                           'status': 'completed', 'conclusion': 'success', 'event': 'workflow_dispatch',
+                           'head_branch': 'main', 'path': '.github/workflows/release-inputs.yml', 'run_attempt': 1,
+                           'html_url': 'https://github.com/owner/repo/actions/runs/51'}
+        self.artifact = {'expired': False, 'id': 7, 'name': f'core-inputs-linux-x86_64-{self.sha}-1',
+                         'digest': 'sha256:' + 'b' * 64, 'size_in_bytes': 9,
+                         'workflow_run': {'id': 51, 'head_sha': self.sha}}
+        self.mac_artifact = {'expired': False, 'id': 8, 'name': f'core-inputs-macos-aarch64-{self.sha}-1',
+                             'digest': 'sha256:' + 'c' * 64, 'size_in_bytes': 9,
+                             'workflow_run': {'id': 51, 'head_sha': self.sha}}
 
-    def inputs(self, sdk=True, run_id='42', attempt='2'):
-        source = self.base / 'inputs'
+    def inputs(self, platform='linux-x86_64', sdk='placeholder', run_id='51', attempt='1'):
+        source = self.base / f'inputs-{platform}'
         (source / 'bin').mkdir(parents=True)
         for name in ('yuzuno-workspace', 'yuzuno-update-helper'):
             p = source / 'bin' / name
@@ -201,108 +211,168 @@ class ReleaseTests(unittest.TestCase):
         (source / 'result-validator/validator.mjs').write_bytes(b'// Generated fixture\n' + header.encode() + b'\n' + body)
         # The release Core carries its validator's SHA-256 (YN-22).
         (source / 'bin/yuzuno-workspace').write_text(f"fixture executable, never started {digest(source / 'result-validator/validator.mjs')}")
-        (source / 'windows-jobs').mkdir()
-        helper = source / 'windows-jobs/yuzuno-jobs-helper.exe'
-        helper.write_bytes(b'MZ fixture Windows helper, never started')
-        helper.chmod(0o755)
-        write(source / 'windows-jobs/windows-helper.json', {'format': 1, 'file': helper.name, 'sha256': digest(helper),
-            'bytes': helper.stat().st_size, 'protocol': 1})
-        product = self.base / 'product'
+        if platform == 'linux-x86_64':
+            (source / 'windows-jobs').mkdir()
+            helper = source / 'windows-jobs/yuzuno-jobs-helper.exe'
+            helper.write_bytes(b'MZ fixture Windows helper, never started')
+            helper.chmod(0o755)
+            write(source / 'windows-jobs/windows-helper.json', {'format': 1, 'file': helper.name, 'sha256': digest(helper),
+                'bytes': helper.stat().st_size, 'protocol': 1})
+        product = self.base / f'product-{platform}'
         product.mkdir()
         files = archive_tree(source, product / 'inputs.tar.gz')
         write(product / 'build.json', {'source': self.sha, 'tree': 'c' * 40, 'runId': run_id, 'runAttempt': attempt,
-            'repository': 'owner/repo', 'platform': 'linux-x86_64', 'files': files,
+            'repository': 'owner/repo', 'platform': platform, 'files': files,
             'archiveSha256': digest(product / 'inputs.tar.gz')})
-        archive = self.base / 'artifact.zip'
+        archive = self.base / f'artifact-{platform}.zip'
         with zipfile.ZipFile(archive, 'w') as output:
             for name in ('build.json', 'inputs.tar.gz'):
                 output.write(product / name, name)
-        self.artifact['digest'] = 'sha256:' + digest(archive)
-        return archive
+        artifact = self.artifact if platform == 'linux-x86_64' else self.mac_artifact
+        artifact.update({'id': 7 if platform == 'linux-x86_64' else 8,
+                         'name': f'core-inputs-{platform}-{self.sha}-{attempt}',
+                         'digest': 'sha256:' + digest(archive)})
+        return archive, artifact
 
-    def fetch(self):
-        archive = self.inputs()
-        with patch.object(release, 'gh_json', side_effect=[self.run, self.artifact]), \
-             patch.object(release, 'download', side_effect=lambda endpoint, target: shutil.copy2(archive, target)):
+    def fetch(self, sdk='placeholder', run_id='51', attempt='1'):
+        linux, linux_artifact = self.inputs('linux-x86_64', sdk=sdk, run_id=run_id, attempt=attempt)
+        mac, mac_artifact = self.inputs('macos-aarch64', sdk=sdk, run_id=run_id, attempt=attempt)
+        archives = {'linux-x86_64': linux, 'macos-aarch64': mac}
+
+        def download(endpoint, target):
+            platform = 'linux-x86_64' if '/artifacts/7/' in endpoint else 'macos-aarch64'
+            shutil.copy2(archives[platform], target)
+        with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, linux_artifact, mac_artifact]), \
+             patch.object(release, 'download', side_effect=download):
             self.flow.run('fetch', self.flow.fetch)
 
     def test_exact_successful_ci_and_artifact_are_required(self):
-        release.ci_identity(self.run, self.artifact, self.flow.config)
+        release.ci_identity(self.run, self.artifact, self.flow.config, self.inputs_run, 'linux-x86_64')
         for key, value in [('conclusion', 'failure'), ('head_sha', 'd' * 40),
                            ('event', 'pull_request'), ('head_branch', 'other'),
-                           ('path', '.github/workflows/other.yml'), ('run_attempt', 3)]:
+                           ('path', '.github/workflows/other.yml')]:
             with self.subTest(key=key), self.assertRaises(ValueError):
-                release.ci_identity({**self.run, key: value}, self.artifact, self.flow.config)
+                release.ci_identity({**self.run, key: value}, self.artifact, self.flow.config,
+                                    self.inputs_run, 'linux-x86_64')
         with self.assertRaises(ValueError):
-            release.ci_identity(self.run, {**self.artifact, 'expired': True}, self.flow.config)
+            release.ci_identity(self.run, {**self.artifact, 'expired': True}, self.flow.config,
+                                self.inputs_run, 'linux-x86_64')
 
-    def inputs_flow(self):
-        """A release whose artifact comes from a release-inputs run (51,
-        attempt 1) and whose tests are the main CI run (42)."""
-        args = argparse.Namespace(work_dir=self.base / 'release-inputs', repository='owner/repo', sha=self.sha,
-            release_id='core-test', version='test.1', review='Accepted PR review reference', ci_run=42,
-            artifact_id=7, inputs_run=51, baseline=self.baseline, public_key=self.base / 'publisher.pub',
-            notes=self.base / 'notes.txt')
-        release.initialize(args)
-        self.inputs_run = {'id': 51, 'head_sha': self.sha, 'head_repository': {'full_name': 'owner/repo'},
-                           'status': 'completed', 'conclusion': 'success', 'event': 'workflow_dispatch',
-                           'head_branch': 'main', 'path': '.github/workflows/release-inputs.yml', 'run_attempt': 1,
-                           'html_url': 'https://github.com/owner/repo/actions/runs/51'}
-        self.artifact = {**self.artifact, 'name': f'core-inputs-{self.sha}-1', 'workflow_run': {'id': 51, 'head_sha': self.sha}}
-        return release.Flow(self.base / 'release-inputs')
-
-    def test_an_inputs_run_is_frozen_only_when_named(self):
-        self.assertNotIn('inputsRunId', self.flow.config)
-        self.assertEqual(self.inputs_flow().config['inputsRunId'], 51)
-
-    def test_inputs_on_request_come_from_the_release_inputs_run_and_the_tests_from_main_ci(self):
-        flow = self.inputs_flow()
-        self.assertIs(release.ci_identity(self.run, self.artifact, flow.config, self.inputs_run), self.inputs_run)
+    def test_each_platform_has_its_own_artifact_of_the_one_inputs_run(self):
+        iconf = self.flow.config
+        self.assertIs(release.ci_identity(self.run, self.artifact, iconf, self.inputs_run, 'linux-x86_64'),
+                      self.inputs_run)
+        self.assertIs(release.ci_identity(self.run, self.mac_artifact, iconf, self.inputs_run, 'macos-aarch64'),
+                      self.inputs_run)
         for key, value in [('conclusion', 'failure'), ('head_sha', 'd' * 40), ('event', 'push'),
                            ('head_branch', 'other'), ('path', '.github/workflows/ci.yml'), ('id', 52),
                            ('run_attempt', 2)]:
             with self.subTest(inputs_run=key), self.assertRaises(ValueError):
-                release.ci_identity(self.run, self.artifact, flow.config, {**self.inputs_run, key: value})
-        for key, value in [('conclusion', 'failure'), ('event', 'workflow_dispatch'), ('path', '.github/workflows/release-inputs.yml')]:
+                release.ci_identity(self.run, self.mac_artifact, iconf, {**self.inputs_run, key: value}, 'macos-aarch64')
+        for key, value in [('conclusion', 'failure'), ('event', 'workflow_dispatch'),
+                           ('path', '.github/workflows/release-inputs.yml')]:
             with self.subTest(tests_run=key), self.assertRaises(ValueError):
-                release.ci_identity({**self.run, key: value}, self.artifact, flow.config, self.inputs_run)
+                release.ci_identity({**self.run, key: value}, self.artifact, iconf, self.inputs_run, 'linux-x86_64')
         with self.subTest('the artifact of the tests run'), self.assertRaisesRegex(ValueError, 'another run'):
             release.ci_identity(self.run, {**self.artifact, 'workflow_run': {'id': 42, 'head_sha': self.sha}},
-                                flow.config, self.inputs_run)
+                                iconf, self.inputs_run, 'linux-x86_64')
         with self.subTest('the inputs run not read'), self.assertRaisesRegex(ValueError, 'not read'):
-            release.ci_identity(self.run, self.artifact, flow.config)
+            release.ci_identity(self.run, self.artifact, iconf, None, 'linux-x86_64')
+        with self.subTest('the Linux artifact named as the Mac one'), self.assertRaisesRegex(ValueError, 'platform'):
+            release.ci_identity(self.run, {**self.artifact,
+                                           'name': f'core-inputs-macos-aarch64-{self.sha}-1'},
+                                iconf, self.inputs_run, 'linux-x86_64')
 
-    def test_fetch_binds_the_build_to_the_inputs_run_and_refuses_the_sdk(self):
-        flow = self.inputs_flow()
+    def test_a_release_must_freeze_both_platforms(self):
+        self.assertEqual(self.flow.config['platforms'], list(release.PLATFORMS))
+        self.assertEqual(self.flow.config['artifacts'], {'linux-x86_64': 7, 'macos-aarch64': 8})
+        for artifacts in (['linux-x86_64=7'], ['linux-x86_64=7', 'linux-x86_64=8'],
+                          ['linux-x86_64=7', 'macos-aarch64=8', 'windows-x86_64=9'],
+                          ['linux-x86_64=0', 'macos-aarch64=8']):
+            with self.subTest(artifacts=artifacts):
+                args = argparse.Namespace(work_dir=self.base / 'other', repository='owner/repo', sha=self.sha,
+                    release_id='core-test', version='test.1', review='Accepted PR review reference', ci_run=42,
+                    inputs_run=51, artifact_id=artifacts, baseline=self.baseline,
+                    public_key=self.base / 'publisher.pub', notes=self.base / 'notes.txt')
+                with self.assertRaises(ValueError):
+                    release.initialize(args)
+        config = read(self.root / 'release.json')
+        config['platforms'] = ['linux-x86_64']
+        write(self.root / 'release.json', config)
+        with self.assertRaisesRegex(ValueError, 'every required platform'):
+            release.Flow(self.root)
+
+    def test_fetch_binds_each_build_to_the_inputs_run_and_refuses_the_sdk(self):
         def fetch(**inputs):
-            archive = self.inputs(**inputs)
             try:
-                with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, self.artifact]), \
-                     patch.object(release, 'download', side_effect=lambda endpoint, target: shutil.copy2(archive, target)):
-                    flow.run('fetch', flow.fetch)
+                self.fetch(**inputs)
             finally:
-                for path in (self.base / 'inputs', self.base / 'product'):
-                    shutil.rmtree(path)
+                for platform in release.PLATFORMS:
+                    for path in (self.base / f'inputs-{platform}', self.base / f'product-{platform}'):
+                        shutil.rmtree(path, ignore_errors=True)
         with self.assertRaisesRegex(ValueError, 'Build metadata differs'):
-            fetch(sdk=False, run_id='42', attempt='2')
+            fetch(sdk=False, run_id='42', attempt='1')
         # A refused artifact was saved but never extracted; a new one replaces it.
-        self.assertFalse((flow.root / 'inputs').exists())
-        shutil.rmtree(flow.root / 'artifact')
+        self.assertFalse((self.root / 'inputs').exists())
+        shutil.rmtree(self.root / 'artifact')
         with self.assertRaisesRegex(ValueError, 'carry the Claude Agent SDK'):
             fetch(sdk=True, run_id='51', attempt='1')
-        self.assertFalse((flow.root / 'inputs').exists())
-        shutil.rmtree(flow.root / 'artifact')
+        self.assertFalse((self.root / 'inputs').exists())
+        shutil.rmtree(self.root / 'artifact')
         # As a build leaves it: the placeholder alone, with exactly its bytes.
         fetch(sdk='placeholder', run_id='51', attempt='1')
-        stage = read(flow.root / 'report.json')['stages']['fetch']
+        stage = read(self.root / 'report.json')['stages']['fetch']
         self.assertEqual(stage['inputsUrl'], self.inputs_run['html_url'])
-        self.assertEqual(read(flow.root / 'ci.json')['inputsRun']['id'], 51)
+        self.assertEqual(read(self.root / 'ci.json')['inputsRun']['id'], 51)
+        self.assertEqual(sorted(read(self.root / 'ci.json')['builds']), sorted(release.PLATFORMS))
+
+    def test_two_platforms_whose_shared_files_differ_are_refused(self):
+        linux, linux_artifact = self.inputs('linux-x86_64')
+        mac, mac_artifact = self.inputs('macos-aarch64')
+        (self.base / 'inputs-macos-aarch64/web/index.html').write_text('<html><head></head><body>OTHER</body></html>')
+        product = self.base / 'product-macos-aarch64'
+        archive_tree(self.base / 'inputs-macos-aarch64', product / 'inputs.tar.gz')
+        files = release.inventory(self.base / 'inputs-macos-aarch64')
+        write(product / 'build.json', {'source': self.sha, 'tree': 'c' * 40, 'runId': '51', 'runAttempt': '1',
+            'repository': 'owner/repo', 'platform': 'macos-aarch64', 'files': files,
+            'archiveSha256': digest(product / 'inputs.tar.gz')})
+        with zipfile.ZipFile(mac, 'w') as output:
+            for name in ('build.json', 'inputs.tar.gz'):
+                output.write(product / name, name)
+        mac_artifact['digest'] = 'sha256:' + digest(mac)
+        archives = {'linux-x86_64': linux, 'macos-aarch64': mac}
+        with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, linux_artifact, mac_artifact]), \
+             patch.object(release, 'download',
+                          side_effect=lambda e, t: shutil.copy2(archives['linux-x86_64' if '/artifacts/7/' in e else 'macos-aarch64'], t)), \
+             self.assertRaisesRegex(ValueError, 'different shared files'):
+            self.flow.run('fetch', self.flow.fetch)
+
+    def test_an_artifact_that_builds_another_platform_is_refused(self):
+        linux, linux_artifact = self.inputs('linux-x86_64')
+        mac, mac_artifact = self.inputs('macos-aarch64')
+        product = self.base / 'product-macos-aarch64'
+        build = read(product / 'build.json')
+        build['platform'] = 'linux-x86_64'
+        write(product / 'build.json', build)
+        with zipfile.ZipFile(mac, 'w') as output:
+            for name in ('build.json', 'inputs.tar.gz'):
+                output.write(product / name, name)
+        mac_artifact['digest'] = 'sha256:' + digest(mac)
+        archives = {'linux-x86_64': linux, 'macos-aarch64': mac}
+        with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, linux_artifact, mac_artifact]), \
+             patch.object(release, 'download',
+                          side_effect=lambda e, t: shutil.copy2(archives['linux-x86_64' if '/artifacts/7/' in e else 'macos-aarch64'], t)), \
+             self.assertRaisesRegex(ValueError, 'Unsupported artifact identity'):
+            self.flow.run('fetch', self.flow.fetch)
 
     def test_download_digest_mismatch_never_adopts_artifact(self):
-        archive = self.inputs()
-        self.artifact['digest'] = 'sha256:' + '0' * 64
-        with patch.object(release, 'gh_json', side_effect=[self.run, self.artifact]), \
-             patch.object(release, 'download', side_effect=lambda endpoint, target: shutil.copy2(archive, target)), \
+        linux, linux_artifact = self.inputs('linux-x86_64')
+        mac, mac_artifact = self.inputs('macos-aarch64')
+        linux_artifact['digest'] = 'sha256:' + '0' * 64
+        archives = {'linux-x86_64': linux, 'macos-aarch64': mac}
+        with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, linux_artifact, mac_artifact]), \
+             patch.object(release, 'download',
+                          side_effect=lambda e, t: shutil.copy2(archives['linux-x86_64' if '/artifacts/7/' in e else 'macos-aarch64'], t)), \
              self.assertRaisesRegex(ValueError, 'digest mismatch'):
             self.flow.run('fetch', self.flow.fetch)
         self.assertFalse((self.root / 'artifact').exists())
@@ -311,29 +381,37 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(report['attempts'][0]['status'], 'failed')
 
     def test_fetch_download_uses_default_github_api_headers(self):
-        archive = self.inputs()
+        linux, linux_artifact = self.inputs('linux-x86_64')
+        mac, mac_artifact = self.inputs('macos-aarch64')
+        archives = {'linux-x86_64': linux, 'macos-aarch64': mac}
+        endpoints = []
+        # The archive is chosen by the artifact ID: 7 is Linux, 8 is macOS.
+        by_id = {'repos/owner/repo/actions/artifacts/7/zip': linux, 'repos/owner/repo/actions/artifacts/8/zip': mac}
         def download(argv, *, stdout, check, timeout):
-            self.assertEqual(argv, ['gh', 'api', 'repos/owner/repo/actions/artifacts/7/zip'])
+            endpoints.append(argv)
             self.assertTrue(check)
             self.assertEqual(timeout, 300)
-            stdout.write(archive.read_bytes())
-        with patch.object(release, 'gh_json', side_effect=[self.run, self.artifact]), \
+            stdout.write(by_id[argv[2]].read_bytes())
+        with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, linux_artifact, mac_artifact]), \
              patch.object(release.subprocess, 'run', side_effect=download) as calls:
             self.flow.run('fetch', self.flow.fetch)
-        self.assertEqual(calls.call_count, 1)
-        self.assertEqual((self.root / 'artifact/artifact.zip').read_bytes(), archive.read_bytes())
+        self.assertEqual(endpoints, [['gh', 'api', 'repos/owner/repo/actions/artifacts/7/zip'],
+                                     ['gh', 'api', 'repos/owner/repo/actions/artifacts/8/zip']])
+        self.assertEqual(calls.call_count, 2)
+        self.assertEqual((self.root / 'artifact/linux-x86_64/artifact.zip').read_bytes(), linux.read_bytes())
+        self.assertEqual((self.root / 'artifact/macos-aarch64/artifact.zip').read_bytes(), mac.read_bytes())
 
     def test_verify_download_requests_release_asset_bytes(self):
-        signed = self.root / 'signed'
-        signed.mkdir()
         payloads, assets, expected = {}, [], []
-        for asset_id, suffix in enumerate(('.json', '.json.minisig', '.tar.gz'), start=1):
-            name = 'yuzuno-core-linux-x86_64' + suffix
-            path = signed / name
-            path.write_bytes(('signed fixture ' + suffix).encode())
-            payloads[str(asset_id)] = path.read_bytes()
-            assets.append({'id': asset_id, 'name': name})
-            expected.append({'name': name, 'bytes': path.stat().st_size, 'sha256': digest(path)})
+        asset_id = 0
+        for platform in release.PLATFORMS:
+            for suffix in ('.json', '.json.minisig', '.tar.gz'):
+                asset_id += 1
+                name = f'yuzuno-core-{platform}' + suffix
+                payloads[str(asset_id)] = ('signed fixture ' + name).encode()
+                assets.append({'id': asset_id, 'name': name, 'bytes': len(payloads[str(asset_id)])})
+                expected.append({'name': name, 'bytes': len(payloads[str(asset_id)]),
+                                 'sha256': hashlib.sha256(payloads[str(asset_id)]).hexdigest()})
         self.flow.report['stages']['sign'] = {'assets': expected}
         remote = {'id': 10, 'draft': False, 'prerelease': False, 'assets': assets,
                   'html_url': 'https://github.com/owner/repo/releases/tag/core-test'}
@@ -352,7 +430,7 @@ class ReleaseTests(unittest.TestCase):
              patch.object(self.flow, 'tag'), patch.object(self.flow, 'signed', side_effect=verify) as verified, \
              patch.object(release.subprocess, 'run', side_effect=download) as calls:
             result = self.flow.verify_download()
-        self.assertEqual(calls.call_count, 3)
+        self.assertEqual(calls.call_count, 3 * len(release.PLATFORMS))
         verified.assert_called_once()
         self.assertEqual(result['receipt']['assets'], expected)
         self.assertTrue(read(self.root / 'download.json')['passed'])
@@ -361,44 +439,51 @@ class ReleaseTests(unittest.TestCase):
         self.fetch()
         # Simulate package completing before its stage receipt was saved.
         result = self.flow.package()
-        manifest = (self.root / 'bundle/manifest.json').read_bytes()
+        manifests = {platform: (self.root / 'bundle' / platform / 'manifest.json').read_bytes()
+                     for platform in release.PLATFORMS}
         recovered = release.Flow(self.root)
         with patch.object(recovered, 'execute', side_effect=AssertionError('must not package again')):
             recovered.run('package', recovered.package)
-        self.assertEqual(result['manifestSha256'], recovered.report['stages']['package']['manifestSha256'])
-        self.assertEqual(manifest, (self.root / 'bundle/manifest.json').read_bytes())
+        self.assertEqual(result['platforms']['linux-x86_64']['manifestSha256'],
+                         recovered.report['stages']['package']['platforms']['linux-x86_64']['manifestSha256'])
+        for platform in release.PLATFORMS:
+            self.assertEqual(manifests[platform], (self.root / 'bundle' / platform / 'manifest.json').read_bytes())
 
     def test_the_bundle_carries_the_project_license_and_every_notices_file(self):
         self.fetch()
         self.flow.package()
-        files = json.loads((self.root / 'bundle/manifest.json').read_text())['files']
-        for name in [*LICENSE_FILES, 'web/licenses/THIRD_PARTY_NOTICES.txt',
-                     'runtimes/result-validator/THIRD_PARTY_NOTICES.txt']:
-            self.assertIn(name, files)
-            self.assertEqual(files[name]['sha256'], digest(self.root / 'bundle' / name))
+        for platform in release.PLATFORMS:
+            files = json.loads((self.root / 'bundle' / platform / 'manifest.json').read_text())['files']
+            for name in [*LICENSE_FILES, 'web/licenses/THIRD_PARTY_NOTICES.txt',
+                         'runtimes/result-validator/THIRD_PARTY_NOTICES.txt']:
+                self.assertIn(name, files)
+                self.assertEqual(files[name]['sha256'], digest(self.root / 'bundle' / platform / name))
 
     def test_the_bundle_carries_the_windows_helper_from_the_fixed_inputs(self):
         self.fetch()
         self.flow.package()
-        files = json.loads((self.root / 'bundle/manifest.json').read_text())['files']
-        inputs = self.root / 'inputs/windows-jobs'
+        files = json.loads((self.root / 'bundle/linux-x86_64/manifest.json').read_text())['files']
+        inputs = self.root / 'inputs/linux-x86_64/windows-jobs'
         self.assertEqual(files['runtimes/windows-jobs/yuzuno-jobs-helper.exe'],
                          {'sha256': digest(inputs / 'yuzuno-jobs-helper.exe'), 'bytes': (inputs / 'yuzuno-jobs-helper.exe').stat().st_size,
                           'executable': True})
         self.assertFalse(files['runtimes/windows-jobs/windows-helper.json']['executable'])
+        # A macOS bundle does not carry it (it runs under WSL only).
+        mac = json.loads((self.root / 'bundle/macos-aarch64/manifest.json').read_text())['files']
+        self.assertFalse([name for name in mac if 'windows-jobs' in name])
 
     def test_a_windows_helper_swapped_after_ci_is_not_packaged(self):
         self.fetch()
-        helper = self.root / 'inputs/windows-jobs/yuzuno-jobs-helper.exe'
+        helper = self.root / 'inputs/linux-x86_64/windows-jobs/yuzuno-jobs-helper.exe'
         helper.write_bytes(b'MZ another helper')
         with self.assertRaisesRegex(ValueError, 'contents changed'):
             self.flow.run('package', self.flow.package)
-        self.assertFalse((self.root / 'bundle').exists())
+        self.assertFalse((self.root / 'bundle/linux-x86_64').exists())
 
     def test_changed_bundle_cannot_be_adopted_after_interruption(self):
         self.fetch()
         self.flow.package()
-        path = self.root / 'bundle/web/index.html'
+        path = self.root / 'bundle/linux-x86_64/web/index.html'
         path.chmod(0o644)
         path.write_text('modified UI')
         with self.assertRaisesRegex(ValueError, 'contents differ'):
@@ -443,28 +528,40 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release.subprocess, 'run', return_value=result), self.assertRaises(RuntimeError):
             release.optional_gh_json('repos/owner/repo/releases/tags/core-test')
 
+    def signed_paths(self, root=None):
+        """Both platforms' three signed assets, as sign() leaves them."""
+        root = root or self.root
+        paths = []
+        for platform in release.PLATFORMS:
+            directory = root / 'signed' / platform
+            directory.mkdir(parents=True, exist_ok=True)
+            for suffix in ('.json', '.json.minisig', '.tar.gz'):
+                path = directory / (f'yuzuno-core-{platform}' + suffix)
+                if not path.exists():
+                    path.write_text(f'signed fixture {path.name}')
+                paths.append(path)
+        return paths
+
     def test_interrupted_sign_receipt_reuses_the_existing_signature(self):
         self.flow.signing_key = self.base / 'existing-key-path-not-read'
-        signed = self.root / 'signed'
-        paths = [signed / ('asset' + suffix) for suffix in ('.json', '.minisig', '.tar.gz')]
         def signer(argv):
             self.assertIn('sign-core-release.py', str(argv[1]))
-            signed.mkdir()
-            for path in paths:
-                path.write_text('signed fixture bytes')
+            out = Path(argv[argv.index('--out') + 1])
+            out.mkdir(parents=True)
+            for suffix in ('.json', '.minisig', '.tar.gz'):
+                (out / (f'yuzuno-core-{out.name}' + suffix)).write_text('signed fixture bytes')
+        def signed(directory):
+            return [directory / platform / (f'yuzuno-core-{platform}' + suffix)
+                    for platform in release.PLATFORMS for suffix in ('.json', '.minisig', '.tar.gz')]
         with patch.object(self.flow, 'execute', side_effect=signer) as calls, \
-             patch.object(self.flow, 'signed', return_value=paths):
+             patch.object(self.flow, 'signed', side_effect=signed):
             first = self.flow.sign()  # process lost its receipt after rename
             self.flow.run('sign', self.flow.sign)
-        self.assertEqual(calls.call_count, 1)
+        self.assertEqual(calls.call_count, len(release.PLATFORMS))
         self.assertEqual(first['assets'], self.flow.report['stages']['sign']['assets'])
 
     def test_lost_upload_reply_resumes_only_missing_assets_then_publishes(self):
-        signed = self.root / 'signed'
-        signed.mkdir()
-        paths = [signed / ('asset' + suffix) for suffix in ('.json', '.minisig', '.tar.gz')]
-        for path in paths:
-            path.write_text(path.name)
+        paths = self.signed_paths()
         self.flow.report['stages']['smoke'] = {'status': 'passed'}
         remote = {'id': 10, 'draft': True, 'assets': [], 'html_url': 'https://github.com/owner/repo/releases/tag/core-test',
                   'upload_url': 'https://uploads.github.com/repos/owner/repo/releases/10/assets{?name,label}'}
@@ -499,11 +596,7 @@ class ReleaseTests(unittest.TestCase):
                 root = self.base / ('lost-' + lost_at)
                 shutil.copytree(self.root, root)
                 flow = release.Flow(root)
-                signed = root / 'signed'
-                signed.mkdir()
-                paths = [signed / ('asset' + suffix) for suffix in ('.json', '.minisig', '.tar.gz')]
-                for path in paths:
-                    path.write_text(path.name)
+                paths = self.signed_paths(root)
                 flow.report['stages']['smoke'] = {'status': 'passed'}
                 remote, lost, creates, edits, uploads, reads = None, False, [], [], [], []
                 endpoint = 'repos/owner/repo/releases'
@@ -619,7 +712,8 @@ class ReleaseTests(unittest.TestCase):
             return {'object': {'type': 'commit', 'sha': self.sha}} if '/git/ref/' in url else None
         with patch.object(release, 'optional_gh_json', side_effect=lookup), \
              patch.object(release, 'gh_json', return_value=[]), patch.object(self.flow, 'tag'), \
-             patch.object(self.flow, 'signed', return_value=[]), patch.object(self.flow, 'execute') as mutations, \
+             patch.object(self.flow, 'signed', return_value=self.signed_paths()), \
+             patch.object(self.flow, 'execute') as mutations, \
              patch.object(self.flow, 'api') as writes:
             with self.assertRaisesRegex(ValueError, 'already attempted'):
                 self.flow.publish()
@@ -627,10 +721,9 @@ class ReleaseTests(unittest.TestCase):
         writes.assert_not_called()
 
     def test_existing_draft_assets_are_not_overwritten(self):
-        path = self.base / 'asset.json'
-        path.write_text('expected signed bytes')
+        paths = self.signed_paths()
         self.flow.report['stages']['smoke'] = {'status': 'passed'}
-        for asset in ({'name': 'unexpected'}, {'name': path.name, 'size': path.stat().st_size,
+        for asset in ({'name': 'unexpected'}, {'name': paths[0].name, 'size': paths[0].stat().st_size,
                                               'digest': 'sha256:' + '0' * 64}):
             value = {'id': 10, 'tag_name': 'core-test', 'target_commitish': self.sha,
                      'draft': True, 'assets': [asset]}
@@ -640,7 +733,7 @@ class ReleaseTests(unittest.TestCase):
                 return [value] if '?per_page=' in url else value
             with self.subTest(asset=asset), patch.object(release, 'optional_gh_json', side_effect=optional_api), \
                  patch.object(release, 'gh_json', side_effect=api), patch.object(self.flow, 'tag'), \
-                 patch.object(self.flow, 'signed', return_value=[path]), patch.object(self.flow, 'execute') as mutations, \
+                 patch.object(self.flow, 'signed', return_value=paths), patch.object(self.flow, 'execute') as mutations, \
                  patch.object(self.flow, 'api') as writes:
                 with self.assertRaisesRegex(ValueError, 'Unexpected remote|Remote asset differs'):
                     self.flow.publish()
@@ -684,11 +777,7 @@ class ReleaseTests(unittest.TestCase):
         return lambda: read(state)
 
     def signed_files(self):
-        signed = self.root / 'signed'
-        signed.mkdir()
-        self.paths = [signed / ('yuzuno-core-linux-x86_64' + suffix) for suffix in ('.json', '.json.minisig', '.tar.gz')]
-        for path in self.paths:
-            path.write_text(f'signed fixture {path.name}')
+        self.paths = self.signed_paths()
         return self.paths
 
     def publish(self):
@@ -737,7 +826,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(state['faults']['listHides'], 1)
         [remote] = state['releases']
         self.assertEqual([a['content_type'] for a in remote['assets']],
-                         ['application/json', 'application/octet-stream', 'application/x-gtar'])
+                         ['application/json', 'application/octet-stream', 'application/x-gtar'] * len(release.PLATFORMS))
 
     def test_a_draft_not_yet_readable_by_id_is_resumed_by_that_id(self):
         github = self.fake_github(listHides=99, idHides=1)
@@ -877,7 +966,7 @@ class ReleaseTests(unittest.TestCase):
         github = self.fake_github(uploadDigest='sha256:' + '0' * 64)
         self.assertEqual(self.publish(), 'ValueError: Uploaded asset digest differs')
         state = github()
-        self.assertEqual((len(state['writes']['upload']), state['writes']['publish']), (3, 0))
+        self.assertEqual((len(state['writes']['upload']), state['writes']['publish']), (len(self.paths), 0))
         self.assertTrue(state['releases'][0]['draft'])
 
     def test_a_lost_publish_reply_is_confirmed_without_another_write(self):
@@ -886,6 +975,135 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(github()['releases'][0]['draft'])
         self.assertIsNone(self.publish())
         self.assert_published_once(github(), 10)
+
+
+def macho(minos='11.0.0', cputype=0x0100000C):
+    """A thin Mach-O with one LC_BUILD_VERSION for platform macOS."""
+    major, minor, patch = map(int, minos.split('.'))
+    version = major << 16 | minor << 8 | patch
+    body = struct.pack('<IIIIII', 0x32, 24, 1, version, version, 0)
+    return struct.pack('<IiiIIIII', 0xFEEDFACF, cputype, 0, 2, 1, len(body), 0, 0) + body
+
+
+class MacosSmokeTests(unittest.TestCase):
+    """The macOS static smoke on the Linux release host (YN-108 M3b)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        baseline = self.base / 'baseline'
+        baseline.mkdir()
+        write(baseline / 'manifest.json', {'releaseId': 'core-before'})
+        (self.base / 'publisher.pub').write_text('unit test placeholder, never signed')
+        (self.base / 'notes.txt').write_text('Reviewed changes')
+        self.sha = 'a' * 40
+        release.initialize(argparse.Namespace(
+            work_dir=self.base / 'release', repository='owner/repo', sha=self.sha,
+            release_id='core-test', version='test.1', review='Accepted PR review reference', ci_run=42,
+            inputs_run=51, artifact_id=['linux-x86_64=7', 'macos-aarch64=8'],
+            baseline=baseline, public_key=self.base / 'publisher.pub', notes=self.base / 'notes.txt'))
+        self.flow = release.Flow(self.base / 'release')
+        self.bundle = self.flow.root / 'bundle/macos-aarch64'
+        self.build = self.flow.root / 'artifact/macos-aarch64/build.json'
+        (self.bundle / 'bin').mkdir(parents=True)
+        self.binaries = {'bin/yuzuno-workspace': macho(), 'bin/yuzuno-update-helper': macho()}
+        for name, content in self.binaries.items():
+            (self.bundle / name).write_bytes(content)
+            (self.bundle / name).chmod(0o755)
+        write(self.bundle / 'manifest.json', {'gitSha': self.sha, 'releaseId': 'core-test', 'version': 'test.1',
+                                              'platform': 'macos-aarch64',
+                                              'files': release.inventory(self.bundle)})
+        write(self.build, {'platform': 'macos-aarch64', 'files': release.inventory(self.bundle)})
+
+    def smoke(self):
+        with patch.object(self.flow, 'ci_smoke', return_value={'conclusion': 'success', 'jobId': 5}):
+            return self.flow.macos_smoke('macos-aarch64')
+
+    def test_the_packaged_binaries_are_arm64_macho_for_macos_11(self):
+        receipt = self.smoke()
+        self.assertEqual(receipt['platform'], 'macos-aarch64')
+        self.assertEqual(receipt['binaries']['bin/yuzuno-workspace']['arch'], 'arm64')
+        self.assertEqual(receipt['binaries']['bin/yuzuno-workspace']['minos'], '11.0.0')
+        self.assertEqual(receipt['ciSmoke']['conclusion'], 'success')
+
+    def test_another_architecture_or_minimum_is_refused(self):
+        for name, content, message in [
+                ('bin/yuzuno-workspace', macho(cputype=0x01000007), 'not arm64'),
+                ('bin/yuzuno-update-helper', macho(minos='13.0.0'), 'not 11.0.0')]:
+            with self.subTest(name=name):
+                (self.bundle / name).write_bytes(content)
+                write(self.build, {'platform': 'macos-aarch64', 'files': {
+                    key: {'sha256': digest(self.bundle / key)} for key in self.binaries}})
+                with self.assertRaisesRegex(ValueError, message):
+                    self.smoke()
+                (self.bundle / name).write_bytes(self.binaries[name])
+        write(self.build, {'platform': 'macos-aarch64',
+                           'files': {name: {'sha256': digest(self.bundle / name)} for name in self.binaries}})
+
+    def test_a_binary_that_is_not_the_ci_build_or_a_windows_helper_is_refused(self):
+        write(self.build, {'platform': 'macos-aarch64',
+                           'files': {name: {'sha256': '0' * 64} for name in self.binaries}})
+        with self.assertRaisesRegex(ValueError, 'differs from the CI build'):
+            self.smoke()
+        write(self.build, {'platform': 'macos-aarch64',
+                           'files': {name: {'sha256': digest(self.bundle / name)} for name in self.binaries}})
+        manifest = read(self.bundle / 'manifest.json')
+        manifest['files']['runtimes/windows-jobs/yuzuno-jobs-helper.exe'] = {'sha256': '0' * 64}
+        write(self.bundle / 'manifest.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'Windows Jobs helper'):
+            self.smoke()
+
+    def test_the_ci_functional_smoke_must_have_passed_this_source(self):
+        job = {'id': 5, 'name': 'macOS (Apple silicon) release inputs', 'conclusion': 'success',
+               'head_sha': self.sha, 'html_url': 'https://example.invalid/job/5',
+               'steps': [{'name': 'Smoke the binaries', 'conclusion': 'success'}]}
+        with patch.object(release, 'gh_json', return_value={'jobs': [job]}):
+            self.assertEqual(self.flow.ci_smoke('macos-aarch64')['jobId'], 5)
+        for jobs, message in [
+                ([], 'Expected one CI job'),
+                ([{**job, 'steps': [{'name': 'other', 'conclusion': 'success'}]}], 'Expected one CI job'),
+                ([{**job, 'conclusion': 'failure'}], 'did not pass'),
+                ([{**job, 'head_sha': 'b' * 40}], 'did not pass'),
+                ([job, {**job, 'id': 6}], 'Expected one CI job')]:
+            with self.subTest(jobs=jobs):
+                with patch.object(release, 'gh_json', return_value={'jobs': jobs}), \
+                     self.assertRaisesRegex(ValueError, message):
+                    self.flow.ci_smoke('macos-aarch64')
+
+    def test_both_platforms_three_assets_are_verified(self):
+        linux = self.flow.root / 'bundle/linux-x86_64'
+        linux.mkdir(parents=True)
+        write(linux / 'manifest.json', {'gitSha': self.sha, 'releaseId': 'core-test', 'version': 'test.1',
+                                        'platform': 'linux-x86_64', 'files': {}})
+        for platform in release.PLATFORMS:
+            bundle = self.flow.root / 'bundle' / platform
+            signed = self.flow.root / 'signed' / platform
+            signed.mkdir(parents=True)
+            archive = signed / f'yuzuno-core-{platform}.tar.gz'
+            archive_tree(bundle, archive)
+            manifest = read(bundle / 'manifest.json')
+            write(signed / f'yuzuno-core-{platform}.json',
+                  {'format': 1, 'repository': 'owner/repo', 'tag': 'core-test', 'manifest': manifest,
+                   'manifestSha256': digest(bundle / 'manifest.json'),
+                   'archiveSha256': digest(archive), 'archiveBytes': archive.stat().st_size})
+            (signed / f'yuzuno-core-{platform}.json.minisig').write_text('signature')
+        with patch.object(self.flow, 'execute') as verify:
+            paths = self.flow.signed(self.flow.root / 'signed')
+        self.assertEqual(len(paths), 3 * len(release.PLATFORMS))
+        self.assertEqual(verify.call_count, len(release.PLATFORMS))
+        (self.flow.root / 'signed/macos-aarch64/yuzuno-core-macos-aarch64.tar.gz').write_text('changed')
+        with patch.object(self.flow, 'execute'), self.assertRaisesRegex(ValueError, 'Signed archive mismatch'):
+            self.flow.signed(self.flow.root / 'signed')
+
+    def test_a_release_without_every_platforms_signed_assets_is_refused(self):
+        (self.flow.root / 'bundle/linux-x86_64').mkdir(parents=True, exist_ok=True)
+        write(self.flow.root / 'bundle/linux-x86_64/manifest.json',
+              {'gitSha': self.sha, 'releaseId': 'core-test', 'version': 'test.1',
+               'platform': 'linux-x86_64', 'files': {}})
+        (self.flow.root / 'signed').mkdir()
+        with self.assertRaisesRegex(ValueError, 'three signed assets per platform'):
+            self.flow.signed(self.flow.root / 'signed')
 
 
 class ArchiveTests(unittest.TestCase):

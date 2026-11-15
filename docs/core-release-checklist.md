@@ -44,7 +44,7 @@ Every command below runs from `W` as `python3 -I tools/core-release-run.py <comm
 ### 2. Inputs
 
 1. Right after the gate passes, run the dispatch as its own command: `gh workflow run release-inputs.yml --repo <REPO> --ref main`. The workflow builds main's head at the moment it starts, so nothing may merge in between.
-2. Run `inputs`. It finds the one run for SHA and checks it is the release-inputs workflow on main. While the run builds, it says the hold can lift. Once the run passes, it prints `INPUTS_RUN` and `ARTIFACT_ID` (the one `core-inputs-<SHA>-<attempt>` artifact); write them into the env file.
+2. Run `inputs`. It finds the one run for SHA and checks it is the release-inputs workflow on main. While the run builds, it says the hold can lift. Once the run passes, it prints `INPUTS_RUN` and one `ARTIFACT_ID_<PLATFORM>` for each required platform (`ARTIFACT_ID_LINUX_X86_64`, `ARTIFACT_ID_MACOS_AARCH64`: the one `core-inputs-<platform>-<SHA>-<attempt>` artifact each); write them into the env file.
 3. Run `milestone --open core.N+1`. Merge-queue grouping tags a merge with the highest-numbered open milestone, and `core.N` stays open until publication. Without `core.N+1`, merges after the cut would be tagged `core.N`.
 4. Mail the Lead that the hold can lift. Include the cut's CI run, the gate's time, the inputs run, main's head and the new milestone.
 
@@ -118,20 +118,23 @@ The user's reply on this Ask authorizes the steps after it; a reply relayed by a
    - `core-release.py resume` exited 0;
    - `release.json` is unchanged;
    - fetch, package, sign and smoke passed;
-   - there are three signed files;
+   - there are three signed files per platform (six);
+   - every platform's bundle manifest is present;
    - the in-place smoke passed;
    - the report resumes at publish.
    
-   `addedFields` lists the fields the smoke saw the release add to projects, tasks and budgets.
+   `addedFields` lists the fields the smoke saw the release add to projects, tasks and budgets. `smoke.json` also holds each platform's checks: Linux's upgrade, and macOS's static Mach-O, manifest and CI-smoke result.
+
+   **The macOS part needs no extra command.** `resume` packages and signs both platforms in the same work directory, and its static smoke reads the Mach-O files on the release host. The first release that carries macOS (design 3.2) additionally gets one real-machine check from the Mac mini executor: install the signed macOS bundle into an experimental root (never the user's default folders), start it, stop it. Record that result beside this release; it is not a step of this tool.
 
 ### 8. Publish, verify, milestone
 
-1. Run `publish --resume-sha <the Job's resume.json SHA-256>`. It checks minisign, `W`, `release.json` against the env file and the summary. It prints the three signed SHA-256s and calls `core-release.py publish`. It then writes `tag-ref.txt` and `remote-release.json`.
-2. Run `verify`. It calls `core-release.py verify-download` through gh, then downloads the three files anonymously into a new `T/anonymous-download` directory (`-2`, `-3` for a later attempt): `env -i`, no token, no netrc. Each must equal the signed file, and the descriptor must verify with the frozen `publisher.pub`.
+1. Run `publish --resume-sha <the Job's resume.json SHA-256>`. It checks minisign, `W`, `release.json` against the env file and the summary. It prints the six signed SHA-256s and calls `core-release.py publish`. It then writes `tag-ref.txt` and `remote-release.json`.
+2. Run `verify`. It calls `core-release.py verify-download` through gh, then downloads the six files anonymously into a new `T/anonymous-download` directory (`-2`, `-3` for a later attempt): `env -i`, no token, no netrc. Each must equal the signed file, and each platform's descriptor must verify with the frozen `publisher.pub`.
 3. Edit the Ask's `text` and `plan` blocks with `edit`, not `put`, so it stays replied. Run `milestone --close core.N`.
 4. Submit a `doing` result naming:
    - the release ID and tag;
-   - the three SHA-256s;
+   - the six SHA-256s (three per platform);
    - that the milestone is closed.
 
 ### 9. Health after the install

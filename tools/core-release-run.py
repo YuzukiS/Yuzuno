@@ -35,8 +35,10 @@ _spec.loader.exec_module(release)
 HEX40, HEX64, NUM = r'[0-9a-f]{40}', r'[0-9a-f]{64}', r'[1-9][0-9]{0,15}'
 ABS = r'/[^\s]*'
 TAG = r'core-20[0-9]{6}-[0-9a-f]{7}'
+# One artifact ID per required platform, named as PLATFORM is.
+ARTIFACT_FIELDS = {f"ARTIFACT_ID_{platform.upper().replace('-', '_')}": NUM for platform in release.PLATFORMS}
 FIELDS = {
-    'SHA': HEX40, 'CI_RUN': NUM, 'INPUTS_RUN': NUM, 'ARTIFACT_ID': NUM,
+    'SHA': HEX40, 'CI_RUN': NUM, 'INPUTS_RUN': NUM, **ARTIFACT_FIELDS,
     'RELEASE_ID': TAG, 'VERSION': r'20[0-9]{2}\.[0-9]{2}\.[0-9]{2}-core\.[1-9][0-9]*',
     'MILESTONE': r'core\.[1-9][0-9]*', 'PREV_TAG': TAG,
     'NOTES_SHA256': HEX64, 'REVIEW_SHA256': HEX64,
@@ -202,6 +204,12 @@ def review_text(env):
     return (env.run / TEXTS[1]).read_text(encoding='utf-8').rstrip('\n')
 
 
+def artifact_ids(env):
+    """Each required platform's artifact ID, from the env file."""
+    values = env.need(*ARTIFACT_FIELDS)
+    return {platform: int(value) for platform, value in zip(release.PLATFORMS, values)}
+
+
 def release_config_matches(env):
     """The frozen release.json is this env file's release, field by field."""
     texts_final(env)
@@ -209,9 +217,13 @@ def release_config_matches(env):
     require(path.is_file(), f'No {path}')
     c = read(path)
     want = {'repository': env.REPO, 'source': env.SHA, 'ciRunId': env.CI_RUN, 'inputsRunId': env.INPUTS_RUN,
-            'artifactId': env.ARTIFACT_ID, 'releaseId': env.RELEASE_ID, 'version': env.VERSION,
+            'releaseId': env.RELEASE_ID, 'version': env.VERSION,
             'notesSha256': env.NOTES_SHA256, 'baselineManifestSha256': env.BASE_SHA256, 'publicKeySha256': env.PUB_SHA256}
     bad = [k for k, v in want.items() if str(c.get(k)) != v]
+    if c.get('artifacts') != artifact_ids(env):
+        bad.append('artifacts')
+    if c.get('platforms') != list(release.PLATFORMS):
+        bad.append('platforms')
     if c.get('upgrade', 'inPlace') != 'inPlace':
         bad.append('upgrade')
     if c.get('acceptedReview') != review_text(env):
@@ -327,17 +339,26 @@ def inputs(env, args):
         say(f"release-inputs run {run['id']} on {sha} is {run['status']}: it builds this SHA, so the hold can lift")
         return 0
     require(run['conclusion'] == 'success', f"release-inputs run {run['id']} {run['conclusion']}")
-    name = f"core-inputs-{sha}-{run['run_attempt']}"
-    artifacts = [a for a in gh(f"repos/{repo}/actions/runs/{run['id']}/artifacts")['artifacts'] if a['name'] == name]
-    require(len(artifacts) == 1, f"Expected one artifact {name}, found {len(artifacts)}")
-    artifact = artifacts[0]
-    require(not artifact['expired'] and re.fullmatch(r'sha256:[0-9a-f]{64}', artifact.get('digest') or ''),
-            f"Artifact {artifact['id']} is expired or has no digest")
-    for key, value in (('INPUTS_RUN', run['id']), ('ARTIFACT_ID', artifact['id'])):
-        require(env.values.get(key) in (None, str(value)), f'{key} in the env file is not {value}')
-    receipt['artifact'] = {k: artifact[k] for k in ('id', 'name', 'size_in_bytes', 'digest')}
+    artifacts = gh(f"repos/{repo}/actions/runs/{run['id']}/artifacts")['artifacts']
+    found = {}
+    for platform in release.PLATFORMS:
+        name = release.artifact_name({'source': sha}, run, platform)
+        matches = [a for a in artifacts if a['name'] == name]
+        require(len(matches) == 1, f"Expected one {name} artifact, found {len(matches)}")
+        artifact = matches[0]
+        require(not artifact['expired'] and re.fullmatch(r'sha256:[0-9a-f]{64}', artifact.get('digest') or ''),
+                f"Artifact {artifact['id']} is expired or has no digest")
+        found[platform] = artifact
+    for platform, artifact in found.items():
+        key = f"ARTIFACT_ID_{platform.upper().replace('-', '_')}"
+        require(env.values.get(key) in (None, str(artifact['id'])), f'{key} in the env file is not {artifact["id"]}')
+    receipt['artifacts'] = {platform: {k: artifact[k] for k in ('id', 'name', 'size_in_bytes', 'digest')}
+                            for platform, artifact in found.items()}
     write(env.run / 'inputs.json', receipt)
-    say(f"INPUTS_RUN={run['id']}\nARTIFACT_ID={artifact['id']}  # {name}, {artifact['size_in_bytes']} B, {artifact['digest']}")
+    say(f"INPUTS_RUN={run['id']}")
+    for platform, artifact in found.items():
+        key = f"ARTIFACT_ID_{platform.upper().replace('-', '_')}"
+        say(f"{key}={artifact['id']}  # {artifact['name']}, {artifact['size_in_bytes']} B, {artifact['digest']}")
     return 0
 
 
@@ -443,15 +464,18 @@ def facts(env, args):
 
 def init(env, args):
     texts_final(env)
-    repo, sha, ci_run, inputs_run, artifact, tag, version, base, pub = env.need(
-        'REPO', 'SHA', 'CI_RUN', 'INPUTS_RUN', 'ARTIFACT_ID', 'RELEASE_ID', 'VERSION', 'BASE', 'PUB')
+    repo, sha, ci_run, inputs_run, tag, version, base, pub = env.need(
+        'REPO', 'SHA', 'CI_RUN', 'INPUTS_RUN', 'RELEASE_ID', 'VERSION', 'BASE', 'PUB')
     require(digest(Path(base) / 'manifest.json') == env.BASE_SHA256, 'BASE is not BASE_SHA256 (run baseline)')
     require(digest(pub) == env.PUB_SHA256, 'The public key is not PUB_SHA256')
     require(not env.work.exists(), f'{env.work} exists: a new release needs a new work directory')
     tools_frozen(env)
-    rc = core_release(env, 'init', '--work-dir', env.work, '--repository', repo, '--sha', sha, '--ci-run', ci_run,
-                      '--inputs-run', inputs_run, '--artifact-id', artifact, '--release-id', tag, '--version', version,
-                      '--review', review_text(env), '--notes', env.run / TEXTS[0], '--baseline', base, '--public-key', pub)
+    argv = ['init', '--work-dir', env.work, '--repository', repo, '--sha', sha, '--ci-run', ci_run,
+            '--inputs-run', inputs_run, '--release-id', tag, '--version', version,
+            '--review', review_text(env), '--notes', env.run / TEXTS[0], '--baseline', base, '--public-key', pub]
+    for platform, artifact in artifact_ids(env).items():
+        argv += ['--artifact-id', f'{platform}={artifact}']
+    rc = core_release(env, *argv)
     require(rc == 0, f'core-release.py init exited {rc}')
     say(f"release.json {digest(env.work / 'release.json')}")
     return 0
@@ -470,15 +494,21 @@ def resume(env, args):
     work = env.work
     report = read(work / 'report.json')
     stages = {name: report['stages'].get(name, {}).get('status') for name in ('fetch', 'package', 'sign', 'smoke')}
-    signed = {p.name: digest(p) for p in sorted((work / 'signed').iterdir())} if (work / 'signed').is_dir() else {}
+    signed_dir = work / 'signed'
+    signed = {p.relative_to(signed_dir).as_posix(): digest(p) for p in sorted(signed_dir.rglob('*')) if p.is_file()} \
+        if signed_dir.is_dir() else {}
     smoke = read(work / 'smoke.json') if (work / 'smoke.json').is_file() else {}
     mode = smoke.get('inputs', {}).get('mode', 'inPlace')
+    manifests = {platform: digest(work / 'bundle' / platform / 'manifest.json')
+                 for platform in release.PLATFORMS if (work / 'bundle' / platform / 'manifest.json').is_file()}
     summary = {'resumeRc': rc, 'releaseJsonSha256': digest(work / 'release.json'), 'stages': stages,
                'resumeAt': report.get('resumeAt'), 'signed': signed, 'smokePassed': smoke.get('passed') is True,
                'smokeMode': mode, 'addedFields': smoke.get('addedFields', {}),
-               'bundleManifestSha256': digest(work / 'bundle/manifest.json') if (work / 'bundle/manifest.json').is_file() else None}
+               'bundleManifests': manifests}
     summary['asExpected'] = (rc == 0 and summary['releaseJsonSha256'] == args.release_json_sha
-                             and all(s == 'passed' for s in stages.values()) and len(signed) == 3
+                             and all(s == 'passed' for s in stages.values())
+                             and len(signed) == 3 * len(release.PLATFORMS)
+                             and len(manifests) == len(release.PLATFORMS)
                              and summary['smokePassed'] and mode == 'inPlace'
                              and str(summary['resumeAt']).startswith('publish'))
     write(env.run / 'resume.json', summary)
@@ -511,23 +541,27 @@ def verify(env, args):
     rc = core_release(env, 'verify-download', '--work-dir', env.work, '--minisign', minisign)
     require(rc == 0, f'core-release.py verify-download exited {rc}')
     signed = env.work / 'signed'
-    names = sorted(p.name for p in signed.iterdir())
-    require(len(names) == 3, 'Expected three signed files')
+    names = sorted(p.relative_to(signed).as_posix() for p in signed.rglob('*') if p.is_file())
+    require(len(names) == 3 * len(release.PLATFORMS), 'Expected three signed files per platform')
+    signed_names = sorted(p.name for p in signed.rglob('*') if p.is_file())
     # Each attempt downloads into a directory of its own; an earlier one is kept, never reused.
     attempts = [Path(env.T) / ('anonymous-download' + (f'-{n}' if n > 1 else '')) for n in range(1, 100)]
     target = next(p for p in attempts if not p.exists())
     target.mkdir()
     for name in names:
         subprocess.run(['/usr/bin/env', '-i', f'PATH={ANON_PATH}', 'HOME=/nonexistent', 'curl', '-fsSL', '--netrc-file', '/dev/null',
-                        '-o', target / name, f'{ANON_BASE}/{env.REPO}/releases/download/{env.RELEASE_ID}/{name}'],
+                        '-o', target / Path(name).name, f'{ANON_BASE}/{env.REPO}/releases/download/{env.RELEASE_ID}/{Path(name).name}'],
                        check=True, timeout=600)
-        require(digest(target / name) == digest(signed / name), f'The anonymous download of {name} differs from the signed file')
-    json_name = next(n for n in names if n.endswith('.json'))
-    checked = subprocess.run([minisign, '-Vm', target / json_name, '-x', target / (json_name + '.minisig'),
-                              '-p', env.work / 'publisher.pub'], text=True, capture_output=True)
-    require(checked.returncode == 0 and f'Trusted comment: Yuzuno Core {env.RELEASE_ID}' in checked.stdout,
-            f'The anonymous download does not verify: {checked.stdout.strip()} {checked.stderr.strip()}')
-    write(env.run / 'anonymous-download.json', {'passed': True, 'directory': str(target), 'files': {n: digest(target / n) for n in names},
+        require(digest(target / Path(name).name) == digest(signed / name), f'The anonymous download of {name} differs from the signed file')
+    descriptors = sorted(n for n in signed_names if n.endswith('.json'))
+    require(len(descriptors) == len(release.PLATFORMS), 'Expected one descriptor per platform')
+    for descriptor in descriptors:
+        checked = subprocess.run([minisign, '-Vm', target / descriptor, '-x', target / (descriptor + '.minisig'),
+                                  '-p', env.work / 'publisher.pub'], text=True, capture_output=True)
+        require(checked.returncode == 0 and f'Trusted comment: Yuzuno Core {env.RELEASE_ID}' in checked.stdout,
+                f'The anonymous download of {descriptor} does not verify: {checked.stdout.strip()} {checked.stderr.strip()}')
+    write(env.run / 'anonymous-download.json', {'passed': True, 'directory': str(target),
+                                                'files': {Path(n).name: digest(target / Path(n).name) for n in names},
                                                 'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')})
     say('anonymous download matches the signed files and verifies')
     return 0
