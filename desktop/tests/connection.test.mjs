@@ -50,7 +50,12 @@ const wslTargets = {
     { id: 'old-distro', label: 'old-distro', kind: 'wsl', selectable: false, isDefault: false, running: false, boot: 'alone', note: 'WSL 1: run `wsl --set-version old-distro 2` in Windows first.' },
   ],
 };
-const macTargets = { platform: 'macos', available: false, reason: 'comingSoon', targets: [] };
+const nothing = { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [], remembered: [] };
+const macTargets = {
+  platform: 'macos',
+  available: true,
+  targets: [{ id: 'this-mac', label: 'This Mac', kind: 'macos', selectable: true, isDefault: true, running: true, boot: 'running' }],
+};
 
 test('an offline Core keeps a visible address and an actionable retry', async () => {
   const calls = [];
@@ -306,28 +311,125 @@ test('a record without the switch is on, and turning it off goes through the app
   } finally { dom.window.close(); }
 });
 
-// YN-111: the Mac until YN-108 connects its own, and other systems.
+// YN-111: a system on which this app has no local Core back end.
 test('where this app cannot install or start Core, only Connect is shown', async () => {
-  for (const targets of [macTargets, { platform: null, available: false, reason: 'unsupported', targets: [] }]) {
-    const dom = await mount(async (command) => {
-      if (command === 'connection_info')
-        return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [{ id: 'core-1', name: 'Studio', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }], remembered: [] };
-      if (command === 'local_core_targets') return targets;
-      throw offline;
-    });
-    try {
-      const document = dom.window.document;
-      assert.equal(visible(document.querySelector('#act-start')), false, targets.reason);
-      assert.equal(visible(document.querySelector('#act-install')), false, targets.reason);
-      assert.equal(visible(document.querySelector('#act-connect')), true);
-      assert.equal(visible(document.querySelector('#guide')), false, 'its steps are WSL steps');
-      assert.equal(document.querySelector('#intro').textContent, 'Your last workspace did not answer. Try again, or choose another.');
-    } finally { dom.window.close(); }
-  }
+  const targets = { platform: null, available: false, reason: 'unsupported', targets: [] };
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info')
+      return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [{ id: 'core-1', name: 'Studio', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    assert.equal(visible(document.querySelector('#act-start')), false);
+    assert.equal(visible(document.querySelector('#act-install')), false);
+    assert.equal(visible(document.querySelector('#act-connect')), true);
+    assert.equal(visible(document.querySelector('#guide')), false, 'its steps are local steps this system has none of');
+    assert.equal(document.querySelector('#intro').textContent, 'Your last workspace did not answer. Try again, or choose another.');
+  } finally { dom.window.close(); }
+});
+
+// YN-108 M4: the Mac app now installs and starts Core on this Mac, with the
+// Mac's own words, and a start there says so.
+test('the Mac shows the local actions, the Mac steps and a start on this Mac', async () => {
+  const calls = [];
+  const macStart = {
+    coreUrl: 'http://127.0.0.1:4317/',
+    autoConnect: false,
+    startDistro: null,
+    startPlatform: 'macos',
+    startConfirmed: true,
+    autoStartLocalCore: true,
+  };
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return macStart;
+    if (command === 'local_core_targets') return macTargets;
+    if (command === 'start_core') return new Promise(() => {});
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    assert.equal(visible(document.querySelector('#act-start')), true);
+    assert.equal(visible(document.querySelector('#act-install')), true);
+    assert.equal(document.querySelector('#start-desc').textContent, 'This Mac · port 4317');
+    assert.equal(document.querySelector('[data-t="installDesc"]').textContent, 'Downloads the signed release, checks it, installs it into the folder you choose, and starts it.');
+    document.querySelector('#start-button').click();
+    await settle();
+    assert.match(document.querySelector('#start-message').textContent, /Starting Core on this Mac/);
+    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url), ['http://127.0.0.1:4317/']);
+  } finally { dom.window.close(); }
+});
+
+test('the first-run guide on the Mac has Mac steps', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return nothing;
+    if (command === 'local_core_targets') return macTargets;
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    const guide = document.querySelector('#guide');
+    assert.equal(visible(guide), true);
+    assert.match(guide.textContent, /Check this Mac/);
+    assert.match(guide.textContent, /No administrator rights/);
+    assert.match(document.querySelector('#intro').textContent, /on this Mac/);
+    assert.match(document.querySelector('#address-hint').textContent, /Core on this Mac/);
+  } finally { dom.window.close(); }
+});
+
+test('the Mac install checks this Mac and offers its own location rules', async () => {
+  const calls = [];
+  const macCheck = {
+    target: 'this-mac',
+    platform: 'macos',
+    user: 'someone',
+    home: '/Users/someone',
+    checks: [
+      { id: 'arch', level: 'required', state: 'ok', detail: 'Apple silicon' },
+      { id: 'macos', level: 'required', state: 'ok', detail: '27.0' },
+      { id: 'paths', level: 'required', state: 'ok' },
+      { id: 'port', level: 'required', state: 'ok', detail: '4317' },
+      { id: 'clt', level: 'recommended', state: 'ok' },
+    ],
+    installation: null,
+    defaults: { installDir: '/Users/someone/Library/Application Support/yuzuno/managed-core', dataDir: '/Users/someone/Library/Application Support/yuzuno/workspace', port: 4317 },
+    installable: true,
+  };
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return { ...nothing, autoConnect: false };
+    if (command === 'local_core_targets') return macTargets;
+    if (command === 'local_core_check') return macCheck;
+    if (command === 'local_core_install') return new Promise(() => {});
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    // The page lists targets when it opens; the click lists them again.
+    calls.length = 0;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.deepEqual(calls.map((call) => call.command), ['local_core_targets', 'local_core_check']);
+    assert.equal(document.querySelector('#distro-label').textContent, 'Install to');
+    assert.equal(document.querySelector('#checks').textContent.includes('Folders are in your home'), true);
+    assert.equal(document.querySelector('#where-install').textContent, '~/Library/Application Support/yuzuno/managed-core');
+    // A Mac folder may hold a space; the WSL rule's "no spaces" does not apply.
+    document.querySelector('#change').click();
+    document.querySelector('#edit-install').value = '~/My Core';
+    document.querySelector('#edit-install').dispatchEvent(new dom.window.Event('input'));
+    await settle();
+    assert.equal(document.querySelector('#where-error').hidden, true, document.querySelector('#where-error').textContent);
+    document.querySelector('#go').click();
+    await settle();
+    const install = calls.find((call) => call.command === 'local_core_install');
+    assert.equal(install.args.installDir, '/Users/someone/My Core');
+    assert.equal(install.args.dataDir, '/Users/someone/Library/Application Support/yuzuno/workspace');
+  } finally { dom.window.close(); }
 });
 
 // YN-111: the first-run guide.
-const nothing = { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [], remembered: [] };
 
 test('the first-run guide shows while nothing is saved and the default address does not answer, until it is dismissed', async () => {
   const invoke = async (command) => {
@@ -359,7 +461,6 @@ test('the guide is not shown once something is saved, before the address is trie
     [{ ...nothing, remembered: [{ url: 'http://127.0.0.1:4319/', workspaceId: 'w-three' }] }],
     [{ ...nothing, autoConnect: false }],
     [{ ...nothing, savedError: 'it could not be read (denied)' }],
-    [nothing, macTargets],
   ]) {
     const dom = await mount(async (command) => {
       if (command === 'connection_info') return info;

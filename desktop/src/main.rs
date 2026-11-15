@@ -22,7 +22,7 @@ mod update;
 use connection::{
     desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
     parse_core_url, permits_appearance, permits_navigation, startup_url, Attempt, Outside, Settle,
-    StartOutcome, StartProfile,
+    StartOutcome, StartPlatform, StartProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -87,6 +87,49 @@ fn system_open(app: &AppHandle, url: &str) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|error| error.to_string())
+}
+
+/// Tells the person, in the window, something the app itself did and could
+/// not do (the Mac's stop item, which has no page of its own). The text goes
+/// in as text, never as markup; a newer notice replaces an older one and it
+/// goes away by itself.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn show_notice(app: &AppHandle, text: &str) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    eprintln!("{text}");
+    let message = serde_json::to_string(text).unwrap_or_default();
+    let script = format!(
+        r##"(() => {{
+  const id = "yuzuno-native-notice";
+  document.getElementById(id)?.remove();
+  const notice = document.createElement("div");
+  notice.id = id;
+  notice.setAttribute("role", "alert");
+  Object.assign(notice.style, {{
+    position: "fixed", left: "50%", bottom: "24px", transform: "translateX(-50%)",
+    zIndex: "2147483647", maxWidth: "min(560px, calc(100vw - 32px))", display: "flex",
+    gap: "12px", alignItems: "flex-start", padding: "12px 16px", borderRadius: "10px",
+    background: "#3b2f1e", color: "#fffaf0", font: "13px/1.45 system-ui, sans-serif",
+    boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+  }});
+  const words = document.createElement("div");
+  words.textContent = {message};
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.textContent = "Dismiss";
+  Object.assign(dismiss.style, {{
+    flex: "none", border: "0", borderRadius: "6px", padding: "2px 8px",
+    background: "#fffaf0", color: "#3b2f1e", font: "inherit", cursor: "pointer",
+  }});
+  dismiss.addEventListener("click", () => notice.remove());
+  notice.append(words, dismiss);
+  document.body.append(notice);
+  setTimeout(() => notice.remove(), 12000);
+}})();"##
+    );
+    if let Err(error) = window.eval(&script) {
+        eprintln!("Unable to show that notice: {error}");
+    }
 }
 
 /// Link clicks are left to this window's own handlers (`on_new_window`,
@@ -254,8 +297,9 @@ struct ConnectionState {
     selected: Arc<Mutex<Option<Url>>>,
     client: reqwest::Client,
     first_open: AtomicBool,
-    /// Where the saved Core is installed in WSL, so the connection page can
-    /// start it (T-171); only ever from that Core's own answer.
+    /// Where the saved Core is installed (in WSL or on this Mac), so the
+    /// connection page can start it (T-171, YN-108); only ever from that
+    /// Core's own answer.
     start: Mutex<Option<StartProfile>>,
     /// A start from this window is under way.
     starting: AtomicBool,
@@ -272,8 +316,8 @@ struct ConnectionInfo {
     /// This computer's start entry has accepted that installation before.
     start_confirmed: bool,
     /// Which local Core back end starts the shown Core: `"wsl"` on Windows,
-    /// `"macos"` once YN-108 connects the Mac's; `None` when there is no
-    /// start this app can run here (YN-107 design section 6, part 1).
+    /// `"macos"` on the Mac (YN-108); `None` when there is no start this app
+    /// can run here (YN-107 design section 6, part 1).
     start_platform: Option<&'static str>,
     /// Whether the page starts that Core by itself, once, when the app opens
     /// and it does not answer, if this computer has confirmed it.
@@ -315,7 +359,8 @@ struct SavedEntry {
     /// What the Core there last answered with, when one has.
     workspace_id: Option<String>,
     /// Whether this is the one entry that may start a Core. Only a Core on
-    /// this computer can be started, and only the Windows app starts one.
+    /// this computer can be started, by the back end this app has here
+    /// (WSL on Windows, this Mac on macOS; YN-108).
     startable: bool,
 }
 
@@ -326,7 +371,7 @@ impl SavedEntry {
             name: entry.name.clone(),
             url: entry.url.as_str().to_owned(),
             workspace_id: entry.workspace_id.clone(),
-            startable: cfg!(windows) && entry.startable(),
+            startable: entry.start.as_ref().is_some_and(|start| entry.startable() && start_platform(start).is_some()),
         }
     }
 }
@@ -376,10 +421,14 @@ fn require_connection_page(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-/// The local Core back end that would run `start`: only the Windows app
-/// starts a Core so far, in WSL.
-fn start_platform(_start: &StartProfile) -> Option<&'static str> {
-    cfg!(windows).then_some("wsl")
+/// The local Core back end that would run `start`: WSL in the Windows app,
+/// this Mac in the Mac app (YN-108). A start of another platform's kind is
+/// not one this app runs here.
+fn start_platform(start: &StartProfile) -> Option<&'static str> {
+    match start.platform {
+        StartPlatform::Wsl => cfg!(windows).then_some("wsl"),
+        StartPlatform::Macos => cfg!(target_os = "macos").then_some("macos"),
+    }
 }
 
 #[tauri::command]
@@ -411,7 +460,7 @@ fn connection_info(
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url,
-        start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
+        start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()).filter(|distro| !distro.is_empty()),
         start_platform: shown.as_ref().and_then(start_platform),
         start_confirmed: shown.is_some_and(|start| start.confirmed),
         auto_start_local_core: saved.auto_start(),
@@ -624,7 +673,12 @@ async fn open_core(
     name: Option<&str>,
 ) -> Result<String, String> {
     let workspace = core_health(&state.client, &core).await.unwrap_or_else(|| {
-        Err("Core is not reachable yet. Start it in WSL or on your chosen host, then try again.".into())
+        Err(if cfg!(target_os = "macos") {
+            "Core is not reachable yet. Start it on this Mac or on your chosen host, then try again."
+        } else {
+            "Core is not reachable yet. Start it in WSL or on your chosen host, then try again."
+        }
+        .into())
     })?;
     if expected.is_some_and(|expected| expected != workspace) {
         return Err("Core answered, but with another Workspace. Check its address.".into());
@@ -674,9 +728,9 @@ async fn open_core(
             ))
         }
     };
-    // Only a Core on this computer can say where it is installed; the Mac
-    // app and other platforms never start one.
-    let offered = if cfg!(windows) && is_loopback(&core) {
+    // Only a Core on this computer can say where it is installed; other
+    // platforms never start one.
+    let offered = if cfg!(any(windows, target_os = "macos")) && is_loopback(&core) {
         match core.join("api/desktop/start-profile") {
             Ok(url) => read_json(&state.client, url).await.and_then(Result::ok),
             Err(_) => None,
@@ -779,17 +833,32 @@ async fn open_core(
     };
     *start = kept;
     remember_opened(window.app_handle(), &core, answered.as_deref(), start.as_ref(), name);
+    // The menu asks the state again; these must be free first.
+    drop(start);
+    drop(selected);
+    #[cfg(target_os = "macos")]
+    local_core::mac::update_stop_item(window.app_handle());
     Ok(desktop_url(&core).into())
 }
 
-#[cfg(windows)]
 async fn run_start(profile: &StartProfile) -> StartOutcome {
-    local_core::start_guarded(profile).await
-}
-
-#[cfg(not(windows))]
-async fn run_start(_: &StartProfile) -> StartOutcome {
-    StartOutcome::Failed("Starting Core is available in the Windows app with WSL only.".into())
+    #[cfg(windows)]
+    {
+        if profile.platform == StartPlatform::Wsl {
+            return local_core::start_guarded(profile).await;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if profile.platform == StartPlatform::Macos {
+            return local_core::mac::start(profile).await;
+        }
+    }
+    let _ = profile;
+    StartOutcome::Failed(
+        "This app cannot start that Core here: the Windows app starts one in WSL, and the Mac app starts one on this Mac."
+            .into(),
+    )
 }
 
 /// Keeps what a start attempt showed about the saved profile
@@ -810,14 +879,17 @@ fn settle_start(window: &WebviewWindow, state: &ConnectionState, profile: &Start
         };
         remember_start(window.app_handle(), &profile.core, start.as_ref());
     }
+    drop(start);
+    #[cfg(target_os = "macos")]
+    local_core::mac::update_stop_item(window.app_handle());
     Ok(())
 }
 
-/// Starts the saved Core in its WSL distribution when it does not answer,
-/// then opens it once it answers with its own Workspace. A Core that already
-/// answers is opened, never started again. Only the embedded connection page
-/// may ask, only for the address it was saved with; what runs is fixed by
-/// that Core's own earlier answer, not by the page.
+/// Starts the saved Core in its WSL distribution or on this Mac when it does
+/// not answer, then opens it once it answers with its own Workspace. A Core
+/// that already answers is opened, never started again. Only the embedded
+/// connection page may ask, only for the address it was saved with; what runs
+/// is fixed by that Core's own earlier answer, not by the page.
 #[tauri::command]
 async fn start_core(
     window: WebviewWindow,
@@ -878,18 +950,29 @@ async fn start_profile(
             return Err("Core was started but has not answered yet. Try Connect in a moment; nothing was stopped.".into())
         }
         StartOutcome::Unanswered => {
-            return Err("WSL gave no answer within 3 minutes. Core may still be starting: try Connect in a moment. Nothing was stopped, and nothing is tried again by itself.".into())
+            return Err(if profile.platform == StartPlatform::Macos {
+                "The start gave no answer within 3 minutes. Core may still be starting: try Connect in a moment. Nothing was stopped, and nothing is tried again by itself."
+            } else {
+                "WSL gave no answer within 3 minutes. Core may still be starting: try Connect in a moment. Nothing was stopped, and nothing is tried again by itself."
+            }
+            .into())
         }
         StartOutcome::NotHere(_) if !profile.confirmed => {
-            return Err("Not started: this computer's WSL has no matching installation for this Workspace. If this address leads to another computer, such as an SSH tunnel, start Core there.".into())
+            return Err(if profile.platform == StartPlatform::Macos {
+                "Not started: this Mac has no matching installation for this Workspace. If this address leads to another computer, such as an SSH tunnel, start Core there."
+            } else {
+                "Not started: this computer's WSL has no matching installation for this Workspace. If this address leads to another computer, such as an SSH tunnel, start Core there."
+            }
+            .into())
         }
         StartOutcome::NotHere(message) | StartOutcome::Failed(message) => return Err(message),
     }
     open_started(window, state, updates, profile, name).await
 }
 
-/// Opens `profile`'s Core just after WSL said it started. WSL's forwarding
-/// to Windows can lag the Core's own answer slightly.
+/// Opens `profile`'s Core just after its start entry said it started. WSL's
+/// forwarding to Windows can lag the Core's own answer slightly; on the Mac
+/// the Core may also need a moment to answer.
 async fn open_started(
     window: &WebviewWindow,
     state: &ConnectionState,
@@ -961,13 +1044,16 @@ async fn open_first_started(window: &WebviewWindow, profile: &StartProfile, name
         restore_start(window, profile, previous);
     }
     opened.map_err(|error| {
-        if error.starts_with("Core is not reachable") {
-            format!(
-                "Core started in WSL, but Windows cannot reach it at {}. Check WSL's localhost forwarding (localhostForwarding and networkingMode in .wslconfig), then connect to that address.",
-                profile.core.as_str().trim_end_matches('/')
-            )
+        if !error.starts_with("Core is not reachable") {
+            return error;
+        }
+        let core = profile.core.as_str().trim_end_matches('/');
+        if profile.platform == StartPlatform::Macos {
+            format!("Core started on this Mac, but the app could not reach it at {core}. Try Connect in a moment.")
         } else {
-            error
+            format!(
+                "Core started in WSL, but Windows cannot reach it at {core}. Check WSL's localhost forwarding (localhostForwarding and networkingMode in .wslconfig), then connect to that address."
+            )
         }
     })
 }
@@ -1069,6 +1155,15 @@ fn main() {
             #[cfg(target_os = "macos")]
             {
                 let _ = &quit;
+                // The Mac's own Core runs in a session of its own; this is
+                // how it is stopped, with no confirmation (YN-108 design 4.3).
+                let stop_local = MenuItem::with_id(
+                    app,
+                    "stop-local-core",
+                    "停止本机 Core / Stop This Mac's Core",
+                    false,
+                    None::<&str>,
+                )?;
                 let separator = || PredefinedMenuItem::separator(app);
                 app.set_menu(Menu::with_items(
                     app,
@@ -1101,7 +1196,7 @@ fn main() {
                                 &PredefinedMenuItem::select_all(app, None)?,
                             ],
                         )?,
-                        &Submenu::with_items(app, "Workspace", true, &[&connect])?,
+                        &Submenu::with_id_and_items(app, "workspace-menu", "Workspace", true, &[&connect, &stop_local])?,
                         &Submenu::with_items(
                             app,
                             "Window",
@@ -1115,6 +1210,7 @@ fn main() {
                         )?,
                     ],
                 )?)?;
+                local_core::mac::update_stop_item(app.handle());
             }
             #[cfg(not(target_os = "macos"))]
             let menu = Menu::with_items(
@@ -1222,6 +1318,8 @@ fn main() {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            "stop-local-core" => local_core::mac::stop_now(app),
             "quit" => app.exit(0),
             _ => {}
         })

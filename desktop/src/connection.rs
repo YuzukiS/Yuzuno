@@ -72,10 +72,40 @@ pub fn saved_record(core: &Url, start: Option<&StartProfile>) -> String {
 
 /// A start (saved, or a Core's start-profile answer) for WSL: its `platform`
 /// is `wsl`, or absent as before there was one (YN-107 design section 6).
-pub fn wsl_platform(start: &serde_json::Value) -> bool {
-    match start.get("platform") {
-        None => true,
-        Some(platform) => platform == "wsl",
+/// The Mac's starts name themselves `macos` (YN-108 design 4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartPlatform {
+    Wsl,
+    Macos,
+}
+
+impl StartPlatform {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wsl => "wsl",
+            Self::Macos => "macos",
+        }
+    }
+
+    /// The platform a saved start or an answer names; absent is WSL, as
+    /// every record and Core from before the Mac's start was.
+    pub fn parse(name: Option<&str>) -> Option<Self> {
+        match name {
+            None | Some("wsl") => Some(Self::Wsl),
+            Some("macos") => Some(Self::Macos),
+            Some(_) => None,
+        }
+    }
+
+    /// Whether this build's app runs this kind of start. A build with
+    /// neither back end (the Linux desktop, which starts no local Core)
+    /// reads every start as its own: it offers none anyway
+    /// (`main::start_platform`).
+    pub fn runs_here(self) -> bool {
+        match self {
+            Self::Wsl => cfg!(windows) || !cfg!(any(windows, target_os = "macos")),
+            Self::Macos => cfg!(target_os = "macos") || !cfg!(any(windows, target_os = "macos")),
+        }
     }
 }
 
@@ -96,24 +126,47 @@ pub fn saved_core(bytes: &[u8]) -> Option<Url> {
 pub fn saved_start(bytes: &[u8]) -> Option<StartProfile> {
     let record = saved_json(bytes)?;
     let core = parse_core_url(record["coreUrl"].as_str()?).ok()?;
-    let start = &record["start"];
-    if !wsl_platform(start) {
-        return None;
-    }
-    let profile = StartProfile::new(
-        &core,
-        start["wslDistro"].as_str()?,
-        start["user"].as_str()?,
-        start["installDir"].as_str()?,
-        start["workspaceId"].as_str()?,
-    )?;
-    Some(StartProfile { confirmed: start["confirmed"] == true, ..profile })
+    profile_from(&record["start"], &core, record["start"]["confirmed"] == true, false)
 }
 
-/// Where a Core says it is installed in WSL (`/api/desktop/start-profile`),
-/// as it said when the user connected to it, so the connection page can
-/// start it again (T-171). Only a loopback Core has one; each part is
-/// checked, since it becomes part of one fixed `wsl.exe` command.
+/// A start's JSON for `core`, checked again as when it was saved: a start
+/// in WSL (a record without `platform` is one), or on this Mac.
+/// `names_core` is true for a start in a list of Workspaces, where it names
+/// the address it was saved for; the one-address record's start has no
+/// `coreUrl` of its own and belongs to that record's address.
+pub(crate) fn profile_from(
+    start: &serde_json::Value,
+    core: &Url,
+    confirmed: bool,
+    names_core: bool,
+) -> Option<StartProfile> {
+    let platform = StartPlatform::parse(start.get("platform").and_then(serde_json::Value::as_str))?;
+    // Saved for this address, and no other.
+    match start.get("coreUrl").and_then(serde_json::Value::as_str) {
+        Some(saved_for) if parse_core_url(saved_for).ok()? != *core => return None,
+        None if names_core => return None,
+        _ => {}
+    }
+    if !platform.runs_here() {
+        return None;
+    }
+    let profile = match platform {
+        StartPlatform::Wsl => StartProfile::new(
+            core,
+            start["wslDistro"].as_str()?,
+            start["user"].as_str()?,
+            start["installDir"].as_str()?,
+            start["workspaceId"].as_str()?,
+        )?,
+        StartPlatform::Macos => StartProfile::macos(core, start["installDir"].as_str()?, start["workspaceId"].as_str()?)?,
+    };
+    Some(StartProfile { confirmed, ..profile })
+}
+
+/// Where a Core says it is installed (`/api/desktop/start-profile`), as it
+/// said when the user connected to it, so the connection page can start it
+/// again (T-171; the Mac in YN-108). Only a loopback Core has one; each part
+/// is checked, since it becomes part of one fixed command.
 ///
 /// A loopback address does not show that the Core is on this computer: an
 /// SSH tunnel's local port may lead to another computer's Core, which says
@@ -121,11 +174,13 @@ pub fn saved_start(bytes: &[u8]) -> Option<StartProfile> {
 /// and only a start that this computer's own start entry accepted for this
 /// installation confirms it ([`settle`]). A confirmation is kept until the
 /// Core says something else: it is not tied to a boot, so it holds after
-/// Windows or WSL restarts.
+/// Windows, WSL or the Mac restarts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartProfile {
+    pub platform: StartPlatform,
     /// The Core's origin; its port is the one the Core starts on.
     pub core: Url,
+    /// WSL only: its distribution and the account. Empty for a Mac start.
     pub wsl_distro: String,
     pub user: String,
     pub install_dir: String,
@@ -135,6 +190,7 @@ pub struct StartProfile {
 }
 
 impl StartProfile {
+    /// A start in WSL.
     pub fn new(core: &Url, wsl_distro: &str, user: &str, install_dir: &str, workspace_id: &str) -> Option<Self> {
         // The same rules as for what the connection page installs.
         let ok = is_loopback(core)
@@ -144,6 +200,7 @@ impl StartProfile {
             && check_rules::linux_path_ok(install_dir)
             && check_rules::workspace_id_ok(workspace_id);
         ok.then(|| Self {
+            platform: StartPlatform::Wsl,
             core: core.clone(),
             wsl_distro: wsl_distro.into(),
             user: user.into(),
@@ -153,9 +210,29 @@ impl StartProfile {
         })
     }
 
+    /// A start on this Mac: the installation folder, checked as the Mac app
+    /// checks one, and the Workspace. The check also holds the folder inside
+    /// the account's home; here only its shape is known.
+    pub fn macos(core: &Url, install_dir: &str, workspace_id: &str) -> Option<Self> {
+        let ok = is_loopback(core)
+            && core.port_or_known_default().is_some()
+            && check_rules::mac_path_shape_ok(install_dir)
+            && check_rules::workspace_id_ok(workspace_id);
+        ok.then(|| Self {
+            platform: StartPlatform::Macos,
+            core: core.clone(),
+            wsl_distro: String::new(),
+            user: String::new(),
+            install_dir: install_dir.into(),
+            workspace_id: workspace_id.into(),
+            confirmed: false,
+        })
+    }
+
     /// The same Core, installation and Workspace, confirmed or not.
     pub fn same_target(&self, other: &Self) -> bool {
-        self.core == other.core
+        self.platform == other.platform
+            && self.core == other.core
             && self.wsl_distro == other.wsl_distro
             && self.user == other.user
             && self.install_dir == other.install_dir
@@ -164,22 +241,26 @@ impl StartProfile {
 
     /// From a Core's start-profile answer, for the Core at `core` whose
     /// health named `workspace_id`; None when it offers none, offers a start
-    /// on another platform than WSL, or it differs.
+    /// this app cannot run here, or it differs.
     pub fn offered(core: &Url, workspace_id: &str, profile: &serde_json::Value) -> Option<Self> {
+        let platform = StartPlatform::parse(profile.get("platform").and_then(serde_json::Value::as_str))?;
         if profile["available"] != true
-            || !wsl_platform(profile)
+            || !platform.runs_here()
             || profile["workspaceId"] != workspace_id
             || profile["port"].as_u64() != core.port_or_known_default().map(u64::from)
         {
             return None;
         }
-        Self::new(
-            core,
-            profile["wslDistro"].as_str()?,
-            profile["user"].as_str()?,
-            profile["installDir"].as_str()?,
-            workspace_id,
-        )
+        match platform {
+            StartPlatform::Wsl => Self::new(
+                core,
+                profile["wslDistro"].as_str()?,
+                profile["user"].as_str()?,
+                profile["installDir"].as_str()?,
+                workspace_id,
+            ),
+            StartPlatform::Macos => Self::macos(core, profile["installDir"].as_str()?, workspace_id),
+        }
     }
 
     /// The arguments to `wsl.exe`: run this installation's start entry as
@@ -205,6 +286,28 @@ impl StartProfile {
         ];
         arguments.map(str::to_owned).to_vec()
     }
+
+    /// The arguments to this installation's start entry on the Mac: `start`
+    /// or `stop`, then the installation, port and Workspace it recorded
+    /// (YN-108 design 4.2, 4.3). Each is one argument; no shell is involved.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn mac_arguments(&self, command: &str) -> Option<Vec<String>> {
+        if self.platform != StartPlatform::Macos || !matches!(command, "start" | "stop") {
+            return None;
+        }
+        let port = self.core.port_or_known_default()?.to_string();
+        let entry = format!("{}/updates/start", self.install_dir);
+        Some(vec![
+            entry,
+            command.to_owned(),
+            "--install-dir".to_owned(),
+            self.install_dir.clone(),
+            "--port".to_owned(),
+            port,
+            "--workspace-id".to_owned(),
+            self.workspace_id.clone(),
+        ])
+    }
 }
 
 /// What a Core offers now, given what was saved: a confirmation stays only
@@ -214,10 +317,10 @@ pub fn merge_offered(previous: Option<&StartProfile>, offered: StartProfile) -> 
     StartProfile { confirmed, ..offered }
 }
 
-/// What a start in WSL came to, as the start entry said it, or that it said
+/// What a start came to, as the start entry said it, or that it said
 /// nothing in time.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub enum StartOutcome {
     /// The entry accepted this computer's installation (its folder, the
     /// recorded Workspace and port), started its Core, and the Core answered.
@@ -282,10 +385,10 @@ pub fn start_result_line(line: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(line.trim()).ok().filter(|v| v["state"].is_string())
 }
 
-/// Reads the start entry's result, or says why WSL did not run it.
-/// `output` is what `wsl.exe` printed. Only the entry's typed result counts;
-/// WSL's own words are shown, never read for a cause.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Reads the start entry's result, or says why this computer could not run
+/// it. `output` is what the command printed. Only the entry's typed result
+/// counts; the system's own words are shown, never read for a cause.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn start_result(profile: &StartProfile, output: &str) -> StartOutcome {
     let result = output.lines().rev().find_map(start_result_line);
     let Some(result) = result else {
@@ -297,11 +400,18 @@ pub fn start_result(profile: &StartProfile, output: &str) -> StartOutcome {
             .filter(|(level, _)| !level.is_empty() && level.chars().all(|c| c.is_ascii_digit()))
             .map_or(said, |(_, rest)| rest.trim());
         let said = said.trim_end_matches('.');
-        return StartOutcome::Failed(format!(
-            "WSL could not run Yuzuno's start in {}: {}. Start Core in WSL yourself, or check that the distribution and installation still exist.",
-            profile.wsl_distro,
-            shortened(said, 240)
-        ));
+        return StartOutcome::Failed(match profile.platform {
+            StartPlatform::Wsl => format!(
+                "WSL could not run Yuzuno's start in {}: {}. Start Core in WSL yourself, or check that the distribution and installation still exist.",
+                profile.wsl_distro,
+                shortened(said, 240)
+            ),
+            StartPlatform::Macos => format!(
+                "This Mac could not run Yuzuno's start from {}: {}. Start Core from the connection page, or check that the installation still exists.",
+                profile.install_dir,
+                shortened(said, 240)
+            ),
+        });
     };
     let message = shortened(result["message"].as_str().unwrap_or(""), 300);
     let code = result["code"].as_str().unwrap_or("");
@@ -557,6 +667,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_start_profile_is_kept_only_for_a_core_on_this_computer_that_offered_one() {
         let core = parse_core_url("http://127.0.0.1:4317").unwrap();
         let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
@@ -604,24 +715,62 @@ mod tests {
     }
 
     #[test]
-    fn only_a_start_in_wsl_is_offered_or_read() {
+    #[cfg(any(windows, target_os = "macos"))]
+    fn a_start_is_offered_and_read_for_the_platform_that_runs_here() {
         let core = parse_core_url("http://127.0.0.1:4317").unwrap();
         let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
-        let offered = serde_json::json!({"available":true,"wslDistro":"Ubuntu-24.04","user":"ada",
+        let wsl = serde_json::json!({"available":true,"platform":"wsl","wslDistro":"Ubuntu-24.04","user":"ada",
             "installDir":"/home/ada/.local/share/yuzuno-core","port":4317,"workspaceId":workspace});
-        for (platform, kept) in [(None, true), (Some("wsl"), true), (Some("macos"), false), (Some(""), false)] {
-            let mut answer = offered.clone();
-            let mut record: serde_json::Value = serde_json::from_str(&saved_record(&core, Some(&profile()))).unwrap();
-            if let Some(platform) = platform {
-                answer["platform"] = platform.into();
-                record["start"]["platform"] = platform.into();
-            }
-            assert_eq!(StartProfile::offered(&core, workspace, &answer).is_some(), kept, "{platform:?}");
-            assert_eq!(saved_start(record.to_string().as_bytes()).is_some(), kept, "{platform:?}");
+        let mac = serde_json::json!({"available":true,"platform":"macos",
+            "installDir":"/Users/ada/Library/Application Support/yuzuno/managed-core","port":4317,"workspaceId":workspace});
+        let mac_record = format!(
+            r#"{{"coreUrl":"http://127.0.0.1:4317/","start":{{"platform":"macos","coreUrl":"http://127.0.0.1:4317/","installDir":"/Users/ada/Library/Application Support/yuzuno/managed-core","workspaceId":"{workspace}","confirmed":true}}}}"#
+        );
+        let here = if cfg!(windows) { StartPlatform::Wsl } else { StartPlatform::Macos };
+        assert_eq!(StartProfile::offered(&core, workspace, &wsl).is_some(), here == StartPlatform::Wsl);
+        assert_eq!(StartProfile::offered(&core, workspace, &mac).is_some(), here == StartPlatform::Macos);
+        assert_eq!(saved_start(saved_record(&core, Some(&profile())).as_bytes()).is_some(), here == StartPlatform::Wsl);
+        assert_eq!(saved_start(mac_record.as_bytes()).is_some(), here == StartPlatform::Macos);
+        // An answer without `platform` is WSL's, as before there was one; a
+        // platform this app does not know is refused.
+        let mut wsl = wsl;
+        wsl.as_object_mut().unwrap().remove("platform");
+        assert_eq!(StartProfile::offered(&core, workspace, &wsl).is_some(), here == StartPlatform::Wsl);
+        for platform in ["", "elsewhere"] {
+            let mut answer = mac.clone();
+            answer["platform"] = platform.into();
+            assert_eq!(StartProfile::offered(&core, workspace, &answer), None, "{platform}");
         }
     }
 
     #[test]
+    fn the_mac_start_and_stop_run_fixed_arguments_with_no_shell() {
+        let core = parse_core_url("http://127.0.0.1:4317").unwrap();
+        let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
+        let root = "/Users/ada/Library/Application Support/yuzuno/managed-core";
+        let p = StartProfile::macos(&core, root, workspace).unwrap();
+        let head = [format!("{root}/updates/start")];
+        for command in ["start", "stop"] {
+            let mut expected: Vec<String> = head.to_vec();
+            expected.extend([
+                command.into(), "--install-dir".into(), root.into(), "--port".into(), "4317".into(),
+                "--workspace-id".into(), workspace.into(),
+            ]);
+            assert_eq!(p.mac_arguments(command), Some(expected), "{command}");
+        }
+        assert_eq!(p.mac_arguments("run"), None, "only these two commands");
+        assert_eq!(profile().mac_arguments("start"), None, "a WSL start runs in WSL");
+        // A Mac start is checked as a path this app passes on, never a shell
+        // word: spaces are fine, a parent folder or an external volume is not.
+        // The guarded folders are the check's rule, which knows the home.
+        assert!(StartProfile::macos(&core, "/Users/ada/my core/yuzuno-core", workspace).is_some());
+        for bad in ["/Users/ada/../root", "/Volumes/External/yuzuno", "relative/core"] {
+            assert!(StartProfile::macos(&core, bad, workspace).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn the_start_runs_one_fixed_command_in_the_cores_distribution() {
         assert_eq!(
             profile().wsl_arguments(),
@@ -720,6 +869,7 @@ mod tests {
             StartProfile { user: "grace".into(), ..profile() },
             StartProfile { install_dir: "/home/ada/other-core".into(), ..profile() },
             StartProfile { workspace_id: "5a0d3b2c-1e4f-4a6b-8c9d-0e1f2a3b4c5d".into(), ..profile() },
+            StartProfile { platform: StartPlatform::Macos, ..profile() },
             StartProfile { core: parse_core_url("http://localhost:4317").unwrap(), ..profile() },
         ];
         for offered in changed {
@@ -728,18 +878,88 @@ mod tests {
         assert!(!merge_offered(None, profile()).confirmed);
         assert!(!merge_offered(Some(&profile()), profile()).confirmed);
         // Saved and read back, as after the app, Windows or WSL restarts:
-        // the confirmation is kept, with nothing tied to a boot.
+        // the confirmation is kept, with nothing tied to a boot. A start in
+        // WSL is one only the Windows app runs (YN-108); the Mac's own is
+        // covered by the mac tests.
         let core = parse_core_url("http://127.0.0.1:4317").unwrap();
-        let saved = saved_record(&core, Some(&confirmed));
-        assert_eq!(saved_start(saved.as_bytes()), Some(confirmed.clone()));
-        assert_eq!(saved_start(saved_record(&core, Some(&profile())).as_bytes()), Some(profile()));
-        // A record from before confirmation (no field), or anything but
-        // true, is not confirmed: it is confirmed again by a start.
-        let mut old: serde_json::Value = serde_json::from_str(&saved).unwrap();
-        old["start"].as_object_mut().unwrap().remove("confirmed");
-        assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
-        old["start"]["confirmed"] = "true".into();
-        assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let _ = &core;
+        #[cfg(windows)]
+        {
+            let saved = saved_record(&core, Some(&confirmed));
+            assert_eq!(saved_start(saved.as_bytes()), Some(confirmed.clone()));
+            assert_eq!(saved_start(saved_record(&core, Some(&profile())).as_bytes()), Some(profile()));
+            // A record from before confirmation (no field), or anything but
+            // true, is not confirmed: it is confirmed again by a start.
+            let mut old: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            old["start"].as_object_mut().unwrap().remove("confirmed");
+            assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
+            old["start"]["confirmed"] = "true".into();
+            assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(saved_start(saved_record(&core, Some(&confirmed)).as_bytes()), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_start_profile_is_kept_only_for_a_core_on_this_mac_that_offered_one() {
+        let core = parse_core_url("http://127.0.0.1:4317").unwrap();
+        let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
+        let root = "/Users/ada/Library/Application Support/yuzuno/managed-core";
+        let offered = serde_json::json!({"available":true,"platform":"macos","installDir":root,"port":4317,"workspaceId":workspace});
+        let expected = StartProfile::macos(&core, root, workspace).unwrap();
+        assert_eq!(StartProfile::offered(&core, workspace, &offered), Some(expected.clone()));
+        // A record without `platform` is WSL's, which this app does not run.
+        let mut wsl_like = offered.clone();
+        wsl_like.as_object_mut().unwrap().remove("platform");
+        assert_eq!(StartProfile::offered(&core, workspace, &wsl_like), None);
+        // Saved and read back with the Core it belongs to.
+        let record = format!(
+            r#"{{"coreUrl":"http://127.0.0.1:4317/","start":{{"platform":"macos","coreUrl":"http://127.0.0.1:4317/","installDir":"{root}","workspaceId":"{workspace}","confirmed":true}}}}"#
+        );
+        assert_eq!(saved_start(record.as_bytes()), Some(StartProfile { confirmed: true, ..expected.clone() }));
+        // Anything the Mac app would not pass on is refused.
+        for (name, change) in [
+            ("another workspace", serde_json::json!({"workspaceId":"other"})),
+            ("another port", serde_json::json!({"port":4318})),
+            ("a relative folder", serde_json::json!({"installDir":"Library/Yuzuno"})),
+            ("a parent folder", serde_json::json!({"installDir":"/Users/ada/../core"})),
+            ("an external volume", serde_json::json!({"installDir":"/Volumes/External/core"})),
+            ("a newline", serde_json::json!({"installDir":"/Users/ada/a\nb"})),
+        ] {
+            let mut answer = offered.clone();
+            for (key, value) in change.as_object().unwrap() {
+                answer[key] = value.clone();
+            }
+            assert_eq!(StartProfile::offered(&core, workspace, &answer), None, "{name}");
+        }
+        // A Core reached at another address never gets one.
+        let tunnel = parse_core_url("https://core.example.com").unwrap();
+        assert_eq!(StartProfile::offered(&tunnel, workspace, &offered), None);
+        // A saved profile that would not be accepted now is not used.
+        let stale = record.replace(root, "/Volumes/External/core");
+        assert_eq!(saved_start(stale.as_bytes()), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_mac_start_result_names_this_mac_and_keeps_the_entrys_typed_state() {
+        let p = StartProfile::macos(
+            &parse_core_url("http://127.0.0.1:4317").unwrap(),
+            "/Users/ada/Library/Application Support/yuzuno/managed-core",
+            "w-one",
+        )
+        .unwrap();
+        use StartOutcome::*;
+        assert_eq!(start_result(&p, r#"{"state":"started","pid":12}"#), Started);
+        assert_eq!(start_result(&p, r#"{"state":"running"}"#), Running);
+        let failed = match start_result(&p, "cannot execute binary file\n") {
+            Failed(message) => message,
+            other => panic!("{other:?}"),
+        };
+        assert!(failed.contains("This Mac could not run Yuzuno's start from /Users/ada/Library/Application Support/yuzuno/managed-core"), "{failed}");
+        assert!(failed.contains("cannot execute binary file"), "{failed}");
     }
 
     #[test]

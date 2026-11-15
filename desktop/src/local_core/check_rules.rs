@@ -15,6 +15,11 @@ pub const FORMAT: &str = "1";
 /// 4317 (core/src/main.rs), and the nine after it (design 4.7).
 pub const PORTS: std::ops::RangeInclusive<u16> = 4317..=4326;
 
+/// Where the Mac app looks for a free port for a new Core (YN-108 design
+/// 4.2): Core's default, 4317, then 4318 to 4337, the first free one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const MAC_PORTS: std::ops::RangeInclusive<u16> = 4317..=4337;
+
 fn named(text: &str, max: usize, more: &[char]) -> bool {
     !text.is_empty() && text.len() <= max && text.chars().all(|c| c.is_ascii_alphanumeric() || more.contains(&c))
 }
@@ -57,6 +62,40 @@ pub fn linux_path_ok(path: &str) -> bool {
 pub fn same_or_nested(a: &str, b: &str) -> bool {
     let within = |inner: &str, outer: &str| inner == outer || inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'));
     within(a, b) || within(b, a)
+}
+
+/// The shape of an absolute macOS path this app passes as one argument to a
+/// command: at most 512 bytes, no control characters, no empty, `.` or `..`
+/// part, and not an external volume. Spaces and non-ASCII characters are
+/// allowed: the path is never part of a shell command (YN-108 design 4.2).
+pub fn mac_path_shape_ok(path: &str) -> bool {
+    // The default Mac disk ignores case: `/volumes/x` is `/Volumes/x`.
+    let lowered = path.to_ascii_lowercase();
+    path.starts_with('/')
+        && path.len() <= 512
+        && !path.chars().any(char::is_control)
+        && path[1..].split('/').all(|part| !matches!(part, "" | "." | ".."))
+        && lowered != "/volumes"
+        && !lowered.starts_with("/volumes/")
+}
+
+/// Where the Mac app may put Core and its Workspace (YN-108 design 4.2): a
+/// path of [`mac_path_shape_ok`] inside `home` and not below one of the
+/// folders macOS guards with a privacy prompt, nor on an external volume.
+/// `home` is the checked account's home folder.
+pub fn mac_path_ok(path: &str, home: &str) -> bool {
+    let home = home.trim_end_matches('/');
+    let guarded = ["/desktop", "/documents", "/downloads", "/library/mobile documents"];
+    // The default Mac disk ignores case, so the home and the guarded folders
+    // are compared that way: `~/desktop` is `~/Desktop`.
+    let (path_lower, home_lower) = (path.to_ascii_lowercase(), home.to_ascii_lowercase());
+    mac_path_shape_ok(path)
+        && mac_path_shape_ok(home)
+        && path_lower.strip_prefix(&home_lower).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+        && !guarded.iter().any(|folder| {
+            let folder = format!("{home_lower}{folder}");
+            path_lower == folder || path_lower.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('/'))
+        })
 }
 
 /// The `key=value` lines the check printed.
@@ -228,7 +267,7 @@ fn tool<'a>(report: &'a Report, key: &str) -> Option<&'a str> {
 }
 
 /// The leading `major.minor` of a version such as `v22.11.0` or `2.39`.
-fn major_minor(version: &str) -> Option<(u32, u32)> {
+pub fn major_minor(version: &str) -> Option<(u32, u32)> {
     let version = version.trim().trim_start_matches('v');
     let mut parts = version.split(|c: char| !c.is_ascii_digit());
     let major = parts.next()?.parse().ok()?;
@@ -721,6 +760,50 @@ cgroup=cpu memory pids
         }
         assert!(same_or_nested("/a/b", "/a/b") && same_or_nested("/a/b/c", "/a/b") && same_or_nested("/a", "/a/b"));
         assert!(!same_or_nested("/a/b", "/a/bc"));
+    }
+
+    #[test]
+    fn mac_paths_are_absolute_inside_the_home_and_away_from_guarded_folders() {
+        let home = "/Users/someone";
+        assert!(mac_path_ok("/Users/someone/Library/Application Support/yuzuno/managed-core", home));
+        assert!(mac_path_ok("/Users/someone/Library/Application Support/yuzuno/workspace", home));
+        // Spaces and non-ASCII are allowed: a path is one argument, never a
+        // shell command.
+        assert!(mac_path_ok("/Users/someone/我的 Core/yuzuno core", home));
+        for bad in [
+            "",
+            "/",
+            "relative/core",
+            "/Users/someone",
+            "/Users/someone/../root",
+            "/Users/someone//core",
+            "/Users/someone/./core",
+            "/Users/someone/core/",
+            "/Users/other/core",
+            "/Volumes/External/yuzuno",
+            "/volumes/External/yuzuno",
+            "/Users/someone/Desktop/core",
+            "/Users/someone/desktop/core",
+            "/Users/someone/Documents/yuzuno",
+            "/Users/someone/documents/yuzuno",
+            "/Users/someone/Downloads/yuzuno",
+            "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/yuzuno",
+            "/Users/someone/library/mobile documents/com~apple~CloudDocs/yuzuno",
+            "/Users/someone/a\nb",
+        ] {
+            assert!(!mac_path_ok(bad, home), "{bad:?}");
+        }
+        // A shared prefix is not inside the home.
+        assert!(!mac_path_ok("/Users/someone2/core", home));
+        // The shape alone is platform-agnostic: an external volume is refused.
+        assert!(!mac_path_shape_ok("/Volumes/External/yuzuno"));
+        for bad in ["", "/", "relative", "/a//b", "/a/./b", "/a/../b", "/a/", "/a\nb"] {
+            assert!(!mac_path_shape_ok(bad), "{bad:?}");
+        }
+        assert!(mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(500))));
+        // The same rules hold when the home is spelled in another case.
+        assert!(!mac_path_ok("/Users/Someone/desktop/core", "/Users/someone"));
+        assert!(!mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(520))));
     }
 
     /// DeepSeek Harness (YN-119 S4b): an optional item after Codex, in a report

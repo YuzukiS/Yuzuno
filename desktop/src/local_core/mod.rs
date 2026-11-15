@@ -11,9 +11,8 @@
 //! check found; both save it as a confirmed entry and open it.
 //! `local_core_cancel` stops an installation until its release is unpacked.
 //!
-//! On Windows the target is a WSL 2 distribution (`wsl.rs`); the Mac app
-//! answers `comingSoon` until YN-108 connects its own; elsewhere
-//! `unsupported`.
+//! On Windows the target is a WSL 2 distribution (`wsl.rs`); on the Mac it is
+//! this Mac (`mac.rs`, YN-108); elsewhere `unsupported`.
 //!
 //! Errors are `{code, message}`; the codes: `notConnectionPage`,
 //! `unsupported`, `unavailable`, `unknownTarget`, `busy`, `noWsl`,
@@ -21,15 +20,17 @@
 //! `peerChanged`, `noInstallation`, `invalidPath`, `invalidPort`,
 //! `portInUse`, `notInstallable`, `network`, `rateLimited`,
 //! `releaseNotFound`, `releaseInvalid`, `signature`, `cancelled`,
-//! `copyFailed`, `tooOld`, `installFailed`, `recorded`, `startFailed`,
-//! `starting`, `openFailed`.
+//! `copyFailed`, `quarantined`, `tooOld`, `installFailed`, `recorded`,
+//! `startFailed`, `starting`, `openFailed`.
 
 pub mod auto_start;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod check_rules;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod guard_rules;
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(target_os = "macos")]
+pub mod mac;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub mod release;
 #[cfg(windows)]
 pub mod wsl;
@@ -236,7 +237,7 @@ pub async fn local_core_check(
     target: String,
 ) -> Result<Check, Error> {
     require_connection_page(&window)?;
-    if !cfg!(windows) {
+    if !cfg!(any(windows, target_os = "macos")) {
         return Err(unsupported());
     }
     let target = listed_target(&local, &target)?;
@@ -317,7 +318,7 @@ fn running_among(names: Vec<String>, known: &[String]) -> Vec<String> {
 
 #[cfg(target_os = "macos")]
 async fn platform_targets() -> Targets {
-    Targets { platform: Some("macos"), available: false, reason: Some("comingSoon"), message: None, targets: Vec::new() }
+    mac::targets()
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -602,7 +603,7 @@ async fn check_target(window: &WebviewWindow, target: &Target) -> Result<Check, 
     situation.may_start(&target.id)?;
     let mut guard = Guard::open(&situation, &target.id).await?;
     let report = guarded(&mut guard, run_check(target, "default", "default")).await?;
-    let port = free_port(window).await;
+    let port = free_port(window, check_rules::PORTS).await;
     Ok(build_check(&target.id, &report, port, situation.is_default(&target.id)))
 }
 
@@ -628,13 +629,26 @@ async fn run_check(target: &Target, install: &str, data: &str) -> Result<Report,
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 async fn check_target(_: &WebviewWindow, _: &Target) -> Result<Check, Error> {
     Err(Error::new("unsupported", "This app cannot install Core on this computer yet."))
 }
 
+/// The read-only check on the Mac: this Mac, with the port the page would
+/// use.
+#[cfg(target_os = "macos")]
+async fn check_target(window: &WebviewWindow, target: &Target) -> Result<Check, Error> {
+    if target.id != mac::TARGET_ID {
+        return Err(Error::new("unknownTarget", "The Mac app checks this Mac only."));
+    }
+    let port = free_port(window, check_rules::MAC_PORTS).await;
+    tauri::async_runtime::spawn_blocking(move || mac::check(port))
+        .await
+        .map_err(|error| Error::new("checkFailed", error.to_string()))
+}
+
 /// The loopback ports a saved workspace or remembered address is on.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn bound_ports(window: &WebviewWindow) -> Result<Vec<u16>, String> {
     use tauri::Manager;
     let saved = crate::read_entries(window.app_handle());
@@ -651,10 +665,10 @@ fn bound_ports(window: &WebviewWindow) -> Result<Vec<u16>, String> {
         .collect())
 }
 
-/// Something on Windows' loopback answers at `port`. A connection is
+/// Something on this computer's loopback answers at `port`. A connection is
 /// accepted at once when something listens; Windows takes about 2 s to
 /// refuse one, so a short wait is enough.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn answering(port: u16) -> bool {
     use std::{
         net::{Ipv4Addr, SocketAddr, TcpStream},
@@ -663,17 +677,18 @@ fn answering(port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_millis(500)).is_ok()
 }
 
-/// The first port of [`check_rules::PORTS`] that no saved workspace or
-/// remembered address is on and nothing on Windows' loopback answers at
-/// (design 4.7). Windows also reaches a Core in WSL there, and a program
-/// that holds the port on Windows would keep WSL's forwarding from it.
-#[cfg(windows)]
-async fn free_port(window: &WebviewWindow) -> Port {
+/// The first port of `ports` that no saved workspace or remembered address
+/// is on and nothing on this computer's loopback answers at (design 4.7):
+/// 4317–4326 on Windows, 4317–4337 on the Mac (YN-108 design 4.2). Windows
+/// also reaches a Core in WSL there, and a program that holds the port on
+/// Windows would keep WSL's forwarding from it.
+#[cfg(any(windows, target_os = "macos"))]
+async fn free_port(window: &WebviewWindow, ports: std::ops::RangeInclusive<u16>) -> Port {
     let bound = match bound_ports(window) {
         Ok(bound) => bound,
         Err(why) => return Port::Unknown(why),
     };
-    let candidates: Vec<u16> = check_rules::PORTS.filter(|port| !bound.contains(port)).collect();
+    let candidates: Vec<u16> = ports.filter(|port| !bound.contains(port)).collect();
     match tauri::async_runtime::spawn_blocking(move || candidates.into_iter().find(|&port| !answering(port))).await {
         Ok(Some(port)) => Port::Free(port),
         Ok(None) => Port::NoneFree,
@@ -683,7 +698,7 @@ async fn free_port(window: &WebviewWindow) -> Port {
 
 /// `port` is one a new Core can take: no saved workspace or remembered
 /// address is on it and nothing answers there (design 4.7).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 async fn port_free(window: &WebviewWindow, port: u16) -> Result<(), Error> {
     if bound_ports(window).map_err(|why| Error::new("portInUse", why))?.contains(&port) {
         return Err(Error::new("portInUse", format!("Port {port} is saved here for another workspace. Choose another port.")));
@@ -813,9 +828,11 @@ pub struct Place {
 }
 
 /// The folders and port the page asked for (design section 6, part 2): the
-/// check's defaults, or folders that pass the WSL path rules, `~/` read as
-/// the checked account's home; apart from each other; a port from 1024.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// check's defaults, or folders that pass this platform's path rules, `~/`
+/// read as the checked account's home; apart from each other; a port from
+/// 1024. WSL paths take no spaces; the Mac's may, and must be inside the
+/// home (YN-108 design 4.2).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn choose_place(check: &Check, install_dir: &str, data_dir: &str, port: u16) -> Result<Place, Error> {
     let expand = |path: &str| match path.strip_prefix("~/") {
         Some(rest) => format!("{}/{rest}", check.home),
@@ -823,11 +840,20 @@ fn choose_place(check: &Check, install_dir: &str, data_dir: &str, port: u16) -> 
     };
     let (install_dir, data_dir) = (expand(install_dir), expand(data_dir));
     for (what, path) in [("install", &install_dir), ("data", &data_dir)] {
-        if !check_rules::linux_path_ok(path) {
-            return Err(Error::new(
-                "invalidPath",
-                format!("The {what} folder {path:?} is not one this app passes to WSL: an absolute Linux path outside /mnt, with letters, digits and ._-+@ only."),
-            ));
+        let ok = match check.platform {
+            "macos" => check_rules::mac_path_ok(path, &check.home),
+            _ => check_rules::linux_path_ok(path),
+        };
+        if !ok {
+            let message = match check.platform {
+                "macos" => format!(
+                    "The {what} folder {path:?} is not one this app uses on this Mac: an absolute path inside your home folder, not under Desktop, Documents, Downloads, iCloud or /Volumes."
+                ),
+                _ => format!(
+                    "The {what} folder {path:?} is not one this app passes to WSL: an absolute Linux path outside /mnt, with letters, digits and ._-+@ only."
+                ),
+            };
+            return Err(Error::new("invalidPath", message));
         }
     }
     if check_rules::same_or_nested(&install_dir, &data_dir) {
@@ -976,8 +1002,14 @@ struct Installed {
 }
 
 /// Reads `yuzuno-update-helper install`'s result (core/src/updates/setup.rs).
-#[cfg_attr(not(windows), allow(dead_code))]
-fn installed(code: Option<i32>, stdout: &str, stderr: &str) -> Result<Installed, Error> {
+/// `path_ok` is the platform's rule for the installation folder it names.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn installed(
+    code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    path_ok: fn(&str) -> bool,
+) -> Result<Installed, Error> {
     let Some(result) = result_line(stdout) else {
         if code == Some(2) {
             return Err(Error::new(
@@ -991,7 +1023,7 @@ fn installed(code: Option<i32>, stdout: &str, stderr: &str) -> Result<Installed,
     match result["state"].as_str() {
         Some("installed") => {
             let release_id = result["releaseId"].as_str().filter(|id| check_rules::release_id_ok(id));
-            let install_dir = result["installDir"].as_str().filter(|dir| check_rules::linux_path_ok(dir));
+            let install_dir = result["installDir"].as_str().filter(|dir| path_ok(dir));
             match (release_id, install_dir) {
                 (Some(release_id), Some(install_dir)) => Ok(Installed { release_id: release_id.into(), install_dir: install_dir.into() }),
                 _ => Err(Error::new("installFailed", "Core was installed, but its result is not one this app reads.")),
@@ -1018,14 +1050,15 @@ struct Started {
     note: Option<String>,
 }
 
-/// Reads `yuzuno-update-helper first-start`'s result line for `port`.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn first_started(result: &serde_json::Value, port: u16) -> Result<Started, Error> {
+/// Reads `yuzuno-update-helper first-start`'s result line for `port`;
+/// `path_ok` is the platform's rule for the installation folder it names.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn first_started(result: &serde_json::Value, port: u16, path_ok: fn(&str) -> bool) -> Result<Started, Error> {
     let message = result["message"].as_str().unwrap_or("").trim();
     match (result["state"].as_str(), result["code"].as_str()) {
         (Some("started"), _) => {
             let workspace = result["workspaceId"].as_str().filter(|id| check_rules::workspace_id_ok(id));
-            let install_dir = result["installDir"].as_str().filter(|dir| check_rules::linux_path_ok(dir));
+            let install_dir = result["installDir"].as_str().filter(|dir| path_ok(dir));
             let (Some(workspace), Some(install_dir), true) = (workspace, install_dir, result["port"] == port) else {
                 return Err(Error::new("startFailed", "Core started, but what it said about itself is not something this app saves."));
             };
@@ -1052,13 +1085,14 @@ fn first_started(result: &serde_json::Value, port: u16) -> Result<Started, Error
 }
 
 /// A first start that printed no result: an update helper too old to have
-/// `first-start` exits with 2 (an unknown command).
-#[cfg_attr(not(windows), allow(dead_code))]
-fn first_start_ended(output: &str, code: Option<i32>) -> Error {
+/// `first-start` exits with 2 (an unknown command). `hint` says what to do
+/// on this platform.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn first_start_ended(output: &str, code: Option<i32>, hint: &str) -> Error {
     if code == Some(2) {
         return Error::new(
             "tooOld",
-            "This installation's release cannot be started from the app before its first start. Start it once in WSL (docs/independent-core.md), or update it.",
+            format!("This installation's release cannot be started from the app before its first start. {hint}"),
         );
     }
     Error::new("startFailed", format!("Core could not be started: {}.", said(output, "")))
@@ -1156,7 +1190,7 @@ pub async fn local_core_install(
     on_progress: Channel<Progress>,
 ) -> Result<String, Error> {
     require_connection_page(&window)?;
-    if !cfg!(windows) {
+    if !cfg!(any(windows, target_os = "macos")) {
         return Err(unsupported());
     }
     let target = listed_target(&local, &target)?;
@@ -1172,7 +1206,7 @@ pub async fn local_core_install(
 #[tauri::command]
 pub async fn local_core_start(window: WebviewWindow, local: tauri::State<'_, LocalCore>, target: String) -> Result<String, Error> {
     require_connection_page(&window)?;
-    if !cfg!(windows) {
+    if !cfg!(any(windows, target_os = "macos")) {
         return Err(unsupported());
     }
     let target = listed_target(&local, &target)?;
@@ -1180,7 +1214,7 @@ pub async fn local_core_start(window: WebviewWindow, local: tauri::State<'_, Loc
     let installation = checked
         .installation
         .clone()
-        .ok_or_else(|| Error::new("noInstallation", "The latest check found no installation in this distribution to start."))?;
+        .ok_or_else(|| Error::new("noInstallation", "The latest check found no installation in this target to start."))?;
     let _starting = crate::Starting::take(&window).ok_or_else(busy)?;
     start_found(&window, &local, &target, &checked, &installation).await
 }
@@ -1196,12 +1230,29 @@ pub fn local_core_cancel(window: WebviewWindow, local: tauri::State<'_, LocalCor
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+async fn install(
+    window: &WebviewWindow,
+    local: &LocalCore,
+    target: &Target,
+    checked: &Check,
+    place: Place,
+    progress: &Channel<Progress>,
+) -> Result<String, Error> {
+    mac::install(window, local, target, checked, place, progress).await
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 async fn install(_: &WebviewWindow, _: &LocalCore, _: &Target, _: &Check, _: Place, _: &Channel<Progress>) -> Result<String, Error> {
     Err(unsupported())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+async fn start_found(window: &WebviewWindow, local: &LocalCore, _: &Target, checked: &Check, installation: &Installation) -> Result<String, Error> {
+    mac::start_found(window, local, checked, installation).await
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 async fn start_found(_: &WebviewWindow, _: &LocalCore, _: &Target, _: &Check, _: &Installation) -> Result<String, Error> {
     Err(unsupported())
 }
@@ -1382,7 +1433,12 @@ async fn clean(steps: &Steps, stage: &str) -> Option<String> {
 async fn register(steps: &Steps, stage: &str, root: &str, verified: &release::Verified) -> Result<Installed, Error> {
     let arguments = steps.install(stage, root, verified, release::public_key())?;
     let output = blocking("installFailed", move || wsl::run(&refs(&arguments), b"", waits::INSTALL, 64 * 1024)).await?;
-    installed(output.code, &String::from_utf8_lossy(&output.stdout), &String::from_utf8_lossy(&output.stderr))
+    installed(
+        output.code,
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+        check_rules::linux_path_ok,
+    )
 }
 
 /// The installed release's helper starts its Core the first time. Its
@@ -1392,8 +1448,16 @@ async fn first_start(steps: &Steps, root: &str, release_id: &str, place: &Place,
     let arguments = steps.first_start(root, release_id, place, home)?;
     let is_result = |line: &str| crate::connection::start_result_line(line).is_some();
     match blocking("startFailed", move || wsl::until_result(&arguments, wsl::START_WAIT, is_result)).await? {
-        wsl::Said::Result(line) => first_started(&crate::connection::start_result_line(&line).unwrap_or_default(), place.port),
-        wsl::Said::Ended(output, code) => Err(first_start_ended(&output, code)),
+        wsl::Said::Result(line) => first_started(
+            &crate::connection::start_result_line(&line).unwrap_or_default(),
+            place.port,
+            check_rules::linux_path_ok,
+        ),
+        wsl::Said::Ended(output, code) => Err(first_start_ended(
+            &output,
+            code,
+            "Start it once in WSL (docs/independent-core.md), or update it.",
+        )),
         wsl::Said::Unanswered => Err(Error::new(
             "starting",
             "WSL gave no answer within 3 minutes. Core may still be starting: use Start in a moment. Nothing was stopped.",
@@ -1413,7 +1477,7 @@ async fn open(window: &WebviewWindow, target: &Target, user: &str, port: u16, st
         .map_err(|message| Error::new("openFailed", message))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn loopback(port: u16) -> Result<url::Url, Error> {
     url::Url::parse(&format!("http://127.0.0.1:{port}")).map_err(|error| Error::new("openFailed", error.to_string()))
 }
@@ -1884,19 +1948,19 @@ mod tests {
     fn install_results_are_read() {
         let ok = r#"{"state":"installed","releaseId":"20991231-0a1b2c3","installDir":"/home/someone/.local/share/yuzuno-core","releaseSource":true}"#;
         assert_eq!(
-            installed(Some(0), &format!("a banner\n{ok}\n"), "").unwrap(),
+            installed(Some(0), &format!("a banner\n{ok}\n"), "", check_rules::linux_path_ok).unwrap(),
             Installed { release_id: "20991231-0a1b2c3".into(), install_dir: "/home/someone/.local/share/yuzuno-core".into() }
         );
         // A release whose helper has no `install`: clap's exit code 2.
-        let old = installed(Some(2), "", "error: unrecognized subcommand 'install'\n").unwrap_err();
+        let old = installed(Some(2), "", "error: unrecognized subcommand 'install'\n", check_rules::linux_path_ok).unwrap_err();
         assert_eq!(old.code, "tooOld");
-        let refused = installed(Some(3), r#"{"state":"refused","code":"installed","message":"A Yuzuno installation is already at /x; nothing was written."}"#, "").unwrap_err();
+        let refused = installed(Some(3), r#"{"state":"refused","code":"installed","message":"A Yuzuno installation is already at /x; nothing was written."}"#, "", check_rules::linux_path_ok).unwrap_err();
         assert_eq!((refused.code, refused.message.as_str()), ("installFailed", "A Yuzuno installation is already at /x; nothing was written."));
-        let failed = installed(Some(3), r#"{"state":"failed","code":"register","message":"Bad file.","cleaned":true}"#, "").unwrap_err();
+        let failed = installed(Some(3), r#"{"state":"failed","code":"register","message":"Bad file.","cleaned":true}"#, "", check_rules::linux_path_ok).unwrap_err();
         assert_eq!(failed.message, "Bad file. The installation folder it had made was removed.");
-        let odd = installed(Some(0), r#"{"state":"installed","releaseId":"../x","installDir":"/home/someone/core"}"#, "").unwrap_err();
+        let odd = installed(Some(0), r#"{"state":"installed","releaseId":"../x","installDir":"/home/someone/core"}"#, "", check_rules::linux_path_ok).unwrap_err();
         assert_eq!(odd.code, "installFailed");
-        let silent = installed(Some(1), "", "<3>WSL (12) ERROR: no such file\n").unwrap_err();
+        let silent = installed(Some(1), "", "<3>WSL (12) ERROR: no such file\n", check_rules::linux_path_ok).unwrap_err();
         assert_eq!(silent.message, "Installing failed: WSL (12) ERROR: no such file.");
     }
 
@@ -1905,22 +1969,22 @@ mod tests {
         let started = json!({"state":"started","pid":7,"releaseId":"20991231-0a1b2c3","workspaceId":"ws-1","port":4318,
             "installDir":"/home/someone/.local/share/yuzuno-core","recorded":true,"environment":"loginShell","shell":"/bin/bash"});
         assert_eq!(
-            first_started(&started, 4318).unwrap(),
+            first_started(&started, 4318, check_rules::linux_path_ok).unwrap(),
             Started { workspace_id: "ws-1".into(), install_dir: "/home/someone/.local/share/yuzuno-core".into(), note: None }
         );
-        assert_eq!(first_started(&started, 4317).unwrap_err().code, "startFailed");
+        assert_eq!(first_started(&started, 4317, check_rules::linux_path_ok).unwrap_err().code, "startFailed");
         let mut inherited = started.clone();
         inherited["environment"] = json!("inherited");
         inherited["environmentNote"] = json!("timeout");
-        assert!(first_started(&inherited, 4318).unwrap().note.unwrap().contains("(timeout)"));
-        let code = |value: serde_json::Value| first_started(&value, 4318).unwrap_err();
+        assert!(first_started(&inherited, 4318, check_rules::linux_path_ok).unwrap().note.unwrap().contains("(timeout)"));
+        let code = |value: serde_json::Value| first_started(&value, 4318, check_rules::linux_path_ok).unwrap_err();
         assert_eq!(code(json!({"state":"starting","pid":7,"port":4318})).code, "starting");
         assert_eq!(code(json!({"state":"refused","code":"recorded","port":4317,"workspaceId":"ws-0"})).code, "recorded");
         let exited = code(json!({"state":"failed","code":"exited","message":"Core exited.","log":"one\nthe last line\n\n"}));
         assert_eq!((exited.code, exited.message.as_str()), ("startFailed", "Core stopped while starting. the last line"));
         assert_eq!(code(json!({"state":"refused","code":"portInUse","message":"Port 4318 is used."})).message, "Port 4318 is used.");
-        assert_eq!(first_start_ended("error: unrecognized subcommand 'first-start'\n", Some(2)).code, "tooOld");
-        assert_eq!(first_start_ended("<3>WSL (9) ERROR: gone\n", Some(1)).message, "Core could not be started: WSL (9) ERROR: gone.");
+        assert_eq!(first_start_ended("error: unrecognized subcommand 'first-start'\n", Some(2), "Start it once in WSL, or update it.").code, "tooOld");
+        assert_eq!(first_start_ended("<3>WSL (9) ERROR: gone\n", Some(1), "Start it once in WSL, or update it.").message, "Core could not be started: WSL (9) ERROR: gone.");
     }
 
     #[test]

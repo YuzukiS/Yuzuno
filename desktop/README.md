@@ -64,7 +64,7 @@ On Windows 11 the native caption, caption text, and border follow the workspace'
 
 After a restart of Windows, Core in WSL is not running until something starts it. The connection page can start it, when Core is a managed installation in WSL ([Install a Linux Core](../docs/independent-core.md#install)) and the app has connected to it once while it ran. Core releases up to core.15 cannot be started this way: they do not record how they started. The page then only says Core is not reachable, as before.
 
-- **What the app keeps.** When you connect from the connection page to a Core at a loopback address, the app asks that Core where it is installed (`/api/desktop/start-profile`, served only on Core's own port). It keeps the answer in `core.json` with the saved Core: the WSL distribution, the Linux user, the installation folder and the Workspace ID. The port is the saved address's. Each part is checked: plain names, an absolute folder outside `/mnt`, no spaces or shell characters. A Core at another address, or one that offers nothing, gets nothing kept. The Mac app never keeps or uses one.
+- **What the app keeps.** When you connect from the connection page to a Core at a loopback address, the app asks that Core where it is installed (`/api/desktop/start-profile`, served only on Core's own port). It keeps the answer in `core.json` with the saved Core: the WSL distribution, the Linux user, the installation folder and the Workspace ID. The port is the saved address's. Each part is checked: plain names, an absolute folder outside `/mnt`, no spaces or shell characters. A Core at another address, or one that offers nothing, gets nothing kept. The Mac app keeps its own kind of start (platform `macos`: the installation folder and Workspace, no distribution) and never a WSL one; [Install and start Core on this Mac](#install-and-start-core-on-this-mac-macos) describes it.
 - **The button.** When connecting to the saved address fails, the page offers **Start in this computer's WSL**. It is offered for that address only. Changing the address hides it.
 - **Confirmed by the first start.** A loopback address does not show that Core is on this computer. An SSH tunnel's local port can lead to another computer's Core, which says where it is installed over there.
   - **Until confirmed:** the button carries a short note: the Workspace says its Core is in WSL (<distribution>), so start it here only if it is installed in this computer's WSL. Clicking it is the user's choice to start it here.
@@ -118,9 +118,103 @@ The connection page's local Core commands can install Core in a WSL 2 distributi
 - **A release too old for this.** A release whose helper has no `install` (or `first-start`) command answers with exit code 2; the app says so, and removes the temporary folder.
 - **What it never does:** use sudo or install packages; run `wsl --install`, `--set-version`, `--set-default`, `--import`, `--unregister`, `--shutdown` or `--terminate`; change `.wslconfig` or `wsl.conf`; start a stopped distribution that is not WSL's default one while another distribution runs; restore interop or cgroups by itself; add a service, a scheduled task or a login item.
 
+## Install and start Core on this Mac (macOS)
+
+The Mac app can also install and run Core on the Mac itself: a managed
+installation in your own home folder, started with your login shell's
+environment. This is the same connection page as on Windows; the Mac's own
+backend is `desktop/src/local_core/mac.rs`. Apple silicon (arm64) only: Intel
+Macs show the target with a note and cannot choose it (YN-161). The end-to-end
+install waits for the first Core release that has macOS assets (`core.N` after
+M3b); until then the page and the commands can be checked, but there is no
+signed macOS release to install.
+
+- **The check** is read-only and lists one target, **This Mac**. Required:
+  Apple silicon, macOS 11 or newer, the two folders, and a free port.
+  Recommended: Xcode's command line tools, Node.js 20 or newer, git, Claude
+  Code, Codex and `gh` signed in. The tools are looked for once on the PATH of
+  your login shell (its shell is read from `dscl`, `/bin/zsh` when that fails,
+  and the read is bounded to 10 seconds); a login shell that hangs leaves those
+  items unknown, not the check failed. Errors are shown with Details.
+- **The folders.** The defaults are `~/Library/Application Support/yuzuno/
+  managed-core` (the managed install location Core itself recognizes) and
+  `~/Library/Application Support/yuzuno/workspace` (Core's default data folder
+  on macOS). Other folders must be absolute (or start with `~/`), inside your
+  home folder, and not below `~/Desktop`, `~/Documents`, `~/Downloads`,
+  `~/Library/Mobile Documents` (iCloud) or `/Volumes`: those trigger macOS
+  privacy prompts, and an external volume may not be there. Spaces and
+  non-ASCII characters are fine: a path is always one argument, never part of a
+  shell command. The two folders must be apart. An existing install folder must
+  belong to you and not be writable by others, as Core itself requires.
+- **Ports.** 4317 if free, else the first free one of 4318–4337 that no saved
+  workspace is on and nothing answers at.
+- **What an install does**, in order:
+  1. Finds the newest stable Core release in `YuzukiS/Yuzuno` for
+     `macos-aarch64`, checks the signed descriptor with the publisher key
+     built into the app (`desktop/core-release.pub`), and then Core's own
+     rules for it (repository, tag, platform, protocol, release ID, both
+     checksums, the archive's size and what it unpacks to).
+  2. Downloads the archive into a temporary file beside the install folder
+     (same volume, this user only), checking the size and SHA-256 named in the
+     signed descriptor while it arrives. A file that does not match is
+     removed.
+  3. Unpacks it with `/usr/bin/tar -xzf <archive> -C <temporary folder>`,
+     absolute paths and no shell. tar does not pass the quarantine attribute on.
+  4. Runs `/usr/bin/xattr -p com.apple.quarantine` on the programs under
+     `bin/`. If one has it, the install stops with `quarantined`: macOS may
+     refuse to run that program, and **the attribute is not removed** and
+     Gatekeeper is not turned off.
+  5. Runs the unpacked release's own `yuzuno-update-helper install ...`, which
+     checks every file against the signed manifest again and registers the
+     installation.
+  6. Starts it the first time with the installed release's
+     `yuzuno-update-helper first-start`: the login shell's environment (as
+     `first-start` reads it), the port, the data folder and your home folder as
+     the working folder.
+  7. Saves it as a confirmed entry named **This Mac** and opens it. The
+     temporary file and folder are removed on every way out, including
+     failures. A force-quit in the middle of an install can leave one beside
+     the install folder; it is this user's, named `.yuzuno-download-…` or
+     `.yuzuno-core-install.…`, and can be deleted by hand.
+- **Cancel** stops the installation until the archive is unpacked; after that
+  it runs to the end. Closing the window does not stop the step under way.
+- **Starting later.** A saved entry starts through its installation's own
+  `<install folder>/updates/start start --install-dir … --port … --workspace-id
+  …`; an installation that never started uses `first-start`. A Core that
+  already answers is opened, never started again. Starting is offered only for
+  a Core this app found on this Mac (a saved answer or the check), never for an
+  arbitrary address, and an SSH tunnel to another computer is started there.
+- **When the app opens.** The same **Start automatically when the app opens**
+  switch as on Windows (`autoStartLocalCore` in `core.json`, on when absent):
+  the page starts the last Workspace's confirmed Core on this Mac once if it
+  does not answer, and not again after a failure.
+- **Stopping it.** Core runs in a session of its own, so closing the window or
+  quitting the app leaves it running. The Workspace menu has **停止本机 Core /
+  Stop This Mac's Core**, with no confirmation. It is enabled only while the
+  selected Workspace is this Mac's confirmed Core, and runs that installation's
+  `<install folder>/updates/start stop --install-dir … --port … --workspace-id
+  …`: the helper asks Core to shut down (SIGTERM on macOS), waits for it, and
+  never kills it. A failure is shown in the window and nothing else is done.
+  This is a native menu item, not a page command, so a page cannot stop Core.
+- **Uninstall.** Stop Core with the menu, quit the app, then delete the install
+  folder (`~/Library/Application Support/yuzuno/managed-core` by default). The
+  data folder (`…/yuzuno/workspace`) is kept; delete it too to remove the
+  Workspace and everything in it.
+- **What it never does:** use sudo or ask for administrator rights; remove a
+  quarantine attribute or change Gatekeeper; add a login item, a service or a
+  scheduled task; install anything from a release it has not verified; start a
+  Core at an address that is not this Mac's own answer.
+- **Not yet checked on a real Mac:** an actual install and start, because no
+  Core release has macOS assets until M3b ships one in `core.N`. The desktop
+  tests (path rules, check parsing, the stop arguments) run on GitHub's macOS
+  runner in `desktop-macos.yml`; the user-facing install, stop and uninstall
+  are to be checked on the Mac after `core.N` (YN-163).
+
 ## macOS desktop, Core on another computer
 
-The Mac app is a client only, as on Windows: Core, its Agents and Jobs, and the Workspace stay on the Core host (for example Linux in WSL). The Mac reaches Core through an SSH tunnel to Core's loopback port; Core is never opened to a network.
+The Mac app runs Core on this Mac as above, or connects to Core on another
+computer (for example Linux in WSL). A remote Core is reached through an SSH
+tunnel to its loopback port; Core is never opened to a network.
 
 **Build** on an Apple silicon Mac, with Xcode's command line tools and a rustup toolchain for the Mac's architecture. macOS is Apple silicon (arm64) only: Intel Macs are not supported (YN-161), and the script stops on one with a message. The build is arm64 only:
 
@@ -171,7 +265,7 @@ On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the
 
 ## Native boundary
 
-Only the embedded local connection page receives the `connection_info`, `connect_core` and `start_core` commands. `start_core` takes only the address; what it runs in WSL is fixed by the saved Core's own earlier answer (see [Start Core from the app](#start-core-from-the-app-windows-wsl)). It also receives `local_core_targets`, `local_core_check`, `local_core_install`, `local_core_start` and `local_core_cancel`: on Windows they list the WSL distributions (`wsl.exe --list --verbose`) and check one chosen from that latest list read-only, as its default account (`desktop/src/local_core/check.sh` creates no file, installs nothing and changes no setting; the login shell it reads the environment of runs your startup files, as opening a terminal does), then install, start, or cancel as [Install Core from the app](#install-core-from-the-app-windows-wsl) describes. They take a distribution only from that latest list, and folders and a port only as checked there; progress goes back through a Tauri channel, so the page gets no event permission. The Mac app answers that this is coming. `build.rs` explicitly declares all commands through `AppManifest::commands`, and the `connection` capability contains no remote origins. The commands also check the current window URL. After a successful explicit Core selection, Tauri's dynamic capability API grants only `set_appearance`, the three desktop update commands (`desktop_update_status`, `desktop_update_check`, `desktop_update_install`), the system notification commands (`desktop_notifications`, `desktop_notify`, `desktop_notifications_request`), `desktop_badge` ([Taskbar and dock badge](#taskbar-and-dock-badge-windows-macos)) and `desktop_title_bar` ([macOS title bar](#macos-title-bar), read-only: where the system's window buttons end and the user's double-click setting) to the selected origin (including its port) in the `main` WebView. The update commands take no URL, key or installer argument; each one re-checks that it was called from the `main` window on the currently selected Core. That command accepts only the `light`/`dark` enum and independently checks that the current window is `main` and its URL belongs to the currently selected Core or exact embedded connection page. Older origin grants cannot bypass that check after changing Core. The frontend cannot supply arbitrary colors or window operations. The remote workspace UI receives no filesystem, shell, process, generic window, or connection-selection native permissions. This follows [Tauri's application-command and capability model](https://v2.tauri.app/security/capabilities/).
+Only the embedded local connection page receives the `connection_info`, `connect_core` and `start_core` commands. `start_core` takes only the address; what it runs in WSL is fixed by the saved Core's own earlier answer (see [Start Core from the app](#start-core-from-the-app-windows-wsl)). It also receives `local_core_targets`, `local_core_check`, `local_core_install`, `local_core_start` and `local_core_cancel`: on Windows they list the WSL distributions (`wsl.exe --list --verbose`) and check one chosen from that latest list read-only, as its default account (`desktop/src/local_core/check.sh` creates no file, installs nothing and changes no setting; the login shell it reads the environment of runs your startup files, as opening a terminal does), then install, start, or cancel as [Install Core from the app](#install-core-from-the-app-windows-wsl) describes. They take a distribution only from that latest list, and folders and a port only as checked there; progress goes back through a Tauri channel, so the page gets no event permission. The Mac app has the same commands for this Mac (`desktop/src/local_core/mac.rs`), with its own path rules and no shell; see [Install and start Core on this Mac](#install-and-start-core-on-this-mac-macos). The stop menu item is native and not among these commands. `build.rs` explicitly declares all commands through `AppManifest::commands`, and the `connection` capability contains no remote origins. The commands also check the current window URL. After a successful explicit Core selection, Tauri's dynamic capability API grants only `set_appearance`, the three desktop update commands (`desktop_update_status`, `desktop_update_check`, `desktop_update_install`), the system notification commands (`desktop_notifications`, `desktop_notify`, `desktop_notifications_request`), `desktop_badge` ([Taskbar and dock badge](#taskbar-and-dock-badge-windows-macos)) and `desktop_title_bar` ([macOS title bar](#macos-title-bar), read-only: where the system's window buttons end and the user's double-click setting) to the selected origin (including its port) in the `main` WebView. The update commands take no URL, key or installer argument; each one re-checks that it was called from the `main` window on the currently selected Core. That command accepts only the `light`/`dark` enum and independently checks that the current window is `main` and its URL belongs to the currently selected Core or exact embedded connection page. Older origin grants cannot bypass that check after changing Core. The frontend cannot supply arbitrary colors or window operations. The remote workspace UI receives no filesystem, shell, process, generic window, or connection-selection native permissions. This follows [Tauri's application-command and capability model](https://v2.tauri.app/security/capabilities/).
 
 Connection health checks use maintained `reqwest` and `url` libraries, enforce a response-size limit, do not follow redirects, and ignore environment proxies. Main-window navigation is restricted to the selected Core and the embedded connection page, and the window opens no WebView popups.
 

@@ -31,8 +31,8 @@
            saved here and the default address does not answer. -->
       <section id="guide" class="guide" aria-labelledby="guide-title" hidden>
         <div class="guide-head"><h2 id="guide-title" data-t="guideTitle"></h2><button id="guide-dismiss" class="quiet" type="button" data-t="guideDismiss"></button></div>
-        <ol><li><b>1</b><span data-t="guide1"></span></li><li><b>2</b><span data-t="guide2"></span></li><li><b>3</b><span data-t="guide3"></span></li></ol>
-        <p data-t="guideNote"></p>
+        <ol><li><b>1</b><span data-t="guide1" data-t-platform="guide1"></span></li><li><b>2</b><span data-t="guide2"></span></li><li><b>3</b><span data-t="guide3"></span></li></ol>
+        <p data-t="guideNote" data-t-platform="guideNote"></p>
       </section>
 
       <div class="actions">
@@ -52,7 +52,7 @@
         <section class="action" id="act-install" aria-labelledby="install-title">
           <div class="action-head">
             <span class="action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg></span>
-            <div class="action-text"><h2 class="action-title" id="install-title" data-t="installTitle"></h2><p class="action-desc" data-t="installDesc"></p></div>
+            <div class="action-text"><h2 class="action-title" id="install-title" data-t="installTitle"></h2><p class="action-desc" data-t="installDesc" data-t-platform="installDesc"></p></div>
             <button type="button" id="install-button" class="secondary" data-t="installButton"></button>
           </div>
           <div class="action-body" id="install-body" hidden></div>
@@ -68,7 +68,7 @@
             <form id="connection-form" novalidate>
               <label for="core-url" data-t="addressLabel">Workspace address</label>
               <div class="address-row"><input id="core-url" name="url" type="url" value="http://127.0.0.1:4317" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="address-hint connection-message" required /><button id="connect-button" type="submit" class="secondary"><span id="connect-label" data-t="connect">Connect</span> <span aria-hidden="true">↗</span></button></div>
-              <p id="address-hint" class="hint" data-t="addressHint"></p>
+              <p id="address-hint" class="hint" data-t="addressHint" data-t-platform="addressHint"></p>
               <div id="connection-message" class="message" role="status" aria-live="polite">Getting ready…</div>
             </form>
             <section id="saved-cores" class="saved" aria-labelledby="saved-heading" hidden>
