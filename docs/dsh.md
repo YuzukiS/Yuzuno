@@ -32,7 +32,8 @@ reads `dsh --version` at each start and judges it by its version line
 `/api/workspace` says whether this Core can start dsh, as
 `dsh: {available, version, label}`. The web offers dsh only while `available`
 is true. The Machines page (the Core host's check) and the desktop app's local
-check show dsh's version where they show Codex's and Claude Code's. A daily
+check show dsh's version where they show Codex's and Claude Code's. Reading
+it (`dsh --version`) writes no file, not even under a new home. A daily
 workflow, [`dsh-contract.yml`](../.github/workflows/dsh-contract.yml), checks
 npm's `latest` and `next` dsh against what Core relies on.
 
@@ -67,9 +68,11 @@ Core keeps `<data>/dsh/<agent>/` (mode 0700) for it:
 
 dsh gets Core's environment without its `DSH_*` and `DEEPSEEK_*` variables,
 plus `DSH_HOME`, `DSH_PERMISSION_MODE`, `DSH_TELEMETRY_DISABLED=1` and the
-Agent's key as `DEEPSEEK_API_KEY`. The key goes to that process only. dsh's
-own documentation says the commands its tools run don't inherit
-credential-shaped variables (`*KEY*`, `*PASSWORD*`, `*SECRET*`, `*TOKEN*`).
+Agent's key as `DEEPSEEK_API_KEY`. The key goes to that process only, and
+the commands dsh's tools run don't see it. dsh leaves credential-shaped
+variables (`*KEY*`, `*PASSWORD*`, `*SECRET*`, `*TOKEN*`) out of their
+environment, by name. That is dsh's own rule, and a lab probe saw a command
+at Full access run without `DEEPSEEK_API_KEY` on 0.2.2-rc.3 and 0.2.2-rc.1.
 
 **What Core sets, and checks at every start.** The overlay writes each of
 these as a literal, and Core reads it back:
