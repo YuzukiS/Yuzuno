@@ -99,7 +99,8 @@ async fn an_opencode_executors_level_reaches_its_server_and_one_whose_agents_don
     ws.reconnect("oc-none").await.unwrap();
     assert!(seen("oc-none")["configContent"].is_null(), "no level: Core's environment as it is");
     ws.reconnect("oc-auto").await.unwrap();
-    assert_eq!(seen("oc-auto")["configContent"].as_str(), crate::permission_levels::opencode_config("auto").as_deref());
+    let attached = std::fs::canonicalize(ws.data_dir.join("input-files").join("oc-auto")).unwrap();
+    assert_eq!(seen("oc-auto")["configContent"].as_str(), crate::permission_levels::opencode_config("auto", Some(&attached)).as_deref());
     let refused = format!("{:#}", ws.reconnect("oc-over").await.unwrap_err());
     assert!(refused.contains("doesn't keep the permission level auto: for external_directory on /elsewhere/* it decides allow, the level ask"),
         "{refused}");

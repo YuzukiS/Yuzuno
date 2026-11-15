@@ -890,7 +890,10 @@ impl Workspace {
                 Ok((level, crate::agent_roles::kind(&db, &agent)?))
             }).await?
         };
-        launch.config = level.as_deref().and_then(crate::permission_levels::opencode_config);
+        // The Agent's own attached files (YN-145 F3b): the folder is made
+        // before the rules name it, so reading it needs no prompt at any level.
+        let attachment = std::path::PathBuf::from(crate::input_files::readable_agent_dir(&self.data_dir, id)?);
+        launch.config = level.as_deref().and_then(|level| crate::permission_levels::opencode_config(level, Some(&attachment)));
         // Its own temporary directory, when it is an executor whose level
         // lets it work alone (YN-78 S2a), created under the Workspace's root
         // gate (S2b-1). Only then do TMPDIR, TMP and TEMP name it; a refusal
@@ -900,7 +903,7 @@ impl Workspace {
         // A local executor at Auto-approve starts with Core's own answers, its
         // rules and their instructions together, or not at all (YN-78 S4b-2).
         let prepared = if auto::eligible(level.as_deref(), kind) {
-            let prepared = auto::prepare(&folder, &self.data_dir, &launch).await.map_err(refused_auto)?;
+            let prepared = auto::prepare(&folder, &self.data_dir, Some(&attachment), &launch).await.map_err(refused_auto)?;
             launch.config = Some(prepared.config.clone());
             Some(prepared)
         } else {
@@ -915,7 +918,7 @@ impl Workspace {
                 if let Some(level) = &level {
                     let managed = crate::permission_levels::OPENCODE_MANAGED;
                     let managed = std::path::Path::new(managed).exists().then_some(managed);
-                    crate::permission_levels::opencode_check(level, &server.agent_rules(cwd).await?, managed)?;
+                    crate::permission_levels::opencode_check(level, Some(&attachment), &server.agent_rules(cwd).await?, managed)?;
                 }
                 None
             }

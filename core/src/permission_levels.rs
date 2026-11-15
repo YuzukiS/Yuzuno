@@ -234,24 +234,79 @@ fn opencode_rules(id: &str) -> Option<&'static [(&'static str, Rule)]> {
 
 /// The configuration an OpenCode executor of level `id` starts with
 /// (OPENCODE_CONFIG_CONTENT), its rules in their order: OpenCode decides by
-/// the last that matches.
-pub(crate) fn opencode_config(id: &str) -> Option<String> {
+/// the last that matches. `files` is the Agent's own folder of attached files
+/// (YN-145 F3b): every level may read it without a prompt, and no level may
+/// write it. A path OpenCode's patterns can't name exactly adds nothing.
+pub(crate) fn opencode_config(id: &str, files: Option<&std::path::Path>) -> Option<String> {
     let rules = opencode_rules(id)?;
+    let entries = entries_with(id, rules, files.and_then(files_path));
     let quoted = |text: &str| serde_json::to_string(text).expect("a string is JSON");
-    let entries: Vec<String> = rules.iter().map(|(action, rule)| match rule {
-        Rule::Effect(effect) => format!("{}:{}", quoted(action), quoted(effect)),
-        Rule::Patterns(patterns) => format!("{}:{{{}}}", quoted(action),
-            patterns.iter().map(|(pattern, effect)| format!("{}:{}", quoted(pattern), quoted(effect))).collect::<Vec<_>>().join(",")),
+    let entries: Vec<String> = entries.iter().map(|(action, patterns)| {
+        if patterns.len() == 1 && patterns[0].0 == "*" {
+            return format!("{}:{}", quoted(action), quoted(patterns[0].1));
+        }
+        format!("{}:{{{}}}", quoted(action),
+            patterns.iter().map(|(pattern, effect)| format!("{}:{}", quoted(pattern), quoted(effect))).collect::<Vec<_>>().join(","))
     }).collect();
     Some(format!("{{\"permission\":{{{}}}}}", entries.join(",")))
 }
 
+/// One action's rules, its patterns in their order.
+type Entry = (&'static str, Vec<(String, &'static str)>);
+
+/// `rules` with each action's patterns, then the attached-file folder's
+/// exceptions for level `id`: `A/*` may be read at every level (appended after
+/// the level's own rules, so it wins where it is under Core's data directory),
+/// and a write there is denied. Full access keeps its rule: it allows every
+/// write already.
+fn entries_with(id: &str, rules: &[(&'static str, Rule)], files: Option<&str>) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = rules.iter().map(|(action, rule)| (*action, match rule {
+        Rule::Effect(effect) => vec![("*".to_owned(), *effect)],
+        Rule::Patterns(patterns) => patterns.iter().map(|(pattern, effect)| ((*pattern).to_owned(), *effect)).collect(),
+    })).collect();
+    if let Some(files) = files {
+        let under = format!("{files}/*");
+        // `default` is what the level decides for this action as it is: the
+        // level's own entry when it has one, else its catch-all rule.
+        let mut add = |action: &'static str, default: &'static str, pattern: String, effect: &'static str| {
+            if let Some((_, patterns)) = entries.iter_mut().find(|(name, _)| *name == action) {
+                patterns.push((pattern, effect));
+            } else {
+                entries.push((action, vec![("*".to_owned(), default), (pattern, effect)]));
+            }
+        };
+        match id {
+            "ask" => add("external_directory", "ask", under, "allow"),
+            "auto" => {
+                add("external_directory", "ask", under.clone(), "allow");
+                add("edit", "allow", under, "deny");
+            }
+            READ_ONLY => add("external_directory", "deny", under, "allow"),
+            _ => {}
+        }
+    }
+    entries
+}
+
+/// `path` as OpenCode's patterns can name it exactly: absolute UTF-8 with no
+/// wildcard, `\` or control character. None: no exception is made for it.
+fn files_path(path: &std::path::Path) -> Option<&str> {
+    let text = path.to_str()?;
+    (text.len() > 1 && text.starts_with('/')
+        && !text.chars().any(|c| matches!(c, '*' | '?' | '\\') || c.is_control())).then_some(text)
+}
+
 /// Level `id`'s rules as OpenCode holds them: (action, resource pattern, effect).
-fn opencode_ruleset(id: &str) -> Vec<(&'static str, &'static str, &'static str)> {
-    opencode_rules(id).into_iter().flatten().flat_map(|(action, rule)| match rule {
-        Rule::Effect(effect) => vec![(*action, "*", *effect)],
-        Rule::Patterns(patterns) => patterns.iter().map(|(pattern, effect)| (*action, *pattern, *effect)).collect(),
-    }).collect()
+pub(crate) fn opencode_ruleset(id: &str) -> Vec<(String, String, &'static str)> {
+    opencode_ruleset_with(id, None)
+}
+
+/// `opencode_ruleset`, with the attached-file folder's exceptions of `files`.
+pub(crate) fn opencode_ruleset_with(id: &str, files: Option<&std::path::Path>) -> Vec<(String, String, &'static str)> {
+    let Some(rules) = opencode_rules(id) else { return Vec::new() };
+    entries_with(id, rules, files.and_then(files_path)).into_iter()
+        .flat_map(|(action, patterns)| patterns.into_iter().map(move |(pattern, effect)| (action.to_owned(), pattern, effect)))
+        .collect()
 }
 
 /// Whether `text` matches OpenCode's wildcard `pattern`: `*` is any run of
@@ -299,10 +354,23 @@ pub(crate) const OPENCODE_MANAGED: &str = if cfg!(target_os = "macos") { "/Libra
 /// the level's rules alone do. A configuration OpenCode reads after Yuzuno's,
 /// such as a managed one, is what can make them differ: `managed` names the
 /// managed one when it is there.
-pub(crate) fn opencode_check(id: &str, agents: &Value, managed: Option<&str>) -> Result<()> {
-    let ours = opencode_ruleset(id);
+pub(crate) fn opencode_check(id: &str, files: Option<&std::path::Path>, agents: &Value, managed: Option<&str>) -> Result<()> {
+    let ours = opencode_ruleset_with(id, files);
     ensure!(!ours.is_empty(), "OpenCode keeps no permission level {id}");
-    check_rules(id, &ours, PROBES.iter().copied(), agents, managed)
+    let ours: Vec<(&str, &str, &str)> = ours.iter().map(|(action, pattern, effect)| (action.as_str(), pattern.as_str(), *effect)).collect();
+    let mut probes: Vec<(String, String)> = PROBES.iter().map(|(action, resource)| ((*action).to_owned(), (*resource).to_owned())).collect();
+    probes.extend(files_probes(files));
+    check_rules(id, &ours, probes.iter().map(|(action, resource)| (action.as_str(), resource.as_str())), agents, managed)
+}
+
+/// What a start also checks for the Agent's attached-file folder (YN-145
+/// F3b): its folder is read at every level, and written at none but full.
+pub(crate) fn files_probes(files: Option<&std::path::Path>) -> Vec<(String, String)> {
+    files_path(files.unwrap_or(std::path::Path::new(""))).map(|a| vec![
+        ("external_directory".to_owned(), format!("{a}/*")),
+        ("read".to_owned(), format!("{a}/probe")),
+        ("edit".to_owned(), format!("{a}/probe")),
+    ]).unwrap_or_default()
 }
 
 /// `opencode_check` against any rules (`ours`) and probes: each agent must
@@ -370,7 +438,7 @@ pub(crate) fn table() -> Value {
         "level": l.id, "label": l.label, "labelZh": l.label_zh,
         "codex": l.codex.map(|p| json!({"permissionPreset": p})),
         "claude": l.claude.map(|m| json!({"permissionMode": m})),
-        "opencode": opencode_config(l.id).and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+        "opencode": opencode_config(l.id, None).and_then(|text| serde_json::from_str::<Value>(&text).ok()),
         "dsh": dsh_column(l.id),
     })).collect()
 }
@@ -527,13 +595,13 @@ mod tests {
 
     #[test]
     fn opencodes_rules_for_each_level_are_written_in_their_order() {
-        assert_eq!(opencode_config("ask").unwrap(), concat!(r#"{"permission":{"*":"ask","read":{"*":"allow","*.env":"ask","*.env.*":"ask","#,
+        assert_eq!(opencode_config("ask", None).unwrap(), concat!(r#"{"permission":{"*":"ask","read":{"*":"allow","*.env":"ask","*.env.*":"ask","#,
             r#""*.env.example":"allow"},"grep":"allow","glob":"allow","list":"allow","question":"allow","todowrite":"allow","todoread":"allow"}}"#));
-        assert_eq!(opencode_config("auto").unwrap(), concat!(r#"{"permission":{"*":"allow","external_directory":"ask","doom_loop":"ask","#,
+        assert_eq!(opencode_config("auto", None).unwrap(), concat!(r#"{"permission":{"*":"allow","external_directory":"ask","doom_loop":"ask","#,
             r#""read":{"*":"allow","*.env":"ask","*.env.*":"ask","*.env.example":"allow"}}}"#));
-        assert_eq!(opencode_config("full").unwrap(), r#"{"permission":{"*":"allow"}}"#);
-        assert_eq!(opencode_config("readonly"), None);
-        let text = opencode_config(READ_ONLY).unwrap();
+        assert_eq!(opencode_config("full", None).unwrap(), r#"{"permission":{"*":"allow"}}"#);
+        assert_eq!(opencode_config("readonly", None), None);
+        let text = opencode_config(READ_ONLY, None).unwrap();
         assert!(text.starts_with(r#"{"permission":{"*":"deny","read":{"*":"allow","*.env":"deny","#), "denied first; the rest decide after it: {text}");
         let read_only: Value = serde_json::from_str(&text).unwrap();
         let rules = read_only["permission"].as_object().unwrap();
@@ -544,8 +612,35 @@ mod tests {
         assert_eq!(yuzuno, listed, "OpenCode keeps exactly the tools Core lists");
         assert!(rules.iter().filter(|(k, _)| k.as_str() != "*" && k.as_str() != "read").all(|(_, effect)| effect == "allow"));
         for id in ["ask", "auto", "full"] {
-            serde_json::from_str::<Value>(&opencode_config(id).unwrap()).unwrap();
+            serde_json::from_str::<Value>(&opencode_config(id, None).unwrap()).unwrap();
         }
+    }
+
+    /// YN-145 F3b: every level reads the Agent's own attached files without a
+    /// prompt; none writes them, but full access, which allows every write.
+    #[test]
+    fn opencodes_attached_files_are_read_at_every_level_and_written_only_at_full() {
+        let a = "/synthetic/input-files/agent1";
+        let on = |id: &str, action: &str, resource: &str| {
+            let rules = opencode_ruleset_with(id, Some(std::path::Path::new(a)));
+            decided(rules.iter().map(|(x, y, z)| (x.as_str(), y.as_str(), *z)), action, resource).to_owned()
+        };
+        let on = |id: &str, action: &str, resource: &str| on(id, action, resource);
+        for (id, write) in [("ask", "ask"), ("auto", "deny"), (READ_ONLY, "deny"), ("full", "allow")] {
+            let folder = format!("{a}/*");
+            let file = format!("{a}/report.pdf");
+            assert_eq!((on(id, "external_directory", &folder).as_str(), on(id, "read", &file).as_str(), on(id, "edit", &format!("{a}/x")).as_str()),
+                ("allow", "allow", write), "{id}");
+        }
+        // A `.env` keeps its own fate: asked where reading asks, denied where
+        // reading is restricted, allowed only where everything is.
+        assert_eq!((on("ask", "read", &format!("{a}/.env")), on("auto", "read", &format!("{a}/.env")),
+            on(READ_ONLY, "read", &format!("{a}/.env")), on("full", "read", &format!("{a}/.env"))),
+            ("ask".to_owned(), "ask".to_owned(), "deny".to_owned(), "allow".to_owned()));
+        // Full access adds nothing; a path OpenCode can't name exactly adds nothing.
+        assert_eq!(opencode_config("full", Some(std::path::Path::new(a))), opencode_config("full", None));
+        assert_eq!(opencode_config("auto", Some(std::path::Path::new("/a*b"))), opencode_config("auto", None));
+        assert_eq!(opencode_config("auto", Some(std::path::Path::new("relative"))), opencode_config("auto", None));
     }
 
     #[test]
@@ -553,10 +648,12 @@ mod tests {
         assert!(wildcard("*", "") && wildcard("*", "a/b c") && wildcard("*.env", "project/.env") && wildcard("*.env.*", "x/.env.local"));
         assert!(!wildcard("*.env", "x/.env.local") && !wildcard("read", "reader") && wildcard("re?d", "read") && wildcard("*plan/*", "/h/.opencode/plan/a.md"));
         let ask = opencode_ruleset("ask");
+        let ask: Vec<(&str, &str, &str)> = ask.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
         let on = |action: &str, resource: &str| decided(ask.iter().copied(), action, resource);
         assert_eq!((on("edit", "src/a.rs"), on("read", "README.md"), on("read", "app/.env"), on("read", "app/.env.example"), on("grep", "*")),
             ("ask", "allow", "ask", "allow", "allow"));
         let auto = opencode_ruleset("auto");
+        let auto: Vec<(&str, &str, &str)> = auto.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
         let on = |action: &str, resource: &str| decided(auto.iter().copied(), action, resource);
         assert_eq!((on("edit", "src/a.rs"), on("shell", "cargo test"), on("external_directory", "/elsewhere/*"), on("read", "app/.env")),
             ("allow", "allow", "ask", "ask"));
@@ -574,7 +671,9 @@ mod tests {
         ];
         let tail = [("browser", "*", "deny"), ("skill", "browser", "deny")];
         Value::Array(own.iter().map(|(id, rules)| {
-            let all: Vec<Value> = defaults.iter().chain(rules).copied().chain(level.map(opencode_ruleset).unwrap_or_default())
+            let ours = level.map(|id| opencode_ruleset(id)).unwrap_or_default();
+            let ours: Vec<(&str, &str, &str)> = ours.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
+            let all: Vec<Value> = defaults.iter().chain(rules).copied().chain(ours)
                 .chain(after.iter().copied()).chain(tail).map(|(a, r, e)| json!({"action": a, "resource": r, "effect": e})).collect();
             json!({"id": id, "mode": "primary", "permissions": all})
         }).collect())
@@ -583,31 +682,32 @@ mod tests {
     #[test]
     fn an_opencode_start_is_checked_to_keep_its_level_in_every_agent() {
         for id in ["ask", "auto", "full"] {
-            opencode_check(id, &agents(Some(id), &[]), None).unwrap_or_else(|e| panic!("{id}: {e:#}"));
+            opencode_check(id, None, &agents(Some(id), &[]), None).unwrap_or_else(|e| panic!("{id}: {e:#}"));
         }
-        let without = opencode_check("ask", &agents(None, &[]), None).unwrap_err().to_string();
+        let without = opencode_check("ask", None, &agents(None, &[]), None).unwrap_err().to_string();
         assert!(without.starts_with("OpenCode's agent build doesn't keep the permission level ask: for edit on src/main.rs it decides allow, the level ask"),
             "{without}");
-        let overridden = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")]), None).unwrap_err().to_string();
+        let overridden = opencode_check("auto", None, &agents(Some("auto"), &[("external_directory", "*", "allow")]), None).unwrap_err().to_string();
         assert!(overridden.contains("for external_directory on /elsewhere/* it decides allow, the level ask")
             && overridden.ends_with("A configuration OpenCode reads after Yuzuno's, such as a managed one, overrides it"), "{overridden}");
-        let managed = opencode_check("auto", &agents(Some("auto"), &[("external_directory", "*", "allow")]), Some("/etc/opencode"))
+        let managed = opencode_check("auto", None, &agents(Some("auto"), &[("external_directory", "*", "allow")]), Some("/etc/opencode"))
             .unwrap_err().to_string();
         assert!(managed.ends_with("OpenCode's managed configuration in /etc/opencode, which it reads after Yuzuno's, overrides it"), "{managed}");
-        assert!(opencode_check("ask", &json!([]), None).unwrap_err().to_string().contains("listed no agent"));
-        assert!(opencode_check("ask", &json!([{"id": "build"}]), None).unwrap_err().to_string().contains("lists no permission rules"));
-        assert!(opencode_check("readonly", &agents(Some("ask"), &[]), None).is_err());
-        opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[]), None).unwrap();
+        assert!(opencode_check("ask", None, &json!([]), None).unwrap_err().to_string().contains("listed no agent"));
+        assert!(opencode_check("ask", None, &json!([{"id": "build"}]), None).unwrap_err().to_string().contains("lists no permission rules"));
+        assert!(opencode_check("readonly", None, &agents(Some("ask"), &[]), None).is_err());
+        opencode_check(READ_ONLY, None, &agents(Some(READ_ONLY), &[]), None).unwrap();
         // A user's rule read after Yuzuno's that lets the shell run is caught.
-        let shell = opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[("bash", "*", "allow")]), Some("/etc/opencode")).unwrap_err().to_string();
+        let shell = opencode_check(READ_ONLY, None, &agents(Some(READ_ONLY), &[("bash", "*", "allow")]), Some("/etc/opencode")).unwrap_err().to_string();
         assert!(shell.contains("for bash on rm -rf src it decides allow, the level deny"), "{shell}");
-        let job = opencode_check(READ_ONLY, &agents(Some(READ_ONLY), &[("yuzuno_*", "*", "allow")]), None).unwrap_err().to_string();
+        let job = opencode_check(READ_ONLY, None, &agents(Some(READ_ONLY), &[("yuzuno_*", "*", "allow")]), None).unwrap_err().to_string();
         assert!(job.contains("for yuzuno_job_submit on * it decides allow, the level deny"), "{job}");
     }
 
     #[test]
     fn read_only_keeps_only_its_tools_on_every_harness() {
         let ruleset = opencode_ruleset(READ_ONLY);
+        let ruleset: Vec<(&str, &str, &str)> = ruleset.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
         let on = |action: &str, resource: &str| decided(ruleset.iter().copied(), action, resource);
         assert_eq!((on("edit", "src/a.rs"), on("bash", "rm -rf src"), on("webfetch", "https://example.com/"), on("external_directory", "/x/*")),
             ("deny", "deny", "deny", "deny"));

@@ -369,6 +369,10 @@ pub(crate) struct Rules<'a> {
     pub temp: Option<&'a Path>,
     pub protected_dirs: &'a [&'a Path],
     pub protected_files: &'a [&'a Path],
+    /// A, the Agent's own folder of attached files (YN-145 F3b): readable
+    /// without a prompt, never written. One that is not its own real path
+    /// grants nothing.
+    pub files: Option<&'a Path>,
 }
 
 /// Reads one stored message: `None` when OpenCode has none (404). `limit` is
@@ -510,6 +514,7 @@ impl Checked {
         let data = text(rules.data_dir)?;
         let outputs = rules.outputs.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let temp = given(rules.temp)?;
+        let attached = given(rules.files)?;
         let internal = rules.internal.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let dirs = rules.protected_dirs.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
         let files = rules.protected_files.iter().map(|&path| text(path)).collect::<Option<Vec<_>>>()?;
@@ -531,7 +536,10 @@ impl Checked {
         // one that has drifted grants nothing, and nothing replaces it.
         let inside_roots = internal.iter().filter(|&root| exact(root)).cloned().collect();
         let temp = temp.filter(|root| without_data(root));
-        let kept = outputs.iter().filter(|&root| without_data(root)).cloned().chain(temp.clone()).collect();
+        // The attached-file folder is read: named beside D, so it needs no
+        // exception to D's deny, only its own real path.
+        let attached = attached.filter(|root| exact(root));
+        let kept = outputs.iter().filter(|&root| without_data(root)).cloned().chain(temp.clone()).chain(attached).collect();
         let places = Places { dirs: both(&dirs), files: both(&files), data, kept, ids };
         Some(Self { directory, worktree, home, inside_roots, temp, places })
     }
