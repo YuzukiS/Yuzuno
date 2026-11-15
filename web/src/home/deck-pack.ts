@@ -6,16 +6,19 @@
  * (an Ask, a heading) takes its row. The grid places them as its own row
  * flow does, never dense, so the order on screen and the keyboard's order
  * stay the deck's. Where that flow would leave a row short, its cards share
- * the rest, from the last back; where a taller card makes a cell empty, the
- * card before it takes it: the card to its left grows to the row's end, or,
- * where that card is taller, the card above it grows down. A large card keeps its
- * second row only when another card reaches that row beside it; otherwise it
- * is one row, as on two columns.
+ * the rest, from the last back, each growing to at most twice its own size
+ * (YN-157): what is still left stays empty at the row's end. Where a taller
+ * card makes a cell empty, the card before it takes it: the card to its left
+ * grows to the row's end, or, where that card is taller, the card above it
+ * grows down. A large card keeps its second row only when another card
+ * reaches that row beside it; otherwise it is one row, as on two columns.
  *
  * What it gives is each item's span, columns and rows. Laid out by the
- * grid's own flow with those spans, the items fill their rows exactly, in
- * order: the cells a card grows into are ones the flow left to nobody, so
- * nothing after it moves.
+ * grid's own flow with those spans, the items are in order and the cells a
+ * card grows into are ones the flow left to nobody, so nothing after it
+ * moves; a row ends early only where its cards there are already twice their
+ * own size. On one and two columns no card can grow past the row's end, so
+ * the spans are exactly YN-3's.
  */
 export type DeckItem = {
   /** Columns of its own size: 1 for small, 2 for wide and large. */
@@ -76,6 +79,11 @@ export function packDeck(items: readonly DeckItem[], columns: number): DeckSpan[
   // time from its last card back: two small cards on four columns are two
   // columns each, not one and three (YN-3, the answer cards). Rows a taller
   // card reaches are left to the filling below.
+  // YN-157: a card grows to at most twice its own columns, so a lone small
+  // card is two columns, not the whole row; what is still left stays empty
+  // at the row's end, and the filling below leaves it so.
+  const own = sizes.map((size) => size.cols);
+  const short = new Set<number>();
   {
     const laid = flow(sizes, columns);
     const rows = new Map<number, number[]>();
@@ -83,7 +91,17 @@ export function packDeck(items: readonly DeckItem[], columns: number): DeckSpan[
     for (const [row, members] of rows) {
       if (laid.some((box) => box.rows > 1 && box.row <= row && box.row + box.rows > row)) continue;
       let free = columns - members.reduce((sum, i) => sum + sizes[i].cols, 0);
-      for (let k = members.length - 1; free > 0; k = k > 0 ? k - 1 : members.length - 1, free--) sizes[members[k]].cols++;
+      for (let k = members.length - 1, idle = 0; free > 0 && idle < members.length; k = k > 0 ? k - 1 : members.length - 1) {
+        const i = members[k];
+        if (items[i].full || sizes[i].cols >= 2 * own[i]) {
+          idle++;
+          continue;
+        }
+        sizes[i].cols++;
+        free--;
+        idle = 0;
+      }
+      if (free > 0) short.add(row);
     }
   }
   const boxes = flow(sizes, columns);
@@ -108,10 +126,11 @@ export function packDeck(items: readonly DeckItem[], columns: number): DeckSpan[
     box.rows++;
     return true;
   };
-  // Every cell the flow left empty goes to the card before it: the one to its left, else the one above.
+  // Every cell the flow left empty goes to the card before it: the one to its left, else the one above. A row that
+  // ended early after sharing keeps its empty cells (YN-157).
   for (let y = 0; y < height; y++)
     for (let x = 0; x < columns; x++) {
-      if (owner[y][x] !== -1) continue;
+      if (owner[y][x] !== -1 || short.has(y)) continue;
       const left = x > 0 ? owner[y][x - 1] : -1;
       if (left >= 0 && !items[left].full && growRight(left)) continue;
       const above = y > 0 ? owner[y - 1][x] : -1;

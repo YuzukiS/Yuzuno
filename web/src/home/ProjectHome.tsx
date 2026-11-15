@@ -30,8 +30,9 @@ const reducedMotion = () =>
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** The width at which the team's facts stand beside the cards, not below them (YN-86 §2.2). */
-const TEAM_BESIDE = 1100;
+/** The width at which the team's facts stand beside the cards, not below them (YN-86 §2.2): the three columns
+ * the deck needs (932 px), its gap (18) and the team's own 300 px (YN-157). */
+const TEAM_BESIDE = 1250;
 
 /**
  * One Project's page on Home (YN-86 §2.2): its header and tools, its own
