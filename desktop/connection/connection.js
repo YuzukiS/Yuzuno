@@ -21,6 +21,8 @@ const installBody = $('#install-body');
 const panel = $('#local-panel');
 const distro = $('#distro');
 const checkMessage = $('#check-message');
+const bootCard = $('#boot-card');
+const guardStop = $('#guard-stop');
 const go = $('#go');
 const savedSection = $('#saved-cores');
 const savedList = $('#saved-list');
@@ -149,6 +151,8 @@ const local = {
   view: 'check',
   progress: null,
   problem: null,
+  // What the guard stopped on ({ message }), shown with its commands as text.
+  guard: null,
   cancelling: false,
   values: null,
 };
@@ -275,10 +279,16 @@ function checkItem(item, platform) {
   const label = platformText(`check.${item.id}`, platform);
   text.append(label ?? item.detail ?? item.id);
   if (label && item.detail) text.append(Object.assign(document.createElement('small'), { textContent: item.detail }));
-  const fix = item.state !== 'ok' ? platformText(`fix.${item.id}`, platform) : null;
+  // A non-default distribution is not told to turn systemd on (YN-156).
+  const fixKey = item.id === 'systemd' && !targetIsDefault() ? 'fix.systemd.other' : `fix.${item.id}`;
+  const fix = item.state !== 'ok' ? platformText(fixKey, platform) : null;
   if (fix) text.append(Object.assign(document.createElement('small'), { textContent: fix }));
   row.append(mark, text);
   return row;
+}
+
+function targetIsDefault() {
+  return Boolean(local.targets.find((listed) => listed.id === local.target)?.isDefault);
 }
 
 function drawChecks(check) {
@@ -312,13 +322,14 @@ function placement() {
 function drawCheckPane() {
   const check = local.check;
   const installing = local.mode === 'install';
+  const risky = targetBoot(local.target) === 'risky';
   $('#distro-label').textContent = t(installing ? 'distroLabel' : 'distroLabelFind');
   const notFound = $('#not-found');
-  notFound.hidden = !(installing && local.notFound && check && !check.installation);
+  notFound.hidden = risky || !(installing && local.notFound && check && !check.installation);
   notFound.textContent = t('notFound', { distro: targetLabel(local.target) });
-  $('#checks').hidden = !(installing && check);
-  if (check) drawChecks(check);
-  const installation = check?.installation;
+  $('#checks').hidden = risky || !(installing && check);
+  if (check && !risky) drawChecks(check);
+  const installation = risky ? null : check?.installation;
   $('#found').hidden = !installation;
   if (installation) {
     $('#found-title').textContent = t('foundTitle', { distro: targetLabel(check.target) });
@@ -326,7 +337,7 @@ function drawCheckPane() {
       ? t('foundRecorded', { release: installation.releaseId, port: installation.port, workspace: installation.workspaceId })
       : t('foundUnrecorded', { release: installation.releaseId });
   }
-  const placing = installing && check && !installation;
+  const placing = !risky && installing && check && !installation;
   // The paths check names a workspace already in the data folder; it is
   // opened as it is (check_rules.rs, `paths`).
   const paths = check?.checks.find((item) => item.id === 'paths');
@@ -341,6 +352,7 @@ function drawCheckPane() {
   const change = $('#change');
   change.hidden = !(placing && check.installable);
   change.textContent = t(local.editing ? 'useDefaults' : 'change');
+  drawBootCard(risky);
   let ready = false;
   if (installation) {
     go.hidden = false;
@@ -451,6 +463,7 @@ function drawPanel() {
   }
   if (local.view === 'check') drawCheckPane();
   else drawProgressPane();
+  drawGuardStop();
 }
 
 function drawAll() {
@@ -643,7 +656,13 @@ async function startSaved(automatic) {
     say(startMessage, { key: 'started' });
     window.location.replace(target);
   } catch (error) {
-    say(startMessage, { key: 'startFailed', original: words(error), error: true });
+    const text = words(error);
+    const key = text.startsWith('WSL did not start')
+      ? 'startNotStarted'
+      : text.startsWith('The shared state')
+        ? 'guardStopped'
+        : 'startFailed';
+    say(startMessage, { key, original: text, error: true });
     // What the attempt changed: an unconfirmed start that this computer
     // refused is no longer offered. Nothing is tried again by itself.
     try {
@@ -673,16 +692,92 @@ async function setAutoStart() {
 }
 
 // ---- Find or install in a distribution --------------------------------------
+// Rule R1 (YN-156): a stopped distribution is started only as WSL's default
+// one or while no other one runs. The app says which, and never starts a
+// risky one, not even to check it.
+function statusText(target) {
+  switch (target.boot) {
+    case 'running':
+      return t('distroRunning');
+    case 'own':
+      return t('distroStoppedDefault');
+    case 'alone':
+      return t('distroStoppedAlone');
+    case 'risky':
+      return t('distroStoppedRisky');
+    default:
+      return t('distroStopped');
+  }
+}
+
 function optionText(target) {
-  let text = target.label;
-  if (target.isDefault) text += t('distroDefault');
+  let text = `${target.label} · ${statusText(target)}`;
+  if (target.isDefault && target.boot !== 'own') text += t('distroDefault');
   if (target.note) text += ` · ${target.note}`;
   return text;
 }
 
+function targetBoot(id) {
+  return local.targets.find((listed) => listed.id === id)?.boot ?? 'unknown';
+}
+
+function currentTarget() {
+  return local.targets.find((listed) => listed.id === local.target) ?? null;
+}
+
+function runningPeers() {
+  return local.targets.filter((listed) => listed.running && listed.id !== local.target).map((listed) => listed.label);
+}
+
+function drawBootCard(risky) {
+  bootCard.hidden = !risky;
+  if (!risky) return;
+  const target = currentTarget();
+  const peers = runningPeers();
+  const others = peers.length ? peers.join(', ') : t('otherDistributions');
+  const fallback = local.targets.find((listed) => listed.isDefault)?.label ?? t('defaultDistribution');
+  $('#boot-title').textContent = t('bootTitle', { distro: targetLabel(local.target) });
+  $('#boot-body').textContent = t('bootBody', { distro: targetLabel(local.target), others });
+  $('#boot-stop').textContent = t('bootStop', { others });
+  $('#boot-default').textContent = t('bootDefault', { default: fallback });
+  const detail = target?.bootDetail ?? '';
+  $('#boot-detail').textContent = detail;
+  $('#boot-detail').hidden = !detail;
+}
+
+// The commands the app stopped on are shown as text: it runs none of them.
+function drawGuardStop() {
+  const message = local.guard?.message ?? (local.problem?.code === 'peerChanged' ? local.problem.message : null);
+  guardStop.hidden = !message;
+  if (!message) return;
+  $('#guard-title').textContent = t('guardTitle');
+  $('#guard-body').textContent = t('guardBody');
+  $('#guard-text').textContent = message;
+}
+
+function fillDistros(targets) {
+  distro.replaceChildren();
+  for (const target of targets) {
+    const option = document.createElement('option');
+    option.value = target.id;
+    option.textContent = optionText(target);
+    option.disabled = !target.selectable;
+    distro.append(option);
+  }
+}
+
 function closePanel() {
   if (page.busy) return;
-  Object.assign(local, { mode: null, check: null, notFound: false, editing: false, view: 'check', progress: null, problem: null });
+  Object.assign(local, {
+    mode: null,
+    check: null,
+    notFound: false,
+    editing: false,
+    view: 'check',
+    progress: null,
+    problem: null,
+    guard: null,
+  });
   say(checkMessage, null);
   panel.hidden = true;
   drawStart();
@@ -690,7 +785,18 @@ function closePanel() {
 
 async function openPanel(mode) {
   if (page.busy) return;
-  Object.assign(local, { mode, targets: [], target: null, check: null, notFound: false, editing: false, view: 'check', progress: null, problem: null });
+  Object.assign(local, {
+    mode,
+    targets: [],
+    target: null,
+    check: null,
+    notFound: false,
+    editing: false,
+    view: 'check',
+    progress: null,
+    problem: null,
+    guard: null,
+  });
   say(startMessage, null);
   distro.replaceChildren();
   drawStart();
@@ -724,13 +830,7 @@ async function openPanel(mode) {
     drawPanel();
     return;
   }
-  for (const target of local.targets) {
-    const option = document.createElement('option');
-    option.value = target.id;
-    option.textContent = optionText(target);
-    option.disabled = !target.selectable;
-    distro.append(option);
-  }
+  fillDistros(local.targets);
   const chosen = local.targets.find((target) => target.selectable && target.isDefault) ?? local.targets.find((target) => target.selectable);
   if (!chosen) {
     distro.value = '';
@@ -742,10 +842,41 @@ async function openPanel(mode) {
   await runCheck();
 }
 
-async function runCheck() {
-  const target = distro.value;
+async function runCheck(refresh = false) {
+  let target = distro.value;
   if (page.busy || !target) return;
-  Object.assign(local, { target, check: null, editing: false, view: 'check', problem: null });
+  Object.assign(local, { target, check: null, editing: false, view: 'check', problem: null, guard: null });
+  if (refresh) {
+    // Checking again after stopping another distribution: read the list and
+    // its running names again. This starts nothing.
+    setBusy('list');
+    say(checkMessage, { key: 'listing' });
+    try {
+      const targets = await invoke('local_core_targets');
+      if (!targets || typeof targets !== 'object') throw new Error(String(targets));
+      page.targets = targets;
+      local.targets = targets.targets ?? [];
+      fillDistros(local.targets);
+      const kept = local.targets.find((listed) => listed.id === target && listed.selectable);
+      target = kept?.id ?? local.targets.find((listed) => listed.selectable)?.id ?? '';
+      if (target) distro.value = target;
+    } catch (error) {
+      say(checkMessage, { key: 'listFailed', original: words(error), error: true });
+      drawPanel();
+      return;
+    } finally {
+      setBusy(null);
+    }
+    local.target = target;
+  }
+  if (!target) return;
+  if (targetBoot(target) === 'risky') {
+    // Rule R1: this one is stopped and another distribution runs. It is not
+    // started even to check it; the card says why and what to do.
+    say(checkMessage, null);
+    drawPanel();
+    return;
+  }
   setBusy('check');
   say(checkMessage, { key: 'checking', values: { distro: targetLabel(target) } });
   try {
@@ -759,7 +890,14 @@ async function runCheck() {
       drawStart();
     }
   } catch (error) {
-    say(checkMessage, { key: 'checkFailed', original: words(error), error: true });
+    if (error?.code === 'peerChanged') {
+      local.guard = { message: words(error) };
+      say(checkMessage, { key: 'guardStopped', original: words(error), error: true });
+    } else if (error?.code === 'notStarted') {
+      say(checkMessage, { key: 'startNotStarted', original: words(error), error: true });
+    } else {
+      say(checkMessage, { key: 'checkFailed', original: words(error), error: true });
+    }
   } finally {
     setBusy(null);
     drawPanel();
@@ -788,9 +926,17 @@ async function startFound() {
     say(checkMessage, { key: 'started' });
     window.location.replace(target);
   } catch (error) {
-    say(checkMessage, { key: 'startFailed', original: words(error), error: true });
+    if (error?.code === 'peerChanged') {
+      local.guard = { message: words(error) };
+      say(checkMessage, { key: 'guardStopped', original: words(error), error: true });
+    } else if (error?.code === 'notStarted') {
+      say(checkMessage, { key: 'startNotStarted', original: words(error), error: true });
+    } else {
+      say(checkMessage, { key: 'startFailed', original: words(error), error: true });
+    }
   } finally {
     setBusy(null);
+    drawPanel();
   }
 }
 
@@ -799,6 +945,7 @@ async function install(values) {
   local.values = values;
   local.view = 'progress';
   local.problem = null;
+  local.guard = null;
   local.cancelling = false;
   local.progress = { phase: null, bytes: {}, details: {}, finished: false };
   if (!Channel) {
@@ -890,7 +1037,7 @@ autoStartBox.addEventListener('change', () => {
   if (invoke) void setAutoStart();
 });
 distro.addEventListener('change', () => void runCheck());
-$('#recheck').addEventListener('click', () => void runCheck());
+$('#recheck').addEventListener('click', () => void runCheck(true));
 $('#change').addEventListener('click', toggleLocation);
 for (const input of ['#edit-install', '#edit-data', '#edit-port']) $(input).addEventListener('input', drawPanel);
 $('#panel-close').addEventListener('click', closePanel);

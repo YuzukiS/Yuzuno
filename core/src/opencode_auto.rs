@@ -71,6 +71,8 @@ pub(crate) struct Prepared {
     /// OPENCODE_CONFIG_CONTENT, with the instructions file.
     pub config: String,
     policy: Policy,
+    /// A, the Agent's own attached-file folder, as its real path (YN-145 F3b).
+    attachment: Option<String>,
     planned: Planned,
     protection: Protection,
     data_dir: String,
@@ -93,21 +95,24 @@ pub(crate) struct Context {
     temp: Option<String>,
     dirs: Vec<String>,
     files: Vec<String>,
+    /// A, the Agent's own attached-file folder (YN-145 F3b); None for none.
+    attachment: Option<String>,
 }
 
 /// Prepares an executor's start: protected locations, rules and their
 /// instructions file in `folder` (its own under Core's data directory
 /// `data_dir`), for `launch` as it will start. Its file-system work runs
 /// under Core's bounded file-system permits within PREPARE_LIMIT.
-pub(crate) async fn prepare(folder: &Path, data_dir: &Path, launch: &Launch) -> Result<Prepared> {
+pub(crate) async fn prepare(folder: &Path, data_dir: &Path, attachment: Option<&Path>, launch: &Launch) -> Result<Prepared> {
     let deadline = Instant::now() + PREPARE_LIMIT;
     // The names, never the values, of what this server alone gets.
     let env = path_env(data_dir, launch.extra.iter().map(|(name, _)| name.clone()).collect());
     let planned = opencode_protection::plan(&env)?;
-    let (folder, data, temp) = (folder.to_owned(), data_dir.to_owned(), launch.temp_dir.clone());
-    let (planned, protection, data, folder, temp) = bounded_fs(deadline, move || -> Result<_> {
+    let (folder, data, temp, attachment) = (folder.to_owned(), data_dir.to_owned(), launch.temp_dir.clone(), attachment.map(Path::to_owned));
+    let (planned, protection, data, folder, temp, attachment) = bounded_fs(deadline, move || -> Result<_> {
         let protection = opencode_protection::identify(&planned)?;
-        Ok((planned, protection, canonical(&data)?, canonical(&folder)?, temp.map(|temp| text(&temp)).transpose()?))
+        Ok((planned, protection, canonical(&data)?, canonical(&folder)?, temp.map(|temp| text(&temp)).transpose()?,
+            attachment.map(|path| canonical(&path)).transpose()?))
     }).await.context("the protected locations could not be read in time")??;
     let outputs = [format!("{folder}/xdg/data/opencode/shell"), format!("{folder}/xdg/data/opencode/tool-output")];
     let instructions = format!("{folder}/{INSTRUCTIONS}");
@@ -116,11 +121,12 @@ pub(crate) async fn prepare(folder: &Path, data_dir: &Path, launch: &Launch) -> 
     let policy = opencode_policy::policy(&Inputs {
         level: Some(LEVEL), platform: Platform::Unix, data_dir: Path::new(&data), outputs: [Path::new(&outputs[0]), Path::new(&outputs[1])],
         temp: temp.as_deref().map(Path::new), protected_dirs: &dirs, protected_files: &files, instructions: Path::new(&instructions),
+        files: attachment.as_deref().map(Path::new),
     })?.context("no rules were made")?;
     let text = policy.instructions.clone().context("no instructions were made")?;
     let path = PathBuf::from(&instructions);
     bounded_fs(deadline, move || write_instructions(&path, &text)).await.context("the instructions file could not be written in time")??;
-    Ok(Prepared { config: policy.config.clone(), policy, planned, protection, data_dir: data, outputs, temp })
+    Ok(Prepared { config: policy.config.clone(), policy, attachment, planned, protection, data_dir: data, outputs, temp })
 }
 
 /// Core's environment for the resolver. A test's Workspace never reads the
@@ -189,8 +195,9 @@ pub(crate) async fn started(prepared: Prepared, server: &Server, cwd: &str) -> R
     let deadline = Instant::now() + PREPARE_LIMIT;
     let internal = bounded_fs(deadline, move || roots.iter().map(|root| canonical(Path::new(root))).collect::<Result<Vec<_>>>()).await
         .context("the project's folders could not be read in time")??;
-    let Prepared { planned, protection, data_dir, outputs, temp, .. } = prepared;
-    Ok(Context { directory, worktree, internal, home: planned.native_home, data_dir, outputs, temp, dirs: protection.dirs, files: protection.files })
+    let Prepared { planned, protection, data_dir, outputs, temp, attachment, .. } = prepared;
+    Ok(Context { directory, worktree, internal, home: planned.native_home, data_dir, outputs, temp, dirs: protection.dirs,
+        files: protection.files, attachment })
 }
 
 fn canonical(path: &Path) -> Result<String> {
@@ -219,7 +226,7 @@ impl Judge for AutoJudge {
         let rules = Rules {
             directory: Path::new(&c.directory), worktree: c.worktree.as_deref().map(Path::new), internal: &internal, home: Path::new(&c.home),
             data_dir: Path::new(&c.data_dir), outputs: [Path::new(&c.outputs[0]), Path::new(&c.outputs[1])], temp: c.temp.as_deref().map(Path::new),
-            protected_dirs: &dirs, protected_files: &files,
+            protected_dirs: &dirs, protected_files: &files, files: c.attachment.as_deref().map(Path::new),
         };
         decide(asked, call, &rules, &BUDGET, &Wall)
     }

@@ -34,7 +34,7 @@ export function ModelField({ c, t, keyProvider, onChange }: {
 
   const tool = harnessName[c.harness];
   const now = read?.harness === c.harness ? read : null;
-  const words: GroupWords = { aliases: t.groupAliases, pinned: t.groupPinned, codex: t.groupCodex, withKey: t.groupWithKey,
+  const words: GroupWords = { aliases: t.groupAliases, pinned: t.groupPinned, codex: t.groupCodex, dsh: t.groupDsh, withKey: t.groupWithKey,
     needsKey: t.groupNeedsKey, env: t.groupEnv, ready: t.groupReady, loggedIn: t.groupLoggedIn };
   const groups: ModelGroup[] = now?.catalog ? modelGroups(c.harness, now.catalog, words, keyProvider)
     : now?.error ? [{ label: t.groupShortList, options: MODEL_HINTS[c.harness].map((value) => ({ value, label: value })) }] : [];
@@ -66,7 +66,7 @@ export function ModelField({ c, t, keyProvider, onChange }: {
       {!now ? <p className="routing-model-note" role="status">{t.modelReading(tool)}</p>
         : now.error ? <p className="routing-model-note is-warn"><CircleAlert size={12} className="routing-icon" aria-hidden="true" /> {t.modelUnreadable(tool, now.error)} {rereadButton}</p>
           : <p className="routing-model-note">{c.harness === "claude" ? t.modelFromClaude : c.harness === "codex" ? t.modelFromCodex
-            : t.modelFromOpencode(now.catalog?.opencode?.version ?? "")} {rereadButton}</p>}
+            : c.harness === "dsh" ? t.modelFromDsh : t.modelFromOpencode(now.catalog?.opencode?.version ?? "")} {rereadButton}</p>}
       {needs && <p className="routing-model-note is-warn"><CircleAlert size={12} className="routing-icon" aria-hidden="true" /> {t.modelNeedsKey(needs)}</p>}
       {other && now?.catalog && model && !listed.has(model) && <p className="routing-model-note is-warn">{t.modelNotListedNote(tool)}</p>}
     </div>

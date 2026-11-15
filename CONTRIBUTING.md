@@ -54,13 +54,13 @@ python3 scripts/source_build.py run --target-dir "$CARGO_TARGET_DIR" --record bu
 
 It holds a lock on the target for the whole run, rebuilds Core from this worktree if the target was last built from another one (edits in the same worktree stay incremental), and rejects the run if the source changes while it runs. Cross builds (`--target`) are not supported. `--artifact`/`--copy-to` record and copy built binaries, and `verify --record` checks them against the source later. The protection only covers runs that go through it. Otherwise give each worktree its own target.
 
-Automated checks do not cover real Codex or Claude CLIs, models, or the desktop window. If your change touches one of them, try it against a separate test Workspace and say in the pull request how you did.
+Automated checks do not cover real Codex or Claude CLIs, models, or the desktop window. Real DeepSeek Harness (`dsh`) releases get a daily contract check of their own ([`dsh-contract.yml`](.github/workflows/dsh-contract.yml)), which no pull request waits for. If your change touches one of them, try it against a separate test Workspace and say in the pull request how you did.
 
 ## Report a problem
 
 Open a new issue and choose **Bug report** or **Feature request**. A useful bug report has:
 
-- **What you ran.** The Core version, which is `version` and `releaseId` from `curl -s http://127.0.0.1:4317/api/health` (use your port). For a source checkout, `releaseId` is `development`; add the commit from `git rev-parse HEAD`. Also the Core host (Linux or WSL), the client (which browser, or the Windows desktop), and whether the Agent runs Codex or Claude, locally or over SSH, with the output of `codex --version` or `claude --version` on that machine.
+- **What you ran.** The Core version, which is `version` and `releaseId` from `curl -s http://127.0.0.1:4317/api/health` (use your port). For a source checkout, `releaseId` is `development`; add the commit from `git rev-parse HEAD`. Also the Core host (Linux or WSL), the client (which browser, or the Windows desktop), and whether the Agent runs Codex, Claude, OpenCode or DeepSeek Harness, locally or over SSH, with the output of `codex --version`, `claude --version`, `opencode --version` or `dsh --version` on that machine.
 - **The smallest steps that reproduce it,** with what you expected and what happened instead.
 - **Evidence by identifier** rather than screenshots of whole conversations: a Job ID with its status and reason, a CI run link, a review ID, and only the log lines around the failure.
 

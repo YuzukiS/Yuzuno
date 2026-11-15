@@ -26,12 +26,14 @@ struct Given {
     dirs: Vec<PathBuf>,
     files: Vec<PathBuf>,
     instructions: PathBuf,
+    /// The Agent's own attached-file folder (YN-145 F3b), when it has one.
+    attachment: Option<PathBuf>,
 }
 
 impl Given {
     fn auto() -> Self {
         Self { level: Some("auto"), platform: Platform::Unix, data: D.into(), outputs: [O1.into(), O2.into()], temp: Some(T.into()),
-            dirs: vec![SSH.into(), AWS.into()], files: vec![NETRC.into()], instructions: RULES.into() }
+            dirs: vec![SSH.into(), AWS.into()], files: vec![NETRC.into()], instructions: RULES.into(), attachment: None }
     }
     fn with(mut self, change: impl FnOnce(&mut Self)) -> Self {
         change(&mut self);
@@ -41,7 +43,8 @@ impl Given {
         let dirs: Vec<&Path> = self.dirs.iter().map(PathBuf::as_path).collect();
         let files: Vec<&Path> = self.files.iter().map(PathBuf::as_path).collect();
         policy(&Inputs { level: self.level, platform: self.platform, data_dir: &self.data, outputs: [&self.outputs[0], &self.outputs[1]],
-            temp: self.temp.as_deref(), protected_dirs: &dirs, protected_files: &files, instructions: &self.instructions })
+            temp: self.temp.as_deref(), protected_dirs: &dirs, protected_files: &files, instructions: &self.instructions,
+            files: self.attachment.as_deref() })
     }
     fn made(&self) -> Policy {
         self.policy().unwrap().expect("a policy")
@@ -203,7 +206,8 @@ fn auto_decides_by_the_last_matching_rule_as_the_design_says() {
     assert_decides(&policy, &table);
     // Today's rules ask the user for YN-77's folder and for OpenCode's own
     // output; these hand both to Core instead, which answers from S4 on.
-    let today = opencode_ruleset("auto");
+    let today = opencode_ruleset_with("auto", None);
+    let today: Vec<(&str, &str, &str)> = today.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
     let old = |action: &str, resource: &str| decided(today.iter().copied(), action, resource);
     assert_eq!((old("external_directory", "/tmp/opencode/yn77/*"), old("external_directory", &at(O2, "*"))), ("ask", "ask"));
     assert_eq!((old("read", "src/main.rs"), old("doom_loop", "*"), old("read", "app/.env")), ("allow", "ask", "ask"));
@@ -433,8 +437,32 @@ fn ask_asks_for_every_read_and_search_and_allows_no_folder() {
         ("edit", "src/main.rs", "ask"), ("shell", "cargo test", "ask"), ("question", "*", "allow"), ("todowrite", "*", "allow"),
         ("todoread", "*", "allow")]);
     // Today's Ask you first allows reading, searching and listing; this hands them to Core.
-    let today = opencode_ruleset("ask");
+    let today = opencode_ruleset_with("ask", None);
+    let today: Vec<(&str, &str, &str)> = today.iter().map(|(a, p, e)| (a.as_str(), p.as_str(), *e)).collect();
     assert_eq!(["read", "grep", "glob", "list"].map(|a| decided(today.iter().copied(), a, "src/main.rs")), ["allow"; 4]);
+}
+
+#[test]
+fn the_agents_attached_files_are_read_at_every_level_and_handed_to_core_at_auto() {
+    let a = PathBuf::from("/synthetic/input-files/agent1");
+    let folder = format!("{}/*", a.display());
+    let file = format!("{}/report.pdf", a.display());
+    // Unix ask asks every read and write by design; only the folder question is allowed.
+    // Auto hands the folder and the read to Core, which answers from its own
+    // rules; the static level itself says ask, never allow.
+    for (level, folder, read, edit) in [("ask", "allow", "ask", "ask"), ("auto", "ask", "ask", "deny"),
+        (READ_ONLY, "allow", "allow", "deny"), ("full", "allow", "allow", "allow")] {
+        let policy = Given::auto().with(|g| { g.level = Some(level); g.attachment = Some(a.clone()); }).made();
+        assert_decides(&policy, &[("external_directory", &format!("{}/x", a.display()), folder), ("read", &file, read),
+            ("edit", &format!("{}/x", a.display()), edit)]);
+        for probe in policy.probes.iter().filter(|(_, resource)| resource.starts_with(a.to_str().unwrap())) {
+            assert!(probe.0 == "external_directory" || probe.0 == "read" || probe.0 == "edit", "{probe:?}");
+        }
+        if level == "auto" {
+            let text = policy.instructions.clone().expect("auto's instructions");
+            assert!(text.contains(&format!("`{}`", a.display())), "{text}");
+        }
+    }
 }
 
 #[test]
@@ -445,14 +473,14 @@ fn full_read_only_no_level_and_another_platform_keep_todays_rules_byte_for_byte(
                 continue;
             }
             let policy = Given::auto().with(|g| { g.level = Some(id); g.platform = platform; }).made();
-            assert_eq!(policy.config, opencode_config(id).unwrap(), "{id} on {platform:?}");
-            assert_eq!(ours(&policy), opencode_ruleset(id).iter().map(|(a, p, e)| ((*a).to_owned(), (*p).to_owned(), (*e).to_owned())).collect::<Vec<_>>());
+            assert_eq!(policy.config, opencode_config(id, None).unwrap(), "{id} on {platform:?}");
+            assert_eq!(ours(&policy), opencode_ruleset_with(id, None).iter().map(|(a, p, e)| (a.clone(), p.clone(), (*e).to_owned())).collect::<Vec<_>>());
             assert_eq!(policy.probes, owned(&PROBES), "{id} on {platform:?}: today's probes");
             assert_eq!(policy.instructions, None);
         }
     }
     // read-only, byte for byte as today (design: unchanged by YN-78).
-    assert_eq!(opencode_config(READ_ONLY).unwrap(), concat!(r#"{"permission":{"*":"deny","read":{"*":"allow","*.env":"deny","*.env.*":"deny","#,
+    assert_eq!(opencode_config(READ_ONLY, None).unwrap(), concat!(r#"{"permission":{"*":"deny","read":{"*":"allow","*.env":"deny","*.env.*":"deny","#,
         r#""*.env.example":"allow"},"grep":"allow","glob":"allow","list":"allow","yuzuno_cleanup_inventory":"allow","#,
         r#""yuzuno_cleanup_plan_submit":"allow","yuzuno_cleanup_plan_get":"allow","yuzuno_cleanup_apply":"allow","yuzuno_task_get":"allow","#,
         r#""yuzuno_task_list":"allow","yuzuno_task_update":"allow","yuzuno_task_comment":"allow","yuzuno_task_submit_result":"allow","#,

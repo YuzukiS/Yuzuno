@@ -10,7 +10,7 @@ Which part of Yuzuno updates how, what is released, and what to try first when s
 | **Windows desktop app** | The native window and its connection page; it shows the web UI that Core serves | Settings → Updates → Desktop app, for a copy installed by its own installer, through a Core at a loopback address. Otherwise, run the installer by hand ([Desktop updates](../desktop/README.md#desktop-updates)). | `Yuzuno Desktop 0.3.0 for Windows` (tag `desktop-0.3.0`) |
 
 - **What a desktop update changes:** the window draws the web UI from Core, so most of what you see changes with a **Core** update, in the browser and the desktop app alike: Home, Settings, the recovery page. A desktop update changes only the native shell: the window, the connection page, link handling and the desktop's own updater.
-- **What neither update changes:** the native Codex and Claude CLIs and their sign-ins.
+- **What neither update changes:** the native Codex and Claude CLIs and their sign-ins, and the OpenCode and DeepSeek Harness (`dsh`) you installed: each is yours to update.
 
 ## What core.12 brought (2026-10-19)
 
@@ -33,7 +33,7 @@ The full matrix is in [Supported platforms](independent-core.md#supported-platfo
   - On Windows, Core runs in WSL2.
 - **Windows desktop app:** in daily use with a Core on the same computer; on 2026-10-25 its own update installed `desktop-0.3.0` over 0.2.0. Through an SSH tunnel it is untested.
   - **Blank Home:** the fix and the recovery page came with core.12, a **Core** release, not a desktop update. After installing core.12, the user reported that Home works in the Windows app; that is the user's report, not an automated check.
-- **Mac desktop app:** Apple silicon, and Intel built and tested in CI only, never opened on an Intel Mac. It is built from source and signed ad hoc, without notarization, and no release exists. It is **not** supported as a public install.
+- **Mac desktop app:** Apple silicon (arm64) only; Intel Macs are not supported (YN-161). It is built from source and signed ad hoc, without notarization, and no release exists. It is **not** supported as a public install.
   - One trial build was installed on the user's Mac and reached a WSL Core through an SSH tunnel; afterwards the app and the tunnel setup were removed again. The trial does not make it a release.
   - It never updates itself; a newer build is installed by hand ([macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer)).
 - **Linux desktop app:** none. Use a browser.

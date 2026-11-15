@@ -784,10 +784,7 @@ async fn open_core(
 
 #[cfg(windows)]
 async fn run_start(profile: &StartProfile) -> StartOutcome {
-    let profile = profile.clone();
-    tauri::async_runtime::spawn_blocking(move || local_core::wsl::start(&profile))
-        .await
-        .unwrap_or_else(|error| StartOutcome::Failed(error.to_string()))
+    local_core::start_guarded(profile).await
 }
 
 #[cfg(not(windows))]

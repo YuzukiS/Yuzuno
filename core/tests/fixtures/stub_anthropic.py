@@ -12,9 +12,15 @@ The newest user message decides the answer:
   YUZUNO-MCP           a call of the Workspace MCP's brief_get (YN-119 S2b)
   YUZUNO-OUTSIDE PATH  a bash call that writes PATH, outside the workspace,
                        asking for danger-full-access with a justification
+  YUZUNO-ENV           a bash call saying whether its command sees
+                       DEEPSEEK_API_KEY, and DSH_SHELL (YN-119 S4b)
   anything else        a thinking block, then the text `stub-reply`
 A tool result is answered with a short text (end_turn), and logged: its
-call's ID, whether it was an error, and the start of its text.
+call's ID, whether it was an error, and the start of its text. Each request
+also logs its model and how many image blocks and file references its newest
+message holds. DeepSeek's Files API, which dsh uploads an image to first, is
+answered as DeepSeek answers it (dsh-llm-deepseek files-api.ts): an upload
+with a file object, a listing with no files.
 
 Each request is logged as one JSON line: its path, its header names (never
 their values), whether it carried an API key, its body's top-level keys,
@@ -78,6 +84,9 @@ def decide(messages):
         return ("tool", "call-sleep", "bash", {"description": "Sleep", "command": "sleep 47 && echo slept"})
     if "YUZUNO-MCP" in said:
         return ("tool", "call-mcp", "mcp__yuzuno__brief_get", {})
+    if "YUZUNO-ENV" in said:
+        return ("tool", "call-env", "bash", {"description": "Environment",
+                                             "command": "if printenv DEEPSEEK_API_KEY >/dev/null; then echo key-visible; else echo key-hidden; fi; echo shell=$DSH_SHELL"})
     if "YUZUNO-OUTSIDE" in said:
         path = said.split("YUZUNO-OUTSIDE", 1)[1].split()[0]
         return ("tool", "call-outside", "bash", {"description": "Write outside", "command": "touch " + path,
@@ -92,8 +101,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def answer_json(self, value):
+        body = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         log({"kind": "get", "path": self.path})
+        if "/files" in self.path:
+            return self.answer_json({"object": "list", "data": [], "has_more": False})
         body = json.dumps({"object": "list", "data": []}).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -107,6 +126,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("content-length") or 0))
+        if self.path.rstrip("/").endswith("/files"):
+            log({"kind": "upload", "path": self.path, "bytes": len(raw)})
+            return self.answer_json({"id": "file-stub-%d" % len(raw), "object": "file", "type": "file", "mime_type": "image/png",
+                                     "size_bytes": len(raw), "created_at": "2026-11-15T00:00:00Z", "filename": "image.png"})
         try:
             body = json.loads(raw)
         except ValueError:
@@ -127,6 +150,10 @@ class Handler(BaseHTTPRequestHandler):
             "marker": MARKER in json.dumps(body.get("system")) or any(MARKER in json.dumps(m) for m in messages),
             "decision": decision[0],
             "toolResult": result_of(messages[-1].get("content")) if messages else None,
+            "model": body.get("model"),
+            "imageBlocks": sum(1 for b in (messages[-1].get("content") if messages and isinstance(messages[-1].get("content"), list) else [])
+                               if isinstance(b, dict) and b.get("type") == "image"),
+            "fileRefs": json.dumps(messages[-1]).count("file-stub-") if messages else 0,
         })
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")

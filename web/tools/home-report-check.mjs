@@ -662,7 +662,7 @@ try {
           sideways: scroller.scrollWidth > scroller.clientWidth || [...document.querySelectorAll(".home-view *")].some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === "auto" && !el.closest(".result-table-scroll, pre")),
         };
       });
-      const expected = deckShape.container >= 1248 ? 4 : deckShape.container >= 560 ? 2 : 1;
+      const expected = deckShape.container >= 1248 ? 4 : deckShape.container >= 932 ? 3 : deckShape.container >= 560 ? 2 : 1;
       assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
       // Each card at the size its author named (Lead 2457), the notes wide though a lead alone; a card with no
       // summary sized to its picture (YN-3 PR C2: the study opens with its research desk, wide) or small with

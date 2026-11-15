@@ -34,7 +34,7 @@ async fn a_snapshot_of_an_auto_connection_leaves_the_user_no_permission_request(
         questions: vec![json!({"id": "frm_1", "sessionID": "ses_main", "fields": []})], ..Snapshot::default() };
     assert_eq!(super::super::user_requests(&snapshot, &c).count(), 2, "without Core's answers, both are the user's");
     let context = Context { directory: "/srv/work".into(), worktree: None, internal: vec!["/srv/work".into()], home: "/home/synthetic".into(),
-        data_dir: "/srv/data".into(), outputs: ["/srv/data/o1".into(), "/srv/data/o2".into()], temp: None, dirs: vec![], files: vec![] };
+        data_dir: "/srv/data".into(), outputs: ["/srv/data/o1".into(), "/srv/data/o2".into()], temp: None, dirs: vec![], files: vec![], attachment: None };
     c.auto = Some(Auto::new(&ws, "oc", &c, context));
     let left: Vec<&Value> = super::super::user_requests(&snapshot, &c).collect();
     assert_eq!(left, [&snapshot.questions[0]], "only the form");

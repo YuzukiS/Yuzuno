@@ -53,7 +53,7 @@
 //! rules do: each part of the order, so a configuration read after Yuzuno's,
 //! or an order OpenCode reads differently, is caught.
 
-use super::{check_rules, label, opencode_config, opencode_ruleset, PROBES};
+use super::{check_rules, files_probes, label, opencode_config, opencode_ruleset_with, PROBES};
 use anyhow::{bail, ensure, Result};
 use std::path::Path;
 
@@ -87,6 +87,9 @@ pub(crate) struct Inputs<'a> {
     pub protected_files: &'a [&'a Path],
     /// Where its instructions file is to be (`<Agent folder>/yuzuno-rules.md`).
     pub instructions: &'a Path,
+    /// A: the Agent's own folder of attached files (YN-145 F3b), made before
+    /// its start; None for an Agent that reads none.
+    pub files: Option<&'a Path>,
 }
 
 /// An executor's rules, as its `opencode serve` is to get them.
@@ -109,8 +112,8 @@ pub(crate) fn policy(inputs: &Inputs<'_>) -> Result<Option<Policy>> {
     let Some(id) = inputs.level else { return Ok(None) };
     match (inputs.platform, id) {
         (Platform::Unix, "auto") => auto(inputs).map(Some),
-        (Platform::Unix, "ask") => Ok(Some(ask())),
-        _ => Ok(today(id)),
+        (Platform::Unix, "ask") => ask(inputs),
+        _ => Ok(today(id, inputs.files)),
     }
 }
 
@@ -123,15 +126,13 @@ pub(crate) fn check(policy: &Policy, id: &str, agents: &serde_json::Value, manag
     check_rules(id, &ours, policy.probes.iter().map(|(action, resource)| (action.as_str(), resource.as_str())), agents, managed)
 }
 
-/// Today's rules for level `id`, unchanged.
-fn today(id: &str) -> Option<Policy> {
-    let config = opencode_config(id)?;
-    Some(Policy {
-        rules: opencode_ruleset(id).into_iter().map(|(action, pattern, effect)| (action.to_owned(), pattern.to_owned(), effect)).collect(),
-        config,
-        instructions: None,
-        probes: PROBES.iter().map(|(action, resource)| ((*action).to_owned(), (*resource).to_owned())).collect(),
-    })
+/// Today's rules for level `id`, with the attached-file folder's exceptions
+/// added when there is one.
+fn today(id: &str, files: Option<&Path>) -> Option<Policy> {
+    let config = opencode_config(id, files)?;
+    let mut probes = owned(&PROBES);
+    probes.extend(files_probes(files));
+    Some(Policy { rules: opencode_ruleset_with(id, files), config, instructions: None, probes })
 }
 
 /// One entry of OpenCode's `permission` configuration: an action's effect,
@@ -141,14 +142,33 @@ enum Rule {
     Patterns(Vec<(String, &'static str)>),
 }
 
-/// Ask you first (design 2.2): no static allow but asking the user and its to-do list.
-fn ask() -> Policy {
+/// Ask you first (design 2.2): no static allow but asking the user, its to-do
+/// list, and the Agent's own attached-file folder (YN-145 F3b).
+fn ask(inputs: &Inputs<'_>) -> Result<Option<Policy>> {
+    let files = match inputs.files {
+        Some(path) => Some(exact(path, "The Agent's attached-file folder")?.to_owned()),
+        None => None,
+    };
+    let outside = match &files {
+        Some(a) => Rule::Patterns(vec![("*".to_owned(), ASK), (format!("{a}/*"), ALLOW)]),
+        None => Rule::Effect(ASK),
+    };
     let rules = vec![("*", Rule::Effect(ASK)), ("read", Rule::Effect(ASK)), ("grep", Rule::Effect(ASK)), ("glob", Rule::Effect(ASK)),
         ("list", Rule::Effect(ASK)), ("question", Rule::Effect(ALLOW)), ("todowrite", Rule::Effect(ALLOW)), ("todoread", Rule::Effect(ALLOW)),
-        ("external_directory", Rule::Effect(ASK))];
+        ("external_directory", outside)];
     let mut probes = owned(&PROBES);
     probes.extend(owned(&[("read", "/elsewhere/probe"), ("grep", "*"), ("glob", "*"), ("list", "*"), ("question", "*"), ("todowrite", "*")]));
-    made(rules, None, probes)
+    probes.extend(files_probes_files(files.as_deref()));
+    Ok(Some(made(rules, None, probes)))
+}
+
+/// `files_probes` for an already exact path.
+fn files_probes_files(files: Option<&str>) -> Vec<(String, String)> {
+    files.map(|a| vec![
+        ("external_directory".to_owned(), format!("{a}/*")),
+        ("read".to_owned(), format!("{a}/probe")),
+        ("edit".to_owned(), format!("{a}/probe")),
+    ]).unwrap_or_default()
 }
 
 /// Auto-approve (design 2.2), for paths checked by `exact`.
@@ -159,6 +179,7 @@ fn auto(inputs: &Inputs<'_>) -> Result<Policy> {
     let dirs = inputs.protected_dirs.iter().map(|p| exact(p, "A protected folder")).collect::<Result<Vec<_>>>()?;
     let files = inputs.protected_files.iter().map(|p| exact(p, "A protected file")).collect::<Result<Vec<_>>>()?;
     let instructions = exact(inputs.instructions, "The instructions file")?;
+    let attached = inputs.files.map(|path| exact(path, "The Agent's attached-file folder")).transpose()?;
     // OpenCode may take an `instructions` entry as a pattern of file names.
     if let Some(c) = instructions.chars().find(|c| "[]{}!".contains(*c)) {
         bail!("The instructions file {instructions:?} has {c:?}, which OpenCode might take as a pattern of file names");
@@ -178,9 +199,13 @@ fn auto(inputs: &Inputs<'_>) -> Result<Policy> {
 
     let mut outside = first(&[("*", ASK), (under(data).as_str(), DENY)]);
     outside.extend(back.iter().cloned());
+    // The Agent's own attached files are handed back to Core, after D's deny.
+    let handed = attached.map(|a| (under(a), ASK));
+    outside.extend(handed.iter().cloned());
     outside.extend(denied_dirs.iter().cloned());
     let mut read = first(&[("*", ASK), (under(data).as_str(), DENY)]);
     read.extend(back.iter().cloned());
+    read.extend(handed.iter().cloned());
     read.extend(denied_dirs.iter().cloned());
     read.extend(denied_files.iter().cloned());
     read.push(("*.env".to_owned(), DENY));
@@ -212,13 +237,18 @@ fn auto(inputs: &Inputs<'_>) -> Result<Policy> {
             probes.push(probe("edit", format!("{dir}/probe")));
         }
     }
+    if let Some(a) = attached {
+        probes.push(probe("external_directory", under(a)));
+        probes.push(probe("read", format!("{a}/probe")));
+        probes.push(probe("edit", format!("{a}/probe")));
+    }
     for file in &files {
         probes.push(probe("read", (*file).to_owned()));
         if temp.is_some() {
             probes.push(probe("edit", (*file).to_owned()));
         }
     }
-    Ok(made(rules, Some((instructions, auto_instructions(data, outputs, temp, &dirs, &files))), probes))
+    Ok(made(rules, Some((instructions, auto_instructions(data, outputs, temp, &dirs, &files, attached))), probes))
 }
 
 /// The policy of `rules` in their order, each pattern kept once where it last
@@ -290,7 +320,7 @@ fn within(path: &str, dir: &str) -> bool {
 
 /// What the model is told at Auto-approve (design 2.5): OpenCode's own tools
 /// tell it only `Unable to …` when a rule refuses.
-fn auto_instructions(data: &str, outputs: [&str; 2], temp: Option<&str>, dirs: &[&str], files: &[&str]) -> String {
+fn auto_instructions(data: &str, outputs: [&str; 2], temp: Option<&str>, dirs: &[&str], files: &[&str], attached: Option<&str>) -> String {
     let (level, _) = label("auto");
     let protected = !(dirs.is_empty() && files.is_empty());
     let mut text = format!("# Rules for this OpenCode executor\n\n\
@@ -305,6 +335,9 @@ fn auto_instructions(data: &str, outputs: [&str; 2], temp: Option<&str>, dirs: &
         - OpenCode keeps the whole output of a long command or tool in `{}` and `{}`. You may read it there.\n",
         if protected { ", and not in a protected location (listed below)" } else { "" },
         if protected { ", but not in a protected location" } else { "" }, outputs[0], outputs[1]);
+    if let Some(attached) = attached {
+        text.push_str(&format!("- The files the user attached to your messages are in `{attached}`; read them there, and never write them.\n"));
+    }
     match temp {
         Some(temp) => text.push_str(&format!("- Write files and run commands only in your project folder or in your own temporary directory, \
             `$TMPDIR` (`{temp}`), not in /tmp.\n\

@@ -18,6 +18,8 @@ export function RewindButton({ agent, turn, onDraft }: { agent: Agent; turn: Nat
   const opencode = agent.harness === "opencode";
   // OpenCode's revert is held by the Agent's own host, not by this turn, which it removes.
   if (opencode && !openRevert) return null;
+  // DeepSeek Harness keeps no checkpoint to go back to (YN-119 §4): no rewind is offered.
+  if (agent.harness === "dsh") return null;
   return <>
     <Tip content={blocked ? <TipText body="Finish the active turn and pending answers before rewinding" />
       : <TipText title={opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"} />} hold>

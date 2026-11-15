@@ -29,6 +29,8 @@ struct Setup {
     dirs: Vec<String>,
     files: Vec<String>,
     internal: Vec<String>,
+    /// A, the Agent's own attached-file folder (YN-145 F3b), when it has one.
+    attachment: Option<String>,
 }
 
 impl Lab {
@@ -65,6 +67,7 @@ impl Lab {
             dirs: vec![at("home/.ssh"), at("home/.aws")],
             files: vec![at("home/.netrc")],
             internal: vec![at("home/proj")],
+            attachment: None,
         };
         Self { _dir: dir, root, setup }
     }
@@ -93,6 +96,7 @@ impl Setup {
             temp: self.temp.as_ref().map(path),
             protected_dirs: &dirs,
             protected_files: &files,
+            files: self.attachment.as_ref().map(path),
         };
         decide(&asked(action, resources), &call(tool, input), &rules, budget, clock)
     }
@@ -299,6 +303,56 @@ fn calls_hold_one_generation() {
     assert!(calls.seen(8, &key).unwrap().ambiguous);
 }
 
+/// YN-145 F3b: the Agent's own attached files are read and searched without
+/// a prompt, never written, and another Agent's stay Core's data directory.
+#[test]
+fn the_agents_own_attached_files_are_read_but_never_written_and_never_anothers() {
+    let lab = Lab::new();
+    let s = &lab.setup;
+    let a = lab.at("home/data/input-files/a1b2");
+    let other = lab.at("home/data/input-files/other");
+    for (folder, name) in [(&a, "report.pdf"), (&a, "notes/prod.env"), (&a, "notes/.env.example"), (&other, "x.txt")] {
+        std::fs::create_dir_all(format!("{folder}/notes")).unwrap();
+        std::fs::write(format!("{folder}/{name}"), "synthetic\n").unwrap();
+    }
+    // A link in A to a protected file stays protected; a link to another
+    // Agent's folder is Core's data directory.
+    symlink(lab.at("home/.ssh/id_rsa"), format!("{a}/k")).unwrap();
+    symlink(&other, format!("{a}/elsewhere")).unwrap();
+    let real = std::fs::canonicalize(&a).unwrap().to_str().unwrap().to_owned();
+    let other = std::fs::canonicalize(&other).unwrap().to_str().unwrap().to_owned();
+    let with = Setup { attachment: Some(real.clone()), ..s.clone() };
+    let read = |path: &str| with.answer("read", &one(path), Tool::Read, json!({"path": path}));
+    assert_eq!(with.answer("external_directory", &star(&real), Tool::Read, json!({"path": format!("{real}/report.pdf")})),
+        Answer::Once, "the folder question is answered once");
+    assert_eq!(read(&format!("{real}/report.pdf")), Answer::Once);
+    assert_eq!(read(&format!("{real}/notes/.env.example")), Answer::Once);
+    assert_eq!(read(&format!("{real}/notes/prod.env")), reject(Reason::EnvFile), "a .env file keeps its fate");
+    assert_eq!(read(&format!("{real}/k")), reject(Reason::Protected), "a link to a protected file");
+    assert_eq!(read(&format!("{other}/x.txt")), reject(Reason::CoreData), "another Agent's files");
+    assert_eq!(read(&format!("{real}/elsewhere/x.txt")), reject(Reason::CoreData), "through a link to another Agent's");
+    assert_eq!(with.answer("edit", &one(&format!("{real}/*")), Tool::Edit, json!({"path": format!("{real}/report.pdf")})),
+        reject(Reason::WriteOutside), "a write is never allowed there");
+    assert_eq!(with.answer("shell", &one(&format!("{real}/*")), Tool::Shell, json!({"command": "ls", "workdir": real})),
+        reject(Reason::ShellOutside), "nor a command run there");
+    assert_eq!(with.answer("glob", &one("*.txt"), Tool::Glob, json!({"path": real, "pattern": "*.txt"})), Answer::Once,
+        "a folder search is allowed");
+    assert_eq!(with.answer("grep", &one("x"), Tool::Grep, json!({"path": format!("{real}/report.pdf"), "pattern": "x"})), Answer::Once,
+        "a file search is allowed");
+    assert_eq!(with.answer("grep", &one("x"), Tool::Grep, json!({"path": real, "pattern": "x"})), reject(Reason::SearchScan),
+        "a folder search reaching a .env file is refused, as anywhere");
+    // Without A, or with a path that is not its own real folder, nothing is read.
+    assert_eq!(s.answer("read", &one(&format!("{real}/report.pdf")), Tool::Read, json!({"path": format!("{real}/report.pdf")})),
+        reject(Reason::CoreData), "no attached-file folder: no exception");
+    let missing = Setup { attachment: Some(lab.at("home/data/input-files/absent")), ..s.clone() };
+    assert_eq!(missing.answer("read", &one(&format!("{real}/report.pdf")), Tool::Read, json!({"path": format!("{real}/report.pdf")})),
+        reject(Reason::CoreData), "a folder that does not exist grants nothing");
+    let linked = Setup { attachment: Some(lab.at("home/data/input-files/link")), ..s.clone() };
+    symlink(&a, lab.at("home/data/input-files/link")).unwrap();
+    assert_eq!(linked.answer("read", &one(&format!("{real}/report.pdf")), Tool::Read, json!({"path": format!("{real}/report.pdf")})),
+        reject(Reason::CoreData), "a folder replaced by a link grants nothing");
+}
+
 /// Rule 1 comes first: an action nobody can approve is refused before any
 /// read, and with it no call is bound.
 #[tokio::test]
@@ -309,7 +363,7 @@ async fn an_action_nobody_approves_is_refused_before_any_read() {
     let children: Vec<String> = Vec::new();
     let on = Connection { generation: 7, session: "ses_main", children: &children };
     let rules = Rules { directory: path(&s.directory), worktree: None, internal: &[], home: path(&s.home), data_dir: path(&s.data),
-        outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: s.temp.as_ref().map(path), protected_dirs: &[], protected_files: &[] };
+        outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: s.temp.as_ref().map(path), protected_dirs: &[], protected_files: &[], files: None };
     for action in ["edit", "shell", "doom_loop", "webfetch", "task"] {
         let decision = answer(&request("ses_main", action, "msg_1", "call_1"), &on, &Calls::default(), &reader, &|| true, &rules, &BUDGET, &Wall).await;
         assert_eq!(decision, Decision { answer: reject(Reason::Action(action.into())), call: None, targets: vec![] });
@@ -763,7 +817,7 @@ fn a_request_naming_other_paths_than_its_call_is_refused() {
     let mut none = asked("read", &[]);
     none.resources = None;
     let rules = Rules { directory: path(&s.directory), worktree: None, internal: &[], home: path(&s.home), data_dir: path(&s.data),
-        outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: None, protected_dirs: &[], protected_files: &[] };
+        outputs: [path(&s.outputs[0]), path(&s.outputs[1])], temp: None, protected_dirs: &[], protected_files: &[], files: None };
     assert_eq!(decide(&none, &call(Tool::Read, json!({"path": a})), &rules, &BUDGET, &Wall).answer, resources);
 }
 

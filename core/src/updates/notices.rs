@@ -25,6 +25,7 @@ pub(super) fn session(detail: &AgentDetail) -> Option<&str> {
     match detail.agent.harness.as_str() {
         "claude" => detail.agent.claude_session_id.as_deref(),
         "opencode" => detail.agent.opencode_session_id.as_deref(),
+        "dsh" => detail.agent.dsh_session_id.as_deref(),
         _ => detail.agent.thread_id.as_deref(),
     }
 }
@@ -168,8 +169,8 @@ impl Workspace {
             .await?;
             return Ok(());
         }
-        if detail.agent.harness == "opencode" {
-            // OpenCode takes no message into a running Turn (yet).
+        if matches!(detail.agent.harness.as_str(), "opencode" | "dsh") {
+            // OpenCode takes no message into a running Turn (yet), nor does dsh (ACP, YN-119 §3.5).
             let m = message.clone();
             self.stored(move |store| store.set_update_pause_delivery(&m, "pending", "error",
                 json!({"reason":"harness_unsupported"}))).await?;

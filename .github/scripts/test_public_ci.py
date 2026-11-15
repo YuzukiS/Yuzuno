@@ -18,12 +18,11 @@ Claude Agent SDK) before uploading its one core-inputs artifact; the Mac job
 also smokes its binaries before that.
 
 .github/workflows/desktop-macos.yml (T-165) builds the macOS app on the
-standard GitHub-hosted macOS 26 runners, one per architecture: arm64 on
-macos-26 and x86_64 on macos-26-intel. Only pull_request and
+standard GitHub-hosted macOS 26 runner, for Apple silicon (arm64) only: Intel
+Macs are not supported (YN-161). Only pull_request and
 workflow_dispatch trigger it; its token reads contents and actions only; no
 secret, cache or other runner. Only a run on request uploads, one macOS
-artifact per architecture, and such a run builds only main whose push CI
-passed.
+artifact, and such a run builds only main whose push CI passed.
 
 .github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
 unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
@@ -226,8 +225,8 @@ def release_inputs_problems(text):
 
 
 MACOS_UPLOAD_NAME = 'name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}'
-# Each architecture on its own standard runner, and nothing else.
-MACOS_RUNNERS = [('arm64', 'macos-26'), ('x86_64', 'macos-26-intel')]
+# Apple silicon on its standard runner, and nothing else (YN-161).
+MACOS_RUNNERS = [('arm64', 'macos-26')]
 ON_REQUEST = "if: github.event_name == 'workflow_dispatch'"
 
 
@@ -256,7 +255,7 @@ def desktop_macos_problems(text):
         found += runner_problems(name, job, '${{ matrix.runner }}')
         matrix = re.findall(r'^          - arch: (\S+)\n            runner: (\S+)$', '\n'.join(job), re.M)
         if matrix != MACOS_RUNNERS:
-            found.append(f'job {name} builds {matrix}, not arm64 on macos-26 and x86_64 on macos-26-intel')
+            found.append(f'job {name} builds {matrix}, not arm64 on macos-26')
         steps = steps_of(job)
         def first(predicate):
             return next((i for i, step in enumerate(steps) if predicate(step)), None)
@@ -509,9 +508,10 @@ class PublicCi(unittest.TestCase):
             'pull_request_target': (good.replace('  pull_request:\n', '  pull_request_target:\n', 1), 'triggers'),
             'a write permission': (good.replace('  actions: read', '  actions: write', 1), 'permissions'),
             'a secret': (good.replace('GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.X }}', 1), 'a secret'),
-            'a larger runner': (good.replace('runner: macos-26-intel\n', 'runner: macos-26-large\n', 1), 'not arm64 on macos-26'),
-            'a third runner': (good.replace('            runner: macos-26-intel\n', '            runner: macos-26-intel\n'
-                                            '          - arch: x86_64\n            runner: macos-15-intel\n', 1), 'not arm64 on macos-26'),
+            'a larger runner': (good.replace('runner: macos-26\n', 'runner: macos-26-large\n', 1), 'not arm64 on macos-26'),
+            'an Intel runner': (good.replace('          - arch: arm64\n            runner: macos-26\n',
+                                             '          - arch: arm64\n            runner: macos-26\n'
+                                             '          - arch: x86_64\n            runner: macos-26-intel\n', 1), 'not arm64 on macos-26'),
             'a runner outside the matrix': (good.replace('runs-on: ${{ matrix.runner }}', 'runs-on: macos-26', 1), 'not ${{ matrix.runner }}'),
             'a self-hosted runner': (good.replace('runs-on: ${{ matrix.runner }}', 'runs-on: [self-hosted, macOS, ARM64]', 1), 'self-hosted'),
             'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),

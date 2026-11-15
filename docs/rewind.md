@@ -25,6 +25,7 @@ native history and Core's prior view, linked by the rewind attempt ID.
 | Claude conversation | Unavailable in the current integration (CLI 2.1.280 / SDK 0.3.296) | Unavailable |
 | Claude files | Existing native checkpoint preview and restore | Not supported by the current file-checkpoint integration |
 | OpenCode conversation and files | OpenCode 2.x's own revert (`POST /api/session/:id/revert/stage`, then `…/revert/commit`), together; see [OpenCode](#opencode) | Unavailable |
+| [DeepSeek Harness](dsh.md) conversation and files | Unavailable: dsh keeps no checkpoints Core could go back to | Unavailable (dsh runs on the Core host only) |
 
 Claude's file option opens the existing file-checkpoint preview. It restores
 only files covered by Claude Code's checkpoint and leaves conversation history

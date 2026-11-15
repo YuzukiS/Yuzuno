@@ -44,8 +44,12 @@
 //! A Turn's end is journaled as a `turn/completed` too, as Claude's is: an
 //! unread result, and what the Brief check reads (brief_turns).
 //!
-//! Not yet (S2b, its second part): model and effort settings and catalogs,
-//! images.
+//! The Agent's model and effort are set on its session between Turns, and
+//! again at each start; its level, dsh's sandbox, takes a new dsh, which
+//! resumes the session (§3.6, §3.9, `dsh_settings`). What it may choose is
+//! what its dsh offers (`model_rows`), or, before it has one, what a dsh of
+//! Core's own lists (`dsh_catalog`). Images go as ACP image blocks, to a dsh
+//! that says it takes them.
 use crate::{
     backlog::{Backlog, EventSender},
     dsh::{self, Access, Dsh},
@@ -68,6 +72,8 @@ use tokio::sync::mpsc;
 pub(crate) const NO_KEY: &str = "dsh 需要一个 DeepSeek 密钥：设置 → 路由密钥。dsh needs a DeepSeek key: Settings → Routing keys.";
 /// Why a message is not sent while a Turn runs (§3.5): ACP takes one prompt at a time.
 const BUSY: &str = "dsh 一轮结束前不能追加，请等它结束或先中断；草稿保留。dsh takes no message until its Turn ends: wait, or interrupt it first. The draft is kept.";
+/// Why a message's images are not sent: its dsh's initialize said it takes none (§3.9).
+const NO_IMAGES: &str = "这个 dsh 不接收图片，消息未发送；草稿保留。This dsh takes no images: the message was not sent.";
 /// How long an interrupt waits for dsh's answer before its Turn's end is
 /// unknown (§3.5), and a close for a running Turn to end before dsh is
 /// stopped: Claude's STOP_CONFIRMATION, 10 s.
@@ -88,6 +94,13 @@ const STOP_UNCONFIRMED: &str = "yuzuno/stopUnconfirmed";
 pub(crate) const PERMISSION: &str = "dsh/permission";
 /// What the user may answer one with: dsh offers allow-once and reject-once only.
 const DECISIONS: [&str; 2] = ["accept", "decline"];
+/// How long dsh's model list for a new Agent stands, and how long reading it
+/// may take: OpenCode's catalog's 60 s and the design's 20 s (§3.9).
+const CATALOG_FRESH: Duration = Duration::from_secs(60);
+const CATALOG_LIMIT: Duration = Duration::from_secs(20);
+/// The key a dsh started only to list its models is given: dsh needs one to
+/// start, and lists its models without calling any.
+const CATALOG_KEY: &str = "sk-yuzuno-catalog-placeholder";
 
 /// The permission levels dsh keeps (§3.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +156,10 @@ pub(crate) struct Connection {
     pub session: String,
     /// The level this dsh was started at: what becomes of a request past its sandbox.
     level: Level,
+    /// dsh's session options as it last gave them (§3.9): the models and efforts it offers.
+    options: Arc<Mutex<Value>>,
+    /// Whether this dsh takes images in a prompt: `promptCapabilities.image` at its initialize (§3.9).
+    images: bool,
     /// Into this connection's own event queue (`PROMPT_ENDED`, `STOP_UNCONFIRMED`).
     events: EventSender,
     /// The Turn whose prompt dsh has not answered yet.
@@ -165,7 +182,7 @@ pub(crate) async fn status(data: &Path) -> Value {
         let status = STATUS.lock().unwrap();
         status.as_ref().filter(|(of, ..)| *of == program).map(|(_, at, value)| (at.elapsed() >= STATUS_FRESH, value.clone()))
     };
-    let home = data.join("dsh-version");
+    let home = version_home(data);
     match read {
         Some((stale, value)) => {
             if stale && !READING.swap(true, Ordering::SeqCst) {
@@ -187,19 +204,29 @@ pub(crate) async fn status(data: &Path) -> Value {
 
 /// `dsh --version` of `program`, in `home`, a folder of Core's own (0700).
 pub(crate) async fn installed(program: &Path, home: &Path) -> Value {
-    let read = async {
-        std::fs::create_dir_all(home)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
-        }
-        dsh::installed(program, home).await
-    };
-    match read.await {
+    match version_in(program, home).await {
         Ok((version, standing)) => json!({"available": true, "version": version.to_string(), "label": standing.note()}),
         Err(_) => json!({"available": false, "version": null, "label": null}),
     }
+}
+
+/// The folder `dsh --version` runs in when Core reads which dsh it would
+/// start: `<data>/dsh-version`, Core's own.
+pub(crate) fn version_home(data: &Path) -> PathBuf {
+    data.join("dsh-version")
+}
+
+/// `dsh --version` of `program` in `home` (0700), and how each start judges
+/// that version (§5.1), or why it can't be read: what `/api/workspace`
+/// (`installed`) and the machine check (machines.rs) say of dsh.
+pub(crate) async fn version_in(program: &Path, home: &Path) -> Result<(dsh::Version, dsh::Standing)> {
+    std::fs::create_dir_all(home)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
+    }
+    dsh::installed(program, home).await
 }
 
 // ---------------------------------------------------------------- the record
@@ -499,6 +526,61 @@ fn option_value(options: &Value, id: &str, wanted: &str) -> Option<String> {
     found.iter().find(|value| **value == wanted).or_else(|| found.iter().find(|value| named(value))).map(|value| (*value).to_owned())
 }
 
+/// The models option `options` offers as model rows (`/api/models`, §3.9):
+/// each by its name, the last part of dsh's `["<provider>","<model>"]` value
+/// (what an Agent keeps and `option_value` takes again), else by that value
+/// where a name is not one model's alone; the session's current one is the
+/// default.
+pub(crate) fn model_rows(options: &Value) -> Vec<Value> {
+    fn choices<'a>(list: &'a Value, group: Option<&'a str>, out: &mut Vec<(&'a Value, Option<&'a str>)>) {
+        for choice in list.as_array().into_iter().flatten() {
+            if choice["value"].is_string() {
+                out.push((choice, group));
+            } else {
+                choices(&choice["options"], choice["name"].as_str().or(group), out);
+            }
+        }
+    }
+    let Some(option) = options.as_array().and_then(|options| options.iter().find(|o| o["id"] == "model")) else { return Vec::new() };
+    let mut found = Vec::new();
+    choices(&option["options"], None, &mut found);
+    let short = |value: &str| serde_json::from_str::<Vec<String>>(value).ok().and_then(|parts| parts.last().cloned());
+    let names: Vec<Option<String>> = found.iter().map(|(choice, _)| choice["value"].as_str().and_then(short)).collect();
+    found.iter().zip(&names).map(|((choice, group), name)| {
+        let value = choice["value"].as_str().unwrap_or_default();
+        let alone = name.as_ref().filter(|name| names.iter().filter(|other| other.as_ref() == Some(*name)).count() == 1);
+        let id = alone.cloned().unwrap_or_else(|| value.to_owned());
+        json!({"id": id, "model": id, "displayName": choice["name"].as_str().unwrap_or(&id), "description": choice["description"],
+            "isDefault": option["currentValue"] == choice["value"], "provider": group, "value": value})
+    }).collect()
+}
+
+/// dsh's models for a new Agent (§3.9): a dsh of Core's own in a new folder
+/// of `<data>/dsh-catalog`, with a placeholder key, through initialize (the
+/// five start checks) and `session/new`; then stopped, and its folder removed.
+async fn catalog_read(data: &Path, program: PathBuf, endpoint: Option<String>) -> Result<Value> {
+    let folder = data.join("dsh-catalog").join(uuid::Uuid::new_v4().to_string());
+    let directory = folder.join("work");
+    let read = async {
+        std::fs::create_dir_all(&directory)?;
+        let launch = dsh::Launch {
+            program, folder: folder.clone(), directory: directory.clone(), access: Level::Ask.access(), writable: Vec::new(),
+            instructions: String::new(), key: Some(crate::routing_keys::Secret::new(CATALOG_KEY.into())), endpoint,
+        };
+        // What it says as the session opens is read by nobody.
+        let (tx, _rx) = mpsc::channel(256);
+        let dsh = Dsh::start(&launch, EventSender::observed(tx, Arc::new(Backlog::default()))).await?;
+        let answer = dsh.request("session/new", json!({"cwd": directory, "mcpServers": []}), SESSION_LIMIT).await;
+        let _ = dsh.shutdown().await;
+        let answer = answer?;
+        dsh::check_session(&answer)?;
+        Ok(json!({"models": model_rows(&answer["configOptions"]), "version": dsh.version().to_string()}))
+    };
+    let result = read.await;
+    let _ = std::fs::remove_dir_all(&folder);
+    result
+}
+
 // ---------------------------------------------------------------- the Agent's folder
 
 /// Removes `<data>/dsh/<agent>` (§3.8), Core's own folder of the Agent, once
@@ -719,18 +801,24 @@ impl Workspace {
             None => answer["sessionId"].as_str().filter(|s| !s.is_empty()).context("dsh's session/new named no session")?.to_owned(),
         };
         // The Agent's model and effort, set again at each start (§3.8, §3.9).
+        let mut options = answer["configOptions"].clone();
         let effort = d.agent.settings.reasoning_effort.clone().unwrap_or_default();
         for (option, wanted) in [("model", d.agent.model.as_str()), ("reasoning_effort", effort.as_str())] {
             if wanted.is_empty() {
                 continue;
             }
-            let value = option_value(&answer["configOptions"], option, wanted)
+            let value = option_value(&options, option, wanted)
                 .with_context(|| format!("dsh 不提供 {option}「{wanted}」，请重新选择。dsh offers no {option} {wanted}: choose another."))?;
-            dsh.request("session/set_config_option", json!({"sessionId": session, "configId": option, "value": value}), SESSION_LIMIT).await
+            let set = dsh.request("session/set_config_option", json!({"sessionId": session, "configId": option, "value": value}), SESSION_LIMIT).await
                 .with_context(|| format!("dsh did not take {option} {wanted}"))?;
+            if set["configOptions"].is_array() {
+                options = set["configOptions"].clone();
+            }
         }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection { generation, dsh: dsh.clone(), session: session.clone(), level, events, prompt: Arc::default(), native: Arc::default() };
+        let images = dsh.initialized()["agentCapabilities"]["promptCapabilities"]["image"] == true;
+        let c = Connection { generation, dsh: dsh.clone(), session: session.clone(), level, options: Arc::new(Mutex::new(options)), images, events,
+            prompt: Arc::default(), native: Arc::default() };
         let owned = self.owner(id).await;
         self.dshs.lock().unwrap().insert(id.into(), c.clone());
         self.backlogs.track(id, generation, backlog.clone());
@@ -1042,7 +1130,9 @@ impl Workspace {
         ensure!(input.expected_turn_id.is_none(), BUSY);
         ensure!(input.question.is_none(), "dsh Agent 只接受新消息；草稿保留。A dsh Agent takes new messages only; the draft is kept.");
         ensure!(!busy(detail), BUSY);
-        self.dsh_ensure(id).await?;
+        let c = self.dsh_ensure(id).await?;
+        // Refused before a receipt is made, as OpenCode's model that reads none is.
+        ensure!(input.images.is_empty() || c.images, NO_IMAGES);
         self.require_collaboration(id).await
     }
 
@@ -1058,12 +1148,12 @@ impl Workspace {
         if d.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
             bail!("上一条消息的发送结果尚未确认，请先重连核对；不会自动重复发送");
         }
-        self.dsh_send_locked(id, text, None).await
+        self.dsh_send_locked(id, text, None, &[]).await
     }
 
     /// Under the Agent gate: one new prompt while dsh is idle (§3.4), its Turn
     /// recorded before it is sent. Ok once it is sent; dsh's answer ends it.
-    pub(crate) async fn dsh_send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>) -> Result<Value> {
+    pub(crate) async fn dsh_send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String]) -> Result<Value> {
         self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
@@ -1071,16 +1161,26 @@ impl Workspace {
         let c = self.dsh_ensure(id).await?;
         ensure!(c.prompt.lock().unwrap().is_none(), BUSY);
         ensure!(self.dsh_current(id, c.generation).is_some(), "dsh 连接已变化，消息未发送；草稿保留");
+        // Its images (§3.9), each this Agent's own and as it was saved, read off the async workers:
+        // what dsh is given, and what the conversation shows.
+        let (blocks, shown) = if images.is_empty() { (Vec::new(), Vec::new()) } else {
+            ensure!(c.images, NO_IMAGES);
+            let (root, agent, images) = (self.data_dir.clone(), id.to_owned(), images.to_vec());
+            tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::dsh_images(&root, &agent, &images)?,
+                crate::input_images::history_images(&root, &agent, &images)))).await??
+        };
         let turn = uuid::Uuid::new_v4().to_string();
         let (requested, client, words) = (turn.clone(), client_id.map(str::to_owned), text.clone());
-        self.record_update(id, "dsh/turnRequested", json!({"turnId": turn, "clientMessageId": client_id, "text": text}),
+        self.record_update(id, "dsh/turnRequested", json!({"turnId": turn, "clientMessageId": client_id, "text": text, "images": images}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
             if let Some(client) = &client {
                 entry["_dshClient"] = client.clone().into();
             }
-            entry["items"] = json!([{"id": format!("{requested}:input"), "type": "userMessage", "content": [{"type": "text", "text": words}]}]);
+            let mut content = vec![json!({"type": "text", "text": words})];
+            content.extend(shown);
+            entry["items"] = json!([{"id": format!("{requested}:input"), "type": "userMessage", "content": content}]);
             let started = entry["_yuzunoStartedAt"].as_i64();
             crate::conversation_time::stamp_message(&mut entry["items"][0], started, "core");
             if let Some(receipt) = client.and_then(|client| d.message_receipts.iter_mut().find(|r| r.input.client_message_id == client)) {
@@ -1092,7 +1192,9 @@ impl Workspace {
         self.changed(id);
         *c.prompt.lock().unwrap() = Some(turn.clone());
         *c.native.lock().unwrap() = None;
-        let call = match c.dsh.call("session/prompt", json!({"sessionId": c.session, "prompt": [{"type": "text", "text": text}]})).await {
+        let mut prompt = vec![json!({"type": "text", "text": text})];
+        prompt.extend(blocks);
+        let call = match c.dsh.call("session/prompt", json!({"sessionId": c.session, "prompt": prompt})).await {
             Ok(call) => call,
             // Refused before it was written: dsh has ended.
             Err(error) => {
@@ -1142,8 +1244,10 @@ impl Workspace {
         self.changed(id);
         // Claimed first, so the prompt's end, which drops them, can't come between.
         let open = self.dsh_claim_requests(id, &c).await;
-        c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await?;
+        let cancel = c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await;
+        // Answered whether or not the cancel went: a claimed request nobody else may answer is never left (#988 R1).
         self.dsh_answer_cancelled(id, &c, open).await;
+        cancel?;
         let events = c.events.clone();
         tokio::spawn(async move {
             tokio::time::sleep(STOP_LIMIT).await;
@@ -1260,14 +1364,143 @@ impl Workspace {
         self.changed(id);
     }
 
+    /// The user's model, effort and level for a dsh Agent (`POST
+    /// /api/agents/:id/settings`, §3.6, §3.9), between Turns only. A model or
+    /// effort its live dsh doesn't offer is refused, nothing saved; one it
+    /// offers is set on its session now, then saved for each start. A level
+    /// is dsh's sandbox, fixed as dsh starts: saved, then a new dsh resumes
+    /// the session under it. dsh keeps a session's effort once set, so one
+    /// can't go back to the provider's own.
+    pub async fn dsh_settings(self: &Arc<Self>, id: &str, model: String, effort: Option<Option<String>>, level: Option<String>) -> Result<Agent> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let d = self.send_view(id).await?;
+        ensure_agent_open(&d.agent)?;
+        ensure!(d.agent.harness == "dsh", "这不是 dsh Agent。This is not a dsh Agent.");
+        ensure!(!busy(&d), "dsh 一轮进行中不能改模型、推理强度或权限；请等它结束或先中断。A dsh Agent's settings change between Turns: wait for this one to end, or interrupt it.");
+        let model = model.trim().to_owned();
+        ensure!(!model.is_empty() || d.agent.model.is_empty(), "dsh 的模型不能留空；请选一个。Choose a model for dsh.");
+        let effort = match effort {
+            Some(chosen) => chosen.map(|e| e.trim().to_owned()).filter(|e| !e.is_empty()),
+            None => d.agent.settings.reasoning_effort.clone(),
+        };
+        if let Some(effort) = &effort {
+            ensure!(EFFORTS.contains(&effort.as_str()), "dsh 的推理强度是 off、low、high 或 max，不是 {effort}。dsh's reasoning effort is off, low, high or max.");
+        }
+        ensure!(effort.is_some() || d.agent.settings.reasoning_effort.is_none() || d.agent.dsh_session_id.is_none(),
+            "dsh 的会话设过推理强度后不能回到默认；请选 off、low、high 或 max。Once set, a dsh session keeps an effort: choose off, low, high or max.");
+        let level = match level {
+            Some(level) => Some(level_of(&level).with_context(|| not_kept(&level))?),
+            None => None,
+        };
+        let live = self.dshs.lock().unwrap().get(id).cloned();
+        let restart = live.as_ref().is_some_and(|c| level.is_some_and(|level| level != c.level));
+        if let Some(c) = live.as_ref().filter(|_| !restart) {
+            let options = c.options.lock().unwrap().clone();
+            let mut sets = Vec::new();
+            if !model.is_empty() && model != d.agent.model {
+                sets.push(("model", option_value(&options, "model", &model)
+                    .with_context(|| format!("dsh 不提供模型「{model}」；设置未保存。dsh offers no model {model}: nothing was saved."))?));
+            }
+            if let Some(effort) = effort.as_ref().filter(|effort| Some(*effort) != d.agent.settings.reasoning_effort.as_ref()) {
+                sets.push(("reasoning_effort", option_value(&options, "reasoning_effort", effort)
+                    .with_context(|| format!("dsh 不提供推理强度「{effort}」；设置未保存。dsh offers no effort {effort}: nothing was saved."))?));
+            }
+            for (option, value) in sets {
+                let set = c.dsh.request("session/set_config_option", json!({"sessionId": c.session, "configId": option, "value": value}), SESSION_LIMIT).await
+                    .with_context(|| format!("dsh 没有接受 {option}；设置未保存。dsh did not take {option}: nothing was saved."))?;
+                if set["configOptions"].is_array() {
+                    *c.options.lock().unwrap() = set["configOptions"].clone();
+                }
+            }
+        }
+        let (agent, kept_model, kept_effort, kept_level) = (id.to_owned(), model.clone(), effort.clone(), level.map(Level::id));
+        self.stored(move |store| {
+            if let Some(level) = kept_level {
+                store.set_permission_level(&agent, Some(level))?;
+            }
+            store.update_meta(&agent, "dsh/settings", &json!({"model": kept_model, "effort": kept_effort, "level": kept_level}), |m| {
+                m.agent.model = kept_model;
+                m.agent.settings.reasoning_effort = kept_effort;
+                if let Some(level) = kept_level {
+                    m.agent.settings.permission_level = Some(level.into());
+                }
+                if let Some(usage) = m.context_usage.as_mut() {
+                    usage.stale = true;
+                }
+            }).map(drop)
+        }).await?;
+        self.changed(id);
+        if let (Some(c), true) = (live, restart) {
+            self.dsh_stop_idle(id, &c).await?;
+            self.dsh_ensure(id).await?;
+        }
+        self.listed(id).await
+    }
+
+    /// Under the Agent gate: connection `c`, idle, removed and its dsh stopped
+    /// (its group with it), recorded as a stop Core chose: a level's new dsh,
+    /// or the user's disconnect (disconnect.rs).
+    pub(crate) async fn dsh_stop_idle(&self, id: &str, c: &Connection) -> Result<()> {
+        ensure!(c.prompt.lock().unwrap().is_none(), "dsh 一轮进行中；没有停止。A dsh Turn is running; dsh was not stopped.");
+        {
+            let _owned = self.owner(id).await;
+            let mut connections = self.dshs.lock().unwrap();
+            if connections.get(id).is_some_and(|v| v.generation == c.generation) {
+                connections.remove(id);
+            }
+        }
+        let (ending, _) = c.dsh.shutdown().await.context("dsh did not end")?;
+        self.record_meta(id, "dsh/stopped", json!({"generation": c.generation, "ending": format!("{ending:?}")}), |m| {
+            m.agent.connection_state = "disconnected".into();
+            if m.agent.status == "idle" {
+                m.agent.status = "offline".into();
+            }
+        }).await?;
+        self.changed(id);
+        Ok(())
+    }
+
+    /// The models a dsh Agent may choose (`GET /api/agents/:id/models`,
+    /// §3.9): those its live dsh offers, else those a dsh of Core's own lists.
+    pub async fn dsh_agent_models(&self, id: &str) -> Result<Value> {
+        let live = self.dshs.lock().unwrap().get(id).cloned();
+        match live {
+            Some(c) => {
+                let options = c.options.lock().unwrap().clone();
+                Ok(json!({"models": model_rows(&options), "version": c.dsh.version().to_string()}))
+            }
+            None => self.dsh_catalog().await,
+        }
+    }
+
+    /// dsh's models for a new Agent (`GET /api/models?harness=dsh`, §3.9),
+    /// read by `catalog_read` within CATALOG_LIMIT, one read at a time, and
+    /// kept CATALOG_FRESH for the dsh this Core starts.
+    pub async fn dsh_catalog(&self) -> Result<Value> {
+        static CATALOG: tokio::sync::Mutex<Option<(PathBuf, Instant, Value)>> = tokio::sync::Mutex::const_new(None);
+        let (program, endpoint) = self.dsh_program();
+        let mut kept = CATALOG.lock().await;
+        if let Some((_, _, value)) = kept.as_ref().filter(|(of, at, _)| *of == program && at.elapsed() < CATALOG_FRESH) {
+            return Ok(value.clone());
+        }
+        let value = tokio::time::timeout(CATALOG_LIMIT, catalog_read(&self.data_dir, program.clone(), endpoint)).await
+            .map_err(|_| anyhow::anyhow!("dsh 没有在 20 秒内列出它的模型。dsh did not list its models within 20 s."))?
+            .context("dsh 的模型目录读不到。dsh's models could not be read")?;
+        *kept = Some((program, Instant::now(), value.clone()));
+        Ok(value)
+    }
+
     /// Under the Agent gate (a close): a running Turn interrupted and given
     /// STOP_LIMIT to end, then dsh stopped (`Dsh::shutdown`, its group with it).
     pub(crate) async fn dsh_close_runtime(&self, id: &str) -> Result<()> {
         let Some(c) = self.dshs.lock().unwrap().get(id).cloned() else { return Ok(()) };
         let running = c.prompt.lock().unwrap().is_some();
         let open = if running { self.dsh_claim_requests(id, &c).await } else { Vec::new() };
-        if running && c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await.is_ok() {
-            self.dsh_answer_cancelled(id, &c, open).await;
+        let cancelled = running && c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await.is_ok();
+        self.dsh_answer_cancelled(id, &c, open).await;
+        if cancelled {
             // Until its end is recorded: the connection is removed only after.
             let _ = tokio::time::timeout(STOP_LIMIT, async {
                 while self.dsh_current(id, c.generation).is_some()

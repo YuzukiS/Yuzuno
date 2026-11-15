@@ -46,8 +46,8 @@ const wslTargets = {
   platform: 'wsl',
   available: true,
   targets: [
-    { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true },
-    { id: 'old-distro', label: 'old-distro', kind: 'wsl', selectable: false, isDefault: false, note: 'WSL 1: run `wsl --set-version old-distro 2` in Windows first.' },
+    { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+    { id: 'old-distro', label: 'old-distro', kind: 'wsl', selectable: false, isDefault: false, running: false, boot: 'alone', note: 'WSL 1: run `wsl --set-version old-distro 2` in Windows first.' },
   ],
 };
 const macTargets = { platform: 'macos', available: false, reason: 'comingSoon', targets: [] };
@@ -722,6 +722,182 @@ test('a Core already installed is started, not installed again, and a failed sta
     const said = document.querySelector('#check-message');
     assert.match(said.textContent, /start it once in WSL by hand/);
     assert.equal(said.dataset.error, 'true');
+  } finally { dom.window.close(); }
+});
+
+const riskyTargets = {
+  platform: 'wsl',
+  available: true,
+  targets: [
+    { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+    { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: false, boot: 'risky', bootDetail: 'It is stopped and another WSL distribution is running.' },
+  ],
+};
+
+test('a stopped distribution with another one running is explained, not checked', async () => {
+  const calls = [];
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return riskyTargets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 1, 'the default is checked');
+    calls.length = 0;
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 0, 'never checked');
+    const card = document.querySelector('#boot-card');
+    assert.equal(visible(card), true);
+    assert.match(card.textContent, /other-distro was not started/);
+    assert.match(card.textContent, /wsl --terminate/);
+    assert.match(card.textContent, /It is stopped and another WSL distribution is running/);
+    assert.equal(visible(document.querySelector('#go')), false);
+    assert.equal(visible(document.querySelector('#checks')), false);
+    // Back to the default, which may start: checked again, no card.
+    select.value = 'main-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 1);
+    assert.equal(visible(card), false);
+  } finally { dom.window.close(); }
+});
+
+test('opening the panel with only a risky distribution checks nothing', async () => {
+  const calls = [];
+  const targets = {
+    platform: 'wsl',
+    available: true,
+    targets: [
+      { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: false, isDefault: true, running: false, boot: 'own', note: 'WSL 1: run `wsl --set-version main-distro 2` in Windows first.' },
+      { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: false, boot: 'risky', bootDetail: 'It is stopped and another WSL distribution is running.' },
+    ],
+  };
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 0);
+    assert.equal(document.querySelector('#distro').value, 'other-distro');
+    assert.equal(visible(document.querySelector('#boot-card')), true);
+    assert.equal(visible(document.querySelector('#go')), false);
+  } finally { dom.window.close(); }
+});
+
+test('Check again reads the running names again, then checks once nothing else runs', async () => {
+  const calls = [];
+  let targets = riskyTargets;
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(visible(document.querySelector('#boot-card')), true);
+    // The user stopped the default distribution meanwhile.
+    targets = {
+      ...riskyTargets,
+      targets: [
+        { ...riskyTargets.targets[0], running: false, boot: 'own' },
+        { ...riskyTargets.targets[1], boot: 'alone' },
+      ],
+    };
+    calls.length = 0;
+    document.querySelector('#recheck').click();
+    await settle();
+    await settle();
+    assert.deepEqual(calls, ['local_core_targets', 'local_core_check']);
+    assert.equal(visible(document.querySelector('#boot-card')), false);
+    assert.equal(visible(document.querySelector('#go')), true);
+  } finally { dom.window.close(); }
+});
+
+test('a non-default distribution is not told to turn systemd on', async () => {
+  const targets = {
+    platform: 'wsl',
+    available: true,
+    targets: [
+      { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+      { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: true, boot: 'running' },
+    ],
+  };
+  const peersCheck = {
+    ...check,
+    target: 'other-distro',
+    checks: [
+      ...check.checks,
+      { id: 'peers', level: 'required', state: 'missing', detail: 'systemd runs in this distribution, which is not the default one; it shares Windows interop and cgroups with the other distributions.' },
+    ].map((item) => (item.id === 'systemd' ? { ...item, state: 'missing' } : item)),
+    installable: false,
+  };
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return peersCheck;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    const systemd = document.querySelector('[data-id="systemd"]');
+    assert.match(systemd.textContent, /competes with the default one for Windows interop/);
+    assert.doesNotMatch(systemd.textContent, /add \[boot\] systemd=true/);
+    assert.match(systemd.textContent, /cannot run local Jobs/);
+    const peers = document.querySelector('[data-id="peers"]');
+    assert.equal(peers.dataset.state, 'bad');
+    assert.match(peers.textContent, /Use the default distribution/);
+    assert.equal(document.querySelector('#go').disabled, true);
+  } finally { dom.window.close(); }
+});
+
+test('a guard stop shows what changed and its commands, and runs nothing more', async () => {
+  const { pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#go').click();
+    await settle();
+    for (const phase of ['release', 'download', 'verify', 'copy', 'register']) pending.channel.onmessage({ phase });
+    pending.reject({
+      code: 'peerChanged',
+      message:
+        "The WSL distributions share Windows interop and one cgroup tree, and what main-distro can see changed while this app was working on main-distro: the Windows interop entry WSLInterop is gone, so Windows programs cannot start in any distribution. Nothing further was run in main-distro. Restore commands, run by you as root in main-distro: printf '%s' ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register",
+    });
+    await settle();
+    const card = document.querySelector('#guard-stop');
+    assert.equal(visible(card), true);
+    assert.match(card.textContent, /Stopped: the shared state changed/);
+    assert.match(document.querySelector('#guard-text').textContent, /WSLInterop is gone/);
+    assert.match(document.querySelector('#guard-text').textContent, /printf '%s'/);
+    assert.match(document.querySelector('#problem-body').textContent, /guard saw the shared state/);
+    assert.match(document.querySelector('#problem-cleaned').textContent, /card below holds the restore commands/);
+    assert.equal(document.querySelector('#steps li[data-phase="register"]').dataset.state, 'failed');
   } finally { dom.window.close(); }
 });
 

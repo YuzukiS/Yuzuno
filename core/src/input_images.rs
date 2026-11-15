@@ -1,4 +1,4 @@
-//! Codex, Claude and OpenCode input images. Opaque, owner-scoped immutable
+//! Codex, Claude, OpenCode and dsh input images. Opaque, owner-scoped immutable
 //! files; no caller paths. An Agent's own (`input-images/<agentId>`) are the
 //! ones a message to it carries. What the user attaches on Home goes first to
 //! its Project's (`home-images/<projectId>`, YN-134): who receives a message
@@ -50,13 +50,14 @@ pub struct UploadedImage {
     pub bytes: usize,
 }
 
-/// Whether Agents of `harness` take images: Codex, Claude and OpenCode.
+/// Whether Agents of `harness` take images: Codex, Claude, OpenCode and dsh
+/// (a dsh whose initialize says so, `dsh_agent`).
 pub fn takes_images(harness: &str) -> bool {
-    matches!(harness, "codex" | "claude" | "opencode")
+    matches!(harness, "codex" | "claude" | "opencode" | "dsh")
 }
 pub fn supported(agent: &Agent) -> Result<()> {
     ensure!(takes_images(&agent.harness),
-        "Images are supported by Codex, Claude and OpenCode Agents.");
+        "Images are supported by Codex, Claude, OpenCode and DeepSeek Harness Agents.");
     Ok(())
 }
 /// An owner's ID, an Agent's or a Project's, as a single plain folder name.
@@ -480,6 +481,26 @@ pub fn opencode_images(root: &FsPath, agent: &str, images: &[String]) -> Result<
         Ok(())
     })?;
     Ok(files)
+}
+
+/// A message's images as dsh is given them (YN-119 §3.9): ACP image blocks,
+/// each checked as for every Agent and sent inline as the same file OpenCode
+/// is given (within 2000 px and Claude's 512 KB).
+pub fn dsh_images(root: &FsPath, agent: &str, images: &[String]) -> Result<Vec<Value>> {
+    use base64::Engine;
+    let mut blocks = vec![];
+    each_owned(root, agent, images, |id, path, bytes| {
+        let data = bounded_read(&claude_fit(path, id, bytes)?, CLAUDE_MAX_BYTES)?;
+        let mime = match image::guess_format(&data)? {
+            ImageFormat::Png => "image/png",
+            ImageFormat::Jpeg => "image/jpeg",
+            ImageFormat::WebP => "image/webp",
+            _ => anyhow::bail!("Unsupported image for dsh; attach it again"),
+        };
+        blocks.push(json!({"type": "image", "mimeType": mime, "data": base64::engine::general_purpose::STANDARD.encode(&data)}));
+        Ok(())
+    })?;
+    Ok(blocks)
 }
 
 /// The images of a sent message as its conversation item shows them: the

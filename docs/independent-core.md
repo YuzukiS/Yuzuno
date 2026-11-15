@@ -33,7 +33,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 | Windows desktop app, through an SSH tunnel | Planned | Expected to work, because the app accepts any loopback address. Untested. |
 | Phone browser, through the phone entry | Tested within the scope below | On 2026-10-25 an iPhone opened the entry of a WSL Core set up from Settings and showed Home and the current conversation (the user's report). Sending, the on-screen keyboard, photos and background/foreground in the phone's browser were checked only synthetically, not on the iPhone. On 2026-10-26, with core.19, it was added to the Home Screen and turned on push notifications there; a notice that an Agent had finished arrived with the phone locked and opened that Agent, and a notice for an Ask arrived and opened Home (the user's report). |
 | iPhone app | Tested within the scope below | Built from source and signed with the owner's own Apple Account on a free personal team, so the installed app lapses after about seven days until it is rebuilt and reinstalled. On 2026-10-25 it was installed on one iPhone, connected through the phone entry's Tailscale Serve HTTPS address (no SSH) and sent a message. No release, App Store or TestFlight build; see [the iPhone app](../ios/README.md). |
-| macOS desktop app (Apple silicon) | Tested within the scope below | Built from source and signed ad hoc; not notarized and not published. Its installation from the disk image, connection through an SSH tunnel to a Linux/WSL Core, the saved Core and reconnection were checked on macOS 27.0.1. A person then used it at the Mac; what the window showed is that person's report. Intel Macs: an x86_64 build is made and tested in CI, but none has been opened on an Intel Mac. See [Mac desktop app](#mac-desktop-app). |
+| macOS desktop app (Apple silicon) | Tested within the scope below | Built from source and signed ad hoc; not notarized and not published. Its installation from the disk image, connection through an SSH tunnel to a Linux/WSL Core, the saved Core and reconnection were checked on macOS 27.0.1. A person then used it at the Mac; what the window showed is that person's report. macOS is Apple silicon only; Intel Macs are not supported (YN-161). See [Mac desktop app](#mac-desktop-app). |
 | Linux desktop app | Unavailable | No published build; use a browser. |
 | HTTPS through the Tailscale Serve entry | Tested within the scope below | One tailnet login only. Set up from Settings for a Core in WSL with Tailscale for Windows, by hand on other hosts. Used from an iPhone, in its browser and the iPhone app, on 2026-10-25; other devices on the tailnet are untested. |
 | Reaching Core over a LAN or a public address | Unavailable | Core has no login. Use an SSH tunnel or the Tailscale Serve entry. |
@@ -326,7 +326,7 @@ Settings → Updates checks the publisher's releases, downloads and verifies one
 2. **Keep or delete the Workspace:** `$DATA` holds the database, uploads and backups made by updates. Delete it only if you no longer want the Workspace.
 3. **Remove the program:** delete `$ROOT` (releases, staging, update logs and `release-source.json`).
 
-Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno does not touch it.
+Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno does not touch it. A DeepSeek Harness Agent's own dsh home is in `$DATA` (`dsh/`); your own `~/.dsh` is never used or touched ([DeepSeek Harness](dsh.md)).
 
 ## Install, start and stop on macOS
 
@@ -420,5 +420,5 @@ This does not test a sign-in, a conversation, an approval, a browser, an update,
 - **Settings → Updates** from this public repository in a fresh installation (the maintainers' own WSL installation updates through it, most recently core.18 to core.19 on 2026-10-26), and downloading or updating with a `gh` account that has no access to the repository;
 - local Jobs on a host whose user manager lacks the `cpu` controller, such as the Ubuntu 22.04.5 host above, before or after an administrator delegates it ([Prerequisites](#prerequisites-on-the-core-host));
 - the Windows desktop app through a tunnel;
-- Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, a downloaded (quarantined) copy, and an Intel build on an Intel Mac;
+- Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, and a downloaded (quarantined) copy;
 - Core as a systemd service.

@@ -410,7 +410,8 @@ export function PrReviews({
         <>
       <p className="github-hint">
         {t.intro(
-          page?.settings?.harness === "claude" ? "Claude Code" : "Codex",
+          // Named as it is: only an answer without a harness is Codex's, the reviewer before others could be chosen.
+          harnessName(page?.settings?.harness) ?? page?.settings?.harness ?? "Codex",
           page?.settings?.model || "gpt-6.1-sol",
         )}
       </p>

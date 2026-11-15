@@ -868,3 +868,35 @@ async fn a_read_only_executor_has_no_temp_dir_to_measure() {
     assert_eq!(temp_usage(&ws), (None, None));
     ws.close_agent("oc").await.unwrap();
 }
+
+/// YN-145 F3b, in a lab: a real OpenCode (YUZUNO_LAB_OPENCODE names its
+/// binary) starts at each level with the Agent's attached-file folder in its
+/// rules, and the start's read-back check (`opencode_check`, every probe
+/// included) passes — it would refuse a server whose agents decide otherwise.
+/// No model, account or turn is used.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "a real OpenCode 2.2.5: set YUZUNO_LAB_OPENCODE, run in a lab Job"]
+async fn a_real_opencode_keeps_every_level_with_the_agents_attached_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let real = std::env::var("YUZUNO_LAB_OPENCODE").expect("YUZUNO_LAB_OPENCODE names the real opencode");
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("opencode");
+    std::fs::write(&program, format!("#!/bin/sh\nexec '{}' \"$@\"\n", real.replace('\'', "'\\''"))).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    for level in ["ask", "auto", "full", "read-only"] {
+        let work = dir.path().join(format!("work-{level}"));
+        std::fs::create_dir_all(&work).unwrap();
+        let data = dir.path().join(format!("data-{level}"));
+        let ws = Workspace::new(data.clone(), work.to_string_lossy().into(), "unused".into()).unwrap();
+        ws.store.insert(&agent(&work.to_string_lossy())).unwrap();
+        ws.store.set_permission_level("oc", Some(level)).unwrap();
+        let d = ws.reconnect("oc").await.unwrap_or_else(|error| panic!("{level}: {error:#}"));
+        assert_eq!(d.agent.connection_state, "connected", "{level}");
+        // The folder the rules name was made before the start, private.
+        let attached = std::fs::canonicalize(data.join("input-files/oc")).unwrap();
+        assert_eq!(std::fs::metadata(&attached).unwrap().permissions().mode() & 0o777, 0o700, "{level}");
+        ws.close_agent("oc").await.unwrap();
+    }
+}

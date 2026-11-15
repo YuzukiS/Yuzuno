@@ -410,6 +410,9 @@ def serve():
                     send({"id": prompt, "result": {"stopReason": "cancelled"}})
         elif method == "session/prompt":
             session, text = params.get("sessionId"), prompt_text(params)
+            # Its blocks: their types, an image's MIME type and the size of its data.
+            log({"kind": "prompt", "blocks": [{"type": b.get("type"), "mimeType": b.get("mimeType"), "bytes": len(b.get("data") or "")}
+                                              for b in params.get("prompt") or []]})
             if "ASK" in text:
                 rid = next_request
                 next_request += 1
