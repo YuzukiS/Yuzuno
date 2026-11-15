@@ -65,9 +65,12 @@ const OUTBOX = "yuzuno.home-outbox.v1";
 
 const agent = (id, name, harness, extra = {}) => ({ id, name, harness, status: "idle", cwd: "/fixture", model: "", color: "sage",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 0, reviewedSeq: 0, goal: "", ...extra });
-// Lab is an Agent whose harness takes no files; Remote is one on another machine.
+// Lab is an Agent whose harness takes no files; Far is on another machine, where
+// Core copies files to a Codex or Claude Agent (F4); Way is an OpenCode Agent,
+// which Core never puts on one, so the page refuses it all the same.
 const agents = [agent("mori", "Mori", "codex"), agent("oc", "Ocean", "opencode"), agent("lab", "Lab", "dsh"),
-  agent("far", "Far", "claude", { remote: { machine: { id: "m", name: "Mac", target: "x", codex: "", defaultCwd: "/w" } } })];
+  agent("far", "Far", "claude", { remote: { machine: { id: "m", name: "Mac", target: "x", codex: "", defaultCwd: "/w" } } }),
+  agent("way", "Way", "opencode", { remote: { machine: { id: "m", name: "Mac", target: "x", codex: "", defaultCwd: "/w" } } })];
 const owner = { agentId: "mori", name: "Mori", state: "active" };
 const body = { root: "body", elements: { body: { type: "BriefBody", props: {}, children: [] } } };
 const base = { owner, updatedAt: new Date().toISOString(), updatedTurnId: null, attachments: [], refs: {}, seen: null, history: false, body };
@@ -153,7 +156,10 @@ test("Home keeps a file's reference as Core answered it, and checks one before t
   const files = page.window.homeFiles;
   assert.equal(files.takesFiles("codex"), true);
   assert.equal(files.takesFiles("dsh"), false);
-  assert.equal(files.agentTakesFiles({ harness: "codex", remote: { machine: "m" } }), false, "another machine takes none yet");
+  assert.equal(files.agentTakesFiles({ harness: "codex", remote: { machine: "m" } }), true, "Core copies them to another machine (F4)");
+  assert.equal(files.agentTakesFiles({ harness: "claude", remote: { machine: "m" } }), true);
+  assert.equal(files.agentTakesFiles({ harness: "opencode", remote: { machine: "m" } }), false, "no OpenCode Agent is on another machine");
+  assert.equal(files.agentTakesFiles({ harness: "dsh" }), false);
   assert.equal(files.homeFileUrl("p 1", id(1), "q3 report.pdf"), "/api/projects/p%201/files/" + id(1) + "/q3%20report.pdf");
   const one = { id: id(1), name: "a.txt", bytes: 3 };
   assert.equal(files.sameFiles([one], [one]), true);
@@ -236,12 +242,23 @@ test("who can't take files is said before sending; an older Core's refusal sends
   lab.document.querySelector('.home-card-reply button[aria-label="Remove data.txt"]').click();
   await until(() => !lab.chips().length, "removed");
 
-  // A remote Agent takes none yet either.
+  // A remote Codex or Claude Agent takes files: Core copies them to its machine (F4).
   const far = await card({ section: { ...report, owner: { agentId: "far", name: "Far", state: "active" } } });
   t.after(far.close);
+  setComposerText(far.field(), "For Far");
   far.choose([far.file("data.txt", "data", "text/plain")]);
   await until(() => far.chips().length === 1, "saved");
-  assert.match(far.document.querySelector(".home-card-reply .home-composer-note[role=status]").textContent, /Far can't receive files/);
+  assert.equal(far.document.querySelector(".home-card-reply .home-composer-note[role=status]"), null,
+    "a remote Claude Agent takes files now that Core carries them there");
+  assert.equal(far.document.querySelector(".home-card-reply button[type=submit]").disabled, false);
+
+  // An OpenCode Agent is refused on another machine, where Core copies files to Codex and Claude only.
+  const way = await card({ section: { ...report, owner: { agentId: "way", name: "Way", state: "active" } } });
+  t.after(way.close);
+  setComposerText(way.field(), "For Way");
+  way.choose([way.file("data.txt", "data", "text/plain")]);
+  await until(() => way.chips().length === 1, "saved");
+  assert.match(way.document.querySelector(".home-card-reply .home-composer-note[role=status]").textContent, /Way can't receive files/);
 
   // An older Core refused them before reading the reply: nothing was sent, and no retry record is kept.
   const older = await card({ older: true });
@@ -276,7 +293,7 @@ test("who can't take files is said before sending; an older Core's refusal sends
   const [first, second] = retry.postsTo("/brief/reply");
   assert.deepEqual(second.body.files, first.body.files);
   assert.equal(second.body.clientMessageId, first.body.clientMessageId, "the same attempt, never twice");
-  assert.deepEqual([...lab.errors, ...far.errors, ...older.errors, ...retry.errors], []);
+  assert.deepEqual([...lab.errors, ...far.errors, ...way.errors, ...older.errors, ...retry.errors], []);
 });
 
 test("an Ask's words carry files; a pick does not; the answer card shows the files its reply took", async (t) => {

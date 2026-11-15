@@ -5,7 +5,7 @@ import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
 import { useFileUploads } from "./useFileUploads";
-import { splitDropped } from "./file-input";
+import { agentTakesFiles, splitDropped } from "./file-input";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
 import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
@@ -1585,14 +1585,15 @@ export function App() {
   const hasDraft = hasDraftContent(draft);
   const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode" || agent?.harness === "dsh");
   // Files go to the harnesses whose own slice reads them (core/src/input_files.rs,
-  // takes_files); dsh and remote Agents cannot until theirs (YN-145 §2.5, F4).
-  const fileSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode") && !agent?.remote;
+  // takes_files); dsh cannot, and on another machine only Codex and Claude can
+  // (YN-145 §2.5, F4). The rule is Home's too (file-input.ts).
+  const fileSupported = agentTakesFiles(agent);
   // What happens to an image on its way to this Agent, said beside the image button.
   const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages
     : agent?.harness === "dsh" ? shell.dshImages : null;
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
   const fileUploads = useFileUploads(selected, fileSupported && !previewMode && !draftBlocked,
-    agent?.remote ? shell.filesNotRemote : shell.filesOnly, getDraft, setDraft);
+    shell.filesOnly, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
@@ -4883,7 +4884,7 @@ export function App() {
                             label: fileUploads.busy ? shell.savingFiles : shell.addFiles,
                             icon: <Paperclip size={16} />,
                             tip: fileSupported ? <TipText body={shell.fileRules} /> : undefined,
-                            note: fileSupported ? undefined : agent?.remote ? shell.filesNotRemote : shell.filesOnly,
+                            note: fileSupported ? undefined : shell.filesOnly,
                             unavailable: !fileSupported,
                             disabled: draftBlocked || fileUploads.busy,
                             onSelect: () => filePicker.current?.click(),

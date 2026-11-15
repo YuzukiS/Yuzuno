@@ -28,11 +28,7 @@ export const homeFileUrl = (projectId: string, id: string, name: string) =>
   `${API_BASE}/api${project(projectId)}/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
 
 /** Whether Agents of `harness` take files (Core's input_files::takes_files); a record without one is Codex's. */
-export const takesFiles = (harness: string | undefined) => ["codex", "claude", "opencode"].includes(harness ?? "codex");
-
-/** Whether `agent` takes files on Home: its harness reads them, and it is not on another machine (F6 refuses those). */
-export const agentTakesFiles = (agent: { harness?: string; remote?: unknown } | undefined) =>
-  !!agent && takesFiles(agent.harness) && !agent.remote;
+export { takesFiles, agentTakesFiles } from "../file-input";
 
 /** The same files, in the same order, as Core named them. */
 export const sameFiles = (a?: readonly HomeFile[], b?: readonly HomeFile[]) =>

@@ -15,6 +15,20 @@ export const MAX_FILES = 8;
 export const MAX_FILE_BYTES = 40 * 1024 * 1024;
 export const MAX_FILE_TOTAL = 40 * 1024 * 1024;
 
+/** Whether Agents of `harness` take files (core/src/input_files.rs,
+ * `takes_files`); a record without one is Codex's, as Core reads it. */
+export const takesFiles = (harness: string | undefined) =>
+  ["codex", "claude", "opencode"].includes(harness ?? "codex");
+
+/** Whether `agent` takes files now: its harness reads them, and on another
+ * machine only Codex and Claude carry them there (core/src/workspace.rs and
+ * project_brief/home.rs, YN-145 F4). A remote OpenCode or dsh Agent still
+ * cannot, so the entry is refused before Core sees it. */
+export const agentTakesFiles = (agent: { harness?: string; remote?: unknown } | undefined) => {
+  const harness = agent?.harness ?? "codex";
+  return !!agent && takesFiles(harness) && (!agent.remote || harness === "codex" || harness === "claude");
+};
+
 // What can be checked before a file is sent, in the interface language.
 const text = strings({
   tooMany: "Attach at most 8 files per message.",
