@@ -11,6 +11,7 @@ import type { TextBlock } from "../message-content";
 import { randomId } from "../random-id";
 import type { MessageReceipt } from "../types";
 import { outboxKey } from "./home-api";
+import type { HomeFile } from "./home-files";
 import { draftStore } from "./reply-drafts";
 
 /** A Project's front desk (front_desk.rs): the lead chosen, and who requests go to now. */
@@ -66,6 +67,8 @@ export type RequestReply = {
   textBlocks: TextBlock[] | null;
   /** The images the user attached (YN-134), by their IDs in the Project's images; none from an older Core. */
   images: string[];
+  /** The files the user attached (YN-145); none from an older Core. */
+  files: HomeFile[];
   at: string;
   messageId: string;
   deliveredTo: { agentId: string; delivery: Delivery }[];
@@ -79,6 +82,8 @@ export type ProjectRequest = {
   textBlocks: TextBlock[] | null;
   /** The images the user attached (YN-134), by their IDs in the Project's images; none from an older Core. */
   images: string[];
+  /** The files the user attached (YN-145); none from an older Core. */
+  files: HomeFile[];
   /** The front desk's title for it; null until it gives one. */
   title: string | null;
   createdAt: string;
@@ -110,11 +115,12 @@ export const saveFrontDesk = (projectId: string, expectedVersion: number, agentI
 export const readRequests = (projectId: string, before?: number, signal?: AbortSignal) =>
   api<RequestPage>(`${base(projectId)}/requests${before ? `?before=${before}` : ""}`, { signal }).then((page) => ({
     ...page,
-    // A Core from before Home's images (YN-134) lists none.
+    // A Core from before Home's images (YN-134) lists none, and one from before its files (YN-145) either.
     requests: page.requests.map((request) => ({
       ...request,
       images: request.images ?? [],
-      replies: request.replies.map((reply) => ({ ...reply, images: reply.images ?? [] })),
+      files: request.files ?? [],
+      replies: request.replies.map((reply) => ({ ...reply, images: reply.images ?? [], files: reply.files ?? [] })),
     })),
   }));
 
@@ -127,7 +133,7 @@ export const delivered = (delivery: Delivery) => delivery === "accepted" || deli
  * or for a follow-up to request `n`: the same words again go with the same
  * client ID, so Core never keeps or sends them twice.
  */
-type Outbound = { text: string; textBlocks?: TextBlock[]; images?: string[]; clientMessageId: string; at: string };
+type Outbound = { text: string; textBlocks?: TextBlock[]; images?: string[]; files?: HomeFile[]; clientMessageId: string; at: string };
 const outbox = draftStore<Outbound>("yuzuno.project-talk-outbox.v1");
 
 export const talkSlot = (workspaceId: string, projectId: string, request?: number) =>
@@ -136,13 +142,15 @@ export const talkSlot = (workspaceId: string, projectId: string, request?: numbe
 /** The words sent in this slot whose delivery is not confirmed. */
 export const pendingWords = (slot: string): Outbound | undefined => outbox.load()[slot];
 
-/** What the user says: the words, their pasted blocks, and the images attached (YN-134) by their IDs. */
-export type Words = { text: string; textBlocks?: TextBlock[]; images?: string[] };
+/** What the user says: the words, their pasted blocks, the images attached (YN-134) by their IDs, and the files (YN-145). */
+export type Words = { text: string; textBlocks?: TextBlock[]; images?: string[]; files?: HomeFile[] };
 
 const sameIds = (a?: readonly string[], b?: readonly string[]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
 
 const sameBlocks = (a?: readonly TextBlock[] | null, b?: readonly TextBlock[] | null) =>
   JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+
+const sameFileRefs = (a?: readonly HomeFile[], b?: readonly HomeFile[]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
 
 /** Forgets the words kept in `slot`: Core keeps them now (its request or follow-up is listed), or the user discarded them. */
 export const forgetWords = (slot: string) => outbox.save(slot, null);
@@ -157,13 +165,15 @@ export const forgetWords = (slot: string) => outbox.save(slot, null);
  */
 export async function sendWords(slot: string, projectId: string, workspaceId: string, words: Words, request?: number) {
   const kept = pendingWords(slot);
-  const same = kept && kept.text === words.text && sameBlocks(kept.textBlocks, words.textBlocks) && sameIds(kept.images, words.images);
+  const same = kept && kept.text === words.text && sameBlocks(kept.textBlocks, words.textBlocks) && sameIds(kept.images, words.images) &&
+    sameFileRefs(kept.files, words.files);
   const record: Outbound = same
     ? kept
     : {
         text: words.text,
         ...(words.textBlocks?.length ? { textBlocks: words.textBlocks } : {}),
         ...(words.images?.length ? { images: words.images } : {}),
+        ...(words.files?.length ? { files: words.files } : {}),
         clientMessageId: randomId(),
         at: new Date().toISOString(),
       };
@@ -177,8 +187,9 @@ export async function sendWords(slot: string, projectId: string, workspaceId: st
       workspaceId,
       text: record.text,
       ...(record.textBlocks ? { textBlocks: record.textBlocks } : {}),
-      // Only with images: words without go to an older Core as before.
+      // Only with images or files: words without go to an older Core as before.
       ...(record.images?.length ? { images: record.images } : {}),
+      ...(record.files?.length ? { files: record.files } : {}),
       clientMessageId: record.clientMessageId,
     });
     settle();
@@ -198,7 +209,7 @@ export async function sendWords(slot: string, projectId: string, workspaceId: st
 export function resendKept(
   projectId: string,
   workspaceId: string,
-  kept: { text: string; textBlocks: TextBlock[] | null; images?: string[]; messageId: string },
+  kept: { text: string; textBlocks: TextBlock[] | null; images?: string[]; files?: HomeFile[]; messageId: string },
   request?: number,
 ) {
   const path = request ? `${base(projectId)}/requests/${request}/replies` : `${base(projectId)}/requests`;
@@ -207,6 +218,7 @@ export function resendKept(
     text: kept.text,
     ...(kept.textBlocks ? { textBlocks: kept.textBlocks } : {}),
     ...(kept.images?.length ? { images: kept.images } : {}),
+    ...(kept.files?.length ? { files: kept.files } : {}),
     clientMessageId: kept.messageId,
   });
 }

@@ -70,7 +70,10 @@ export const talkText = strings(
     // Images (YN-134).
     deskNoImages: (desk: string) =>
       `${desk}, the project's front desk, can't receive images; Codex, Claude and OpenCode Agents can. Remove the images, or choose another front desk in settings.`,
+    deskNoFiles: (desk: string) =>
+      `${desk}, the project's front desk, can't receive files; Codex, Claude and OpenCode Agents can. Remove the files, or choose another front desk in settings.`,
     olderCoreImages: "This Core can't take images with what you say yet, so nothing was sent. Update Core, or remove the images and send again.",
+    olderCoreFiles: "This Core can't take files with what you say yet, so nothing was sent. Update Core, or remove the files and send again.",
     // Handoffs (RoutingEvents): who did what, to whom.
     you: "You",
     opened: (title: string) => `opened the card “${title}”`,
@@ -172,7 +175,9 @@ export const talkText = strings(
     kept: "还没收到 Core 的回答。再发一次发的是同一条消息，不会发两遍。",
     reading: "正在读取需求…",
     deskNoImages: (desk) => `${desk}（项目的前台）不能接收图片（Codex、Claude 和 OpenCode Agent 可以）。移除图片，或在设置里换一个前台。`,
+    deskNoFiles: (desk) => `${desk}（项目的前台）不能接收文件（Codex、Claude 和 OpenCode Agent 可以）。移除文件，或在设置里换一个前台。`,
     olderCoreImages: "这个 Core 还不能随你说的话发送图片，所以什么都没有发出。请更新 Core，或移除图片后再发。",
+    olderCoreFiles: "这个 Core 还不能随你说的话发送文件，所以什么都没有发出。请更新 Core，或移除文件后再发。",
     you: "你",
     opened: (title) => `新开卡片「${title}」`,
     joined: (title) => `并入卡片「${title}」`,

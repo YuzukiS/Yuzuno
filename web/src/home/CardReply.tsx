@@ -8,14 +8,16 @@ import { returnSends, useDevicePreferences } from "../device-preferences";
 import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
-import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, olderCoreImages, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
+import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, olderCoreFiles, olderCoreImages, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
 import { replyRecipient } from "./card-responsible";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
 import { HomeComposer } from "./HomeComposer";
 import { ImageAttachments } from "../ImageAttachments";
+import { FileAttachments } from "../FileAttachments";
 import { homeImageUrl, takesImages, validHomeImages, type HomeImage } from "./home-images";
+import { agentTakesFiles, homeFileUrl, sameFiles, validHomeFiles, type HomeFile } from "./home-files";
 import type { ComposerHandle } from "../PastedTextComposer";
 import type { TextBlock } from "../message-content";
 import type { ProjectPanel, Section } from "./types";
@@ -45,6 +47,8 @@ export type CardDraft = {
   blocks?: TextBlock[];
   /** The images attached (YN-134), saved to the Project's images. */
   images?: HomeImage[];
+  /** The files attached (YN-145), saved to the Project's files. */
+  files?: HomeFile[];
   /** The card's title when last written in, said if the card leaves Home. */
   title: string;
   agentId: string;
@@ -66,20 +70,30 @@ const takesReply = (section: Section) =>
 const drafts = draftStore<CardDraft>("yuzuno.home-card-drafts.v1");
 
 /** `to` is null when the Agent had no name to show: worded when shown. */
-type Sent = { status: string; to: string | null; version: number; images: number };
+type Sent = { status: string; to: string | null; version: number; images: number; files: number };
 /** A Core from before Home's images refused them (YN-134): worded when shown, as OLDER_CORE is. */
 const OLDER_IMAGES = Symbol("older Core, images");
+/** A Core from before Home's files refused them (YN-145): worded when shown. */
+const OLDER_FILES = Symbol("older Core, files");
 /** One card's reply, shared by every place the card shows. */
-type ReplyState = { draft: CardDraft | null; busy: boolean; error: string | typeof OLDER_CORE | typeof OLDER_IMAGES; sent: Sent | null };
+type ReplyState = { draft: CardDraft | null; busy: boolean; error: string | typeof OLDER_CORE | typeof OLDER_IMAGES | typeof OLDER_FILES; sent: Sent | null };
 
-/** A kept draft as read back: images that are not what this page keeps are left out. */
+/** A kept draft as read back: images and files that are not what this page keeps are left out. */
 function checked(draft: CardDraft | null): CardDraft | null {
-  if (!draft || draft.images === undefined || validHomeImages(draft.images)) return draft;
-  const { images: _dropped, ...rest } = draft;
-  return rest;
+  if (!draft) return draft;
+  let kept = draft;
+  if (kept.images !== undefined && !validHomeImages(kept.images)) {
+    const { images: _dropped, ...rest } = kept;
+    kept = rest;
+  }
+  if (kept.files !== undefined && !validHomeFiles(kept.files)) {
+    const { files: _dropped, ...rest } = kept;
+    kept = rest;
+  }
+  return kept;
 }
-/** Worth keeping: words, or images. */
-const worthKeeping = (draft: CardDraft | null | undefined) => !!draft?.text.trim() || !!draft?.images?.length;
+/** Worth keeping: words, images or files. */
+const worthKeeping = (draft: CardDraft | null | undefined) => !!draft?.text.trim() || !!draft?.images?.length || !!draft?.files?.length;
 const replies = new Map<string, ReplyState>();
 const listeners = new Map<string, Set<() => void>>();
 
@@ -218,10 +232,12 @@ export function CardReply({
   const named = agents.find((a) => a.id === target)?.name || null;
   const name = named ?? t.theAgent;
   const images = draft.images ?? [];
-  // Who it goes to is known here: one that takes no images is said before Core would refuse it.
+  const files = draft.files ?? [];
+  // Who it goes to is known here: one that takes no images or files is said before Core would refuse it.
   const chosen = agents.find((a) => a.id === target);
   const refusal = chosen && !takesImages(chosen.harness) ? t.cantTakeImages(chosen.name) : null;
-  const held = uploading || (images.length > 0 && !!refusal);
+  const filesRefusal = chosen && !agentTakesFiles(chosen) ? t.cantTakeFiles(chosen.name) : null;
+  const held = uploading || (images.length > 0 && !!refusal) || (files.length > 0 && !!filesRefusal);
   // An attempt Core has not answered: the same words go again as it was.
   const unconfirmed = !busy && !!pendingReply(slot);
   async function send() {
@@ -231,6 +247,7 @@ export function CardReply({
     const value = reply?.text.trim();
     if (!reply || !value || !target || current.busy || held || replyTooLong(value)) return;
     const ids = (reply.images ?? []).map((image) => image.id);
+    const attached = reply.files ?? [];
     const shown = onScreen.current;
     update(slot, { busy: true, error: "", sent: null });
     try {
@@ -239,10 +256,12 @@ export function CardReply({
       // goes to the version on screen.
       const was = pendingReply(slot);
       const retry = !!was && was.text === value && was.agentId === target && was.version !== undefined &&
-        JSON.stringify(was.images ?? []) === JSON.stringify(ids);
+        JSON.stringify(was.images ?? []) === JSON.stringify(ids) && sameFiles(was.files, attached);
       let to = retry ? { version: was!.version!, title: was!.title ?? "" } : { version: shown.version, title: shown.title };
       let attempt = () =>
-        retry ? resendReply(slot, projectId, reply.key) : sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, images: ids, ...to });
+        retry
+          ? resendReply(slot, projectId, reply.key)
+          : sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, images: ids, ...(attached.length ? { files: attached } : {}), ...to });
       let receipt;
       // Refused because the card moved on: to its latest version, as Core has it (YN-38).
       for (let tries = 0; ; tries += 1) {
@@ -254,20 +273,21 @@ export function CardReply({
           const now = await latestSection(projectId, reply.key).catch(() => null);
           if (!now || !takesReply(now) || (now.version === to.version && now.title === to.title)) throw e;
           to = { version: now.version, title: now.title };
-          attempt = () => sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, images: ids, ...to });
+          attempt = () =>
+            sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, images: ids, ...(attached.length ? { files: attached } : {}), ...to });
         }
       }
       // The next reply here begins afresh; the box stays where it is.
       const { version: _begun, ...rest } = reply;
       update(slot, {
         busy: false,
-        sent: { status: receipt.status, to: named, version: to.version, images: ids.length },
-        draft: { ...rest, text: "", blocks: undefined, images: undefined, title: to.title || shown.title, at: new Date().toISOString() },
+        sent: { status: receipt.status, to: named, version: to.version, images: ids.length, files: attached.length },
+        draft: { ...rest, text: "", blocks: undefined, images: undefined, files: undefined, title: to.title || shown.title, at: new Date().toISOString() },
       });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
-      if (olderCore(e) || olderCoreImages(e)) dropPendingReply(slot);
-      update(slot, { busy: false, error: olderCoreImages(e) ? OLDER_IMAGES : explain(e) });
+      if (olderCore(e) || olderCoreImages(e) || olderCoreFiles(e)) dropPendingReply(slot);
+      update(slot, { busy: false, error: olderCoreImages(e) ? OLDER_IMAGES : olderCoreFiles(e) ? OLDER_FILES : explain(e) });
     }
   }
   return (
@@ -307,11 +327,11 @@ export function CardReply({
           slot={slot}
           label={t.replyField(section.title)}
           placeholder={t.replyFor(name)}
-          words={{ text: draft.text, blocks: draft.blocks, ...(images.length ? { images } : {}) }}
-          onWords={(words) => change({ text: words.text, blocks: words.blocks, images: words.images })}
+          words={{ text: draft.text, blocks: draft.blocks, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) }}
+          onWords={(words) => change({ text: words.text, blocks: words.blocks, images: words.images, files: words.files })}
           onSubmit={() => void send()}
           onEscape={onClose}
-          attach={{ projectId, refusal }}
+          attach={{ projectId, refusal, files: { refusal: filesRefusal } }}
           onUploading={setUploading}
         />
         <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
@@ -327,9 +347,14 @@ export function CardReply({
         <p className="home-note" role="status">
           {sent.status === "queued" ? t.queuedFor(sent.to ?? t.theAgent, sent.version) : t.sentTo(sent.to ?? t.theAgent, sent.version)}
           {sent.images > 0 && ` ${t.sentImages(sent.images)}`}
+          {sent.files > 0 && ` ${t.sentFiles(sent.files)}`}
         </p>
       )}
-      {error && <p className="inline-error" role="alert">{error === OLDER_CORE ? t.olderCore : error === OLDER_IMAGES ? t.olderCoreImages : error}</p>}
+      {error && (
+        <p className="inline-error" role="alert">
+          {error === OLDER_CORE ? t.olderCore : error === OLDER_IMAGES ? t.olderCoreImages : error === OLDER_FILES ? t.olderCoreFiles : error}
+        </p>
+      )}
     </div>
   );
 }
@@ -373,8 +398,9 @@ export function KeptCardReplies({
               <>
                 <p className="home-note">{t.keptNotSent(draft.title)}</p>
                 <blockquote>{draft.text}</blockquote>
-                {/* Its images, to open: kept with it, never sent from here. */}
+                {/* Its images and files, kept with it, never sent from here. */}
                 <ImageAttachments images={draft.images ?? []} imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)} />
+                <FileAttachments files={draft.files ?? []} href={(file) => homeFileUrl(projectId, file.id, file.name)} />
               </>
             )}
             <span className="home-kept-reply-actions">
