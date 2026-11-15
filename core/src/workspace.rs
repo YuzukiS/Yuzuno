@@ -1647,8 +1647,8 @@ impl Workspace {
     async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], skills: &[SkillRef]) -> Result<Value> {
         // A dsh Agent's own path (a Brief reminder Turn, brief_turns): not Codex's.
         if self.listed(id).await?.harness == "dsh" {
-            anyhow::ensure!(images.is_empty() && skills.is_empty(), "dsh Agent 暂不接收图片或 skill。A dsh Agent takes no images or skills yet.");
-            return self.dsh_send_locked(id, text, client_id).await;
+            anyhow::ensure!(skills.is_empty(), "dsh Agent 不接收 skill 引用。A dsh Agent takes no skill references.");
+            return self.dsh_send_locked(id, text, client_id, images).await;
         }
         self.ensure_rewind_settled(id).await?;
         // Its checks read the metadata, receipts and Turn statuses: the open
@@ -1932,7 +1932,7 @@ impl Workspace {
             }
         } else if detail.agent.harness == "dsh" {
             // A new message only (`dsh_admit`); a form's answers are one too.
-            self.dsh_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
+            self.dsh_send_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images).await
         } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
             // The same input, with the words the Agent reads: its files are
             // kept, its images and pasted blocks unchanged.

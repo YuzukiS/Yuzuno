@@ -7,7 +7,10 @@
 //! interrupt, Core starting again and resuming its session, a close and a
 //! delete. And (S2b) the Workspace MCP Core serves, reached by dsh with the
 //! Agent's credential, and a request past dsh's sandbox the user allows once
-//! and then declines. Run as opencode_probe.rs is:
+//! and then declines, and whether dsh keeps the Workspace MCP's credential
+//! on disk. And (S2b-2) its models, listed by a dsh of Core's
+//! own and by the Agent's, a model, effort and level set, and an image sent.
+//! Run as opencode_probe.rs is:
 //! `cargo test --test dsh_probe -- --ignored --test-threads=1 --nocapture`.
 #![cfg(target_os = "linux")]
 
@@ -259,7 +262,151 @@ async fn a_real_dsh_agent_reaches_the_workspace_mcp_and_asks_past_its_sandbox() 
         assert!(d.pending.is_empty());
     }
 
+    // 3. What dsh keeps on disk (the Lead's question on #988): every file of the Agent's dsh folder, after
+    // a restart that resumed the session with the Workspace MCP named again and its close, searched for
+    // the credential as written and inside dsh's zstd session files, with each file's mode.
+    ws.dsh_stop_all().await;
+    ws.reconnect(&id).await.unwrap();
+    // Read before the close, which may end the credential.
+    let config = ws.collaboration_http_config(&ws.store.agent(&id).unwrap()).await.unwrap().expect("the Workspace MCP");
+    let token = config["headers"]["Authorization"].as_str().unwrap().trim_start_matches("Bearer ").to_owned();
+    assert!(token.len() > 16);
+    ws.close_agent(&id).await.unwrap();
+    let folder = data.join("dsh").join(&id);
+    let (files, holding) = kept_on_disk(&folder, &token);
+    for (path, mode, bytes) in &files {
+        println!("probe: on disk {:o} {bytes} {}", mode, path.strip_prefix(&folder).unwrap().display());
+    }
+    println!("probe: the credential on disk: {holding:?} (folder {:o}, home {:o})", mode_of(&folder), mode_of(&folder.join("home")));
+    ws.delete_agent(&id).await.unwrap();
+    assert!(!folder.exists(), "its dsh folder went with it");
+    println!("probe: closed and deleted");
+}
+
+/// Each file under `dir`, its mode and size, and those holding `secret`: as
+/// written, or once decompressed when it is zstd (dsh's sessions are
+/// `session.v4.jsonl.zstd`, design §1), with zstd's own decoder.
+fn kept_on_disk(dir: &Path, secret: &str) -> (Vec<(PathBuf, u32, u64)>, Vec<String>) {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut files, mut holding, mut todo) = (Vec::new(), Vec::new(), vec![dir.to_path_buf()]);
+    while let Some(at) = todo.pop() {
+        for entry in std::fs::read_dir(&at).unwrap().flatten() {
+            let (path, meta) = (entry.path(), entry.metadata().unwrap());
+            if meta.is_dir() {
+                todo.push(path);
+                continue;
+            }
+            files.push((path.clone(), meta.permissions().mode() & 0o7777, meta.len()));
+            let raw = std::fs::read(&path).unwrap_or_default();
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).contains(secret);
+            let unpacked = path.extension().is_some_and(|e| e == "zstd" || e == "zst")
+                .then(|| std::process::Command::new("zstd").args(["-dc", "--"]).arg(&path).output().ok())
+                .flatten().filter(|out| out.status.success()).map(|out| out.stdout);
+            if text(&raw) || unpacked.as_deref().is_some_and(text) {
+                holding.push(path.strip_prefix(dir).unwrap().display().to_string());
+            }
+            // That the search read what dsh wrote: the session's own words are in it once unpacked.
+            if let Some(unpacked) = &unpacked {
+                println!("probe: unpacked {} to {} bytes, holding this session's prompt: {}", path.strip_prefix(dir).unwrap().display(),
+                    unpacked.len(), String::from_utf8_lossy(unpacked).contains("YUZUNO-MCP"));
+            }
+        }
+    }
+    files.sort();
+    (files, holding)
+}
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).map_or(0, |m| m.permissions().mode() & 0o7777)
+}
+
+#[tokio::test]
+#[ignore = "needs a real dsh, named by YUZUNO_DSH_BIN, python3, and no network"]
+async fn a_real_dsh_lists_its_models_takes_settings_and_an_image() {
+    assert!(std::env::var_os("YUZUNO_DSH_BIN").is_some(), "YUZUNO_DSH_BIN names the dsh to probe");
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (data, work) = (root.join("data"), root.join("work"));
+    std::fs::create_dir(&work).unwrap();
+    let model = Model::start(&root);
+    std::env::set_var("YUZUNO_DSH_BASE_URL", format!("http://127.0.0.1:{}/v1", model.port));
+    let ws = open(&data, &work);
+    routing_keys::Store::of(&data).put_local("deepseek", routing_keys::Provider::Deepseek,
+        routing_keys::Secret::new("sk-placeholder-not-a-key".into())).unwrap();
+    let names = |listed: &Value| -> Vec<String> { listed["models"].as_array().unwrap().iter().map(|m| m["model"].as_str().unwrap().to_owned()).collect() };
+
+    // 1. A new Agent's list: a dsh of Core's own, its folder gone after.
+    let catalog = ws.dsh_catalog().await.unwrap();
+    println!("probe: catalog {catalog}");
+    let listed = names(&catalog);
+    assert!(listed.contains(&"deepseek-flash".to_owned()) && listed.contains(&"deepseek-v4-pro".to_owned()), "{listed:?}");
+    assert!(std::fs::read_dir(data.join("dsh-catalog")).unwrap().next().is_none(), "the catalog's folder is removed");
+
+    let agent = ws.dsh_create_on("Probe".into(), work.to_string_lossy().into(), String::new(), None, None, None, None,
+        Some("ask".into()), Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() })).await.unwrap();
+    let id = agent.id.clone();
+    let d = until(&ws, &id, "connected", 60, |d| d.agent.connection_state == "connected" || d.agent.error.is_some()).await;
+    assert_eq!(d.agent.connection_state, "connected", "{:?}", d.agent.error);
+    let home = data.join("dsh").join(&id).join("home");
+    let live = ws.dsh_agent_models(&id).await.unwrap();
+    println!("probe: its dsh's models {live}");
+    assert_eq!(names(&live), listed, "its own dsh lists the same");
+    let send = |ws: &Arc<Workspace>, id: &str, client: &str, text: &str, images: Vec<String>| {
+        let (ws, id) = (ws.clone(), id.to_owned());
+        let input = serde_json::from_value::<MessageInput>(json!({"clientMessageId": client, "text": text, "images": images})).unwrap();
+        async move { ws.send_message(&id, input).await.unwrap_or_else(|refused| panic!("refused: {refused:#}")) }
+    };
+    let ended = |ws: Arc<Workspace>, id: String, turn: String| async move {
+        let d = until(&ws, &id, "the Turn ends", 60, |d| turn_status(d, &turn) != "inProgress").await;
+        turn_status(&d, &turn)
+    };
+
+    // 2. A model and an effort, set on its live session: its next request asks for that model.
+    ws.dsh_settings(&id, "deepseek-v4-pro".into(), Some(Some("low".into())), None).await.unwrap();
+    let pro = send(&ws, &id, "s1", "Say hello.", vec![]).await.turn_id.unwrap();
+    assert_eq!(ended(ws.clone(), id.clone(), pro).await, "completed");
+    let asked = model.requests().last().unwrap()["model"].clone();
+    println!("probe: after the model was set, the request asked for {asked}");
+    assert!(asked.as_str().unwrap_or_default().contains("v4-pro"), "{asked}");
+
+    // 3. A level: a new dsh in the new sandbox, the same session.
+    let before = holding(&home);
+    let session = ws.store.detail(&id).unwrap().agent.dsh_session_id.clone();
+    ws.dsh_settings(&id, "deepseek-flash".into(), None, Some("full".into())).await.unwrap();
+    let after = holding(&home);
+    let d = ws.store.detail(&id).unwrap();
+    println!("probe: level full: dsh pids {before:?} -> {after:?}, session {:?}", d.agent.dsh_session_id);
+    assert!(!after.is_empty() && before.iter().all(|pid| !after.contains(pid)), "a new dsh");
+    assert_eq!((d.agent.connection_state.as_str(), &d.agent.dsh_session_id), ("connected", &session), "resumed");
+    let flash = send(&ws, &id, "s2", "Say hello again.", vec![]).await.turn_id.unwrap();
+    assert_eq!(ended(ws.clone(), id.clone(), flash).await, "completed");
+
+    // 4. An image, as dsh's model takes it: uploaded first, then named in the request.
+    let saved = data.join("input-images").join(&id);
+    std::fs::create_dir_all(&saved).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 6).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    use sha2::Digest;
+    let picture = format!("{}.png", sha2::Sha256::digest(&png).iter().map(|b| format!("{b:02x}")).collect::<String>());
+    std::fs::write(saved.join(&picture), &png).unwrap();
+    let looked = send(&ws, &id, "s3", "What is in this image?", vec![picture]).await.turn_id.unwrap();
+    let status = ended(ws.clone(), id.clone(), looked.clone()).await;
+    let d = ws.store.detail(&id).unwrap();
+    let last = model.requests().last().unwrap().clone();
+    let uploads: Vec<Value> = std::fs::read_to_string(&model.log).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|r| r["kind"] == "upload").collect();
+    println!("probe: image turn {status}: {}; uploads {uploads:?}; last request images {} files {}",
+        d.turns.iter().find(|t| t["id"] == looked.as_str()).unwrap()["items"], last["imageBlocks"], last["fileRefs"]);
+    assert_eq!(status, "completed");
+    assert!(last["imageBlocks"].as_u64().unwrap_or(0) + last["fileRefs"].as_u64().unwrap_or(0) > 0, "the image reached the model: {last}");
+
     ws.close_agent(&id).await.unwrap();
     ws.delete_agent(&id).await.unwrap();
     println!("probe: closed and deleted");
+}
+
+fn turn_status(d: &AgentDetail, id: &str) -> String {
+    d.turns.iter().find(|t| t["id"] == id).map_or_else(String::new, |t| t["status"].as_str().unwrap_or_default().to_owned())
 }

@@ -52,8 +52,9 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
     if agent.disconnected_at.is_some() {
         return Some("you already disconnected this Agent".into());
     }
-    if !matches!(agent.harness.as_str(), "codex" | "claude") {
-        return Some("only Codex and Claude Code Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
+    // dsh's tools run in its process group, which ends with it (YN-119 §3.8).
+    if !matches!(agent.harness.as_str(), "codex" | "claude" | "dsh") {
+        return Some("only Codex, Claude Code and DeepSeek Harness Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
     }
     if agent.connection_state != "connected" {
         return Some("this Agent isn't connected, so there is no native session to stop".into());
@@ -171,6 +172,11 @@ impl Workspace {
                         .await
                         .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?,
                 }
+            }
+            "dsh" => {
+                let connection = self.dshs.lock().unwrap().get(id).cloned()
+                    .context("Not disconnected: this Agent has no live dsh. Nothing changed.")?;
+                self.dsh_stop_idle(id, &connection).await.map_err(|error| anyhow!("Not disconnected: {error}. Nothing changed."))?;
             }
             other => bail!("Not disconnected: {other} Agents can't be disconnected. Nothing changed."),
         }
