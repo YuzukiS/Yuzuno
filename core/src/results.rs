@@ -564,6 +564,7 @@ pub(crate) fn native_session(a: &crate::model::Agent) -> Option<String> {
     match a.harness.as_str() {
         "claude" => a.claude_session_id.clone(),
         "opencode" => a.opencode_session_id.clone(),
+        "dsh" => a.dsh_session_id.clone(),
         _ => a.thread_id.clone(),
     }
 }

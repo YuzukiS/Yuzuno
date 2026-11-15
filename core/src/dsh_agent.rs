@@ -21,8 +21,17 @@
 //! is ended, since ACP's next prompt would wait for this one's answer: the
 //! next message or a reconnect resumes the session in a new dsh.
 //!
-//! A request past dsh's sandbox (`session/request_permission`) is refused by
-//! Core at every level, reject-once (§3.6, S2a): S2b asks the user at Ask.
+//! A request past dsh's sandbox (`session/request_permission`, §3.6) is the
+//! user's at Ask you first: a `dsh/permission` card, answered allow-once or
+//! reject-once (`dsh_respond`). At Auto-approve Core refuses it, reject-once,
+//! and at Full access dsh asks nothing. An interrupt or a close answers an
+//! open one `cancelled`, as ACP asks of a client that cancels.
+//!
+//! With the Workspace MCP (§3.7), both `session/new` and `session/resume`
+//! name it (`mcpServers`, its Bearer credential in that request alone), and
+//! `$DSH_HOME/AGENTS.md` holds the session notice and, for a Project's Agent
+//! the Brief check applies to, the Brief's rules (§3.1), as Claude's system
+//! prompt and Codex's developer instructions do.
 //!
 //! A start (§3.8): a new dsh, `session/resume` of the Agent's session (or
 //! `session/new` for its first), then its model and effort set again. What
@@ -32,13 +41,15 @@
 //! The Agent's folder for dsh, `<data>/dsh/<agent>`, is Core's own and goes
 //! with the Agent when it is deleted (`remove_folder`).
 //!
-//! Not yet (S2b): Workspace MCP, the session notice and the Brief's rules in
-//! `$DSH_HOME/AGENTS.md`, mail and Brief reminder Turns, the user's answers
-//! to requests, model and effort settings and catalogs, images.
+//! A Turn's end is journaled as a `turn/completed` too, as Claude's is: an
+//! unread result, and what the Brief check reads (brief_turns).
+//!
+//! Not yet (S2b, its second part): model and effort settings and catalogs,
+//! images.
 use crate::{
     backlog::{Backlog, EventSender},
     dsh::{self, Access, Dsh},
-    model::{ensure_agent_open, now, Agent, AgentDetail, ContextUsage, MessageInput},
+    model::{ensure_agent_open, now, Agent, AgentDetail, ContextUsage, MessageInput, PendingRequest},
     routing_launch::RuntimeProfile,
     rpc::RpcError,
     store::Sel,
@@ -73,6 +84,10 @@ pub(crate) const EFFORTS: [&str; 4] = ["off", "low", "high", "max"];
 /// an interrupt dsh did not answer within STOP_LIMIT.
 const PROMPT_ENDED: &str = "yuzuno/promptEnded";
 const STOP_UNCONFIRMED: &str = "yuzuno/stopUnconfirmed";
+/// A request past dsh's sandbox, the user's to answer (§3.6).
+pub(crate) const PERMISSION: &str = "dsh/permission";
+/// What the user may answer one with: dsh offers allow-once and reject-once only.
+const DECISIONS: [&str; 2] = ["accept", "decline"];
 
 /// The permission levels dsh keeps (§3.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +141,8 @@ pub(crate) struct Connection {
     pub generation: u64,
     pub dsh: Arc<Dsh>,
     pub session: String,
+    /// The level this dsh was started at: what becomes of a request past its sandbox.
+    level: Level,
     /// Into this connection's own event queue (`PROMPT_ENDED`, `STOP_UNCONFIRMED`).
     events: EventSender,
     /// The Turn whose prompt dsh has not answered yet.
@@ -193,7 +210,9 @@ fn busy(d: &AgentDetail) -> bool {
 }
 
 fn refresh_status(d: &mut AgentDetail) {
-    if d.turns.iter().any(|t| t["status"] == "inProgress") {
+    if d.pending.iter().any(|p| !p.stale && p.params["_responseSent"] != true) {
+        d.agent.status = "waiting".into();
+    } else if d.turns.iter().any(|t| t["status"] == "inProgress") {
         d.agent.status = "working".into();
     } else if matches!(d.agent.status.as_str(), "waiting" | "working") {
         d.agent.status = "idle".into();
@@ -336,6 +355,57 @@ fn delivered(d: &mut AgentDetail, turn: &str) {
     }
 }
 
+/// The card of a request past the sandbox (§3.6), in the shape the web's
+/// approval card reads (`command`, `reason`, `cwd`, `availableDecisions`):
+/// the command, its sandbox permissions and why, from the request's own tool
+/// call when it carries them, else from the call dsh started before it.
+fn asked(d: &AgentDetail, turn: Option<&str>, generation: u64, cwd: &str, message: &Value) -> PendingRequest {
+    let params = &message["params"];
+    let call = params["toolCall"]["toolCallId"].as_str().unwrap_or_default();
+    let item = turn.and_then(|turn| d.turns.iter().find(|t| t["id"] == turn))
+        .and_then(|t| t["items"].as_array()).and_then(|items| items.iter().find(|i| i["callId"] == call));
+    let own = &params["toolCall"]["rawInput"];
+    let input = if own.is_object() { own.clone() } else { item.map_or(Value::Null, |i| i["_dshInput"].clone()) };
+    let command = match command_of(&input) {
+        Value::Null => item.map_or(Value::Null, |i| i["command"].clone()),
+        command => command,
+    };
+    let tool = params["toolCall"]["title"].as_str().or_else(|| item.and_then(|i| i["name"].as_str()));
+    let mut card = json!({
+        "toolCallId": call, "command": command, "reason": input["justification"], "sandboxPermissions": input["sandbox_permissions"],
+        "tool": tool, "input": input, "cwd": cwd, "options": params["options"], "availableDecisions": DECISIONS,
+        "_dshRequest": message["id"], "_runtimeGeneration": generation, "_responseSent": false,
+    });
+    if let Some(turn) = turn {
+        card["turnId"] = turn.into();
+    }
+    PendingRequest { id: uuid::Uuid::new_v4().to_string(), agent_id: d.agent.id.clone(), method: PERMISSION.into(), params: card, created_at: now(), stale: false }
+}
+
+/// What refuses a request (§3.6): its reject-once option, else, when dsh
+/// offers none, the request cancelled.
+fn refusal(options: &Value) -> Value {
+    match options.as_array().into_iter().flatten().find(|o| o["kind"] == "reject_once").and_then(|o| o["optionId"].as_str()) {
+        Some(option) => json!({"outcome": {"outcome": "selected", "optionId": option}}),
+        None => json!({"outcome": {"outcome": "cancelled"}}),
+    }
+}
+
+/// The Item of tool call `call` in `turn`.
+fn tool_item_of<'a>(d: &'a mut AgentDetail, turn: &str, call: &str) -> Option<&'a mut Value> {
+    let id = format!("{turn}:tool:{call}");
+    d.turns.iter_mut().find(|t| t["id"] == turn).and_then(|t| t["items"].as_array_mut())
+        .and_then(|items| items.iter_mut().find(|i| i["id"] == id.as_str()))
+}
+
+/// ACP's `mcpServers` for the Workspace MCP (§3.7): an http server whose
+/// credential is a header, from `collaboration_http_config`.
+fn mcp_servers(config: &Value) -> Value {
+    let headers: Vec<Value> = config["headers"].as_object().into_iter().flatten()
+        .map(|(name, value)| json!({"name": name, "value": value})).collect();
+    json!([{"type": "http", "name": "yuzuno", "url": config["url"], "headers": headers}])
+}
+
 /// A tool call's Item as dsh starts it (§3.4): `bash` a command, `mcp__<server>__<tool>`
 /// an MCP call, any other the tool's name with its input and output as dsh gives them.
 fn tool_item(id: &str, call: &str, update: &Value) -> Value {
@@ -345,7 +415,7 @@ fn tool_item(id: &str, call: &str, update: &Value) -> Value {
             "result": null, "status": "inProgress"})
     } else if name == "bash" || update["kind"] == "execute" {
         json!({"id": id, "type": "commandExecution", "callId": call, "command": command_of(&update["rawInput"]), "aggregatedOutput": "",
-            "exitCode": null, "status": "inProgress"})
+            "exitCode": null, "status": "inProgress", "_dshInput": update["rawInput"]})
     } else {
         json!({"id": id, "type": "dshTool", "callId": call, "name": name, "kind": update["kind"], "input": update["rawInput"],
             "output": null, "status": "inProgress"})
@@ -372,7 +442,10 @@ fn tool_update(item: &mut Value, update: &Value) {
     }
     if !update["rawInput"].is_null() {
         match item["type"].as_str() {
-            Some("commandExecution") => item["command"] = command_of(&update["rawInput"]),
+            Some("commandExecution") => {
+                item["command"] = command_of(&update["rawInput"]);
+                item["_dshInput"] = update["rawInput"].clone();
+            }
             Some("mcpToolCall") => item["arguments"] = update["rawInput"].clone(),
             _ => item["input"] = update["rawInput"].clone(),
         }
@@ -605,6 +678,18 @@ impl Workspace {
             Some(level) => level_of(level).with_context(|| not_kept(level))?,
         };
         let key = self.dsh_launch(id).await?;
+        // The Workspace MCP and what goes with it (§3.1, §3.7), as Claude's start has them.
+        let (servers, instructions) = match self.collaboration_http_config(&d.agent).await? {
+            Some(config) => {
+                let mut instructions = crate::guide::session_notice().to_owned();
+                if let Some(rules) = crate::brief_turns::start_hard_rules(self, id).await? {
+                    instructions = format!("{instructions}\n\n{rules}");
+                }
+                (mcp_servers(&config), instructions)
+            }
+            None => (json!([]), String::new()),
+        };
+        let attached = servers.as_array().is_some_and(|servers| !servers.is_empty());
         let directory = PathBuf::from(&d.agent.cwd);
         let launch = dsh::Launch {
             program,
@@ -612,7 +697,7 @@ impl Workspace {
             writable: dsh::writable_roots(&directory).await,
             directory,
             access: level.access(),
-            instructions: String::new(),
+            instructions,
             key: Some(key),
             endpoint,
         };
@@ -621,8 +706,8 @@ impl Workspace {
         let events = EventSender::observed(tx, backlog.clone());
         let dsh = Arc::new(Dsh::start(&launch, events.clone()).await?);
         let opened = match &d.agent.dsh_session_id {
-            Some(session) => dsh.request("session/resume", json!({"sessionId": session, "cwd": d.agent.cwd, "mcpServers": []}), SESSION_LIMIT).await,
-            None => dsh.request("session/new", json!({"cwd": d.agent.cwd, "mcpServers": []}), SESSION_LIMIT).await,
+            Some(session) => dsh.request("session/resume", json!({"sessionId": session, "cwd": d.agent.cwd, "mcpServers": servers}), SESSION_LIMIT).await,
+            None => dsh.request("session/new", json!({"cwd": d.agent.cwd, "mcpServers": servers}), SESSION_LIMIT).await,
         };
         let answer = opened.context("dsh start check 5 of 5 (its session)")?;
         dsh::check_session(&answer).context("dsh start check 5 of 5 (its session)")?;
@@ -642,7 +727,7 @@ impl Workspace {
                 .with_context(|| format!("dsh did not take {option} {wanted}"))?;
         }
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection { generation, dsh: dsh.clone(), session: session.clone(), events, prompt: Arc::default(), native: Arc::default() };
+        let c = Connection { generation, dsh: dsh.clone(), session: session.clone(), level, events, prompt: Arc::default(), native: Arc::default() };
         let owned = self.owner(id).await;
         self.dshs.lock().unwrap().insert(id.into(), c.clone());
         self.backlogs.track(id, generation, backlog.clone());
@@ -667,6 +752,10 @@ impl Workspace {
             return Err(error);
         }
         self.dsh_watch(id, generation, rx, backlog);
+        // dsh took the session with the Workspace MCP named: ready, as a Claude start is.
+        if attached {
+            self.collaboration_started(id, generation).await;
+        }
         self.changed(id);
         Ok(c)
     }
@@ -689,6 +778,7 @@ impl Workspace {
         let Some(c) = self.dsh_current(id, generation) else { return };
         match message["method"].as_str().unwrap_or_default() {
             "session/update" => self.dsh_update(id, &c, message).await,
+            "session/request_permission" if c.level == Level::Ask => self.dsh_ask(id, &c, message).await,
             "session/request_permission" => self.dsh_refuse(id, &c, message).await,
             PROMPT_ENDED => self.dsh_prompt_ended(id, &c, &message["params"]).await,
             STOP_UNCONFIRMED => self.dsh_stop_unconfirmed(id, &c, &message["params"]).await,
@@ -739,16 +829,38 @@ impl Workspace {
         self.changed(id);
     }
 
-    /// A request past dsh's sandbox, refused by Core (§3.6, S2a): reject-once,
-    /// else, when dsh offers no such option, the request cancelled. The answer
-    /// goes first, whatever becomes of its record: nothing is ever allowed.
+    /// A request past dsh's sandbox at Ask you first (§3.6): a card of the
+    /// command dsh's tool call gave, its sandbox permissions and why, for the
+    /// user to allow once or refuse (`dsh_respond`). Journaled as a request,
+    /// as Claude's is.
+    async fn dsh_ask(&self, id: &str, c: &Connection, message: Value) {
+        let turn = c.prompt.lock().unwrap().clone();
+        let (generation, cwd) = (c.generation, self.listed(id).await.map(|a| a.cwd).unwrap_or_default());
+        let held = turn.clone().map_or_else(Vec::new, |turn| vec![turn]);
+        let kept = message.clone();
+        let written = self.record_update(id, "request", message.clone(), Sel::Turns(held), move |d| {
+            let request = asked(d, turn.as_deref(), generation, &cwd, &kept);
+            if !d.pending.iter().any(|p| !p.stale && p.params["_dshRequest"] == kept["id"] && p.params["_runtimeGeneration"] == generation) {
+                d.pending.push(request);
+            }
+            refresh_status(d);
+        }).await;
+        if let Err(error) = written {
+            // Not kept, so nobody could answer it: refused, as at Auto-approve.
+            eprintln!("Workspace dsh request not recorded, refused: {error:#}");
+            let reject = refusal(&message["params"]["options"]);
+            let _ = c.dsh.respond(message["id"].clone(), reject).await;
+        }
+        self.changed(id);
+    }
+
+    /// A request past dsh's sandbox, refused by Core (§3.6): at Auto-approve,
+    /// reject-once, else, when dsh offers no such option, the request
+    /// cancelled. The answer goes first, whatever becomes of its record:
+    /// nothing is ever allowed.
     async fn dsh_refuse(&self, id: &str, c: &Connection, message: Value) {
         let params = &message["params"];
-        let reject = params["options"].as_array().into_iter().flatten().find(|o| o["kind"] == "reject_once").and_then(|o| o["optionId"].as_str());
-        let outcome = match reject {
-            Some(option) => json!({"outcome": {"outcome": "selected", "optionId": option}}),
-            None => json!({"outcome": {"outcome": "cancelled"}}),
-        };
+        let outcome = refusal(&params["options"]);
         let sent = c.dsh.respond(message["id"].clone(), outcome.clone()).await;
         let call = params["toolCall"]["toolCallId"].as_str().unwrap_or_default().to_owned();
         let turn = c.prompt.lock().unwrap().clone();
@@ -786,12 +898,15 @@ impl Workspace {
             return;
         }
         let (agent, data, stop) = (id.to_owned(), params.clone(), params["stopReason"].clone());
-        let written = self.stored_owned(owned, move |store| store.record_event(&agent, "dsh/turnEnded", &data, Sel::Turns(vec![turn.clone()]), move |d| {
-            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str()) else { return };
+        let (named, picked) = (vec![turn.clone()], turn.clone());
+        let end = move |d: &mut AgentDetail| {
+            // What it asked can no longer be answered.
+            d.pending.retain(|p| p.params["turnId"] != turn.as_str());
             // Its own end, or one an unanswered interrupt left unknown.
-            if !matches!(entry["status"].as_str(), Some("inProgress" | "outcomeUnknown")) {
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str() && matches!(t["status"].as_str(), Some("inProgress" | "outcomeUnknown"))) else {
+                refresh_status(d);
                 return;
-            }
+            };
             let answered = !stop.is_null();
             entry["status"] = status.into();
             match error {
@@ -807,7 +922,19 @@ impl Workspace {
                 delivered(d, &turn);
             }
             refresh_status(d);
-        }).map(drop)).await;
+        };
+        // Its end as the record has it, when it is one a completion is journaled for.
+        let completion = move |d: &AgentDetail, _: Option<String>| d.turns.iter().find(|t| t["id"] == picked.as_str())
+            .filter(|t| matches!(t["status"].as_str(), Some("completed" | "failed" | "interrupted")))
+            .map(|t| json!({"id": t["id"], "status": t["status"]}));
+        let written = self.stored_owned(owned, move |store| {
+            let (_, ended) = store.change(&agent, "dsh/turnEnded", &data, Sel::Turns(named), end, completion)?;
+            // Read state and the Brief check (brief_turns), once per Turn, as Claude's.
+            if let Some(turn) = ended {
+                store.record_recovered_completion(&agent, &turn)?;
+            }
+            Ok(())
+        }).await;
         if let Err(error) = written {
             eprintln!("Workspace dsh Turn end not recorded: {error:#}");
         }
@@ -912,7 +1039,8 @@ impl Workspace {
         ensure!(input.expected_turn_id.is_none(), BUSY);
         ensure!(input.question.is_none(), "dsh Agent 只接受新消息；草稿保留。A dsh Agent takes new messages only; the draft is kept.");
         ensure!(!busy(detail), BUSY);
-        self.dsh_ensure(id).await.map(drop)
+        self.dsh_ensure(id).await?;
+        self.require_collaboration(id).await
     }
 
     /// `send` for a dsh Agent.
@@ -1009,7 +1137,10 @@ impl Workspace {
             }
         }).await?;
         self.changed(id);
+        // Claimed first, so the prompt's end, which drops them, can't come between.
+        let open = self.dsh_claim_requests(id, &c).await;
         c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await?;
+        self.dsh_answer_cancelled(id, &c, open).await;
         let events = c.events.clone();
         tokio::spawn(async move {
             tokio::time::sleep(STOP_LIMIT).await;
@@ -1018,12 +1149,122 @@ impl Workspace {
         Ok(())
     }
 
+    /// The user's answer to a `dsh/permission` card (§3.6), under the Agent
+    /// gate (`Workspace::respond`): `accept` sends dsh's allow-once option,
+    /// `decline` its reject-once, only to the dsh that asked. Marked sent
+    /// before it goes, so it never goes twice; one whose fate is unknown is
+    /// never a button again. False: the Agent holds no such request.
+    pub(crate) async fn dsh_respond(&self, id: &str, request_id: &str, response: &Value) -> Result<bool> {
+        let owned = self.owner(id).await;
+        let connection = self.dshs.lock().unwrap().get(id).cloned();
+        let (agent, request, reply) = (id.to_owned(), request_id.to_owned(), response.clone());
+        let checked = self.stored_owned(owned, move |store| {
+            ensure_agent_open(&store.agent(&agent)?)?;
+            let Some(p) = store.pending(&agent)?.into_iter().find(|p| p.id == request) else { return Ok(None) };
+            ensure!(p.method == PERMISSION, "不是可以回答的 dsh 请求。This is no dsh request to answer.");
+            ensure!(!p.stale && p.params["_responseSent"] != true, "这个请求已经回答或已失效；不会再次发送");
+            let c = connection.context("dsh 连接已断开，回答没有发送")?;
+            ensure!(p.params["_runtimeGeneration"] == c.generation, "这个请求属于已经结束的 dsh；不会把回答发给新的 dsh");
+            let decision = reply["decision"].as_str().filter(|d| DECISIONS.contains(d))
+                .context("dsh 的请求只接受 accept（允许一次）或 decline（拒绝）")?.to_owned();
+            let kind = if decision == "accept" { "allow_once" } else { "reject_once" };
+            let option = p.params["options"].as_array().into_iter().flatten().find(|o| o["kind"] == kind)
+                .and_then(|o| o["optionId"].as_str()).map(str::to_owned)
+                .with_context(|| format!("dsh 没有为这个请求提供 {kind}。dsh offers no {kind} for this request."))?;
+            store.update_meta(&agent, "request/replied", &json!({"requestId": request, "decision": decision}), |m| {
+                if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
+                    p.params["_responseSent"] = true.into();
+                }
+            })?;
+            Ok(Some((p, c, decision, option)))
+        }).await?;
+        let Some((p, c, decision, option)) = checked else { return Ok(false) };
+        let sent = c.dsh.respond(p.params["_dshRequest"].clone(), json!({"outcome": {"outcome": "selected", "optionId": option}})).await;
+        let (request, turn, call) = (request_id.to_owned(), p.params["turnId"].as_str().map(str::to_owned), p.params["toolCallId"].as_str().unwrap_or_default().to_owned());
+        let shown = turn.clone().map_or_else(Vec::new, |turn| vec![turn]);
+        match sent {
+            Ok(()) => {
+                let answer = if decision == "accept" { "allowed" } else { "refused" };
+                self.record_update(id, "dsh/requestAnswered", json!({"requestId": request_id, "decision": decision}), Sel::Turns(shown), move |d| {
+                    d.pending.retain(|p| p.id != request);
+                    if let Some(item) = turn.and_then(|turn| tool_item_of(d, &turn, &call)) {
+                        item["permission"] = json!({"answer": answer, "by": "user"});
+                    }
+                    refresh_status(d);
+                }).await?;
+            }
+            Err(error) => {
+                let message = format!("回答没有送达 dsh，是否生效无法确认：{error:#}");
+                let said = message.clone();
+                self.record_update(id, "dsh/requestAnswerFailed", json!({"requestId": request_id, "error": message}), Sel::Open, move |d| {
+                    if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                        p.stale = true;
+                    }
+                    d.agent.error = Some(said);
+                    refresh_status(d);
+                }).await?;
+                self.changed(id);
+                return Err(error);
+            }
+        }
+        self.changed(id);
+        Ok(true)
+    }
+
+    /// Before a `session/cancel`: the requests connection `c`'s dsh still
+    /// waits on, marked sent so that nobody answers them but the cancel.
+    async fn dsh_claim_requests(&self, id: &str, c: &Connection) -> Vec<PendingRequest> {
+        let owned = self.owner(id).await;
+        let (agent, generation) = (id.to_owned(), c.generation);
+        let claimed = self.stored_owned(owned, move |store| {
+            let open: Vec<PendingRequest> = store.pending(&agent)?.into_iter()
+                .filter(|p| p.method == PERMISSION && !p.stale && p.params["_responseSent"] != true && p.params["_runtimeGeneration"] == generation)
+                .collect();
+            if !open.is_empty() {
+                let ids: Vec<String> = open.iter().map(|p| p.id.clone()).collect();
+                store.update_meta(&agent, "dsh/requestsCancelling", &json!({"requestIds": ids}), |m| {
+                    for p in m.pending.iter_mut().filter(|p| ids.contains(&p.id)) {
+                        p.params["_responseSent"] = true.into();
+                    }
+                })?;
+            }
+            Ok(open)
+        }).await;
+        claimed.unwrap_or_else(|error| {
+            eprintln!("Workspace dsh requests not cancelled: {error:#}");
+            Vec::new()
+        })
+    }
+
+    /// After a `session/cancel`: each request `dsh_claim_requests` took
+    /// answered `cancelled`, as ACP asks, once, and its card gone.
+    async fn dsh_answer_cancelled(&self, id: &str, c: &Connection, open: Vec<PendingRequest>) {
+        if open.is_empty() {
+            return;
+        }
+        for p in &open {
+            let _ = c.dsh.respond(p.params["_dshRequest"].clone(), json!({"outcome": {"outcome": "cancelled"}})).await;
+        }
+        let ids: Vec<String> = open.iter().map(|p| p.id.clone()).collect();
+        let data = json!({"requestIds": ids});
+        let written = self.record_update(id, "dsh/requestsCancelled", data, Sel::Open, move |d| {
+            d.pending.retain(|p| !ids.contains(&p.id));
+            refresh_status(d);
+        }).await;
+        if let Err(error) = written {
+            eprintln!("Workspace dsh requests' cancel not recorded: {error:#}");
+        }
+        self.changed(id);
+    }
+
     /// Under the Agent gate (a close): a running Turn interrupted and given
     /// STOP_LIMIT to end, then dsh stopped (`Dsh::shutdown`, its group with it).
     pub(crate) async fn dsh_close_runtime(&self, id: &str) -> Result<()> {
         let Some(c) = self.dshs.lock().unwrap().get(id).cloned() else { return Ok(()) };
         let running = c.prompt.lock().unwrap().is_some();
+        let open = if running { self.dsh_claim_requests(id, &c).await } else { Vec::new() };
         if running && c.dsh.notify("session/cancel", json!({"sessionId": c.session})).await.is_ok() {
+            self.dsh_answer_cancelled(id, &c, open).await;
             // Until its end is recorded: the connection is removed only after.
             let _ = tokio::time::timeout(STOP_LIMIT, async {
                 while self.dsh_current(id, c.generation).is_some()

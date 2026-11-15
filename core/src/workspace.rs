@@ -1645,6 +1645,11 @@ impl Workspace {
     }
 
     async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], skills: &[SkillRef]) -> Result<Value> {
+        // A dsh Agent's own path (a Brief reminder Turn, brief_turns): not Codex's.
+        if self.listed(id).await?.harness == "dsh" {
+            anyhow::ensure!(images.is_empty() && skills.is_empty(), "dsh Agent 暂不接收图片或 skill。A dsh Agent takes no images or skills yet.");
+            return self.dsh_send_locked(id, text, client_id).await;
+        }
         self.ensure_rewind_settled(id).await?;
         // Its checks read the metadata, receipts and Turn statuses: the open
         // and newest Turns as the Agent holds them (`Sel::Named`).
@@ -2734,8 +2739,9 @@ impl Workspace {
                 if self.opencode_respond(&a.id, request_id, &response).await? { return Ok(()); }
                 continue;
             }
-            // Core answers every request of a dsh Agent itself (YN-119 S2a): none is the user's.
+            // A request past a dsh Agent's sandbox at Ask you first (YN-119 §3.6).
             if a.harness == "dsh" {
+                if self.dsh_respond(&a.id, request_id, &response).await? { return Ok(()); }
                 continue;
             }
             // Re-read Pending under the same lock as disconnect; reply and

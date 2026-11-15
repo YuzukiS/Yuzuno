@@ -287,13 +287,13 @@ async fn a_turn_reads_dshs_updates_into_items_and_ends_with_its_answer() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
-/// A request past dsh's sandbox is refused by Core (§3.6, S2a), at Ask too:
+/// A request past dsh's sandbox at Auto-approve is refused by Core (§3.6):
 /// dsh gets reject-once, the user nothing to answer, and the Turn goes on.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_request_past_the_sandbox_is_refused_by_core_and_never_reaches_the_user() {
+async fn a_request_past_the_sandbox_is_refused_by_core_at_auto_approve() {
     let lab = Lab::new();
-    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    lab.agent(ID, Some("auto"), Some("deepseek"), json!({}), json!({}));
     let receipt = lab.send("c1", "ASK").await.unwrap();
     let turn = lab.turn_ended(receipt.turn_id.as_deref().unwrap()).await;
     assert_eq!(turn["status"], "completed");
@@ -302,6 +302,132 @@ async fn a_request_past_the_sandbox_is_refused_by_core_and_never_reaches_the_use
     assert_eq!(item(&turn, "commandExecution")[0]["permission"], json!({"answer": "refused", "by": "core"}));
     let d = lab.ws.store.detail(ID).unwrap();
     assert!(d.pending.is_empty(), "nothing waits for the user");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A request past dsh's sandbox at Ask you first is the user's (§3.6): a
+/// card with the command, its sandbox permissions and why; the Agent waits;
+/// allow once sends dsh's allow-once, decline its reject-once, each once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_request_past_the_sandbox_at_ask_is_a_card_the_user_allows_or_declines() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    for (client, decision, option, answer) in [("c1", "accept", "allow-once", "allowed"), ("c2", "decline", "reject-once", "refused")] {
+        let running = lab.send(client, "ASK").await.unwrap().turn_id.unwrap();
+        let d = lab.until("the card", |d| !d.pending.is_empty()).await;
+        let card = d.pending[0].clone();
+        assert_eq!((card.method.as_str(), d.agent.status.as_str()), (PERMISSION, "waiting"));
+        assert_eq!((&card.params["command"], &card.params["reason"], &card.params["sandboxPermissions"], &card.params["turnId"]),
+            (&json!("touch ../outside"), &json!("The test asks."), &json!("danger-full-access"), &json!(running)));
+        assert_eq!(card.params["availableDecisions"], json!(["accept", "decline"]));
+        assert!(lab.send("c9", "more").await.unwrap_err().to_string().contains("一轮结束前不能追加"), "busy while it waits");
+        let refused = lab.ws.respond(&card.id, json!({"decision": "acceptForSession"})).await.unwrap_err();
+        assert!(refused.to_string().contains("accept"), "{refused}");
+        lab.ws.respond(&card.id, json!({"decision": decision})).await.unwrap();
+        let turn = lab.turn_ended(&running).await;
+        assert_eq!(turn["status"], "completed");
+        let said: Value = serde_json::from_str(item(&turn, "agentMessage")[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(said, json!({"outcome": {"outcome": "selected", "optionId": option}}), "what dsh was answered");
+        assert_eq!(item(&turn, "commandExecution")[0]["permission"], json!({"answer": answer, "by": "user"}));
+        let d = lab.ws.store.detail(ID).unwrap();
+        assert!(d.pending.is_empty());
+        assert_eq!(d.agent.status, "idle");
+        assert!(lab.ws.respond(&card.id, json!({"decision": decision})).await.is_err(), "answered once");
+    }
+    let answers = lab.log(ID).into_iter().filter(|r| r["kind"] == "answer").count();
+    assert_eq!(answers, 2, "each answer went once");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// An interrupt while a card waits (§3.5, §3.6): dsh's request is answered
+/// `cancelled`, as ACP asks, the card goes, and the Turn ends interrupted.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_interrupt_answers_an_open_request_cancelled() {
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let running = lab.send("c1", "ASK").await.unwrap().turn_id.unwrap();
+    let card = lab.until("the card", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.interrupt(ID).await.unwrap();
+    assert_eq!(lab.turn_ended(&running).await["status"], "interrupted");
+    let d = lab.until("the card is gone", |d| d.pending.is_empty()).await;
+    assert_eq!(d.agent.status, "idle");
+    let answers: Vec<Value> = lab.log(ID).into_iter().filter(|r| r["kind"] == "answer").collect();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["result"], json!({"outcome": {"outcome": "cancelled"}}));
+    assert!(lab.ws.respond(&card.id, json!({"decision": "accept"})).await.is_err(), "nothing more goes");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// With the Workspace MCP (§3.7, §3.1): each start names it to dsh, an http
+/// server with its credential as a header, never in dsh's argv, environment
+/// or files; AGENTS.md holds the session notice; the Agent is ready for mail.
+/// A Turn's end is journaled as a completion once (an unread result).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_start_names_the_workspace_mcp_and_writes_the_session_notice() {
+    let lab = Lab::new();
+    lab.ws.collaboration_url.set("http://127.0.0.1:4999".into()).unwrap();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let turn = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.turn_ended(&turn).await["status"], "completed");
+    let mcp: Vec<Value> = lab.log(ID).into_iter().filter(|r| r["kind"] == "mcp").collect();
+    assert_eq!(mcp.len(), 1);
+    assert_eq!(mcp[0]["servers"], json!([{"type": "http", "name": "yuzuno", "url": format!("http://127.0.0.1:4999/mcp/{ID}"),
+        "headerNames": ["Authorization"]}]));
+    let config = crate::collaboration_mcp::agent_http_config_in(&lab.ws.store, ID, "http://127.0.0.1:4999").unwrap();
+    let token = config["headers"]["Authorization"].as_str().unwrap().trim_start_matches("Bearer ").to_owned();
+    assert!(token.len() > 16);
+    let home = lab.root.join("data/dsh").join(ID);
+    let notice = std::fs::read_to_string(home.join("home/AGENTS.md")).unwrap();
+    assert_eq!(notice, crate::guide::session_notice());
+    let run = &lab.acp_runs(ID)[0];
+    for (place, text) in [("argv and environment", run.to_string()), ("overlay", std::fs::read_to_string(home.join("overlay.yml")).unwrap()),
+        ("AGENTS.md", notice)] {
+        assert!(!text.contains(&token), "the credential in dsh's {place}");
+    }
+    assert!(lab.ws.collaboration_status(ID).await.is_some_and(|s| s.ready));
+    // Journaled just after the Turn's end, as Claude's is.
+    lab.until("its result is unread", |d| d.agent.unread_count == 1).await;
+    let db = lab.ws.store.db.read().unwrap();
+    let ends: i64 = db.query_row("SELECT COUNT(*) FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2",
+        rusqlite::params![ID, turn], |r| r.get(0)).unwrap();
+    drop(db);
+    assert_eq!(ends, 1);
+    // A new dsh resumes the session with it named again.
+    lab.ws.dsh_stop_all().await;
+    lab.ws.reconnect(ID).await.unwrap();
+    let mcp: Vec<Value> = lab.log(ID).into_iter().filter(|r| r["kind"] == "mcp").collect();
+    assert_eq!((mcp.len(), &mcp[1]["method"], &mcp[1]["servers"][0]["name"]), (2, &json!("session/resume"), &json!("yuzuno")));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// dsh has no Stop hook (§3.5): a Project Agent's Turn that ends without a
+/// Brief update gets Codex's one reminder Turn, through dsh's own send, and
+/// that Turn is never reminded itself. Its session starts with the rules.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_turn_without_a_brief_update_gets_one_reminder_turn() {
+    let lab = Lab::new();
+    lab.ws.collaboration_url.set("http://127.0.0.1:4999".into()).unwrap();
+    let fake = crate::brief_turns::tests::Fake::member(ID);
+    lab.ws.brief_turns.set_seam(fake.clone());
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let missed = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.turn_ended(&missed).await["status"], "completed");
+    let notice = std::fs::read_to_string(lab.root.join("data/dsh").join(ID).join("home/AGENTS.md")).unwrap();
+    assert!(notice.starts_with(crate::guide::session_notice()) && notice.ends_with("BRIEF HARD RULES: call brief_update every turn."), "{notice}");
+    lab.until("its end is journaled", |d| d.agent.unread_count == 1).await;
+    lab.ws.check_brief_turns().await.unwrap();
+    assert_eq!(fake.recorded(ID, &missed).map(|o| o.0).as_deref(), Some("reminded"));
+    let d = lab.until("the reminder Turn ends", |d| d.turns.len() == 2 && d.turns[1]["status"] == "completed" && d.agent.unread_count == 2).await;
+    let input = &item(&d.turns[1], "userMessage")[0];
+    assert!(input["content"][0]["text"].as_str().unwrap().starts_with("[Yuzuno Brief reminder"), "{input}");
+    assert!(input["clientId"].as_str().unwrap().starts_with(crate::brief_turns::REMINDER_CLIENT_PREFIX));
+    lab.ws.check_brief_turns().await.unwrap();
+    assert_eq!(fake.recorded(ID, &missed).map(|o| o.0).as_deref(), Some("remindFailed"), "its reminder ended without an update");
+    assert_eq!(lab.log(ID).iter().filter(|r| r["method"] == "session/prompt").count(), 2, "no reminder of the reminder");
     lab.ws.close_agent(ID).await.unwrap();
 }
 

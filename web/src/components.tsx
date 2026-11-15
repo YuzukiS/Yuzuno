@@ -1388,9 +1388,12 @@ function CodexPendingCard({
   const kept = codexAnswers(answers, questions || [])!;
   const keptEmpty = !Object.values(kept).some(Boolean);
   useEffect(() => { draft.save(kept, keptEmpty); }, [answers]);
+  // dsh's request past its sandbox (YN-119 §3.6) has a command's shape:
+  // allow once or decline, as availableDecisions says.
   const approval = [
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",
+    "dsh/permission",
   ].includes(request.method);
   const decisions = (request.params.availableDecisions || [
     "accept",
