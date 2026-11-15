@@ -11,6 +11,7 @@ import {
   fileSize,
   MAX_FILES,
   splitDropped,
+  uploadFileName,
   validDraftFiles,
   validateFileChoice,
 } from "../src/file-input.ts";
@@ -38,6 +39,21 @@ test("file sizes are decimal with one place, as the Agent's notice writes them",
   assert.equal(fileSize(860000), "860.0 KB");
   assert.equal(fileSize(2400000), "2.4 MB");
   assert.equal(fileSize(40 * 1024 * 1024), "41.9 MB");
+});
+
+test("an upload name is cut to 200 units without leaving half an emoji (YN-145)", () => {
+  assert.equal(uploadFileName("q3-report.pdf"), "q3-report.pdf");
+  assert.equal(uploadFileName("a".repeat(300)), "a".repeat(200));
+  // The 200th unit would be the high half of an emoji: it is dropped, so
+  // encodeURIComponent gets a whole string.
+  const split = `${"a".repeat(199)}😀b`;
+  assert.equal(uploadFileName(split), "a".repeat(199));
+  assert.equal(encodeURIComponent(uploadFileName(split)), "a".repeat(199));
+  // A whole emoji before the cut survives.
+  const whole = `${"a".repeat(198)}😀b`;
+  assert.equal(uploadFileName(whole), `${"a".repeat(198)}😀`);
+  assert.equal(uploadFileName(""), "Pasted file");
+  assert.equal(uploadFileName("😀"), "😀");
 });
 
 test("the choice is refused before anything is sent: count, empty files and size (YN-145)", () => {

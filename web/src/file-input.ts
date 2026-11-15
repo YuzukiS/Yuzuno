@@ -38,6 +38,15 @@ export function fileSize(bytes: number): string {
   return `${(bytes / (1000 * 1000)).toFixed(1)} MB`;
 }
 
+/** The name asked of Core for an upload: its first 200 UTF-16 units, never
+ * ending in half a surrogate pair (`encodeURIComponent` throws on one). Core
+ * cleans and shortens it again (core/src/input_files.rs, `safe_name`). */
+export function uploadFileName(name: string) {
+  const cut = (name || "").slice(0, 200);
+  const kept = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+  return kept || "Pasted file";
+}
+
 /** What can be checked before any file is read: how many, and how large. */
 export function validateFileChoice(
   files: readonly File[],

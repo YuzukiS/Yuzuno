@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
-import { appendFile, validateFileChoice, type DraftFile } from "./file-input";
+import { appendFile, uploadFileName, validateFileChoice, type DraftFile } from "./file-input";
 import type { ComposerDraft } from "./composer-draft";
 import { strings, useLanguage, useStrings } from "./i18n";
 
@@ -59,7 +59,7 @@ export function useFileUploads(
           // draft stores that, so a download asks for the stored name.
           const saved = await api<Omit<DraftFile, "agentId">>(
             `/agents/${encodeURIComponent(target)}/files?name=${encodeURIComponent(
-              file.name.slice(0, 200) || "Pasted file",
+              uploadFileName(file.name),
             )}`,
             {
               method: "POST",
