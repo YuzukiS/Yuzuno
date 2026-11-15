@@ -872,8 +872,12 @@ It never holds a key's value or an account's email.
     otherwise grey. At work on its task with no Turn running, it is grey
     with a pill, the first that holds: what it left running (在等 Job
     Awaits a Job, below; its line two then says only what it said and its
-    clock, not the wait again); its PR's (审查中 In review, 等负责人 Lead's turn and
-    the others below); 受阻 Blocked, its task blocked; 已交结果 Result in, a
+    clock, not the wait again); its PR's (审查中 In review, 要改 Changes asked,
+    CI 红了 CI failed, 等合并 Ready to merge, 已合入 Merged, and 在等 CI
+    Awaits CI while the checks on its head are pending or running; a PR it
+    hasn't handed in never says 等负责人 Lead's turn — that is the handed-in
+    executor's pill — so one with no review round yet is 等下一轮 Between
+    turns); 受阻 Blocked, its task blocked; 已交结果 Result in, a
     result in on its own dispatch (`resultAt`); else 等下一轮 Between turns.
   - A standing Agent's: working while a Turn runs (compacting too); needs
     you; ✕ for an error or a failed Turn not yet shown; ✓ for a Turn it
