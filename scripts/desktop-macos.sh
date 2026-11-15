@@ -38,11 +38,12 @@ arch=$(uname -m)
 # The oldest macOS each build is for: Tauri writes it to the bundle's
 # LSMinimumSystemVersion and sets cargo's MACOSX_DEPLOYMENT_TARGET from it.
 # Apple silicon Macs start at macOS 11, which is also what Rust's
-# aarch64-apple-darwin target links for; Intel keeps Tauri's default. The
-# build stops below if the executable says otherwise.
+# aarch64-apple-darwin target links for. The build stops below if the
+# executable says otherwise. macOS is Apple silicon only (YN-161): Intel
+# Macs are no longer supported, so an Intel Mac is refused below.
 case "$arch" in
   arm64) triple=aarch64-apple-darwin minimum=11.0 ;;
-  x86_64) triple=x86_64-apple-darwin minimum=10.13 ;;
+  x86_64) echo "This builds the macOS app for Apple silicon only; Intel Macs are not supported." >&2; exit 69 ;;
   *) echo "Unknown architecture $arch" >&2; exit 69 ;;
 esac
 toolchain=$(ls -d "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/"$channel-$triple" 2>/dev/null) ||

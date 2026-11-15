@@ -95,7 +95,8 @@ drops `linker-signed` and any other change breaks the signature, but Apple's
 `strip` signs again as the linker did, so the signature alone cannot show a
 strip. `build.json` records the SDK's version and path, `ld -v`
 and `sw_vers` among the toolchains, and per binary the minimum, architectures,
-libraries and signature as its compatibility. Intel Macs are not covered.
+libraries and signature as its compatibility. macOS is Apple silicon (arm64)
+only (YN-161); Intel Macs are not supported.
 The isolated smoke additionally exercises the production binary on the release
 host; it is not a claim of a complete Linux distribution matrix.
 
