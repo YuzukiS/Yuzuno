@@ -46,6 +46,8 @@ const MAX_EXTENSION: usize = 16;
 const TOO_LARGE: &str = "Files in one message must total at most 40 MiB";
 // One upload at a time: the folder's room is counted before it is written.
 static SAVING: OnceLock<Arc<Semaphore>> = OnceLock::new();
+// One copy to an Agent at a time: bounds the recipient's quota check.
+static ADOPTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A saved file as a message names it: its content's SHA-256, its safe name
 /// and its size. On disk it is `<folder>/<id>/<name>`.
@@ -120,6 +122,13 @@ fn safe_owner(owner: &str) -> Result<()> {
 pub fn agent_dir(root: &FsPath, agent: &str) -> Result<PathBuf> {
     safe_owner(agent)?;
     Ok(root.join("input-files").join(agent))
+}
+
+/// A Project's files written on Home, before any is sent:
+/// `home-files/<projectId>` (YN-145 F6).
+pub fn home_dir(root: &FsPath, project: &str) -> Result<PathBuf> {
+    safe_owner(project)?;
+    Ok(root.join("home-files").join(project))
 }
 
 /// `dir/<id>/<name>`, for an ID that is a SHA-256 and a name that is safe.
@@ -403,6 +412,56 @@ pub(crate) fn message_bytes(dir: &FsPath, refs: &[FileRef]) -> Result<Vec<Vec<u8
     }).collect()
 }
 
+/// Checks the files a message from Home names (YN-145 F6), before anything is
+/// kept or sent: each in the Project's folder, unchanged since upload, within
+/// the count and the total. Blocking.
+pub fn check_home(root: &FsPath, project: &str, refs: &[FileRef]) -> Result<()> {
+    check(&home_dir(root, project)?, refs).map(drop)
+}
+
+/// Copies the files a message from Home names (YN-145 F6) from the Project's
+/// folder to `agent`'s own, once its recipient is known: a copy, never a hard
+/// link, so an Agent that changes its own cannot change the staging copy or
+/// another recipient's. One the Agent already has is left as it is; the
+/// Agent's own room must fit the rest. Called again, it copies nothing twice,
+/// so a retry is the same. Blocking.
+pub fn adopt(root: &FsPath, project: &str, agent: &str, refs: &[FileRef]) -> Result<()> {
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let from = home_dir(root, project)?;
+    let to = agent_dir(root, agent)?;
+    check(&from, refs)?;
+    let _one = ADOPTING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for file in refs {
+        let source = file_path(&from, &file.id, &file.name)?;
+        let target = file_path(&to, &file.id, &file.name)?;
+        if target.exists() {
+            continue;
+        }
+        let (mut reader, len) = open_plain(&source)?;
+        ensure!(len == file.bytes, "Saved file {} changed; attach it again", file.name);
+        make_private(&to)?;
+        let (used, files) = usage(&to)?;
+        ensure!(files < MAX_FOLDER_FILES, "The receiving Agent's saved files reached the 4096-file limit");
+        ensure!(used.saturating_add(file.bytes) <= MAX_FOLDER, "The receiving Agent's saved files reached the 256 MiB limit");
+        make_private(target.parent().context("Invalid file reference")?)?;
+        // Created new (O_EXCL), readable and writable by its owner only, and
+        // made read-only once it is the file that was checked.
+        let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&target)?;
+        let copied = std::io::copy(&mut reader, &mut writer)?;
+        writer.sync_all()?;
+        drop(writer);
+        let (mut checkable, size) = open_plain(&target)?;
+        if copied != file.bytes || sha256(&mut checkable, size)? != (file.id.clone(), size) {
+            let _ = std::fs::remove_file(&target);
+            bail!("Saved file {} changed; attach it again", file.name);
+        }
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o400))?;
+    }
+    Ok(())
+}
+
 /// Removes a deleted Agent's attached files: its own folder only, and not a
 /// link put in its place. Blocking.
 pub(crate) fn remove_agent_dir(root: &FsPath, agent: &str) -> Result<()> {
@@ -418,6 +477,9 @@ pub(crate) fn remove_agent_dir(root: &FsPath, agent: &str) -> Result<()> {
 /// The user's routes, on Core's own port and on the phone entry: upload an
 /// Agent's file and download one. An Agent's credential (any Authorization
 /// header) is refused: no Agent attaches a file for the user.
+///
+/// A Project's routes are registered with the user's Home routes
+/// (`project_requests::router`), under the same refusal.
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/agents/{id}/files", post(upload_route))
@@ -426,8 +488,8 @@ pub fn router() -> Router<Arc<Workspace>> {
 }
 
 #[derive(Deserialize)]
-struct Upload {
-    name: String,
+pub struct Upload {
+    pub name: String,
 }
 
 /// `POST /api/agents/{id}/files?name=`: the body is the file's bytes. The
@@ -448,6 +510,53 @@ async fn upload_route(
     let declared = request.headers().get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok()?.parse().ok());
     Ok(Json(save_stream(dir, &upload.name, declared, request.into_body()).await?))
+}
+
+/// `POST /api/projects/{id}/files?name=`, for the files written on Home
+/// (YN-145 F6): the body is the file's bytes, kept in the Project's staging
+/// folder. Only for a Project that is not archived, as its images.
+pub async fn home_upload_route(
+    State(ws): State<Arc<Workspace>>,
+    Path(project): Path<String>,
+    Query(upload): Query<Upload>,
+    request: Request,
+) -> Result<Json<FileRef>, ApiError> {
+    let _permit = ws.admission.enter_work()?;
+    let dir = home_dir(&ws.data_dir, &project)?;
+    let id = project.clone();
+    ws.stored(move |store| {
+        let (name, archived) = crate::projects::project_labels(&*store.db.read()?)?
+            .remove(&id)
+            .context("project_not_found: Project does not exist")?;
+        ensure!(!archived, "project_archived: {name} is archived; unarchive it to attach files");
+        Ok(())
+    })
+    .await?;
+    let declared = request.headers().get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse().ok());
+    Ok(Json(save_stream(dir, &upload.name, declared, request.into_body()).await?))
+}
+
+/// `GET /api/projects/{id}/files/{file_id}/{name}` (YN-145 F6): a file in
+/// the Project's staging folder, served as an Agent's. An archived Project's
+/// are still read, as its requests are.
+pub async fn home_read_route(
+    State(ws): State<Arc<Workspace>>,
+    Path((project, id, name)): Path<(String, String, String)>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    let path = file_path(&home_dir(&ws.data_dir, &project)?, &id, &name)?;
+    ws.stored(move |store| crate::projects::ensure_exists(&*store.db.read()?, &project)).await?;
+    let checked = path.clone();
+    tokio::task::spawn_blocking(move || open_plain(&checked).map(drop)).await??;
+    let mut response = tower_http::services::ServeFile::new(path).oneshot(request).await?.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+    headers.insert(header::CONTENT_DISPOSITION, attachment(&name));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 /// `GET /api/agents/{id}/files/{file_id}/{name}`, for a live or closed

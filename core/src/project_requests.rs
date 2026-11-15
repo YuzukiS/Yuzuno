@@ -80,6 +80,15 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN images TEXT"))?;
         }
     }
+    // files: the files the user attached on Home (YN-145), a JSON array of
+    // their references; NULL without any. Older Cores ignore the column.
+    for table in ["project_requests", "project_request_replies"] {
+        let has: bool = db.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='files')"), [], |r| r.get(0))?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN files TEXT"))?;
+        }
+    }
     routes::migrate(db)
 }
 
@@ -100,6 +109,11 @@ pub(crate) struct Words {
     /// the message goes to is given its own copy (`send`).
     #[serde(default)]
     pub images: Vec<String>,
+    /// Files the user attached on Home (YN-145), by their references in the
+    /// Project's files written on Home (input_files::home_dir). Each Agent the
+    /// message goes to is given its own copy (`send`).
+    #[serde(default)]
+    pub files: Vec<crate::input_files::FileRef>,
 }
 
 /// Refused before anything was kept or sent: the page keeps the words, and
@@ -165,6 +179,86 @@ async fn check_images(ws: &Workspace, project: &str, images: &[String]) -> Resul
     tokio::task::spawn_blocking(move || crate::input_images::check_home(&root, &project, &images))
         .await?
         .map_err(|error| not_submitted(format!("home_images: {error}. Nothing was sent, and your message is kept.")))
+}
+
+/// Checks the files a message to a Project names (YN-145), before its lock is
+/// taken: each in the Project's files written on Home, unchanged, and within
+/// a message's count and total. Refused, nothing is kept or sent.
+async fn check_files(ws: &Workspace, project: &str, files: &[crate::input_files::FileRef]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let (root, project, files) = (ws.data_dir.clone(), project.to_owned(), files.to_vec());
+    tokio::task::spawn_blocking(move || crate::input_files::check_home(&root, &project, &files))
+        .await?
+        .map_err(|error| not_submitted(format!("home_files: {error}. Nothing was sent, and your message is kept.")))
+}
+
+/// Refuses a message with files when one of the Agents it goes to takes no
+/// files (YN-145), read in the caller's transaction: nothing is kept or sent.
+fn refuse_files(db: &Connection, to: &[String], files: &[crate::input_files::FileRef]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    for agent in to {
+        let (name, harness): (Option<String>, Option<String>) = db
+            .query_row("SELECT json_extract(data,'$.agent.name'),json_extract(data,'$.agent.harness') FROM agents WHERE id=?1", [agent],
+                |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .unwrap_or_default();
+        if !crate::input_files::takes_files(harness.as_deref().unwrap_or("codex")) {
+            return Err(not_submitted(format!(
+                "files_unsupported: {} answers for this request and can't receive files; Codex, Claude and OpenCode Agents can. \
+                 Nothing was sent, and your message is kept.",
+                name.unwrap_or_else(|| agent.clone())
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Why a message's files could not go to its Agent (YN-145): it takes no
+/// files, or they could not be copied to it. Nothing was sent; `send` refuses
+/// the message.
+#[derive(Debug)]
+pub(crate) struct FilesRefused(pub String);
+
+impl std::fmt::Display for FilesRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "home_files: {}. Nothing was sent, and your message is kept.", self.0)
+    }
+}
+
+impl std::error::Error for FilesRefused {}
+
+/// The reason a refused message's files could not go, if that is why.
+pub(crate) fn files_refused(error: &anyhow::Error) -> Option<&str> {
+    let inner = error.downcast_ref::<MessageNotSubmitted>().map_or(error, |refused| &refused.0);
+    inner.downcast_ref::<FilesRefused>().map(|refused| refused.0.as_str())
+}
+
+/// Gives `agent` its own copy of a new message's files (input_files::adopt),
+/// when it takes files; refused (`FilesRefused`), nothing is sent.
+pub(crate) async fn adopt_files(ws: &Workspace, project: &str, agent: &str, files: &[crate::input_files::FileRef]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let refused = |reason: String| anyhow::Error::new(MessageNotSubmitted(anyhow::Error::new(FilesRefused(reason))));
+    let to = agent.to_owned();
+    let found = ws.stored(move |store| store.agent(&to)).await?;
+    if !crate::input_files::takes_files(&found.harness) {
+        return Err(refused(format!("{} can't receive files", found.name)));
+    }
+    // A remote Agent's files are not copied here (a later slice carries them
+    // to its machine); the hand-off goes without them, as with an Agent that
+    // takes none.
+    if found.remote.is_some() {
+        return Err(refused(format!("{} is on another machine, which cannot receive files yet", found.name)));
+    }
+    let (root, project, agent, files) = (ws.data_dir.clone(), project.to_owned(), agent.to_owned(), files.to_vec());
+    tokio::task::spawn_blocking(move || crate::input_files::adopt(&root, &project, &agent, &files))
+        .await?
+        .map_err(|error| refused(error.to_string()))
 }
 
 /// Refuses a message with images when one of the Agents it goes to takes no
@@ -261,9 +355,11 @@ struct Request {
     state: String,
     /// The images the user attached (YN-134), by ID; none for most.
     images: Vec<String>,
+    /// The files the user attached (YN-145); none for most.
+    files: Vec<crate::input_files::FileRef>,
 }
 
-const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state,images";
+const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state,images,files";
 
 fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
     Ok(Request {
@@ -277,6 +373,7 @@ fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
         message_id: r.get(7)?,
         state: r.get(8)?,
         images: stored_images(r.get(9)?),
+        files: stored_files(r.get(10)?),
     })
 }
 
@@ -297,6 +394,16 @@ fn stored_images(raw: Option<String>) -> Vec<String> {
 /// NULL without images, as rows written before them.
 fn kept_images(images: &[String]) -> Result<Option<String>> {
     Ok((!images.is_empty()).then(|| serde_json::to_string(images)).transpose()?)
+}
+
+/// Files as kept (YN-145): what Core checked, so a row it cannot read shows none.
+fn stored_files(raw: Option<String>) -> Vec<crate::input_files::FileRef> {
+    raw.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default()
+}
+
+/// NULL without files, as rows written before them.
+fn kept_files(files: &[crate::input_files::FileRef]) -> Result<Option<String>> {
+    Ok((!files.is_empty()).then(|| serde_json::to_string(files)).transpose()?)
 }
 
 /// The Workspace, and the Project's name and whether it is archived, for one message.
@@ -358,19 +465,26 @@ async fn lock(ws: &Workspace, project: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// YN-134; never again for a retry). Another message under that client ID,
 /// one whose receipt names another `origin`, is not this one: refused,
 /// nothing sent. Refused before it was sent, `Err` says so.
-async fn send(ws: &Arc<Workspace>, project: &str, agent: &str, client: &str, origin: Value,
-    compose: impl FnOnce(Option<String>) -> MessageInput) -> Result<MessageReceipt> {
+async fn send(ws: &Arc<Workspace>, project: &str, agent: &str, client: &str, files: &[crate::input_files::FileRef],
+    files_may_differ: bool, origin: Value, compose: impl FnOnce(Option<String>) -> MessageInput) -> Result<MessageReceipt> {
     let (to, id) = (agent.to_owned(), client.to_owned());
-    let input = match ws.stored(move |store| store.receipt(&to, &id)).await? {
-        Some(previous) if previous.origin.as_ref() == Some(&origin) => previous.input,
+    let wanted = files.to_vec();
+    let (input, sent_files) = match ws.stored(move |store| store.receipt(&to, &id)).await? {
+        // A retry is the same message: its words, images and files as they
+        // were. A route's hand-off may have dropped its files on the first
+        // try, so a route matches on its origin whatever files it carried,
+        // and keeps the files that first message carried.
+        Some(previous) if previous.origin.as_ref() == Some(&origin) && (files_may_differ || previous.files == wanted) =>
+            (previous.input, previous.files),
         Some(_) => return Err(not_submitted("This clientMessageId was already used for another message. Nothing was sent.".into())),
         None => {
             let input = compose(follow_up_turn(&ws.send_view(agent).await.map_err(|error| not_submitted(error.to_string()))?));
             adopt_images(ws, project, agent, &input.images).await?;
-            input
+            adopt_files(ws, project, agent, files).await?;
+            (input, files.to_vec())
         }
     };
-    ws.send_message_from(agent, input, Vec::new(), Vec::new(), Some(origin)).await
+    ws.send_message_from(agent, input, Vec::new(), sent_files, Some(origin)).await
 }
 
 fn announce(ws: &Workspace, project: &str) {
@@ -386,6 +500,7 @@ fn announce(ws: &Workspace, project: &str) {
 pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> Result<Value> {
     check(&words)?;
     check_images(ws, project, &words.images).await?;
+    check_files(ws, project, &words.files).await?;
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
@@ -398,13 +513,14 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
                 params![id, said.client_message_id], request_row)
             .optional()?;
         if let Some(found) = found {
-            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images,
-                "This clientMessageId was already used for another message");
+            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images
+                && found.files == said.files, "This clientMessageId was already used for another message");
             return Ok((place, found));
         }
         refuse_archived(&place)?;
         let front = front_desk_now(&tx, &id)?;
         refuse_images(&tx, std::slice::from_ref(&front), &said.images)?;
+        refuse_files(&tx, std::slice::from_ref(&front), &said.files)?;
         let n: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_requests WHERE project_id=?1", [&id], |r| r.get(0))?;
         let request = Request {
             id: uuid::Uuid::new_v4().to_string(),
@@ -417,19 +533,20 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
             message_id: said.client_message_id,
             state: "open".into(),
             images: said.images,
+            files: said.files,
         };
         tx.execute(
-            "INSERT INTO project_requests(id,project_id,n,text,text_blocks,created_at,front_agent_id,message_id,state,images)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT INTO project_requests(id,project_id,n,text,text_blocks,created_at,front_agent_id,message_id,state,images,files)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![request.id, id, request.n, request.text, kept_blocks(&request.text_blocks)?, request.created_at,
-                request.front_agent_id, request.message_id, request.state, kept_images(&request.images)?],
+                request.front_agent_id, request.message_id, request.state, kept_images(&request.images)?, kept_files(&request.files)?],
         )?;
         tx.commit()?;
         Ok((place, request))
     }).await?;
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"workspaceId":place.workspace});
     let head = request_head(&place.workspace, &place.name, project, request.n);
-    let sent = send(ws, project, &request.front_agent_id, &request.message_id, origin, |turn| {
+    let sent = send(ws, project, &request.front_agent_id, &request.message_id, &request.files, false, origin, |turn| {
         message(&request.message_id, &head, &request.text, request.text_blocks.as_deref(), &request.images, turn)
     }).await;
     match sent {
@@ -503,6 +620,7 @@ fn follow_up_to(db: &Connection, project: &str, request: &str) -> Result<Vec<Str
 pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words: Words) -> Result<Value> {
     check(&words)?;
     check_images(ws, project, &words.images).await?;
+    check_files(ws, project, &words.files).await?;
     let gate = lock(ws, project).await;
     let _held = gate.lock().await;
     let (id, said) = (project.to_owned(), words.clone());
@@ -519,21 +637,23 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
                 params![request.id, said.client_message_id], reply_row)
             .optional()?;
         if let Some(found) = found {
-            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images,
-                "This clientMessageId was already used for another message");
+            ensure!(found.text == said.text && found.text_blocks == said.text_blocks && found.images == said.images
+                && found.files == said.files, "This clientMessageId was already used for another message");
             return Ok((place, request, found));
         }
         refuse_archived(&place)?;
         let to = follow_up_to(&tx, &id, &request.id)?;
-        // Every Agent it goes to takes its images, or none is sent any of it.
+        // Every Agent it goes to takes its images and files, or none is sent any of it.
         refuse_images(&tx, &to, &said.images)?;
+        refuse_files(&tx, &to, &said.files)?;
         let m: i64 = tx.query_row("SELECT COALESCE(MAX(n),0)+1 FROM project_request_replies WHERE request_id=?1", [&request.id], |r| r.get(0))?;
         let reply = Reply { n: m, text: said.text, text_blocks: said.text_blocks, at: crate::model::now(), message_id: said.client_message_id,
-            delivered_to: to, images: said.images };
+            delivered_to: to, images: said.images, files: said.files };
         tx.execute(
-            "INSERT INTO project_request_replies(request_id,n,text,text_blocks,at,message_id,delivered_to,images) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO project_request_replies(request_id,n,text,text_blocks,at,message_id,delivered_to,images,files)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![request.id, reply.n, reply.text, kept_blocks(&reply.text_blocks)?, reply.at, reply.message_id,
-                serde_json::to_string(&reply.delivered_to)?, kept_images(&reply.images)?],
+                serde_json::to_string(&reply.delivered_to)?, kept_images(&reply.images)?, kept_files(&reply.files)?],
         )?;
         tx.commit()?;
         Ok((place, request, reply))
@@ -542,7 +662,7 @@ pub(crate) async fn follow_up(ws: &Arc<Workspace>, project: &str, n: i64, words:
     let origin = json!({"kind":ORIGIN,"projectId":project,"requestId":request.id,"request":request.n,"reply":reply.n,"workspaceId":place.workspace});
     let mut receipts = Vec::new();
     for agent in &reply.delivered_to {
-        let sent = send(ws, project, agent, &reply.message_id, origin.clone(), |turn| {
+        let sent = send(ws, project, agent, &reply.message_id, &reply.files, false, origin.clone(), |turn| {
             message(&reply.message_id, &head, &reply.text, reply.text_blocks.as_deref(), &reply.images, turn)
         }).await;
         match sent {
@@ -583,9 +703,11 @@ struct Reply {
     delivered_to: Vec<String>,
     /// The images the user attached (YN-134), by ID.
     images: Vec<String>,
+    /// The files the user attached (YN-145).
+    files: Vec<crate::input_files::FileRef>,
 }
 
-const REPLY: &str = "n,text,text_blocks,at,message_id,delivered_to,images";
+const REPLY: &str = "n,text,text_blocks,at,message_id,delivered_to,images,files";
 
 fn reply_row(r: &rusqlite::Row) -> rusqlite::Result<Reply> {
     Ok(Reply {
@@ -596,6 +718,7 @@ fn reply_row(r: &rusqlite::Row) -> rusqlite::Result<Reply> {
         message_id: r.get(4)?,
         delivered_to: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or_default(),
         images: stored_images(r.get(6)?),
+        files: stored_files(r.get(7)?),
     })
 }
 
@@ -620,8 +743,8 @@ fn reply_view(db: &Connection, request: &str, reply: Reply) -> Result<Value> {
     let delivered_to = reply.delivered_to.iter()
         .map(|agent| Ok(json!({"agentId":agent,"delivery":delivery(db, request, agent, &reply.message_id, Some(reply.n))?})))
         .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"images":reply.images,"at":reply.at,"messageId":reply.message_id,
-        "deliveredTo":delivered_to}))
+    Ok(json!({"n":reply.n,"text":reply.text,"textBlocks":reply.text_blocks,"images":reply.images,"files":reply.files,"at":reply.at,
+        "messageId":reply.message_id,"deliveredTo":delivered_to}))
 }
 
 /// A request as the Project's page reads it: the user's words and blocks as
@@ -638,7 +761,7 @@ fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
         .map(|reply| reply_view(db, &request.id, reply))
         .collect::<Result<Vec<_>>>()?;
     let mut shown = json!({
-        "id":request.id,"n":request.n,"text":request.text,"textBlocks":request.text_blocks,"images":request.images,"title":request.title,
+        "id":request.id,"n":request.n,"text":request.text,"textBlocks":request.text_blocks,"images":request.images,"files":request.files,"title":request.title,
         "createdAt":request.created_at,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
     });
@@ -672,6 +795,8 @@ pub fn router() -> Router<Arc<Workspace>> {
         .route("/api/projects/{id}/front-desk", get(get_front_desk).put(put_front_desk))
         .route("/api/projects/{id}/images", post(crate::input_images::home_upload_route))
         .route("/api/projects/{id}/images/{image_id}", get(crate::input_images::home_read_route))
+        .route("/api/projects/{id}/files", post(crate::input_files::home_upload_route))
+        .route("/api/projects/{id}/files/{file_id}/{name}", get(crate::input_files::home_read_route))
         .route("/api/projects/{id}/requests", get(list).post(post_request))
         .route("/api/projects/{id}/requests/{n}/replies", post(post_reply))
         .route("/api/projects/{id}/cards/{section}/reassign", post(post_reassign))
