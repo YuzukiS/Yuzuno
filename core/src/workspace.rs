@@ -1786,18 +1786,20 @@ impl Workspace {
 
     /// A message without an origin: nothing confirms who wrote it (T-6).
     pub async fn send_message(self: &Arc<Self>, id: &str, input: MessageInput) -> Result<MessageReceipt> {
-        self.send_message_from(id, input, Vec::new(), None).await
+        self.send_message_from(id, input, Vec::new(), Vec::new(), None).await
     }
 
     /// A message with where Core took it from, its `origin`, on its receipt
-    /// (T-6), and any Codex skills it invokes that the Agent's Codex listed
-    /// (`codex_skills`): typed `skill` items after its text, kept on its
-    /// receipt beside the input.
-    pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
+    /// (T-6), any Codex skills it invokes that the Agent's Codex listed
+    /// (`codex_skills`), and the files the user attached (`input_files`):
+    /// typed `skill` items after its text, kept on its receipt beside the
+    /// input with the paths this Agent reads them at.
+    pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>,
+        files: Vec<crate::input_files::FileRef>, origin: Option<Value>) -> Result<MessageReceipt> {
         // Boxed: the send's state is large, and a caller's future (a Home
         // reply's, inside a test's block_on) would otherwise hold it on the
         // stack, one level deeper than before the guard (YN-131).
-        Box::pin(self.send_message_guarded(id, input, skills, origin, |_| Ok(()))).await
+        Box::pin(self.send_message_guarded(id, input, skills, files, origin, |_| Ok(()))).await
     }
 
     /// `send_message_from` with one more check, `guard`: it reads the Agent
@@ -1805,7 +1807,8 @@ impl Workspace {
     /// anything is recorded. When it refuses, nothing is sent, and the
     /// `MessageNotSubmitted` returned holds its error (YN-131, resume.rs).
     /// An ID that has a receipt already returns it without the guard.
-    pub(crate) async fn send_message_guarded(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>,
+    pub(crate) async fn send_message_guarded(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>,
+        files: Vec<crate::input_files::FileRef>, origin: Option<Value>,
         guard: impl FnOnce(&AgentDetail) -> Result<()> + Send) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
@@ -1816,7 +1819,7 @@ impl Workspace {
         // the first send may have gone, and the client keeps its id.
         let (agent, client) = (id.to_owned(), input.client_message_id.clone());
         if let Some(previous) = self.stored(move |store| store.receipt(&agent, &client)).await? {
-            if previous.input != input || previous.skills != skills { bail!("同一消息编号不能提交不同的内容"); }
+            if previous.input != input || previous.skills != skills || previous.files != files { bail!("同一消息编号不能提交不同的内容"); }
             return Ok(previous);
         }
         // What the checks read: the metadata, the open and newest Turns (as
@@ -1830,7 +1833,8 @@ impl Workspace {
         // so every refusal up to there says so. The client keeps its draft
         // and shows no delivery to confirm.
         let admitted = async {
-            if (input.text.trim().is_empty() && input.images.is_empty()) || input.text.len() > crate::model::MAX_MESSAGE_TEXT || input.images.len() > crate::input_images::MAX_IMAGES
+            if (input.text.trim().is_empty() && input.images.is_empty() && files.is_empty())
+                || input.text.len() > crate::model::MAX_MESSAGE_TEXT || input.images.len() > crate::input_images::MAX_IMAGES
                 || input.client_message_id.is_empty() || input.client_message_id.len() > 100 {
                 bail!("消息或消息编号无效");
             }
@@ -1842,6 +1846,13 @@ impl Workspace {
             anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
                 "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";
+            anyhow::ensure!(files.len() <= crate::input_files::MAX_FILES, "Attach at most 8 files per message");
+            anyhow::ensure!(files.is_empty() || crate::input_files::takes_files(&detail.agent.harness),
+                "{} can't receive files; Codex, Claude and OpenCode Agents can", detail.agent.name);
+            anyhow::ensure!(files.is_empty() || (input.question.is_none() && input.clarification.is_none()),
+                "Attach files to a message, not to an answer or form reply");
+            anyhow::ensure!(files.is_empty() || detail.agent.remote.is_none(),
+                "远程 Agent 暂不能接收附件；消息未发送，草稿保留");
             anyhow::ensure!(input.clarification.is_none() || (input.question.is_none() && input.images.is_empty()),
                 "Submit form answers separately from image attachments and native questions");
             if !input.images.is_empty() { crate::input_images::supported(&detail.agent)?; }
@@ -1893,36 +1904,51 @@ impl Workspace {
             if let Some(form) = &input.clarification {
                 self.validate_clarification(&self.listed(id).await?, form, &input.text).await?;
             }
-            Ok::<_, anyhow::Error>(claude)
+            // What the Agent reads: the user's words, then the notice naming
+            // the path of each file; without files, exactly the user's words.
+            // Each file is checked again now, under the Agent's gate.
+            let (text, file_paths) = if files.is_empty() {
+                (input.text.clone(), Vec::new())
+            } else {
+                let (root, agent, refs) = (self.data_dir.clone(), id.to_owned(), files.clone());
+                let paths = tokio::task::spawn_blocking(move || crate::input_files::send_paths(&root, &agent, &refs)).await??;
+                (crate::input_files::with_notice(&input.text, &paths, &files), paths)
+            };
+            Ok::<_, anyhow::Error>((claude, text, file_paths))
         }.await;
-        let claude = match admitted {
-            Ok(claude) => claude,
+        let (claude, text, file_paths) = match admitted {
+            Ok(admitted) => admitted,
             Err(error) if error.is::<crate::collaboration_credentials::MessageNotSubmitted>() => return Err(error),
             Err(error) => return Err(crate::collaboration_credentials::MessageNotSubmitted(error).into()),
         };
-        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(), origin, status: "sending".into(), turn_id: None, error: None };
+        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(),
+            files: files.clone(), file_paths: file_paths.clone(), origin, status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
         let result = if detail.agent.harness == "opencode" {
             match &input.expected_turn_id {
-                Some(expected) => self.opencode_add_input_locked(id, &input.text, expected, &input.client_message_id, &input.images).await,
-                None => self.opencode_send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, true).await,
+                Some(expected) => self.opencode_add_input_locked(id, &text, expected, &input.client_message_id, &input.images).await,
+                None => self.opencode_send_images_locked(id, text.clone(), Some(&input.client_message_id), &input.images, true).await,
             }
         } else if detail.agent.harness == "dsh" {
             // A new message only (`dsh_admit`); a form's answers are one too.
             self.dsh_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
         } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
-            self.claude_answer_form_locked(id, &input).await
+            // The same input, with the words the Agent reads: its files are
+            // kept, its images and pasted blocks unchanged.
+            let mut sent = input.clone();
+            sent.text = text.clone();
+            self.claude_answer_form_locked(id, &sent).await
         } else if input.question.is_some() || input.clarification.is_some() {
             self.answer_locked(id, &input).await
         } else if let Some(expected) = &input.expected_turn_id {
             if claude {
-                self.claude_steer_locked(id, &input.text, expected, &input.client_message_id, &input.images).await
+                self.claude_steer_locked(id, &text, expected, &input.client_message_id, &input.images).await
             } else {
-                self.steer_images_locked(id, &input.text, expected, &input.client_message_id, &input.images, &skills).await
+                self.steer_images_locked(id, &text, expected, &input.client_message_id, &input.images, &skills).await
             }
         } else {
-            self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, &skills).await
+            self.send_images_locked(id, text, Some(&input.client_message_id), &input.images, &skills).await
         };
         let (status, turn_id, error) = match result {
             // Queued at Claude, not yet confirmed: a turn naming its uuid confirms it.

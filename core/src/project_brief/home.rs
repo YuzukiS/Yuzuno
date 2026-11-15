@@ -661,7 +661,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             }
         }
     };
-    ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+    ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await
 }
 
 /// A reply meant for a released executor (from a Home that showed it as the
@@ -833,7 +833,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             question: None,
             clarification: None,
         };
-        ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await?
+        ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await?
     };
     // Marked on that version only, if it is still the live ask now.
     if shown.is_some() && delivered(&receipt) {
@@ -922,5 +922,5 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         question: None,
         clarification: None,
     };
-    ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+    ws.send_message_from(&input.agent_id, message, Vec::new(), Vec::new(), Some(origin)).await
 }

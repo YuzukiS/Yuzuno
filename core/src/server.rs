@@ -1402,20 +1402,25 @@ async fn stop_task(State(ws): State<Arc<Workspace>>, Path((id, task_id)): Path<(
     Ok(Json(json!({"requested": ws.claude_stop_task(&id, &task_id).await?})))
 }
 
-/// A message, with the Codex skills it invokes (`skills`) held apart from
-/// the rest, which is a `MessageInput` as strict as ever. A malformed body
-/// was never submitted, so the client keeps its draft.
+/// A message, with the Codex skills it invokes (`skills`) and the files it
+/// attaches (`files`) held apart from the rest, which is a `MessageInput` as
+/// strict as ever. A malformed body was never submitted, so the client keeps
+/// its draft.
 async fn send_message(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(mut body): Json<Value>) -> ApiResult<Json<Value>> {
-    let parsed = (|| -> anyhow::Result<(MessageInput, Vec<crate::model::SkillRef>)> {
+    let parsed = (|| -> anyhow::Result<(MessageInput, Vec<crate::model::SkillRef>, Vec<crate::input_files::FileRef>)> {
         let skills = match body.as_object_mut().and_then(|b| b.remove("skills")) {
             Some(skills) => serde_json::from_value(skills).map_err(|e| anyhow::anyhow!("Invalid skills: {e}"))?,
             None => Vec::new(),
         };
-        Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills))
+        let files = match body.as_object_mut().and_then(|b| b.remove("files")) {
+            Some(files) => serde_json::from_value(files).map_err(|e| anyhow::anyhow!("Invalid files: {e}"))?,
+            None => Vec::new(),
+        };
+        Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills, files))
     })();
-    let (input, skills) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
+    let (input, skills, files) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
     // Typed by the person in a client (T-6).
-    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, Some(json!({"kind":"client"}))).await?)?))
+    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, files, Some(json!({"kind":"client"}))).await?)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

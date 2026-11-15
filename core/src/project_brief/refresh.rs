@@ -769,7 +769,7 @@ pub(super) enum Sender {
 impl Sender {
     async fn send(&self, ws: &Arc<Workspace>, agent: &str, input: MessageInput, origin: Value) -> Result<MessageReceipt> {
         match self {
-            Sender::Core => ws.send_message_from(agent, input, Vec::new(), Some(origin)).await,
+            Sender::Core => ws.send_message_from(agent, input, Vec::new(), Vec::new(), Some(origin)).await,
             #[cfg(test)]
             Sender::Fake(send) => send(agent, &input, &origin),
         }

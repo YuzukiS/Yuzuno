@@ -418,7 +418,7 @@ async fn a_number_given_back_is_never_taken_twice_at_once() {
 async fn another_messages_client_id_is_not_taken_for_this_one() {
     let (_dir, ws, project) = lab();
     choose(&ws, &project, Some("b")).unwrap();
-    let typed = MessageReceipt { binding: None, skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+    let typed = MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
         turn_id: Some("t1".into()), error: None, input: MessageInput { client_message_id: "typed".into(), text: "hi".into(),
             text_blocks: None, images: vec![], expected_turn_id: None, question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(typed)).unwrap();

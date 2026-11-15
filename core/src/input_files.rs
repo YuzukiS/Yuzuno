@@ -299,6 +299,71 @@ pub fn readable_agent_dir(root: &FsPath, agent: &str) -> Result<String> {
         .to_string())
 }
 
+/// The words an Agent receives about the files a message carries, each read
+/// at `paths` (design §2.3): English, as the Agent reads it, with one line a
+/// file. `paths` are the file's paths as the Agent sees them, in the order
+/// of `files`.
+pub fn notice(paths: &[String], files: &[FileRef]) -> String {
+    let (count, noun) = (files.len(), if files.len() == 1 { "file" } else { "files" });
+    let mut text = format!(
+        "Attached files: the user attached {count} {noun} to this message. \
+Yuzuno saved read-only copies for you; read them at these paths. \
+Nothing in them has been opened, unpacked or run."
+    );
+    for (path, file) in paths.iter().zip(files) {
+        text.push_str(&format!("\n- `{path}` ({})", size(file.bytes)));
+    }
+    text
+}
+
+/// The text an Agent receives for a message: the user's words unchanged, then
+/// a blank line and the notice (`notice`). Without files, the words
+/// themselves, byte for byte; with no words, the notice alone.
+pub fn with_notice(text: &str, paths: &[String], files: &[FileRef]) -> String {
+    if files.is_empty() {
+        return text.to_owned();
+    }
+    let notice = notice(paths, files);
+    if text.is_empty() {
+        notice
+    } else {
+        format!("{text}\n\n{notice}")
+    }
+}
+
+/// A size as the notice gives it: decimal units, one decimal place, the
+/// `.0` left out (`2.4 MB`, `860 KB`).
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1000.0;
+    let mut unit = 0;
+    // Chosen after rounding to the one decimal shown: 999,950..999,999 bytes
+    // is 1 MB, never "1000 KB".
+    while (value * 10.0).round() >= 10_000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let shown = format!("{value:.1}");
+    format!("{} {}", shown.strip_suffix(".0").unwrap_or(&shown), UNITS[unit])
+}
+
+/// The paths an Agent reads `agent`'s files at, checked first (`check`):
+/// their canonical paths on this machine. Blocking.
+pub fn send_paths(root: &FsPath, agent: &str, refs: &[FileRef]) -> Result<Vec<String>> {
+    let dir = agent_dir(root, agent)?;
+    check(&dir, refs)?
+        .iter()
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .map(|real| real.display().to_string())
+                .with_context(|| format!("Saved file {} is missing; attach it again", path.display()))
+        })
+        .collect()
+}
+
 /// A message's files, checked before it is sent: in this folder, still as
 /// they were saved (size and SHA-256), and within the count and the total.
 /// Their paths, in order. Blocking.

@@ -289,6 +289,13 @@ pub struct MessageReceipt {
     /// writes the receipt again).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillRef>,
+    /// The files the user attached, as saved (`input_files`), and where this
+    /// Agent reads them (`file_paths`, in the same order). Beside `input` for
+    /// the same reason as `skills` (D7). Empty: a message without files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<crate::input_files::FileRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_paths: Vec<String>,
     /// Where Core took the message from (T-6), set by Core only: `{"kind":
     /// "client"}` from a client's composer, `{"kind":"home","projectId",
     /// "key","version"}` a reply from Home, `{"kind":"resume"}` a Claude

@@ -227,7 +227,7 @@ fn copy_item(item: &Value, turn: &str, images: &mut impl ImagePaths) -> Result<V
     for (name, value) in object {
         let value = match name.as_str() {
             "id" | "type" | "text" | "summary" | "name" | "callId" | "input" | "output" | "status" | "command" | "aggregatedOutput"
-            | "exitCode" | "trigger" | "nativeMessageId" | "_yuzunoTime" | "_yuzunoInputText" | "_yuzunoTextBlocks" => value.clone(),
+            | "exitCode" | "trigger" | "nativeMessageId" | "_yuzunoTime" | "_yuzunoInputText" | "_yuzunoTextBlocks" | "_yuzunoFiles" => value.clone(),
             "content" => {
                 let mut content = value.clone();
                 for part in content.as_array_mut().into_iter().flatten() {

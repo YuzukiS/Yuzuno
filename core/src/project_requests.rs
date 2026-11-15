@@ -370,7 +370,7 @@ async fn send(ws: &Arc<Workspace>, project: &str, agent: &str, client: &str, ori
             input
         }
     };
-    ws.send_message_from(agent, input, Vec::new(), Some(origin)).await
+    ws.send_message_from(agent, input, Vec::new(), Vec::new(), Some(origin)).await
 }
 
 fn announce(ws: &Workspace, project: &str) {

@@ -204,7 +204,7 @@ async fn a_clients_message_says_so_on_its_receipt_and_a_client_cannot_say_otherw
 
 #[test]
 fn a_receipt_with_skills_reads_in_a_core_that_predates_them() {
-    let receipt = MessageReceipt { binding: None, input: serde_json::from_value(json!({"clientMessageId":"m","text":"$deploy"})).unwrap(),
+    let receipt = MessageReceipt { binding: None, files: vec![], file_paths: vec![], input: serde_json::from_value(json!({"clientMessageId":"m","text":"$deploy"})).unwrap(),
         skills: vec![SkillRef { name: "deploy".into(), path: REPO.into() }], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
         turn_id: Some("t".into()), error: None };
     let saved = serde_json::to_value(&receipt).unwrap();
