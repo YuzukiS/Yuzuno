@@ -80,6 +80,27 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             packager.assemble(self.args)
 
+    def test_a_macos_bundle_takes_its_platform_from_build_json_and_leaves_out_the_windows_helper(self):
+        build = self.root / "build.json"
+        build.write_text(json.dumps({"platform": "macos-aarch64"}))
+        self.args.build_json = build
+        with contextlib.redirect_stdout(io.StringIO()):
+            packager.assemble(self.args)
+        manifest = json.loads((self.args.out / "manifest.json").read_text())
+        self.assertEqual(manifest["platform"], "macos-aarch64")
+        self.assertFalse([name for name in manifest["files"] if "windows-jobs" in name])
+        self.assertIn("bin/yuzuno-workspace", manifest["files"])
+
+    def test_a_build_json_for_another_platform_is_refused(self):
+        build = self.root / "build.json"
+        for value in ({"platform": "windows-x86_64"}, {"platform": None}):
+            with self.subTest(value=value):
+                build.write_text(json.dumps(value))
+                self.args.build_json = build
+                with self.assertRaisesRegex(ValueError, "not a released platform"):
+                    packager.assemble(self.args)
+                self.assertFalse(self.args.out.exists())
+
     def test_a_release_without_a_matching_windows_helper_is_not_packaged(self):
         helper = self.args.windows_helper / "yuzuno-jobs-helper.exe"
         helper.write_bytes(b"MZ another helper, 25 byte")

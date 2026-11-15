@@ -15,12 +15,14 @@ Those inputs are public, so they must not carry the Claude Agent SDK ([Publicati
 
 1. Reuse the accepted PR review and successful **exact main SHA** CI. Record the
    review reference; this tool does not independently approve that review.
-2. Obtain the production artifact built on request for that SHA, package it with release identity
-   and notes, and sign once using the existing local publisher key.
+2. Obtain the production artifacts built on request for that SHA, one per
+   required platform, package each with release identity and notes, and sign
+   once using the existing local publisher key.
 3. Run one short isolated baseline → candidate upgrade: start, Core/UI identity,
    Workspace identity, persisted conversation/project/task/settings/read cursor,
    saved budget and the helper's after-restore records proof.
-4. When the specific release is authorized, publish the same three signed files,
+4. When the specific release is authorized, publish the same signed files (three
+   per platform, six in all),
    then download them through official `gh` and verify bytes and signature.
 5. After the user installs from their existing window, read installed identity,
    public health and the completed restoration proof. This step starts no work.
@@ -38,7 +40,7 @@ only the affected assertion, as done for T-76.
 ## CI artifact and compatibility
 
 The historical private `CI` kept its PR tests. Only a push to its `main`, after those four jobs
-passed, built `core-inputs-<40-character SHA>-<run attempt>` with
+passed, built `core-inputs-linux-x86_64-<40-character SHA>-<run attempt>` with
 `tools/build-core-artifact.py`. The artifact has `build.json` and `inputs.tar.gz`:
 release-mode Core/helper, raw Vite UI, locked production Claude SDK/runtime and
 the result validator. No release version or signing key is needed.
@@ -54,10 +56,10 @@ not carry, so no release ships an unpinned validator.
 
 **Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted runners, with a token that reads contents and actions and no secret. It has one job per platform: Linux x86_64 on ubuntu-24.04, and macOS on Apple silicon on the standard macos-26 runner (YN-108):
 - Each job builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
-- Each runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs for another platform, from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before the job's artifact is uploaded for 14 days: `core-inputs-<SHA>-<run attempt>` for Linux, `core-inputs-macos-aarch64-<SHA>-<run attempt>` for macOS.
+- Each runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs for another platform, from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before the job's artifact is uploaded for 14 days. Each artifact is named `core-inputs-<platform>-<SHA>-<run attempt>`: `core-inputs-linux-x86_64-…` and `core-inputs-macos-aarch64-…`.
 - The Mac job also smokes the two binaries it built (`tools/release-inputs-smoke.py`), since the Linux release host cannot run them: Core answers `/api/health` and `/api/updates` says `macos-aarch64`; the update helper installs an unsigned local package of the inputs into a new managed root (`register --initialize`); `updates/start start` and `stop` start and stop that root's Core; every Core it started itself exits 0 after SIGTERM. It uses a new folder, HOME and ports of its own.
-- The run passes only when both jobs pass. Packaging, signing and publishing the macOS inputs are not done yet (YN-108 M3b); until then a release uses only the Linux artifact.
-- `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
+- The run passes only when both jobs pass.
+- `core-release.py init` then names both runs and freezes one artifact ID per required platform: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one, and `--artifact-id PLATFORM=ID` appears once for each of `linux-x86_64` and `macos-aarch64`. Each artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
 
 **Every main commit's runs finish:**
 - `CI` gives each push to `main` a concurrency group of its own commit (#697), so every `main` commit gets its own run: a later push neither cancels it nor replaces it while it waits. A newer push to a PR still cancels that PR's older run.
@@ -100,6 +102,29 @@ only (YN-161); Intel Macs are not supported.
 The isolated smoke additionally exercises the production binary on the release
 host; it is not a claim of a complete Linux distribution matrix.
 
+**Both platforms are packaged and signed.** `tools/package-release.py` takes a
+bundle's platform from that platform's `build.json` (`--build-json`), keeps its
+rule that the host is Linux, and leaves the Windows Jobs helper out of a macOS
+bundle (it runs under WSL only). `tools/sign-core-release.py` accepts
+`macos-aarch64`, and the same publisher key signs both descriptors.
+`tools/core-release.py` freezes one artifact per required platform, fetches,
+packages and signs each separately, and requires the two CI builds' web UI,
+Claude runtime and result validator to be byte-identical: they are built from
+the same commit, so a difference stops the release. The macOS smoke is static,
+on the release host: minisign, the manifest, unpacking by the same rules, the
+Mach-O header and macOS 11.0 read from the file in Python, and the packaged
+binary's SHA-256 equal to the CI build's. The functional proof is the Mac CI
+job's smoke above, whose result `core-release.py` records.
+
+**Every release carries every platform.** Core reads the newest published
+release and refuses one that lacks assets for its own platform, so publishing
+a release with only some platforms would strand the others. This tool therefore
+refuses to freeze, fetch, sign or publish a release that is missing a platform,
+and a release has three assets per platform (six). The cost: after this
+tooling, there can be no Linux-only emergency release. Shipping one would need
+a deliberate change to Core's update check first (skip a release that lacks
+this platform); that changes Linux's behaviour and is not done.
+
 Licenses travel with the bundle. Every file below is generated from what the
 build actually contains, so a dependency change updates it without a manual step:
 - `licenses/LICENSE` is the project's Apache License 2.0.
@@ -135,9 +160,10 @@ then reproduce that text, marked as not shipped in the package, but only for
 the recorded name, version and lock integrity, and only if the text's SHA-256
 matches. Nothing is fetched while building.
 
-The immutable GitHub artifact ID, run/attempt, exact source, archive SHA-256 and
-per-file inventory are checked on download. The ZIP digest is checked against
-the GitHub API, not merely an adjacent checksum file. Artifact retention is 14
+The immutable GitHub artifact IDs, run/attempt, exact source, archive SHA-256s and
+per-file inventories are checked on download, one artifact per platform. Each
+ZIP's digest is checked against the GitHub API, not merely an adjacent checksum
+file. Artifact retention is 14
 days (subject to repository limits). Expired/missing/mismatched input stops the
 flow. Explicitly obtain another successful artifact for the same reviewed SHA;
 there is no silent local rebuild fallback. Older releases without this artifact
@@ -168,7 +194,8 @@ Start the inputs build for the candidate with `gh workflow run release-inputs.ym
 python3 tools/core-release.py init \
   --work-dir "$release_work" --repository OWNER/REPO \
   --sha "$reviewed_sha" --ci-run "$ci_run_id" --inputs-run "$inputs_run_id" \
-  --artifact-id "$artifact_id" \
+  --artifact-id linux-x86_64="$linux_artifact_id" \
+  --artifact-id macos-aarch64="$mac_artifact_id" \
   --release-id "$release_id" --version "$version" --review "$accepted_review" \
   --notes "$release_notes" --baseline "$previous_bundle" \
   --public-key "$existing_publisher_public_key"
@@ -215,7 +242,14 @@ is no overwrite/clobber operation. Failed logs are retained separately.
 
 The short smoke uses `core-release-smoke.py`, the existing scripted Codex fixture
 and update helpers. It creates an owned `/tmp/yzrel-*` directory, selects a free
-loopback port and keeps Unix socket paths short. It preserves data and phase
+loopback port and keeps Unix socket paths short. That is the Linux part. The
+macOS part is static, on the release host: both descriptors' signatures and
+manifests are verified, each archive is unpacked by the same rules, the Mach-O
+header and macOS 11.0 minimum are read from each binary in Python, each packaged
+binary's SHA-256 equals the CI build's `build.json`, and the Mac CI job's
+functional smoke step must have passed on the same source. A macOS bundle must
+not carry the Windows Jobs helper. `smoke.json` records both parts under
+`platforms`. The Linux part preserves data and phase
 receipts for inspection. Before upgrading, it explicitly saves and reads back
 a small job budget different from the host's suggested default, then checks
 that saved value after replacement. A retry uses the same apply request ID and durable

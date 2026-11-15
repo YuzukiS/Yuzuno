@@ -168,9 +168,9 @@ def problems(text):
     return found
 
 
-UPLOAD_NAME = 'name: core-inputs-${{ github.sha }}-${{ github.run_attempt }}'
-# Each platform's job: its runner and the name of its one artifact. Linux's
-# keeps the name tools/core-release.py reads until both are released (M3b).
+UPLOAD_NAME = 'name: core-inputs-linux-x86_64-${{ github.sha }}-${{ github.run_attempt }}'
+# Each platform's job: its runner and the name of its one artifact
+# (tools/core-release.py reads exactly these two).
 RELEASE_INPUT_JOBS = {
     'inputs': ('ubuntu-24.04', UPLOAD_NAME),
     'macos-aarch64': ('macos-26', 'name: core-inputs-macos-aarch64-${{ github.sha }}-${{ github.run_attempt }}'),
@@ -480,7 +480,7 @@ class PublicCi(unittest.TestCase):
             'any branch': (good.replace('[ "$GITHUB_REF" = refs/heads/main ] ||', 'true ||', 1), 'passed CI before checkout'),
             'no CI lookup': (good.replace('-f status=success', '-f status=completed', 1), 'passed CI before checkout'),
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
-            'another artifact name': (good.replace('name: core-inputs-${{ github.sha }}', 'name: inputs-${{ github.sha }}', 1), 'one core-inputs artifact'),
+            'another artifact name': (good.replace('name: core-inputs-linux-x86_64-${{ github.sha }}', 'name: inputs-${{ github.sha }}', 1), 'one core-inputs artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one core-inputs artifact'),
             'no check before upload': (good.replace('-I tools/release-inputs-check.py', '-I tools/other.py', 1), 'check the inputs'),
             'the Mac job on a paid runner': (good.replace('runs-on: macos-26', 'runs-on: macos-26-xlarge', 1), 'not macos-26'),

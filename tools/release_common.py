@@ -18,16 +18,25 @@ def digest(path):
     return value.hexdigest()
 
 
-def macho_minimum(path):
-    """The oldest macOS a thin 64-bit little-endian Mach-O is linked for, as
-    X.Y.Z: its one LC_BUILD_VERSION for platform macOS, or LC_VERSION_MIN_MACOSX.
-    Read from the file's own load commands (as scripts/desktop-macos.sh reads
+# The Mach-O CPU type of an Apple silicon binary, and the oldest macOS it is
+# built for (tools/build-core-artifact.py's MACOS_MINIMUM).
+MACHO_ARM64 = 0x0100000C
+MACHO_X86_64 = 0x01000007
+MACOS_MINIMUM = '11.0.0'
+
+
+def macho_identity(path):
+    """A thin 64-bit little-endian Mach-O as {'cputype', 'arch', 'minos'}:
+    the CPU type of its header and the oldest macOS its one
+    LC_BUILD_VERSION for platform macOS or LC_VERSION_MIN_MACOSX names, as
+    X.Y.Z. Read from the file's own bytes (as scripts/desktop-macos.sh reads
     the app), so it needs no Apple tool. Raises ValueError for anything else."""
     import struct
     data = Path(path).read_bytes()
     name = Path(path).name
     if len(data) < 32 or struct.unpack_from('<I', data)[0] != 0xFEEDFACF:
         raise ValueError(f'{name} is not a thin 64-bit Mach-O')
+    cputype = struct.unpack_from('<i', data, 4)[0]
     count, size = struct.unpack_from('<II', data, 16)
     found, offset, end = [], 32, 32 + size
     if end > len(data):
@@ -45,7 +54,16 @@ def macho_minimum(path):
         offset += length
     if len(found) != 1:
         raise ValueError(f'{name}: {len(found)} macOS minimum version load commands, not one')
-    return f'{found[0] >> 16}.{(found[0] >> 8) & 0xFF}.{found[0] & 0xFF}'
+    version = found[0]
+    return {'cputype': cputype,
+            'arch': {MACHO_ARM64: 'arm64', MACHO_X86_64: 'x86_64'}.get(cputype),
+            'minos': f'{version >> 16}.{(version >> 8) & 0xFF}.{version & 0xFF}'}
+
+
+def macho_minimum(path):
+    """The oldest macOS a thin 64-bit little-endian Mach-O is linked for, as
+    X.Y.Z. Raises ValueError for anything else."""
+    return macho_identity(path)['minos']
 
 
 # The Claude Agent SDK is not in a public release (T-159): its runtime carries

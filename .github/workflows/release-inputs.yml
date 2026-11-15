@@ -1,13 +1,13 @@
 # Builds the production inputs a Core release is packaged from (T-159), only
 # when someone runs it, only for the current head of main, and only after the
 # CI workflow has passed on that commit's push to main. tools/core-release.py
-# then takes the artifact from this run (--inputs-run) and the tests from the
-# CI run (--ci-run); see docs/core-release.md.
+# then takes one artifact per platform from this run (--inputs-run) and the
+# tests from the CI run (--ci-run); see docs/core-release.md.
 #
-# One job per platform, each with an artifact of its own: Linux x86_64
-# (core-inputs-<sha>-<attempt>) and macOS on Apple silicon
-# (core-inputs-macos-aarch64-<sha>-<attempt>, YN-108). The Mac job also
-# smokes the binaries it built, since the Linux release host cannot run them.
+# One job per platform, each with an artifact of its own, named
+# core-inputs-<platform>-<sha>-<attempt>: Linux x86_64 and macOS on Apple
+# silicon (YN-108). The Mac job also smokes the binaries it built, since the
+# Linux release host cannot run them.
 #
 # The artifact is public, so it must not carry the Claude Agent SDK
 # (docs/public-readiness.md): tools/release-inputs-check.py refuses it before
@@ -80,7 +80,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: core-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          name: core-inputs-linux-x86_64-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             target/core-inputs/build.json
             target/core-inputs/inputs.tar.gz

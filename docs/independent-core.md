@@ -330,7 +330,7 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 
 ## Install, start and stop on macOS
 
-**No release has a macOS package yet:** building and publishing one are YN-108's slices M3a and M3b ([macOS Core: status and gaps](macos-core.md)). Until a release has `yuzuno-core-macos-aarch64.*` files, these steps cannot be followed with a published release. They say what the release's helper does on a Mac at this commit, which is what it does on Linux except where it says otherwise. Apple silicon only.
+**No published release has a macOS package yet.** The release tooling packages and signs macOS Apple silicon from YN-108 M3b on, so the first two-platform release will have `yuzuno-core-macos-aarch64.*` files ([macOS Core: status and gaps](macos-core.md)). Until then these steps cannot be followed with a published release. They say what the release's helper does on a Mac at this commit, which is what it does on Linux except where it says otherwise. Apple silicon only; Intel Macs are not supported.
 
 - **Prerequisites:** as [on Linux](#prerequisites-on-the-core-host), without systemd: Jobs on the Mac itself are refused for now ([below](#macos-core-current-gaps)). `/usr/bin/python3` and `git` come with Apple's command line tools (`xcode-select --install`); Node, `gh` and `minisign` with their own installers or Homebrew (`brew install node gh minisign`).
 - **Folders:** these are the ones the Mac app is to use. The Workspace folder is also where a Core started without `--data-dir` keeps it on a Mac. Both paths contain a space, so keep the quotes:
@@ -340,8 +340,40 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
   DATA="$HOME/Library/Application Support/yuzuno/workspace"
   ```
 
-- **Download and verify** as in steps 1 and 2 [above](#install), with `yuzuno-core-macos-aarch64` in place of `yuzuno-core-linux-x86_64`. Download with `gh` or `curl` in Terminal: a browser marks what it downloads as coming from the internet, and macOS may then refuse to run the release's programs, which are signed ad hoc and not notarized.
-- **Install** with the unpacked release's helper (`install`, as [above](#installed-by-the-desktop-app)), unpacking with macOS's own `tar`.
+- **Download and verify** the three macOS files (`yuzuno-core-macos-aarch64.json`, `.json.minisig`, `.tar.gz`). Download them in Terminal with `gh` or `curl`, not in a browser:
+
+  ```sh
+  TAG=core-20261201-abcdef0        # the release you chose
+  mkdir -p ~/yuzuno-download && cd ~/yuzuno-download
+  gh release download "$TAG" -R YuzukiS/Yuzuno -p 'yuzuno-core-macos-aarch64.*'
+  ```
+
+  ```sh
+  # Without gh, the same three files with curl:
+  curl -fLO "https://github.com/YuzukiS/Yuzuno/releases/download/$TAG/yuzuno-core-macos-aarch64.json"
+  curl -fLO "https://github.com/YuzukiS/Yuzuno/releases/download/$TAG/yuzuno-core-macos-aarch64.json.minisig"
+  curl -fLO "https://github.com/YuzukiS/Yuzuno/releases/download/$TAG/yuzuno-core-macos-aarch64.tar.gz"
+  ```
+
+  **Do not download them in a browser.** A browser marks what it downloads as coming from the internet (`com.apple.quarantine`), and macOS may then refuse to run these binaries: they are signed ad hoc and not notarized, and Gatekeeper checks quarantined programs. `curl` and `gh` do not add the flag, and unpacking with `tar` does not carry it to the files inside. If `xattr -p com.apple.quarantine <file>` shows one, do not remove it and do not disable macOS protection: delete the files and download them again with `gh` or `curl`.
+
+  Verify the descriptor with the same publisher key as Linux (the one `KEY=…` line in [step 2](#install)), then check the archive against it:
+
+  ```sh
+  KEY=<the publisher key from step 2>
+  minisign -Vm yuzuno-core-macos-aarch64.json -P "$KEY"
+  python3 - <<'EOF'
+  import hashlib, json
+  d = json.load(open('yuzuno-core-macos-aarch64.json'))
+  h = hashlib.sha256(open('yuzuno-core-macos-aarch64.tar.gz', 'rb').read()).hexdigest()
+  assert h == d['archiveSha256'], 'archive does not match the signed descriptor'
+  open('manifest.sha256', 'w').write(d['manifestSha256'])
+  print('verified', d['manifest']['releaseId'])
+  EOF
+  ```
+
+  Stop if either step fails. Both platforms' descriptors are signed by the one publisher key; a release always carries both.
+- **Install** with the unpacked release's helper (`install`, as [above](#installed-by-the-desktop-app)), unpacking with macOS's own `tar`: `mkdir bundle && tar -xzf yuzuno-core-macos-aarch64.tar.gz -C bundle`, then `bundle/bin/yuzuno-update-helper install --install-dir "$ROOT" --bundle "$PWD/bundle" --manifest-sha256 "$(cat manifest.sha256)" --reviewed-source "$TAG" --initialize`.
 - **First start:** `first-start`, as above. For `--cwd`, choose a folder of your own outside Desktop, Documents, Downloads and iCloud Drive: macOS asks for permission when an Agent reads those. It reads the environment your login shell sets: the shell the user database names (macOS's default is zsh; `/bin/zsh` when it names none). So Core finds what your profile adds to `PATH`, such as `/opt/homebrew/bin`. A Core started some other way, for example by a launchd agent, has only the `PATH` it inherits. Core records the environment in `$ROOT/updates/launch.json`, and every later start uses it.
 - **Start it again** (after a restart, or after a stop):
 
