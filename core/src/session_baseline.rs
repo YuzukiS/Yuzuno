@@ -303,6 +303,7 @@ pub(crate) fn attach(db: &Connection, agent: &Agent, start_text: Option<&str>) -
     let native = match agent.harness.as_str() {
         "claude" => agent.claude_session_id.as_deref(),
         "opencode" => agent.opencode_session_id.as_deref(),
+        "dsh" => agent.dsh_session_id.as_deref(),
         _ => agent.thread_id.as_deref(),
     };
     let tools_now = serde_json::to_string(&baseline())?;
@@ -360,15 +361,15 @@ fn send(db: &Connection, agent: &Agent, body: String, changes: &Changes, start_c
 }
 
 impl crate::workspace::Workspace {
-    /// The text Core gives `agent`'s session as it starts: for Claude and
-    /// Codex the session notice and, for a Project's Agent, the Brief hard
+    /// The text Core gives `agent`'s session as it starts: for Claude, Codex
+    /// and dsh the session notice and, for a Project's Agent, the Brief hard
     /// rules (claude.rs start, results::with_capability_notice and
-    /// brief_turns::with_hard_rules); for every harness the MCP server
+    /// brief_turns::with_hard_rules, dsh's AGENTS.md); for every harness the MCP server
     /// instructions. None when whether the rules apply can't be read: that
     /// is unknown, not a text without them (YN-5 R1).
     async fn start_text(&self, agent: &Agent) -> Option<String> {
         let mut parts = Vec::new();
-        if matches!(agent.harness.as_str(), "claude" | "codex") {
+        if matches!(agent.harness.as_str(), "claude" | "codex" | "dsh") {
             parts.push(crate::guide::session_notice().to_owned());
             match crate::brief_turns::start_hard_rules(self, &agent.id).await {
                 Ok(Some(rules)) => parts.push(rules),

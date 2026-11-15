@@ -345,6 +345,7 @@ def serve():
         log({"kind": "child", "pid": child.pid})
     sessions = 0
     asked = {}        # our request ID -> (prompt ID, session)
+    cancelled = set() # our request IDs whose prompt session/cancel ended
     sleeping = {}     # session -> prompt ID
     next_request = 0
     for raw in sys.stdin:
@@ -353,7 +354,18 @@ def serve():
         log({"kind": "message", "method": method, "id": message.get("id")})
         mid = message.get("id")
         params = message.get("params") or {}
-        if method is None:
+        if method in ("session/new", "session/resume"):
+            # The MCP servers it was told of: names, URLs and header names, never a header's value.
+            log({"kind": "mcp", "method": method, "servers": [
+                {"type": s.get("type"), "name": s.get("name"), "url": s.get("url"),
+                 "headerNames": [h.get("name") for h in s.get("headers") or []]}
+                for s in params.get("mcpServers") or []]})
+        if method is None and mid in cancelled:
+            # An answer to a request of a prompt session/cancel already ended.
+            log({"kind": "answer", "id": mid, "result": message.get("result")})
+            cancelled.discard(mid)
+        elif method is None:
+            log({"kind": "answer", "id": mid, "result": message.get("result")})
             # An answer to a request of ours.
             prompt, session = asked.pop(mid)
             update(session, {"sessionUpdate": "agent_message_chunk", "messageId": "m-ask",
@@ -390,6 +402,12 @@ def serve():
             session = params.get("sessionId")
             if session in sleeping:
                 send({"id": sleeping.pop(session), "result": {"stopReason": "cancelled"}})
+            # A prompt waiting on our answer ends cancelled; that answer comes after.
+            for rid, (prompt, asking) in list(asked.items()):
+                if asking == session:
+                    del asked[rid]
+                    cancelled.add(rid)
+                    send({"id": prompt, "result": {"stopReason": "cancelled"}})
         elif method == "session/prompt":
             session, text = params.get("sessionId"), prompt_text(params)
             if "ASK" in text:

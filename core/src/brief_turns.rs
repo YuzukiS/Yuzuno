@@ -250,7 +250,9 @@ pub(crate) fn decide(seam: &dyn Seam, store: &Store, end: &TurnEnd) -> Result<De
         Err(_) => return Ok(Decision::Done),
     };
     let receipt = seam.receipt(store, &end.agent, &end.turn)?;
-    if harness == "codex" {
+    // dsh has no Stop hook: it gets Codex's reminder Turn (YN-119 §3.5).
+    let reminded = matches!(harness.as_str(), "codex" | "dsh");
+    if reminded {
         if let Some(missed) = reminded_turn(store, &end.agent, &end.turn)? {
             // A reminder Turn is never reminded. Its result is the missed
             // Turn's: remedied by its receipt, else (ended without one,
@@ -286,7 +288,7 @@ pub(crate) fn decide(seam: &dyn Seam, store: &Store, end: &TurnEnd) -> Result<De
         }
         return Ok(Decision::Done);
     }
-    if harness != "codex" {
+    if !reminded {
         record(&end.turn, "missing")?;
         return Ok(Decision::Done);
     }

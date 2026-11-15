@@ -8,9 +8,13 @@ http://127.0.0.1:PORT/v1, as dsh's own mock server is
 probe (results/design-YN-119/probe/fake_llm.py).
 
 The newest user message decides the answer:
-  YUZUNO-SLEEP   a bash tool call running `sleep 47` (for session/cancel)
-  anything else  a thinking block, then the text `stub-reply`
-A tool result is answered with a short text (end_turn).
+  YUZUNO-SLEEP         a bash tool call running `sleep 47` (for session/cancel)
+  YUZUNO-MCP           a call of the Workspace MCP's brief_get (YN-119 S2b)
+  YUZUNO-OUTSIDE PATH  a bash call that writes PATH, outside the workspace,
+                       asking for danger-full-access with a justification
+  anything else        a thinking block, then the text `stub-reply`
+A tool result is answered with a short text (end_turn), and logged: its
+call's ID, whether it was an error, and the start of its text.
 
 Each request is logged as one JSON line: its path, its header names (never
 their values), whether it carried an API key, its body's top-level keys,
@@ -52,13 +56,33 @@ def tool_result(content):
     return None
 
 
+def result_of(content):
+    """The first tool result in `content`: its call, whether it is an error, its text's start."""
+    if isinstance(content, str):
+        return None
+    for block in content or []:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            inner = block.get("content")
+            text = inner if isinstance(inner, str) else text_of(inner)
+            return {"id": block.get("tool_use_id"), "isError": bool(block.get("is_error")), "text": (text or "")[:400]}
+    return None
+
+
 def decide(messages):
     last = messages[-1] if messages else {}
     answered = tool_result(last.get("content"))
     if answered is not None:
         return ("text", "after " + answered)
-    if "YUZUNO-SLEEP" in text_of(last.get("content")):
+    said = text_of(last.get("content"))
+    if "YUZUNO-SLEEP" in said:
         return ("tool", "call-sleep", "bash", {"description": "Sleep", "command": "sleep 47 && echo slept"})
+    if "YUZUNO-MCP" in said:
+        return ("tool", "call-mcp", "mcp__yuzuno__brief_get", {})
+    if "YUZUNO-OUTSIDE" in said:
+        path = said.split("YUZUNO-OUTSIDE", 1)[1].split()[0]
+        return ("tool", "call-outside", "bash", {"description": "Write outside", "command": "touch " + path,
+                                                 "sandbox_permissions": "danger-full-access",
+                                                 "justification": "The probe asks to write outside the workspace."})
     return ("thinking-text", "stub-reply")
 
 
@@ -102,6 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             "messages": len(messages),
             "marker": MARKER in json.dumps(body.get("system")) or any(MARKER in json.dumps(m) for m in messages),
             "decision": decision[0],
+            "toolResult": result_of(messages[-1].get("content")) if messages else None,
         })
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")

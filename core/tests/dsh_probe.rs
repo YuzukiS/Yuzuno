@@ -5,7 +5,9 @@
 //! key a placeholder: no real model, no request leaves the host. One Agent,
 //! through Core's own paths: made as POST /api/agents makes it, a Turn, an
 //! interrupt, Core starting again and resuming its session, a close and a
-//! delete. Run as opencode_probe.rs is:
+//! delete. And (S2b) the Workspace MCP Core serves, reached by dsh with the
+//! Agent's credential, and a request past dsh's sandbox the user allows once
+//! and then declines. Run as opencode_probe.rs is:
 //! `cargo test --test dsh_probe -- --ignored --test-threads=1 --nocapture`.
 #![cfg(target_os = "linux")]
 
@@ -35,6 +37,11 @@ impl Model {
             std::thread::sleep(Duration::from_millis(20));
         };
         Self { child, port, log }
+    }
+
+    /// What each tool result the model was given said.
+    fn results(&self) -> Vec<Value> {
+        self.requests().into_iter().filter_map(|r| Some(r["toolResult"].clone()).filter(|t| t.is_object())).collect()
     }
 
     fn requests(&self) -> Vec<Value> {
@@ -179,4 +186,80 @@ async fn a_real_dsh_agent_talks_stops_resumes_after_a_restart_and_goes() {
     ws.delete_agent(&id).await.unwrap();
     assert!(!data.join("dsh").join(&id).exists(), "its dsh folder went with it");
     println!("probe: closed and deleted; first dsh pids {first:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs a real dsh, named by YUZUNO_DSH_BIN, python3, and no network"]
+async fn a_real_dsh_agent_reaches_the_workspace_mcp_and_asks_past_its_sandbox() {
+    assert!(std::env::var_os("YUZUNO_DSH_BIN").is_some(), "YUZUNO_DSH_BIN names the dsh to probe");
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (data, work, outside) = (root.join("data"), root.join("work"), root.join("outside"));
+    std::fs::create_dir(&work).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let model = Model::start(&root);
+    std::env::set_var("YUZUNO_DSH_BASE_URL", format!("http://127.0.0.1:{}/v1", model.port));
+    let ws = open(&data, &work);
+    routing_keys::Store::of(&data).put_local("deepseek", routing_keys::Provider::Deepseek,
+        routing_keys::Secret::new("sk-placeholder-not-a-key".into())).unwrap();
+    // The Workspace MCP as Core serves it, on loopback.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mcp = yuzuno_workspace::collaboration_mcp::router(ws.clone(), port);
+    tokio::spawn(async move { axum::serve(listener, mcp).await.unwrap() });
+    ws.start_collaboration(port);
+    let project = ws.store.create_project("Probe", Default::default()).unwrap();
+    let send = |ws: &Arc<Workspace>, id: &str, client: &str, text: &str| {
+        let (ws, id) = (ws.clone(), id.to_owned());
+        let input = serde_json::from_value::<MessageInput>(json!({"clientMessageId": client, "text": text})).unwrap();
+        async move { ws.send_message(&id, input).await.unwrap_or_else(|refused| panic!("refused: {refused:#}")) }
+    };
+    let agent = ws.dsh_create_on("Probe".into(), work.to_string_lossy().into(), String::new(), None, None, Some(project.id.clone()), None,
+        Some("ask".into()), Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() })).await.unwrap();
+    let id = agent.id.clone();
+    let d = until(&ws, &id, "connected", 60, |d| d.agent.connection_state == "connected" || d.agent.error.is_some()).await;
+    assert_eq!(d.agent.connection_state, "connected", "{:?}", d.agent.error);
+    assert!(ws.collaboration_status(&id).await.is_some_and(|s| s.ready), "the Workspace MCP is ready");
+    let notice = std::fs::read_to_string(data.join("dsh").join(&id).join("home/AGENTS.md")).unwrap();
+    println!("probe: connected, dsh {:?}; AGENTS.md {} bytes", d.agent.dsh_version, notice.len());
+    assert!(!notice.is_empty(), "the session notice");
+
+    // 1. The Workspace MCP: dsh lists its tools with the Agent's credential, and brief_get answers.
+    let asked = send(&ws, &id, "m1", "YUZUNO-MCP").await.turn_id.unwrap();
+    let d = until(&ws, &id, "the MCP Turn ends", 60, |d| turn(d, &asked)["status"] != "inProgress").await;
+    let t = turn(&d, &asked);
+    println!("probe: MCP turn {} items {}", t["status"], t["items"]);
+    assert_eq!(t["status"], "completed");
+    let call = t["items"].as_array().unwrap().iter().find(|i| i["type"] == "mcpToolCall").expect("the MCP call");
+    assert_eq!((&call["server"], &call["tool"], &call["status"]), (&json!("yuzuno"), &json!("brief_get"), &json!("completed")), "{call}");
+    let answered = model.results().into_iter().find(|r| r["id"] == "call-mcp").expect("brief_get's answer reached the model");
+    println!("probe: brief_get answered {answered}");
+    assert_eq!(answered["isError"], false, "{answered}");
+    assert!(answered["text"].as_str().unwrap_or_default().contains("version"), "{answered}");
+
+    // 2. A request past dsh's sandbox at Ask you first: a card; allowed once, the command runs.
+    for (client, decision, file, wrote) in [("m2", "accept", "allowed.txt", true), ("m3", "decline", "declined.txt", false)] {
+        let path = outside.join(file);
+        let running = send(&ws, &id, client, &format!("YUZUNO-OUTSIDE {}", path.display())).await.turn_id.unwrap();
+        let d = until(&ws, &id, "the card", 60, |d| !d.pending.is_empty() || turn(d, &running)["status"] != "inProgress").await;
+        assert_eq!(d.pending.len(), 1, "a card: {}", turn(&d, &running));
+        let card = d.pending[0].clone();
+        println!("probe: card {} {}", card.method, serde_json::to_string(&card.params).unwrap());
+        assert_eq!((card.method.as_str(), d.agent.status.as_str()), ("dsh/permission", "waiting"));
+        assert!(card.params["command"].as_str().unwrap_or_default().contains(file), "{}", card.params);
+        assert_eq!(card.params["sandboxPermissions"], "danger-full-access");
+        ws.respond(&card.id, json!({"decision": decision})).await.unwrap();
+        let d = until(&ws, &id, "the Turn ends", 60, |d| turn(d, &running)["status"] != "inProgress").await;
+        let t = turn(&d, &running);
+        let command = t["items"].as_array().unwrap().iter().find(|i| i["type"] == "commandExecution").expect("the command");
+        println!("probe: {decision}: turn {} command {}", t["status"], command);
+        assert_eq!(t["status"], "completed");
+        assert_eq!(command["permission"]["by"], "user");
+        assert_eq!(path.exists(), wrote, "{decision}: {} {}", path.display(), if wrote { "written" } else { "not written" });
+        assert!(d.pending.is_empty());
+    }
+
+    ws.close_agent(&id).await.unwrap();
+    ws.delete_agent(&id).await.unwrap();
+    println!("probe: closed and deleted");
 }
