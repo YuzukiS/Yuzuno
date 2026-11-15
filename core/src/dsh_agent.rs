@@ -182,7 +182,7 @@ pub(crate) async fn status(data: &Path) -> Value {
         let status = STATUS.lock().unwrap();
         status.as_ref().filter(|(of, ..)| *of == program).map(|(_, at, value)| (at.elapsed() >= STATUS_FRESH, value.clone()))
     };
-    let home = data.join("dsh-version");
+    let home = version_home(data);
     match read {
         Some((stale, value)) => {
             if stale && !READING.swap(true, Ordering::SeqCst) {
@@ -204,19 +204,29 @@ pub(crate) async fn status(data: &Path) -> Value {
 
 /// `dsh --version` of `program`, in `home`, a folder of Core's own (0700).
 pub(crate) async fn installed(program: &Path, home: &Path) -> Value {
-    let read = async {
-        std::fs::create_dir_all(home)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
-        }
-        dsh::installed(program, home).await
-    };
-    match read.await {
+    match version_in(program, home).await {
         Ok((version, standing)) => json!({"available": true, "version": version.to_string(), "label": standing.note()}),
         Err(_) => json!({"available": false, "version": null, "label": null}),
     }
+}
+
+/// The folder `dsh --version` runs in when Core reads which dsh it would
+/// start: `<data>/dsh-version`, Core's own.
+pub(crate) fn version_home(data: &Path) -> PathBuf {
+    data.join("dsh-version")
+}
+
+/// `dsh --version` of `program` in `home` (0700), and how each start judges
+/// that version (§5.1), or why it can't be read: what `/api/workspace`
+/// (`installed`) and the machine check (machines.rs) say of dsh.
+pub(crate) async fn version_in(program: &Path, home: &Path) -> Result<(dsh::Version, dsh::Standing)> {
+    std::fs::create_dir_all(home)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700))?;
+    }
+    dsh::installed(program, home).await
 }
 
 // ---------------------------------------------------------------- the record

@@ -382,7 +382,15 @@ async fn a_real_dsh_lists_its_models_takes_settings_and_an_image() {
     let flash = send(&ws, &id, "s2", "Say hello again.", vec![]).await.turn_id.unwrap();
     assert_eq!(ended(ws.clone(), id.clone(), flash).await, "completed");
 
-    // 4. An image, as dsh's model takes it: uploaded first, then named in the request.
+    // 4. What dsh's tools see (YN-119 S4b): a command it runs gets none of its DEEPSEEK_API_KEY.
+    let env = send(&ws, &id, "s4", "YUZUNO-ENV", vec![]).await.turn_id.unwrap();
+    assert_eq!(ended(ws.clone(), id.clone(), env).await, "completed");
+    let said = model.results().into_iter().find(|r| r["id"] == "call-env").expect("the command's output reached the model");
+    println!("probe: a dsh command's environment: {said}");
+    assert!(said["text"].as_str().unwrap_or_default().contains("key-hidden"), "{said}");
+    assert!(said["text"].as_str().unwrap_or_default().contains("shell=1"), "the command ran in dsh's shell: {said}");
+
+    // 5. An image, as dsh's model takes it: uploaded first, then named in the request.
     let saved = data.join("input-images").join(&id);
     std::fs::create_dir_all(&saved).unwrap();
     let mut png = std::io::Cursor::new(Vec::new());

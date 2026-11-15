@@ -12,6 +12,8 @@ The newest user message decides the answer:
   YUZUNO-MCP           a call of the Workspace MCP's brief_get (YN-119 S2b)
   YUZUNO-OUTSIDE PATH  a bash call that writes PATH, outside the workspace,
                        asking for danger-full-access with a justification
+  YUZUNO-ENV           a bash call saying whether its command sees
+                       DEEPSEEK_API_KEY, and DSH_SHELL (YN-119 S4b)
   anything else        a thinking block, then the text `stub-reply`
 A tool result is answered with a short text (end_turn), and logged: its
 call's ID, whether it was an error, and the start of its text. Each request
@@ -82,6 +84,9 @@ def decide(messages):
         return ("tool", "call-sleep", "bash", {"description": "Sleep", "command": "sleep 47 && echo slept"})
     if "YUZUNO-MCP" in said:
         return ("tool", "call-mcp", "mcp__yuzuno__brief_get", {})
+    if "YUZUNO-ENV" in said:
+        return ("tool", "call-env", "bash", {"description": "Environment",
+                                             "command": "if printenv DEEPSEEK_API_KEY >/dev/null; then echo key-visible; else echo key-hidden; fi; echo shell=$DSH_SHELL"})
     if "YUZUNO-OUTSIDE" in said:
         path = said.split("YUZUNO-OUTSIDE", 1)[1].split()[0]
         return ("tool", "call-outside", "bash", {"description": "Write outside", "command": "touch " + path,

@@ -138,10 +138,10 @@ not a template's or a Project's.
 | --- | --- |
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Routing** (`routing`) | Unset: the template follows routing. Its executors get their harness, model, effort and account from the Workspace's [routing](executor-routing.md#routing-at-dispatch-s3b2). While routing is off, or none of its candidates keeps the template's permission level, they get the default harness and model for new Agents: the task's Project's, then the Workspace's, then Codex. Such a template names no harness, model or effort. `"fixed"`: its executors start with this template's own harness, model and machine on the host's login, whatever the [routing policy](executor-routing.md#the-policy-get-and-put-apiroutingpolicy-s3a) says. In Settings it is the template's **Runs with**: **Follows routing**, or the tool it is fixed to. Executor routing's **Templates** section sets it too: one switch per template. On, the template is routed by the rules. Off, it is fixed to a tool you choose beside the switch, which starts as the Workspace's default tool for new Agents. A tool that doesn't keep the template's permission level isn't saved: choose another tool, or change the level. |
-| **Harness** | A fixed template's only: Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
+| **Harness** | A fixed template's only: Codex, Claude Code, [DeepSeek Harness](dsh.md) (`dsh`), or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. A dsh executor's DeepSeek key comes from a routing candidate: a dispatch from a template fixed to dsh that routing gives none is refused (`dsh_needs_key`). |
 | **Permissions** (`permissionLevel`) | **Ask you first** (`ask`), **Auto-approve** (`auto`) or **Full access** (`full`): one permission for every harness, which Core maps to each harness's own. The page shows what the chosen level is on each tool, and which tools routing passes over for it. See [Permission levels](executor-routing.md#permission-levels-yn-56). Left unset, each harness's default for new Agents. A fixed template's level must be one its harness keeps: Claude Code doesn't keep Full access, and OpenCode keeps each, as rules of its own. A fixed Codex template may instead follow its machine's own Codex configuration (`permissionPreset: "config"`). A dispatch whose harness doesn't keep the level is refused (`level_not_kept`). Its executor's materials name the level. |
 | **Model**, **Reasoning effort** | A fixed template's only, shown once it runs with a tool, as for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. The template form's Model field takes it, as does `executor_templates_change`. |
-| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
+| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode and dsh offer this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
@@ -251,9 +251,9 @@ not a template's or a Project's.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
-  [Which machine](#dispatching-to-a-new-executor)). OpenCode executors run on
-  this Core host only, and a Codex executor can't run on a machine that
-  keeps its Agents contained.
+  [Which machine](#dispatching-to-a-new-executor)). OpenCode and dsh
+  executors run on this Core host only, and a Codex executor can't run on a
+  machine that keeps its Agents contained.
 - **Who changes them.** You, in Settings, and a lead of a Project, with
   `executor_templates_change` (YN-24). Your save replaces the whole list, and
   a save against a list changed meanwhile is refused, so the page reloads
@@ -407,8 +407,8 @@ and is chosen unless you pick a template. Core then:
 - **What a lead reads of the machines.** `machines_list` lists the machines a
   dispatch can name, for a lead choosing one. For each it gives the id, the
   name, the kind (`local`, this Core host, or `ssh`), the harnesses an
-  executor there can use (OpenCode on this Core host only, no Codex on a
-  machine that keeps its Agents contained), its executor slots (`limit`;
+  executor there can use (OpenCode and dsh on this Core host only, no Codex
+  on a machine that keeps its Agents contained), its executor slots (`limit`;
   `running`, those starting or running there; `waiting`, those queued for a
   slot there), `connected` (whether Core holds a live connection to an Agent
   there now; always true for this Core host, and false says only that none

@@ -112,6 +112,8 @@ window.YUZUNO_I18N = {
     'fix.claude': '可选：要跑 Claude Agent 就装上它。',
     'check.codex': 'Codex',
     'fix.codex': '可选：要跑 Codex Agent 就装上它。',
+    'check.dsh': 'DeepSeek Harness',
+    'fix.dsh': '可选：要跑 DeepSeek Harness Agent 就装上它（npm i -g @deepseek-ai/dsh@latest），它需要 Node.js 24.9 或更新。',
     'check.gh': 'gh 已登录',
     'fix.gh': '更新时用：在发行版里运行 gh auth login。',
 
@@ -320,6 +322,8 @@ window.YUZUNO_I18N = {
     'fix.claude': 'Optional: install it to run Claude agents.',
     'check.codex': 'Codex',
     'fix.codex': 'Optional: install it to run Codex agents.',
+    'check.dsh': 'DeepSeek Harness',
+    'fix.dsh': 'Optional: install it to run DeepSeek Harness agents (npm i -g @deepseek-ai/dsh@latest); it needs Node.js 24.9 or newer.',
     'check.gh': 'gh signed in',
     'fix.gh': 'Used for updates: run gh auth login in the distribution.',
 

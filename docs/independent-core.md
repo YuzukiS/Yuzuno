@@ -326,7 +326,7 @@ Settings → Updates checks the publisher's releases, downloads and verifies one
 2. **Keep or delete the Workspace:** `$DATA` holds the database, uploads and backups made by updates. Delete it only if you no longer want the Workspace.
 3. **Remove the program:** delete `$ROOT` (releases, staging, update logs and `release-source.json`).
 
-Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno does not touch it.
+Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno does not touch it. A DeepSeek Harness Agent's own dsh home is in `$DATA` (`dsh/`); your own `~/.dsh` is never used or touched ([DeepSeek Harness](dsh.md)).
 
 ## Install, start and stop on macOS
 
