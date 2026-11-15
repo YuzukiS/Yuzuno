@@ -1035,9 +1035,13 @@ fn settle(_store: &Store, db: &Connection, run: &mut Value) -> Result<bool> {
 
 /// A new attempt of a stage: the same command and frozen inputs, its own
 /// identity, folder, log and usage file. It waits until `advance` releases it.
-fn new_attempt(db: &Connection, previous: &Value, number: i64) -> Result<Value> {
-    let count: i64 = db.query_row("SELECT COUNT(*) FROM local_jobs", [], |r| r.get(0))?;
-    ensure!(count < 5000, "Local job history limit reached (5000)");
+pub(super) fn new_attempt(db: &Connection, previous: &Value, number: i64) -> Result<Value> {
+    // The run it adds to stays, settled or not, and so does the attempt it follows.
+    let keep = super::history::Keep {
+        runs: previous["run"]["id"].as_str().map(str::to_owned).into_iter().collect(),
+        jobs: previous["id"].as_str().map(str::to_owned).into_iter().collect(),
+    };
+    super::history::make_room(db, 1, &keep)?;
     let queued: i64 = db.query_row(
         "SELECT COUNT(*) FROM local_jobs WHERE status IN ('queued','waiting')",
         [],
@@ -1447,10 +1451,14 @@ fn previous_run(
         "idempotency_conflict: requestId already names a different run submission"
     );
     let response: Value = serde_json::from_str(&response)?;
-    Ok(Some(run_view(
-        db,
-        response["runId"].as_str().context("Invalid run receipt")?,
-    )?))
+    let id = response["runId"].as_str().context("Invalid run receipt")?;
+    let exists: Option<i64> = db.query_row("SELECT 1 FROM local_job_runs WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    ensure!(
+        exists.is_some(),
+        "This requestId named run {id}, which was removed from the Job history (the oldest finished Jobs are removed when it reaches {}); submit again with a new requestId",
+        super::history::LIMIT
+    );
+    Ok(Some(run_view(db, id)?))
 }
 
 impl Store {
@@ -1490,6 +1498,14 @@ impl Store {
         let owner_id = actor.or(input.agent_id.as_deref()).context("A job must be associated with an Agent")?;
         let after_runs = after::check(&tx, owner_id, &input.after_runs)?;
         let run_needs: Vec<String> = after_runs.iter().filter_map(|a| a["runId"].as_str()).map(after::need).collect();
+        // Room for every stage it runs, keeping the runs it waits for and the
+        // attempts it reuses, before anything of it is written.
+        let keep = super::history::Keep {
+            runs: after_runs.iter().filter_map(|a| a["runId"].as_str()).map(str::to_owned).collect(),
+            jobs: stages.iter().filter_map(|p| p.reuse.as_ref()).filter_map(|r| r["jobId"].as_str()).map(str::to_owned).collect(),
+        };
+        let running = stages.iter().filter(|p| p.reuse.is_none()).count() as i64;
+        super::history::make_room(&tx, running, &keep)?;
         let id = uuid::Uuid::new_v4().to_string();
         let mut owner = Value::Null;
         let mut list = Vec::new();

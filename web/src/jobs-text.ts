@@ -199,6 +199,9 @@ export const jobsText = strings({
   envChecks: "Environment and input checks",
   env: "Explicit environment (JSON)",
   guardGit: "Check Git HEAD and changed tracked files before launch",
+  // A macOS Core (YN-108 M2c): this host is This Mac, where Jobs run limited (YN-104).
+  macHost: "This Mac · macOS · limits declared only: CPU and RAM queue and record the job; nothing holds them while it runs.",
+  macGuardGit: "Not available on macOS: list the files to freeze as inputs.",
   inputs: "Additional small input files, one per line",
   captured: "Commands and environment are captured. Untracked data and changes after launch are not frozen. No dataset copying.",
   outputs: "Output files, relative to the working directory",
@@ -382,6 +385,8 @@ export const jobsText = strings({
   envChecks: "环境与输入检查",
   env: "显式环境（JSON）",
   guardGit: "启动前检查 Git HEAD 和已更改的受跟踪文件",
+  macHost: "本机 · macOS · 限额只声明：CPU 和内存只用于排队和记录，运行时不会被限制。",
+  macGuardGit: "macOS 上不可用：要冻结的文件写进输入。",
   inputs: "额外的小型输入文件，每行一个",
   captured: "会记录命令和环境。未受跟踪的数据和启动后的更改不会冻结。不会复制数据集。",
   outputs: "输出文件，相对于工作目录",

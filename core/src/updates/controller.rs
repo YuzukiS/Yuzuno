@@ -33,6 +33,11 @@ pub trait Runtime: Send + Sync {
         Box::pin(async { Ok(()) })
     }
     fn update_pause_status(&self, _operation: &Operation) -> Result<Value> { Ok(json!([])) }
+    /// An update ended and admission reopened: the Agents it paused may
+    /// continue now (resume.rs), without waiting for the worker's next round.
+    fn update_ended(&self) {}
+    /// Each paused Agent's continue after an ended update (resume.rs).
+    fn update_resume_status(&self, _operation: &Operation) -> Result<Value> { Ok(json!([])) }
     fn workspace_id(&self) -> Result<String>;
     fn blockers(&self) -> Result<Vec<Blocker>>;
     fn sessions(&self) -> Result<Vec<SessionRef>>;
@@ -165,10 +170,15 @@ impl Controller {
         let wait_notices = if let Some(op) = journal.operation.clone().filter(|op| op.phase == Phase::Waiting) {
             self.runtime_read(move |runtime| runtime.update_pause_status(&op)).await?
         } else { json!([]) };
+        let resumes = if let Some(op) = journal.operation.clone().filter(|op| {
+            matches!(op.phase, Phase::Complete | Phase::RolledBack | Phase::Failed | Phase::Cancelled)
+        }) {
+            self.runtime_read(move |runtime| runtime.update_resume_status(&op)).await?
+        } else { json!([]) };
         Ok(
             json!({"managed":self.running.is_some(),"reason":if self.running.is_none() {Some("This Core uses a development checkout. Install a managed release to enable updates here.")} else {None},
             "current":current,"candidates":candidates,"preparedReleaseId":journal.prepared.map(|p|p.release_id),"releaseSource":self.releases.status(),
-            "operation":journal.operation.map(|o|o.public()),"blockers":blockers,"waitNotices":wait_notices,
+            "operation":journal.operation.map(|o|o.public()),"blockers":blockers,"waitNotices":wait_notices,"resumes":resumes,
             "acceptingWork":self.admission.snapshot().operation_id.is_none(),"storage":storage}),
         )
     }
@@ -424,6 +434,7 @@ impl Controller {
                 Ok(())
             });
             self.admission.reopen(&id)?;
+            self.runtime.update_ended();
             saved?;
             return Err(error);
         }
@@ -446,6 +457,7 @@ impl Controller {
         })?;
         if self.admission.snapshot().operation_id.as_deref() == Some(id) {
             self.admission.reopen(id)?;
+            self.runtime.update_ended();
         }
         Ok(())
     }
@@ -584,6 +596,7 @@ impl Controller {
             Ok(())
         });
         self.admission.reopen(&op.id)?;
+        self.runtime.update_ended();
         receipt.and(saved)
     }
 }

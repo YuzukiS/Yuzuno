@@ -11,8 +11,11 @@ use serde_json::Value;
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
-    os::unix::{net::UnixStream, process::CommandExt},
-    path::Path,
+    os::{
+        fd::AsFd,
+        unix::{net::UnixStream, process::CommandExt},
+    },
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
@@ -118,7 +121,7 @@ pub fn run(root: &Path, operation_id: &str) -> Result<()> {
     package::valid_id(&op.previous.release_id)?;
     let previous_path = layout.root.join("releases").join(&op.previous.release_id);
     ensure!(
-        std::env::current_exe()? == previous_path.join("bin/yuzuno-update-helper"),
+        own_executable()? == previous_path.join("bin/yuzuno-update-helper"),
         "Helper must run from the original managed release"
     );
     ensure!(
@@ -633,13 +636,25 @@ pub(super) fn retain(layout: &Layout, id: &str) -> Result<()> {
 }
 
 pub(super) fn prune_logs(layout: &Layout, id: &str) -> Result<()> {
-    let live_log = fs::read_link("/proc/self/fd/1").ok();
+    prune_logs_but(layout, id, std::io::stdout())
+}
+
+/// `prune_logs`, keeping the file `live` writes to when it is one of the
+/// logs: this process's stdout is its own live log (Core's `core.log`, or a
+/// helper's). The open file is told by its (device, inode), which fstat
+/// gives on every Unix; Linux's /proc/self/fd/1 does not exist on macOS.
+pub(super) fn prune_logs_but(layout: &Layout, id: &str, live: impl AsFd) -> Result<()> {
+    let live = rustix::fs::fstat(live).ok().map(|stat| (stat.st_dev, stat.st_ino));
+    // lstat, as the entry's own file type below: a link is not the log.
+    let is_live = |path: &Path| {
+        live.is_some_and(|live| rustix::fs::lstat(path).is_ok_and(|stat| (stat.st_dev, stat.st_ino) == live))
+    };
     let mut logs = fs::read_dir(layout.updates())?
         .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.path().extension().is_some_and(|ext| ext == "log")
                 && !e.file_name().to_string_lossy().starts_with(id)
-                && live_log.as_ref() != Some(&e.path())
+                && !is_live(&e.path())
         })
         .collect::<Vec<_>>();
     logs.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
@@ -650,9 +665,30 @@ pub(super) fn prune_logs(layout: &Layout, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// This process's executable, resolved. `current_exe()` is the path it was
+/// started by, which macOS does not resolve (Linux's /proc/self/exe is):
+/// `updates/start` is a symlink to the helper (start.rs). The release paths
+/// it is compared with need no resolving: they are under Layout::open's
+/// canonical root, in release directories that are not links
+/// (Bundle::verify).
+fn own_executable() -> Result<PathBuf> {
+    resolved(&std::env::current_exe()?)
+}
+
+/// `path` with every link and `.`/`..` resolved, as the file system names it.
+fn resolved(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).with_context(|| format!("Cannot resolve executable {}", path.display()))
+}
+
 /// Resolve the actual executable, not an ambient version or source checkout.
 pub fn running_bundle(layout: &Layout) -> Result<Bundle> {
-    let executable = std::env::current_exe()?;
+    bundle_of(layout, &std::env::current_exe()?)
+}
+
+/// The accepted release whose `bin/yuzuno-workspace` is `executable` once
+/// resolved.
+pub(super) fn bundle_of(layout: &Layout, executable: &Path) -> Result<Bundle> {
+    let executable = resolved(executable)?;
     let installed: ReleaseRef =
         serde_json::from_reader(File::open(layout.root.join("current.json"))?)?;
     let mut accepted = vec![installed];

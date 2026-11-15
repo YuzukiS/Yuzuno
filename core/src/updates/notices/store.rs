@@ -1,6 +1,16 @@
 use super::*;
-use crate::store::Store;
+use crate::store::{Sel, Store};
 use rusqlite::{params, OptionalExtension};
+
+/// A Turn from an update's original Turn on (resume.rs): its ID, its status
+/// and, after the original, who its first input came from (`_yuzunoInput`,
+/// as the conversation marks it; None without a user message).
+#[derive(Debug)]
+pub(crate) struct Starter {
+    pub id: String,
+    pub status: Option<String>,
+    pub input: Option<String>,
+}
 
 impl Store {
     /// A single transaction retains the original targets even when there were
@@ -46,7 +56,7 @@ impl Store {
         for (agent, turn, session) in targets {
             let id = format!("update-pause-{}-{}", op.id, agent.id);
             let body = format!(
-                "Workspace update {} (operation {}) is waiting for your current Turn to finish, until {}. At your next safe native opportunity, save necessary progress and references on the existing task, then end this Turn. Do not start another task, wait in a polling loop, or send a receipt-only reply. Ending the Turn does not complete the task. Do not kill long-running tools, shells or Jobs to satisfy this request. This request applies only while updateWait.active is true and only to the original Turn {}. After yielding, stay idle; the user chooses when to continue. Cancellation or expiry releases this request and never replays prior user input.",
+                "Workspace update {} (operation {}) is waiting for your current Turn to finish, until {}. At your next safe native opportunity, save necessary progress and references on the existing task, then end this Turn. Do not start another task, wait in a polling loop, or send a receipt-only reply. Ending the Turn does not complete the task. Do not kill long-running tools, shells or Jobs to satisfy this request. This request applies only while updateWait.active is true and only to the original Turn {}. After yielding, stay idle: when the update ends, Yuzuno Core sends you one message to continue this work. Do not poll or wait for it. Cancellation or expiry releases this request and never replays prior user input.",
                 op.release_id, op.id, op.deadline, turn);
             crate::collaboration_store::insert_message(
                 &tx,
@@ -71,14 +81,24 @@ impl Store {
     }
 
     pub(crate) fn update_pause_messages(&self, operation: &str) -> Result<Vec<Value>> {
+        self.pause_messages(operation, "")
+    }
+
+    /// This update's pause messages whose continue (resume.rs) has no
+    /// outcome yet, or was being sent when Core stopped.
+    pub(crate) fn update_resume_candidates(&self, operation: &str) -> Result<Vec<Value>> {
+        self.pause_messages(operation, "AND COALESCE(json_extract(m.delivery_detail,'$.resume.state'),'sending')='sending'")
+    }
+
+    fn pause_messages(&self, operation: &str, only: &str) -> Result<Vec<Value>> {
         let db = self.db.read()?;
-        let mut q = db.prepare(
+        let mut q = db.prepare(&format!(
             "SELECT m.data,m.delivery_state,m.delivery_detail,r.read_at
             FROM collaboration_messages m LEFT JOIN collaboration_message_reads r
             ON r.message_seq=m.seq AND r.reader_id=m.recipient_id
             WHERE json_extract(m.data,'$.metadata.kind')='update_wait'
-            AND json_extract(m.data,'$.metadata.operationId')=?1 ORDER BY m.seq",
-        )?;
+            AND json_extract(m.data,'$.metadata.operationId')=?1 {only} ORDER BY m.seq",
+        ))?;
         let rows = q.query_map([operation], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -117,5 +137,47 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(changed == 1)
+    }
+
+    /// Moves a pause message's continue (`delivery_detail.resume`, resume.rs)
+    /// from `from` (None: it has none yet) to `to` (None removes it), only
+    /// if it is still `from`. False if it was not: someone else moved it.
+    pub(crate) fn set_update_resume(&self, message: &str, from: Option<&str>, to: Option<Value>) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let changed = tx.execute(
+            "UPDATE collaboration_messages SET delivery_detail=CASE WHEN ?1 IS NULL
+                THEN json_remove(delivery_detail,'$.resume') ELSE json_set(delivery_detail,'$.resume',json(?1)) END
+            WHERE id=?2 AND json_extract(data,'$.metadata.kind')='update_wait'
+            AND (CASE WHEN ?3 IS NULL THEN json_extract(delivery_detail,'$.resume') IS NULL
+                ELSE json_extract(delivery_detail,'$.resume.state') IS ?3 END)",
+            params![to.map(|v| v.to_string()), message, from],
+        )?;
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// The Agent's Turns from `turn` on, oldest first (`Starter`); only the
+    /// later ones are read, and only their first inputs are looked at. None
+    /// if the Agent has no such Turn.
+    pub(crate) fn turn_starters_since(&self, agent: &str, turn: &str) -> Result<Option<Vec<Starter>>> {
+        let states = {
+            let db = self.db.read()?;
+            let Some(before) = crate::record_rows::turns_before(&db, agent, turn)? else {
+                return Ok(None);
+            };
+            let count = crate::record_rows::turn_count(&db, agent)?;
+            crate::record_rows::newest_turn_states(&db, agent, count.saturating_sub(before))?
+        };
+        anyhow::ensure!(states.first().is_some_and(|(id, _)| id == turn), "Turns changed while read");
+        let later: Vec<String> = states[1..].iter().map(|(id, _)| id.clone()).collect();
+        // Read after the guard above is dropped: `view` takes a reader itself.
+        let turns = if later.is_empty() { vec![] } else { self.view(agent, Sel::Turns(later))?.turns };
+        Ok(Some(states.into_iter().enumerate().map(|(at, (id, status))| {
+            let input = (at > 0).then(|| turns.iter().find(|t| t["id"] == id.as_str())).flatten()
+                .and_then(|t| t["items"].as_array()?.iter().find(|i| i["type"] == "userMessage"))
+                .and_then(|i| i["_yuzunoInput"].as_str().map(str::to_owned));
+            Starter { id, status, input }
+        }).collect()))
     }
 }

@@ -282,6 +282,17 @@
   color: var(--home-ink-2);
   font-size: calc(9.5px + var(--font-adjust, 3px));
 }
+/* Answered with no card (YN-136): the answer, one line, whole in its tip. */
+.request-card-answer {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .request-card-cards {
   margin: 0;
   padding: 0;

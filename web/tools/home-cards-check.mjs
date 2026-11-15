@@ -12,8 +12,10 @@
 //    its reply and Reply again;
 //  - the deck in its order (open Asks, current status, reports, Asks put off;
 //    the answered Asks under their heading; status out of date last, closed),
-//    and with no hole: every cell of its grid, and of Out of date's once
-//    opened, is a card's (PR B; 1920 px too, where the deck has four columns);
+//    and with no gap before a card: every cell of its grid, and of Out of
+//    date's once opened, is a card's up to a row's end, which may stay empty
+//    where its cards are twice their size (PR B, YN-157; 1920 px too, where
+//    the deck has four columns);
 //  - in Chinese, Enter sends a reply from Home as from the composer: Shift+Enter
 //    makes a new line, Enter while an input method composes sends nothing (PR B);
 //  - a card's HTML page and Home talk through the bridge (YN-16 S6): the page
@@ -359,7 +361,8 @@ async function check(run) {
     const closed = deck.locator(":scope > details.home-out-of-date");
     assert.equal(await closed.evaluate((el) => el.open), false, "out of date, closed");
     assert.match(await closed.locator("summary").innerText(), w.outOfDate);
-    // Every cell of the grid, as laid out, is a card's, a heading's or Out of date's.
+    // Every cell of the grid, as laid out, is a card's, a heading's or Out of date's; a row may end empty where
+    // its cards are at twice their own size (YN-157), but never have a gap before a card.
     const holes = (grid) => grid.evaluate((el) => {
       const style = getComputedStyle(el);
       const columns = style.gridTemplateColumns.split(" ").map(parseFloat), rows = style.gridTemplateRows.split(" ").map(parseFloat);
@@ -376,10 +379,14 @@ async function check(run) {
       let y = box.top + (parseFloat(style.paddingTop) || 0);
       rows.forEach((height, row) => {
         let x = box.left + (parseFloat(style.paddingLeft) || 0);
-        columns.forEach((width, column) => {
+        const covered = columns.map((width) => {
           const cx = x + width / 2, cy = y + height / 2;
-          if (!items.some((r) => cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom)) missing.push([row + 1, column + 1]);
           x += width + gapX;
+          return items.some((r) => cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom);
+        });
+        const last = covered.lastIndexOf(true);
+        covered.forEach((isCovered, column) => {
+          if (!isCovered && (last < 0 || column < last)) missing.push([row + 1, column + 1]);
         });
         y += height + gapY;
       });
@@ -396,7 +403,7 @@ async function check(run) {
     await deck.screenshot({ path: join(output, `${run.name}-deck.png`) });
     result.shots.push(`${run.name}-deck.png`);
     await closed.locator("summary").click();
-    pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no hole in either", { columns: main.columns, rows: main.rows });
+    pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no gap before a card in either", { columns: main.columns, rows: main.rows });
 
     // ---- A report whose substance is its HTML page (YN-3 C2): the page works on its card, asked for only
     // once the card is in view, in the Portal's sandbox (its script runs, in an opaque origin); the card is the whole report.
@@ -495,12 +502,12 @@ async function check(run) {
     // Pictured before the rules below, so a failure still shows the cards.
     await cardShot("tokenizer", "answer-card");
     await cardShot("draft", "answer-card-updated");
-    const sharing = main.columns >= 2 ? String(main.columns / 2) : "1";
-    for (const key of ["tokenizer", "draft"]) {
+    const sharing = main.columns >= 4 ? ["2", "2"] : main.columns === 3 ? ["1", "2"] : ["1", "1"];
+    for (const [n, key] of ["tokenizer", "draft"].entries()) {
       const a = answers[key];
       assert.ok(a.answer && a.size === "small", `${key}: an answer card, small: ${JSON.stringify(a)}`);
       assert.equal(a.kind, w.replied);
-      assert.equal(a.cols, sharing, `${key}: ${main.columns} columns, two answer cards share the row: ${JSON.stringify(a)}`);
+      assert.equal(a.cols, sharing[n], `${key}: ${main.columns} columns, filled from the last back (YN-157): ${JSON.stringify(a)}`);
       assert.ok(a.quoteLines <= 3, `${key}: the reply in three lines at most: ${JSON.stringify(a)}`);
     }
     if (main.columns >= 2) assert.equal(answers.tokenizer.top, answers.draft.top, "side by side");
@@ -509,14 +516,15 @@ async function check(run) {
     assert.match(answers.tokenizer.reply, /Keep it until the shard rebuild, then switch\.$/);
     assert.equal(answers.tokenizer.next, w.next);
     assert.ok(answers.draft.update && answers.draft.next === null, "its owner's update in place of who acts next");
-    // Opened: the question and details, its row its own; the other takes the row it is left alone on; still no hole.
+    // Opened: the question and details, its row its own; the other takes the row it is left alone on, as far as
+    // its twice-its-size cap allows (YN-157); still no gap before a card.
     const tokenizer = card("tokenizer");
     await tokenizer.locator(".home-answer-details").click();
     await tokenizer.locator(".home-card-body .home-question").waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => {
       const grid = document.querySelector('[data-home-project="p-orch"] .home-brief');
-      const draft = document.querySelector("#home-section-p-orch-draft");
-      return grid && draft && Math.abs(draft.getBoundingClientRect().width - (grid.clientWidth - parseFloat(getComputedStyle(grid).paddingLeft || 0) - parseFloat(getComputedStyle(grid).paddingRight || 0))) < 4;
+      const tokenizer = document.querySelector("#home-section-p-orch-tokenizer");
+      return grid && tokenizer && Math.abs(tokenizer.getBoundingClientRect().width - (grid.clientWidth - parseFloat(getComputedStyle(grid).paddingLeft || 0) - parseFloat(getComputedStyle(grid).paddingRight || 0))) < 4;
     }, null, { timeout: 5000 }).catch(() => {});
     const opened = await holes(deck);
     assert.deepEqual(opened.missing, [], `no hole with an answer card open: ${JSON.stringify(opened)}`);

@@ -62,7 +62,7 @@ const CREDENTIALS: &str = "collaboration.mcp.agent.*";
 
 /// Folders Core keeps its own files in; what is copied from each is chosen
 /// by the database copy (`Named`).
-pub(crate) const INCLUDED: &[&str] = &["input-images", "brief-attachments", "pr-reviews", "jobs"];
+pub(crate) const INCLUDED: &[&str] = &["input-images", "home-images", "input-files", "home-files", "brief-attachments", "pr-reviews", "jobs"];
 /// Names in the Workspace folder left out, with the reason the manifest gives.
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("workspace.lock", "The lock of the Core using the Workspace"),
@@ -467,6 +467,7 @@ pub fn restore_with(backup: &Path, target: &Path, keep_out: Option<&Path>, ctl: 
                 "The Workspace's own MCP credentials were not in the backup; Core makes new ones when an Agent connects.".into(),
                 "Paths inside records and native histories still name the folder that was backed up; they are not rewritten.".into(),
                 "Native sessions, CLI accounts and working directories were not in the backup (notCovered).".into(),
+                "Home cards that refresh themselves are paused in the restored Workspace (restored from a backup); turn each on again on its card.".into(),
             ],
         })
     })();
@@ -477,11 +478,12 @@ pub fn restore_with(backup: &Path, target: &Path, keep_out: Option<&Path>, ctl: 
     result.context("Nothing was restored; nothing else was changed")
 }
 
-/// What the database copy names: the Agents, Jobs, reviews and Brief
-/// attachment files whose folders and files a backup holds.
+/// What the database copy names: the Agents, Projects, Jobs, reviews and
+/// Brief attachment files whose folders and files a backup holds.
 #[derive(Default)]
 struct Named {
     agents: BTreeSet<String>,
+    projects: BTreeSet<String>,
     jobs: BTreeSet<String>,
     finished_reviews: BTreeSet<String>,
     running_reviews: BTreeSet<String>,
@@ -500,6 +502,7 @@ impl Named {
         };
         Ok(Self {
             agents: ids("agents", "SELECT id FROM agents")?,
+            projects: ids("projects", "SELECT id FROM projects")?,
             jobs: ids("local_jobs", "SELECT id FROM local_jobs")?,
             finished_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status NOT IN ('preparing','running')")?,
             running_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status IN ('preparing','running')")?,
@@ -511,8 +514,9 @@ impl Named {
     /// folders) belongs in the backup, or why not.
     fn decide(&self, folder: &str, entry: &str) -> Result<(), &'static str> {
         let named = match folder {
-            "input-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
-            "input-images" => self.agents.contains(entry),
+            "input-images" | "home-images" | "input-files" | "home-files" if entry.starts_with(".tmp") => return Err(TEMPORARY),
+            "input-images" | "input-files" => self.agents.contains(entry),
+            "home-images" | "home-files" => self.projects.contains(entry),
             "brief-attachments" if entry.starts_with(".tmp-") => return Err(TEMPORARY),
             "brief-attachments" => self.attachments.contains(entry),
             "pr-reviews" if self.running_reviews.contains(entry) => return Err(RUNNING_REVIEW),
@@ -526,7 +530,7 @@ impl Named {
     /// Why a name inside a kept entry is left out, if it is.
     fn skip(folder: &str, name: &str) -> Option<&'static str> {
         match folder {
-            "input-images" if name.starts_with(".tmp") => Some(TEMPORARY),
+            "input-images" | "home-images" | "input-files" | "home-files" if name.starts_with(".tmp") => Some(TEMPORARY),
             "pr-reviews" if name == "objects.git" => Some(REVIEW_CACHE),
             _ => None,
         }
@@ -742,11 +746,14 @@ fn copy_snapshot(source: &Connection, path: &Path) -> Result<()> {
 
 /// Readies a database copy: one file with no write-ahead log beside it (Core
 /// turns WAL on when it opens it), the credentials removed and no trace of
-/// them left in its free pages, and the copy checked whole.
+/// them left in its free pages, every Home card refresh paused (YN-113: a
+/// restored Workspace never refreshes beside this one), and the copy checked
+/// whole.
 fn finish_copy(path: &Path) -> Result<(Database, usize, String)> {
     let target = Connection::open(path)?;
     target.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;")?;
     let removed = target.execute("DELETE FROM workspace_meta WHERE key GLOB ?1", [CREDENTIALS])?;
+    crate::project_brief::refresh::pause_for_backup(&target)?;
     target.execute_batch("VACUUM")?;
     let facts = facts(&target, Role::Workspace)?;
     target.close().map_err(|(_, error)| error)?;

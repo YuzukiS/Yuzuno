@@ -78,7 +78,7 @@ const buildTask = { id: "YN-7", title: "Settings layout", shortName: "Build page
 const copyTask = { id: "YN-8", title: "Casual copy", shortName: "Copy", status: "doing", archived: false };
 const builder = { agentId: "x", name: "YN-7 · Build page", kind: "executor", state: "running" };
 const desk = { agentId: "a", name: "Mori" };
-const at = { r3: ago(60), r4: ago(40) };
+const at = { r3: ago(60), r4: ago(40), gone: ago(60 * 24 * 40) };
 const route = (kind, request, index, sectionId, cardKey, task, to, why, title) =>
   ({ kind, index, request, at: request === 3 ? at.r3 : at.r4, state: "done", why, by: desk, to, task, cardKey, sectionId, ...(title ? { title } : {}) });
 const handoffs = {
@@ -121,9 +121,9 @@ const requests = () => [
     cards: [card(21, "yn-7", "Settings layout", buildTask, builder), card(22, "yn-8", "Casual copy", copyTask, { agentId: "a", name: "Mori", kind: "lead", state: "idle" })],
     state: "doing", progress: { cards: 2, ended: 0 }, lines: [] },
   // Its card archived longer ago than Home keeps it: no longer on the page.
-  { id: "r2", n: 2, text: "Compare the export formats", textBlocks: null, title: "Export formats", createdAt: ago(60 * 24 * 40), frontAgentId: "a",
-    messageId: "m2", delivery: "accepted", replies: [], notes: [{ note: "A research card.", by: desk, at: ago(60 * 24 * 40) }],
-    routes: [{ kind: "card", index: 0, request: 2, at: ago(60 * 24 * 40), state: "done", why: "Research", by: desk, to: { agentId: "x", name: "YN-6 · Research" },
+  { id: "r2", n: 2, text: "Compare the export formats", textBlocks: null, title: "Export formats", createdAt: at.gone, frontAgentId: "a",
+    messageId: "m2", delivery: "accepted", replies: [], notes: [{ note: "A research card.", by: desk, at: at.gone }],
+    routes: [{ kind: "card", index: 0, request: 2, at: at.gone, state: "done", why: "Research", by: desk, to: { agentId: "x", name: "YN-6 · Research" },
       task: "YN-6", cardKey: "yn-6", sectionId: 19, title: "Export research" }],
     cards: [{ sectionId: 19, key: "yn-6", title: "Export research", live: false, task: { id: "YN-6", status: "done", archived: false }, responsible: null }],
     state: "done", progress: { cards: 1, ended: 1 }, lines: [] },

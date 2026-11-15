@@ -1,7 +1,7 @@
 /** Executor routing's words (YN-49 S4a), in English and Chinese, and what
  * a candidate, a condition or a schedule is called in a line; and what keeps a
  * candidate from being saved, as YN-34 S3a's check refuses it. */
-import { DEEPSEEK_PEAK, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type PresetId, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, LOCAL_MACHINE, credentialFits, isKnown, keyFits, modelShort, sameSchedule, type AnyCondition, type Candidate, type Harness, type NamedMachine, type PoolPick, type PresetId, type Schedule, type Slot } from "./executor-routing";
 import { strings } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
 
@@ -33,7 +33,7 @@ export const text = strings({
   loginClaude: "This host's login",
   loginCodex: "This host's login (ChatGPT subscription)",
   loginOpencode: "OpenCode's own login",
-  pool: (n: number | "all") => (n === "all" ? "claude-swap pool · the account with most left · all accounts" : `claude-swap pool · the account with most left · ${n} ${n === 1 ? "account" : "accounts"}`),
+  pool: (n: number | "all", pick: PoolPick) => `claude-swap pool · ${pick === "soonestReset" ? "the account that resets soonest" : "the account with most left"} · ${n === "all" ? "all accounts" : `${n} ${n === 1 ? "account" : "accounts"}`}`,
   key: (provider: string, source: string) => `API key: ${provider} · ${source}`,
   keyLocal: "this host",
   key1p: "1Password",
@@ -54,10 +54,14 @@ export const text = strings({
   chipOutside: (s: string, m?: number) => `Outside ${s}${m ? ` · ${m} min left at least` : ""}`,
   chipQuota: (week?: number) => (week != null ? `Week left ≥ ${week}%` : ""),
   chipCap: (usd: number) => `Today ≤ $${usd}`,
-  chipPick: "The account with most left",
+  chipPick: (pick: PoolPick): string => (pick === "soonestReset" ? "The account that resets soonest" : "The account with most left"),
   chipSkip: "Skipped when a reading is unavailable",
   chipPass: "Counted as met when a reading is unavailable",
   chipUnknownKind: (kind: string) => `A condition this version can't show (${kind})`,
+  // YN-139: a machine condition's chip, its machines joined.
+  chipMachines: (names: string) => `${names} only`,
+  chipThisHost: "This host",
+  machineJoin: ", ",
   utc: "UTC",
   local: "Core host time",
   days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
@@ -100,7 +104,7 @@ export const text = strings({
   credLoginClaude: "This host's login",
   credLoginCodex: "This host's login (ChatGPT subscription)",
   credLoginOpencode: "OpenCode's own login",
-  credPool: "claude-swap pool (the account with most left)",
+  credPool: "claude-swap pool",
   credKey: (provider: string, id: string) => `API key: ${provider} (${id})`,
   credHome: (label: string) => `Codex account: ${label}`,
   // An API key for a candidate, added in place (YN-57 S3).
@@ -112,6 +116,10 @@ export const text = strings({
   poolAccounts: "Accounts in the pool",
   poolAll: "All accounts claude-swap lists",
   poolSome: "Only these:",
+  poolPick: "Which account first",
+  poolPickMost: "The one with most left",
+  poolPickSoonest: "The one that resets soonest, until it runs low",
+  poolPickHelp: "Among the accounts whose conditions hold, the one whose week resets first; once it falls below \"This week left at least\" or reaches 0%, the next one. Accounts with no known reset come last.",
   account: (n: number) => `Account #${n}`,
   noAccounts: "claude-swap lists no account now.",
   conditions: "Conditions",
@@ -119,6 +127,7 @@ export const text = strings({
   addTime: "Time window",
   addQuota: "Subscription left",
   addCap: "Daily spend",
+  addMachine: "Only on these machines",
   removeCondition: "Remove this condition",
   timeWindow: "Time window",
   insideOption: "Within these hours",
@@ -139,6 +148,10 @@ export const text = strings({
   week: "This week left at least",
   cap: "Daily spend",
   capOwn: "This candidate, at most $ a day",
+  machines: "Machines",
+  machineHere: "This Core host",
+  machineGone: (id: string) => `${id} (removed, or not read)`,
+  machineQuotaNote: "On another machine, a subscription-left condition still reads this host's account.",
   unknown: "When a reading is unavailable",
   skip: "Skip this candidate",
   pass: "Count it as met",
@@ -158,6 +171,8 @@ export const text = strings({
   fixIt: (title: string) => `Needs a fix: edit ${title}`,
   modelSpaces: "A model is one name, without spaces.",
   modelOpencode: "An OpenCode model is <provider>/<model>, such as deepseek/deepseek-flash.",
+  /** A candidate's harness choice; where Yuzuno's OpenCode support stops is Core's `opencode::VERIFIED` (YN-119). */
+  harnessOption: (harness: Harness) => (harness === "opencode" ? "OpenCode (stops at 2.2.5)" : harnessName[harness]),
   keyNeeded: (id: string) => `The key ${id} isn't added yet: add it under Accounts & keys, or choose another.`,
   homeNeeded: (id: string) => `The Codex account ${id} isn't listed: add it under Accounts & keys, or choose another.`,
   labelTooLong: "A name is at most 60 characters.",
@@ -170,6 +185,7 @@ export const text = strings({
   slotNoDay: (n: number) => `Period ${n} needs a day.`,
   slotBad: (n: number) => `Period ${n} starts and ends at the same time.`,
   minBad: "1 to 1440 minutes.",
+  machinesEmpty: "Choose at least one machine.",
   // Below the list.
   add: "Add a candidate",
   max: (n: number) => `At most ${n} candidates.`,
@@ -216,7 +232,7 @@ export const text = strings({
   loginClaude: "主机的登录",
   loginCodex: "主机的登录（ChatGPT 订阅）",
   loginOpencode: "OpenCode 自己的登录",
-  pool: (n) => (n === "all" ? "claude-swap 账号池 · 选剩余最多的 · 全部账号" : `claude-swap 账号池 · 选剩余最多的 · ${n} 个账号`),
+  pool: (n, pick) => `claude-swap 账号池 · ${pick === "soonestReset" ? "先用快重置的" : "选剩余最多的"} · ${n === "all" ? "全部账号" : `${n} 个账号`}`,
   key: (provider, source) => `API key：${provider} · ${source}`,
   keyLocal: "本机密钥库",
   key1p: "1Password",
@@ -237,10 +253,14 @@ export const text = strings({
   chipOutside: (s, m) => `在 ${s} 以外${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
   chipQuota: (week) => (week != null ? `本周剩 ≥ ${week}%` : ""),
   chipCap: (usd) => `今日本项 ≤ $${usd}`,
-  chipPick: "选剩余最多的账号",
+  chipPick: (pick) => (pick === "soonestReset" ? "先用快重置的账号" : "选剩余最多的账号"),
   chipSkip: "读不到时跳过",
   chipPass: "读不到时当作满足",
   chipUnknownKind: (kind) => `这个版本显示不了的条件（${kind}）`,
+  // 机器名以拉丁字母开头时留一个空格：「只在 Mac mini」「只在这台主机」。
+  chipMachines: (names) => `只在${/^[\x21-\x7e]/.test(names) ? " " : ""}${names}`,
+  chipThisHost: "这台主机",
+  machineJoin: "、",
   utc: "UTC",
   local: "Core 主机时间",
   days: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
@@ -281,7 +301,7 @@ export const text = strings({
   credLoginClaude: "主机的登录",
   credLoginCodex: "主机的登录（ChatGPT 订阅）",
   credLoginOpencode: "OpenCode 自己的登录",
-  credPool: "claude-swap 账号池（选剩余最多的）",
+  credPool: "claude-swap 账号池",
   credKey: (provider, id) => `API key：${provider}（${id}）`,
   credHome: (label) => `Codex 账号：${label}`,
   credGroupAccounts: "账号",
@@ -292,6 +312,10 @@ export const text = strings({
   poolAccounts: "池里的账号",
   poolAll: "claude-swap 列出的全部账号",
   poolSome: "只用这些：",
+  poolPick: "先用哪个账号",
+  poolPickMost: "剩得最多的",
+  poolPickSoonest: "离重置最近的，用完再换下一个",
+  poolPickHelp: "在满足条件的账号里，先用本周额度最早重置的；它低于「本周至少剩」或用到 0% 后，再用下一个。不知道重置时间的排在最后。",
   account: (n) => `账号 #${n}`,
   noAccounts: "claude-swap 现在没有列出账号。",
   conditions: "条件",
@@ -299,6 +323,7 @@ export const text = strings({
   addTime: "时间窗口",
   addQuota: "订阅额度",
   addCap: "每日花费",
+  addMachine: "只在这些机器上跑",
   removeCondition: "删除这个条件",
   timeWindow: "时间窗口",
   insideOption: "在这些时段内",
@@ -319,6 +344,10 @@ export const text = strings({
   week: "本周至少剩",
   cap: "每日花费",
   capOwn: "这一项每天最多 $",
+  machines: "机器",
+  machineHere: "这台 Core 主机",
+  machineGone: (id) => `${id}（已移除或未读到）`,
+  machineQuotaNote: "在别的机器上，订阅额度条件读的仍是这台主机的账号。",
   unknown: "读不到读数时",
   skip: "跳过这一项",
   pass: "当作满足",
@@ -335,6 +364,7 @@ export const text = strings({
   fixIt: (title) => `需要修改：编辑 ${title}`,
   modelSpaces: "模型是一个名字，不带空格。",
   modelOpencode: "OpenCode 的模型写成 <提供方>/<模型>，例如 deepseek/deepseek-flash。",
+  harnessOption: (harness) => (harness === "opencode" ? "OpenCode（停在 2.2.5）" : harnessName[harness]),
   keyNeeded: (id) => `还没有 key ${id}：在「账号与密钥」里添加，或换一个。`,
   homeNeeded: (id) => `Codex 账号 ${id} 不在列表里：在「账号与密钥」里添加，或换一个。`,
   labelTooLong: "名称最多 60 个字。",
@@ -347,6 +377,7 @@ export const text = strings({
   slotNoDay: (n) => `时段 ${n} 要选至少一天。`,
   slotBad: (n) => `时段 ${n} 的开始和结束是同一时间。`,
   minBad: "1 到 1440 分钟。",
+  machinesEmpty: "选至少一台机器。",
   add: "添加候选",
   max: (n) => `最多 ${n} 项。`,
   presets: "预设：",
@@ -385,10 +416,20 @@ export function scheduleWords(schedule: Schedule, t: Text): string {
   return `${zoneWords(schedule, t)} ${slotWords(slot, t)}${schedule.slots.length > 1 ? t.moreSlots(schedule.slots.length - 1) : ""}`;
 }
 
-export function chipText(c: AnyCondition, t: Text): string {
+/** A machine a machine condition names, by its name: this Core host, a listed machine's name, else its id (YN-139). */
+export const machineWord = (id: string, t: Text, machines: readonly NamedMachine[] | null) =>
+  id === LOCAL_MACHINE ? t.chipThisHost : machines?.find((m) => m.id === id)?.name || id;
+
+/** A condition in a few words, for its chip; a machine condition names its machines from `machines` when listed. */
+export function chipText(c: AnyCondition, t: Text, machines: readonly NamedMachine[] | null = null): string {
   if (!isKnown(c)) return t.chipUnknownKind(c.kind);
   if (c.kind === "quota") return t.chipQuota(c.weekLeftPct) || t.quota;
   if (c.kind === "dailyApiCap") return t.chipCap(c.usd);
+  if (c.kind === "machine") {
+    // This Core host first, then the others as saved.
+    const ids = [...c.machines.filter((id) => id === LOCAL_MACHINE), ...c.machines.filter((id) => id !== LOCAL_MACHINE)];
+    return ids.length ? t.chipMachines(ids.map((id) => machineWord(id, t, machines)).join(t.machineJoin)) : t.addMachine;
+  }
   if (sameSchedule(c.schedule, DEEPSEEK_PEAK)) return c.inside ? t.chipPeakOn : t.chipPeakOff(c.minMinutesLeft);
   return (c.inside ? t.chipInside : t.chipOutside)(scheduleWords(c.schedule, t), c.minMinutesLeft);
 }
@@ -399,7 +440,7 @@ export function credentialWords(c: Candidate, t: Text, keys: RoutingKey[] | null
   // DeepSeek Harness has no login here (YN-119 §3.10): one saved so is said to need a key.
   if (cred.kind === "login" && c.harness === "dsh") return { text: t.dshKeyOnly, missing: true };
   if (cred.kind === "login") return { text: c.harness === "codex" ? t.loginCodex : c.harness === "claude" ? t.loginClaude : t.loginOpencode, missing: false };
-  if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length), missing: false };
+  if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length, cred.pick), missing: false };
   if (cred.kind === "apiKey") {
     if (!keys) return { text: t.keyPending(cred.keyId), missing: false };
     const key = keys.find((k) => k.id === cred.keyId);
@@ -439,6 +480,7 @@ export function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, acc
     const at = String(i);
     if (cond.kind === "quota" && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
     if (cond.kind === "dailyApiCap" && !usdFits(cond.usd)) list.push({ at, text: t.capBad });
+    if (cond.kind === "machine" && !cond.machines.length) list.push({ at, text: t.machinesEmpty });
     if (cond.kind === "timeWindow") {
       if (!cond.schedule.slots.length) list.push({ at, text: t.slotsEmpty });
       cond.schedule.slots.forEach((s, n) => {

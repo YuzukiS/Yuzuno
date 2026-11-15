@@ -27,6 +27,8 @@ pub mod auto_start;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod check_rules;
 #[cfg_attr(not(windows), allow(dead_code))]
+pub mod guard_rules;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod release;
 #[cfg(windows)]
 pub mod wsl;

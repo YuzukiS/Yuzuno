@@ -7,7 +7,9 @@ import { api } from "./api";
 export type ExecutorSlotsView = {
   /** `startLimitSeconds`: how long an executor's start may take before Core cuts it off (S2), the Workspace's. */
   workspace: { version: number; startLimitSeconds: number };
-  limits: { min: number; max: number; default: number; startLimitSeconds: { min: number; max: number; default: number } };
+  /** `urgentExtra`: the slots over a machine's limit an urgent dispatch's executor may take (YN-137); 0 from an older
+   * Core, which has none. */
+  limits: { min: number; max: number; default: number; urgentExtra: number; startLimitSeconds: { min: number; max: number; default: number } };
   inUse: { waiting: number; starting: number; running: number };
   /** Each machine's limit, this Core host's (`local`) first. */
   machines: MachineSlots[];
@@ -45,6 +47,7 @@ export const slotsView = (value: Partial<ExecutorSlotsView> | null | undefined):
     },
     limits: {
       min: whole(value?.limits?.min, 1), max: whole(value?.limits?.max, 64), default: defaults,
+      urgentExtra: whole(value?.limits?.urgentExtra, 0),
       startLimitSeconds: { min: whole(startLimits?.min, 30), max: whole(startLimits?.max, 3600), default: startDefault },
     },
     inUse: {

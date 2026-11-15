@@ -64,6 +64,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_delivery();
     ws.start_merge_queue();
     ws.start_backup_schedule();
+    ws.start_brief_refresh();
     ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())
@@ -176,6 +177,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::machine_load::router())
         .merge(crate::remote_service::router())
         .merge(crate::storage_overview::router())
+        .merge(crate::input_files::router())
         .merge(crate::claude_sdk::router())
         .merge(crate::github::router())
         .merge(crate::workspace_backup::online::router())
@@ -314,9 +316,9 @@ async fn health(State(ws): State<Arc<Workspace>>, updates: Option<Extension<Arc<
         "workspaceId":ws.stored(|store| store.workspace_id()).await?})))
 }
 
-/// Where this Core is installed in WSL, which the Windows desktop app keeps
-/// to start it again when it does not answer (T-171). Paths and names only;
-/// it starts nothing.
+/// Where this Core is installed, in WSL or on macOS (`platform`), which a
+/// desktop app keeps to start it again when it does not answer (T-171,
+/// YN-108). Paths and names only; it starts nothing.
 async fn start_profile(updates: Option<Extension<Arc<crate::updates::controller::Controller>>>) -> ApiResult<Json<Value>> {
     let Some(Extension(controller)) = updates else {
         return Ok(Json(json!({"available":false,"reason":"notManaged"})));
@@ -621,9 +623,12 @@ async fn backlog(State(ws): State<Arc<Workspace>>) -> Json<Value> {
 
 async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
+    // The dsh this Core would start (YN-119 S2a): {available, version, label}.
+    let dsh = crate::dsh_agent::status(&ws.data_dir).await;
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
             "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
+            "dsh":dsh,
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await
@@ -660,6 +665,14 @@ struct Create {
     /// This Agent's own Claude Code permission mode, likewise.
     #[serde(default)]
     permission_mode: Option<String>,
+    /// A dsh Agent's permission level (YN-119 §3.6): ask, auto or full; left
+    /// out, ask.
+    #[serde(default)]
+    permission_level: Option<String>,
+    /// The DeepSeek routing key a dsh Agent runs with (§3.10), as
+    /// `{"kind":"apiKey","keyId":…}`.
+    #[serde(default)]
+    runtime_profile: Option<crate::routing_launch::RuntimeProfile>,
 }
 
 #[cfg(test)]
@@ -671,6 +684,17 @@ mod create_tests {
         assert!(fresh.goal.is_empty());
         let legacy: Create = serde_json::from_value(json!({"name":"Dev","cwd":"/tmp","goal":"historical purpose"})).unwrap();
         assert_eq!(legacy.goal,"historical purpose");
+    }
+
+    /// A dsh Agent as the web asks for one (YN-125 W1): its level and its
+    /// DeepSeek key, as RuntimeProfile's own JSON.
+    #[test]
+    fn a_dsh_agent_is_asked_for_with_its_level_and_key() {
+        let asked: Create = serde_json::from_value(json!({"name":"D","cwd":"/tmp","machineId":"local","harness":"dsh","model":"deepseek-flash",
+            "permissionLevel":"auto","runtimeProfile":{"kind":"apiKey","keyId":"deepseek"}})).unwrap();
+        assert_eq!((asked.harness.as_deref(), asked.permission_level.as_deref()), (Some("dsh"), Some("auto")));
+        assert_eq!(asked.runtime_profile, Some(crate::routing_launch::RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
+        assert!(serde_json::from_value::<Create>(json!({"name":"D","cwd":"/tmp","runtimeProfile":{"kind":"apiKey","keyId":"k","extra":1}})).is_err());
     }
 }
 #[cfg(test)]
@@ -759,9 +783,31 @@ pub(crate) async fn executor_born(ws: &Arc<Workspace>, template: &crate::executo
             crate::opencode_agent::check_new(machine, &model)?;
             crate::model::AgentSettings::default()
         }
+        // As dsh_create_on keeps them (YN-119 S3): its effort and its level, shown in its
+        // settings, decided by its own row, which the caller writes beside its key.
+        "dsh" => dsh_born(machine, p.reasoning_effort.flatten(), p.permission_level)?,
         _ => anyhow::bail!("未知 Harness"),
     };
     Ok(Born { harness, model, settings })
+}
+
+/// A dsh executor's settings as `dsh_create_on` makes and checks them (YN-119
+/// §3.6, §3.9): on this Core host only, its effort one of dsh's, and its level
+/// one dsh keeps (none is Ask you first).
+fn dsh_born(machine: &str, effort: Option<String>, level: Option<String>) -> anyhow::Result<crate::model::AgentSettings> {
+    anyhow::ensure!(machine == "local", "dsh Agent 目前只在 Core 所在的本机运行。dsh Agents run on this Core host only.");
+    if let Some(effort) = &effort {
+        anyhow::ensure!(crate::dsh_agent::EFFORTS.contains(&effort.as_str()),
+            "dsh 的推理强度是 off、low、high 或 max，不是 {effort}。dsh's reasoning effort is off, low, high or max.");
+    }
+    let level = match level.as_deref() {
+        Some(level) => anyhow::Context::with_context(crate::dsh_agent::level_of(level), || {
+            let (label, label_zh) = crate::permission_levels::label(level);
+            format!("DeepSeek Harness 不支持权限等级「{label_zh}」。DeepSeek Harness doesn't keep the permission level {label}.")
+        })?,
+        None => crate::dsh_agent::Level::Ask,
+    };
+    Ok(crate::model::AgentSettings { reasoning_effort: effort, permission_level: Some(level.id().into()), ..Default::default() })
 }
 
 /// What an executor from `template` asks of POST /api/agents' creation.
@@ -779,6 +825,10 @@ fn executor_request(template: &crate::executor_templates::Template, name: String
         save_project_default: false,
         permission_preset: template.permission_preset.clone(),
         permission_mode: template.permission_mode.clone(),
+        // A dsh executor is made with its template's level (YN-119 S3), which it keeps
+        // as its own row and each start reads; its key is its dispatch's (routing).
+        permission_level: template.permission_level.clone().filter(|_| template.harness() == "dsh"),
+        runtime_profile: None,
     }
 }
 
@@ -786,10 +836,15 @@ fn executor_request(template: &crate::executor_templates::Template, name: String
 /// came from; an executor with `birth`.
 async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::workspace::Birth>) -> anyhow::Result<(crate::model::Agent, Value)> {
     let Settled { harness, model, settings, sources } = settle(ws, &p).await?;
+    anyhow::ensure!(harness == "dsh" || (p.permission_level.is_none() && p.runtime_profile.is_none()),
+        "permissionLevel and runtimeProfile are for dsh Agents");
     let agent = match harness.as_str() {
         "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
         "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
         "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
+        // Its own effort, level and DeepSeek key (YN-119 §3.6, §3.9, §3.10).
+        "dsh" => ws.dsh_create_on(p.name, p.cwd, model, p.reasoning_effort.flatten(), p.machine_id, p.project_id, birth,
+            p.permission_level, p.runtime_profile).await?,
         _ => anyhow::bail!("未知 Harness"),
     };
     Ok((agent, sources))
@@ -823,8 +878,11 @@ async fn settle(ws: &Arc<Workspace>, p: &Create) -> anyhow::Result<Settled> {
     // on this host does (YN-81): that machine's app-server receives it in the
     // same place, and this host's catalog says nothing of that machine's Codex.
     let remote_codex = new.harness == "codex" && !local;
+    // A dsh Agent's effort is dsh's own (off, low, high or max), which its create
+    // checks and keeps (YN-119 §3.9), not one of a Codex catalog's.
+    let own_effort = remote_codex || new.harness == "dsh";
     let plan = crate::agent_defaults::resolve_model(&defaults, project_defaults.as_ref(), new.harness == "codex" && local,
-        &p.model, if remote_codex { None } else { p.reasoning_effort.as_ref().map(|effort| effort.as_deref()) })?
+        &p.model, if own_effort { None } else { p.reasoning_effort.as_ref().map(|effort| effort.as_deref()) })?
         .or_else(|| (new.harness == "claude" && local).then(|| crate::agent_defaults::resolve_claude_model(&defaults, project_defaults.as_ref(), &p.model)));
     let mut settings = new.settings;
     let mut sources = new.sources;
@@ -1344,20 +1402,25 @@ async fn stop_task(State(ws): State<Arc<Workspace>>, Path((id, task_id)): Path<(
     Ok(Json(json!({"requested": ws.claude_stop_task(&id, &task_id).await?})))
 }
 
-/// A message, with the Codex skills it invokes (`skills`) held apart from
-/// the rest, which is a `MessageInput` as strict as ever. A malformed body
-/// was never submitted, so the client keeps its draft.
+/// A message, with the Codex skills it invokes (`skills`) and the files it
+/// attaches (`files`) held apart from the rest, which is a `MessageInput` as
+/// strict as ever. A malformed body was never submitted, so the client keeps
+/// its draft.
 async fn send_message(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(mut body): Json<Value>) -> ApiResult<Json<Value>> {
-    let parsed = (|| -> anyhow::Result<(MessageInput, Vec<crate::model::SkillRef>)> {
+    let parsed = (|| -> anyhow::Result<(MessageInput, Vec<crate::model::SkillRef>, Vec<crate::input_files::FileRef>)> {
         let skills = match body.as_object_mut().and_then(|b| b.remove("skills")) {
             Some(skills) => serde_json::from_value(skills).map_err(|e| anyhow::anyhow!("Invalid skills: {e}"))?,
             None => Vec::new(),
         };
-        Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills))
+        let files = match body.as_object_mut().and_then(|b| b.remove("files")) {
+            Some(files) => serde_json::from_value(files).map_err(|e| anyhow::anyhow!("Invalid files: {e}"))?,
+            None => Vec::new(),
+        };
+        Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills, files))
     })();
-    let (input, skills) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
+    let (input, skills, files) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
     // Typed by the person in a client (T-6).
-    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, Some(json!({"kind":"client"}))).await?)?))
+    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, files, Some(json!({"kind":"client"}))).await?)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1376,6 +1439,10 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
 }
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
     let harness = ws.listed(&id).await?.harness;
+    if harness == "dsh" {
+        // Chosen when it is created; changing them comes with YN-119 S2b.
+        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型、推理强度和权限暂时只能在新建时选择。A DeepSeek Harness Agent's model, effort and permissions are chosen when it is created, for now.").into());
+    }
     if harness == "opencode" {
         // The model and its variant only (T-10, `effort` names the variant);
         // permissions stay OpenCode's own configuration's.
@@ -1395,6 +1462,7 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
         if input.permission_mode.is_some() { return Err(anyhow::anyhow!("Claude 权限模式不适用于 Codex").into()); }
         if input.effort.is_some() { return Err(anyhow::anyhow!("Codex 推理强度通过设置传入").into()); }
         let settings = input.settings.ok_or_else(|| anyhow::anyhow!("Codex 设置缺失"))?;
+        if settings.permission_level.is_some() { return Err(anyhow::anyhow!("permissionLevel is a dsh Agent's").into()); }
         ws.update_settings(&id, input.model, settings).await?
     };
     Ok(Json(serde_json::to_value(agent)?))
@@ -1402,8 +1470,11 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
 /// The composer's `/compact`: a Codex Agent's own compaction, or an OpenCode
 /// Agent's (T-10).
 async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    if ws.listed(&id).await?.harness == "opencode" {
-        return Ok(Json(ws.opencode_compact(&id).await?));
+    match ws.listed(&id).await?.harness.as_str() {
+        "opencode" => return Ok(Json(ws.opencode_compact(&id).await?)),
+        // dsh compacts by itself; ACP has no manual compaction (YN-119 §4).
+        "dsh" => return Err(anyhow::anyhow!("dsh 会自己压缩上下文；它没有手动 /compact。dsh compacts its context by itself; it has no manual /compact.").into()),
+        _ => {}
     }
     Ok(Json(ws.codex_compact(&id).await?))
 }
@@ -1444,6 +1515,9 @@ async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) 
         ws.claude_agent_catalog(&id).await?
     } else if harness == "opencode" {
         ws.opencode_agent_catalog(&id).await?
+    } else if harness == "dsh" {
+        // Read from the Agent's dsh with YN-119 S2b.
+        return Err(anyhow::anyhow!("DeepSeek Harness Agent 的模型目录暂不可读。A DeepSeek Harness Agent's models can't be read yet.").into());
     } else {
         ws.agent_catalog(&id).await?
     }))
@@ -1482,6 +1556,8 @@ async fn models(State(ws): State<Arc<Workspace>>, Query(query): Query<ModelsQuer
     match query.harness.as_deref().unwrap_or("codex") {
         "claude" => return Ok(Json(ws.claude_catalog().await?)),
         "opencode" if crate::opencode_agent::enabled() => return Ok(Json(crate::opencode_agent::catalog())),
+        // Read from a dsh of its own with YN-119 S2b (§3.9).
+        "dsh" => return Err(anyhow::anyhow!("DeepSeek Harness 的模型目录暂不可读。DeepSeek Harness's models can't be read yet.").into()),
         "codex" => {},
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     }

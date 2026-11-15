@@ -45,11 +45,11 @@ const REASON_CHARS = 300;
 type Json = Record<string, unknown>;
 const object = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
 const ID = /^[a-zA-Z][\w-]{0,63}$/;
-const CONTAINERS = new Set(["BriefBody", "Group", "Columns"]);
+const CONTAINERS = new Set(["BriefBody", "Group", "Columns", "Tabs"]);
 
 /** Components whose props a repair may move, drop, fill or normalize. */
 const REPAIRED_FIELDS = new Set<string>([
-  "BriefBody", "Group", "Columns", "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
+  "BriefBody", "Group", "Columns", "Tabs", "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
   "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments",
 ]);
 /** Element-level fields a later contract may give meaning to; never moved or dropped. */

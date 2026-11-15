@@ -244,8 +244,10 @@ await run("b-fold-near-end", async ({ page, cdp, state, entry }) => {
   entry.after = after;
   entry.moved = Math.round((after.top - before.top) * 10) / 10;
   check(after.groupOpen === false, "B: the open tool group folded when the commentary arrived", { groupOpen: after.groupOpen });
-  // A clamp may move it down by what folded beyond the room below; nothing may carry it up after that.
-  check(entry.moved >= -2 && after.toEnd === 0, "B: the clamp does not start following: the text being read is not carried off", { moved: entry.moved, scrollsToEnd: after.toEnd, gapAfter: Math.round(after.gap) });
+  // Nothing carries it up after the fold, and the output streams on below
+  // the reader rather than the pane following it to the end. (A clamp, and
+  // the app putting the place back after one, may scroll it either way.)
+  check(entry.moved >= -2 && after.gap >= 72, "B: the clamp does not start following: the text being read is not carried off", { moved: entry.moved, scrollsToEnd: after.toEnd, gapAfter: Math.round(after.gap) });
 });
 
 await run("c-controls", async ({ page, cdp, state, entry }) => {

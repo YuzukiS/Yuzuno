@@ -9,6 +9,8 @@ const text = strings({
   group: "How many executors run at once",
   title: "Executors at once",
   perMachine: (list: string, total: number) => `Executors at once is set for each machine: ${list}; ${total} in all. Those dispatched beyond a machine's number wait in a queue and start in turn, as executors there close. Change a machine's number in Settings → Machines.`,
+  // YN-137: the number is Core's (limits.urgentExtra).
+  urgentMore: (n: number) => ` An urgent dispatch (a release, say) may start ${n === 1 ? "one more" : `${n} more`} when a machine is full.`,
   machine: (name: string, n: number, own: boolean) => own ? `${name} ${n}` : `${name} ${n} (default)`,
   inUse: (running: number, starting: number, waiting: number) => `In this Workspace now: ${running} running, ${starting} starting, ${waiting} waiting.`,
   startLimit: "Start time limit (seconds)",
@@ -22,6 +24,7 @@ const text = strings({
   group: "同时运行的执行者数量",
   title: "同时运行的执行者",
   perMachine: (list, total) => `同时运行的执行者按机器设置：${list}；合计 ${total} 个。超出某台机器数量的派发会排队，在该机器上的执行者关闭后按顺序启动。在“设置 → 机器”中更改各机器的数量。`,
+  urgentMore: (n) => `加急派发（发布等）在满额时可多开 ${n} 个。`,
   machine: (name, n, own) => own ? `${name} ${n} 个` : `${name} ${n} 个（默认）`,
   inUse: (running, starting, waiting) => `此 Workspace 现在：${running} 个运行中，${starting} 个启动中，${waiting} 个排队中。`,
   startLimit: "启动时限（秒）",
@@ -98,6 +101,7 @@ export function ExecutorSlots({ active, disabled = false }: { active: boolean; p
             <span className="settings-row-title">{t.title}</span>
             <span className="settings-row-help executor-slots-machines">
               {t.perMachine(view.machines.map(m => t.machine(m.name, m.limit, m.slots !== null)).join(", "), view.total)}
+              {view.limits.urgentExtra > 0 && t.urgentMore(view.limits.urgentExtra)}
             </span>
           </span>
         </div>

@@ -28,7 +28,7 @@ import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/
 import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
-import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/brief/density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
 import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
@@ -38,7 +38,7 @@ const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
-// With a density, as Home draws its cards (T-9); without one, as anywhere else.
+// With a density, as a Home card's front draws (low, T-9); without one, as anywhere else (high).
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));
 // A report as its summary card on Home (T-18), read only: its figure in its frame; on the deck (extra.deck), at its size.
@@ -985,6 +985,8 @@ test("the contract's examples render without a failed part", async (t) => {
     flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
     timeline: ["the user installs it", "Nov 3, 2026", "Candidate cut", "Notes reviewed", "Week 46", "Planned", "Installing it", "Step 1 of 4", "Download the bundle"],
     review: ["Version 2 rewrites section 2", "design-v2.pdf", "Design doc v2 (PDF)"],
+    // Every page is drawn, the hidden ones too (YN-113 R6).
+    tabs: ["two new papers", "News", "Papers", "An open model reaches 1.0", "Sparse attention at 1M tokens"],
   };
   const reads = {
     note: [],
@@ -1001,6 +1003,7 @@ test("the contract's examples render without a failed part", async (t) => {
     flowchart: [],
     timeline: [],
     review: [attachment("design-v2.pdf", "pdf", "application/pdf", { caption: "Design doc, version 2" })],
+    tabs: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1377,9 +1380,9 @@ test("a broken body or part stays local, and a failed chart read keeps its place
   assert.ok(document.querySelector("p.brief-preview-frame"), "the failed preview keeps its frame");
 });
 
-// T-9: the same body at Home's two densities, chosen per device. Low shows a
-// card's main point, high every field and row; nothing is dropped silently,
-// nothing unknown becomes 0, and switching keeps the section's state.
+// T-9: the same body at the two densities (density.ts). Low, on a Home card's
+// front, shows a card's main point, high every field and row; nothing is
+// dropped silently and nothing unknown becomes 0.
 const dense = (elements, children, attachments = []) => ({
   op: "put",
   key: KEY,
@@ -1547,47 +1550,6 @@ test("T-9 low density never folds away an attachment that warns: gone, not kept 
   await until(() => shown().length === 5, "every attachment after Show all");
   assert.deepEqual(shown(), names);
   assert.equal(document.querySelector(".brief-attachments-more").textContent, "Show fewer");
-  assert.deepEqual(page.errors, []);
-});
-
-test("T-9 switching density keeps the section's state: the same nodes, a table's filter, an open data table and focus", async (t) => {
-  const page = mount(respond);
-  t.after(page.close);
-  const { document, window } = page;
-  const section = readSection(page, dense({
-    note: { type: "Markdown", props: { text: "Runs so far." } },
-    runs: {
-      type: "Table",
-      props: {
-        id: "runs",
-        title: "Runs",
-        columns: [{ key: "run", label: "Run" }],
-        rows: [{ id: "r1", cells: { run: "1" } }, { id: "r2", cells: { run: "2" } }, { id: "r12", cells: { run: "12" } }],
-      },
-    },
-    trend: { type: "LineChart", props: { id: "trend", title: "Trend", x: { label: "Run" }, y: { label: "Score" }, series: [{ name: "S", points: [[1, 2], [2, 3]] }] } },
-  }, ["note", "runs", "trend"]));
-  window.renderSection(section, PROJECT, {}, "ws-density", "high");
-  const body = document.querySelector(".brief-body");
-  const note = document.querySelector(".brief-markdown");
-  const filter = () => document.querySelector('input[aria-label="Filter Runs"]');
-  const input = filter();
-  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, "2");
-  input.dispatchEvent(new window.Event("input", { bubbles: true }));
-  await until(() => document.querySelectorAll(".result-table-scroll tbody tr").length === 2, "the filtered table");
-  const data = document.querySelector("details.brief-chart-data");
-  data.open = true;
-  await until(() => data.querySelector("tbody tr"), "the opened data table");
-  input.focus();
-  window.renderSection(section, PROJECT, {}, "ws-density", "low");
-  assert.ok(document.querySelector(".brief-body") === body, "the section is not drawn again");
-  assert.ok(document.querySelector(".brief-markdown") === note, "an unchanged block keeps its node");
-  assert.ok(filter() === input, "the filter input is the same node");
-  assert.equal(filter().value, "2", "the filter stays");
-  assert.equal(document.querySelectorAll(".result-table-scroll tbody tr").length, 2);
-  assert.ok(document.querySelector("details.brief-chart-data") === data, "the data table is the same node");
-  assert.ok(data.open, "the data table stays open");
-  assert.ok(document.activeElement === input, "focus stays where it was");
   assert.deepEqual(page.errors, []);
 });
 
@@ -2148,4 +2110,97 @@ test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens
   steps().querySelectorAll(".brief-step-move")[0].click();
   await until(() => /Step 1 of 2/.test(steps().textContent), "Back from the clamped step");
   assert.deepEqual(page.errors, []);
+});
+
+/** The contract's tabs example (YN-113 R6) with a third page, Policy. */
+const digest = (window) => {
+  const put = JSON.parse(JSON.stringify(window.examples.tabs));
+  put.body.elements.more.children.push("policy");
+  put.body.elements.policy = { type: "Group", props: { title: "Policy" }, children: ["rule"] };
+  put.body.elements.rule = { type: "Markdown", props: { text: "A transit data rule takes effect." } };
+  return put;
+};
+
+test("YN-113 R6 Tabs: one tab per page as the WAI-ARIA pattern has it; arrows round the ends, Home and End; every page drawn, one shown", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, digest(window));
+  window.renderSection(section, PROJECT);
+  const list = document.querySelector('.brief-tabs > [role="tablist"]');
+  assert.equal(list.getAttribute("aria-label"), "Categories");
+  const tabs = [...list.querySelectorAll('[role="tab"]')];
+  const panels = [...document.querySelectorAll('.brief-tabs > [role="tabpanel"]')];
+  assert.deepEqual(tabs.map((tab) => tab.textContent), ["News", "Papers", "Policy"], "each tab is its page's title");
+  assert.equal(panels.length, 3);
+  tabs.forEach((tab, at) => {
+    assert.equal(tab.getAttribute("aria-controls"), panels[at].id);
+    assert.equal(panels[at].getAttribute("aria-labelledby"), tab.id);
+    assert.equal(tab.type, "button");
+  });
+  const shown = () => tabs.map((tab, at) => [tab.getAttribute("aria-selected"), tab.tabIndex, panels[at].hidden]);
+  const only = (at) => tabs.map((_, i) => (i === at ? ["true", 0, false] : ["false", -1, true]));
+  assert.deepEqual(shown(), only(0), "the first page shows first; only its tab is in the Tab order");
+  assert.match(panels[0].textContent, /An open model reaches 1\.0/);
+  assert.match(panels[1].textContent, /Sparse attention at 1M tokens/, "a hidden page is drawn, only hidden");
+  assert.equal(panels[1].querySelector(".brief-group > h4").textContent, "Papers", "its title stays in the page, for the stylesheet to leave to the tab");
+  tabs[0].focus();
+  for (const [name, at] of [["ArrowRight", 1], ["ArrowRight", 2], ["ArrowRight", 0], ["ArrowLeft", 2], ["Home", 0], ["End", 2], ["ArrowLeft", 1]]) {
+    key(window, document.activeElement, name);
+    await until(() => tabs[at].getAttribute("aria-selected") === "true", name);
+    assert.deepEqual(shown(), only(at), name);
+    assert.equal(document.activeElement, tabs[at], `${name} moves the focus with the page`);
+  }
+  // Other keys are left to the page: Tab leaves the row, Enter does nothing more.
+  assert.equal(key(window, tabs[1], "Tab"), true, "not prevented");
+  tabs[0].click();
+  await until(() => tabs[0].getAttribute("aria-selected") === "true", "a click");
+  assert.deepEqual(shown(), only(0));
+  // The same version drawn again keeps the page open; the next version starts at the first page again.
+  tabs[2].click();
+  await until(() => tabs[2].getAttribute("aria-selected") === "true", "Policy");
+  window.renderSection({ ...section }, PROJECT);
+  assert.equal(document.querySelectorAll('[role="tab"]')[2].getAttribute("aria-selected"), "true");
+  window.renderSection({ ...section, version: 4 }, PROJECT);
+  await until(() => document.querySelectorAll('[role="tab"]')[0].getAttribute("aria-selected") === "true", "the next version");
+  assert.equal(document.querySelectorAll('[role="tabpanel"]:not([hidden])').length, 1);
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-113 R6 Tabs: a page counts its one Collection's items on its tab; no label is Pages, in the interface language; the card never draws it; copied, each page is a section", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const section = readSection(page, digest(window));
+  // Collections (YN-128) on the pages, as the contract accepts them: Papers holds one, Policy two.
+  const listed = (id, count) => ({ type: "Collection", props: { id, layout: "list", items: Array.from({ length: count }, (_, i) => ({ id: `${id}${i}`, title: `${id} ${i}` })) } });
+  const put = digest(window);
+  delete put.body.elements.more.props.label;
+  put.body.elements.papers.children.push("list");
+  put.body.elements.list = listed("list", 14);
+  put.body.elements.policy.children.push("listTwo", "listThree");
+  put.body.elements.listTwo = listed("listTwo", 2);
+  put.body.elements.listThree = listed("listThree", 2);
+  const counted = readSection(page, put);
+  window.renderSection(counted, PROJECT);
+  const tabs = () => [...document.querySelectorAll('[role="tab"]')];
+  assert.deepEqual(tabs().map((tab) => [tab.firstChild.textContent, tab.querySelector(".brief-tab-count")?.textContent ?? null]),
+    [["News", null], ["Papers", "14"], ["Policy", null]], "one Collection counts; two do not add up");
+  assert.equal(document.querySelector(".result-part-error"), null, "a Collection draws on a page, hidden or shown");
+  assert.equal(document.querySelector('[role="tablist"]').getAttribute("aria-label"), "Pages");
+  window.chooseLanguage("zh-Hans");
+  window.renderSection({ ...counted }, PROJECT);
+  assert.equal(document.querySelector('[role="tablist"]').getAttribute("aria-label"), "分页");
+  assert.deepEqual(tabs().map((tab) => tab.firstChild.textContent), ["News", "Papers", "Policy"], "titles stay as written");
+  window.chooseLanguage("en");
+  // Home's card shows the summary only: the lead, never the tabs.
+  window.renderCard(section, PROJECT);
+  assert.match(document.body.textContent, /Three stories and two new papers worth reading today\./);
+  assert.equal(document.querySelector('[role="tablist"], [role="tabpanel"]'), null, "the card draws no Tabs");
+  // Copy report: each page a section under its title, every page whatever was open.
+  const copied = window.sectionMarkdown(section, "en", { clock: "h24", timeZone: "UTC" });
+  // A Markdown block that opens with a list is set apart from the heading before it by an HTML comment, as everywhere in a copy.
+  assert.match(copied, /## News\n\n<!-- -->\n\n- An open model reaches 1\.0[^\n]*\n- A chip export rule[^\n]*\n- A city opens its transit data\.\n\n## Papers\n\n[\s\S]*Sparse attention at 1M tokens[\s\S]*\n\n## Policy\n\nA transit data rule takes effect\.\n$/);
+  assert.ok(!/Categories|Pages/.test(copied), "the row of tabs is not copied");
 });

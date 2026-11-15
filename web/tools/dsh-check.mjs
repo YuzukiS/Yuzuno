@@ -1,11 +1,14 @@
 // YN-119 W1: DeepSeek Harness (dsh) in Chromium, against a disposable
 // fixture server (no Core) whose /api/workspace says Core starts dsh
-// (`dsh {available, version, label}`). Desktop 1280 px, English and Chinese:
+// (`dsh {available, version, label}`). Desktop 1440 px and phone 390 px,
+// English and Chinese:
 //  - New agent offers DeepSeek Harness; chosen, it runs on the Core host
 //    with a DeepSeek key and one of Ask you first, Auto-approve and Full
-//    access (never Read only), and Create sends that;
-//  - a dsh Agent's settings offer its models, an effort of off/low/high/max
-//    and the three levels, and Save sends the model, effort and level.
+//    access (never Read only), and Create sends that. Core can't read dsh's
+//    models yet, so the page says this Agent starts with its own default.
+//  - a dsh Agent's settings show its model, an effort of off/low/high/max and
+//    the three levels, and say they are chosen when the Agent is created for
+//    now: nothing is offered, and there is no Save (S2b part 2).
 // Synthetic Agents, keys and folders only.
 //   YUZUNO_UI_DIST=<build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/dsh-check.mjs
 import assert from "node:assert/strict";
@@ -31,10 +34,6 @@ const agents = [
     settings: { reasoningEffort: "low", approvalPolicy: "on-request", sandbox: "workspace-write" } },
 ];
 const dsh = { available: true, version: "0.2.2-rc.3", label: null };
-const dshModels = { models: [
-  { id: "deepseek-flash", model: "deepseek-flash", displayName: "DeepSeek Flash", isDefault: true },
-  { id: "deepseek-v4-pro", model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
-] };
 const keys = { keys: [
   { id: "anthropic", provider: "anthropic", source: "local", set: true, setAt: "2026-11-14T00:00:00Z" },
   { id: "deepseek", provider: "deepseek", source: "local", set: true, setAt: "2026-11-14T00:00:00Z" },
@@ -82,11 +81,15 @@ const server = createServer(async (req, res) => {
     ] });
     if (url.pathname === "/api/home") return send(200, { generatedAt: new Date().toISOString(), order: [], needsYou: [], projects: [] });
     if (url.pathname === "/api/agent-defaults") return send(200, defaults);
-    if (url.pathname === "/api/models" && url.searchParams.get("harness") === "dsh") return send(200, dshModels);
+    // Core refuses dsh's model catalog until YN-119 S2b part 2, both for a
+    // new Agent and for an existing one; the page says so.
+    if (url.pathname === "/api/models" && url.searchParams.get("harness") === "dsh")
+      return send(400, { error: "DeepSeek Harness 的模型目录暂不可读。DeepSeek Harness's models can't be read yet." });
     if (url.pathname === "/api/models") return send(200, { models: [{ id: "codex-fixture", model: "codex-fixture", displayName: "Codex fixture" }] });
     if (url.pathname === "/api/routing/keys") return send(200, keys);
     if (url.pathname === "/api/agents" && req.method === "POST") return send(400, { error: "Fixture: nothing is created here." });
-    if (agent && action === "models") return send(200, agent.harness === "dsh" ? dshModels : { models: [] });
+    if (agent && action === "models") return send(agent.harness === "dsh"
+      ? 400 : 200, agent.harness === "dsh" ? { error: "DeepSeek Harness Agent 的模型目录暂不可读。" } : { models: [] });
     if (agent && action === "settings") return send(200, { ...agent, model: body?.model ?? agent.model });
     if (agent && action) return send(404, { error: "Not served by this fixture" });
     if (agent)
@@ -114,8 +117,8 @@ async function shot(target, page, name) {
   report.screenshots.push(`${name}.png`);
   assert.equal(await page.locator("#app-recovery-title").count(), 0, `${name}: the app fell to its error screen: ${JSON.stringify(report.console)}`);
 }
-async function open(language) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 1100 }, reducedMotion: "reduce", locale: language === "zh-Hans" ? "zh-CN" : "en-US" });
+async function open(language, viewport) {
+  const context = await browser.newContext({ viewport, reducedMotion: "reduce", locale: language === "zh-Hans" ? "zh-CN" : "en-US" });
   await context.addInitScript((language) => localStorage.setItem("yuzuno.language", JSON.stringify({ language })), language);
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(String(error)));
@@ -125,14 +128,25 @@ async function open(language) {
   return { context, page };
 }
 const W = {
-  en: { permissions: "Permissions", levels: ["Ask you first", "Auto-approve", "Full access"], effort: "Reasoning effort", harness: "Harness", model: "Model", where: "Where to work" },
-  "zh-Hans": { permissions: "权限", levels: ["先问你", "自动审批", "完全放开"], effort: "推理强度", harness: "Harness", model: "模型", where: "工作位置" },
+  en: { permissions: "Permissions", levels: ["Ask you first", "Auto-approve", "Full access"], effort: "Reasoning effort", harness: "Harness", model: "Model", where: "Where to work",
+    note: "Core can’t read DeepSeek Harness’s models yet, so this Agent starts with its own default model.",
+    locked: "Its model, reasoning effort and permissions are chosen when this Agent is created, for now: Core can’t read or change them yet. These are what it runs with.",
+    close: "Close" },
+  "zh-Hans": { permissions: "权限", levels: ["先问你", "自动审批", "完全放开"], effort: "推理强度", harness: "Harness", model: "模型", where: "工作位置",
+    note: "Core 现在还读不到 DeepSeek Harness 的模型，所以这个 Agent 先用它自己的默认模型。",
+    locked: "这个 Agent 的模型、推理强度和权限目前只能在新建时选择：Core 还不能读取或修改它们。这里显示的是它正在用的。",
+    close: "关闭" },
 };
+// Desktop and phone: the dialog's chips and its notes have to hold at both.
+const VIEWPORTS = [{ name: "1440", width: 1440, height: 1000 }, { name: "390", width: 390, height: 844 }];
 const dialog = (page) => page.locator('[role="dialog"]');
 const radios = (scope, label) => scope.locator(`[role="radiogroup"][aria-label="${label}"]`);
 const values = (scope, label) => radios(scope, label).locator("input").evaluateAll((inputs) => inputs.map((i) => i.value));
 const chipLabels = (scope, label) => radios(scope, label).locator(".choice-chip-label").allTextContents();
 const checked = (scope, label) => radios(scope, label).locator("input:checked").evaluate((i) => i.value);
+const disabled = (scope, label, value) => radios(scope, label).locator(`input[value="${value}"]`).isDisabled();
+/** A whole group is off (ChoiceChips' fieldset `disabled`): its chips can't be chosen. */
+const groupOff = (scope, label) => radios(scope, label).evaluate((el) => el.disabled === true || el.hasAttribute("disabled"));
 const choose = (scope, label, value) => radios(scope, label).locator(`label.choice-chip[data-value="${value}"]`).click();
 
 let failed = null;
@@ -140,58 +154,69 @@ try {
   for (const language of ["en", "zh-Hans"]) {
     const t = W[language];
     const tag = language === "en" ? "en" : "zh";
-    const { context, page } = await open(language);
+    for (const viewport of VIEWPORTS) {
+      const size = viewport.name;
+      const { context, page } = await open(language, { width: viewport.width, height: viewport.height });
 
-    // New agent, DeepSeek Harness chosen.
-    await page.locator("button.add-agent").click();
-    const create = dialog(page);
-    await create.waitFor();
-    assert.deepEqual(await values(create, t.harness), ["codex", "claude", "dsh"]);
-    await create.locator(".remote-create input[required]").first().fill("Dune");
-    await choose(create, t.harness, "dsh");
-    await radios(create, "DeepSeek key").waitFor();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] [aria-label] input[value="deepseek-v4-pro"]').length > 0);
-    assert.deepEqual(await values(create, "DeepSeek key"), ["deepseek", "deepseek-team"]);
-    assert.equal(await checked(create, "DeepSeek key"), "deepseek");
-    assert.deepEqual(await values(create, t.permissions), ["ask", "auto", "full"]);
-    assert.deepEqual(await chipLabels(create, t.permissions), t.levels);
-    assert.equal(await checked(create, t.permissions), "ask");
-    assert.ok(await radios(create, t.where).locator('input[value="studio"]').isDisabled(), "SSH can't be chosen");
-    await choose(create, "DeepSeek key", "deepseek-team");
-    await choose(create, t.permissions, "auto");
-    await shot(create, page, `new-agent-dsh-${tag}`);
-    const before = calls.length;
-    await create.locator(".remote-create .primary-button").click();
-    await page.waitForFunction(() => document.querySelector('[role="dialog"] .kept-error:not(.is-empty)'));
-    const sent = calls.slice(before).find((c) => c.method === "POST" && c.path === "/api/agents");
-    assert.deepEqual(sent?.body, { name: "Dune", cwd: "/fixture/project", machineId: "local", harness: "dsh",
-      permissionLevel: "auto", runtimeProfile: { kind: "apiKey", keyId: "deepseek-team" } });
-    check(`${tag}: New agent offers DeepSeek Harness; chosen, it is on the Core host with a DeepSeek key and Ask you first / Auto-approve / Full access, and Create sends them`);
-    await page.keyboard.press("Escape");
-    await create.waitFor({ state: "detached" });
+      // New agent, DeepSeek Harness chosen.
+      await page.locator("button.add-agent").click();
+      const create = dialog(page);
+      await create.waitFor();
+      assert.deepEqual(await values(create, t.harness), ["codex", "claude", "dsh"]);
+      await create.locator(".remote-create input[required]").first().fill("Dune");
+      await choose(create, t.harness, "dsh");
+      await radios(create, "DeepSeek key").waitFor();
+      // Core refuses dsh's model catalog (S2b part 2): said as a note, and
+      // the Agent starts with dsh's own default; the keys are the Workspace's.
+      await create.locator(".create-dsh-models").waitFor();
+      assert.equal(await create.locator(".create-dsh-models").textContent(), t.note);
+      assert.equal(await create.locator(".model-catalog-error").count(), 0, "not an error of this page's");
+      assert.deepEqual(await values(create, t.model), [""], "its own default model only");
+      assert.deepEqual(await values(create, "DeepSeek key"), ["deepseek", "deepseek-team"]);
+      assert.equal(await checked(create, "DeepSeek key"), "deepseek");
+      assert.deepEqual(await values(create, t.permissions), ["ask", "auto", "full"]);
+      assert.deepEqual(await chipLabels(create, t.permissions), t.levels);
+      assert.equal(await checked(create, t.permissions), "ask");
+      assert.ok(await disabled(create, t.where, "studio"), "SSH can't be chosen");
+      await choose(create, "DeepSeek key", "deepseek-team");
+      await choose(create, t.permissions, "auto");
+      await shot(create, page, `new-agent-dsh-${tag}-${size}`);
+      const before = calls.length;
+      await create.locator(".remote-create .primary-button").click();
+      await page.waitForFunction(() => document.querySelector('[role="dialog"] .kept-error:not(.is-empty)'));
+      const sent = calls.slice(before).find((c) => c.method === "POST" && c.path === "/api/agents");
+      assert.deepEqual(sent?.body, { name: "Dune", cwd: "/fixture/project", machineId: "local", harness: "dsh",
+        permissionLevel: "auto", runtimeProfile: { kind: "apiKey", keyId: "deepseek-team" } });
+      check(`${tag} ${size}: New agent offers DeepSeek Harness; chosen, it is on the Core host with a DeepSeek key and Ask you first / Auto-approve / Full access, and Create sends them`);
+      await page.keyboard.press("Escape");
+      await create.waitFor({ state: "detached" });
 
-    // The dsh Agent's settings.
-    await page.locator('.agent-row[data-agent-id="ds"] .agent-select').click();
-    await page.locator(".agent-settings-button").first().click();
-    const settings = dialog(page);
-    await settings.waitFor();
-    await page.waitForFunction(() => document.querySelectorAll('[role="dialog"] input[value="deepseek-v4-pro"]').length > 0);
-    assert.deepEqual(await values(settings, t.effort), ["", "off", "low", "high", "max"]);
-    assert.equal(await checked(settings, t.effort), "high");
-    assert.deepEqual(await values(settings, t.permissions), ["ask", "auto", "full"]);
-    assert.equal(await checked(settings, t.permissions), "auto");
-    assert.equal(await settings.locator(".codex-permissions, .codex-context-settings").count(), 0, "nothing of Codex's");
-    await shot(settings, page, `settings-dsh-${tag}`);
-    const posted = calls.length;
-    await choose(settings, t.model, "deepseek-v4-pro");
-    await choose(settings, t.effort, "max");
-    await choose(settings, t.permissions, "full");
-    await settings.locator(".agent-settings-form .primary-button").click();
-    await settings.waitFor({ state: "detached" });
-    const saved = calls.slice(posted).find((c) => c.method === "POST" && c.path === "/api/agents/ds/settings");
-    assert.deepEqual(saved?.body, { model: "deepseek-v4-pro", effort: "max", permissionLevel: "full" });
-    check(`${tag}: a dsh Agent's settings offer its models, off/low/high/max and the three levels, and Save sends the model, effort and level`);
-    await context.close();
+      // The dsh Agent's settings: its three shown, not offered, until Core reads and changes them.
+      await page.locator('.agent-row[data-agent-id="ds"] .agent-select').click();
+      await page.locator(".agent-settings-button").first().click();
+      const settings = dialog(page);
+      await settings.waitFor();
+      await settings.locator(".dsh-locked-note").waitFor();
+      assert.equal(await settings.locator(".dsh-locked-note").textContent(), t.locked);
+      assert.deepEqual(await values(settings, t.model), ["", "deepseek-flash", "deepseek-v4-pro"], "its short list, and the saved one");
+      assert.equal(await checked(settings, t.model), "deepseek-flash");
+      assert.ok(await groupOff(settings, t.model), "no model is offered");
+      assert.deepEqual(await values(settings, t.effort), ["", "off", "low", "high", "max"]);
+      assert.equal(await checked(settings, t.effort), "high");
+      assert.ok(await groupOff(settings, t.effort), "no effort is offered");
+      assert.deepEqual(await values(settings, t.permissions), ["ask", "auto", "full"]);
+      assert.equal(await checked(settings, t.permissions), "auto");
+      assert.ok(await groupOff(settings, t.permissions), "no level is offered");
+      assert.equal(await settings.locator(".codex-permissions, .codex-context-settings").count(), 0, "nothing of Codex's");
+      assert.equal(await settings.locator(".agent-settings-form .primary-button").count(), 0, "no Save");
+      await shot(settings, page, `settings-dsh-${tag}-${size}`);
+      const posted = calls.length;
+      await settings.locator(".button-row button", { hasText: t.close }).click();
+      await settings.waitFor({ state: "detached" });
+      assert.equal(calls.slice(posted).filter((c) => c.method === "POST").length, 0, "nothing is sent");
+      check(`${tag} ${size}: a dsh Agent's settings show its model, off/low/high/max and the three levels, disabled, with the note that they are chosen at creation`);
+      await context.close();
+    }
   }
   assert.deepEqual(report.errors, [], "no page errors");
 } catch (error) {

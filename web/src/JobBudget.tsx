@@ -153,6 +153,8 @@ const text = strings({
   gpusGroup: "GPUs",
   takesJobs: (shared: boolean): string =>
     shared ? "Open to new jobs; managed jobs may share it." : "Open to new jobs, one managed GPU job at a time.",
+  // A macOS Core (YN-108 M2c): its Jobs run on This Mac, limited, as on a Mac over SSH (YN-104).
+  macBudget: "Used only to queue and record Jobs: macOS can’t enforce CPU or RAM, so nothing is held while a Job runs. Each job still declares its own CPU and RAM.",
 }, {
   cpuQuota: "CPU 配额",
   ram: "内存（MiB）",
@@ -229,6 +231,7 @@ const text = strings({
   runningNow: (n) => `现在有 ${n} 个在运行。`,
   gpusGroup: "GPU",
   takesJobs: (shared) => (shared ? "对新 Job 开放；托管 Job 可以共享它。" : "对新 Job 开放，同一时间一个托管 GPU Job。"),
+  macBudget: "预算只用于排队和记录：macOS 限不住 CPU 和内存，Job 运行时不会被限制。每个 Job 仍各自声明 CPU 和内存。",
 });
 type Text = ReturnType<typeof text>;
 
@@ -317,6 +320,9 @@ export type JobsBudgetView = {
   gpus?: GpuView;
   /** Absent from Cores before T-108's Windows ceiling. */
   windows?: WindowsJobsView;
+  /** Whether this host's Jobs run on This Mac (a macOS Core), where the
+   * budget only queues and records them. Absent from Cores before YN-108 M2c. */
+  mac?: { available?: boolean };
 };
 export const validBudget = (value: JobsBudgetView) =>
   !!value?.machine &&
@@ -420,6 +426,7 @@ export function BudgetSettings({
   maxActive,
   reserved,
   active,
+  mac = false,
   onSaved,
 }: {
   budget: Resources;
@@ -432,6 +439,8 @@ export function BudgetSettings({
   /** What running Jobs hold now, and how many run: drawn on the tracks. */
   reserved?: Resources;
   active?: number;
+  /** A macOS Core's: the budget only queues and records its Jobs. */
+  mac?: boolean;
   onSaved: () => void;
 }) {
   const t = useStrings(text);
@@ -507,6 +516,7 @@ export function BudgetSettings({
         if (!inBar) void save();
       }}
     >
+      {mac && <p className="settings-row-help jobs-settings-mac">{t.macBudget}</p>}
       {maxActive && (
         <div className="jobs-settings-slider">
           <SettingsSlider

@@ -357,7 +357,7 @@ async fn managed_permissions_disable_and_reject_modes_without_changing_saved_set
 async fn settings_are_validated_persisted_and_only_used_on_next_start_or_resume() {
     let (dir, ws) = fixture().await;
     ws.send_message("a", input("start", "hello", None)).await.unwrap();
-    let settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort:Some("high".into()), approval_policy:"never".into(), sandbox:"read-only".into(), permission_preset:None, permission_mode:None };
+    let settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort:Some("high".into()), approval_policy:"never".into(), sandbox:"read-only".into(), permission_preset:None, permission_mode:None, permission_level:None };
     assert!(ws.update_settings("a", "not-on-this-machine".into(), settings.clone()).await.is_err());
     let mut invalid = settings.clone(); invalid.reasoning_effort = Some("ultra".into());
     assert!(ws.update_settings("a", "test-model".into(), invalid).await.is_err());
@@ -498,6 +498,83 @@ async fn images_are_sent_natively_scoped_and_included_in_durable_deduplication()
     assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 16);
 }
 
+
+#[tokio::test]
+async fn attached_files_are_saved_sent_by_path_and_kept_exact_on_the_receipt() {
+    use axum::{body::{Body, to_bytes}, http::Request};
+    use tower::ServiceExt;
+    use yuzuno_workspace::input_files::FileRef;
+    let (dir, ws) = fixture().await;
+    let router = yuzuno_workspace::server::router(ws.clone(), dir.path().join("web"));
+    ws.reconnect("a").await.unwrap();
+    // The user's page uploads each file; any byte is kept as it is.
+    let mut saved: Vec<FileRef> = Vec::new();
+    for (name, bytes) in [("q3%20report.pdf", "the report"), ("notes.txt", "hello")] {
+        let response = router.clone().oneshot(Request::builder().method("POST")
+            .uri(format!("/api/agents/a/files?name={name}"))
+            .header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop")
+            .body(Body::from(bytes)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        saved.push(serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap());
+    }
+    // `files` goes beside the message, as `skills` does.
+    let response = router.clone().oneshot(Request::builder().method("POST").uri("/api/agents/a/messages")
+        .header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop").header("content-type", "application/json")
+        .body(Body::from(json!({"clientMessageId":"with-files","text":"Inspect both","files":saved}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let receipt: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(receipt["status"], "accepted");
+    assert_eq!(receipt["files"], json!(saved));
+    let starts = calls(&dir, "turn/start");
+    assert_eq!(starts.len(), 1);
+    let sent = starts[0]["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(sent.starts_with("Inspect both\n\nAttached files: the user attached 2 files to this message."), "{sent}");
+    // Each path is the file's canonical path on this machine.
+    let root = std::fs::canonicalize(dir.path().join("data")).unwrap();
+    for file in &saved {
+        let at = format!("`{}/input-files/a/{}/{}`", root.display(), file.id, file.name);
+        assert!(sent.contains(&at), "{sent} lacks {at}");
+    }
+    // Only files, no words: the notice alone.
+    let only = ws.send_message_from("a", input("files-only", "", Some("turn-1")), Vec::new(), vec![saved[1].clone()], None).await.unwrap();
+    assert_eq!((only.status.as_str(), only.file_paths.len()), ("accepted", 1));
+    let steered = calls(&dir, "turn/steer")[0]["params"]["input"][0]["text"].as_str().unwrap().to_owned();
+    assert!(steered.starts_with("Attached files: the user attached 1 file to this message."), "{steered}");
+    // Without files, the request is the words, byte for byte.
+    assert_eq!(ws.send_message("a", input("plain-steer", "more", Some("turn-1"))).await.unwrap().status, "accepted");
+    assert_eq!(calls(&dir, "turn/steer")[1]["params"]["input"], json!([{"type":"text","text":"more"}]));
+    // The same ID and the same files: the receipt as it was, nothing sent again.
+    let again = ws.send_message_from("a", input("with-files", "Inspect both", None), Vec::new(), saved.clone(), None).await.unwrap();
+    assert_eq!(again.files, saved);
+    let mut changed = saved.clone();
+    changed.reverse();
+    assert!(ws.send_message_from("a", input("with-files", "Inspect both", None), Vec::new(), changed, None).await.is_err(),
+        "the same ID with other files");
+    assert_eq!(calls(&dir, "turn/start").len(), 1);
+    // A form answer, an Agent that takes no files, and a remote Agent are
+    // refused before anything is recorded or sent.
+    let form = form_input("form-files", "r", "valid");
+    assert!(ws.send_message_from("a", form, Vec::new(), saved.clone(), None).await.unwrap_err().to_string().contains("Attach files to a message"));
+    let mut other = detail();
+    other.agent.id = "d".into();
+    other.agent.harness = "deepseek".into();
+    ws.store.insert(&other).unwrap();
+    assert!(ws.send_message_from("d", input("unsupported", "hi", None), Vec::new(), saved.clone(), None)
+        .await.unwrap_err().to_string().contains("can't receive files"));
+    let mut remote = detail();
+    remote.agent.id = "r".into();
+    remote.agent.remote = Some(serde_json::from_value(json!({"machine": {
+        "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/tmp"}})).unwrap());
+    ws.store.insert(&remote).unwrap();
+    assert!(ws.send_message_from("r", input("remote", "hi", None), Vec::new(), saved.clone(), None)
+        .await.unwrap_err().to_string().contains("远程 Agent 暂不能接收附件"));
+    assert_eq!(calls(&dir, "turn/start").len(), 1);
+    // The receipt keeps the user's words and each Agent path; the bubble
+    // shows the files and the original text, never the notice.
+    ws.reconnect("a").await.unwrap();
+    let stored = ws.store.detail("a").unwrap();
+    assert_eq!((stored.message_receipts[0].input.text.as_str(), stored.message_receipts[0].file_paths.len()), ("Inspect both", 2));
+}
 
 async fn context_fixture() -> (tempfile::TempDir, Arc<Workspace>) {
     let (dir, ws) = fixture().await;

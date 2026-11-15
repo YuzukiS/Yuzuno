@@ -9,8 +9,43 @@ import tempfile
 
 
 def digest(path):
+    # Read in chunks, not with hashlib.file_digest: the macOS release inputs
+    # are built with the Mac's /usr/bin/python3, which is Python 3.9.
+    value = hashlib.sha256()
     with Path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        while chunk := stream.read(1024 * 1024):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def macho_minimum(path):
+    """The oldest macOS a thin 64-bit little-endian Mach-O is linked for, as
+    X.Y.Z: its one LC_BUILD_VERSION for platform macOS, or LC_VERSION_MIN_MACOSX.
+    Read from the file's own load commands (as scripts/desktop-macos.sh reads
+    the app), so it needs no Apple tool. Raises ValueError for anything else."""
+    import struct
+    data = Path(path).read_bytes()
+    name = Path(path).name
+    if len(data) < 32 or struct.unpack_from('<I', data)[0] != 0xFEEDFACF:
+        raise ValueError(f'{name} is not a thin 64-bit Mach-O')
+    count, size = struct.unpack_from('<II', data, 16)
+    found, offset, end = [], 32, 32 + size
+    if end > len(data):
+        raise ValueError(f'{name}: load commands run past the end of the file')
+    for _ in range(count):
+        if offset + 8 > end:
+            raise ValueError(f'{name}: load commands run past their size')
+        command, length = struct.unpack_from('<II', data, offset)
+        if length < 8 or offset + length > end:
+            raise ValueError(f'{name}: a load command has an impossible size')
+        if command == 0x32 and length >= 16 and struct.unpack_from('<I', data, offset + 8)[0] == 1:
+            found.append(struct.unpack_from('<I', data, offset + 12)[0])
+        elif command == 0x24 and length >= 16:
+            found.append(struct.unpack_from('<I', data, offset + 8)[0])
+        offset += length
+    if len(found) != 1:
+        raise ValueError(f'{name}: {len(found)} macOS minimum version load commands, not one')
+    return f'{found[0] >> 16}.{(found[0] >> 8) & 0xFF}.{found[0] & 0xFF}'
 
 
 # The Claude Agent SDK is not in a public release (T-159): its runtime carries

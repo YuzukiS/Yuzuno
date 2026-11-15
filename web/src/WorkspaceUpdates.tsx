@@ -40,6 +40,7 @@ import { ExecutorTemplates } from "./ExecutorTemplates";
 import { ExecutorRouting } from "./ExecutorRouting";
 import { RoutingKeys } from "./RoutingKeys";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { BriefRefreshSettings } from "./BriefRefreshSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
@@ -55,6 +56,7 @@ import {
   updateInProgress,
   updateIntentKey,
   updateLabel,
+  updateResumeRows,
   updateStatusFresh,
   updateStepLabel,
   updateSteps,
@@ -372,6 +374,7 @@ export function WorkspaceUpdatesHost({
   workspaceId,
   openAt,
   pages,
+  onOpenCard,
 }: {
   enabled: boolean;
   open: boolean;
@@ -386,6 +389,8 @@ export function WorkspaceUpdatesHost({
   openAt?: SettingsOpenAt | null;
   /** The Projects and Machines pages' managers (YN-8), drawn by their owner. */
   pages?: SettingsPagesContent;
+  /** Opens a Home card from Settings → Home → Refreshes (YN-113 R4). */
+  onOpenCard?: (projectId: string, key: string) => void;
 }) {
   const intent = useUpdateIntent(workspaceId);
   // A chosen update is followed closely even while Settings is closed.
@@ -404,6 +409,7 @@ export function WorkspaceUpdatesHost({
       workspaceId={workspaceId}
       openAt={openAt}
       pages={pages}
+      onOpenCard={onOpenCard}
       {...updates}
     />
   );
@@ -438,6 +444,7 @@ export function WorkspaceUpdates({
   workspaceId,
   openAt,
   pages,
+  onOpenCard,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -451,6 +458,7 @@ export function WorkspaceUpdates({
   workspaceId: string;
   openAt?: SettingsOpenAt | null;
   pages?: SettingsPagesContent;
+  onOpenCard?: (projectId: string, key: string) => void;
 }) {
   const language = useLanguage();
   const dialog = settingsDialogText(language);
@@ -588,6 +596,8 @@ export function WorkspaceUpdates({
   // An earlier outcome stays out of the way of the update now in hand.
   const finished =
     operation && !active && !step && operation.phase !== "prepared" ? operation : null;
+  // Who the finished update continued, and who it did not (YN-131).
+  const resumeRows = finished ? updateResumeRows(status, language) : [];
   const checkButton = (
     <button
       className="quiet-button"
@@ -908,6 +918,20 @@ export function WorkspaceUpdates({
                     {finished.error && <p className="updates-error">{finished.error}</p>}
                   </div>
                 )}
+                {!!resumeRows.length && (
+                  <div className="update-card-part">
+                    <p className="update-card-label">{t.resume.label}</p>
+                    <ul className="updates-blockers" aria-label={t.resume.label}>
+                      {resumeRows.map((row, i) => (
+                        <li key={`${row.agentId}-${i}`} className={`is-${row.state}`}>
+                          <span className="updates-blocker-dot" />
+                          <strong>{row.name}</strong>
+                          <span>{row.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {active && operation?.error && (
                   <div className="update-card-part">
                     <p className="updates-error">{operation.error}</p>
@@ -1073,6 +1097,7 @@ export function WorkspaceUpdates({
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "refreshes" && <BriefRefreshSettings active={open} visible={visible} onOpenCard={onOpenCard} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
           {tab === "remote" && <RemoteAccessSettings key={workspaceId} active={open && visible} workspaceId={workspaceId} />}

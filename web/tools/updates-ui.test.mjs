@@ -275,8 +275,8 @@ async function mount(overrides = {}, shell, seed, { idleMs } = {}) {
     [...w.document.querySelectorAll("button")].find(
       (el) => el.textContent.trim() === text,
     );
-  const open = async () => {
-    w.document.querySelector('[aria-label="Settings and updates"]').click();
+  const open = async (label = "Settings and updates") => {
+    w.document.querySelector(`[aria-label="${label}"]`).click();
     assert.ok(await until(() => !!w.document.querySelector('[role="dialog"]')), "Settings opens");
   };
   // Settings shows one page at a time and opens on Updates, which holds
@@ -796,6 +796,80 @@ test("update wait separates notification delivery from actual idle and preserves
       assert.deepEqual(f.errors, []);
     } finally { f.w.close(); }
   }
+});
+
+// YN-131: a finished update lists each Agent it paused, and how its continue
+// went; the panel no longer says yielded Agents stay idle.
+test("a finished update lists who continued and who did not, in Core's order", async () => {
+  const f = await mount({
+    current: release("B"),
+    candidates: [],
+    acceptingWork: true,
+    operation: { id: "update-one", releaseId: "B", phase: "complete", startedAt: "", updatedAt: "" },
+    resumes: [
+      { agentId: "a", name: "Mori", state: "sent", turnId: "turn-b" },
+      { agentId: "b", name: "Hana", state: "pending" },
+      { agentId: "c", name: "Dev Lead 2", state: "skipped", reason: "newer_input" },
+      { agentId: "d", name: "Kiku", state: "failed", error: "Claude account unavailable" },
+    ],
+  });
+  try {
+    await f.open();
+    assert.ok(await until(() => !!f.w.document.querySelector('[aria-label="Continued after update"]')), "the continue list shows");
+    const rows = [...f.w.document.querySelectorAll('[aria-label="Continued after update"] li')];
+    assert.deepEqual(rows.map((li) => li.querySelector("strong").textContent), ["Mori", "Hana", "Dev Lead 2", "Kiku"], "Core's order");
+    assert.deepEqual(rows.map((li) => li.querySelector("span:last-child").textContent), [
+      "Continued",
+      "Continues when its current Turn ends",
+      "Something newer was sent; not sent again",
+      "Not sent: Claude account unavailable",
+    ]);
+    assert.deepEqual(rows.map((li) => li.className), ["is-sent", "is-pending", "is-skipped", "is-failed"]);
+    assert.match(f.w.document.body.textContent, /Agents that yielded for the update continue on their own\./);
+    assert.ok(!/stay idle/.test(f.w.document.body.textContent), "no longer told to wait for a message");
+    assert.equal(f.calls.filter((c) => c.method !== "GET").length, 0, "reading the list changes nothing");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
+// YN-131: the same rows and the outcome in Chinese, for a cancelled wait.
+test("a cancelled update's continue list in Chinese (YN-131)", async () => {
+  const f = await mount({
+    current: release("B"),
+    candidates: [],
+    acceptingWork: true,
+    operation: { id: "update-one", releaseId: "B", phase: "cancelled", startedAt: "", updatedAt: "" },
+    resumes: [
+      { agentId: "a", name: "Mori", state: "sent" },
+      { agentId: "b", name: "Hana", state: "skipped", reason: "disconnected" },
+      { agentId: "c", name: "Kiku", state: "uncertain" },
+    ],
+  }, undefined, (w) => w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
+  try {
+    await f.open("设置与更新");
+    assert.ok(await until(() => !!f.w.document.querySelector('[aria-label="更新后继续"]')), "the continue list in Chinese");
+    const rows = [...f.w.document.querySelectorAll('[aria-label="更新后继续"] li')];
+    assert.deepEqual(rows.map((li) => li.querySelector("span:last-child").textContent), [
+      "已继续",
+      "你断开了它",
+      "送达未确认，没有重发，请到会话里核对",
+    ]);
+    assert.match(f.w.document.body.textContent, /暂停请求已取消。已让出的 Agent 会自动继续。/);
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
+test("a rolled-back update says the yielded Agents continue, and keeps Core's data line", async () => {
+  const f = await mount({
+    candidates: [],
+    operation: { id: "update-one", releaseId: "B", phase: "rolledBack", startedAt: "", updatedAt: "" },
+  });
+  try {
+    await f.open();
+    assert.match(f.w.document.body.textContent, /Your Workspace data was kept\. Agents that yielded for the update continue on their own\./);
+    assert.equal(f.w.document.querySelector('[aria-label="Continued after update"]'), null, "nobody was paused: no list");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
 });
 
 const published = (id, phase = "available") => ({

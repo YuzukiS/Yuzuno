@@ -161,6 +161,23 @@ impl Store {
     }
 }
 
+/// claude-swap's accounts as a reading keeps them: each one's number,
+/// fingerprint, whether it is the default login, and its week, or why its
+/// usage is unknown. A started executor's account is judged on a fresh list
+/// read the same way (routing_launch.rs `move_account`, YN-138).
+pub(crate) fn cswap_reading(accounts: &[routing_accounts::Account]) -> Value {
+    json!({"accounts": accounts.iter().map(|a| {
+        let mut row = json!({"number": a.number, "fingerprint": a.fingerprint, "active": a.active, "source": "cswap"});
+        if let Some(w) = &a.week { row["week"] = json!(w); }
+        if a.usage_status.as_deref() != Some("ok") || a.week.is_none() {
+            let status = a.usage_status.clone().unwrap_or_else(|| "none".into());
+            row["unknown"] = unknown(&format!("usage:{status}"), format!("claude-swap has no usage for this account ({status})"),
+                format!("claude-swap 没有这个账号的用量（{status}）"));
+        }
+        row
+    }).collect::<Vec<_>>()})
+}
+
 /// Whether a reading observed at `at` is stale now.
 pub fn stale(at: &str, now: DateTime<Utc>) -> bool {
     DateTime::parse_from_rfc3339(at).map_or(true, |t| (now - t.with_timezone(&Utc)).num_seconds() > STALE_AFTER_SECONDS)
@@ -205,16 +222,7 @@ impl Workspace {
             let command = self.stored(|store| store.cswap_settings()).await?.command;
             let at = Utc::now();
             let reading = match routing_accounts::cswap_accounts(&command).await {
-                Ok(accounts) => json!({"accounts": accounts.iter().map(|a| {
-                    let mut row = json!({"number": a.number, "fingerprint": a.fingerprint, "active": a.active, "source": "cswap"});
-                    if let Some(w) = &a.week { row["week"] = json!(w); }
-                    if a.usage_status.as_deref() != Some("ok") || a.week.is_none() {
-                        let status = a.usage_status.clone().unwrap_or_else(|| "none".into());
-                        row["unknown"] = unknown(&format!("usage:{status}"), format!("claude-swap has no usage for this account ({status})"),
-                            format!("claude-swap 没有这个账号的用量（{status}）"));
-                    }
-                    row
-                }).collect::<Vec<_>>()}),
+                Ok(accounts) => cswap_reading(&accounts),
                 Err(why) => json!({"accounts": [], "unavailable": why}),
             };
             let kept = reading.clone();

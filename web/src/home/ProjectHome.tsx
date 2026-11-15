@@ -12,7 +12,7 @@ import { homeText } from "./home-text";
 import type { HomeTarget } from "./home-navigation";
 import type { SeenMark } from "./home-api";
 import { askKey, HomeJumps, nextAsk, scrollWithinHome, waitingAsks } from "./HomeJumps";
-import { HomeDensity, RefreshHome } from "./home-tools";
+import { RefreshHome } from "./home-tools";
 import { ProjectDeck, ProjectFacts, RepoBlock, useProjectDeck } from "./HomePanel";
 import { ProjectTalk } from "./ProjectTalk";
 import type { ProjectRequest } from "./project-talk-api";
@@ -30,8 +30,9 @@ const reducedMotion = () =>
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** The width at which the team's facts stand beside the cards, not below them (YN-86 §2.2). */
-const TEAM_BESIDE = 1100;
+/** The width at which the team's facts stand beside the cards, not below them (YN-86 §2.2): the three columns
+ * the deck needs (932 px), its gap (18) and the team's own 300 px (YN-157). */
+const TEAM_BESIDE = 1250;
 
 /**
  * One Project's page on Home (YN-86 §2.2): its header and tools, its own
@@ -48,7 +49,6 @@ export function ProjectHome({
   agents,
   needsYou,
   readOnly,
-  densityWorkspace,
   refreshing,
   onRefresh,
   onNavigate,
@@ -68,8 +68,6 @@ export function ProjectHome({
   /** Core's Needs you, for this project only. */
   needsYou: NeedsYouItem[];
   readOnly: boolean;
-  /** Where Home keeps its density choice: "" in the preview, as on Home. */
-  densityWorkspace: string;
   refreshing: boolean;
   onRefresh: () => void;
   onNavigate: (target: HomeTarget) => void;
@@ -277,7 +275,6 @@ export function ProjectHome({
           </span>
         </h1>
         <span className="home-header-tools">
-          <HomeDensity workspaceId={densityWorkspace} />
           {changed > 0 && !readOnly && (
             <button type="button" className="quiet-button" disabled={seeingAll} onClick={() => void seenAll()}>
               {seeingAll ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}

@@ -236,10 +236,10 @@ test("each OpenCode entry of the dialog is marked experimental, in English and i
     page.window.renderCreate({ open: true, close() {}, defaultCwd: "/workspace", disabled: false, onCreated() {}, projects: [], opencode: true });
     await tick();
     assert.equal(button(page, "OpenCode export").textContent.trim(), "OpenCode export Experimental", "the import tab");
-    assert.equal(chip(), "OpenCodeExperimental", "the harness of a new Agent");
+    assert.equal(chip(), "OpenCode (stops at 2.2.5)Experimental", "the harness of a new Agent, where its support stops (YN-127)");
     await language("zh-Hans");
     assert.equal(button(page, "OpenCode 导出文件").textContent.trim(), "OpenCode 导出文件 实验性");
-    assert.equal(chip(), "OpenCode实验性");
+    assert.equal(chip(), "OpenCode（停在 2.2.5）实验性");
     assert.deepEqual(uploads(page), []);
     assert.deepEqual(page.errors, []);
   } finally {

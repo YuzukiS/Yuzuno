@@ -330,6 +330,11 @@ impl Workspace {
                 if let Err(error) = ws.deliver_update_notices().await {
                     eprintln!("Update pause delivery: {error:#}");
                 }
+                // After an update ends, before mail: the continue it owes
+                // an Agent it paused starts that Agent's next Turn (YN-131).
+                if let Err(error) = ws.resume_after_update().await {
+                    eprintln!("Continue after update: {error:#}");
+                }
                 // Before mail: a Brief reminder belongs to the Turn that just
                 // ended, so it goes before the next mailbox wake-up.
                 if let Err(error) = ws.check_brief_turns().await {
@@ -476,6 +481,10 @@ impl Workspace {
             // Ok only once OpenCode stored it under its message ID.
             PeerDeliveryTarget::Start if detail.agent.harness == "opencode" => {
                 self.opencode_send_locked(id, text, Some(&client_id)).await
+            }
+            // A new Turn while dsh is idle (YN-119 §3.5).
+            PeerDeliveryTarget::Start if detail.agent.harness == "dsh" => {
+                self.dsh_send_locked(id, text, Some(&client_id)).await
             }
             PeerDeliveryTarget::Start => self.send_locked(id, text, Some(&client_id)).await,
         };

@@ -13,9 +13,12 @@ export const HARNESSES: readonly Harness[] = ["claude", "codex", "opencode", "ds
 /** The tools offered for a new choice: dsh only while this Core starts it (`dsh.available` of /api/workspace), and
  * `kept`, the one already chosen, always. */
 export const harnessesOffered = (dsh: boolean, kept?: Harness) => HARNESSES.filter((h) => h !== "dsh" || dsh || kept === "dsh");
+/** Which of a pool's accounts it uses first (YN-150): the one with the most of
+ * its week left (the default), or the one whose week resets soonest. */
+export type PoolPick = "mostRemaining" | "soonestReset";
 export type Credential =
   | { kind: "login" }
-  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: "mostRemaining" }
+  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: PoolPick }
   | { kind: "apiKey"; keyId: string }
   | { kind: "codexHome"; id: string };
 /** One weekly period: ISO days (Monday 1 … Sunday 7), from and to as HH:MM, `to` exclusive ("24:00" allowed). */
@@ -25,7 +28,9 @@ export type Condition =
   | { kind: "timeWindow"; inside: boolean; schedule: Schedule; minMinutesLeft?: number }
   /** The share of the week left: Claude and Codex have no 5-hour quota now (YN-60). */
   | { kind: "quota"; weekLeftPct?: number }
-  | { kind: "dailyApiCap"; usd: number };
+  | { kind: "dailyApiCap"; usd: number }
+  /** The machines it may run on (YN-139): "local" for this Core host, else a registered machine's id. */
+  | { kind: "machine"; machines: string[] };
 /** A condition of a kind this version doesn't know: shown, kept, never edited. */
 export type AnyCondition = Condition | ({ kind: string } & Record<string, unknown>);
 export interface Candidate {
@@ -52,7 +57,12 @@ export interface PolicyView { version: number; policy: Policy; updatedAt?: strin
 /** The kinds of work a candidate takes (YN-70, YN-84 S1): its own module, re-exported here as the page had them. */
 export { TIERS, tiersOf, type Tier } from "./routing-tiers";
 
-export const isKnown = (c: AnyCondition): c is Condition => c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap";
+export const isKnown = (c: AnyCondition): c is Condition =>
+  c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap" || c.kind === "machine";
+/** This Core host, as a machine condition names it (YN-139). */
+export const LOCAL_MACHINE = "local";
+/** A machine a machine condition can name: its id and its name in the Machines list (SSH machines only). */
+export interface NamedMachine { id: string; name: string }
 export const emptyPolicy = (): Policy => ({ enabled: false, candidates: [], whenNone: "wait" });
 
 /** The view as this client reads it: lists and switches even from an answer without them. */

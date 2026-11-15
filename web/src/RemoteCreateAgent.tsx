@@ -639,7 +639,7 @@ export function RemoteCreateAgent({
               choices={[
                 { value: "codex", label: "Codex" },
                 { value: "claude", label: "Claude Code" },
-                ...(opencode ? [{ value: "opencode", label: "OpenCode", note: t.experimental }] : []),
+                ...(opencode ? [{ value: "opencode", label: t.openCodeName, note: t.experimental }] : []),
                 ...(offerDsh ? [{ value: "dsh", label: DSH_NAME, note: dsh?.version || undefined }] : []),
               ]}
             />
@@ -828,7 +828,7 @@ export function RemoteCreateAgent({
                 <LoaderCircle size={13} className="spin" /> {t.loadingModels(harnessName(harness))}
               </p>
             )}
-            {!remote && modelError && (
+            {!remote && modelError && !isDsh && (
               <div
                 className="remote-field-error model-catalog-error"
                 role="alert"
@@ -842,6 +842,10 @@ export function RemoteCreateAgent({
                   {t.retryModels}
                 </button>
               </div>
+            )}
+            {/* DeepSeek Harness's catalog isn't Core's to read yet (S2b part 2): a note, not an error. */}
+            {!remote && isDsh && !loadingModels && modelError && (
+              <p className="remote-field-note create-dsh-models">{t.dshModelsUnread}</p>
             )}
             {!remote &&
               !isOpenCode &&

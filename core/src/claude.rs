@@ -723,6 +723,8 @@ impl Workspace {
             opencode_session_id: None,
             opencode_version: None,
             opencode_major: None,
+            dsh_session_id: None,
+            dsh_version: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -854,6 +856,14 @@ impl Workspace {
             }
         });
         let mut start = start_params(&d.agent);
+        // The Agent's own attached files, readable without a prompt and never
+        // writable (YN-145 F3a): the folder is made before the rule names it,
+        // and only on this machine (a remote one gets its copy in F4).
+        if d.agent.remote.is_none() {
+            let (root, agent) = (self.data_dir.clone(), d.agent.id.clone());
+            let dir = tokio::task::spawn_blocking(move || crate::input_files::readable_agent_dir(&root, &agent)).await??;
+            start["readableDirs"] = json!([dir]);
+        }
         // The read-only level (YN-74 ④b): `default` mode, and the tools the
         // bridge removes and the only ones its hook lets run.
         let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };

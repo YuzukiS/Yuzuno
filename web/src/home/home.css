@@ -73,12 +73,13 @@
   gap: 12px;
   min-width: 0;
 }
-/* As many widgets to a row as fit at 340 px or more; a lone widget fills
-   its row rather than leaving half of it empty (T-18). */
+/* As many widgets to a row as fit at 340 px or more. A lone small widget takes
+   two columns, not the rest of a three- or four-column row (YN-157); on two
+   columns it still fills its row (T-18). */
 /* My widgets as the deck lays out its cards (T-18, Dev 7's v19): four
    columns, two or one by the column's width; a pinned card at the size the
    user gave it, else its Agent's, in the same spans and minimum heights, in
-   the user's order, with no holes (deck-pack.ts). Machines, built in, and a pin with no
+   the user's order (deck-pack.ts). Machines, built in, and a pin with no
    summary take the whole row at their content's height. */
 .home-widget-grid {
   display: grid;
@@ -106,6 +107,11 @@
   }
   .home-widget-slot > .home-summary-card {
     min-height: 260px;
+  }
+}
+@container deck (min-width: 932px) {
+  .home-widget-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 @container deck (min-width: 1248px) {
@@ -1181,7 +1187,8 @@ ul.home-widget {
    summary shows how its body opens and takes the same minimum (YN-3).
    Placement is the grid's own row flow, never dense, so the keyboard's
    order is the order on screen; where it would leave a cell empty, the card
-   before it takes it (deck-pack.ts, below). */
+   before it takes it, and a row may end empty only where its cards are
+   already twice their own size (deck-pack.ts, below, YN-157). */
 .home-brief {
   display: grid;
   padding-top: 14px;
@@ -1189,8 +1196,11 @@ ul.home-widget {
   align-items: stretch;
   gap: 16px;
 }
-/* Two columns, then four where each is 300 px or more; never three, where
-   two wide cards in a row would leave a hole at every row's end. */
+/* Two columns, then three and four where each is 300 px or more (YN-157:
+   3 × 300 + 2 × 16 = 932, 4 × 300 + 3 × 16 = 1248; gap 16, above). Two
+   wide cards in a row take their own row on three columns as on two, and a
+   deck's row may end empty where its cards are at twice their size
+   (deck-pack.ts). */
 @container deck (min-width: 560px) {
   .home-brief {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1201,6 +1211,11 @@ ul.home-widget {
   }
   .home-brief .home-summary-card:is(.size-wide, .size-large) {
     grid-column: span 2;
+  }
+}
+@container deck (min-width: 932px) {
+  .home-brief {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 @container deck (min-width: 1248px) {
@@ -1251,9 +1266,10 @@ ul.home-widget {
   font-size: calc(10px + var(--font-adjust, 3px));
   font-weight: 600;
 }
-/* With no holes, in order (deck-pack.ts): each card's span from its size and
-   the cells it takes, where its grid's columns are known; else the spans
-   above. A large card with nothing beside its second row takes one. */
+/* In order (deck-pack.ts): each card's span from its size and the cells it
+   takes, where its grid's columns are known; else the spans above. A large
+   card with nothing beside its second row takes one; a row may end empty
+   where its cards are at twice their size (YN-157). */
 .home-brief .home-summary-card[data-deck-cols] {
   grid-column: span var(--deck-cols);
   grid-row: span var(--deck-rows);
@@ -1584,6 +1600,20 @@ ul.home-widget {
 .home-composer .pasted-text-composer .cm-content {
   min-height: calc(2 * 1.5em);
   padding: 6px 8px;
+}
+/* A field that takes images (YN-134): thumbnails under the text, then "+" at
+   the box's bottom left, in the order of the conversation's box. */
+.home-composer[data-attach] .input-images {
+  padding: 2px 8px 0;
+}
+.home-composer-note {
+  margin: 0;
+  padding: 2px 8px 0;
+}
+.home-composer-tools {
+  display: flex;
+  align-items: center;
+  padding: 0 4px 3px;
 }
 .home-ask-replied {
   display: flex;
@@ -1916,35 +1946,6 @@ ul.home-widget {
   height: 36px;
   min-width: 36px;
   margin: -7px -4px -7px -10px;
-}
-
-/* Card detail (T-9): this device's choice, two options side by side. */
-.home-density {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-}
-.home-density-option {
-  min-height: 30px;
-  padding: 4px 12px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-.home-density-option[aria-pressed="true"] {
-  background: var(--paper);
-  box-shadow: 0 0 0 1px var(--line);
-  color: var(--ink);
-}
-.home-density-option:focus-visible {
-  outline: 2px solid var(--accent-ink, currentColor);
-  outline-offset: 1px;
 }
 
 /* Core accepted this version after repairing slips in it (YN-14): a quiet mark, not an error. */

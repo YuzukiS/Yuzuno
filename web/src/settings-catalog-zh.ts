@@ -45,6 +45,7 @@ export const entriesZh: Record<string, EntryText> = {
   projects: { title: "项目目录、仓库与服务", scope: "所选项目 · 按执行机器", source: "由 Core 保存的项目设置。默认目录按机器分别记录。", effect: "默认目录只用于预填新 Agent。注册服务不会启动它；归档不会移动文件。" },
   "merge-queue": { title: "合并队列", scope: "所选项目 → 仓库 · 每个已链接的仓库", source: "Core 为每个仓库保存的开关；你开启之前保持关闭。只有你能更改它；Agent 没有对应的工具。", effect: "开启后，Core 合并那里已放行合并的 PR；开启时会列出它可能做的每一项写入。关闭立即保存，Core 不再向那里的 GitHub 写入任何内容。暂停的队列会说明原因，并提供“解除暂停”。" },
   home: { title: "Home 展示", scope: "此 Workspace", source: "由 Core 保存的共享 Home 展示偏好。", effect: "用于之后的 Home 与结果交互。不会更改编辑权限或 Agent 权限。" },
+  refreshes: { title: "定时刷新", scope: "此 Workspace · 所有项目的卡片", source: "每张卡片的定时刷新由 Core 随卡片保存，项目的负责人设定；三个上限为整个 Workspace 保存。", effect: "开关会立即暂停或重新开启一张卡片的定时刷新；上限对所有负责人生效。调低不会停掉已经开启的。卡片自己的时间和刷新说明在卡片和报告页上修改。" },
   budget: { title: "Core 主机 Job 预算", scope: "Core 执行机器", source: "由 Core 保存的托管 Job 的 CPU、内存与交换空间、同时运行的数量、磁盘保留、Windows 上限与 GPU 设置；未保存时为默认值。", effect: "新 Job 的准入使用它们。运行中的 Job 保留各自的预留；原生后台任务不在其内。Job 面板显示 Job 现在的用量。" },
   "remote-budget": { title: "远程机器 Job 预算", scope: "所选执行机器", source: "所选机器保存的同时运行的 Job 数、Job 预算与限制方式，由 Core 随机器保存。", effect: "编辑前先选择机器。保存只影响尚未开始的 Job；限制取决于该执行器的能力。" },
   storage: { title: "数据与存储概览", scope: "此设备 · Workspace 服务 · 原生 CLI", source: "此浏览器为此站点保存的数据，在这里读取；Core 的数据文件夹，由 Core 读取。原生会话历史只计数，不测量大小。", effect: "打开它只会读取。这里不测量文件夹大小。除了你打开的构建输出自动清理和你移除的已准备 Claude 运行环境，这里不删除任何内容。" },
@@ -63,7 +64,7 @@ export const entriesShortZh: Record<string, string> = {
   appearance: "外观", "portal-open": "打开方式", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
   clock: "时钟", language: "语言", notifications: "通知", "agent-model": "模型与权限", "agent-context": "上下文",
   "auto-continue": "自动继续", "auto-continue-default": "自动继续默认值", "agent-defaults": "新 Agent 默认值", "executor-templates": "执行者模板", "executor-routing": "执行者路由", "routing-keys": "账号与密钥",
-  review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", "merge-queue": "合并队列", home: "Home",
+  review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", "merge-queue": "合并队列", home: "Home", refreshes: "定时刷新",
   budget: "Core 主机预算", "remote-budget": "远程预算", storage: "存储", "build-cleanup": "构建清理", diagnostics: "诊断", history: "历史与内存",
   backup: "备份", drafts: "草稿", updates: "版本与更新", runtime: "运行环境", about: "关于与帮助",
 };

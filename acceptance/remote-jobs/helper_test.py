@@ -506,8 +506,9 @@ class HelperTests(unittest.TestCase):
         return json.loads((self.folder(job) / "stopping.json").read_text())
 
     def own_stopping(self, job, started, at):
+        # Timed on CLOCK_MONOTONIC, and saying so (YN-144).
         return dict({key: started[key] for key in ("bootId", "pid", "pgid", "sid", "starttime")},
-                    attempt=job["attempt"], monotonic=at)
+                    attempt=job["attempt"], monotonic=at, clock="CLOCK_MONOTONIC")
 
     def test_a_lost_command_that_ignores_term_is_killed_by_a_later_status_after_its_timeout(self):
         job = self.attempt("trap '' TERM; exec sleep 60", timeout=2)
@@ -597,7 +598,10 @@ class HelperTests(unittest.TestCase):
         for case, change in (("another attempt", {"attempt": "other"}), ("another boot", {"bootId": "other"}),
                              ("another process", {"pid": 1}), ("another start", {"starttime": 1}),
                              ("another group", {"pgid": 1, "sid": 1}), ("a later clock", {"monotonic": long_ago + 10 ** 6}),
-                             ("no clock reading", {"monotonic": "soon"}), ("unreadable", None), ("its own", {})):
+                             ("no clock reading", {"monotonic": "soon"}), ("another clock", {"clock": "CLOCK_REALTIME"}),
+                             ("unreadable", None), ("its own", {}),
+                             # Written before records named their clock: on Linux it was this one.
+                             ("its own, unnamed", {"clock": None})):
             with self.subTest(case=case):
                 job = self.attempt("trap '' TERM; exec sleep 60", timeout=600)
                 started, _ = self.lose(job)
@@ -605,7 +609,7 @@ class HelperTests(unittest.TestCase):
                 (self.folder(job) / "stopping.json").write_text("{" if change is None else json.dumps(dict(record, **change)))
                 before = time.monotonic()
                 reply = self.call(self.bound(job, "cancel"))
-                if case == "its own":
+                if case.startswith("its own"):
                     # This attempt's own record, 100 s old: KILL at once.
                     self.assertEqual(reply.get("result", {}).get("status"), "cancelled", reply)
                     self.assertTrue(gone(started["pid"]))

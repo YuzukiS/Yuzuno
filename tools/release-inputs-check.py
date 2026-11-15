@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Checks the release inputs the release-inputs workflow is about to upload
-(T-159): built from this run's commit, repository, run and attempt, the
-archive is the one build.json describes, and no file belongs to the Claude
-Agent SDK. Prints each problem and exits 1 if there is any."""
+(T-159): built for the platform its job builds, from this run's commit,
+repository, run and attempt, the archive is the one build.json describes, and
+no file belongs to the Claude Agent SDK. Prints each problem and exits 1 if
+there is any."""
 import argparse
 import os
 from pathlib import Path
@@ -11,9 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_common import claude_sdk_files, digest, read
 
 
-def problems(product, env):
+def problems(product, env, platform='linux-x86_64'):
     build = read(product / 'build.json')
     found = []
+    if build.get('platform') != platform:
+        found.append(f'build.json platform is {build.get("platform")!r}, not {platform!r}')
     for key, variable in [('source', 'GITHUB_SHA'), ('repository', 'GITHUB_REPOSITORY'),
                           ('runId', 'GITHUB_RUN_ID'), ('runAttempt', 'GITHUB_RUN_ATTEMPT')]:
         expected = env.get(variable)
@@ -30,7 +33,9 @@ def problems(product, env):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('product', type=Path, help='The directory with build.json and inputs.tar.gz')
-    found = problems(parser.parse_args().product, os.environ)
+    parser.add_argument('--platform', choices=('linux-x86_64', 'macos-aarch64'), default='linux-x86_64')
+    args = parser.parse_args()
+    found = problems(args.product, os.environ, args.platform)
     for problem in found:
         print(f'::error::{problem}')
     sys.exit(1 if found else 0)

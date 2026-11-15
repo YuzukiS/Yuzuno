@@ -29,6 +29,8 @@ export const newAgentText = strings({
   namePlaceholder: "Mikan, Mori, or something entirely you",
   harness: "Harness",
   experimental: "Experimental",
+  /** Where Yuzuno's OpenCode support stops: Core's `opencode::VERIFIED` (YN-119). */
+  openCodeName: "OpenCode (stops at 2.2.5)",
   defaultHarness: (source: string, harness: string) => `${source}: ${harness} for new Agents.`,
   whereToWork: "Where to work",
   local: "Local",
@@ -82,6 +84,7 @@ export const newAgentText = strings({
   dshKeysError: (reason: string) => `Couldn’t read the keys: ${reason}`,
   dshNoKey: "DeepSeek Harness needs a DeepSeek key: add one in Settings → Accounts & keys.",
   dshKeyUnset: "not set",
+  dshModelsUnread: "Core can’t read DeepSeek Harness’s models yet, so this Agent starts with its own default model.",
   dshPermissionNote:
     "Ask you first and Auto-approve keep DeepSeek Harness in its sandbox, which limits writing files only: anything beyond it asks you, or is refused without asking. Its network isn’t limited at any level, so Read only isn’t offered.",
   /** `machine` null: the Core host. */
@@ -199,6 +202,7 @@ export const newAgentText = strings({
   name: "名称",
   namePlaceholder: "Mikan、Mori，或完全属于你的名字",
   experimental: "实验性",
+  openCodeName: "OpenCode（停在 2.2.5）",
   defaultHarness: (source, harness) => `${source}：新 Agent 使用 ${harness}。`,
   whereToWork: "工作位置",
   local: "本地",
@@ -248,6 +252,7 @@ export const newAgentText = strings({
   dshKeysError: (reason) => `无法读取 key：${reason}`,
   dshNoKey: "DeepSeek Harness 需要一个 DeepSeek 的 key：在「设置 → 账号与密钥」里添加。",
   dshKeyUnset: "未设置",
+  dshModelsUnread: "Core 现在还读不到 DeepSeek Harness 的模型，所以这个 Agent 先用它自己的默认模型。",
   dshPermissionNote: "先问你和自动审批都让 DeepSeek Harness 待在它的沙箱里，沙箱只限制写文件：越出沙箱的先问你，或不问你直接拒绝。它在任何级别都不限网络，所以不提供只读。",
   login: (harness, machine) => `使用${machine ? ` ${machine} ` : "你的 Core 主机"}上的 ${harness} 登录。`,
   createDisabled: "在只读的设计预览中无法创建。",

@@ -37,6 +37,10 @@ mod http;
 /// A kept image's size from its header alone, within a budget (T-19 HM:B14).
 mod image_header;
 mod presentation;
+/// Home cards that refresh themselves (YN-113 R1): the timer that wakes their owners.
+pub(crate) mod refresh;
+/// What writes those refreshes (YN-113 R2): brief_update's `refresh`, the user's routes.
+mod refresh_writes;
 mod refs;
 mod research;
 mod sections;
@@ -45,6 +49,10 @@ mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+mod refresh_tests;
+#[cfg(test)]
+mod refresh_write_tests;
 #[cfg(test)]
 mod tests;
 
@@ -175,7 +183,7 @@ Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
 Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
-At most 12 topics with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
+At most 12 topics with 4 sub-topics each; a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
@@ -268,7 +276,8 @@ fn update_properties(project: Value) -> Value {
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
             "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
-            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."}}}}
+            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
+            "refresh":{"type":["object","null"],"description":"put or edit of a report, by a lead: {every: day|hours|week, at?, hours?, days?, zone?, instruction, paused?} makes it refresh itself; null removes it; a put without it keeps it. Creating, speeding up or a new instruction only in a Turn the user started. See brief_guide refresh."}}}}
     })
 }
 
@@ -360,6 +369,14 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_form {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_form TEXT")?;
     }
+    // reply_images: the images the user's reply to the replied version of an
+    // ask carried (YN-134), a JSON array of their IDs; NULL without any.
+    // Shown on Home's answered ask; older Cores ignore it.
+    let has_reply_images: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_images')", [], |r| r.get(0))?;
+    if !has_reply_images {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_images TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {
@@ -417,6 +434,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
          WHERE live=1 AND task_id IS NOT NULL;",
     )?;
+    // The cards that refresh themselves (YN-113), by their identity on Home.
+    // Older Cores ignore it.
+    refresh::migrate(db)?;
     Ok(())
 }
 
@@ -576,7 +596,8 @@ pub fn turn_outcome(store: &Store, agent_id: &str, turn_id: &str) -> Result<Opti
     ).optional()?)
 }
 
-/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache.
+/// Home's routes: /api/home, /api/projects/{id}/brief/*, /api/brief-cache,
+/// /api/brief-refreshes.
 pub fn router() -> axum::Router<Arc<Workspace>> {
     http::routes()
 }

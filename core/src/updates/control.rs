@@ -278,6 +278,7 @@ async fn execute(this: &Controller, request: Request) -> Result<Value> {
                 Ok(())
             })?;
             this.admission.reopen(&op.id)?;
+            this.runtime.update_ended();
             Ok(json!({"complete":true,"releaseId":current.release_id}))
         }
         Command::Abort => {

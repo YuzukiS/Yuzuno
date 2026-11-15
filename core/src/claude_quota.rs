@@ -429,7 +429,7 @@ impl Workspace {
         } else {
             let input = MessageInput { client_message_id: format!("{RESUME_CLIENT_PREFIX}{}", i.id), text: CONTINUE_TEXT.into(), text_blocks: None,
                 images: vec![], expected_turn_id: None, question: None, clarification: None };
-            let (to, reason, turn) = match self.send_message_from(&agent, input, Vec::new(), Some(json!({"kind":"resume"}))).await {
+            let (to, reason, turn) = match self.send_message_from(&agent, input, Vec::new(), Vec::new(), Some(json!({"kind":"resume"}))).await {
                 Ok(r) => { let (to, reason) = receipt_state(&r.status, r.error.as_deref()); (to, reason, r.turn_id) }
                 Err(error) => ("failed", Some(error.to_string()), None),
             };
@@ -505,7 +505,7 @@ impl Workspace {
     }
 }
 
-fn receipt_state(status: &str, error: Option<&str>) -> (&'static str, Option<String>) {
+pub(crate) fn receipt_state(status: &str, error: Option<&str>) -> (&'static str, Option<String>) {
     match status {
         "accepted" | "queued" => ("sent", None),
         "uncertain" | "sending" => ("uncertain", Some(error.unwrap_or("The message's delivery is unconfirmed; reconnect to check").to_owned())),

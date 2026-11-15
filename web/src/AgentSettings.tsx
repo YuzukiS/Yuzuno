@@ -11,7 +11,7 @@ import { OpenCodeLogin } from "./OpenCodeLogin";
 import { OpenCodeModelPicker } from "./OpenCodeModelPicker";
 import { AgentNameSetting } from "./RenameAgent";
 import { langTag, strings, useLanguage } from "./i18n";
-import { DSH_EFFORTS, DSH_LEVELS, dshLevelName, isDshLevel, useDsh } from "./dsh";
+import { DSH_EFFORTS, DSH_LEVELS, DSH_MODEL_HINTS, dshLevelName, isDshLevel, useDsh } from "./dsh";
 import { Tip, TipText } from "./Tip";
 import "./agent-settings.css";
 
@@ -33,7 +33,9 @@ const text = strings({
   claudeDescription: "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn.",
   codexDescription: "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle.",
   opencodeDescription: "The model and its variant go with each new message from the next one; a running turn keeps what it was sent with. Both are what OpenCode’s configured providers list: its release’s own catalog of models and those in your OpenCode config, since an OpenCode Yuzuno starts fetches no newer list. Permissions stay OpenCode’s own configuration.",
-  openCodeNewer: (version: string, verified: string) => `OpenCode ${version} is newer than the verified ${verified}.`,
+  // The package is Core's `opencode::PACKAGE`, as Core's own note names it (YN-119).
+  openCodeNewer: (version: string, verified: string) =>
+    `OpenCode support stops at ${verified}: ${version} is unverified, and problems with it are not fixed. To be safe, install ${verified} (npm i -g @opencode/cli@${verified}).`,
   variant: "Variant",
   variantNote: "OpenCode runs the model with this variant from the next message. Default leaves it to OpenCode.",
   variantBack: (name: string, variant: string) => `${name || "This model"} does not list variant ${variant}; it is back to the default.`,
@@ -86,6 +88,9 @@ const text = strings({
     full: "No sandbox, and nothing asks: it writes wherever this host’s user can.",
   } as Record<string, string>,
   dshVersion: (version: string) => `DeepSeek Harness ${version} on the Core host.`,
+  // While Core can't read or change them (S2b part 2): shown, not offered.
+  dshChosenAtCreation: "Its model, reasoning effort and permissions are chosen when this Agent is created, for now: Core can’t read or change them yet. These are what it runs with.",
+  dshClose: "Close",
 }, {
   button: "Agent 设置",
   buttonTitle: (harness) => (harness === "claude" ? "Claude Code 的模型、推理强度与审批" : harness === "opencode" ? "OpenCode 的模型与变体" : "模型、推理与权限"),
@@ -95,7 +100,7 @@ const text = strings({
   claudeDescription: "模型和推理强度从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置，此会话也不会被拆开。审批设置对 Claude 的下一次权限检查生效，包括正在运行的 Turn。",
   codexDescription: "模型、推理强度和权限对新的 Turn 生效。当前 Turn 和待处理的请求保留原有权限。上下文设置需要在会话空闲时另行安全地重新载入。",
   opencodeDescription: "模型及其变体从下一条消息起随每条新消息发送；正在运行的 Turn 保持发送时的设置。两者都来自 OpenCode 已配置的提供方：它这一版本自带的模型目录，加上你的 OpenCode 配置里的模型；Yuzuno 启动的 OpenCode 不会获取更新的列表。权限仍由 OpenCode 自己的配置决定。",
-  openCodeNewer: (version, verified) => `OpenCode ${version} 比已验证的 ${verified} 更新。`,
+  openCodeNewer: (version, verified) => `OpenCode 支持停在 ${verified}：${version} 未核验，出问题不修；要稳妥请装 ${verified}（npm i -g @opencode/cli@${verified}）。`,
   variant: "变体",
   variantNote: "从下一条消息起，OpenCode 用这个变体运行模型。选默认则由 OpenCode 决定。",
   variantBack: (name, variant) => `${name || "此模型"}没有列出变体 ${variant}，已恢复为默认。`,
@@ -144,6 +149,8 @@ const text = strings({
     full: "不用沙箱，也不询问：这台主机的用户能写的地方它都能写。",
   },
   dshVersion: (version) => `Core 主机上的 DeepSeek Harness ${version}。`,
+  dshChosenAtCreation: "这个 Agent 的模型、推理强度和权限目前只能在新建时选择：Core 还不能读取或修改它们。这里显示的是它正在用的。",
+  dshClose: "关闭",
 });
 type Words = ReturnType<typeof text>;
 /** A note or error: as Core gave it, or worded on show from this dialog's words. */
@@ -204,6 +211,10 @@ export function AgentSettings({
   const dsh = agent.harness === "dsh";
   const dshStatus = useDsh();
   const [dshLevel, setDshLevel] = useState<string>(() => dshLevelOf(agent));
+  // Core can't read or change a dsh Agent's model, effort and level yet (S2b
+  // part 2 is still in progress): its models read is refused, and that answer
+  // is the check. Until Core answers, the three are shown as chosen at creation.
+  const [dshLocked, setDshLocked] = useState(false);
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
   // OpenCode (YN-47): its providers and where each gets its access, and the model OpenCode uses when none is chosen
@@ -256,13 +267,14 @@ export function AgentSettings({
     setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
     setDshLevel(dshLevelOf(agent));
+    setDshLocked(false);
     api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
       .then(({ models, providers, default: resolved, permissions, context, opencode: native }) => {
         if (!current()) return;
         setModels(models);
         setProviders(providers);
         setResolvedDefault(resolved);
-        // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
+        // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one support stops at, YN-119).
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
         setPermissions(permissions);
         setContext(context);
@@ -287,7 +299,13 @@ export function AgentSettings({
             s.reasoningEffort || selected?.defaultReasoningEffort || null,
         }));
       })
-      .catch((e) => current() && setError(errorText(e)))
+      .catch((e) => {
+        if (!current()) return;
+        // A dsh Agent's models can't be read yet (S2b part 2): the page shows
+        // its saved three instead, and says they are chosen at creation.
+        if (agent.harness === "dsh") setDshLocked(true);
+        else setError(errorText(e));
+      })
       .finally(() => {
         const mine = ownRead.current === read;
         if (mine) ownRead.current = 0;
@@ -421,7 +439,7 @@ export function AgentSettings({
   const variantUnlisted = !!opencodeVariant && !variants.includes(opencodeVariant);
   const dshEffort = dsh ? settings.reasoningEffort || "" : "";
   async function save() {
-    if (saving) return;
+    if (saving || dshLocked) return;
     setSaving(true);
     setError("");
     try {
@@ -558,7 +576,7 @@ export function AgentSettings({
               label={t.model}
               name="agent-model"
               value={model}
-              disabled={loading || saving}
+              disabled={loading || saving || dshLocked}
               // While the catalog loads, its note waits in the chips' row, a
               // chip high (T-19 ST:AS2): how many rows the catalog takes is
               // not known before it arrives, so a one-row catalog moves
@@ -584,6 +602,9 @@ export function AgentSettings({
                   note: m.isDefault ? t.default : undefined,
                   title: m.description || undefined,
                 })),
+                // DeepSeek Harness's models can't be read yet: its own short
+                // list stands in, and the saved one is already shown as current.
+                ...(dsh && models.length === 0 ? DSH_MODEL_HINTS.filter((m) => m !== model).map((m) => ({ value: m, label: m })) : []),
               ]}
             />
             {selected?.description && (
@@ -665,13 +686,16 @@ export function AgentSettings({
                 )}
             </div>
           )}
+          {dsh && dshLocked && (
+            <small className="model-catalog-note dsh-locked-note">{t.dshChosenAtCreation}</small>
+          )}
           {dsh && (
             <div className="agent-setting">
               <ChoiceChips
                 label={t.effort}
                 name="agent-effort"
                 value={dshEffort}
-                disabled={loading || saving}
+                disabled={loading || saving || dshLocked}
                 onChange={(value) => setSettings((s) => ({ ...s, reasoningEffort: value || null }))}
                 choices={[
                   { value: "", label: t.dshDefault },
@@ -689,7 +713,7 @@ export function AgentSettings({
                 label={t.permissions}
                 name="agent-dsh-level"
                 value={dshLevel}
-                disabled={saving}
+                disabled={saving || dshLocked}
                 onChange={setDshLevel}
                 // The three levels it keeps; never Read only (YN-119 §3.6).
                 choices={DSH_LEVELS.map((level) => ({ value: level, label: dshLevelName(level, language) }))}
@@ -799,6 +823,12 @@ export function AgentSettings({
               </button>
             </div>
           )}
+          {dshLocked ? (
+            // Nothing here is Core's to change yet: it is read, and Close is all this page does.
+            <div className="button-row">
+              <button type="button" className="quiet-button" onClick={() => changeOpen(false)}>{t.dshClose}</button>
+            </div>
+          ) : (
           <div className="button-row">
             <button
               type="submit"
@@ -821,6 +851,7 @@ export function AgentSettings({
               {saving ? t.saving : t.save}
             </button>
           </div>
+          )}
         </form>
       </Modal>
     </>

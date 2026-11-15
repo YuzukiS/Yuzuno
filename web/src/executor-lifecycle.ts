@@ -27,6 +27,9 @@ export type ExecutorLifecycle = {
   reason?: string | null;
   /** Its place in the queue, 1 first, while queued. */
   position?: number | null;
+  /** While queued: its dispatch was urgent (YN-137), so it goes first and may take one slot over its machine's limit.
+   * Absent otherwise, and from an older Core's answer. */
+  urgent?: boolean;
   /** Its task's blocker, while it runs on a blocked task. */
   blocked?: string | null;
   /** While it runs: when its task's newest result was handed in on its own dispatch (as doing, or its task no longer in
@@ -76,6 +79,8 @@ export const lifecycleText = strings(
       closed: "Closed",
     } as Record<ExecutorState, string>,
     queuedAt: (position: number) => `Queued · ${position} in line`,
+    queuedUrgentAt: (position: number) => `Queued · urgent · ${position} in line`,
+    urgentDetail: "Urgent dispatch: may take one slot over its machine's limit",
     queuedCandidate: "Queued · waiting for a routing candidate",
     executor: "Executor",
     executors: "Task executors",
@@ -101,6 +106,8 @@ export const lifecycleText = strings(
       closed: "已关闭",
     },
     queuedAt: (position) => `排队中 · 第 ${position} 位`,
+    queuedUrgentAt: (position) => `排队中 · 加急 · 第 ${position} 位`,
+    urgentDetail: "加急派发：机器满额时可多用一个名额",
     queuedCandidate: "排队中 · 在等路由候选",
     executor: "执行者",
     executors: "任务执行者",
@@ -120,12 +127,16 @@ type Text = ReturnType<typeof lifecycleText>;
 export function stateLabel(lifecycle: ExecutorLifecycle, t: Text): string {
   // Waiting for a routing candidate is not a place in the slot queue (YN-57).
   if (lifecycle.state === "queued" && lifecycle.route?.kind === "waiting") return t.queuedCandidate;
-  return lifecycle.state === "queued" && lifecycle.position ? t.queuedAt(lifecycle.position) : t.states[lifecycle.state];
+  if (lifecycle.state === "queued" && lifecycle.position) {
+    return lifecycle.urgent ? t.queuedUrgentAt(lifecycle.position) : t.queuedAt(lifecycle.position);
+  }
+  return t.states[lifecycle.state];
 }
 
 /** What a title adds: why it is in that state, its task's blocker, who dispatched it. */
 export function stateDetail(lifecycle: ExecutorLifecycle, t: Text): string[] {
   const lines: string[] = [];
+  if (lifecycle.urgent) lines.push(t.urgentDetail);
   if (lifecycle.reason) lines.push(lifecycle.state === "archiving" ? t.archivingReason(lifecycle.reason) : lifecycle.reason);
   if (lifecycle.blocked) lines.push(t.blocked(lifecycle.blocked));
   const by = lifecycle.dispatcher;

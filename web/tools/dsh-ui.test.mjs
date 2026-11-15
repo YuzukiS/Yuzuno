@@ -1,10 +1,11 @@
 // YN-119 W1: DeepSeek Harness (dsh) in the web. It is offered only while
 // Core says it starts it (`dsh.available` of /api/workspace); a new dsh
 // Agent runs on the Core host with a DeepSeek key and one of the three levels
-// dsh keeps, never Read only; its settings send the model, an effort of
-// off/low/high/max and the level; routing gives it a DeepSeek key only; and
-// Codex's own panels are named for Codex, so no other harness falls into
-// them. Fixture HTTP only; no Core.
+// dsh keeps, never Read only; its settings show the model, an effort of
+// off/low/high/max and the level, and send them once Core can read and change
+// them (S2b part 2), reading them as chosen at creation until then; routing
+// gives it a DeepSeek key only; and Codex's own panels are named for Codex, so
+// no other harness falls into them. Fixture HTTP only; no Core.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -86,7 +87,7 @@ const someKeys = [
 ];
 const AVAILABLE = { available: true, version: "0.2.2-rc.3", label: null };
 
-function mount({ keys = someKeys, language } = {}) {
+function mount({ keys = someKeys, language, dshModelsReadable = false } = {}) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -103,9 +104,15 @@ function mount({ keys = someKeys, language } = {}) {
     if (url.includes("/agent-defaults")) return answer(200, defaults);
     if (url.endsWith("/machines")) return answer(200, { machines: [local, studio] });
     // The Agent's own routes first: its catalog's path also ends in /models.
-    if (url.endsWith("/agents/ds/models")) return answer(200, { models: dshModels });
+    // Core refuses a dsh Agent's model catalog until YN-119 S2b part 2; the
+    // page then shows its saved three (see the settings tests).
+    if (url.endsWith("/agents/ds/models")) return dshModelsReadable
+      ? answer(200, { models: dshModels })
+      : answer(400, { error: "DeepSeek Harness Agent 的模型目录暂不可读。A DeepSeek Harness Agent's models can't be read yet." });
     if (url.endsWith("/agents/ds/settings")) return answer(200, { id: "ds", ...body });
-    if (url.endsWith("/models?harness=dsh")) return answer(200, { models: dshModels });
+    if (url.endsWith("/models?harness=dsh")) return dshModelsReadable
+      ? answer(200, { models: dshModels })
+      : answer(400, { error: "DeepSeek Harness 的模型目录暂不可读。DeepSeek Harness's models can't be read yet." });
     if (url.endsWith("/models?harness=claude")) return answer(200, { models: [] });
     if (url.endsWith("/models")) return answer(200, { models: [{ id: "gpt", model: "gpt", displayName: "GPT" }] });
     if (url.endsWith("/routing/keys")) return answer(200, { keys, onePasswordToken: { set: true } });
@@ -179,10 +186,14 @@ test("a new DeepSeek Harness Agent runs on the Core host with a DeepSeek key and
     assert.equal(picked(page, "Where to work"), "local");
     assert.ok(choice(page, "Where to work", "studio").disabled);
     assert.ok(page.document.querySelector(".choice-chip-action").disabled, "no machine added for it");
-    // Its own models, from dsh on the Core host; its key from the Workspace's DeepSeek keys.
-    await until(() => offered(page, "Model").includes("deepseek-v4-pro"), "dsh's models");
-    assert.ok(page.calls.some((c) => c.url.endsWith("/models?harness=dsh")), "dsh's own catalog is read");
-    assert.deepEqual(offered(page, "Model"), ["", "deepseek-flash", "deepseek-v4-pro"]);
+    // Its own models can't be read yet (S2b part 2): Core's default model stands,
+    // said as a note rather than as this page's error; its key is the Workspace's.
+    await tick(); await tick();
+    assert.ok(page.calls.some((c) => c.url.endsWith("/models?harness=dsh")), "Core is asked for dsh's models");
+    assert.equal(page.document.querySelector(".create-dsh-models").textContent,
+      "Core can’t read DeepSeek Harness’s models yet, so this Agent starts with its own default model.");
+    assert.equal(page.document.querySelector(".model-catalog-error"), null, "not this page's error");
+    assert.deepEqual(offered(page, "Model"), [""], "its own default model only");
     await until(() => group(page, "DeepSeek key"), "the keys");
     assert.deepEqual(offered(page, "DeepSeek key"), ["deepseek", "deepseek-team"], "DeepSeek's keys only");
     assert.equal(picked(page, "DeepSeek key"), "deepseek", "the first one, until another is chosen");
@@ -197,13 +208,12 @@ test("a new DeepSeek Harness Agent runs on the Core host with a DeepSeek key and
 
     await pick(page, "DeepSeek key", "deepseek-team");
     await pick(page, "Permissions", "auto");
-    await pick(page, "Model", "deepseek-v4-pro");
     await type(page, "Name", "Dune");
     const body = await submit(page);
     assert.deepEqual(plain(body), {
-      name: "Dune", cwd: "/workspace", machineId: "local", harness: "dsh", model: "deepseek-v4-pro",
+      name: "Dune", cwd: "/workspace", machineId: "local", harness: "dsh",
       permissionLevel: "auto", runtimeProfile: { kind: "apiKey", keyId: "deepseek-team" },
-    });
+    }, "no model: DeepSeek Harness's own default, as Core can't list its models yet");
     await until(() => page.created.length === 1, "the Agent Core made");
 
     // Ask you first, sent as such, when nothing else is chosen.
@@ -256,10 +266,49 @@ test("the dialog's DeepSeek Harness words in Chinese", async () => {
   } finally { page.close(); }
 });
 
-test("a DeepSeek Harness Agent's settings send its model, effort and level, and nothing of Codex's", async () => {
+test("a DeepSeek Harness Agent's settings are shown, not offered, until Core can read and change them", async () => {
   const agent = { id: "ds", name: "Dune", harness: "dsh", model: "deepseek-flash", settings: { reasoningEffort: "high", permissionLevel: "auto" },
     dshVersion: "0.2.2-rc.3", status: "idle", connectionState: "connected", cwd: "/workspace" };
   const page = mount();
+  const saved = () => page.calls.filter((c) => c.url.endsWith("/agents/ds/settings")).map((c) => plain(c.body));
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }, { ...AVAILABLE, label: "Newer than the verified 0.2.2-rc.3." });
+    await tick();
+    page.document.querySelector(".agent-settings-button").click(); await tick(); await tick();
+    const dialog = page.document.querySelector('[role="dialog"]');
+    assert.match(dialog.textContent, /keeps Ask you first, Auto-approve and Full access, never Read only/);
+    // Core is asked, and its refusal is the check: the three are what the Agent runs with.
+    assert.ok(page.calls.some((c) => c.url.endsWith("/agents/ds/models")), "Core is asked for its catalog");
+    await tick(); await tick();
+    assert.match(dialog.textContent, /chosen when this Agent is created, for now: Core can’t read or change them yet/);
+    assert.equal(page.document.querySelector(".model-catalog-error"), null, "Core's refusal isn't shown as this page's error");
+    assert.deepEqual(offered(page, "Model"), ["", "deepseek-flash", "deepseek-v4-pro"], "its short list, and the saved one");
+    assert.equal(picked(page, "Model"), "deepseek-flash");
+    assert.ok(group(page, "Model").disabled, "no model is offered");
+    assert.deepEqual(offered(page, "Reasoning effort"), ["", "off", "low", "high", "max"]);
+    assert.equal(picked(page, "Reasoning effort"), "high");
+    assert.ok(group(page, "Reasoning effort").disabled, "no effort is offered");
+    assert.deepEqual(offered(page, "Permissions"), ["ask", "auto", "full"]);
+    assert.equal(picked(page, "Permissions"), "auto");
+    assert.ok(group(page, "Permissions").disabled, "no level is offered");
+    assert.equal(group(page, "Approvals"), null, "no Claude approvals");
+    assert.equal(page.document.querySelector(".dsh-version-note").textContent,
+      "DeepSeek Harness 0.2.2-rc.3 on the Core host. Newer than the verified 0.2.2-rc.3.");
+    // No Save: nothing of Core's is this page's to change.
+    assert.equal(page.document.querySelector(".agent-settings-form .primary-button"), null);
+    assert.equal(page.document.querySelector(".dsh-locked-note").textContent,
+      "Its model, reasoning effort and permissions are chosen when this Agent is created, for now: Core can’t read or change them yet. These are what it runs with.");
+    page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await tick(); await tick();
+    assert.equal(saved().length, 0, "nothing is sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("once Core reads a DeepSeek Harness Agent's models, its settings send its model, effort and level, and nothing of Codex's", async () => {
+  const agent = { id: "ds", name: "Dune", harness: "dsh", model: "deepseek-flash", settings: { reasoningEffort: "high", permissionLevel: "auto" },
+    dshVersion: "0.2.2-rc.3", status: "idle", connectionState: "connected", cwd: "/workspace" };
+  const page = mount({ dshModelsReadable: true });
   const saved = () => page.calls.filter((c) => c.url.endsWith("/agents/ds/settings")).map((c) => plain(c.body));
   const save = async () => {
     page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));

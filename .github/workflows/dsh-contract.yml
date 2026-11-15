@@ -1,0 +1,80 @@
+# The daily contract probe of the published DeepSeek Harness, dsh (YN-126;
+# design YN-119, section 5.1). Core drives dsh over ACP and relies on what
+# tools/dsh_contract_probe.py asserts. dsh is a developer preview that
+# publishes every few days, so this installs npm's `latest` and `next` and
+# runs the probe against each one. A failed check turns the run red, and
+# GitHub notifies the repository owner. No pull request needs this check
+# to pass.
+#
+# Runs once a day, on request, and for a pull request that changes the
+# probe or this workflow, to show the change still runs. The probe talks
+# only to its own fake model and MCP endpoints on 127.0.0.1: no DeepSeek
+# key, no secret, no upload, and its token reads contents only.
+name: dsh contract
+
+on:
+  schedule:
+    # 03:37 UTC, off the hour as GitHub advises for scheduled runs.
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - tools/dsh_contract_probe.py
+      - .github/scripts/hosted-guard.sh
+      - .github/workflows/dsh-contract.yml
+
+permissions:
+  contents: read
+
+# A newer push to a PR cancels its older run; a scheduled or requested run
+# finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  probe:
+    name: dsh@${{ matrix.tag }} contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      # One tag failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        tag: [latest, next]
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      # dsh needs Node 24.9.0 or newer (the engines field of its
+      # package.json); this takes the newest Node 24.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Into $RUNNER_TEMP only, never globally, without running the
+      # package's install scripts; npm's own cache stays there too.
+      - name: Install @deepseek-ai/dsh@${{ matrix.tag }}
+        env:
+          TAG: ${{ matrix.tag }}
+          npm_config_cache: ${{ runner.temp }}/npm-cache
+        run: |
+          npm view @deepseek-ai/dsh dist-tags
+          npm install --prefix "$RUNNER_TEMP/dsh" --no-save --no-package-lock --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh@$TAG"
+          node --version
+          "$RUNNER_TEMP/dsh/node_modules/.bin/dsh" --version
+
+      - name: Contract probe
+        run: python3 tools/dsh_contract_probe.py --dsh "$RUNNER_TEMP/dsh/node_modules/.bin/dsh" --out "$RUNNER_TEMP/probe"

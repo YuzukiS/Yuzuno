@@ -11,11 +11,21 @@ new Agents: an existing OpenCode Agent keeps working either way, and can still
 be forked. Any other value, `1` included, leaves it on. A Core the Windows
 desktop starts again (`updates/start`) gets the value it last started with.
 
+**Support stops at OpenCode 2.2.5 (YN-119).** 2.2.5 is the last OpenCode
+release Yuzuno verifies and fixes problems on: no newer release is probed or
+followed. A newer 2.x still starts, as before. Its Agent's settings, and a
+start of it that fails, say that support stops at 2.2.5, that this release is
+unverified and that problems with it are not fixed, and to install 2.2.5 to
+be safe: `npm i -g @opencode/cli@2.2.5`. The new Agent dialog, an executor
+template's harness and a routing candidate's tool name it **OpenCode (stops
+at 2.2.5)**. Core's own answers at Auto-approve were only ever for 2.2.5
+([Executor routing](executor-routing.md#core-answers-an-opencode-executor-at-auto-approve-yn-78)).
+
 **Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
 one part of the protocol at a time. It starts, checks and stops OpenCode as 2.x
 does, and takes any 2.x from 2.0.7: it is checked against 2.2.5; the routes and
-events Core reads exist from 2.0.7. A newer one is noted in the Agent's
-settings, not refused. Before 2.0.29, a turn that ended unsuccessfully while no
+events Core reads exist from 2.0.7. A newer one is not refused: the Agent's
+settings say it is unverified (above). Before 2.0.29, a turn that ended unsuccessfully while no
 stream was open shows without OpenCode's error text. An older 2.x is refused
 with both versions, saying to update it, and an OpenCode that is not 2.x is
 refused with the version it says it is. Logging an Agent in to a provider here
@@ -127,7 +137,7 @@ a new one.
 - **Updates and the models list:** OpenCode is started with
   `OPENCODE_DISABLE_AUTOUPDATE=1`, although `opencode serve` 2.2.5 never
   updates itself anyway. Updating OpenCode is yours to do; Yuzuno takes any
-  2.x from 2.0.7 and notes one newer than the verified release. It is also
+  2.x from 2.0.7 and says one newer than 2.2.5 is unverified. It is also
   started with `OPENCODE_DISABLE_MODELS_FETCH=1`, so an OpenCode Yuzuno starts makes no
   network request of its own besides your model provider's. Its models are
   the installed release's own catalog and those in your OpenCode config, so

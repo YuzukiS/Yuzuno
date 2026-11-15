@@ -6,7 +6,8 @@ const GPU0: &str = "GPU-00000000-1111-2222-3333-444444444444";
 /// A stand-in nvidia-smi: a burst of two rows every `-l` seconds or `-lms`
 /// milliseconds, each saying there are two, 30 ms apart (so a reading kept
 /// row by row would be seen half), the second device's name holding a comma
-/// and its values unknown; each start noted in `starts` beside it. `mode` beside it: `once`
+/// and its values unknown; each start noted in `starts` beside it, and its own
+/// time as the creation time of the `times/<n>` file it makes first. `mode` beside it: `once`
 /// prints once and exits, `silent` exits at once with nothing, `truncated` loses the first
 /// burst's first row and gives the second device's total as 16000 + the burst's number, `hang`
 /// prints once and then neither prints nor exits.
@@ -14,6 +15,11 @@ fn stub(dir: &Path) -> PathBuf {
     let path = dir.join("nvidia-smi");
     std::fs::write(&path, format!(r#"#!/bin/sh
 here=$(dirname "$0")
+n=0
+# BSD wc pads its count; strip it before $(( )).
+[ -f "$here/starts" ] && n=$(wc -l < "$here/starts" | tr -d ' ')
+mkdir -p "$here/times"
+: > "$here/times/$((n + 1))"
 echo $$ >> "$here/starts"
 every=1
 while [ $# -gt 0 ]; do
@@ -51,11 +57,34 @@ fn starts(dir: &Path) -> Vec<String> {
     std::fs::read_to_string(dir.join("starts")).unwrap_or_default().lines().map(str::to_owned).collect()
 }
 
+/// When each start happened, as the stand-in recorded it: every start creates
+/// `times/<n>` first thing, so its creation time is the start's own, not the
+/// moment a reader noticed it. A reader's poll is late by up to its whole
+/// `latest` wait, and two starts can fall in one poll (Linux CI 43642940734:
+/// the second gap measured 42 ms where the backoff was 100 ms).
+fn start_times(dir: &Path) -> Vec<std::time::SystemTime> {
+    (1..).map_while(|n| std::fs::metadata(dir.join("times").join(n.to_string())).ok().and_then(|m| m.modified().ok())).collect()
+}
+
 fn alive(pid: &str) -> bool {
     pid.parse().is_ok_and(crate::test_platform::running)
 }
 
 const WAIT: Duration = Duration::from_secs(2);
+
+/// `config` without its 400 ms idle stop, for a test whose reads must all
+/// fall in one session: a read that starts a session waits for its first
+/// reading without reading again, and on a loaded runner the stand-in's
+/// first whole burst can come later than 400 ms (macOS CI 43544818577: the
+/// session stopped idle before it, YN-122).
+fn without_idle_stop(dir: &Path) -> Config {
+    Config { idle: Duration::from_secs(60), ..config(dir) }
+}
+
+/// How long a test waits for a session's first reading where how soon it
+/// comes is not what the test checks: a bound for a run that hangs, not a
+/// time the stand-in must keep (YN-122).
+const FIRST: Duration = Duration::from_secs(30);
 
 /// nvidia-smi's rows, read from both ends: how many devices the burst has,
 /// a name that may hold a comma, and `[N/A]` as unknown, not zero.
@@ -81,12 +110,17 @@ fn a_row_is_read_from_both_ends_and_n_a_is_unknown() {
 #[tokio::test]
 async fn every_read_shares_one_session_and_one_child() {
     let dir = tempfile::tempdir().unwrap();
-    let sampler = GpuSampler::new(config(dir.path()));
+    let sampler = GpuSampler::new(without_idle_stop(dir.path()));
     let mut seen = std::collections::BTreeSet::new();
-    for _ in 0..60 {
-        let sample = sampler.latest(WAIT).await.expect("a reading");
+    // At least 60 reads, 20 ms apart, and on until it has sampled on its own
+    // six times: how fast the stand-in prints is the runner's, not the
+    // sampler's (a loaded macOS runner printed 5 bursts in 60 reads, YN-122).
+    let (mut reads, until) = (0, Instant::now() + FIRST);
+    while reads < 60 || (seen.len() <= 5 && Instant::now() < until) {
+        let sample = sampler.latest(FIRST).await.expect("a reading");
         assert_eq!((sample.source, sample.devices.len()), ("nvidia-smi", 2), "each reading is a whole burst, every device in it");
         seen.insert(sample.observed_at);
+        reads += 1;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(seen.len() > 5, "it samples on its own between reads: {}", seen.len());
@@ -109,8 +143,9 @@ async fn every_read_shares_one_session_and_one_child() {
 async fn a_burst_missing_a_row_is_dropped_not_completed_with_the_next() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mode"), "truncated").unwrap();
-    let sampler = GpuSampler::new(config(dir.path()));
-    let first = sampler.latest(WAIT).await.expect("a reading");
+    // Its first whole reading is the stand-in's second burst.
+    let sampler = GpuSampler::new(without_idle_stop(dir.path()));
+    let first = sampler.latest(FIRST).await.expect("a reading");
     assert_eq!(first.devices.len(), 2, "{first:?}");
     let burst = |sample: &Sample| (sample.devices[0].utilization_percent, sample.devices[1].memory_total_mib.map(|total| total - 16000));
     assert_eq!(burst(&first), (Some(1), Some(1)), "a reading never mixes two bursts");
@@ -202,20 +237,32 @@ async fn an_idle_sampler_stops_and_starts_again_on_the_next_read() {
 }
 
 /// A child that exits after giving readings is started again after a
-/// backoff that doubles, never at once.
+/// backoff that doubles, never at once. Each gap is between the two starts
+/// themselves, as the stand-in recorded them, so a runner that is slow to
+/// notice a start still measures the sampler's backoff (plus the stand-in's
+/// own exit, which only makes the gap longer).
 #[tokio::test]
 async fn a_child_that_exits_is_started_again_after_a_backoff() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mode"), "once").unwrap();
     let sampler = GpuSampler::new(config(dir.path()));
-    let until = Instant::now() + Duration::from_millis(600);
-    while Instant::now() < until {
+    let until = Instant::now() + Duration::from_secs(30);
+    while start_times(dir.path()).len() < 3 && Instant::now() < until {
+        // A read starts the next session once its backoff has passed, and
+        // keeps the idle stop from ending it meanwhile.
         let _ = sampler.latest(Duration::from_millis(100)).await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    // 50, 100, 200 ms between starts: four starts at most in 600 ms.
-    let n = starts(dir.path()).len();
-    assert!((2..=5).contains(&n), "started again after a backoff, not at once: {n} starts");
+    let times = start_times(dir.path());
+    assert!(times.len() >= 3, "started again after a backoff: {} starts", times.len());
+    let (first, second) = (
+        times[1].duration_since(times[0]).unwrap_or_default(),
+        times[2].duration_since(times[1]).unwrap_or_default(),
+    );
+    // 50 ms, then 100 ms after the stand-in has ended (it takes a few ms to
+    // exit after its reading, which only lengthens the gap).
+    assert!(first >= Duration::from_millis(40), "the second start came at once: {first:?}");
+    assert!(second >= Duration::from_millis(90), "the backoff did not double: {second:?}");
 }
 
 /// With neither NVML nor nvidia-smi, the sampler says why and is not tried

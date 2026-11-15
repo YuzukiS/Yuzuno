@@ -551,7 +551,7 @@ try {
   );
   await page.getByRole("button", { name: "Cancel update" }).click();
   await hasText("Update wait cancelled");
-  await hasText("Pause requests have expired. Agents that yielded stay idle");
+  await hasText("The pause request was cancelled. Agents that yielded continue on their own");
   await preserved();
   check("disconnect/reconnect preserves wait and draft; cancel resumes work");
   mode = "lost-receipt";

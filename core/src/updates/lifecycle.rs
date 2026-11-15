@@ -82,6 +82,12 @@ impl Runtime for WorkspaceRuntime {
     fn update_pause_status(&self, op: &super::state::Operation) -> Result<Value> {
         self.0.update_pause_status(op)
     }
+    fn update_ended(&self) {
+        self.0.collaboration_wakeup.notify_one();
+    }
+    fn update_resume_status(&self, op: &super::state::Operation) -> Result<Value> {
+        self.0.update_resume_status(op)
+    }
     fn workspace_id(&self) -> Result<String> {
         self.0.store.workspace_id()
     }

@@ -2,7 +2,7 @@
 //! (ssh_mux), against a real sshd on 127.0.0.1 with its own keys. None of
 //! the user's SSH configuration, keys or known hosts is read: calls go
 //! through a wrapper that gives OpenSSH this test's own configuration.
-use super::remote::{call, Machine, Programs, Reply};
+use super::remote::{call, Machine, Programs, Reply, MAC_TOOLS};
 use super::ssh_mux::{destination, Lease, Mux};
 use crate::remote::{ssh_with_control, Control, RemoteMachine};
 use crate::test_ports::free_port;
@@ -137,7 +137,7 @@ async fn hello(sshd: &Sshd, mux: Option<&Mux>, machine: &RemoteMachine) -> Reply
 }
 
 async fn hello_through(ssh: &str, mux: Option<&Mux>, machine: &RemoteMachine) -> Reply {
-    call(&Programs { ssh, windows: None, mux }, &Machine::Ssh(machine.clone()), json!({"action": "hello"})).await
+    call(&Programs { ssh, windows: None, mux, mac: MAC_TOOLS }, &Machine::Ssh(machine.clone()), json!({"action": "hello"})).await
 }
 
 /// Until the master started for `machine` is ready (or none is starting).

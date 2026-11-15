@@ -209,7 +209,7 @@ fn job(lab: &Lab, job: &Value) -> Value {
 }
 
 async fn ssh_logs(lab: &Lab, job: &Value, program: &str) -> anyhow::Result<Value> {
-    remote::logs_with(&lab.ws, job, None, &remote::Programs { ssh: program, windows: None, mux: None }).await
+    remote::logs_with(&lab.ws, job, None, &remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }).await
 }
 
 fn cancel(lab: &Lab, of: &Value) {
@@ -626,8 +626,8 @@ async fn a_dead_supervisor_and_a_child_left_by_the_leader_keep_the_slot_until_ca
 /// A supervisor that is gone does not take the timeout with it: before the
 /// deadline it recorded the attempt is unknown and keeps its slot; the first
 /// check after it stops the command's group and records the timeout, which
-/// releases the slot. The unknown is told once, the timeout once.
-#[cfg(target_os = "linux")]
+/// releases the slot. The unknown is told once, the timeout once. On macOS
+/// too: the deadline is on one clock for every process (YN-144).
 #[tokio::test]
 async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_the_next_check() {
     let lab = lab();
@@ -659,8 +659,8 @@ async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_
 
 /// A cancel of a lost attempt whose command ignores TERM is not settled by
 /// the call that sends it TERM (4 s); Core asks again at its next check, and
-/// that call KILLs it, 5 s after the first TERM: cancelled, slot released.
-#[cfg(target_os = "linux")]
+/// that call KILLs it, 5 s after the first TERM: cancelled, slot released. On
+/// macOS too: the first TERM's time is on one clock for every process (YN-144).
 #[tokio::test]
 async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_check() {
     let lab = lab();
@@ -681,6 +681,43 @@ async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_chec
     assert!(cancelled["reason"].as_str().unwrap().contains("its supervisor was gone"), "{cancelled}");
     assert!(gone(leader).await);
     assert!(cancelled["notifications"]["cancelled"].is_string(), "{cancelled}");
+}
+
+/// A lost attempt's deadline written before its records named their clock
+/// (an older helper's supervisor): on Linux it was CLOCK_MONOTONIC already,
+/// so it still applies; on macOS it was that process's own clock, which no
+/// other process can read, so it is never applied in the supervisor's place
+/// and the attempt keeps its slot until a cancel, as before (YN-144).
+#[tokio::test]
+async fn a_lost_attempts_deadline_from_before_the_clock_was_named_keeps_its_meaning() {
+    let lab = lab();
+    // Its own timeout far off, so that only the rewritten deadline can pass.
+    let first = create(&lab, input(&lab, "unmarked", "exec sleep 60", json!({"timeoutSeconds": 30})));
+    until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let attempt = folder(&lab, &first);
+    let supervisor = read(attempt.join("supervisor.json"))["pid"].as_i64().unwrap();
+    let leader = read(attempt.join("started.json"))["pid"].as_i64().unwrap();
+    std::process::Command::new("kill").args(["-KILL", &supervisor.to_string()]).status().unwrap();
+    assert!(gone(supervisor).await);
+    // As an older supervisor wrote it: no clock, and long past on this one.
+    let mut deadline = read(attempt.join("deadline.json"));
+    assert_eq!(deadline["clock"], "CLOCK_MONOTONIC", "{deadline}");
+    deadline.as_object_mut().unwrap().remove("clock");
+    deadline["monotonic"] = json!(0.5);
+    std::fs::write(attempt.join("deadline.json"), deadline.to_string()).unwrap();
+    tick(&lab, &lab.ssh).await;
+    let checked = job(&lab, &first);
+    if cfg!(target_os = "macos") {
+        assert_eq!((checked["status"].as_str(), checked["reserved"].as_bool()), (Some("unknown"), Some(true)), "{checked}");
+        assert!(alive(leader));
+        cancel(&lab, &first);
+        let cancelled = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
+        assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+    } else {
+        assert_eq!((checked["status"].as_str(), checked["reserved"].as_bool()), (Some("failed"), Some(false)), "{checked}");
+        assert_eq!(checked["reason"], "timeout after 30 s; its supervisor was gone, so its process group was stopped here");
+    }
+    assert!(gone(leader).await);
 }
 
 #[tokio::test]
@@ -1040,7 +1077,7 @@ print(mark + json.dumps({"status": "inspected", "cwd": request["cwd"], "files": 
 async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
     let lab = lab();
     let helper = remote::WindowsHelper::trusting(&windows_helper(&lab, "windows-inspect", INSPECTING));
-    let programs = remote::Programs { ssh: &lab.ssh, windows: Some(&helper), mux: None };
+    let programs = remote::Programs { ssh: &lab.ssh, windows: Some(&helper), mux: None, mac: remote::MAC_TOOLS };
     let snapshot = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["a.txt".into()]).await.unwrap();
     assert_eq!((snapshot["frozenOn"]["kind"].as_str(), snapshot["hostId"].as_str()), (Some("windows"), Some("w".repeat(64).as_str())));
     assert_eq!(snapshot["files"][0]["absolutePath"], r"C:\work\a.txt");
@@ -1049,7 +1086,7 @@ async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
     let error = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["linux.txt".into()]).await.unwrap_err().to_string();
     assert!(error.ends_with("its reply does not name each input with its digest"), "{error}");
     // No helper in this Core: nothing is read anywhere, and nothing is submitted.
-    let none = remote::Programs { ssh: &lab.ssh, windows: None, mux: None };
+    let none = remote::Programs { ssh: &lab.ssh, windows: None, mux: None, mac: remote::MAC_TOOLS };
     let error = remote::remote_snapshot(&lab.ws, &none, "windows", r"C:\work", &["a.txt".into()]).await.unwrap_err().to_string();
     assert!(error.starts_with("The inputs could not be read on Windows on this PC, so nothing was submitted"), "{error}");
     // The start carries the frozen inputs and the artifacts, so its digest is v3.
@@ -1072,7 +1109,7 @@ async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
 /// One pass with this Core's Windows helper, or none.
 async fn windows_tick(lab: &Lab, helper: Option<&remote::WindowsHelper>) {
     lab.ws.jobs.remote_seen.lock().unwrap().clear();
-    remote::tick_with(&lab.ws, &remote::Programs { ssh: &lab.ssh, windows: helper, mux: None }).await.unwrap();
+    remote::tick_with(&lab.ws, &remote::Programs { ssh: &lab.ssh, windows: helper, mux: None, mac: remote::MAC_TOOLS }).await.unwrap();
 }
 
 #[tokio::test]
@@ -1397,7 +1434,7 @@ fn sha(text: &str) -> String {
 
 async fn frozen(lab: &Lab, program: &str, inputs: &[&str]) -> anyhow::Result<Value> {
     let inputs: Vec<String> = inputs.iter().map(|p| p.to_string()).collect();
-    remote::remote_snapshot(&lab.ws, &remote::Programs { ssh: program, windows: None, mux: None }, "m1", &lab.work.to_string_lossy(), &inputs).await
+    remote::remote_snapshot(&lab.ws, &remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }, "m1", &lab.work.to_string_lossy(), &inputs).await
 }
 
 /// As job_submit: the job with what was frozen on the machine.
@@ -2086,7 +2123,7 @@ fn replying(lab: &Lab, name: &str, reply: &Value) -> String {
 }
 
 async fn ask_pause(lab: &Lab, job: &Value, program: &str) -> Value {
-    remote::control_with(&lab.ws, job, "pause", &remote::Programs { ssh: program, windows: None, mux: None }).await
+    remote::control_with(&lab.ws, job, "pause", &remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }).await
 }
 
 /// The running attempt's status as a machine reports it in a scope of its own
@@ -2177,7 +2214,7 @@ async fn a_remote_pause_is_what_the_machine_answered_and_its_status_settles_one_
     // machine reports the scope thawed: then it is resumed.
     let (asked, act) = lab.ws.store.request_job_pause(id, true).unwrap();
     assert!(act);
-    let lost = remote::control_with(&lab.ws, &asked, "resume", &remote::Programs { ssh: &lab.down, windows: None, mux: None }).await;
+    let lost = remote::control_with(&lab.ws, &asked, "resume", &remote::Programs { ssh: &lab.down, windows: None, mux: None, mac: remote::MAC_TOOLS }).await;
     let unsure = lab.ws.store.record_job_pause(id, &running["attempt"], true, &lost).unwrap();
     assert_eq!((unsure["pause"]["state"].as_str(), unsure["pause"]["intent"].as_str()), (Some("unknown"), Some("resume")));
     tick(&lab, &replying(&lab, "ssh-thawed", &status(thawed()))).await;
@@ -2283,7 +2320,7 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     // Named as sent; resolved from the authenticated Agent's own record.
     let sent = input(&lab, "on-agent", "true", json!({"machineId":"agent"}));
     sent.validate().unwrap();
-    let resolved = lab.ws.store.resolve_machine(Some("r"), sent.clone()).unwrap();
+    let resolved = lab.ws.store.resolve_machine(Some("r"), sent.clone(), false).unwrap();
     assert_eq!(resolved.machine_id.as_deref(), Some("m1"));
     resolved.validate().unwrap();
     let job = create_as(&lab, "r", resolved.clone()).unwrap();
@@ -2294,14 +2331,14 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     assert_eq!(lab.ws.store.previous_job(Some("r"), &sent).unwrap().unwrap()["id"], job["id"]);
     assert_eq!(create_as(&lab, "r", resolved).unwrap()["id"], job["id"]);
     // The machine's rules hold for what it resolved to: guardGit reads this host.
-    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "git", "true", json!({"machineId":"agent","guardGit":true}))).unwrap();
+    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "git", "true", json!({"machineId":"agent","guardGit":true})), false).unwrap();
     assert!(checked.validate().unwrap_err().to_string().contains("guardGit"));
     // No calling Agent: nothing is guessed, and nothing runs anywhere.
-    let error = lab.ws.store.resolve_machine(None, input(&lab, "nobody", "true", json!({"machineId":"agent"}))).unwrap_err();
+    let error = lab.ws.store.resolve_machine(None, input(&lab, "nobody", "true", json!({"machineId":"agent"})), false).unwrap_err();
     assert!(error.to_string().contains("this submission has none"), "{error}");
     // An explicit id is left as it was named.
-    let named = lab.ws.store.resolve_machine(Some("r"), input(&lab, "named", "true", json!({}))).unwrap();
-    assert_eq!((named.machine_id.as_deref(), named.requested_machine.as_deref()), (Some("m1"), None));
+    let named = lab.ws.store.resolve_machine(Some("r"), input(&lab, "named", "true", json!({})), false).unwrap();
+    assert_eq!((named.machine_id.as_deref(), named.requested_machine.is_none()), (Some("m1"), true));
     // Its machine removed while it was closed, then reopened: refused, never
     // another machine (Machines refuses removal under an open Agent).
     lab.ws.store.add_machine(&RemoteMachine { id: "m2".into(), name: "spare box".into(), target: "spare-box".into(),
@@ -2310,7 +2347,7 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     lab.ws.store.update("r2", "agent/closed", &json!({}), |d| d.agent.closed_at = Some("now".into())).unwrap();
     lab.ws.store.remove_machine("m2").unwrap();
     lab.ws.store.update("r2", "agent/reopened", &json!({}), |d| d.agent.closed_at = None).unwrap();
-    let error = lab.ws.store.resolve_machine(Some("r2"), input(&lab, "gone", "true", json!({"machineId":"agent"}))).unwrap_err();
+    let error = lab.ws.store.resolve_machine(Some("r2"), input(&lab, "gone", "true", json!({"machineId":"agent"})), false).unwrap_err();
     assert!(error.to_string().contains("spare box, which is no longer registered"), "{error}");
 }
 
