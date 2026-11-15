@@ -36,7 +36,7 @@ async fn a_card_for_an_agent_here_sends_it_a_files_only_request_beside_the_descr
     let sent = lab.receipt("lead", &format!("route-{}", lab.route_id(n, 0))).expect("the files, as a message from Home");
     assert_eq!(sent.files, files);
     assert!(holds(&lab, "lead", &files), "copied to the Agent that answers for the card");
-    assert!(sent.input.text.starts_with("The 1 file the user attached to R-1"), "{}", sent.input.text);
+    assert!(sent.input.text.starts_with("The files the user attached to R-1"), "{}", sent.input.text);
     assert!(sent.input.text.contains(&key), "{}", sent.input.text);
     // Routed again: nothing is sent or copied twice.
     lab.route("desk", n, "设置页", "好。", vec![to_agent("设置页代码", "lead", "开发协调")]).await.unwrap();

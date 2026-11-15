@@ -766,11 +766,10 @@ async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, h
 /// when its words are in the task's description (Dev Lead 2, seq 13386;
 /// files YN-145).
 fn attachments_head(ctx: &Ctx, task: &str) -> String {
-    let (images, files) = (ctx.request.images.len(), ctx.request.files.len());
-    let what = match (images, files) {
-        (0, n) => format!("{n} file{}", if n == 1 { "" } else { "s" }),
-        (n, 0) => format!("{n} image{}", if n == 1 { "" } else { "s" }),
-        (i, f) => format!("{i} image{} and {f} file{}", if i == 1 { "" } else { "s" }, if f == 1 { "" } else { "s" }),
+    let what = match (ctx.request.images.is_empty(), ctx.request.files.is_empty()) {
+        (false, true) => "images",
+        (true, false) => "files",
+        _ => "images and files",
     };
     format!(
         "The {what} the user attached to R-{} of the project {} on Home (Workspace {}, Project {}); the request's words are in \
