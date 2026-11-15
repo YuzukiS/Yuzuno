@@ -784,13 +784,14 @@ async fn adopt_files(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) -> 
     if input.files.is_empty() {
         return Ok(());
     }
-    // A remote Agent's files are not copied here (a later slice carries them
-    // to its machine): refused before copying anything.
+    // A remote Agent's files are copied to its own folder here and carried to
+    // its machine at the send (F4). Only Codex and Claude can be on one: an
+    // OpenCode or dsh reply is refused before copying anything.
     let agent = input.agent_id.clone();
     let found = ws.stored(move |store| store.agent(&agent)).await?;
-    if found.remote.is_some() {
+    if found.remote.is_some() && !matches!(found.harness.as_str(), "codex" | "claude") {
         return Err(not_submitted(format!(
-            "files_unsupported: {} is on another machine, which cannot receive files yet. Nothing was sent, and your reply is kept.",
+            "files_unsupported: {} is on another machine, where only Codex and Claude Agents can receive files. Nothing was sent, and your reply is kept.",
             found.name
         )));
     }

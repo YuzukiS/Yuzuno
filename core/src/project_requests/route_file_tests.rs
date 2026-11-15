@@ -60,13 +60,14 @@ async fn a_route_retried_after_its_files_were_dropped_reuses_its_first_message()
     assert!(lab.ws.store.receipt("lead", client).unwrap().is_some());
 }
 
-/// Files for a remote Agent are refused as files, before anything is copied,
-/// so a route's hand-off can go on without them (review 7e0a59be).
+/// Files for an Agent another machine cannot run are refused as files, before
+/// anything is copied, so a route's hand-off can go on without them.
 #[tokio::test]
-async fn a_remote_agents_files_are_refused_before_copying_so_a_hand_off_goes_on() {
+async fn a_remote_agent_without_files_is_refused_before_copying_so_a_hand_off_goes_on() {
     let lab = lab();
     let files = vec![attached(&lab, 1, "report.pdf")];
     lab.ws.store.update("lead", "test/remote", &json!({}), |d| {
+        d.agent.harness = "opencode".into();
         d.agent.remote = Some(serde_json::from_value(json!({"machine": {
             "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/tmp"}})).unwrap());
     }).unwrap();
@@ -74,6 +75,21 @@ async fn a_remote_agents_files_are_refused_before_copying_so_a_hand_off_goes_on(
     let why = crate::project_requests::files_refused(&error).expect("a files refusal, not a plain one");
     assert!(why.contains("another machine"), "{why}");
     assert!(!ws_files(&lab, "lead").exists(), "nothing was copied");
+}
+
+/// Files for a remote Codex Agent are copied to its own folder here (F4);
+/// the send carries them to its machine.
+#[tokio::test]
+async fn a_remote_codex_agents_files_are_copied_to_its_folder_before_the_send() {
+    let lab = lab();
+    let files = vec![attached(&lab, 1, "report.pdf")];
+    lab.ws.store.update("lead", "test/remote", &json!({}), |d| {
+        d.agent.remote = Some(serde_json::from_value(json!({"machine": {
+            "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/tmp"}})).unwrap());
+    }).unwrap();
+    crate::project_requests::adopt_files(&lab.ws, &lab.project, "lead", &files).await.unwrap();
+    assert!(holds(&lab, "lead", &files), "copied to the Agent's own folder");
+    assert!(lab.ws.store.receipt("lead", "route-none").unwrap().is_none(), "nothing sent");
 }
 
 fn ws_files(lab: &Lab, agent: &str) -> std::path::PathBuf {
