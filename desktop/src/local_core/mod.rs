@@ -287,6 +287,14 @@ async fn running_names() -> Option<Vec<String>> {
     }
 }
 
+/// `names` limited to the distributions `--list --verbose` knows. WSL may
+/// print a "no running distributions" line instead of nothing; that is not a
+/// distribution name, and treating it as one would invent a witness.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn running_among(names: Vec<String>, known: &[String]) -> Vec<String> {
+    names.into_iter().filter(|name| known.iter().any(|known| known == name)).collect()
+}
+
 #[cfg(target_os = "macos")]
 async fn platform_targets() -> Targets {
     Targets { platform: Some("macos"), available: false, reason: Some("comingSoon"), message: None, targets: Vec::new() }
@@ -320,6 +328,11 @@ fn wsl_targets(success: bool, stdout: &[u8], stderr: &[u8], running: Option<&[St
     if distros.is_empty() {
         return wsl_error("WSL listed no distributions.".into());
     }
+    // WSL may print a "no running distributions" message instead of nothing;
+    // only names the verbose list knows are distributions.
+    let known: Vec<String> = distros.iter().map(|distro| distro.name.clone()).collect();
+    let running: Option<Vec<String>> = running.map(|names| running_among(names.to_vec(), &known));
+    let running = running.as_deref();
     let default = distros.iter().find(|distro| distro.is_default).map(|distro| distro.name.clone());
     let targets = distros
         .into_iter()
@@ -381,6 +394,8 @@ fn failure_text(failure: wsl::Failure) -> String {
 #[cfg(windows)]
 struct Situation {
     default: Option<String>,
+    /// Every distribution `--list --verbose` listed.
+    known: Vec<String>,
     /// None when `--list --running --quiet` could not be read; then a
     /// stopped distribution that is not the default is treated as risky.
     running: Option<Vec<String>>,
@@ -399,11 +414,11 @@ impl Situation {
                 .unwrap_or_else(|| "WSL could not list its distributions.".into());
             return Err(Error::new("checkFailed", said));
         }
-        let default = wsl_list::parse(&wsl_list::decode(&output.stdout))
-            .iter()
-            .find(|distro| distro.is_default)
-            .map(|distro| distro.name.clone());
-        Ok(Self { default, running: running_names().await })
+        let distros = wsl_list::parse(&wsl_list::decode(&output.stdout));
+        let known: Vec<String> = distros.iter().map(|distro| distro.name.clone()).collect();
+        let default = distros.iter().find(|distro| distro.is_default).map(|distro| distro.name.clone());
+        let running = running_names().await.map(|names| running_among(names, &known));
+        Ok(Self { default, known, running })
     }
 
     fn is_running(&self, distro: &str) -> bool {
@@ -463,6 +478,7 @@ fn not_started(distro: &str, peers: Option<&[String]>, default: Option<&str>) ->
 #[cfg(windows)]
 struct Guard {
     target: String,
+    known: Vec<String>,
     witness: Option<String>,
     baseline: Option<guard_rules::Snapshot>,
 }
@@ -475,11 +491,11 @@ impl Guard {
             Some(witness) => Some(snapshot(witness).await?),
             None => None,
         };
-        Ok(Self { target: target.to_owned(), witness, baseline })
+        Ok(Self { target: target.to_owned(), known: situation.known.clone(), witness, baseline })
     }
 
     async fn after(&mut self) -> Result<(), Error> {
-        let running = running_names().await;
+        let running = running_names().await.map(|names| running_among(names, &self.known));
         let Some(running) = running else {
             return Err(Error::new(
                 "peerChanged",
@@ -1252,7 +1268,17 @@ async fn install(
 
     // Into the distribution: only these verified bytes, on tar's stdin.
     send(Progress::bytes("copy", 0, total));
-    let stage = guarded(&mut guard, prepare(&steps, &place.install_dir)).await?;
+    // Looking before `prepare` creates nothing yet; if the look after it
+    // fails, the folder it made is removed like any other failed step.
+    guard.after().await?;
+    let prepared = prepare(&steps, &place.install_dir).await;
+    if let Err(error) = guard.after().await {
+        return match prepared {
+            Ok(stage) => Err(cleaned_up(error, clean(&steps, &stage).await)),
+            Err(_) => Err(error),
+        };
+    }
+    let stage = prepared?;
     let unpacked = guarded(&mut guard, unpack(&steps, &stage, archive, &cancel, progress.clone(), total)).await;
     cancel.end();
     if let Err(error) = unpacked {
@@ -1484,6 +1510,27 @@ mod tests {
         assert_eq!(boot(Some(&main)), ("running".into(), "risky".into()));
         // Unreadable running names: only the default may start.
         assert_eq!(boot(None), ("own".into(), "risky".into()));
+    }
+
+    #[test]
+    fn a_no_running_message_is_not_a_distribution_or_a_peer() {
+        let known = vec!["main".to_string(), "other".to_string()];
+        assert_eq!(
+            running_among(vec!["There are no running distributions.".into()], &known),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            running_among(vec!["main".into(), "noise line".into()], &known),
+            ["main".to_string()]
+        );
+        let list = "  NAME       STATE     VERSION\r\n* main     Stopped   2\r\n  other    Stopped   2\r\n";
+        let message = vec!["There are no running distributions.".to_string()];
+        let targets = wsl_targets(true, list.as_bytes(), b"", Some(&message));
+        let value = serde_json::to_value(&targets).unwrap();
+        let targets = value["targets"].as_array().unwrap();
+        assert_eq!(targets[0]["boot"], "own");
+        assert_eq!(targets[1]["boot"], "alone");
+        assert_eq!(targets[1]["bootDetail"], Value::Null);
     }
 
     #[test]
