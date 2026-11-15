@@ -9,6 +9,10 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/dsh_acp.py");
 const KEY: &str = "sk-yuzuno-test-placeholder-yn158";
+/// How long a wait here may go: a bound on the condition, not on a count of
+/// 20 ms slices, so a loaded machine cannot expire it early. One that never
+/// comes still fails the test.
+const WAIT: Duration = Duration::from_secs(120);
 
 struct Lab {
     _dir: tempfile::TempDir,
@@ -54,16 +58,39 @@ impl Lab {
         text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
 
-    /// Executor `id`'s record once `check` holds, within 30 s.
+    /// Executor `id`'s record once `check` holds, within `WAIT`.
     async fn until(&self, id: &str, what: &str, check: impl Fn(&AgentDetail) -> bool) -> AgentDetail {
-        for _ in 0..1500 {
-            let d = self.ws.store.detail(id).unwrap();
-            if check(&d) {
-                return d;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let d = self.ws.store.detail(id).unwrap();
+                if check(&d) {
+                    return d;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("{what} within 30 s: {:#}", serde_json::to_value(self.ws.store.detail(id).unwrap()).unwrap());
+        }).await.unwrap_or_else(|_| {
+            panic!("timed out waiting for {what}: {:#}", serde_json::to_value(self.ws.store.detail(id).unwrap()).unwrap())
+        })
+    }
+
+    /// Executor `id`'s record once `check` holds, delivering `mail` on each
+    /// pass until it is in. Core's mail loop offers a batch again on its next
+    /// pass; an Agent's start records connected and idle before it lets go of
+    /// its gate, so a delivery at that moment finds the gate busy and is left
+    /// for the next pass (`deliver_peer_batch`).
+    async fn until_delivered(&self, id: &str, mail: &Value, what: &str, check: impl Fn(&AgentDetail) -> bool) -> AgentDetail {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let d = self.ws.store.detail(id).unwrap();
+                if check(&d) {
+                    return d;
+                }
+                self.ws.deliver_peer_batch(mail).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }).await.unwrap_or_else(|_| {
+            panic!("timed out waiting for {what}: {:#}", serde_json::to_value(self.ws.store.detail(id).unwrap()).unwrap())
+        })
     }
 }
 
@@ -92,8 +119,7 @@ async fn a_routed_dsh_executor_starts_from_the_queue_on_its_key_and_level_and_ru
     lab.until(&id, "its slot starts it", |d| d.agent.connection_state == "connected" && d.agent.status == "idle").await;
     let batch = lab.ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["agentId"] == id.as_str())
         .unwrap_or_else(|| panic!("the task's mail waits for it: {:#?}", lab.ws.store.pending_peer_deliveries().unwrap()));
-    lab.ws.deliver_peer_batch(&batch).await.unwrap();
-    let started = lab.until(&id, "its first Turn ends", |d| d.turns.iter().any(|t| t["status"] == "completed")).await;
+    let started = lab.until_delivered(&id, &batch, "its first Turn ends", |d| d.turns.iter().any(|t| t["status"] == "completed")).await;
     assert_eq!((started.agent.harness.as_str(), started.agent.model.as_str()), ("dsh", "deepseek-v4-pro"));
     assert_eq!((started.agent.settings.permission_level.as_deref(), started.agent.settings.reasoning_effort.as_deref()), (Some("auto"), Some("high")));
     assert!(started.agent.remote.is_none(), "on this Core host");
