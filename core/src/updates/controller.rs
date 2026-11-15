@@ -60,6 +60,9 @@ pub struct Controller {
     pub transition: Mutex<()>,
     candidates: Mutex<Vec<(CatalogEntry, Bundle)>>,
     storage_cache: Mutex<Option<(std::time::Instant, Value)>>,
+    /// How often this update's seal went back to Waiting (YN-169), with its
+    /// operation. In memory only: a restarted Core fails the update anyway.
+    seal_retries: std::sync::Mutex<(String, usize)>,
 }
 
 impl Controller {
@@ -82,6 +85,7 @@ impl Controller {
             transition: Mutex::new(()),
             candidates: Mutex::new(vec![]),
             storage_cache: Mutex::new(None),
+            seal_retries: Default::default(),
         });
         if let Some(layout) = &controller.layout {
             controller.runtime.configure_update_notices(layout);
@@ -116,6 +120,16 @@ impl Controller {
     ) -> Result<T> {
         let runtime = self.runtime.clone();
         crate::db::blocking(move || read(runtime.as_ref())).await
+    }
+
+    /// Counts one more return to Waiting for `operation` and gives the count.
+    pub(super) fn seal_retry(&self, operation: &str) -> usize {
+        let mut retries = self.seal_retries.lock().unwrap();
+        if retries.0 != operation {
+            *retries = (operation.to_owned(), 0);
+        }
+        retries.1 += 1;
+        retries.1
     }
 
     pub async fn blockers(&self) -> Result<Vec<Blocker>> {

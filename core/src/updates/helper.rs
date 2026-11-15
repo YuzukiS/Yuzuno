@@ -216,7 +216,9 @@ fn perform(layout: &Layout, id: &str) -> Result<()> {
             .as_array()
             .is_some_and(|items| items.is_empty())
         {
-            let sealed = call(layout, &op, Control::Seal, Duration::from_secs(90))?;
+            // Core's 60 s seal, then up to 90 s to reattach when it met new
+            // work (control.rs, YN-169), and the 30 s margin this call had.
+            let sealed = call(layout, &op, Control::Seal, Duration::from_secs(180))?;
             if sealed["sealed"] == true {
                 break;
             }
