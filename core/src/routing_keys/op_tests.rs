@@ -44,6 +44,23 @@ fn mode(dir: &Path, mode: &str) {
     fs::write(dir.join("mode"), mode).unwrap();
 }
 
+/// One op run's limit for as long as this is held; the production one is put
+/// back when it is dropped, a failed test included.
+struct Limit;
+
+impl Limit {
+    fn set(millis: u64) -> Self {
+        TEST_TIMEOUT_MS.store(millis, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for Limit {
+    fn drop(&mut self) {
+        TEST_TIMEOUT_MS.store(TIMEOUT.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// A Workspace folder in `dir` whose key file has the token.
 fn store_with_token(dir: &Path) -> Store {
     fs::create_dir_all(dir.join("data")).unwrap();
@@ -100,7 +117,6 @@ async fn each_way_a_key_cannot_be_had_says_why_in_both_languages() {
     for (stub_mode, code, zh) in [
         ("missing", "referenceNotFound", format!("1Password 里找不到 {REFERENCE}")),
         ("down", "unreachable", "1Password 连不上，取不到 key".to_string()),
-        ("slow", "unreachable", "1Password 连不上，取不到 key".to_string()),
         ("rejected", "tokenRejected", "1Password 不接受服务账号的令牌".to_string()),
         ("limited", "rateLimited", "服务账号的 1Password 请求次数到上限了，稍后再试".to_string()),
     ] {
@@ -109,6 +125,16 @@ async fn each_way_a_key_cannot_be_had_says_why_in_both_languages() {
             let why = answer.unwrap_err();
             assert_eq!((why.code, &why.message_zh), (code, &zh), "{stub_mode}");
         }
+    }
+    // A run past the limit is 1Password unreachable. The limit is 2 s here
+    // rather than the production 30 s, so this waits 2 s and not 30; whether
+    // the stand-in's start or its read runs past it, the answer is the same.
+    let _short = Limit::set(2_000);
+    mode(tmp.path(), "slow");
+    let zh = "1Password 连不上，取不到 key".to_string();
+    for answer in [read(&store, REFERENCE).await.map(|_| ()), check(&store, REFERENCE).await] {
+        let why = answer.unwrap_err();
+        assert_eq!((why.code, &why.message_zh), ("unreachable", &zh), "slow");
     }
 }
 
