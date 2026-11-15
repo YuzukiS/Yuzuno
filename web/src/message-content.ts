@@ -137,5 +137,6 @@ export function userRequestText(item: NativeItem) {
     ...(item.content || [])
       .filter((part) => part.type === "image" || part.type === "localImage")
       .map(() => "[Image]"),
+    ...(item._yuzunoFiles || []).map((file) => `[File: ${file.name}]`),
   ].filter(Boolean).join("\n");
 }

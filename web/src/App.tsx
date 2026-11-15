@@ -1,11 +1,14 @@
 import { flushSync } from "react-dom";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { FileAttachments } from "./FileAttachments";
 import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
+import { useFileUploads } from "./useFileUploads";
+import { splitDropped } from "./file-input";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
-import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import { copyText } from "./clipboard";
 import { desktopBadge } from "./desktop-badge";
 import {
@@ -50,6 +53,7 @@ import {
   MessageSquare,
   Minimize2,
   Monitor,
+  Paperclip,
   PanelLeft,
   PanelRight,
   Plus,
@@ -1580,11 +1584,17 @@ export function App() {
   ), [currentDetail?.pending]);
   const hasDraft = hasDraftContent(draft);
   const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode" || agent?.harness === "dsh");
+  // Files go to the harnesses whose own slice reads them (core/src/input_files.rs,
+  // takes_files); dsh and remote Agents cannot until theirs (YN-145 §2.5, F4).
+  const fileSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode") && !agent?.remote;
   // What happens to an image on its way to this Agent, said beside the image button.
   const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages
     : agent?.harness === "dsh" ? shell.dshImages : null;
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
+  const fileUploads = useFileUploads(selected, fileSupported && !previewMode && !draftBlocked,
+    agent?.remote ? shell.filesNotRemote : shell.filesOnly, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
   const closed = !!agent?.closedAt;
   const busy =
@@ -1749,7 +1759,7 @@ export function App() {
   const { shape: composerShape, short: placeholderShort, tall: composerTall } = useComposerShape(
     composerBox,
     () => composer.current?.lineExtent() ?? null,
-    expanded || !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    expanded || !!draft.images?.length || !!draft.files?.length || !!draft.skills?.length || !!imageUploads.error || !!fileUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
     [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
     composerPlaceholder,
     () => composer.current?.rows() ?? 0,
@@ -3192,6 +3202,7 @@ export function App() {
     if (
       !hasDraft ||
       imageUploads.busy ||
+      fileUploads.busy ||
       draftBlocked ||
       !agent ||
       !currentDetail ||
@@ -3217,7 +3228,7 @@ export function App() {
     try {
       // `/model` and a Codex `/compact` are Yuzuno controls: run here, never
       // sent to the model as a prompt. Anything else is a message as before.
-      const control = sentDraft.images?.length || sentDraft.skills?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
+      const control = sentDraft.images?.length || sentDraft.files?.length || sentDraft.skills?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
       if (control?.command === "model") {
         if (/\s/.test(control.args)) throw new Error("Give one model name, for example /model followed by a name from this Agent's settings. Your draft is kept.");
         // The notice comes once the settings have opened for it.
@@ -3310,9 +3321,11 @@ export function App() {
         return;
       }
       if (sentDraft.images?.some(image => image.agentId !== target)) throw new Error("These images belong to the original Agent. Attach them again in this Agent; your draft is kept.");
+      if (sentDraft.files?.some(file => file.agentId !== target)) throw new Error("These files belong to the original Agent. Attach them again in this Agent; your draft is kept.");
       if (sentDraft.skills?.some(skill => skill.agentId !== target)) throw new Error("Some skills here were listed for another Agent. Remove them and choose this Agent's own; your draft is kept.");
       await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft),
-        sentDraft.skills?.map(({ name, path }) => ({ name, path })));
+        sentDraft.skills?.map(({ name, path }) => ({ name, path })),
+        sentDraft.files?.map(({ id, name, bytes }) => ({ id, name, bytes })));
       clearIfUnchanged(target, sentDraft);
       refresh();
       if (here()) composer.current?.focus();
@@ -4752,11 +4765,15 @@ export function App() {
                     if (e.dataTransfer.types.includes("Files")) e.preventDefault();
                   }}
                   onDrop={(e) => {
-                    // Images dropped on the box go with the draft, as pasted
-                    // ones do; the editor takes those dropped on its text.
+                    // Images and files dropped on the box go with the draft,
+                    // as pasted ones do; the editor takes those dropped on
+                    // its text.
                     if (e.defaultPrevented || !e.dataTransfer.types.includes("Files")) return;
                     e.preventDefault();
-                    if (!previewMode && !draftBlocked) void imageUploads.add(clipboardImages(e.dataTransfer));
+                    if (previewMode || draftBlocked) return;
+                    const dropped = splitDropped(e.dataTransfer);
+                    if (dropped.images.length) void imageUploads.add(dropped.images);
+                    if (dropped.files.length) void fileUploads.add(dropped.files);
                   }}
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -4795,6 +4812,7 @@ export function App() {
                       return { ...current, skills: [...others, { agentId: selected, name: skill.name, path: skill.path!, scope: skill.scope || "" }].slice(-MAX_DRAFT_SKILLS) };
                     })}
                     onImages={files => void imageUploads.add(files)}
+                    onFiles={files => void fileUploads.add(files)}
                     onSubmit={() => void send()}
                   />
                   {offerExpand && (
@@ -4813,16 +4831,21 @@ export function App() {
                   )}
                   <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
+                  <FileAttachments files={draft.files || []}
+                    onRemove={previewMode || draftBlocked ? undefined : file => setDraft(selected, current => ({ ...current,
+                      files: current.files?.filter(saved => !(saved.id === file.id && saved.agentId === file.agentId && saved.name === file.name)) }))} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
                   <SkillChips skills={draft.skills || []}
                     onRemove={previewMode || draftBlocked ? undefined : skill => setDraft(selected, current => ({ ...current,
                       skills: current.skills?.filter(s => !(s.name === skill.name && s.path === skill.path)) }))} />
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}
+                  {fileUploads.error && <p className="inline-error" role="alert">{fileUploads.error}</p>}
                   {draftError && <p className="inline-error" role="alert">{draftError}</p>}
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
                   <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
+                      <input ref={filePicker} type="file" multiple hidden aria-label={shell.chooseFiles} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void fileUploads.add(files); }} />
                       <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
@@ -4832,10 +4855,10 @@ export function App() {
                           so it can say why. */}
                       <ComposerAddMenu
                         label={shell.addMenu}
-                        tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, shell.askResult]} />}
+                        tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, shell.addFiles, shell.askResult]} />}
                         menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
-                        busy={imageUploads.busy}
+                        busy={imageUploads.busy || fileUploads.busy}
                         items={[
                           {
                             key: "images",
@@ -4854,6 +4877,16 @@ export function App() {
                             icon: <SquareDashedMousePointer size={16} />,
                             tip: <TipText title="Point & Fix" body={shell.markUpBody} />,
                             onSelect: () => pointFixPicker.current?.click(),
+                          },
+                          {
+                            key: "files",
+                            label: fileUploads.busy ? shell.savingFiles : shell.addFiles,
+                            icon: <Paperclip size={16} />,
+                            tip: fileSupported ? <TipText body={shell.fileRules} /> : undefined,
+                            note: fileSupported ? undefined : agent?.remote ? shell.filesNotRemote : shell.filesOnly,
+                            unavailable: !fileSupported,
+                            disabled: draftBlocked || fileUploads.busy,
+                            onSelect: () => filePicker.current?.click(),
                           },
                           {
                             key: "result",
@@ -4938,6 +4971,7 @@ export function App() {
                           disabled={
                             !hasDraft ||
                             imageUploads.busy ||
+                            fileUploads.busy ||
                             draftBlocked ||
                             !currentDetail ||
                             sending ||
@@ -5206,7 +5240,7 @@ export function App() {
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         workspaceId={previewMode ? "" : workspaceId}
         onOpenCard={(projectId, key) => { setUpdatesOpen(false); openProject(projectId, key); }}
-        preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
+        preserveDrafts={() => { if (imageUploads.hasPending() || fileUploads.hasPending()) throw new Error("Wait for images and files to finish saving before updating."); preserveDrafts(); }}
         pages={{
           // Settings › Projects and › Machines (YN-8). Each request (the rail,
           // a search result) opens the projects page anew, at what it names.

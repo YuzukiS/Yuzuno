@@ -29,6 +29,17 @@ test("native text variants and exact source overrides keep image captions outsid
   }
 });
 
+test("a request with only files reads as its files after any images (YN-145)", () => {
+  const files = [
+    { id: "a".repeat(64), name: "q3 report.pdf", bytes: 2400000, path: "/d/input-files/a/x/q3 report.pdf" },
+    { id: "b".repeat(64), name: "sensor-log.csv", bytes: 860000, path: "/d/input-files/a/y/sensor-log.csv" },
+  ];
+  assert.equal(userRequestText({ _yuzunoInputText: "", content: [], _yuzunoFiles: files }),
+    "[File: q3 report.pdf]\n[File: sensor-log.csv]");
+  assert.equal(userRequestText({ _yuzunoInputText: "look", content: [], _yuzunoFiles: files }),
+    "look\n[File: q3 report.pdf]\n[File: sensor-log.csv]");
+});
+
 test("identical paste bodies have independent identity and exact ordered UTF-16 ranges", () => {
   const body = "👩‍💻e\u0301中文\r\n".repeat(12);
   const draft = {

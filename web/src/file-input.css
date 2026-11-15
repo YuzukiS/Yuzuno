@@ -1,0 +1,97 @@
+/* The files of a draft or a message (FileAttachments.tsx, YN-145): each one
+   line, wrapping rather than widening the page. */
+.input-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 2px 0;
+  min-width: 0;
+  max-width: 100%;
+}
+.input-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.input-file-body {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 340px;
+  padding: 5px 9px 5px 6px;
+  color: var(--ink);
+  text-decoration: none;
+}
+a.input-file-body:hover,
+a.input-file-body:focus-visible {
+  background: var(--surface-hover);
+}
+.input-file-kind {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.input-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.input-file-size {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.input-file-download {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+.input-file-remove {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.input-file-remove:hover {
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+/* A phone keeps each one a comfortable touch target (YN-145 §2.6). */
+@media (max-width: 720px), (pointer: coarse) {
+  .input-file {
+    min-height: 44px;
+  }
+  .input-file-body {
+    min-height: 44px;
+  }
+  .input-file-remove {
+    width: 44px;
+    height: 44px;
+  }
+}

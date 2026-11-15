@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
+import { FileAttachments } from "./FileAttachments";
 import { agentHarnessName } from "./machine-checks";
 import { compacting, deliveryNote, sendingInTurn, steered } from "./delivery-note";
 import { memo } from "react";
@@ -153,6 +154,7 @@ export const OutgoingMessages = memo(function OutgoingMessages({
             <div className="user-text"><MessageContent text={receipt.input.text} blocks={receipt.input.textBlocks} /></div>
           )}
           <ImageAttachments images={(receipt.input.images || []).map(id => ({ id, agentId }))} />
+          <FileAttachments files={(receipt.input.files || []).map(file => ({ ...file, agentId }))} agentId={agentId} />
         </div>
       );
     });
