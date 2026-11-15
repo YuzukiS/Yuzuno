@@ -58,7 +58,7 @@ objc2-user-notifications = { version = "0.3.2", default-features = false, featur
 # uses, at its versions, with only the classes read there (and NSError,
 # which macOS's answer to notify.rs's request carries).
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSString", "NSUserDefaults"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSString", "NSUserDefaults", "NSProcessInfo", "NSPathUtilities"] }
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.

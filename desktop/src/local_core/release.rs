@@ -367,7 +367,102 @@ impl Client {
         }
         Ok(body)
     }
+    /// Downloads `asset` to `path`, which must not exist yet, as this user only,
+    /// and checks it against the signed descriptor while it arrives: exactly
+    /// [`Verified::archive_bytes`] and its SHA-256. A file that does not match,
+    /// and a download that breaks off, are removed; nothing else is written.
+    /// The Mac app unpacks from this file with `/usr/bin/tar` (YN-108 design
+    /// 4.2); the WSL app keeps the archive in memory (`download`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub async fn download_archive(
+        &self,
+        asset: &Asset,
+        verified: &Verified,
+        path: &std::path::Path,
+        wait: Duration,
+        cancel: &mut watch::Receiver<bool>,
+        progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<(), Error> {
+        use std::io::Write;
+        let failed = |what: String| Error::new("network", what);
+        let remove = || {
+            let _ = std::fs::remove_file(path);
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(path)
+            .map_err(|error| failed(format!("Cannot write the download to {}: {error}. Nothing was installed.", path.display())))?;
+        let response = match self.get(&asset.url, "application/octet-stream", wait).await {
+            Ok(response) => response,
+            Err(error) => {
+                remove();
+                return Err(error);
+            }
+        };
+        if response.content_length().is_some_and(|length| length > asset.size) {
+            remove();
+            return Err(Error::new("releaseInvalid", "GitHub sent more than this app downloads."));
+        }
+        let mut response = response;
+        let mut hasher = Sha256::new();
+        let mut done = 0u64;
+        loop {
+            if *cancel.borrow() {
+                remove();
+                return Err(cancelled());
+            }
+            let chunk = tokio::select! {
+                chunk = response.chunk() => chunk,
+                () = asked_to_stop(cancel) => {
+                    remove();
+                    return Err(cancelled());
+                }
+            };
+            match chunk {
+                Ok(Some(chunk)) if done + chunk.len() as u64 <= asset.size => {
+                    if let Err(error) = file.write_all(&chunk) {
+                        remove();
+                        return Err(failed(format!("Cannot write the download to {}: {error}. Nothing was installed.", path.display())));
+                    }
+                    hasher.update(&chunk);
+                    done += chunk.len() as u64;
+                    progress(done);
+                }
+                Ok(Some(_)) => {
+                    remove();
+                    return Err(Error::new("releaseInvalid", "GitHub sent more than this app downloads."));
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    remove();
+                    return Err(failed(format!("The download from GitHub broke off: {}.", chain(&error))));
+                }
+            }
+        }
+        if let Err(error) = file.sync_all() {
+            remove();
+            return Err(failed(format!("Cannot write the download to {}: {error}. Nothing was installed.", path.display())));
+        }
+        drop(file);
+        let digest: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+        if done != verified.archive_bytes || done != asset.size || !digest.eq_ignore_ascii_case(&verified.archive_sha256) {
+            remove();
+            return Err(Error::new(
+                "releaseInvalid",
+                "The downloaded archive does not match its signed checksum. Nothing was installed.",
+            ));
+        }
+        Ok(())
+    }
+
 }
+
 
 /// Ends when `cancel` turns true; never, once nothing can turn it so.
 async fn asked_to_stop(cancel: &mut watch::Receiver<bool>) {

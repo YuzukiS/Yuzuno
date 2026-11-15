@@ -63,10 +63,28 @@ function t(key, values = {}) {
   return text.replace(/\{(\w+)\}/g, (whole, name) => (name in values ? String(values[name]) : whole));
 }
 
+function known(key) {
+  return WORDS[lang]?.[key] !== undefined || WORDS.en?.[key] !== undefined;
+}
+
 // The platform's own wording first (`check.arch.wsl`), then the shared one.
 function platformText(key, platform) {
   const own = `${key}.${platform}`;
-  return WORDS[lang]?.[own] !== undefined || WORDS.en?.[own] !== undefined ? t(own) : WORDS.en?.[key] !== undefined ? t(key) : null;
+  return known(own) ? t(own) : WORDS.en?.[key] !== undefined ? t(key) : null;
+}
+
+// A page sentence with the Mac's own words where it has them
+// (`introLocal.macos`), else the shared one (YN-108).
+function platformWord(key, platform = page.targets?.platform) {
+  const own = `${key}.${platform}`;
+  return platform && known(own) ? own : key;
+}
+
+// The sentences that differ by platform, wherever they sit in the page.
+function applyPlatformText() {
+  for (const element of document.querySelectorAll('[data-t-platform]')) {
+    element.textContent = t(platformWord(element.dataset.tPlatform));
+  }
 }
 
 function applyStatic() {
@@ -81,6 +99,7 @@ function applyStatic() {
     if (element.hasAttribute('title')) element.title = t(element.dataset.tLabel);
   }
   for (const choice of document.querySelectorAll('[data-lang]')) choice.setAttribute('aria-pressed', String(choice.dataset.lang === lang));
+  applyPlatformText();
 }
 
 // A message is kept as what it says, so a change of language redraws it.
@@ -203,7 +222,7 @@ function drawIntro() {
   // "Start it" only where there is a start to offer.
   if (page.unreachable && (page.info?.saved ?? []).length)
     intro.textContent = t(page.startable && localOffered() ? 'introSaved' : 'introSavedOther');
-  else if (localOffered() && page.targets?.platform === 'wsl') intro.textContent = t('introLocal');
+  else if (localOffered() && page.targets?.platform) intro.textContent = t(platformWord('introLocal'));
   else intro.innerHTML = t('intro');
 }
 
@@ -218,9 +237,9 @@ function drawStart() {
   const start = page.startable;
   $('#start-badge').hidden = !start?.confirmed;
   const desc = $('#start-desc');
-  if (!start) desc.textContent = t('startDescNone');
+  if (!start) desc.textContent = t(platformWord('startDescNone'));
   else if (start.confirmed) desc.textContent = t('startDescSaved', { where: startWhere(start), port: portOf(start.coreUrl) });
-  else desc.textContent = t('startUnconfirmed', { where: startWhere(start) });
+  else desc.textContent = t(platformWord('startUnconfirmed'), { where: startWhere(start) });
   startButton.textContent = start ? t('startGo') : t('startFind');
   startButton.className = start?.confirmed ? '' : 'secondary';
   // The switch is shown only where it can act: a confirmed start.
@@ -323,16 +342,16 @@ function drawCheckPane() {
   const check = local.check;
   const installing = local.mode === 'install';
   const risky = targetBoot(local.target) === 'risky';
-  $('#distro-label').textContent = t(installing ? 'distroLabel' : 'distroLabelFind');
+  $('#distro-label').textContent = t(platformWord(installing ? 'distroLabel' : 'distroLabelFind', check?.platform));
   const notFound = $('#not-found');
   notFound.hidden = risky || !(installing && local.notFound && check && !check.installation);
-  notFound.textContent = t('notFound', { distro: targetLabel(local.target) });
+  notFound.textContent = t(platformWord('notFound', check?.platform), { distro: targetLabel(local.target) });
   $('#checks').hidden = risky || !(installing && check);
   if (check && !risky) drawChecks(check);
   const installation = risky ? null : check?.installation;
   $('#found').hidden = !installation;
   if (installation) {
-    $('#found-title').textContent = t('foundTitle', { distro: targetLabel(check.target) });
+    $('#found-title').textContent = t(platformWord('foundTitle', check.platform), { distro: targetLabel(check.target) });
     $('#found-body').textContent = installation.recorded
       ? t('foundRecorded', { release: installation.releaseId, port: installation.port, workspace: installation.workspaceId })
       : t('foundUnrecorded', { release: installation.releaseId });
@@ -364,7 +383,7 @@ function drawCheckPane() {
     const where = placement();
     const error = $('#where-error');
     error.hidden = !local.editing || where.valid;
-    error.textContent = where.valid ? '' : t(where.why);
+    error.textContent = where.valid ? '' : t(platformWord(where.why, check?.platform));
     ready = check.installable && where.valid && localInstallable();
   } else {
     go.hidden = true;
@@ -379,7 +398,7 @@ function localInstallable() {
 }
 
 function stepLabel(phase) {
-  return t(`phase.${phase}`, { distro: targetLabel(local.target) });
+  return t(platformWord(`phase.${phase}`, local.check?.platform), { distro: targetLabel(local.target) });
 }
 
 function megabytes(bytes) {
@@ -431,7 +450,16 @@ function drawProgressPane() {
     // The step it stopped at says what happened and what was cleaned up,
     // unless the app named a case of its own (local_core/mod.rs lists them).
     const phase = problem.phase ?? 'none';
-    const own = (kind) => (problem.code && WORDS.en?.[`${kind}.${problem.code}`] !== undefined ? `${kind}.${problem.code}` : `${kind}.${phase}`);
+    const own = (kind) => {
+      const candidates = [];
+      if (problem.code) candidates.push(`${kind}.${problem.code}`);
+      candidates.push(`${kind}.${phase}`);
+      for (const key of candidates) {
+        const key2 = platformWord(key, local.check?.platform);
+        if (known(key2)) return key2;
+      }
+      return `${kind}.none`;
+    };
     $('#problem-title').textContent = t(problem.cancelled ? 'cancelledTitle' : 'failTitle');
     $('#problem-body').textContent = t(own('fail'), { distro: targetLabel(local.target) });
     $('#problem-cleaned').textContent = t(own('cleaned'));
@@ -802,7 +830,7 @@ async function openPanel(mode) {
   drawStart();
   drawPanel();
   setBusy('list');
-  say(checkMessage, { key: 'listing' });
+  say(checkMessage, { key: platformWord('listing') });
   let targets;
   try {
     targets = await invoke('local_core_targets');
@@ -824,6 +852,7 @@ async function openPanel(mode) {
     return;
   }
   drawIntro();
+  applyPlatformText();
   if (!targets.available) {
     if (targets.reason === 'noWsl') say(checkMessage, { key: 'noWsl', error: true });
     else say(checkMessage, { key: 'wslError', original: targets.message ?? targets.reason ?? '', error: true });
@@ -834,7 +863,7 @@ async function openPanel(mode) {
   const chosen = local.targets.find((target) => target.selectable && target.isDefault) ?? local.targets.find((target) => target.selectable);
   if (!chosen) {
     distro.value = '';
-    say(checkMessage, { key: 'noneSelectable', error: true });
+    say(checkMessage, { key: platformWord('noneSelectable'), error: true });
     drawPanel();
     return;
   }
@@ -850,7 +879,7 @@ async function runCheck(refresh = false) {
     // Checking again after stopping another distribution: read the list and
     // its running names again. This starts nothing.
     setBusy('list');
-    say(checkMessage, { key: 'listing' });
+    say(checkMessage, { key: platformWord('listing') });
     try {
       const targets = await invoke('local_core_targets');
       if (!targets || typeof targets !== 'object') throw new Error(String(targets));
@@ -878,7 +907,7 @@ async function runCheck(refresh = false) {
     return;
   }
   setBusy('check');
-  say(checkMessage, { key: 'checking', values: { distro: targetLabel(target) } });
+  say(checkMessage, { key: platformWord('checking'), values: { distro: targetLabel(target) } });
   try {
     const check = await invoke('local_core_check', { target });
     local.check = check;
@@ -920,7 +949,7 @@ async function startFound() {
   const check = local.check;
   if (page.busy || !check?.installation) return;
   setBusy('start');
-  say(checkMessage, { key: 'startingIn', values: { distro: targetLabel(check.target) } });
+  say(checkMessage, { key: platformWord('startingIn', check.platform), values: { distro: targetLabel(check.target) } });
   try {
     const target = await invoke('local_core_start', { target: check.target });
     say(checkMessage, { key: 'started' });
@@ -1070,6 +1099,7 @@ async function loadTargets() {
   if (!targets || typeof targets !== 'object') return;
   page.targets = targets;
   if (!local.mode) local.targets = page.targets.targets ?? [];
+  applyPlatformText();
   drawIntro();
   drawGuide();
   drawStart();

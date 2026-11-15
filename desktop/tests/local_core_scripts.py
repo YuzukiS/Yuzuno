@@ -40,6 +40,9 @@ with open(STAGE, "rb") as _script:
 GUARD = os.path.join(DESKTOP, "src", "local_core", "guard.sh")
 with open(GUARD, "rb") as _script:
     GUARD_BYTES = _script.read()
+MAC_CHECK = os.path.join(DESKTOP, "src", "local_core", "mac_check.sh")
+with open(MAC_CHECK, "rb") as _script:
+    MAC_CHECK_BYTES = _script.read()
 FIXTURES = os.path.join(HERE, "fixtures", "release")
 
 # Every key the script prints; check_rules.rs reads them.
@@ -631,6 +634,68 @@ class GuardScript(unittest.TestCase):
                 printed = self.run_guard(interpreter)
                 self.assertNotIn("user.nobody.control", [key for key, _ in printed])
                 self.assertEqual(self.values(printed, "user.1000.control"), ["+cpu +memory +pids"])
+
+
+class MacCheckScript(unittest.TestCase):
+    """The Mac's tools script (YN-108 design 4.2): the app runs it with
+    /bin/sh and the PATH it read from the login shell, and it prints only
+    versions and the gh sign-in's exit code. It writes nothing."""
+
+    def run_script(self, path, extra_env=None):
+        with tempfile.TemporaryDirectory() as base:
+            bin = os.path.join(base, "bin")
+            os.makedirs(bin)
+            for name in ("head",):
+                os.symlink(shutil.which(name), os.path.join(bin, name))
+            for name, body in [
+                ("node", 'echo v22.11.0\necho a second line'),
+                ("git", "echo 'git version 2.43.0'"),
+                ("gh", 'case "$1" in auth) exit 1 ;; --version) echo "gh version 2.45.0" ;; esac'),
+                ("claude", "echo '2.1.3 (Claude Code)'"),
+                ("codex", "echo 'codex-cli 0.80.0'"),
+            ]:
+                write(os.path.join(bin, name), "#!/bin/sh\n" + body + "\n", 0o755)
+            env = {"PATH": f"{bin}:{os.environ.get('PATH', '')}", "HOME": base}
+            env.update(extra_env or {})
+            before = snapshot(bin)
+            done = subprocess.run(["/bin/sh", MAC_CHECK], capture_output=True, env=env, cwd=base, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(before, snapshot(bin), "the script changed a program")
+            printed = {}
+            for line in done.stdout.decode().splitlines():
+                key, _, value = line.partition("=")
+                self.assertNotIn(key, printed, f"{key} printed twice")
+                printed[key] = value
+            return printed
+
+    def test_versions_are_the_programs_own_first_lines(self):
+        printed = self.run_script(MAC_CHECK)
+        self.assertEqual(printed["format"], "1")
+        self.assertEqual(printed["tool.node"], "v22.11.0")
+        self.assertEqual(printed["tool.git"], "git version 2.43.0")
+        self.assertEqual(printed["tool.gh"], "gh version 2.45.0")
+        self.assertEqual(printed["gh.auth"], "1")
+        self.assertEqual(printed["tool.claude"], "2.1.3 (Claude Code)")
+        self.assertEqual(printed["tool.codex"], "codex-cli 0.80.0")
+        self.assertEqual(printed["done"], "1")
+
+    def test_missing_programs_are_a_dash(self):
+        with tempfile.TemporaryDirectory() as base:
+            done = subprocess.run(
+                ["/bin/sh", MAC_CHECK],
+                capture_output=True,
+                env={"PATH": base, "HOME": base},
+                cwd=base,
+                timeout=60,
+            )
+            printed = dict(line.split("=", 1) for line in done.stdout.decode().splitlines())
+            for key in ("tool.node", "tool.git", "tool.gh", "tool.claude", "tool.codex"):
+                self.assertEqual(printed[key], "-", key)
+            self.assertEqual(printed["gh.auth"], "-")
+
+    def test_the_missing_command_line_tools_keep_git_from_being_run(self):
+        printed = self.run_script(MAC_CHECK, {"YUZUNO_CHECK_GIT": "0"})
+        self.assertEqual(printed["tool.git"], "?", "not run, because /usr/bin/git is Xcode's installer shim")
 
 
 class ReleaseKey(unittest.TestCase):

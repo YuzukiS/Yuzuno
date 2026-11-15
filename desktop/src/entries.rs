@@ -24,7 +24,7 @@
 use serde_json::Value;
 use url::Url;
 
-use crate::connection::{parse_core_url, StartProfile};
+use crate::connection::{parse_core_url, StartPlatform, StartProfile};
 
 /// More than any record this writes: sixteen entries of this shape fit well
 /// inside it. The one-address record allowed 4 KiB; a list needs more.
@@ -75,13 +75,13 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Whether this entry may be started now: it has a profile, and still
-    /// has the address that profile was saved for. `StartProfile.core` is
-    /// rebuilt from this entry's own address when read, so the two agree by
-    /// construction; retargeting the entry drops the profile instead of
-    /// carrying it (see [`read`]).
+    /// Whether this entry may be started now: it has a profile this build
+    /// runs, and still has the address that profile was saved for.
+    /// `StartProfile.core` is rebuilt from this entry's own address when
+    /// read, so the two agree by construction; retargeting the entry drops
+    /// the profile instead of carrying it (see [`read`]).
     pub fn startable(&self) -> bool {
-        self.start.as_ref().is_some_and(|start| start.core == self.url)
+        self.start.as_ref().is_some_and(|start| start.core == self.url && start.platform.runs_here())
     }
 }
 
@@ -303,6 +303,13 @@ pub fn name_for_wsl(distro: &str) -> String {
     format!("{}{suffix}", distro.chars().take(room).collect::<String>())
 }
 
+/// The name of the Workspace the Mac app installed or started on this Mac
+/// (YN-108 design 4.3). The page lists one local start, so one name.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn name_for_mac() -> String {
+    "This Mac".into()
+}
+
 pub fn next_id(entries: &[Entry]) -> String {
     (1..)
         .map(|n| format!("core-{n}"))
@@ -311,20 +318,23 @@ pub fn next_id(entries: &[Entry]) -> String {
 }
 
 fn start_json(start: &StartProfile) -> Value {
-    serde_json::json!({
-        // Where the start runs: always WSL here (YN-107 design section 6,
-        // part 4). The Mac app writes its own.
-        "platform": "wsl",
+    let mut value = serde_json::json!({
+        // Where the start runs: WSL on Windows, or this Mac (YN-108 design
+        // 4.1). A record without `platform` is read as WSL.
+        "platform": start.platform.as_str(),
         // The address this profile was saved for. An entry pointed somewhere
         // else no longer has it: it is not carried to the new address, and
         // never to another entry.
         "coreUrl": start.core.as_str(),
-        "wslDistro": start.wsl_distro,
-        "user": start.user,
         "installDir": start.install_dir,
         "workspaceId": start.workspace_id,
         "confirmed": start.confirmed,
-    })
+    });
+    if start.platform == StartPlatform::Wsl {
+        value["wslDistro"] = serde_json::json!(start.wsl_distro);
+        value["user"] = serde_json::json!(start.user);
+    }
+    value
 }
 
 /// The start profile in `value`, for an entry whose address is `url`. `None`
@@ -336,28 +346,9 @@ fn start_from_json(value: &Value, url: &Url) -> Option<StartProfile> {
     if start.is_null() {
         return None;
     }
-    // Only a start in WSL is one this app runs; one without `platform` is
-    // from before it, and was one. Another platform's leaves this entry an
-    // address to connect to, and is not written back.
-    if !crate::connection::wsl_platform(start) {
-        return None;
-    }
-    // Saved for this entry's address, and no other. A record that says
-    // otherwise does not have its start quietly re-aimed here.
-    let saved_for = parse_core_url(start["coreUrl"].as_str()?).ok()?;
-    if saved_for != *url {
-        return None;
-    }
-    let profile = StartProfile::new(
-        url,
-        start["wslDistro"].as_str()?,
-        start["user"].as_str()?,
-        start["installDir"].as_str()?,
-        start["workspaceId"].as_str()?,
-    )?;
     // `confirmed` is only what was written. A record from before it, or one
     // that never earned it, stays unconfirmed: this never promotes it.
-    Some(StartProfile { confirmed: start["confirmed"] == true, ..profile })
+    crate::connection::profile_from(start, url, start["confirmed"] == true, true)
 }
 
 fn remembered_from_json(value: &Value) -> Option<Remembered> {
@@ -450,8 +441,10 @@ pub fn read(bytes: &[u8]) -> Saved {
         }
     }
     // One start, or none. Two would mean guessing which Core a start belongs
-    // to, and this would rather refuse than start the wrong one.
-    if entries.iter().filter(|entry| entry.start.is_some()).count() > 1 {
+    // to, and this would rather refuse than start the wrong one. Only the
+    // starts this build runs count (YN-108 design 4.1), so a record holding
+    // one of each platform is not "more than one".
+    if entries.iter().filter(|entry| entry.startable()).count() > 1 {
         return Saved::Unusable("more than one of its Workspaces is set to start a Core".into());
     }
     let mut remembered: Vec<Remembered> = Vec::new();
@@ -577,8 +570,28 @@ mod tests {
     }
 
     fn start_for(address: &str, workspace: &str) -> StartProfile {
-        StartProfile::new(&core(address), "Ubuntu-24.04", "yuzuki", "/home/yuzuki/yuzuno", workspace)
-            .expect("a start profile")
+        // The platform this build's app starts: WSL on Windows, this Mac on
+        // macOS (a build with neither reads both, and offers none).
+        if cfg!(windows) {
+            StartProfile::new(&core(address), "Ubuntu-24.04", "yuzuki", "/home/yuzuki/yuzuno", workspace)
+                .expect("a start profile")
+        } else {
+            StartProfile::macos(&core(address), "/Users/yuzuki/Library/Application Support/yuzuno/managed-core", workspace)
+                .expect("a start profile")
+        }
+    }
+
+    /// A start for the other platform than this build runs, as JSON.
+    fn other_start(address: &str, workspace: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                r#"{{"platform":"macos","coreUrl":"{address}","installDir":"/Users/someone/Library/Application Support/yuzuno/managed-core","workspaceId":"{workspace}","confirmed":true}}"#
+            )
+        } else {
+            format!(
+                r#"{{"platform":"wsl","coreUrl":"{address}","wslDistro":"Ubuntu-24.04","user":"someone","installDir":"/home/someone/.local/share/yuzuno-core","workspaceId":"{workspace}","confirmed":true}}"#
+            )
+        }
     }
 
     fn entry(id: &str, name: &str, address: &str, workspace: Option<&str>, start: Option<StartProfile>) -> Entry {
@@ -600,34 +613,44 @@ mod tests {
     }
 
     #[test]
-    fn a_start_is_written_for_wsl_and_another_platforms_is_not_started_or_kept() {
+    #[cfg(any(windows, target_os = "macos"))]
+    fn a_start_is_written_for_this_apps_platform_and_another_platforms_is_not_started_or_kept() {
         let entries = [entry("core-1", "Main", "http://127.0.0.1:4317", Some("w-one"), Some(start_for("http://127.0.0.1:4317", "w-one")))];
         let text = record(&entries, Some("core-1"), &[], AUTO_START_DEFAULT).unwrap();
         let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["entries"][0]["start"]["platform"], "wsl");
+        let platform = if cfg!(windows) { "wsl" } else { "macos" };
+        assert_eq!(value["entries"][0]["start"]["platform"], platform);
+        if platform == "wsl" {
+            assert_eq!(value["entries"][0]["start"]["wslDistro"], "Ubuntu-24.04");
+        } else {
+            assert!(value["entries"][0]["start"].get("wslDistro").is_none());
+        }
         assert_eq!(read(text.as_bytes()).entries()[0].start, entries[0].start);
         // Another platform's start: the record reads, that entry only
         // connects, and writing it back drops that start. A start of each
         // platform is not "more than one".
-        let mac = r#"{"platform":"macos","coreUrl":"http://127.0.0.1:4318/","installDir":"/Users/someone/yuzuno","workspaceId":"w-two","confirmed":true}"#;
-        let wsl = start_json(&start_for("http://127.0.0.1:4317", "w-one"));
-        for (platform, start) in [("macos", mac.to_owned()), ("unknown", mac.replace("macos", "elsewhere"))] {
-            let both = format!(
-                r#"{{"version":1,"selected":"core-2","entries":[{{"id":"core-1","name":"Main","url":"http://127.0.0.1:4317/","start":{wsl}}},{{"id":"core-2","name":"Mac","url":"http://127.0.0.1:4318/","start":{start}}}]}}"#
-            );
-            let saved = read(both.as_bytes());
-            let listed = saved.entries();
-            assert_eq!(listed.len(), 2, "{platform}");
-            assert!(listed[0].startable());
-            assert_eq!(listed[1].start, None, "{platform}");
-            let written = record(listed, Some("core-2"), &[], AUTO_START_DEFAULT).unwrap();
-            assert_eq!(written.matches("\"start\"").count(), 1, "{written}");
-        }
-        // One without a platform, as written before it, is a start in WSL.
-        let mut old = wsl.clone();
+        let here = start_json(&start_for("http://127.0.0.1:4317", "w-one"));
+        let both = format!(
+            r#"{{"version":1,"selected":"core-2","entries":[{{"id":"core-1","name":"Main","url":"http://127.0.0.1:4317/","start":{here}}},{{"id":"core-2","name":"Other","url":"http://127.0.0.1:4318/","start":{other}}}]}}"#,
+            other = other_start("http://127.0.0.1:4318/", "w-two")
+        );
+        let saved = read(both.as_bytes());
+        let listed = saved.entries();
+        assert_eq!(listed.len(), 2);
+        assert!(listed[0].startable());
+        assert_eq!(listed[1].start, None, "another platform's start is not this app's");
+        let written = record(listed, Some("core-2"), &[], AUTO_START_DEFAULT).unwrap();
+        assert_eq!(written.matches("\"start\"").count(), 1, "{written}");
+        // One without a platform, as written before it, is a start in WSL;
+        // it is this build's only on Windows.
+        let mut old = start_json(&start_for("http://127.0.0.1:4317", "w-one"));
         old.as_object_mut().unwrap().remove("platform");
+        old.as_object_mut().unwrap().remove("wslDistro");
+        old.as_object_mut().unwrap().remove("user");
+        old["wslDistro"] = serde_json::json!("Ubuntu-24.04");
+        old["user"] = serde_json::json!("yuzuki");
         let old = format!(r#"{{"version":1,"entries":[{{"id":"core-1","name":"Main","url":"http://127.0.0.1:4317/","start":{old}}}]}}"#);
-        assert!(read(old.as_bytes()).entries()[0].startable());
+        assert_eq!(read(old.as_bytes()).entries()[0].startable(), cfg!(windows));
     }
 
     #[test]
@@ -666,21 +689,46 @@ mod tests {
         assert_eq!(entries[0].id, "core");
         assert_eq!(entries[0].name, "127.0.0.1:4317");
         assert_eq!(selected, Some("core".into()));
-        let start = entries[0].start.as_ref().expect("the old start is kept");
-        assert_eq!(start.core, core("http://127.0.0.1:4317"));
-        assert!(start.confirmed, "a confirmation already earned is kept");
-        assert!(entries[0].startable());
         // The old record names no Workspace for the entry itself: unknown
         // until a Core answers, not borrowed from the start profile.
         assert_eq!(entries[0].workspace_id, None);
+        // The start in it is WSL's: the Windows app keeps it; the Mac app
+        // leaves the entry as an address to connect to (YN-108).
+        if cfg!(windows) {
+            let start = entries[0].start.as_ref().expect("the old start is kept");
+            assert_eq!(start.core, core("http://127.0.0.1:4317"));
+            assert!(start.confirmed, "a confirmation already earned is kept");
+            assert!(entries[0].startable());
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(entries[0].start, None);
+            assert!(!entries[0].startable());
+        } else {
+            // A build with no local Core back end (the Linux desktop) reads
+            // both kinds as its own; it offers no start anyway.
+            assert!(entries[0].start.is_some());
+        }
     }
 
     #[test]
+    #[cfg(windows)]
     fn an_old_record_that_was_never_confirmed_is_not_promoted() {
         let old = br#"{"coreUrl":"http://127.0.0.1:4317/","start":{"wslDistro":"Ubuntu-24.04","user":"yuzuki","installDir":"/home/yuzuki/yuzuno","workspaceId":"w-one"}}"#;
         let Saved::Entries { entries, .. } = read(old) else { panic!() };
         let start = entries[0].start.as_ref().expect("kept");
         assert!(!start.confirmed, "no confirmed field is not confirmed, and is never written as one");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_mac_record_is_written_with_its_platform_and_read_back() {
+        let start = StartProfile { confirmed: true, ..start_for("http://127.0.0.1:4318", "w-two") };
+        let kept = vec![entry("core-1", "This Mac", "http://127.0.0.1:4318", Some("w-two"), Some(start.clone()))];
+        let text = record(&kept, Some("core-1"), &[], AUTO_START_DEFAULT).unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["entries"][0]["start"]["platform"], "macos");
+        assert!(value["entries"][0]["start"].get("wslDistro").is_none());
+        assert_eq!(read(text.as_bytes()).entries()[0].start, Some(start));
+        assert_eq!(name_for_mac(), "This Mac");
     }
 
     #[test]
