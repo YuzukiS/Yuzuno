@@ -101,9 +101,11 @@ jobs:
           echo "CI passed on $GITHUB_SHA"
 
       # A candidate's version input is X.Y.Z or empty, and a lab run takes
-      # none: checked before checkout.
-      - name: Version input (candidate only)
-        if: github.event_name == 'workflow_dispatch'
+      # none: checked before checkout. A pull request has neither input; the
+      # step runs there too, so that the runner's bash (3.2 on macOS) reads it
+      # on every pull request. (That bash takes a quote inside ${...} for a
+      # quote of its own, as a run on request once showed.)
+      - name: Version input
         working-directory: .
         env:
           VERSION: ${{ inputs.version }}
@@ -116,7 +118,9 @@ jobs:
           if [ "$LAB" = true ] && [ -n "$VERSION" ]; then
             echo "::error::a lab run builds its own versions; leave the version input empty"; exit 1
           fi
-          echo "version: ${VERSION:-the source's}, lab: $LAB"
+          shown="the source's"
+          [ -z "$VERSION" ] || shown=$VERSION
+          echo "version: $shown, lab: ${LAB:-false}"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
