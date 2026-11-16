@@ -959,6 +959,7 @@ test("YN-195 a report's or status's Markdown block over the advice length shows 
     assert.equal(document.querySelectorAll(".brief-markdown li").length, 24, "nothing cut");
   }
   window.chooseLanguage("zh-Hans");
+  window.unmountSection();
   window.renderSection(md("report", long), PROJECT);
   await until(() => summary()?.startsWith("展开全文"), "the Chinese control");
   assert.match(summary(), /^展开全文 · 还有 \d+ 字$/);
