@@ -21,8 +21,10 @@ also smokes its binaries before that.
 standard GitHub-hosted macOS 26 runner, for Apple silicon (arm64) only: Intel
 Macs are not supported (YN-161). Only pull_request and
 workflow_dispatch trigger it; its token reads contents and actions only; no
-secret, cache or other runner. Only a run on request uploads, one macOS
-artifact, and such a run builds only main whose push CI passed.
+secret, cache or other runner. Only a run on request uploads, and such a run
+builds only main whose push CI passed: one macOS artifact, or with lab
+(YN-191) the update lab's two instead. The lab key is made and deleted in one
+step, in the runner's temporary folder, and no upload names it.
 
 .github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
 unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
@@ -228,6 +230,14 @@ MACOS_UPLOAD_NAME = "name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version ||
 # Apple silicon on its standard runner, and nothing else (YN-161).
 MACOS_RUNNERS = [('arm64', 'macos-26')]
 ON_REQUEST = "if: github.event_name == 'workflow_dispatch'"
+# The update lab's two uploads (YN-191 S5), only on request with lab; the
+# regular one only without it.
+MACOS_LAB_UPLOAD_NAMES = ['name: yuzuno-macos-${{ matrix.arch }}-lab-install-${{ github.sha }}-${{ github.run_attempt }}',
+                          'name: yuzuno-macos-${{ matrix.arch }}-lab-feed-${{ github.sha }}-${{ github.run_attempt }}']
+LAB_ONLY = ON_REQUEST + ' && inputs.lab'
+NOT_LAB = ON_REQUEST + ' && !inputs.lab'
+LAB_KEY_STEP = ['lab="$RUNNER_TEMP/lab"', 'trap \'rm -f "$lab/lab.key"\' EXIT', 'signer generate --ci -w "$lab/lab.key"',
+                'rm -f "$lab/lab.key"\n          [ ! -e "$lab/lab.key" ]']
 
 
 def desktop_macos_problems(text):
@@ -267,10 +277,21 @@ def desktop_macos_problems(text):
             found.append(f'job {name} does not require main with passed CI before checkout, on request')
         if checkout is not None and 'persist-credentials: false' not in steps[checkout]:
             found.append(f'job {name} keeps the checkout credentials')
-        if len(uploads) != 1 or MACOS_UPLOAD_NAME not in steps[uploads[0]]:
-            found.append(f'job {name} does not upload exactly the one macOS artifact')
-        elif ON_REQUEST not in steps[uploads[0]]:
+        uploaded = [steps[i] for i in uploads]
+        regular = [step for step in uploaded if MACOS_UPLOAD_NAME in step]
+        lab = [next(n for n in MACOS_LAB_UPLOAD_NAMES if n in step) for step in uploaded
+               if any(n in step for n in MACOS_LAB_UPLOAD_NAMES)]
+        if len(regular) != 1 or sorted(lab) != sorted(MACOS_LAB_UPLOAD_NAMES) or len(uploaded) != 3:
+            found.append(f'job {name} does not upload exactly the one macOS artifact and the two lab artifacts')
+        elif any(ON_REQUEST not in step for step in uploaded):
             found.append(f'job {name} uploads from a pull request')
+        elif NOT_LAB not in regular[0] or any(LAB_ONLY not in step for step in uploaded if step not in regular):
+            found.append(f'job {name} mixes the lab and the regular uploads')
+        if any(re.search(r'/lab/|lab\.key(?!\.pub)', step) for step in uploaded):
+            found.append(f'job {name} uploads the lab key')
+        generate = [step for step in steps if 'signer generate' in step]
+        if len(generate) != 1 or any(part not in generate[0] for part in LAB_KEY_STEP) or LAB_ONLY not in generate[0]:
+            found.append(f'job {name} does not keep the lab key to one lab step in the runner\'s temporary folder')
     return found
 
 
@@ -521,10 +542,23 @@ class PublicCi(unittest.TestCase):
             'no CI lookup': (good.replace('-f status=success', '-f status=completed', 1), 'passed CI before checkout'),
             'a gate that never runs': (good.replace(ON_REQUEST, 'if: false', 1), 'passed CI before checkout'),
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
-            'an upload from PRs': (good.replace(f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        {ON_REQUEST}\n',
+            'an upload from PRs': (good.replace(f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        {NOT_LAB}\n',
                                                 f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n', 1), 'from a pull request'),
             'another artifact name': (good.replace("name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version || 'source' }}-${{ github.sha }}", 'name: macos-${{ github.sha }}', 1), 'one macOS artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one macOS artifact'),
+            'no lab feed upload': (good.replace('-lab-feed-${{ github.sha }}', '-feed-${{ github.sha }}', 1), 'two lab artifacts'),
+            'a lab upload from PRs': (good.replace(f"{LAB_ONLY}\n        with:\n          name: yuzuno-macos-${{{{ matrix.arch }}}}-lab-install",
+                                                   "if: inputs.lab\n        with:\n          name: yuzuno-macos-${{ matrix.arch }}-lab-install", 1), 'from a pull request'),
+            'the regular upload in a lab run': (good.replace(NOT_LAB, ON_REQUEST, 1), 'mixes the lab and the regular'),
+            'a lab upload without lab': (good.replace(f"{LAB_ONLY}\n        with:\n          name: yuzuno-macos-${{{{ matrix.arch }}}}-lab-feed",
+                                                      f"{ON_REQUEST}\n        with:\n          name: yuzuno-macos-${{{{ matrix.arch }}}}-lab-feed", 1), 'mixes the lab and the regular'),
+            'the lab key uploaded': (good.replace('            ${{ runner.temp }}/lab-install/SHA256SUMS\n',
+                                                  '            ${{ runner.temp }}/lab-install/SHA256SUMS\n            ${{ runner.temp }}/lab/lab.key\n', 1), 'uploads the lab key'),
+            'the lab key folder uploaded': (good.replace('path: ${{ runner.temp }}/lab-feed/', 'path: ${{ runner.temp }}/lab/', 1), 'uploads the lab key'),
+            'the lab key kept on failure': (good.replace('trap \'rm -f "$lab/lab.key"\' EXIT\n', '', 1), 'lab key to one lab step'),
+            'the lab key kept': (good.replace('rm -f "$lab/lab.key"\n          [ ! -e "$lab/lab.key" ]\n', '', 1), 'lab key to one lab step'),
+            'the lab key elsewhere': (good.replace('lab="$RUNNER_TEMP/lab" ', 'lab="$GITHUB_WORKSPACE/lab" ', 1), 'lab key to one lab step'),
+            'a lab key in a pull request': (good.replace(f"{LAB_ONLY}\n        shell: bash\n        run: |\n          lab=", "if: true\n        shell: bash\n        run: |\n          lab=", 1), 'lab key to one lab step'),
         }
         for label, (text, message) in cases.items():
             with self.subTest(label):
