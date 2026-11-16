@@ -1,4 +1,4 @@
-import { CircleCheck, Forward, GitMerge, MessageSquare, MessageSquareReply, SquarePlus } from "lucide-react";
+import { CircleCheck, CircleCheckBig, Forward, GitMerge, MessageSquare, MessageSquareReply, SquarePlus } from "lucide-react";
 import { useLanguage } from "../i18n";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
@@ -14,7 +14,7 @@ import "./routing-events.css";
  */
 export type TrailEvent = {
   id: string;
-  kind: "card" | "existing" | "answer" | "reassign" | "note" | "done";
+  kind: "card" | "existing" | "answer" | "reassign" | "note" | "done" | "confirmed";
   at: string | null;
   /** The user, for a reassignment; else the project (its front desk). */
   byUser?: boolean;
@@ -65,14 +65,18 @@ export function requestTrail(request: ProjectRequest): TrailEvent[] {
     ...request.routes.map((route) => routeEvent(route, card)),
     ...request.notes.map((note, index) => ({ id: `note:${index}`, kind: "note" as const, at: note.at, note: note.note })),
   ];
-  if (request.state === "done") {
+  // Every card ended (YN-184: it then waits for the user), and the user's confirmation once it is done.
+  if (request.cards.length && (request.state === "ended" || request.state === "done")) {
     const ends = request.lines.filter((line) => line.kind === "done").map((line) => line.at ?? "");
     events.push({ id: "done", kind: "done", at: ends.sort().at(-1) || null });
+  }
+  if (request.state === "done" && request.confirmedAt) {
+    events.push({ id: "confirmed", kind: "confirmed", at: request.confirmedAt });
   }
   return events.sort((a, b) => (a.at ?? "").localeCompare(b.at ?? ""));
 }
 
-const ICONS = { card: SquarePlus, existing: GitMerge, answer: MessageSquareReply, reassign: Forward, note: MessageSquare, done: CircleCheck };
+const ICONS = { card: SquarePlus, existing: GitMerge, answer: MessageSquareReply, reassign: Forward, note: MessageSquare, done: CircleCheck, confirmed: CircleCheckBig };
 
 export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard?: ShowCard }) {
   const language = useLanguage();
@@ -104,6 +108,8 @@ export function RoutingEvents({ events, onCard }: { events: TrailEvent[]; onCard
                 </>
               ) : event.kind === "done" ? (
                 t.allDone
+              ) : event.kind === "confirmed" ? (
+                <span className="routing-event-actor">{t.youConfirmed}</span>
               ) : (
                 <>
                   <span className="routing-event-actor">{event.byUser ? t.you : t.project}</span> {action}

@@ -14,8 +14,9 @@ import { talkText } from "./talk-text";
  * One request in the requests column (YN-86 §4.1, §4.5, as a parent issue
  * lists its sub-issues): the project's title for it (never the user's
  * words, which stay in the conversation), or a light placeholder until it
- * has one; its state, cards and progress; Follow up and its handoffs,
- * folded; then one row per card, which shows that card on the page.
+ * has one; its state, cards and progress; Confirm done while it waits for
+ * the user (YN-184); Follow up and its handoffs, folded; then one row per
+ * card, which shows that card on the page.
  */
 export const RequestCard = forwardRef<
   HTMLDivElement,
@@ -25,13 +26,19 @@ export const RequestCard = forwardRef<
     trailOpen: boolean;
     readOnly: boolean;
     resending: boolean;
+    confirming: boolean;
+    confirmError: string;
     onTitle: () => void;
     onFollowUp: () => void;
     onTrail: () => void;
     onResend: () => void;
+    onConfirm: () => void;
     onCard: ShowCard;
   }
->(function RequestCard({ request, selected, trailOpen, readOnly, resending, onTitle, onFollowUp, onTrail, onResend, onCard }, ref) {
+>(function RequestCard(
+  { request, selected, trailOpen, readOnly, resending, confirming, confirmError, onTitle, onFollowUp, onTrail, onResend, onConfirm, onCard },
+  ref,
+) {
   const language = useLanguage();
   const t = talkText(language);
   const time = useTimeDisplay();
@@ -40,8 +47,10 @@ export const RequestCard = forwardRef<
   const merged = mergedInto(request);
   const trail = requestTrail(request);
   const title = request.title?.trim() || "";
-  // Answered with no card (YN-136): the answer is the project's newest note.
-  const answer = state === "answered" ? request.notes.at(-1)?.note ?? "" : "";
+  // Answered with no card (YN-136): the answer is the project's newest note, shown while it waits and once done.
+  const answer = !request.cards.length && (state === "answered" || state === "done") ? request.notes.at(-1)?.note ?? "" : "";
+  // Its cards ended, or answered: the user's to confirm (YN-184).
+  const awaiting = state === "ended" || state === "answered";
   const label = title || t.untitled(untitledHint(request.text));
   return (
     <div
@@ -61,6 +70,14 @@ export const RequestCard = forwardRef<
         <span className="request-card-state" data-state={state}>
           {t.state[state]}
         </span>
+        {awaiting && !readOnly && (
+          <Tip content={<TipText title={t.confirmTip} />} describe={false}>
+            <button type="button" className="request-card-confirm" disabled={confirming} aria-label={t.confirmLabel(label)} onClick={onConfirm}>
+              {confirming && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
+              {t.confirm}
+            </button>
+          </Tip>
+        )}
         {state === "unconfirmed" && !readOnly && (
           <button type="button" className="talk-link" disabled={resending} onClick={onResend}>
             {resending && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
@@ -85,6 +102,7 @@ export const RequestCard = forwardRef<
           )}
         </span>
       </div>
+      {confirmError && <p className="request-card-error" role="alert">{t.confirmFailed(confirmError)}</p>}
       {request.cards.length > 0 ? (
         <ol className="request-card-cards" aria-label={t.requestCards}>
           {request.cards.map((card, index) => {

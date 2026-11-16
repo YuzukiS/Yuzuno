@@ -213,7 +213,7 @@ fn utf16(text: &str, start: usize, end: usize) -> String {
 fn kept_request(text: &str) -> Request {
     Request {
         id: "r".into(), n: 1, text: text.into(), text_blocks: None, title: None, created_at: String::new(),
-        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(), images: vec![], files: vec![],
+        front_agent_id: "desk".into(), message_id: "m".into(), state: "open".into(), images: vec![], files: vec![], confirmed_at: None,
     }
 }
 
@@ -823,11 +823,11 @@ async fn progress_and_lines_come_from_the_cards_tasks_and_asks_once_each() {
         assert_eq!(lines, [(json!("ask"), json!(code)), (json!("done"), json!(code))], "each once");
         assert_eq!((request["progress"].clone(), request["state"].clone()), (json!({"cards":2,"ended":1}), json!("doing")));
         assert_eq!(lab.request(second)["lines"], json!([]), "on the first request only");
-        assert_eq!((lab.request(second)["progress"].clone(), lab.request(second)["state"].clone()), (json!({"cards":1,"ended":1}), json!("done")));
+        assert_eq!((lab.request(second)["progress"].clone(), lab.request(second)["state"].clone()), (json!({"cards":1,"ended":1}), json!("ended")));
     }
     lab.end(&format, "cancelled");
     let request = lab.request(n);
-    assert_eq!((request["progress"].clone(), request["state"].clone()), (json!({"cards":2,"ended":2}), json!("done")));
+    assert_eq!((request["progress"].clone(), request["state"].clone()), (json!({"cards":2,"ended":2}), json!("ended")), "the user's to confirm (YN-184)");
     assert_eq!(request["lines"].as_array().unwrap().iter().filter(|l| l["kind"] == "done").count(), 2);
     assert_eq!(request["cards"][1]["task"]["status"], "cancelled");
 }
@@ -980,3 +980,5 @@ mod route_image_tests;
 mod route_file_tests;
 #[path = "route_owed_tests.rs"]
 mod route_owed_tests;
+#[path = "route_confirm_tests.rs"]
+mod route_confirm_tests;

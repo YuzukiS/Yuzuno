@@ -4,8 +4,11 @@
 Relay half (always): starts a new managed Core under the project target/
 from a T-12 bundle. Its release source's `gh` is a local fixture that serves
 `desktop-<version>` releases from --feed: one folder per release, as
-`scripts/desktop.ps1 -Bundle -Lab` stages them. It then probes the
-manifest and installer routes the way the desktop calls them.
+`scripts/desktop.ps1 -Bundle -Lab` stages them for Windows, or as the Desktop
+macOS workflow's lab run stages them for --target darwin-aarch64 (its feed
+artifact's feed/ folder). It then probes the manifest and installer routes
+the way the desktop calls them. For darwin-aarch64 only this half runs; with
+--serve the lab Core then keeps serving for the Mac update lab.
 
 Windows half (--windows, run only once the lab install has been approved):
 - Installs Yuzuno Lab (the oldest feed release) with desktop/tests/update-lab.ps1.
@@ -40,8 +43,17 @@ spec = importlib.util.spec_from_file_location('updates_acceptance', REPO / 'tool
 common = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(common)
 
+# Each target's update file, as Core relays it; --target picks one.
+INSTALLERS = {
+    'windows-x86_64': 'yuzuno-desktop-windows-x86_64-setup.exe',
+    'darwin-aarch64': 'yuzuno-desktop-darwin-aarch64.app.tar.gz',
+}
 TARGET = 'windows-x86_64'
-INSTALLER = f'yuzuno-desktop-{TARGET}-setup.exe'
+INSTALLER = INSTALLERS[TARGET]
+# The lab Core's port: this lab's own range, or Core's services range
+# (4380-4389 by default, docs/independent-core.md#project-services-from-a-mac),
+# which a Mac's tunnel key may already allow.
+PORTS = (range(4400, 5000), range(4380, 4390))
 REPOSITORY = 'YuzukiS/Yuzuno'
 
 
@@ -142,7 +154,7 @@ def cdp_ready(port):
 def main(args):
     root = args.run_dir.resolve()
     assert root.is_relative_to(common.PROJECT / 'target') and not root.exists(), 'Use a new folder under target/'
-    assert 4400 <= args.port <= 4999 and 9300 <= args.cdp_port <= 9399
+    assert any(args.port in ports for ports in PORTS) and 9300 <= args.cdp_port <= 9399
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', args.port))
     assert not cdp_ready(args.cdp_port), f'DevTools port {args.cdp_port} is in use'
@@ -155,7 +167,7 @@ def main(args):
     bundle, initial, digest = common.manifest(args.bundle)
     core_url = f'http://127.0.0.1:{args.port}'
     receipt = {'root': str(root), 'core': core_url, 'bundle': initial['releaseId'], 'source': initial['gitSha'],
-               'checks': [], 'windows': args.windows}
+               'target': TARGET, 'checks': [], 'windows': args.windows}
     owned = []
     def request(path, body=None):
         encoded = None if body is None else json.dumps(body).encode()
@@ -342,13 +354,17 @@ if __name__ == '__main__':
     parser.add_argument('--feed', type=Path, required=True,
                         help='folder of desktop-<version> folders, each with the two staged release files')
     parser.add_argument('--run-dir', type=Path, required=True)
-    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--port', type=int, required=True, help='4400-4999, or 4380-4389 (Core\'s services range)')
+    parser.add_argument('--target', choices=sorted(INSTALLERS), default='windows-x86_64',
+                        help='the desktop target whose releases the feed holds')
     parser.add_argument('--cdp-port', type=int, default=9334)
     parser.add_argument('--windows-build-root', help='Windows path to the isolated *-lab/release build, containing both signed feed versions')
     parser.add_argument('--startup-port', type=int, default=4998, help='unused Lab address, replaced through the connection UI')
     parser.add_argument('--windows', action='store_true', help='also run the approved Windows half')
     parser.add_argument('--serve', action='store_true', help='keep the lab Core running until Ctrl+C')
     args = parser.parse_args()
+    TARGET, INSTALLER = args.target, INSTALLERS[args.target]
+    assert not args.windows or TARGET == 'windows-x86_64', '--windows needs --target windows-x86_64'
     if args.windows:
         assert args.serve and args.windows_build_root, '--windows requires --serve and --windows-build-root so B stays usable'
         assert 4400 <= args.startup_port <= 4999 and args.startup_port != args.port

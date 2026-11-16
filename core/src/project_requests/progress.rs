@@ -1,9 +1,10 @@
 //! What routing made of a request (YN-86 §4.3, §4.5; slice S3a-2), read each
 //! time from its routes and its cards' tasks, never stored: the cards it
 //! went to and who answers for each now, its progress (how many of their
-//! tasks ended), Core's lines for the conversation, and on each card where
-//! it came from (`card.handoffs`). None of it carries the user's words:
-//! they stay on the request, shown only in the conversation.
+//! tasks ended), its state (done only once the user confirmed it, YN-184),
+//! Core's lines for the conversation, and on each card where it came from
+//! (`card.handoffs`). None of it carries the user's words: they stay on the
+//! request, shown only in the conversation.
 use super::routes::{self, RouteRow};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -98,26 +99,48 @@ fn first_request(db: &Connection, task: &str) -> Result<Option<i64>> {
         .flatten())
 }
 
+/// The `workspace_meta` key of when this Workspace's Core first asked the
+/// user to confirm requests (YN-184; project_requests.rs `migrate`).
+pub(super) const CONFIRM_FROM: &str = "requests.confirmFrom";
+
 /// What `view` (project_requests.rs) adds to a request once the front desk
 /// has seen it (YN-86 §4.5):
 /// - `notes`: the front desk's short replies, oldest first;
 /// - `routes`: its routes and the user's reassignments of its cards, by time;
 /// - `cards`: one per task it went to, as Home shows the card and who
 ///   answers for it now; `progress`: how many of their tasks ended;
-/// - `state`: waiting (no card yet), doing, done (every card's task ended),
-///   or answered (no card, the front desk answered it with an answer route,
-///   and no follow-up came after its newest note; YN-136);
+/// - `state`: waiting (no card yet), doing, ended (every card's task ended,
+///   YN-184), answered (no card, the front desk answered it with an answer
+///   route, and no follow-up came after its newest note; YN-136), or done:
+///   ended or answered, and confirmed (`confirmed_since`) no earlier than its
+///   newest change: a note, a follow-up, a route, a card's task that ended;
+/// - `confirmedAt`: the user's newest confirmation, or null;
 /// - `lines`: Core's lines in the conversation, one per fact: each Ask on
 ///   one of its cards (`ask`, with its state), and each card's task that
 ///   ended (`done`). A card several requests went to has its lines on the
 ///   first of them only.
-pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, shown: &mut Value) -> Result<()> {
-    shown["notes"] = json!(notes(db, request)?);
+pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confirmed: Option<&str>, shown: &mut Value) -> Result<()> {
+    let notes = notes(db, request)?;
+    // The request's newest change: a note, a follow-up, a route, a card's task that ended.
+    let mut changed: Option<String> = None;
+    let mut change = |at: Option<String>| {
+        if at.as_deref() > changed.as_deref() {
+            changed = at;
+        }
+    };
+    for note in &notes {
+        change(note["at"].as_str().map(str::to_owned));
+    }
+    change(db.query_row("SELECT MAX(at) FROM project_request_replies WHERE request_id=?1", [request], |r| r.get(0))?);
+    shown["notes"] = json!(notes);
     let rows = routes::of_request(db, request)?;
     let tasks = tasks(&rows);
     let mut events: Vec<(String, Value)> = Vec::new();
     for row in &rows {
         events.push((row.at.clone(), routes::json(db, row)?));
+        if row.state == routes::DONE {
+            change(Some(row.at.clone()));
+        }
     }
     for id in &tasks {
         for row in routes::reassignments(db, id)? {
@@ -129,8 +152,10 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, shown:
     let (mut cards, mut lines, mut ended) = (vec![], vec![], 0);
     for id in &tasks {
         let Some(task) = task(db, id)? else { continue };
+        let end = if task.ended() { ended_at(db, id, &task)? } else { None };
         if task.ended() {
             ended += 1;
+            change(end.clone());
         }
         // The card: where its newest route to it put it.
         let section = rows.iter().rev().find(|row| to_card(row) && row.task_id.as_deref() == Some(id.as_str())).and_then(|row| row.section_id);
@@ -155,22 +180,35 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, shown:
         }
         if task.ended() {
             let status = if matches!(task.status.as_str(), "done" | "cancelled") { task.status.as_str() } else { "archived" };
-            lines.push(json!({"kind":"done","task":task.key,"status":status,"at":ended_at(db, id, &task)?,"cardSectionId":section,
+            lines.push(json!({"kind":"done","task":task.key,"status":status,"at":end,"cardSectionId":section,
                 "title":card.as_ref().map(|c| c.title.clone())}));
         }
     }
     lines.sort_by(|a, b| a["at"].as_str().unwrap_or_default().cmp(b["at"].as_str().unwrap_or_default()));
     let count = cards.len();
-    shown["state"] = json!(match (count, ended) {
+    let state = match (count, ended) {
         (0, _) if answered(db, request, &rows)? => "answered",
         (0, _) => "waiting",
-        (count, ended) if ended == count => "done",
+        (count, ended) if ended == count => "ended",
         _ => "doing",
-    });
+    };
+    let confirmed_since = confirmed_since(db, confirmed)?;
+    let done = matches!(state, "ended" | "answered") && confirmed_since.is_some() && confirmed_since >= changed;
+    shown["state"] = json!(if done { "done" } else { state });
+    shown["confirmedAt"] = json!(confirmed);
     shown["progress"] = json!({"cards":count,"ended":ended});
     shown["cards"] = json!(cards);
     shown["lines"] = json!(lines);
     Ok(())
+}
+
+/// Since when a settled request counts as confirmed (YN-184): the user's
+/// confirmation, or, for one settled before this Core first asked for
+/// confirmations, that time (`CONFIRM_FROM`), whichever is later. All are
+/// model::now()'s, compared as text as `lines` are.
+fn confirmed_since(db: &Connection, confirmed: Option<&str>) -> Result<Option<String>> {
+    let from: Option<String> = db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [CONFIRM_FROM], |r| r.get(0)).optional()?;
+    Ok(from.into_iter().chain(confirmed.map(str::to_owned)).max())
 }
 
 /// A request with no card is answered (YN-136) when the front desk answered

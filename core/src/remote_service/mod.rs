@@ -1,12 +1,14 @@
 //! The S1 remote program: a session started over SSH, with no port, socket,
 //! daemon, or GPU access. package.rs packages and starts it; program.py
 //! answers frames and, once watched, samples CPU, memory and the data root's
-//! free space (program_tests.py, run from tests.rs). link.rs is Core's side
-//! of one such session over one SSH connection, with protocol.rs checking
-//! what it reads. registry.rs keeps the Workspace's sessions, one per
-//! registered SSH machine, started only for `GET /api/machine-live`
-//! (live.rs) while the user's interest lasts. No page asks for it yet: Home's
-//! machine card is a later slice (PR5).
+//! free space, and, when asked, scans the record files of the remote Jobs
+//! held there for changes (program_tests.py, run from tests.rs). link.rs is
+//! Core's side of one such session over one SSH connection, with protocol.rs
+//! checking what it reads. registry.rs keeps the Workspace's sessions, one
+//! per registered SSH machine, started only for `GET /api/machine-live`
+//! (live.rs) while the user's interest lasts, and for the remote Jobs held
+//! on a machine (`hold_jobs`, YN-83 S2 PR4), whose checks then follow what
+//! the session says changed (`Registry::jobs_views`).
 
 mod link;
 mod live;
@@ -30,4 +32,5 @@ mod tests;
 
 pub(crate) use live::router;
 pub(crate) use package::boot_command;
-pub(crate) use registry::{Closing, Registry};
+pub(crate) use protocol::{Attempt, MAX_JOB_ATTEMPTS};
+pub(crate) use registry::{hold_jobs, Closing, JobsView, Notice, Registry};
