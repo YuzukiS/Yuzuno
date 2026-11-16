@@ -94,6 +94,10 @@ fn actor_key(actor: Option<&str>) -> String {
 fn epoch() -> i64 {
     chrono::Utc::now().timestamp()
 }
+/// An epoch second as the ISO time the entry's other fields use (YN-193).
+fn iso(epoch: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.to_rfc3339()).unwrap_or_default()
+}
 fn entry(db: &Connection, id: &str) -> Result<Value> {
     let raw: Option<String> = db
         .query_row("SELECT data FROM merge_entries WHERE id=?1", [id], |r| r.get(0))
@@ -1469,9 +1473,10 @@ impl Store {
                             let pace = if running { RUNNING_MAIN_CI } else { (60i64 << waits.min(3)).min(600) };
                             e["nextCheck"] = json!(now_epoch + pace);
                             if now_epoch - since > WAIT_LIMIT {
-                                e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":"No finished push run of CI on the merge commit within six hours"});
+                                let detail = format!("No finished push run of CI on the merge commit within six hours of waiting for it, since {}", iso(since));
+                                e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":detail});
                                 e["state"] = json!("done");
-                                e["detail"] = json!("No finished push run of CI on the merge commit within six hours.");
+                                e["detail"] = json!(format!("{detail}."));
                                 announce_as = Some("urgent");
                             }
                         }
@@ -2131,7 +2136,14 @@ fn wait(e: &mut Value, detail: String, at_least: i64, now_epoch: i64) {
     e["waitingSince"] = json!(since);
     e["nextCheck"] = json!((now_epoch + (60i64 << waits.min(3)).min(600)).max(at_least));
     if now_epoch - since > WAIT_LIMIT {
-        stop(e, "wait_timeout", format!("Still waiting after six hours: {detail}"));
+        // The six hours count from `since`, which a check that held, a retry
+        // or a paused queue starts again (YN-193: #896 waited 16.7 h in all).
+        let why = format!(
+            "Still waiting: no check held for six hours, counted since {} (time while the repository's queue was paused, or before a check that held, is not counted; released {}): {detail}",
+            iso(since),
+            e["createdAt"].as_str().unwrap_or("?")
+        );
+        stop(e, "wait_timeout", why);
     } else {
         e["state"] = json!("waiting");
         e["reason"] = json!("waiting");
