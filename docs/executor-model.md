@@ -598,7 +598,9 @@ Once an executor's work is accepted, it is released: Core closes it for good.
   task releases the executors made for it and the one it is assigned to now,
   but not one that is still assigned another task that is not done,
   cancelled or archived: its dispatcher sent it on there, and that task's
-  done releases it (YN-192).
+  done releases it (YN-192). Core decides that in the same write that
+  begins the release, and refuses a task dispatched to an executor whose
+  release has begun (`executor_archiving`): whichever comes first decides.
 - **While its work is still going, it is archiving.** A Job of its still
   running, its delivery flow under way, or a pull request operation of its
   in flight: the release waits for it, and its answer's `archiving.reason`
