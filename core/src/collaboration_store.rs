@@ -1651,16 +1651,17 @@ fn create_message(
         let to_id = parent["recipient"]["id"]
             .as_str()
             .context("invalid message recipient")?;
-        // Each refusal says how to send it instead (YN-192).
+        // Each refusal says how to send it instead (YN-192); who may reply is as before.
         let parent_task = parent["taskId"].as_str();
-        if parent["sender"]["kind"] == "system" {
-            let about = task_id.as_deref().or(parent_task)
-                .map(|task| format!(", with taskId {},", task_shown(db, task))).unwrap_or_default();
-            bail!("invalid_reply: {parent_id} is Core's notice, which takes no reply; send without replyTo{about} to write to {to}");
-        }
         if actor.kind == "agent" {
+            let kept = (actor.id == from_id && to == to_id) || (actor.id == to_id && to == from_id);
+            if !kept && parent["sender"]["kind"] == "system" {
+                let about = task_id.as_deref().or(parent_task)
+                    .map(|task| format!(", with taskId {},", task_shown(db, task))).unwrap_or_default();
+                bail!("invalid_reply: {parent_id} is Core's notice, which takes no reply; send without replyTo{about} to write to {to}");
+            }
             ensure!(
-                (actor.id == from_id && to == to_id) || (actor.id == to_id && to == from_id),
+                kept,
                 "invalid_reply: a reply goes between {from_id} and {to_id}, the parent's sender and recipient; \
                  to write to {to}, send without replyTo"
             );
@@ -3058,6 +3059,10 @@ mod tests {
         };
         let error = send("b", json!({"requestId":"to core","toAgentId":"a","replyTo":notice["id"],"body":"Seen."})).unwrap_err().to_string();
         assert_eq!(error, "invalid_reply: notice-1 is Core's notice, which takes no reply; send without replyTo, with taskId T-1, to write to a");
+        // Who may reply is as before: the user may still write to its recipient in its thread.
+        let user = store.collaboration_call(None, "peer_send", json!({"requestId":"user on notice","toAgentId":"b","replyTo":notice["id"],"body":"About this."}))
+            .unwrap()["message"].clone();
+        assert_eq!((user["threadId"].as_str(), user["taskId"].as_str()), (Some("notice-1"), Some("T-1")));
         let message = send("a", json!({"requestId":"ask","toAgentId":"b","taskId":"T-1","body":"A question."})).unwrap()["message"].clone();
         let error = send("b", json!({"requestId":"elsewhere","toAgentId":"c","replyTo":message["id"],"body":"Forwarded."})).unwrap_err().to_string();
         assert_eq!(error, "invalid_reply: a reply goes between a and b, the parent's sender and recipient; to write to c, send without replyTo");
