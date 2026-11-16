@@ -15,7 +15,8 @@ import { Tip, TipText } from "./Tip";
 /** The desktop shell's own update state (desktop/src/update.rs). */
 export type DesktopUpdateStatus = {
   version: string;
-  /** "installer": installed by the Yuzuno installer, which can update it. */
+  /** "installer": a copy that can replace itself in place (the Windows app
+   *  its installer installed, the Mac app from a Yuzuno release). */
   channel: "installer" | "unknown";
   /** Why this copy cannot update itself here, if it cannot. */
   unavailable: string | null;
@@ -55,18 +56,18 @@ const POLL_MS = 500;
 // and release notes are shown as they came.
 const text = strings({
   title: "Desktop app",
-  separately: "The Windows app is updated separately, from Settings in the app itself. The update above changes only the Workspace service it connects to.",
+  separately: "The desktop app is updated separately, from Settings in the app itself. The update above changes only the Workspace service it connects to.",
   older: "This desktop version cannot update itself. Install a newer release by hand.",
   choose: "Choose which Workspace service this window opens.",
   connection: "Connection",
-  checks: "This Windows app checks the Workspace service it is connected to for a signed desktop release.",
+  checks: "This desktop app checks the Workspace service it is connected to for a signed desktop release.",
   installedNow: "Installed now",
   version: (version: string) => `Version ${version}`,
   available: (version: string) => `Version ${version} is available`,
   current: "The desktop app is up to date.",
   checking: "Checking for a desktop release…",
   updates: "Desktop updates",
-  notInstaller: "This copy was not installed by the Yuzuno installer, so it cannot update itself. Install new releases by hand.",
+  notInstaller: "This copy was not installed from a Yuzuno release, so it cannot update itself. Install new releases by hand.",
   whatsNew: "What’s new",
   installNote: "Installing closes this window and reopens the new version. Drafts and the Workspace connection are kept; the Workspace service and its agents keep running.",
   downloading: (received: string, total: string | null) => ` Downloading and verifying ${received}${total ? ` of ${total}` : ""}…`,
@@ -75,18 +76,18 @@ const text = strings({
   install: (version: string) => `Download and install ${version}`,
 }, {
   title: "桌面应用",
-  separately: "Windows 应用单独更新，需在该应用自己的设置中进行。上方的更新只会改变它所连接的 Workspace 服务。",
+  separately: "桌面应用单独更新，需在该应用自己的设置中进行。上方的更新只会改变它所连接的 Workspace 服务。",
   older: "此桌面版本无法自行更新。请手动安装更新的发行版。",
   choose: "选择此窗口打开哪个 Workspace 服务。",
   connection: "连接",
-  checks: "此 Windows 应用会向它所连接的 Workspace 服务检查已签名的桌面发行版。",
+  checks: "此桌面应用会向它所连接的 Workspace 服务检查已签名的桌面发行版。",
   installedNow: "当前已安装",
   version: (version) => `版本 ${version}`,
   available: (version) => `版本 ${version} 可用`,
   current: "桌面应用已是最新。",
   checking: "正在检查桌面发行版…",
   updates: "桌面更新",
-  notInstaller: "此副本不是由 Yuzuno 安装程序安装的，因此无法自行更新。请手动安装新的发行版。",
+  notInstaller: "此副本不是从 Yuzuno 发行版安装的，因此无法自行更新。请手动安装新的发行版。",
   whatsNew: "新内容",
   installNote: "安装会关闭此窗口并打开新版本。草稿和 Workspace 连接会保留；Workspace 服务及其 Agent 会继续运行。",
   downloading: (received, total) => ` 正在下载并验证 ${received}${total ? ` / ${total}` : ""}…`,

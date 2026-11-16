@@ -132,7 +132,7 @@ try {
   assert.deepEqual(en.waits, [`Mori${BLOCKER} · Pause request delivered`]);
   assert.deepEqual(en.steps, ["Download:is-reused", "Verify:is-reused", "Prepare:is-done", "Wait for agents:is-current", "Install:is-next"]);
   assert.deepEqual(en.buttons, ["Cancel update"]);
-  assert.match(en.desktop, /^Desktop appThe Windows app is updated separately/);
+  assert.match(en.desktop, /^Desktop appThe desktop app is updated separately/);
   assert.deepEqual(report.posts, [], "opening Settings mid-update sends nothing");
   check("Workspace service in English: an update chosen here waits for the agents, with its steps, Core's reason and the Desktop app", { en });
 
@@ -149,7 +149,7 @@ try {
   assert.ok(zh.details.includes("已准备"), "the prepared release");
   assert.ok(zh.details.some((d) => d.includes("linux-x86_64 · API 1 · 数据 2 · 记录 1Reviewed local build")), "its source as written");
   assert.ok(zh.details.some((d) => /^Core 主机上 48 MB · 已保留 2 个发行版 · 最多保留 3 个用于恢复$/.test(d)));
-  assert.match(zh.desktop, /^桌面应用Windows 应用单独更新，需在该应用自己的设置中进行。/);
+  assert.match(zh.desktop, /^桌面应用桌面应用单独更新，需在该应用自己的设置中进行。/);
   assert.equal(zh.intent, en.intent, "the chosen update as it was saved");
   assert.deepEqual(meanwhile.filter((read) => !read.startsWith("GET ")), [], "nothing sent");
   await page.screenshot({ path: join(output, "updates-zh.png") });

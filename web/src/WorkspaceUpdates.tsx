@@ -1059,7 +1059,7 @@ export function WorkspaceUpdates({
               )}
             </section>
           )}
-          {/* The Windows app's own updates sit with the service's, not in a
+          {/* The desktop app's own updates sit with the service's, not in a
               category of their own. */}
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
