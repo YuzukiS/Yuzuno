@@ -11,7 +11,7 @@ Claude Code、Codex、OpenCode 和 DeepSeek Harness，你的项目，以及在�
   <a href="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml"><img src="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <a href="#现状与限制"><img src="https://img.shields.io/badge/status-pre--alpha-e6bb50?labelColor=44403c" alt="状态：pre-alpha" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="许可证：Apache 2.0" /></a>
-  <a href="docs/independent-core.md#supported-platforms"><img src="https://img.shields.io/badge/Core-Linux%20%7C%20WSL2-64748b?logo=linux&logoColor=white" alt="Core：Linux 和 WSL2" /></a>
+  <a href="docs/independent-core.md#supported-platforms"><img src="https://img.shields.io/badge/Core-Linux%20%7C%20WSL2%20%7C%20macOS-64748b?logo=linux&logoColor=white" alt="Core：Linux、WSL2 和 macOS" /></a>
 </p>
 
 <p align="center">
@@ -72,7 +72,7 @@ Job 把命令、资源申请、状态、日志和输出放在一起。后面的�
 
 ## 开始使用
 
-先选 Core 跑在哪里：一台 Linux x86_64 电脑，或者 Windows 上的 WSL2。先在那里装好并登录 Claude Code、Codex 或两者；Yuzuno 用这些登录，从不复制它们。
+先选 Core 跑在哪里：一台 Linux x86_64 电脑、Windows 上的 WSL2，或者一台 Apple 芯片的 Mac。先在那里装好并登录 Claude Code、Codex 或两者；Yuzuno 用这些登录，从不复制它们。
 
 ### Windows：桌面应用把 Core 装进 WSL2
 
@@ -89,7 +89,7 @@ Linux x86_64 的签名 Core 发布在 [Releases 页](https://github.com/YuzukiS/
 
 ### macOS
 
-目前 Mac 通过 SSH 隧道连接 Linux 上的 Core；Mac 应用要从源码构建，见[桌面应用说明](desktop/README.md#macos-desktop-core-on-another-computer)。*下一版：* 给 Apple 芯片 Mac 的 Core 包，以及能把它装在你的 Mac 上并启动的 Mac 应用（[在这台 Mac 上安装并启动 Core](desktop/README.md#install-and-start-core-on-this-mac-macos)）。
+从 core.36 起，[Releases 页面](https://github.com/YuzukiS/Yuzuno/releases)上有给 Apple 芯片 Mac（macOS 11 或更新）的签名 Core 发布；[安装指南](docs/independent-core.md#install-start-and-stop-on-macos)在终端里装一个。Mac 也可以通过 SSH 隧道连接 Linux 上的 Core；Mac 应用要从源码构建，见[桌面应用说明](desktop/README.md#macos-desktop-core-on-another-computer)。*下一版：* 能把 Core 装在你的 Mac 上并启动的 Mac 应用（[在这台 Mac 上安装并启动 Core](desktop/README.md#install-and-start-core-on-this-mac-macos)）。
 
 ### 从源码运行
 
@@ -114,11 +114,11 @@ python3 scripts/launch.py core
 
 | 部分 | 支持 |
 | --- | --- |
-| **Core** | Linux x86_64，glibc 2.35 或更新，包括 Windows 上的 WSL2。*下一版：* Apple 芯片上的 macOS 11 或更新。 |
+| **Core** | Linux x86_64，glibc 2.35 或更新，包括 Windows 上的 WSL2；从 core.36 起，Apple 芯片上的 macOS 11 或更新。 |
 | **客户端** | Chromium 系浏览器；Windows 桌面应用；Mac 应用（从源码构建）；通过[手机入口](docs/independent-core.md#connect-from-a-phone-tailscale-serve)用手机浏览器。iPhone 应用可以从源码构建；没有 Linux 桌面应用。 |
 | **Agent 运行时** | Claude Code（需要 Node.js 20 或更新）、Codex 或 [OpenCode](docs/opencode.md)（实验性），装在 Agent 运行的机器上并已登录。[DeepSeek Harness](docs/dsh.md)（`dsh`，需要 Node.js 24.9 或更新）只在 Core 所在的电脑上运行，要先在设置里加一个 DeepSeek 密钥。 |
 | **Agent 所在机器** | Core 所在的电脑，或经 SSH 访问、装有 Python 3 的 Linux 和 macOS 机器。 |
-| **Job** | Linux：systemd 用户管理器，cgroup v2 带 `cpu`、`memory` 和 `pids`，由它们强制执行每个 Job 的上限。经 SSH 的 Mac 按 limited 模式运行 Job：上限只记录，不强制。 |
+| **Job** | Linux：systemd 用户管理器，cgroup v2 带 `cpu`、`memory` 和 `pids`，由它们强制执行每个 Job 的上限。Mac（经 SSH，或者就是 Core 所在的电脑）按 limited 模式运行 Job：上限只记录，不强制。 |
 
 [支持矩阵](docs/independent-core.md#supported-platforms)分开写了哪些测过、哪些还是计划。
 
@@ -143,7 +143,7 @@ Yuzuno 是一个仍在积极开发的早期 alpha，以源码和签名的 Core �
 
 - **没有用户账号。** 能访问 Core 端口的人都能使用这个 Workspace，所以只让它留在本机回环地址上。
 - **Job 是资源控制，不是沙箱。** 它们以 Core 的用户身份运行，在 Agent 的沙箱之外。
-- **Windows 上 Core 只能跑在 WSL2 里。** **[macOS 上的 Core](docs/macos-core.md)（只支持 Apple 芯片）正在做**；目前 Mac 连接 Linux 上的 Core。还没有 Linux aarch64 的包。
+- **Windows 上 Core 只能跑在 WSL2 里。** **[macOS 上的 Core](docs/macos-core.md) 只支持 Apple 芯片，要手动安装**：还没有发布的 Mac 应用能装它。还没有 Linux aarch64 的包。
 - **应用都没有公认发布者的签名。** Windows 可能会对安装程序发出警告；Mac 应用是 ad hoc 签名、没有公证；iPhone 应用要从源码构建，大约一周后失效。
 - **OpenCode Agent 还是实验性的，DeepSeek Harness 是开发者预览版。** 有些功能因运行时而异：例如[回退](docs/rewind.md)、文件（DeepSeek Harness 和 SSH 机器上的 Agent 还不能收）和流式输出（DeepSeek Harness 每一步结束时才显示；见[它的已知限制](docs/dsh.md#known-limits)）。
 

@@ -11,7 +11,7 @@ Claude Code, Codex, OpenCode and DeepSeek Harness, your projects, and the work t
   <a href="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml"><img src="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <a href="#status-and-limits"><img src="https://img.shields.io/badge/status-pre--alpha-e6bb50?labelColor=44403c" alt="Status: pre-alpha" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0" /></a>
-  <a href="docs/independent-core.md#supported-platforms"><img src="https://img.shields.io/badge/Core-Linux%20%7C%20WSL2-64748b?logo=linux&logoColor=white" alt="Core: Linux and WSL2" /></a>
+  <a href="docs/independent-core.md#supported-platforms"><img src="https://img.shields.io/badge/Core-Linux%20%7C%20WSL2%20%7C%20macOS-64748b?logo=linux&logoColor=white" alt="Core: Linux, WSL2 and macOS" /></a>
 </p>
 
 <p align="center">
@@ -70,7 +70,7 @@ A routing candidate can use a pool of [claude-swap](docs/executor-routing.md#cla
 
 ## Get started
 
-Choose where Core runs: a Linux x86_64 computer, or WSL2 on Windows. Install and sign in to Claude Code, Codex or both there first; Yuzuno uses those sign-ins and never copies them.
+Choose where Core runs: a Linux x86_64 computer, WSL2 on Windows, or a Mac with Apple silicon. Install and sign in to Claude Code, Codex or both there first; Yuzuno uses those sign-ins and never copies them.
 
 ### Windows: the desktop app installs Core in WSL2
 
@@ -87,7 +87,7 @@ Signed Core releases for Linux x86_64 are on the [Releases page](https://github.
 
 ### macOS
 
-For now a Mac connects through an SSH tunnel to a Core on Linux; the [desktop guide](desktop/README.md#macos-desktop-core-on-another-computer) covers the Mac app, which is built from source. *Next release:* a Core package for Macs with Apple silicon, and a Mac app that installs and starts it on your Mac ([Install and start Core on this Mac](desktop/README.md#install-and-start-core-on-this-mac-macos)).
+Signed Core releases for Macs with Apple silicon (macOS 11 or newer) are on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases) from core.36 on; the [install guide](docs/independent-core.md#install-start-and-stop-on-macos) installs one in Terminal. A Mac can also connect through an SSH tunnel to a Core on Linux; the [desktop guide](desktop/README.md#macos-desktop-core-on-another-computer) covers the Mac app, which is built from source. *Next release:* a Mac app that installs and starts Core on your Mac ([Install and start Core on this Mac](desktop/README.md#install-and-start-core-on-this-mac-macos)).
 
 ### Run from source
 
@@ -112,11 +112,11 @@ Open **http://127.0.0.1:4317**, create an Agent, choose its runtime and project 
 
 | Part | Supported |
 | --- | --- |
-| **Core** | Linux x86_64 with glibc 2.35 or newer, including WSL2 on Windows. *Next release:* macOS 11 or newer on Apple silicon. |
+| **Core** | Linux x86_64 with glibc 2.35 or newer, including WSL2 on Windows; macOS 11 or newer on Apple silicon, from core.36. |
 | **Clients** | Chromium-based browsers; the Windows desktop app; the Mac app, built from source; a phone's browser through the [phone entry](docs/independent-core.md#connect-from-a-phone-tailscale-serve). An iPhone app builds from source; there is no Linux desktop app. |
 | **Agent runtimes** | Claude Code (with Node.js 20 or newer), Codex, or [OpenCode](docs/opencode.md) (experimental), installed and signed in where the Agent runs. [DeepSeek Harness](docs/dsh.md) (`dsh`, with Node.js 24.9 or newer) runs on the Core's computer only, with a DeepSeek key added in Settings. |
 | **Agent machines** | The Core's computer, or Linux and macOS machines reached over SSH with Python 3. |
-| **Jobs** | Linux: a systemd user manager with cgroup v2 `cpu`, `memory` and `pids`, which enforce each Job's limits. Macs over SSH run Jobs in limited mode, where limits are recorded, not enforced. |
+| **Jobs** | Linux: a systemd user manager with cgroup v2 `cpu`, `memory` and `pids`, which enforce each Job's limits. Macs, over SSH or as the Core's own computer, run Jobs in limited mode, where limits are recorded, not enforced. |
 
 The [support matrix](docs/independent-core.md#supported-platforms) separates what was tested from what is planned.
 
@@ -141,7 +141,7 @@ Yuzuno is an early alpha in active development, published as source and as signe
 
 - **No user accounts.** Anyone who can reach Core's port can use the Workspace; keep it on loopback.
 - **Jobs are resource control, not a sandbox.** They run as the Core's user, outside the Agents' sandboxes.
-- **Windows runs Core only in WSL2.** **macOS Core (Apple silicon only) is [being built](docs/macos-core.md)**; a Mac connects to a Core on Linux for now. There is no Linux aarch64 package yet.
+- **Windows runs Core only in WSL2.** **[macOS Core](docs/macos-core.md) is Apple silicon only and installed by hand**: no released Mac app installs it yet. There is no Linux aarch64 package yet.
 - **The apps are not signed by a recognised publisher.** Windows may warn about the installer; the Mac app is signed ad hoc and not notarized; the iPhone app is built from source and lapses after about a week.
 - **OpenCode Agents are experimental, and DeepSeek Harness is a developer preview.** Some features differ by runtime: for example [rewind](docs/rewind.md), files (not yet for DeepSeek Harness or Agents on SSH machines) and streaming output (DeepSeek Harness shows each step when it ends; see [its limits](docs/dsh.md#known-limits)).
 
