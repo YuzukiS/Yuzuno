@@ -1145,6 +1145,14 @@ pub(super) fn auto_retry(db: &Connection, job: &mut Value) -> Result<()> {
     let systemd = &job["result"]["evidence"]["systemd"];
     let retryable = match job["status"].as_str() {
         Some("interrupted") => retry.interrupted,
+        Some("failed") if job["executor"].is_object() => {
+            // A stage on a machine (YN-83 S2): the exit its supervisor there
+            // recorded, only for a command that exited with that code (not a
+            // timeout, a signal or a failed artifact check).
+            let ended = &job["result"]["evidence"]["result"];
+            ended["reason"].as_str().is_some_and(|reason| reason.starts_with("exit-code "))
+                && ended["exitCode"].as_i64().is_some_and(|code| retry.exit_codes.contains(&code))
+        }
         Some("failed") => {
             systemd["Result"] == "exit-code"
                 && systemd["ExecMainStatus"]
