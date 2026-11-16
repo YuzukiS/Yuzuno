@@ -37,7 +37,7 @@ Home 的内容分两类：
 - **Section**：按主题 key 划分，每节有一个种类（ask / report / status）和一个 Section Owner。
   - **ask**：必须写明问题，并给出至少一个选项或明确的回复要求，否则拒收。只有 owner 把它标为已解决时才离开。用户回复后，它离开 Needs you，紧凑显示为"已回复 · 等待 owner"，原问题收在可展开处。owner 在 brief_get 的 you.repliedAsks 里看到它，处理完再 resolve：偏好或信息类收到即可关闭，执行类在授权动作确认完成、结果写入任务或 Brief 后才关闭；处理中或失败时保持已回复，只更新进度。若 owner 重新 put，就是再次提问。还没回复的 ask，用户可以把它延后到某个时间。
   - **report**：用户标记看过后收入历史，历史保留 30 天。
-  - **status**：一直保留，显示"数据截至"时间。超过该节声明的有效期后变灰。edit 或 patch 不带 `status` 时，"数据截至"记为这次写入的时间，有效期不变；带了就按带的来；edit 可以只带 `status`、不带 `elements`（YN-195）。目标是由 Status Feeder 刷新，见切片 3。
+  - **status**：一直保留，显示"数据截至"时间。超过该节声明的有效期后变灰。改了块的 edit 或 patch 不带 `status` 时，"数据截至"记为这次写入的时间，有效期不变（只改 `task` 的 edit 不动它）；带了就按带的来；edit 可以只带 `status`、不带 `elements`（YN-195）。目标是由 Status Feeder 刷新，见切片 3。
 - **Owner 规则**：
   - 只有 owner 能修改自己的节。
   - 其他 Agent 要补充时，在该主题下挂子主题（例如 `round-12/review`），Yuzuno 把父节和子节合并显示，并分别标明作者。

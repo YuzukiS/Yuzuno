@@ -192,7 +192,7 @@ On an array, @<id> names the item whose id it is, e.g. /elements/runs/props/rows
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
-status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale. An edit or patch without status sets asOf to the time of the write.\n\
+status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale. An edit of blocks or a patch without status sets asOf to the time of the write.\n\
 attachments: up to 12 per section, {name, path (absolute, on the Core host) or url (https), caption?}. Files up to 25 MB are kept as snapshots; \
 charts read only snapshot data files (CSV, JSON, JSONL).\n\
 errors: a rejection lists problems with a code, a path and the guide part to read; nothing was changed.";

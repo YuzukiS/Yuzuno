@@ -1528,10 +1528,14 @@ fn apply(
                 data["body"] = normalized[index]["body"].clone();
                 if !change.edit["status"].is_null() {
                     data["status"] = normalized[index]["status"].clone();
-                } else if row.kind == "status" {
-                    // A status edited without one is current as of this write
-                    // (YN-195); its validity is kept. One that sends status
-                    // says when its facts are from.
+                } else if row.kind == "status"
+                    && (change.op == Op::Patch || change.edit["elements"].as_object().is_some_and(|blocks| !blocks.is_empty()))
+                {
+                    // A status whose content is edited or patched without one
+                    // is current as of this write (YN-195); its validity is
+                    // kept. One that sends status says when its facts are
+                    // from; an edit of its binding or refresh alone writes no
+                    // content, so its facts are as old as they were.
                     data["status"]["asOf"] = json!(at);
                 }
                 match kept_repairs(&row.data["repairs"], change, &data["body"]) {
