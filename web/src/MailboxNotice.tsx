@@ -43,7 +43,7 @@ const jobResults: Record<string, string> = {
   timed_out: "timed out",
   oom: "out of memory",
   interrupted: "interrupted",
-  rejected: "rejected",
+  rejected: "not started",
   unknown: "result unknown",
 };
 const ciResults: Record<string, string> = {
@@ -111,7 +111,7 @@ function labelEn(group: MailboxGroup) {
 // In Chinese (T-189); a status Core sends that isn't listed is "结果未知".
 const jobResultsZh: Record<string, string> = {
   waiting_analysis: "等待分析", succeeded: "通过", failed: "失败", cancelled: "已取消", timed_out: "超时",
-  oom: "内存不足", interrupted: "已中断", rejected: "已拒绝", unknown: "结果未知",
+  oom: "内存不足", interrupted: "已中断", rejected: "未启动", unknown: "结果未知",
 };
 const ciResultsZh: Record<string, string> = {
   passed: "通过", failed: "失败", cancelled: "已取消", skipped: "已跳过", pending: "等待中", unknown: "结果未知",

@@ -845,7 +845,7 @@ test("compact doorbells use frozen results, priorities and bounded groups withou
     const cases = [
       ["peer", "", "Peer message"], ["job", "succeeded", "Job passed"], ["job", "failed", "Job failed"],
       ["job", "cancelled", "Job cancelled"], ["job", "timed_out", "Job timed out"], ["job", "oom", "Job out of memory"],
-      ["job", "unknown", "Job result unknown"], ["job", "interrupted", "Job interrupted"], ["job", "rejected", "Job rejected"],
+      ["job", "unknown", "Job result unknown"], ["job", "interrupted", "Job interrupted"], ["job", "rejected", "Job not started"],
       ["ci", "passed", "CI passed"], ["ci", "failed", "CI failed"], ["ci", "cancelled", "CI cancelled"],
       ["ci", "skipped", "CI skipped"], ["ci", "pending", "CI pending"],
       ["review", "no_findings", "Code review: no findings"], ["review", "changes_requested", "Code review: changes requested"],

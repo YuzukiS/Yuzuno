@@ -618,9 +618,10 @@ async fn a_signal_the_wrapper_cannot_raise_again_or_that_systemd_calls_clean_is_
     // and no budget is spent.
     let pipe = json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"243"});
     let term = json!({"Result":"success","ExecMainCode":"2","ExecMainStatus":"15"});
+    let wrapper = json!({"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"1"});
     let own = |code: i64| Some(json!({"pid":42,"exitCode":code}));
     let none = json!({});
-    let cases: [(&str, Value, Option<Value>, Value, &str); 14] = [
+    let cases: [(&str, Value, Option<Value>, Value, &str); 16] = [
         // No record of the command's end, or another attempt's.
         ("failed", pipe.clone(), None, none.clone(), "unknown_outcome"),
         ("failed", pipe.clone(), Some(json!({"pid":42,"startedAt":1.0})), none.clone(), "unknown_outcome"),
@@ -634,6 +635,9 @@ async fn a_signal_the_wrapper_cannot_raise_again_or_that_systemd_calls_clean_is_
         ("failed", json!({"Result":"success","ExecMainCode":"1","ExecMainStatus":"0"}), own(-15), none.clone(), "launch_refused"),
         // The wrapper failed before creating the command.
         ("failed", pipe.clone(), None, json!({"notLaunched":{"stage":"prepare","reason":"OSError"}}), "launch_refused"),
+        // As the host now records it (YN-174): not started, at the stage it names.
+        ("rejected", wrapper.clone(), None, json!({"notLaunched":{"stage":"inputs","reason":"RuntimeError: Guarded inputs must be files"}}), "inputs_changed"),
+        ("rejected", wrapper.clone(), None, json!({"notLaunched":{"stage":"prepare","reason":"RuntimeError: This Job's cgroup has no memory controller"}}), "launch_refused"),
         // Every earlier ending still decides first.
         ("unknown", pipe.clone(), own(-13), none.clone(), "unknown_outcome"),
         ("failed", pipe.clone(), own(-13), json!({"deadline":{"kind":"stop","at":1.0}}), "lifetime_reached"),

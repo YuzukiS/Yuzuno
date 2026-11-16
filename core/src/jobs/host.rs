@@ -132,6 +132,17 @@ fn input_guard(stderr: &[u8]) -> Option<String> {
     let detail: Value = serde_json::from_str(line.strip_prefix("yuzuno-input-guard ")?).ok()?;
     detail["problem"].as_str().filter(|problem| !problem.is_empty()).map(str::to_owned)
 }
+/// A program that could not be created at all (spawn failed): it ran nothing
+/// and was asked nothing. Shown as the OS error itself, which is therefore
+/// not its source too: a chain would name it twice.
+#[derive(Debug)]
+pub(super) struct NotSpawned(std::io::Error);
+impl std::fmt::Display for NotSpawned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for NotSpawned {}
 async fn run(mut cmd: Command, input: Option<Value>, seconds: u64) -> Result<Value> {
     cmd.stdin(if input.is_some() {
         Stdio::piped()
@@ -141,7 +152,7 @@ async fn run(mut cmd: Command, input: Option<Value>, seconds: u64) -> Result<Val
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .kill_on_drop(true);
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(NotSpawned)?;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().context("Missing helper stdin")?;
         stdin.write_all(&serde_json::to_vec(&input)?).await?;
@@ -378,10 +389,27 @@ pub(super) async fn launch(data: &Path, job: &Value) -> Result<(), LaunchError> 
     .await
     .with_context(|| format!("Could not prepare its launch record in {}", dir.display()))
     .map_err(LaunchError::NotStarted)?;
-    systemd_run(job, &script, &spec).await.map_err(LaunchError::Unconfirmed)
+    systemd_run(data, job, &script, &spec).await.map_err(|error| {
+        // systemd-run itself could not be created: systemd was never asked
+        // to start anything (YN-174). Anything after that may have started
+        // the unit, which only reconciliation can tell.
+        if error.downcast_ref::<NotSpawned>().is_some() {
+            LaunchError::NotStarted(error.context("systemd-run could not be started"))
+        } else {
+            LaunchError::Unconfirmed(error)
+        }
+    })
 }
-async fn systemd_run(job: &Value, script: &Path, spec: &Path) -> Result<()> {
-    let mut cmd = Command::new("systemd-run");
+/// Tests: for the data folders named here, the program run instead of
+/// systemd-run (one that does not exist, or one that fails).
+#[cfg(test)]
+pub(super) static SYSTEMD_RUN: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+async fn systemd_run(data: &Path, job: &Value, script: &Path, spec: &Path) -> Result<()> {
+    let program = PathBuf::from("systemd-run");
+    #[cfg(test)]
+    let program = SYSTEMD_RUN.lock().unwrap().iter().find(|(dir, _)| data.starts_with(dir)).map_or(program, |(_, stand_in)| stand_in.clone());
+    let _ = data;
+    let mut cmd = Command::new(program);
     cmd.args([
         "--user",
         "--quiet",
