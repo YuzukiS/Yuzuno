@@ -340,7 +340,12 @@ fn notify(db: &Connection, job: &mut Value) -> Result<()> {
         None => "Local job".to_owned(),
     };
     let resources = super::resource_summary::mail(job);
-    let body = format!("{place} {} ({}) is {status}. Task {public_task}. {}{context}{resources} Read job_get(jobId={}) for retained machine evidence and job_logs for bounded output. This job result does not complete the business task or authorize an automatic rerun.",job["name"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""),job["reason"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""));
+    // Its Git guard checked again at exit found a change (YN-194).
+    let guard = match &job["result"]["guardAtExit"] {
+        exit if exit["unchanged"] == false => format!(" {}", exit["reason"].as_str().unwrap_or("The guarded work tree changed while the command ran.")),
+        _ => String::new(),
+    };
+    let body = format!("{place} {} ({}) is {status}. Task {public_task}. {}{guard}{context}{resources} Read job_get(jobId={}) for retained machine evidence and job_logs for bounded output. This job result does not complete the business task or authorize an automatic rerun.",job["name"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""),job["reason"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""));
     let name = job["name"].as_str().unwrap_or("").to_owned();
     let run = job["run"]["id"].as_str().unwrap_or("").to_owned();
     let recipient = job["agent"].clone();

@@ -600,6 +600,45 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertEqual((self.work/'cpu.txt').read_text(), f"1600 {self.folder/'cpu-millis'}\n")
         self.assertEqual(host.read(self.folder/'started.json')['limits']['cpu.weight'], '5')
 
+    # YN-194: the Git guard checked again once the command exited.
+    def git_guarded(self, command, artifacts=()):
+        git = lambda *args: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *args],
+                                           cwd=self.work, check=True, capture_output=True)
+        git('init', '-q')
+        (self.work/'tracked.txt').write_text('one\n')
+        (self.work/'out.json').write_text('{}\n')
+        git('add', '.')
+        git('commit', '-q', '-m', 'base')
+        self.git = git
+        self.spec.update({'guardGit': True, 'argv': ['/bin/sh', '-c', command],
+                          'artifacts': [{'path': p, 'format': 'bytes'} for p in artifacts]})
+        self.spec['snapshot'] = host.snapshot(self.spec)
+        with patch.dict(os.environ, {'GIT_CEILING_DIRECTORIES': str(Path(self.tmp.name))}):
+            code = self.run_worker()
+        return code, host.read(self.folder/'guard-exit.json')
+
+    def test_a_tracked_file_changed_while_it_ran_is_said_at_exit_and_nothing_fails(self):
+        code, checked = self.git_guarded('echo two > tracked.txt; exit 3')
+        self.assertEqual(code, 3, 'the exit status stays the command\'s own')
+        self.assertEqual((checked['attempt'], checked['unchanged']), (self.spec['attempt'], False))
+        self.assertEqual(checked['changed'], [str(self.work/'tracked.txt')])
+        self.assertIn('changed while the command ran', checked['reason'])
+        self.assertEqual(host.reports(self.spec, self.folder)['guardAtExit'], checked)
+
+    def test_an_untouched_tree_is_unchanged_at_exit_and_its_own_artifact_is_left_out(self):
+        code, checked = self.git_guarded('echo \'{"a":1}\' > out.json; echo ok > untracked.txt; exit 0', artifacts=['out.json'])
+        self.assertEqual(code, 0)
+        self.assertTrue(checked['unchanged'], checked)
+
+    def test_a_commit_while_it_ran_is_said_by_name(self):
+        code, checked = self.git_guarded('git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m later; exit 3')
+        self.assertEqual(checked['changed'], ['the Git commit'])
+
+    def test_without_guard_git_nothing_is_checked_at_exit(self):
+        self.assertEqual(self.run_worker(), 3)
+        self.assertIsNone(host.read(self.folder/'guard-exit.json'))
+        self.assertNotIn('guardAtExit', host.reports(self.spec, self.folder))
+
     def test_an_attempt_from_before_cpu_grants_starts_at_its_request(self):
         self.spec['argv'] = ['/bin/sh','-c','echo "$YUZUNO_JOB_CPU_MILLIS" > cpu.txt; exit 3']
         self.assertEqual(self.run_worker(), 3)

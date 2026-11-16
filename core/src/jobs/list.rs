@@ -218,6 +218,10 @@ fn compact_job(job: &Value) -> Value {
     if !job["run"]["id"].is_null() {
         out["run"] = json!({"id":job["run"]["id"],"stage":job["run"]["stage"],"attempt":job["run"]["attempt"]});
     }
+    // Its Git guard checked again at exit found a change (YN-194).
+    if job["result"]["guardAtExit"]["unchanged"] == false {
+        out["guardChangedDuringRun"] = json!(true);
+    }
     out
 }
 
