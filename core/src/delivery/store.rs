@@ -471,7 +471,7 @@ pub(crate) fn call(
         if let Some(raw) = raw {
             r.review.id = Some(text(&serde_json::from_str::<Value>(&raw)?, "id")?.into());
         }
-        let unresolved: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running','unknown') AND id IS NOT ?3)", params![id,f.link_id,r.review.id], |row|row.get(0))?;
+        let unresolved: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('queued','preparing','running','unknown') AND id IS NOT ?3)", params![id,f.link_id,r.review.id], |row|row.get(0))?;
         ensure!(
             !unresolved,
             "Another review is running or its outcome is unknown; reconcile that retained review before enabling delivery"
@@ -524,7 +524,7 @@ fn continued(db: &Connection, f: &Flow, linked: &Value, head: &str) -> Result<Op
         Some(id) => {
             let rv = review(db, Some(id))?;
             let rv = rv
-                .filter(|v| !matches!(v["status"].as_str(), Some("preparing" | "running" | "unknown")))
+                .filter(|v| !matches!(v["status"].as_str(), Some("queued" | "preparing" | "running" | "unknown")))
                 .context("Reconcile the existing review first; an unfinished or unknown review cannot be replaced")?;
             let status = rv["status"].as_str().unwrap_or("unknown").to_owned();
             // A completed review without an explicit conclusion is an unknown
@@ -935,7 +935,7 @@ fn state(db: &Connection, f: &Flow, rv: &Value, ci: &Value) -> Result<(&'static 
             "Starting the registered independent review.",
         );
     }
-    if matches!(rv["status"].as_str(), Some("preparing" | "running")) {
+    if matches!(rv["status"].as_str(), Some("queued" | "preparing" | "running")) {
         return state(
             "waiting_review",
             "The independent reviewer is working on this fixed revision.",

@@ -21,7 +21,7 @@ impl Store {
         let db = self.db.read()?;
         let mut query = db.prepare(
             "SELECT data ->> '$.notificationRecipient.id', data ->> '$.number', data ->> '$.round' FROM pr_reviews
-             WHERE status IN ('preparing','running') AND data ->> '$.notificationRecipient.kind'='agent' ORDER BY rowid",
+             WHERE status IN ('queued','preparing','running') AND data ->> '$.notificationRecipient.kind'='agent' ORDER BY rowid",
         )?;
         let rows = query.query_map([], |r| {
             Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?))

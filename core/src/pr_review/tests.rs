@@ -1416,3 +1416,82 @@ fn a_start_without_the_new_flag_serializes_as_before() {
 
 /// YN-12 S2: the dispatcher's copy of an executor's own round.
 mod copy;
+
+/// A Workspace whose GitHub is unreachable (a round that starts ends at its
+/// first read) and a task with PR 7:pull:1 linked: YN-192's queue tests.
+fn queue_workspace(dir: &std::path::Path) -> (Arc<Workspace>, String) {
+    let mut ws = Workspace::new(dir.join("data"), "/tmp".into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = dir.join("no-gh").to_string_lossy().into();
+    let task = ws.store.collaboration_call(None, "task_create", json!({"requestId":"create","title":"Deliver PR"})).unwrap()["task"]["id"]
+        .as_str().unwrap().to_owned();
+    ws.store.github_link_object(&task, &Repository { id: 7, full_name: "owner/repo".into() }, "pull", 1,
+        json!({"baseSha":"a".repeat(40),"headSha":"b".repeat(40)})).unwrap();
+    (ws, task)
+}
+
+async fn status_leaves(ws: &Workspace, task: &str, id: &str, from: &str) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let run = ws.store.pr_review_report(task, id).unwrap();
+        if run["status"] != from {
+            return run;
+        }
+        assert!(std::time::Instant::now() < deadline, "still {from}: {run}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// YN-192 (20): with both review slots in use, review_start queues the round
+/// instead of refusing it. It is open (its PR takes no second round meanwhile)
+/// and starts once a slot frees.
+#[tokio::test]
+async fn a_round_waits_for_a_review_slot_and_starts_when_one_frees() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let start = |request: &str| json!({"requestId":request,"taskId":task,"linkId":"7:pull:1"});
+    let queued = ws.collaboration_call(None, "review_start", start("r1")).await.unwrap();
+    assert_eq!(queued["status"], "queued", "{queued}");
+    assert_eq!(queued["phase"], "Waiting for a review slot: both are in use");
+    let id = queued["id"].as_str().unwrap().to_owned();
+    let second = ws.collaboration_call(None, "review_start", start("r2")).await.unwrap_err().to_string();
+    assert!(second.contains("already running"), "{second}");
+    assert_eq!(ws.store.pr_review_report(&task, &id).unwrap()["status"], "queued", "it waits while both slots are in use");
+    drop(held);
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert!(run["queue"]["startedAt"].is_string(), "it left the queue and started: {run}");
+}
+
+/// YN-192 (20): a queued round cancelled before it starts ends cancelled,
+/// read nothing, and counts toward no round limit.
+#[tokio::test]
+async fn a_queued_round_cancelled_before_it_starts_does_not_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let _held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let queued = ws.collaboration_call(None, "review_start", json!({"requestId":"r1","taskId":task,"linkId":"7:pull:1"})).await.unwrap();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    ws.collaboration_call(None, "review_cancel", json!({"taskId":task,"reviewId":id})).await.unwrap();
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert_eq!(run["status"], "cancelled", "{run}");
+    assert!(run["nativeStartedAt"].is_null(), "it never started");
+    assert_eq!(run["roundLimit"]["counts"], false, "{run}");
+    assert_eq!(round_limit::counts(std::slice::from_ref(&run)), [false]);
+}
+
+/// YN-192 (20): a queued round never started, so a restart leaves it queued
+/// (unlike a preparing one, which ends unknown) for the next start to resume.
+#[test]
+fn a_queued_round_survives_a_restart_to_wait_again() {
+    let (dir, s, task) = setup();
+    s.create_pr_review(None, &input(&task, "queued"), "queued").unwrap();
+    let run = s.queue_pr_review("queued").unwrap();
+    assert_eq!((run["status"].as_str(), run["queue"]["ahead"].as_i64()), (Some("queued"), Some(0)));
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    s.recover_pr_reviews().unwrap();
+    assert_eq!(s.queued_pr_reviews().unwrap(), ["queued"]);
+    let started = s.dequeue_pr_review("queued").unwrap().unwrap();
+    assert_eq!(started["status"], "preparing");
+    assert!(s.dequeue_pr_review("queued").unwrap().is_none(), "it leaves the queue once");
+}

@@ -760,7 +760,7 @@ function memoryForms(budget: Budget, t: Words) {
 
 const stopped = new Set(["failed", "rejected", "interrupted", "unknown"]);
 const reviewActive = (r: ReviewRow) =>
-  r.status === "preparing" || r.status === "running";
+  r.status === "queued" || r.status === "preparing" || r.status === "running";
 const reviewOk = (r: ReviewRow) => r.status === "completed" && reviewPassed(r);
 /** What an end says, in the bar's words; Core's status values as they came.
  * Short, it leaves out the name, which is the part that can be long (YN-75). */

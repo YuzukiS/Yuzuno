@@ -277,7 +277,7 @@ fn review(db: &Connection, link: &str) -> Result<(Option<Value>, bool)> {
         )
         .optional()?;
     let running: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE link_id=?1 AND status IN ('preparing','running'))",
+        "SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE link_id=?1 AND status IN ('queued','preparing','running'))",
         [link],
         |r| r.get(0),
     )?;

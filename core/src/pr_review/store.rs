@@ -11,7 +11,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
       link_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, report TEXT);
       CREATE INDEX IF NOT EXISTS pr_reviews_task ON pr_reviews(task_id);
       CREATE UNIQUE INDEX IF NOT EXISTS pr_reviews_active ON pr_reviews(task_id,link_id)
-      WHERE status IN ('preparing','running');",
+      WHERE status IN ('preparing','running');
+      CREATE UNIQUE INDEX IF NOT EXISTS pr_reviews_open ON pr_reviews(task_id,link_id)
+      WHERE status IN ('queued','preparing','running');",
     )?;
     super::evidence::migrate(db)
 }
@@ -195,6 +197,68 @@ fn dispatcher_copy(tx: &Connection, data: &Value) -> Result<Option<crate::collab
 }
 
 impl Store {
+    /// Both review slots are taken (YN-192): `id`, just created, waits for
+    /// one, and says how many rounds wait ahead of it.
+    pub(crate) fn queue_pr_review(&self, id: &str) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let data: String = tx.query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='preparing'", [id], |r| r.get(0))?;
+        let ahead: i64 = tx.query_row("SELECT COUNT(*) FROM pr_reviews WHERE status='queued'", [], |r| r.get(0))?;
+        let mut run: Value = serde_json::from_str(&data)?;
+        run["status"] = json!("queued");
+        run["phase"] = json!(match ahead {
+            0 => "Waiting for a review slot: both are in use".to_owned(),
+            1 => "Waiting for a review slot: both are in use, 1 round ahead".to_owned(),
+            n => format!("Waiting for a review slot: both are in use, {n} rounds ahead"),
+        });
+        run["queue"] = json!({"ahead":ahead,"since":now()});
+        tx.execute("UPDATE pr_reviews SET status='queued',data=?2 WHERE id=?1 AND status='preparing'", params![id, run.to_string()])?;
+        tx.commit()?;
+        Ok(run)
+    }
+
+    /// A queued round's slot is free: it is preparing now, as a round that
+    /// found a slot at once; None when it ended meanwhile.
+    pub(crate) fn dequeue_pr_review(&self, id: &str) -> Result<Option<Value>> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let data: Option<String> = tx.query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='queued'", [id], |r| r.get(0)).optional()?;
+        let Some(data) = data else { return Ok(None) };
+        let mut run: Value = serde_json::from_str(&data)?;
+        run["status"] = json!("preparing");
+        run["phase"] = json!("Fetching fixed PR revision");
+        run["queue"]["startedAt"] = json!(now());
+        tx.execute("UPDATE pr_reviews SET status='preparing',data=?2 WHERE id=?1 AND status='queued'", params![id, run.to_string()])?;
+        tx.commit()?;
+        Ok(Some(run))
+    }
+
+    /// A queued round cancelled before it started: it ends cancelled, read
+    /// nothing, and counts toward no round limit.
+    pub(crate) fn cancel_queued_pr_review(&self, id: &str) -> Result<()> {
+        let data: Option<String> = self.db.read()?
+            .query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='queued'", [id], |r| r.get(0)).optional()?;
+        let Some(data) = data else { return Ok(()) };
+        let mut run: Value = serde_json::from_str(&data)?;
+        run["status"] = json!("cancelled");
+        run["conclusion"] = json!("unknown");
+        run["error"] = json!("Cancelled while it waited for a review slot; it never started");
+        super::policy::execution_reason(&mut run, "execution_cancelled");
+        run["roundLimit"] = json!({"counts":false,"read":"nothing",
+            "why":"It was cancelled while it waited for a review slot and never started, so it doesn't count toward this PR's two started rounds."});
+        run["finishedAt"] = json!(now());
+        run["phase"] = json!("cancelled");
+        self.save_pr_review(&run, None)
+    }
+
+    /// The rounds that wait for a review slot, oldest first.
+    pub(crate) fn queued_pr_reviews(&self) -> Result<Vec<String>> {
+        let db = self.db.read()?;
+        let mut query = db.prepare("SELECT id FROM pr_reviews WHERE status='queued' ORDER BY rowid")?;
+        let ids = query.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(ids)
+    }
+
     pub(crate) fn recover_pr_reviews(&self) -> Result<()> {
         let pending = {
             let db = self.db.read()?;
@@ -270,7 +334,7 @@ impl Store {
             count < 1000,
             "This task has reached its review history limit"
         );
-        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running'))", params![task,link], |r| r.get(0))?;
+        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('queued','preparing','running'))", params![task,link], |r| r.get(0))?;
         ensure!(!busy, "A review for this PR is already running");
         // Before a new paid round exists: an earlier completed round of this
         // exact candidate already found paths no round can cover.
@@ -432,7 +496,7 @@ impl Store {
             .into_iter()
             .find(|v| v["id"] == link.as_str())
             .context("PR is no longer linked to this task")?;
-        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running'))", params![task,link], |r| r.get(0))?;
+        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('queued','preparing','running'))", params![task,link], |r| r.get(0))?;
         ensure!(!busy, "A review for this PR is already running");
         // One continuation per parent. Only a child that provably started no
         // model (it failed before its native start was recorded) leaves it.
@@ -529,7 +593,7 @@ impl Store {
         }
         // Ending only a preparing or running round makes it end once, so
         // there is one original and at most one copy.
-        let n = tx.execute("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN ('preparing','running')",params![id,status,stored_data.to_string(),report])?;
+        let n = tx.execute("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN ('queued','preparing','running')",params![id,status,stored_data.to_string(),report])?;
         ensure!(n == 1, "Review has already ended");
         if !matches!(status, "preparing" | "running") {
             let actor = crate::collaboration_store::TaskActor {

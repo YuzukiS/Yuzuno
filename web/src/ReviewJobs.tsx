@@ -62,6 +62,7 @@ export const openTaskReview = (detail: { taskId: string; reviewId: string }) =>
 // as they came. The review reasons come from review-outcome.ts, as in the
 // task's review panel.
 const reviewText = strings({
+  queued: "Waiting for a review slot",
   preparing: "Preparing",
   reviewing: "Reviewing",
   conclusions: { ...reviewConclusions } as Record<string, string>,
@@ -121,6 +122,7 @@ const reviewText = strings({
   dockName: (number: number, round: number | null) => (round ? `PR #${number} · round ${round}` : `PR #${number}`),
   dockFindings: (count: number) => (count === 1 ? "1 finding" : `${count} findings`),
 }, {
+  queued: "等待审查位",
   preparing: "正在准备",
   reviewing: "正在审查",
   conclusions: {
@@ -189,9 +191,10 @@ type ReviewText = ReturnType<typeof reviewText>;
 const reviewEn = reviewText("en");
 const empty: Page = { reviews: [], hasMore: false, nextBefore: null };
 const active = (r: ReviewRow) =>
-  r.status === "preparing" || r.status === "running";
+  r.status === "queued" || r.status === "preparing" || r.status === "running";
 /** The run's own state; a conclusion is shown only for a completed model run. */
 export function reviewState(r: ReviewRow, t: ReviewText = reviewEn) {
+  if (r.status === "queued") return t.queued;
   if (r.status === "preparing") return t.preparing;
   if (r.status === "running") return t.reviewing;
   if (r.status === "completed")
@@ -652,7 +655,7 @@ export function useConversationReviews(agentId: string, revision: string, disabl
  * or a conclusion it does not know, stays unknown, never a failure.
  */
 export function dockMark(r: ReviewRow) {
-  if (r.status === "preparing") return "pending";
+  if (r.status === "queued" || r.status === "preparing") return "pending";
   if (r.status === "running") return "running";
   if (r.status === "completed")
     return reviewPassed(r) ? "passed" : r.conclusion === "changes_requested" ? "rejected" : "unknown";
