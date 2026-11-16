@@ -24,6 +24,20 @@ caches into the one latest load frame.
 
 Ages and windows use the monotonic clock. A load never carries a path.
 
+Job records (YN-83 S2 PR4). While Core holds remote Jobs on this machine it
+names their attempts with `jobs`, as one numbered set that replaces the one
+before. A scanner thread then lstats, every LOAD_PERIOD, each attempt's fixed
+record files under <root>/jobs/<job>/<attempt>/ (RECORDS), and notes which
+attempts' (exists, inode, size, mtime) changed. It never opens, follows or
+writes a file there, nor touches `lock` or `supervisor.lock`; a folder on the
+way that is a link is not read through. One scan is one bounded read, by the
+rules of Reads (SCANS). Every LOAD_PERIOD while the set is not empty the
+writer sends a jobs event: the set the newest scan was for, its age, every
+attempt that changed since the last jobs event written (each kept until one
+that names it is written whole) and, when the scan did not answer,
+`unanswered`. It says only that a record changed: Core then asks the Jobs
+helper, whose answer alone is the attempt's state.
+
 One gate. STOPPING, the busy marks, reads in flight and the child registry
 change only under GATE, and each start (a sample, a read, a child) is checked
 and registered in the same critical section, so nothing new starts once the
@@ -82,13 +96,34 @@ MEMSIZE = ["/usr/sbin/sysctl", "-n", "hw.memsize"]
 LIBSYSTEM = "/usr/lib/libSystem.B.dylib"
 HOST_CPU_LOAD_INFO = 3
 
+# S2 design v3 §3.5: a jobs set names at most 64 attempts, maxJobs' ceiling
+# (remote.rs MAX_JOBS_RANGE), by remote_job.py's ID; a scan waits 5 s, as a
+# disk read does, and at most one is out.
+JOBS_LIMIT = 64
+JOB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SCAN_TIMEOUT = 5.0
+# The records remote_job.py writes in an attempt's folder, each <name>.json.
+RECORDS = ("intent", "launching", "started", "limits", "stopping", "cancel", "paused", "resumed",
+           "artifacts", "result", "fenced", "supervisor")
+
 QUEUE_LOCK = threading.Lock()
 CONTROL = []
 LOAD = [None]
+# The newest jobs event and the changes it carries, waiting for the writer.
+JOBS_OUT = [None]
 PUBLISH = [True]
 WAKE = threading.Event()
 FINISHING = False
 BYE_DONE = threading.Event()
+
+# The set Core named (its version and attempts, in order), what the last scan
+# found of each attempt, the changes not yet written (attempt -> a count, so a
+# change after an event was built is not cleared by it), and the newest scan:
+# (version, monotonic time, why) or None.
+JOBS_LOCK = threading.Lock()
+JOBS = {"set": None, "attempts": [], "seen": {}, "changed": {}, "count": 0, "scan": None,
+        "started": False}
+JOBS_WAKE = threading.Event()
 
 GATE = threading.Condition(threading.Lock())
 STOPPING = False
@@ -609,6 +644,169 @@ def disk_step(state):
     return None, (result, time.monotonic(), None)
 
 
+# Job records.
+
+def jobs_args(args):
+    """A jobs request: (version, [(job, attempt)]) in its order, or None."""
+    if not isinstance(args, dict):
+        return None
+    version = args.get("set")
+    given = args.get("attempts")
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 <= version < 2 ** 64:
+        return None
+    if not isinstance(given, list) or len(given) > JOBS_LIMIT:
+        return None
+    attempts = []
+    for item in given:
+        if not isinstance(item, dict):
+            return None
+        job, attempt = item.get("job"), item.get("attempt")
+        if not (isinstance(job, str) and JOB_ID.fullmatch(job) and isinstance(attempt, str)
+                and JOB_ID.fullmatch(attempt)):
+            return None
+        if (job, attempt) not in attempts:
+            attempts.append((job, attempt))
+    return version, attempts
+
+
+def lstat_of(path):
+    """What lstat says of a path, without following it: None when absent."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return ("error", error.errno)
+    return (stat.S_IFMT(info.st_mode), info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def plain_dir(path):
+    """'dir' for a folder that is not a link, else 'absent' or 'other'."""
+    found = lstat_of(path)
+    if found is None:
+        return "absent"
+    return "dir" if found[0] == stat.S_IFDIR else "other"
+
+
+def scan_attempts(root, attempts):
+    """Each attempt's records as lstat sees them, or why its folder is not read.
+
+    Like remote_job.py's attempt_dir, no folder from the root down may be a
+    link: a folder on the way that is one, or is not a folder, is 'other'.
+    """
+    jobs = os.path.join(root, "jobs")
+    top = plain_dir(root)
+    if top == "dir":
+        top = plain_dir(jobs)
+    found = {}
+    for job, attempt in attempts:
+        state = top
+        folder = os.path.join(jobs, job, attempt)
+        for step in (os.path.join(jobs, job), folder):
+            if state == "dir":
+                state = plain_dir(step)
+        if state == "dir":
+            state = tuple(lstat_of(os.path.join(folder, name + ".json")) for name in RECORDS)
+        found[(job, attempt)] = state
+    return found
+
+
+def scan_read(key):
+    root = os.environ.get("YUZUNO_REMOTE_ROOT")
+    if not root:
+        return {"error": "no_root", "permanent": True}
+    return {"found": scan_attempts(root, key[1])}
+
+
+SCANS = Reads(1, SCAN_TIMEOUT, scan_read)
+
+
+def set_jobs(version, attempts):
+    """Replace the set; start the scanner once. False once the exit began."""
+    with GATE:
+        if STOPPING:
+            return False
+        with JOBS_LOCK:
+            keep = set(attempts)
+            JOBS["set"] = version
+            JOBS["attempts"] = list(attempts)
+            JOBS["seen"] = dict((key, value) for key, value in JOBS["seen"].items() if key in keep)
+            JOBS["changed"] = dict((key, value) for key, value in JOBS["changed"].items() if key in keep)
+            if not attempts:
+                JOBS["scan"] = None
+            start = bool(attempts) and not JOBS["started"]
+            if start:
+                JOBS["started"] = True
+        if start:
+            thread = threading.Thread(target=jobs_loop)
+            thread.daemon = True
+            thread.start()
+    JOBS_WAKE.set()
+    return True
+
+
+FIRST = object()
+
+
+def record_scan(version, result, now):
+    """Note what one scan found: an attempt it saw first, or saw change, changed."""
+    with JOBS_LOCK:
+        if "found" not in result:
+            JOBS["scan"] = (version, now, "unanswered")
+            return
+        for key, state in result["found"].items():
+            if key not in JOBS["attempts"]:
+                # Left the set while it was scanned.
+                continue
+            if JOBS["seen"].get(key, FIRST) != state:
+                JOBS["count"] += 1
+                JOBS["changed"][key] = JOBS["count"]
+            JOBS["seen"][key] = state
+        JOBS["scan"] = (version, now, None)
+
+
+def jobs_loop():
+    while True:
+        started = time.monotonic()
+        with JOBS_LOCK:
+            version, attempts = JOBS["set"], tuple(JOBS["attempts"])
+        if attempts:
+            result = SCANS.sample((version, attempts))
+            if result.get("error") == "stopping":
+                return
+            record_scan(version, result, time.monotonic())
+        JOBS_WAKE.wait(max(0.0, started + LOAD_PERIOD - time.monotonic()))
+        JOBS_WAKE.clear()
+        if STOP.is_set():
+            return
+
+
+def jobs_frame(now):
+    """The jobs event to send now and the changes it carries, or (None, None)."""
+    with JOBS_LOCK:
+        if not JOBS["attempts"] or JOBS["scan"] is None:
+            return None, None
+        version, at, why = JOBS["scan"]
+        written = dict(JOBS["changed"])
+        changed = [{"job": job, "attempt": attempt} for job, attempt in JOBS["attempts"]
+                   if (job, attempt) in written]
+    event = {"ev": "jobs", "data": {"set": version, "ageMs": age(now, at), "changed": changed, "why": why}}
+    return json_line(event), written
+
+
+def jobs_written(written):
+    """A jobs event went out whole: the changes it named are told."""
+    with JOBS_LOCK:
+        for key, count in written.items():
+            if JOBS["changed"].get(key) == count:
+                del JOBS["changed"][key]
+
+
+def jobs_on():
+    with JOBS_LOCK:
+        return bool(JOBS["attempts"])
+
+
 # Sampling threads and the load frame.
 
 def sample_loop(kind, period, step):
@@ -744,19 +942,29 @@ def enqueue(value):
 def writer():
     pending = b""
     pending_since = None
+    # The changes a jobs event in `pending` carries, told once it is written.
+    pending_jobs = None
     next_load = None
     while True:
         frame = None
-        if WATCH["started"] and not STOPPING:
+        jobs = None
+        watched = WATCH["started"]
+        if (watched or jobs_on()) and not STOPPING:
             now = time.monotonic()
             if next_load is None:
                 next_load = now + LOAD_PERIOD
             elif now >= next_load:
-                frame = json_line(load_frame(now))
+                if watched:
+                    frame = json_line(load_frame(now))
+                jobs = jobs_frame(now)
                 next_load = now + LOAD_PERIOD
         with QUEUE_LOCK:
             if frame is not None and PUBLISH[0]:
                 LOAD[0] = frame
+            if jobs is not None and jobs[0] is not None and PUBLISH[0]:
+                # A newer event names every change the one it replaces did:
+                # nothing is told before an event naming it is written.
+                JOBS_OUT[0] = jobs
             if pending:
                 data = pending
             elif CONTROL:
@@ -767,6 +975,10 @@ def writer():
             elif LOAD[0] is not None:
                 data = LOAD[0]
                 LOAD[0] = None
+                pending = data
+            elif JOBS_OUT[0] is not None:
+                data, pending_jobs = JOBS_OUT[0]
+                JOBS_OUT[0] = None
                 pending = data
             else:
                 data = None
@@ -807,6 +1019,9 @@ def writer():
             pending_since = time.monotonic()
             if not pending:
                 pending_since = None
+                if pending_jobs is not None:
+                    jobs_written(pending_jobs)
+                    pending_jobs = None
 
 
 # The exit.
@@ -823,9 +1038,11 @@ def stop_work():
         STOPPING = True
         GATE.notify_all()
     STOP.set()
+    JOBS_WAKE.set()
     with QUEUE_LOCK:
         PUBLISH[0] = False
         LOAD[0] = None
+        JOBS_OUT[0] = None
     return owner
 
 
@@ -833,7 +1050,7 @@ def settle(limit):
     """Wait up to `limit` for reads in flight and running samples to finish."""
     end_at = time.monotonic() + limit
     with GATE:
-        while READS.out or any(BUSY.values()):
+        while READS.out or SCANS.out or any(BUSY.values()):
             left = end_at - time.monotonic()
             if left <= 0:
                 break
@@ -843,7 +1060,7 @@ def settle(limit):
 def unclean():
     with GATE:
         why = []
-        if READS.out:
+        if READS.out or SCANS.out:
             why.append("read_pending")
         if CHILDREN.live or CHILDREN.stuck:
             why.append("child_stuck")
@@ -925,6 +1142,14 @@ def handle(line):
         if path is None:
             enqueue({"re": ident, "err": {"code": "bad_args"}})
         elif start_sampling(path):
+            enqueue({"re": ident, "ok": {}})
+        else:
+            enqueue({"re": ident, "err": {"code": "stopping"}})
+    elif op == "jobs":
+        given = jobs_args(frame.get("args"))
+        if given is None:
+            enqueue({"re": ident, "err": {"code": "bad_args"}})
+        elif set_jobs(given[0], given[1]):
             enqueue({"re": ident, "ok": {}})
         else:
             enqueue({"re": ident, "err": {"code": "stopping"}})

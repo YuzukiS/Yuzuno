@@ -230,6 +230,7 @@ It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed g
   - It has one artifact, `yuzuno-macos-arm64-<version or source>-<commit>-<attempt>`. It holds the disk image, `Yuzuno.app.zip`, `Yuzuno.app.tar.gz`, `build.json` and `SHA256SUMS`, and in `title-bar/` a picture of the app's window on the runner and where its window buttons stand (`geometry.json`, [macOS title bar](#macos-title-bar)). It is kept 14 days, and nothing is published as a Release.
   - To check one, run `gh run download <run> -n <artifact>`, then `shasum -a 256 -c SHA256SUMS`. Compare the sums with those in the run's summary on GitHub, and check that `build.json`'s `sourceCommit` is the commit you expect and `app.updatePublicKeyId` is `E8881810BE226D78`.
   - The version input must be X.Y.Z; the run checks that the app and `build.json` carry it. Without it the version inside is the source's (`desktop/tauri.conf.json`), not a release's. The commit and the SHA-256 identify a candidate.
+- **A lab run**, `gh workflow run desktop-macos.yml --ref main -f lab=true`, takes the same gate and builds Yuzuno Lab for the [update lab](#update-lab) instead (not with a version input).
 
 **Signing.** The app is signed ad hoc: it has no Developer ID signature and is not notarized, because no Developer ID exists for this project. `codesign --verify` passes; Gatekeeper's assessment (`spctl --assess`) rejects it, and `syspolicy_check distribution` reports the ad hoc signature and the missing notarization ticket. A copy built on the Mac, or copied there without a quarantine attribute (for example over SSH), opens normally. A copy downloaded with a browser carries the quarantine attribute, and macOS refuses its first open. To allow this one app, open it once, then choose **Open Anyway** under System Settings, Privacy & Security, and confirm. That dialog has not been checked on macOS 27 yet. Leave Gatekeeper itself on.
 
@@ -409,6 +410,29 @@ python3 desktop/tests/update-lab.py --bundle <T-12 bundle> --run-dir target/<new
   --feed /mnt/c/Users/<user>/AppData/Local/Yuzuno/build/<isolated>-lab/release/bundle/desktop-release \
   --windows --serve --windows-build-root 'C:\Users\<user>\AppData\Local\Yuzuno\build\<isolated>-lab\release'
 ```
+
+**On a Mac.** The Mac's lab uses Yuzuno Lab 0.0.1, 0.0.2 and 0.0.3 from a lab run of the Desktop macOS workflow (`gh workflow run desktop-macos.yml --ref main -f lab=true`, from main with passed CI):
+- **The lab key.** The run makes a lab key in the runner's temporary folder and builds each version with `--lab`, embedding the lab public key. It signs each update package for its version with that key and deletes the private key in the same step, also when the step fails; nothing prints or uploads it. Yuzuno Lab trusts only that lab key, and the regular app only its own key.
+- **What it checks.** Before uploading, the run checks each version's app (lab bundle identifier, version, the lab key in its executable once, `codesign --verify`) and each signature (made by the lab key, for that version), and that neither artifact holds a private key.
+- **The artifacts,** each kept 14 days:
+  - `yuzuno-macos-arm64-lab-install-<commit>-<attempt>`: 0.0.1's disk image and `SHA256SUMS`, to download on the Mac with a browser.
+  - `yuzuno-macos-arm64-lab-feed-<commit>-<attempt>`: `feed/desktop-0.0.N/` with `yuzuno-desktop-darwin-aarch64.app.tar.gz` and its `.sig`, each version's `builds/0.0.N/build.json`, `lab.key.pub` and `SHA256SUMS`.
+
+On the Core host, `--target darwin-aarch64` runs only the relay half against the feed artifact's `feed/`, and `--serve` keeps the lab Core serving while the Mac updates:
+
+```sh
+python3 desktop/tests/update-lab.py --bundle <T-12 bundle> --run-dir target/<new folder> \
+  --target darwin-aarch64 --feed <feed artifact>/feed --port <P> --serve
+```
+
+`P` is 4400–4999, or a free port of Core's services range 4380–4389 when the Mac's tunnel key already allows those ([Project services from a Mac](../docs/independent-core.md#project-services-from-a-mac)); never 4317. The lab Core must be built from a source whose Core relays `darwin-aarch64`.
+
+On the Mac:
+1. Open a second tunnel, `YUZUNO_TUNNEL_LOCAL_PORT=<local port> YUZUNO_TUNNEL_CORE_PORT=<P> scripts/mac-tunnel.sh start`.
+2. Install Yuzuno Lab 0.0.1 from the disk image into Applications and connect it to `http://127.0.0.1:<local port>`.
+3. Under **Settings → Updates → Desktop app**, check for 0.0.2, then download and install it.
+
+Yuzuno Lab is a separate app (`dev.yuzuno.workspace.lab`); the regular app and its data stay as they are. To remove it, quit it and delete it and its data: the `dev.yuzuno.workspace.lab` counterparts of the folders under `~/Library/` that [Install](#macos-desktop-core-on-another-computer) lists. Then stop the second tunnel with the same variables and `stop`. That Yuzuno Lab updates itself on a real Mac has not been checked yet.
 
 Run the validation as a Yuzuno Job with the CPU and memory it needs: Core admits it within the machine's budget, so add no lock or wait of your own around it. A Job's cgroup limits only its Linux processes; the Windows build limits itself, because `scripts/desktop.ps1` runs every build in a Windows job object with a memory limit. Keep the Lab serving in its own supervised scope after success. Stop that scope only when inspection is finished; uninstalling or deleting the retained Lab is a separate explicit action.
 

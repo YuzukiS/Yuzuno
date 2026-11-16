@@ -7,6 +7,9 @@ open a session on each machine. Nothing else on Home connects to them.
 
 This is S1 of the remote-machines design: a read-only status row. It is not
 how Jobs, Claude, Codex or MCP reach a machine, and it starts no work there.
+Since S2 the same session also helps remote Jobs: while a Job holds its slot
+on the machine, it tells Core when that attempt's record files change, so
+Core checks the attempt sooner (see [Remote Jobs](#remote-jobs)).
 
 ## When it connects
 
@@ -18,6 +21,10 @@ how Jobs, Claude, Codex or MCP reach a machine, and it starts no work there.
 - Each read is one request at a time: the next starts about 2 seconds after the
   previous answer ends. Core starts a session on a machine the first time it is
   asked about it and it may start one.
+- A remote Job on the machine whose start was sent and that holds its slot
+  also keeps a session there, with Home closed. Core starts one when it may
+  (by the same rules as for Home, below), keeps it while such Jobs run there,
+  and closes it 60 seconds after the last one ends, unless Home still reads.
 
 There is no port, no daemon and no service left behind. The session is a child
 of Core's SSH process: OpenSSH in batch mode with the machine's own
@@ -34,7 +41,7 @@ Limits.
   place; every connection verifies it before starting the program.
 - `<digest>` is the SHA-256 of the file exactly as installed. The file is the
   fixed header `# yuzuno-remote protocol 1` plus the session source; on this
-  Core it is 31,065 bytes (measured from the current source, not an estimate).
+  Core it is 39,746 bytes (measured from the current source, not an estimate).
 - The `remote/bin` directory is created `0700`, the file is written `0600`, and
   it is replaced atomically.
 - Every connection hashes the file that is already there and reuses it only if
@@ -47,9 +54,10 @@ Limits.
 
 The program runs as the machine's account, and writes nothing but that file.
 It reports only public facts: the platform, its Python version, a hash of the
-machine id, a hash of the account and data root, and the readings shown on the
-card. It never reports the hostname, user, paths or credentials, and the GPU is
-not read: the card says "not enabled".
+machine id, a hash of the account and data root, the readings shown on the
+card, and which of the Job attempts Core named changed. It never reports the
+hostname, user, paths or credentials, and the GPU is not read: the card says
+"not enabled".
 
 ## When a session ends
 
@@ -77,7 +85,8 @@ A session that ends any other way is not restarted automatically:
 
 To start that machine again, open its page in Settings → Machines and make a
 check succeed, or change its target or data root, or restart Core. A later
-`/api/machine-live` read alone does not clear a stopped session.
+`/api/machine-live` read alone does not clear a stopped session, nor do the
+remote Jobs that run there: they are checked every 10 seconds meanwhile.
 
 A change to a machine's `contained` or Codex setting does not restart its
 session. Another machine with the same account and data root is marked as the
@@ -97,12 +106,32 @@ not restart the other.
 - This was tested on Linux and against a local OpenSSH server; it has not been
   run on a real macOS or Windows machine. The S1 Core side was tested on Linux.
 
+## Remote Jobs
+
+While remote Jobs hold their slots on the machine, Core names their attempts
+(job and attempt ids, at most 64) to the session. Every 2 seconds the program
+reads, without opening, following or writing anything, the metadata of each
+attempt's fixed record files in `<data root>/jobs/<job>/<attempt>/` (`intent`,
+`launching`, `started`, `limits`, `stopping`, `cancel`, `paused`, `resumed`,
+`artifacts`, `result`, `fenced`, `supervisor`, each `.json`): whether it
+exists, its inode, size and modification time. A folder on the way that is a
+link is not read through. Every 2 seconds it then reports which attempts
+changed since its last report; a report that is lost is repeated in the next.
+
+Core then asks the Jobs helper about those attempts at once. The report never
+says what an attempt's state is, and an attempt not named by Core is ignored
+whatever a report says. A scan that does not return within 5 seconds is
+reported as unanswered, and no second one starts while it hangs; a hung scan
+makes the session's exit unclean, as a hung disk read does.
+
 ## What it does not change
 
 Jobs and Agents on a remote machine still use their own connection path: the
-fixed helper, its own SSH command, and its own checks. Whether either can run
-on a machine is decided by that path's check, not by this card. A remote
-session that cannot start affects only its row on Home.
+fixed helper, its own SSH command, and its own checks. Every action on a Job
+and its every state still come from the helper; the session only makes Core
+ask sooner. Whether either can run on a machine is decided by that path's
+check, not by this card. A remote session that cannot start affects only its
+row on Home and how often that machine's Jobs are checked.
 
-The design and its known limits are kept with the Task that implements it
-(YN-83, S1).
+The design and its known limits are kept with the Tasks that implement it
+(YN-83 for S1; YN-188 for the remote Jobs part of S2).

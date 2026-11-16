@@ -259,6 +259,79 @@
 .request-card-state[data-state="doing"] {
   color: var(--ink);
 }
+/* Waiting for the user's confirmation (YN-184): the attention colour, as Needs you. */
+.request-card-state:is([data-state="ended"], [data-state="answered"]) {
+  color: var(--home-attention-ink, var(--ink));
+  font-weight: 600;
+}
+/* The user's own action on a request (YN-184): a small outlined button, the one thing on the line that is not a link. */
+.request-card-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-ink, var(--ink)) 55%, var(--line));
+  border-radius: 999px;
+  background: var(--home-surface);
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.request-card-confirm:hover:not(:disabled) {
+  background: var(--home-soft);
+}
+.request-card-confirm:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.request-card-error {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--home-error-ink, var(--ink));
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* A request's one card on its own line (YN-184): who and its state, then Open →; who gives way first. */
+.request-card-one {
+  display: inline-flex;
+  flex: 1 1 140px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-card-one:hover {
+  background: var(--home-soft);
+}
+.request-card-one > span:not(.status-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-card-one-who {
+  flex: 0 1 auto;
+  color: var(--ink);
+}
+.request-card-one-state {
+  flex: 0 0 auto;
+}
+.request-card-one .request-card-row-go {
+  flex: none;
+  color: var(--accent-ink, var(--ink));
+}
 .request-card-merged {
   min-width: 0;
   max-width: 100%;
@@ -269,6 +342,10 @@
   color: var(--home-ink-2);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Beside a request's one card, the card it joined gives way first. */
+.request-card-head[data-one] .request-card-merged {
+  max-width: 45%;
 }
 .request-card-actions {
   display: inline-flex;

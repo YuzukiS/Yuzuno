@@ -148,6 +148,14 @@ function mount({ width = 1440, lang = "en", storage = {}, front = { version: 1, 
       state.fail--;
       throw new TypeError("Failed to fetch");
     }
+    // YN-184: the user's confirmation; Core refuses it with state.refuse, else the request is done.
+    const confirmed = call.url.match(/\/requests\/(\d+)\/confirm$/);
+    if (method === "POST" && confirmed) {
+      if (state.refuse) return answer({ error: state.refuse }, 400);
+      const n = Number(confirmed[1]);
+      state.requests = state.requests.map((r) => (r.n === n ? { ...r, state: "done", confirmedAt: new Date().toISOString() } : r));
+      return answer({ request: state.requests.find((r) => r.n === n) });
+    }
     const receipt = { input: { text: call.body?.text, clientMessageId: call.body?.clientMessageId }, status: "accepted", turnId: "t1", error: null };
     if (method === "POST" && call.url.endsWith("/replies")) return answer({ reply: { n: 2 }, receipts: [receipt] });
     if (method === "POST" && call.url.endsWith("/requests")) return answer({ request: { n: 5 }, receipt });
@@ -281,7 +289,7 @@ test("the requests show the project's titles, states, cards and handoffs; never 
   page.button("Handoffs 3", page.request(1)).click();
   await tick();
   assert.match(page.request(1).querySelector('.routing-event[data-kind="existing"]').textContent, /Project added this to the card “Export research” → YN-91 · Design/);
-  assert.match(page.request(1).querySelector('.routing-event[data-kind="done"]').textContent, /All done/);
+  assert.match(page.request(1).querySelector('.routing-event[data-kind="done"]').textContent, /Every card ended/);
   assert.equal(page.button("See archive", page.request(1))?.textContent, "See archive", "a card no longer live is in the archive");
 
   // The user's words are nowhere in the requests.
@@ -290,8 +298,8 @@ test("the requests show the project's titles, states, cards and handoffs; never 
   assert.deepEqual(page.errors, []);
 });
 
-// YN-136: a question the front desk answers with no card. R-5 is answered: settled with the done ones,
-// its answer on the card, its handoff saying no card was opened, and no "All done".
+// YN-136: a question the front desk answers with no card. R-5 is answered: it waits for the user (YN-184),
+// its answer on the card, its handoff saying no card was opened, and no "Every card ended".
 const answered = (state = "answered") => {
   // One time for the note and the answer it is about: the trail is sorted by
   // time, and two `ago(2)` calls can land 1 ms apart, which puts the note
@@ -314,18 +322,19 @@ async function answeredTalk(options, state) {
   return page;
 }
 
-test("an answered request is settled with the done ones, says its answer, and its handoff says no card was opened", async (t) => {
+test("an answered request waits for the user, says its answer, and its handoff says no card was opened", async (t) => {
   const page = await answeredTalk();
   t.after(page.close);
   const five = page.request(5);
-  assert.equal(five.querySelector(".request-card-state").textContent, "Answered");
+  assert.equal(five.querySelector(".request-card-state").textContent, "Answered · waiting for you");
+  assert.ok(page.button("Confirm done", five), "the user's to confirm");
   assert.equal(five.querySelector(".request-card-answer").textContent, "Answer: Yes: YN-115 merged it this morning.");
-  assert.ok(!five.querySelector(".request-card-wait"), "not waiting");
+  assert.ok(!five.querySelector(".request-card-wait"), "not waiting for the front desk");
   assert.ok(!five.querySelector(".request-card-count"), "no cards");
   const fold = page.document.querySelector(".project-talk-done");
-  assert.equal(fold.querySelector("summary").textContent, "Done 2");
-  assert.ok(fold.contains(five));
-  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress");
+  assert.equal(fold.querySelector("summary").textContent, "Done 1");
+  assert.ok(!fold.contains(five), "not done until the user confirms it");
+  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress · 1 waiting for you");
   // A request still waiting says so as before.
   assert.equal(page.request(4).querySelector(".request-card-wait").textContent, "The project is looking at it; no card yet.");
 
@@ -336,15 +345,26 @@ test("an answered request is settled with the done ones, says its answer, and it
   assert.equal(events[0].querySelector(".routing-event-text").textContent, "Project answered here, no card: Only asks for progress");
   assert.ok(!events[0].querySelector("small"), "its why is on its line, not again below");
   assert.ok(!events[0].querySelector(".routing-event-link"), "no card to open");
-  assert.ok(!five.querySelector('.routing-event[data-kind="done"]'), "no All done for an answer");
+  assert.ok(!five.querySelector('.routing-event[data-kind="done"]'), "no Every card ended for an answer");
   assert.deepEqual(page.errors, []);
+
+  // Confirmed, it is done: with the done ones, its answer still shown, no button.
+  const done = await answeredTalk({}, "done");
+  t.after(done.close);
+  const settled = done.request(5);
+  assert.equal(settled.querySelector(".request-card-state").textContent, "Done");
+  assert.ok(done.document.querySelector(".project-talk-done").contains(settled));
+  assert.equal(settled.querySelector(".request-card-answer").textContent, "Answer: Yes: YN-115 merged it this morning.");
+  assert.ok(!done.button("Confirm done", settled));
+  assert.deepEqual(done.errors, []);
 });
 
 test("an answered request in Chinese, and one reopened by a follow-up", async (t) => {
   const zh = await answeredTalk({ lang: "zh" });
   t.after(zh.close);
   const five = zh.request(5);
-  assert.equal(five.querySelector(".request-card-state").textContent, "已回答");
+  assert.equal(five.querySelector(".request-card-state").textContent, "已回答 · 等你确认");
+  assert.ok(zh.button("确认完成", five));
   assert.equal(five.querySelector(".request-card-answer").textContent, "回答：Yes: YN-115 merged it this morning.");
   zh.button("转交记录 2", five).click();
   await tick();
@@ -357,6 +377,121 @@ test("an answered request in Chinese, and one reopened by a follow-up", async (t
   assert.ok(!again.querySelector(".request-card-answer"), "no answer while it waits");
   assert.ok(!reopened.document.querySelector(".project-talk-done").contains(again), "going on again");
   assert.deepEqual([...zh.errors, ...reopened.errors], []);
+});
+
+// YN-184: a request whose cards all ended waits for the user: "Waiting for you" and Confirm done, out of
+// Done. Confirm done sends the page's Workspace once; Core's refusal shows on the request, nothing else is
+// sent, and once Core has it the request is done, with "You confirmed it done" in its handoffs. A read-only
+// page has no button.
+test("a request whose cards ended waits for the user's Confirm done, and only then is done", async (t) => {
+  const page = mount();
+  page.state.requests = page.state.requests.map((r) => (r.n === 1 ? { ...r, state: "ended" } : r));
+  page.state.refuse = "request_not_ready: R-1 still has a card going on. Nothing was confirmed.";
+  page.window.renderTalk();
+  await until(() => page.request(1), "the requests are read");
+  await tick();
+  t.after(page.close);
+  const one = () => page.request(1);
+  assert.equal(one().querySelector(".request-card-state").textContent, "Waiting for you");
+  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress · 1 waiting for you");
+  assert.ok(!page.document.querySelector(".project-talk-done"), "nothing done yet");
+  const confirm = page.button("Confirm “Export formats” is done", one());
+  assert.equal(confirm.textContent, "Confirm done");
+
+  confirm.click();
+  await until(() => one().querySelector(".request-card-error"), "Core's refusal is shown");
+  assert.equal(one().querySelector(".request-card-error").textContent, "Not confirmed: request_not_ready: R-1 still has a card going on. Nothing was confirmed.");
+  assert.equal(page.posts().length, 1);
+  assert.match(page.posts()[0].url, /\/api\/projects\/p1\/requests\/1\/confirm$/);
+  assert.deepEqual(plain(page.posts()[0].body), { workspaceId: "ws" });
+
+  page.state.refuse = "";
+  page.button("Confirm done", one()).click();
+  await until(() => page.document.querySelector(".project-talk-done")?.contains(one()), "done once Core has it");
+  assert.equal(page.posts().length, 2, "one more, nothing else");
+  assert.equal(one().querySelector(".request-card-state").textContent, "Done");
+  assert.ok(!one().querySelector(".request-card-error"), "the refusal is gone");
+  assert.ok(!page.button("Confirm done", one()));
+  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress");
+  page.button("Handoffs 4", one()).click();
+  await tick();
+  const kinds = [...one().querySelectorAll(".routing-event")].map((e) => e.dataset.kind);
+  assert.deepEqual(kinds.slice(-2), ["done", "confirmed"]);
+  assert.match(one().querySelector('.routing-event[data-kind="confirmed"]').textContent, /You confirmed it done/);
+
+  const quiet = mount();
+  quiet.state.requests = quiet.state.requests.map((r) => (r.n === 1 ? { ...r, state: "ended" } : r));
+  quiet.window.renderTalk({ readOnly: true });
+  await until(() => quiet.request(1), "the requests are read");
+  t.after(quiet.close);
+  assert.equal(quiet.request(1).querySelector(".request-card-state").textContent, "Waiting for you");
+  assert.ok(!quiet.button("Confirm done", quiet.request(1)), "read-only: no button");
+  assert.deepEqual([...page.errors, ...quiet.errors], []);
+});
+
+// YN-184: a request with one card shows it on its own line: who answers for it, its state and Open →, no row of
+// its own and no "In progress" beside it; several cards keep their rows. A card whose task ended says how it ended
+// (Cancelled, not its released executor's state), and a done request with its one card done says Done once.
+test("a request with one card shows it on its own line; several keep their rows, each ended one saying how it ended", async (t) => {
+  const settings = { sectionId: 21, key: "yn-91", title: "Settings layout", live: true, task: { id: "YN-91", status: "doing", archived: false },
+    responsible: { agentId: "x", name: "YN-91 · Design", kind: "executor", state: "running" } };
+  const dropped = { sectionId: 23, key: "yn-93", title: "Dark mode research", live: true, task: { id: "YN-93", status: "cancelled", archived: false },
+    responsible: null };
+  const one = (n, card, state, title) => ({ id: `r${n}`, n, text: `Request ${n}`, textBlocks: null, title, createdAt: ago(n), frontAgentId: "d",
+    messageId: `m${n}`, delivery: "accepted", replies: [], notes: [], cards: [card], state, progress: { cards: 1, ended: state === "doing" ? 0 : 1 },
+    lines: [], routes: [{ kind: "card", index: 0, request: n, at: ago(n), state: "done", why: "One card", by: desk, to: null, task: card.task.id,
+      cardKey: card.key, sectionId: card.sectionId, title: card.title }] });
+  const mountWith = async (options) => {
+    const page = mount(options);
+    page.state.requests = [
+      one(6, settings, "doing", "Settings page, again"),
+      one(7, dropped, "ended", "Dark mode"),
+      ...page.state.requests.map((r) => (r.n === 3 ? { ...r, cards: [r.cards[0], { ...r.cards[1], task: { ...r.cards[1].task, status: "cancelled" } }] } : r)),
+    ];
+    page.window.renderTalk();
+    await until(() => page.request(7), "the requests are read");
+    await tick();
+    return page;
+  };
+  const page = await mountWith();
+  t.after(page.close);
+
+  const six = page.request(6);
+  assert.ok(!six.querySelector(".request-card-cards"), "no row of its own");
+  assert.ok(!six.querySelector(".request-card-state"), "its card's state says it is going on");
+  const line = six.querySelector(".request-card-one");
+  assert.equal(line.getAttribute("aria-label"), "Show the card “Settings layout” on this page");
+  assert.equal(line.querySelector(".request-card-one-who").textContent, "YN-91 · Design");
+  assert.ok(line.querySelector(".request-card-one-state").textContent, "who answers for it, with its state");
+  assert.equal(line.querySelector(".request-card-row-go").textContent, "Open →");
+  line.click();
+  assert.deepEqual(plain(page.window.shownCards), ["yn-91"], "the line shows that card on the page");
+
+  const seven = page.request(7);
+  assert.equal(seven.querySelector(".request-card-state").textContent, "Waiting for you");
+  assert.ok(page.button("Confirm done", seven));
+  assert.equal(seven.querySelector(".request-card-one-state").textContent, "Cancelled", "how its task ended");
+
+  const three = page.request(3);
+  const rows = [...three.querySelectorAll(".request-card-row")];
+  assert.equal(rows.length, 2, "several cards keep their rows");
+  assert.equal(three.querySelector(".request-card-count").textContent, "2 cards · 0/2 done");
+  assert.equal(rows[1].querySelector(".request-card-row-state").textContent, "Cancelled");
+  assert.notEqual(rows[0].querySelector(".request-card-row-state").textContent, "Cancelled");
+
+  // R-1 is done, joined to a card whose task is done: Done once, the card it joined named, no row.
+  const done = page.request(1);
+  assert.equal(done.querySelector(".request-card-state").textContent, "Done");
+  assert.equal(done.querySelector(".request-card-merged").textContent, "Joined “Export research”");
+  assert.ok(done.querySelector(".request-card-one") && !done.querySelector(".request-card-one-state"), "Done is said once");
+  assert.ok(!done.querySelector(".request-card-cards"));
+
+  const zh = await mountWith({ lang: "zh" });
+  t.after(zh.close);
+  assert.equal(zh.request(7).querySelector(".request-card-one-state").textContent, "已取消");
+  assert.equal(zh.request(6).querySelector(".request-card-one").getAttribute("aria-label"), "在本页显示卡片「Settings layout」");
+  assert.equal(zh.request(6).querySelector(".request-card-row-go").textContent, "打开 →");
+  assert.deepEqual([...page.errors, ...zh.errors], []);
 });
 
 test("the conversation has each request's words once, the project's short replies, follow-ups and Core's lines", async (t) => {

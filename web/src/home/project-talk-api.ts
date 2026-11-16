@@ -94,8 +94,14 @@ export type ProjectRequest = {
   notes: { note: string; by: RouteAgent; at: string }[];
   routes: RouteEvent[];
   cards: RequestCard[];
-  /** answered (YN-136): no card, the front desk answered it in its note, and nothing was said since. */
-  state: "waiting" | "doing" | "done" | "answered";
+  /**
+   * ended (YN-184): every card's task ended, and the user has not confirmed it since; answered (YN-136): no card, the
+   * front desk answered it in its note, nothing was said since, and not confirmed since; done: the user confirmed it,
+   * and nothing changed after.
+   */
+  state: "waiting" | "doing" | "ended" | "answered" | "done";
+  /** The user's newest confirmation (YN-184), or null; none from an older Core. */
+  confirmedAt?: string | null;
   progress: { cards: number; ended: number };
   lines: RequestLine[];
 };
@@ -123,6 +129,10 @@ export const readRequests = (projectId: string, before?: number, signal?: AbortS
       replies: request.replies.map((reply) => ({ ...reply, images: reply.images ?? [], files: reply.files ?? [] })),
     })),
   }));
+
+/** The user's confirmation that request R-n is done (YN-184): only the user's page sends it. */
+export const confirmRequest = (projectId: string, n: number, workspaceId: string) =>
+  post<{ request: ProjectRequest }>(`${base(projectId)}/requests/${n}/confirm`, { workspaceId });
 
 /** Whether a message's receipt says it reached its Agent. */
 export const delivered = (delivery: Delivery) => delivery === "accepted" || delivery === "queued";

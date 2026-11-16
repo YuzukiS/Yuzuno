@@ -14,6 +14,7 @@
 //  - selection links the two sides, and a card's row shows that card;
 //  - a card's source line (S3b-2) is one line inside its card, its details too,
 //    with none of the user's words; See words → shows them in the conversation;
+//  - a request waiting for the user (YN-184) keeps Confirm done inside its card;
 //  - nothing is sent but the reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-talk-check.mjs
 import assert from "node:assert/strict";
@@ -122,6 +123,22 @@ const requests = () => [
     state: "done", progress: { cards: 1, ended: 1 },
     lines: [{ kind: "done", task: "YN-90", status: "done", at: at(150), cardSectionId: 390, title: "旧的导出调研" }] },
 ];
+// YN-184: two requests waiting for the user, a card's task ended (a long title beside Confirm done) and an answer.
+// Shown only in each run's last pass (`showWaiting`), after every check above: more of the conversation around R-5
+// moves where a phone's See words → lands (as on main), which is not what these two are here to check.
+const waiting = () => [
+  { id: "r8", n: 8, text: "现在是哪个版本", textBlocks: null, title: "现在跑的是哪个版本", createdAt: at(35), frontAgentId: "l", messageId: "m8",
+    delivery: "accepted", replies: [], notes: [{ note: "core.36，11-16 装的。", by: desk, at: at(34) }],
+    routes: [{ kind: "answer", index: 0, request: 8, at: at(34), state: "done", why: "一句话能答", by: desk, to: null, task: null, cardKey: null, sectionId: null }],
+    cards: [], state: "answered", progress: { cards: 0, ended: 0 }, lines: [] },
+  { id: "r7", n: 7, text: "导出也给一份 Markdown", textBlocks: null,
+    title: "导出 Markdown：表格、标题层级和代码块都要保留（一个特意写长的标题，看它和确认按钮会不会挤）", createdAt: at(37), frontAgentId: "l",
+    messageId: "m7", delivery: "accepted", replies: [], notes: [{ note: "开一张卡。", by: desk, at: at(36) }],
+    routes: [{ kind: "card", index: 0, request: 7, at: at(36), state: "done", why: "有明确终点", by: desk, to: { agentId: "x", name: agents[2].name }, task: "YN-94", cardKey: "yn-94", sectionId: 395, title: "导出 Markdown" }],
+    cards: [card(395, "yn-94", "导出 Markdown", { id: "YN-94", status: "done" }, null)],
+    state: "ended", progress: { cards: 1, ended: 1 },
+    lines: [{ kind: "done", task: "YN-94", status: "done", at: at(33), cardSectionId: 395, title: "导出 Markdown" }] },
+];
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
   en: { requests: "Requests", both: "Both", chat: "Conversation", request: "Request →" },
@@ -169,6 +186,7 @@ async function check(run) {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   }, run.language);
+  let showWaiting = false;
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
     if (url.host !== HOST) {
@@ -178,7 +196,8 @@ async function check(run) {
     if (path === "/api/workspace") return route.fulfill({ json: { workspace: { id: "ws-talk" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     if (path === "/api/home") return route.fulfill({ json: home() });
     if (path === "/api/projects/p-dev/front-desk") return route.fulfill({ json: { version: 1, agentId: null, effectiveAgentId: "l" } });
-    if (path === "/api/projects/p-dev/requests" && method === "GET") return route.fulfill({ json: { requests: requests(), hasMore: false } });
+    if (path === "/api/projects/p-dev/requests" && method === "GET")
+      return route.fulfill({ json: { requests: [...(showWaiting ? waiting() : []), ...requests()], hasMore: false } });
     // A list read, though sent as POST (home-api.ts readLinkedRepositories): no repositories linked here.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
@@ -226,7 +245,7 @@ async function check(run) {
       out.columns[name] = Math.round(frame.width);
       const scroll = side.querySelector(".project-talk-scroll");
       if (scroll.scrollWidth > scroll.clientWidth + 1) out.over.push({ el: `${name} scroll`, scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth });
-      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-merged, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
+      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-one, .request-card-merged, .request-card-confirm, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
         const at = el.getBoundingClientRect();
         if (at.width && (at.right > frame.right + 1 || at.left < frame.left - 1)) out.over.push({ el: el.className, right: Math.round(at.right), frame: Math.round(frame.right) });
       }
@@ -255,6 +274,20 @@ async function check(run) {
   // in a card row pulses for ever, and is not the talk's motion.
   const settled = () => page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"
     || !(a.transitionProperty === "grid-template-columns" || String(a.animationName ?? "").startsWith("project-talk-"))), null, { timeout: 5000 });
+  // A smooth scroll is no animation `settled` waits for: until both sides' scroll positions stay put for 10 frames
+  // (at most 300), so a side is measured where its scroll lands, however far it went.
+  const scrolled = () => page.evaluate(() => new Promise((done) => {
+    const sides = [...document.querySelectorAll(".project-talk-scroll")];
+    let last = "", same = 0, frames = 0;
+    const step = () => {
+      const now = sides.map((side) => side.scrollTop).join();
+      same = now === last ? same + 1 : 0;
+      last = now;
+      if (same >= 10 || ++frames > 300) done();
+      else requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }));
   try {
     await page.goto(`http://${HOST}/#/home?w=ws-talk&p=p-dev`);
     await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
@@ -266,10 +299,10 @@ async function check(run) {
     const tabs = (await page.locator(".project-talk-tabs [role=tab]").allInnerTexts()).map((t) => t.trim());
     if (narrow) {
       assert.equal(view, "requests");
-      assert.deepEqual(tabs, [`${w.requests} 5`, w.chat]);
+      assert.deepEqual(tabs, [`${w.requests} ${requests().length}`, w.chat]);
     } else {
       assert.equal(view, "both");
-      assert.deepEqual(tabs, [`${w.requests} 5`, w.both, w.chat]);
+      assert.deepEqual(tabs, [`${w.requests} ${requests().length}`, w.both, w.chat]);
     }
     let fit = await fits();
     fitsOk(fit, "the first view");
@@ -331,6 +364,7 @@ async function check(run) {
     await page.locator(".project-talk-project", { hasText: "拆成两件" }).locator(".project-talk-chip").click();
     await page.locator('.request-card[data-request="5"][data-selected]').waitFor({ timeout: 5000 });
     await settled();
+    await scrolled();
     const seen = await page.evaluate(() => {
       const card = document.querySelector('.request-card[data-request="5"]').getBoundingClientRect();
       const side = document.querySelector(".project-talk-requests .project-talk-scroll").getBoundingClientRect();
@@ -341,6 +375,7 @@ async function check(run) {
     await page.locator('.request-card[data-request="6"] .request-card-title').click();
     await page.locator('.project-talk-mine[data-words="6"]').waitFor({ timeout: 5000 });
     await settled();
+    await scrolled();
     const words6 = await page.evaluate(() => {
       const words = document.querySelector('.project-talk-mine[data-words="6"]').getBoundingClientRect();
       const side = document.querySelector(".project-talk-chat .project-talk-scroll").getBoundingClientRect();
@@ -406,6 +441,24 @@ async function check(run) {
     assert.ok(back.talk[0] < back.window && back.talk[1] > 0, `the talk brought into view: ${JSON.stringify(back)}`);
     pass("a card's source line stays inside the card, its details carry no words, and See words → shows them", { source: fitSource, back });
     await shot("page", page.locator("body"));
+
+    // YN-184: requests waiting for the user, read again with the page: Confirm done stays inside its card, and
+    // nothing is wider than its column.
+    showWaiting = true;
+    await page.reload();
+    await page.locator('.request-card[data-request="7"] .request-card-confirm').waitFor({ state: "attached", timeout: 15_000 });
+    if (narrow) await tab(w.requests).click();
+    await settled();
+    fit = await fits();
+    fitsOk(fit, "requests waiting for the user");
+    const confirms = await page.evaluate(() => [7, 8].map((n) => {
+      const card = document.querySelector(`.request-card[data-request="${n}"]`).getBoundingClientRect();
+      const button = document.querySelector(`.request-card[data-request="${n}"] .request-card-confirm`).getBoundingClientRect();
+      return { n, inside: button.left >= card.left - 1 && button.right <= card.right + 1, height: Math.round(button.height) };
+    }));
+    assert.ok(confirms.every((c) => c.inside), `Confirm done inside its card: ${JSON.stringify(confirms)}`);
+    await shot("waiting", page.locator(".project-talk-requests"));
+    pass("requests waiting for the user keep Confirm done inside their cards", { confirms });
   } finally {
     await context.close();
   }

@@ -1,4 +1,5 @@
-"""Load sampling of the remote program (YN-83 PR3), run by tests.rs:
+"""Load sampling (YN-83 PR3) and job record scans (S2 PR4) of the remote
+program, run by tests.rs:
 
     python3 -I program_tests.py <program.py> <machine_load.rs>
 
@@ -7,9 +8,11 @@ stand-ins with the test's own environment, and nothing runs SSH, a GPU tool
 or a model. In-process tests load a fresh copy of program.py for each test,
 so its module state (the gate, caches, registry) never leaks from one test to
 the next. Session tests run program.main() in a child Python through WRAPPER,
-which can replace a module value, os.statvfs, os.write or the reap step
+which can replace a module value, os.statvfs, os.lstat, os.write or the reap
+step
 before the session starts; program.py itself has no hook for them.
 """
+import builtins
 import importlib.util
 import json
 import os
@@ -68,6 +71,16 @@ if scenario.get("noReapMarked"):
             return False
         return real_reap(process, timeout)
     program.CHILDREN.reap = reap
+if "scanTimeout" in scenario:
+    program.SCANS.timeout = scenario["scanTimeout"]
+if scenario.get("hangJobs"):
+    # Every lstat under an attempt's folder hangs; the rest still answers.
+    real_lstat = os.lstat
+    def hang_lstat(path, *args, **kwargs):
+        if "/jobs/" in str(path):
+            threading.Event().wait()
+        return real_lstat(path, *args, **kwargs)
+    os.lstat = hang_lstat
 if scenario.get("shortWrites"):
     # Every write to stdout takes at most 7 bytes: frames go out in pieces.
     real_write = os.write
@@ -566,12 +579,252 @@ class GateTests(unittest.TestCase):
     def test_the_stop_clears_a_queued_load_and_nothing_follows_the_bye(self):
         p = self.p
         p.LOAD[0] = b"{}\n"
+        p.JOBS_OUT[0] = (b"{}\n", {})
         p.stop_work()
         self.assertIsNone(p.LOAD[0])
+        self.assertIsNone(p.JOBS_OUT[0])
         self.assertFalse(p.PUBLISH[0])
         p.FINISHING = True
         p.enqueue({"re": 1, "ok": {}})
         self.assertEqual(p.CONTROL, [])
+
+
+JOB = "0f8fad5b-d9cb-469f-a165-70867728950e"
+ATTEMPT = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+OTHER = "16fd2706-8baf-433b-82eb-8c7fada847da"
+
+
+def attempt_item(job, attempt):
+    return {"job": job, "attempt": attempt}
+
+
+class JobsTests(unittest.TestCase):
+    """The jobs set, the record scan and the jobs event, in process."""
+
+    def setUp(self):
+        self.p = fresh()
+        self.temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.temp, True)
+        self.root = os.path.join(self.temp, "data")
+        self.folder = os.path.join(self.root, "jobs", JOB, ATTEMPT)
+        os.makedirs(self.folder)
+        # The set as set_jobs keeps it, without its scanner thread.
+        self.p.JOBS["set"] = 1
+        self.p.JOBS["attempts"] = [(JOB, ATTEMPT)]
+
+    def scan(self, version=1):
+        found = self.p.scan_attempts(self.root, list(self.p.JOBS["attempts"]))
+        self.p.record_scan(version, {"found": found}, time.monotonic())
+
+    def event(self):
+        """The jobs event the writer would build now, and what it carries."""
+        line, written = self.p.jobs_frame(time.monotonic())
+        return json.loads(line.decode("utf-8")), written
+
+    def told(self):
+        """The attempts the next event names, as if it went out whole."""
+        frame, written = self.event()
+        self.p.jobs_written(written)
+        return [(item["job"], item["attempt"]) for item in frame["data"]["changed"]]
+
+    def test_a_request_is_checked_and_keeps_its_order(self):
+        p = self.p
+        given = {"set": 3, "attempts": [attempt_item(JOB, ATTEMPT), attempt_item(OTHER, ATTEMPT),
+                                        attempt_item(JOB, ATTEMPT)]}
+        self.assertEqual(p.jobs_args(given), (3, [(JOB, ATTEMPT), (OTHER, ATTEMPT)]))
+        self.assertEqual(p.jobs_args({"set": 0, "attempts": []}), (0, []))
+        many = [attempt_item(JOB, "%08x-0000-4000-8000-000000000000" % n) for n in range(65)]
+        self.assertEqual(len(p.jobs_args({"set": 1, "attempts": many[:64]})[1]), 64)
+        for bad in [None, [], {"attempts": []}, {"set": -1, "attempts": []}, {"set": True, "attempts": []},
+                    {"set": 1.0, "attempts": []}, {"set": "1", "attempts": []}, {"set": 2 ** 64, "attempts": []},
+                    {"set": 1}, {"set": 1, "attempts": {}}, {"set": 1, "attempts": JOB},
+                    {"set": 1, "attempts": [JOB]}, {"set": 1, "attempts": [attempt_item(JOB.upper(), ATTEMPT)]},
+                    {"set": 1, "attempts": [attempt_item("../" + JOB[3:], ATTEMPT)]},
+                    {"set": 1, "attempts": [{"job": JOB}]}, {"set": 1, "attempts": [attempt_item(JOB, ATTEMPT + "0")]},
+                    {"set": 1, "attempts": many}]:
+            self.assertIsNone(p.jobs_args(bad), bad)
+
+    def test_every_record_created_changed_replaced_or_removed_is_noticed_and_nothing_else(self):
+        p = self.p
+        self.assertIsNone(p.jobs_frame(time.monotonic())[0], "no event before a scan")
+        # The first scan: every attempt of the set counts as changed.
+        self.scan()
+        self.assertEqual(self.told(), [(JOB, ATTEMPT)])
+        self.scan()
+        self.assertEqual(self.told(), [])
+        for name in p.RECORDS:
+            path = os.path.join(self.folder, name + ".json")
+            with open(path, "w") as out:
+                out.write('{"a":1}')
+            self.scan()
+            self.assertEqual(self.told(), [(JOB, ATTEMPT)], "created: " + name)
+            # The same size, a later mtime.
+            info = os.stat(path)
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1000))
+            self.scan()
+            self.assertEqual(self.told(), [(JOB, ATTEMPT)], "rewritten: " + name)
+            # Replaced as remote_job.py's atomic() does: a new inode.
+            with open(path + ".tmp", "w") as out:
+                out.write('{"a":2}')
+            os.replace(path + ".tmp", path)
+            self.scan()
+            self.assertEqual(self.told(), [(JOB, ATTEMPT)], "replaced: " + name)
+            self.scan()
+            self.assertEqual(self.told(), [], "unchanged: " + name)
+        os.remove(os.path.join(self.folder, "result.json"))
+        self.scan()
+        self.assertEqual(self.told(), [(JOB, ATTEMPT)], "removed")
+        # The lock, the supervisor's lock, the output and other files are not records.
+        before = sorted(os.listdir(self.folder))
+        for name in ("lock", "supervisor.lock", "deadline.json", "output", "spec.json"):
+            with open(os.path.join(self.folder, name), "a") as out:
+                out.write("x")
+        self.scan()
+        self.assertEqual(self.told(), [])
+        self.assertEqual(sorted(os.listdir(self.folder)), sorted(set(before) | {"lock", "supervisor.lock",
+                                                                               "deadline.json", "output",
+                                                                               "spec.json"}))
+        # The attempt's folder appearing or going is a change too.
+        p.JOBS["attempts"] = [(JOB, ATTEMPT), (OTHER, ATTEMPT)]
+        self.scan()
+        self.assertEqual(self.told(), [(OTHER, ATTEMPT)], "first seen, absent")
+        os.makedirs(os.path.join(self.root, "jobs", OTHER, ATTEMPT))
+        self.scan()
+        self.assertEqual(self.told(), [(OTHER, ATTEMPT)], "its folder appeared")
+
+    def test_changes_are_kept_together_until_an_event_naming_them_is_written(self):
+        p = self.p
+        p.JOBS["attempts"] = [(JOB, ATTEMPT), (OTHER, ATTEMPT)]
+        os.makedirs(os.path.join(self.root, "jobs", OTHER, ATTEMPT))
+        self.scan()
+        self.told()
+        with open(os.path.join(self.folder, "started.json"), "w") as out:
+            out.write("{}")
+        self.scan()
+        first, first_written = self.event()
+        self.assertEqual(first["data"]["changed"], [attempt_item(JOB, ATTEMPT)])
+        # Not written yet: the next event names that change and the new one.
+        with open(os.path.join(self.root, "jobs", OTHER, ATTEMPT, "result.json"), "w") as out:
+            out.write("{}")
+        self.scan()
+        second, second_written = self.event()
+        self.assertEqual(second["data"]["changed"], [attempt_item(JOB, ATTEMPT), attempt_item(OTHER, ATTEMPT)])
+        # The first went out after all: only what it named, as it named it, is told.
+        p.jobs_written(first_written)
+        third, _ = self.event()
+        self.assertEqual(third["data"]["changed"], [attempt_item(OTHER, ATTEMPT)])
+        # A change after an event was built is not told by that event.
+        with open(os.path.join(self.root, "jobs", OTHER, ATTEMPT, "result.json"), "a") as out:
+            out.write("more")
+        self.scan()
+        p.jobs_written(second_written)
+        self.assertEqual(self.told(), [(OTHER, ATTEMPT)])
+        self.assertEqual(self.told(), [])
+        # A new set keeps what its attempts had and drops the rest.
+        with open(os.path.join(self.folder, "limits.json"), "w") as out:
+            out.write("{}")
+        self.scan()
+        self.assertTrue(p.set_jobs(2, [(OTHER, ATTEMPT)]))
+        self.assertEqual(p.JOBS["changed"], {})
+        self.assertEqual(list(p.JOBS["seen"]), [(OTHER, ATTEMPT)])
+        self.scan(version=2)
+        frame, _ = self.event()
+        self.assertEqual((frame["data"]["set"], frame["data"]["changed"], frame["data"]["why"]), (2, [], None))
+        # An empty set sends nothing.
+        self.assertTrue(p.set_jobs(3, []))
+        self.assertIsNone(p.jobs_frame(time.monotonic())[0])
+        self.assertFalse(p.jobs_on())
+
+    def test_a_record_or_folder_that_is_a_link_is_not_read_through(self):
+        p = self.p
+        target = os.path.join(self.temp, "elsewhere.json")
+        with open(target, "w") as out:
+            out.write("a")
+        os.symlink(target, os.path.join(self.folder, "result.json"))
+        self.scan()
+        self.told()
+        with open(target, "w") as out:
+            out.write("changed, and longer")
+        self.scan()
+        self.assertEqual(self.told(), [], "the link's target is not followed")
+        # An attempt's folder, or a folder above it, that is a link.
+        real = os.path.join(self.temp, "real")
+        os.makedirs(os.path.join(real, ATTEMPT))
+        with open(os.path.join(real, ATTEMPT, "result.json"), "w") as out:
+            out.write("{}")
+        os.symlink(real, os.path.join(self.root, "jobs", OTHER))
+        self.assertEqual(p.scan_attempts(self.root, [(OTHER, ATTEMPT)]), {(OTHER, ATTEMPT): "other"})
+        os.symlink(os.path.join(real, ATTEMPT), os.path.join(self.root, "jobs", JOB, OTHER))
+        self.assertEqual(p.scan_attempts(self.root, [(JOB, OTHER)]), {(JOB, OTHER): "other"})
+        linked = os.path.join(self.temp, "linked-root")
+        os.symlink(self.root, linked)
+        self.assertEqual(p.scan_attempts(linked, [(JOB, ATTEMPT)]), {(JOB, ATTEMPT): "other"})
+        self.assertEqual(p.scan_attempts(os.path.join(self.temp, "none"), [(JOB, ATTEMPT)]),
+                         {(JOB, ATTEMPT): "absent"})
+
+    def test_a_scan_never_opens_a_file(self):
+        p = self.p
+        with open(os.path.join(self.folder, "intent.json"), "w") as out:
+            out.write("{}")
+        opened = []
+
+        def refuse(*args, **kwargs):
+            opened.append(args)
+            raise AssertionError("a scan opened %r" % (args,))
+        real_open, real_os_open = builtins.open, os.open
+        builtins.open, os.open = refuse, refuse
+        try:
+            found = p.scan_attempts(self.root, [(JOB, ATTEMPT)])
+        finally:
+            builtins.open, os.open = real_open, real_os_open
+        self.assertEqual(opened, [])
+        state = found[(JOB, ATTEMPT)]
+        self.assertEqual(len(state), len(p.RECORDS))
+        self.assertIsNotNone(state[p.RECORDS.index("intent")])
+        self.assertIsNone(state[p.RECORDS.index("result")])
+
+    def test_a_hung_scan_is_unanswered_without_more_threads(self):
+        p = self.p
+        release = threading.Event()
+        self.addCleanup(release.set)
+        real_lstat = os.lstat
+
+        def hang(path, *args, **kwargs):
+            if "/jobs/" in str(path):
+                release.wait(10)
+            return real_lstat(path, *args, **kwargs)
+        os.lstat = hang
+        self.addCleanup(setattr, os, "lstat", real_lstat)
+        os.environ["YUZUNO_REMOTE_ROOT"] = self.root
+        self.addCleanup(os.environ.pop, "YUZUNO_REMOTE_ROOT", None)
+        p.SCANS.timeout = 0.2
+        key = (1, ((JOB, ATTEMPT),))
+        before = threading.active_count()
+        start = time.monotonic()
+        result = p.SCANS.sample(key)
+        self.assertEqual(result, {"error": "timeout", "permanent": False})
+        self.assertGreaterEqual(time.monotonic() - start, 0.15)
+        p.record_scan(1, result, time.monotonic())
+        frame, _ = self.event()
+        self.assertEqual((frame["data"]["why"], frame["data"]["changed"]), ("unanswered", []))
+        # A new set while it hangs: no second scan starts either.
+        for version in range(20):
+            start = time.monotonic()
+            self.assertIn(p.SCANS.sample((version, ((OTHER, ATTEMPT),)))["error"], ("unanswered", "busy"))
+            self.assertIn(p.SCANS.sample(key)["error"], ("unanswered", "busy"))
+            self.assertLess(time.monotonic() - start, 0.1)
+        self.assertLessEqual(threading.active_count(), before + 1)
+        self.assertEqual(p.unclean(), ["read_pending"])
+        # The filesystem answers: the scan leaves and the next one runs.
+        release.set()
+        with p.GATE:
+            self.assertTrue(p.GATE.wait_for(lambda: not p.SCANS.out, 5))
+        result = p.SCANS.sample(key)
+        self.assertEqual(list(result), ["found"])
+        p.record_scan(1, result, time.monotonic())
+        self.assertEqual(self.told(), [(JOB, ATTEMPT)])
+        self.assertIsNone(self.event()[0]["data"]["why"])
+        self.assertEqual(p.unclean(), [])
 
 
 class Session(object):
@@ -610,6 +863,7 @@ class Session(object):
         self.lines = queue.Queue()
         self.raw = []
         self.loads = []
+        self.jobs = []
         self.errors = []
         self.readers = [threading.Thread(target=self.pump, daemon=True),
                         threading.Thread(target=self.drain, daemon=True)]
@@ -645,6 +899,8 @@ class Session(object):
         frame = json.loads(line.decode("utf-8"))
         if frame.get("ev") == "load":
             self.loads.append(frame)
+        elif frame.get("ev") == "jobs":
+            self.jobs.append(frame)
         return frame
 
     def next(self, timeout):
@@ -707,6 +963,18 @@ class Session(object):
                 return frame["data"]
         raise AssertionError("no such load in %.1f s; loads %r; stderr %r"
                              % (timeout, self.loads[-3:], self.errors))
+
+    def jobs_event(self, predicate, timeout):
+        """The next jobs event that `predicate` accepts."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            frame = self.next(max(0.001, end - time.monotonic()))
+            if frame is None:
+                break
+            if frame.get("ev") == "jobs" and predicate(frame["data"]):
+                return frame["data"]
+        raise AssertionError("no such jobs event in %.1f s; events %r; stderr %r"
+                             % (timeout, self.jobs[-3:], self.errors))
 
     def rest(self, timeout):
         """Every frame up to EOF."""
@@ -833,6 +1101,58 @@ class SessionTests(unittest.TestCase):
             self.assertEqual([frame for frame in frames if frame.get("ev") == "bye"], [frames[-1]])
             for line in session.raw:
                 self.assertTrue(line.endswith(b"\n"))
+
+    def test_jobs_are_checked_and_changes_are_told_with_the_set_without_a_watch(self):
+        session = Session(self, {"set": FAST})
+        folder = os.path.join(session.root, "jobs", JOB, ATTEMPT)
+        os.makedirs(folder)
+        many = [attempt_item(JOB, "%08x-0000-4000-8000-000000000000" % n) for n in range(65)]
+        for ident, args in enumerate([None, {"set": 1}, {"set": 1, "attempts": "x"},
+                                      {"set": 1, "attempts": [attempt_item(JOB.upper(), ATTEMPT)]},
+                                      {"set": 1, "attempts": many}], start=20):
+            session.send({"id": ident, "op": "jobs", "args": args})
+            self.assertEqual(session.reply(ident, 5), {"re": ident, "err": {"code": "bad_args"}})
+        session.send({"id": 30, "op": "jobs", "args": {"set": 7, "attempts": [attempt_item(JOB, ATTEMPT)]}})
+        self.assertEqual(session.reply(30, 5), {"re": 30, "ok": {}})
+        first = session.jobs_event(lambda data: data["changed"], 5)
+        self.assertEqual((first["set"], first["changed"], first["why"]), (7, [attempt_item(JOB, ATTEMPT)], None))
+        self.assertLessEqual(first["ageMs"], 3000)
+        session.jobs_event(lambda data: not data["changed"], 5)
+        with open(os.path.join(folder, "started.json"), "w") as out:
+            out.write("{}")
+        told = session.jobs_event(lambda data: data["changed"], 5)
+        self.assertEqual((told["set"], told["changed"]), (7, [attempt_item(JOB, ATTEMPT)]))
+        # Nothing was watched: no load went out, and no frame names a path.
+        self.assertEqual(session.loads, [])
+        # An empty set: at most an event built before it, then none.
+        session.send({"id": 31, "op": "jobs", "args": {"set": 8, "attempts": []}})
+        self.assertEqual(session.reply(31, 5), {"re": 31, "ok": {}})
+        after = len(session.jobs)
+        session.collect(0.5)
+        self.assertLessEqual(len(session.jobs) - after, 1, session.jobs[after:])
+        self.assertTrue(all(frame["data"]["set"] == 7 for frame in session.jobs))
+        frames, code = session.close(self)
+        self.assertEqual((frames[-1]["data"]["clean"], code), (True, 0))
+        for line in session.raw:
+            self.assertNotIn(session.root.encode("utf-8"), line)
+
+    def test_a_hung_scan_says_unanswered_while_pings_are_answered(self):
+        session = Session(self, {"hangJobs": True, "scanTimeout": 0.3, "set": FAST})
+        os.makedirs(os.path.join(session.root, "jobs", JOB, ATTEMPT))
+        session.send({"id": 2, "op": "jobs", "args": {"set": 5, "attempts": [attempt_item(JOB, ATTEMPT)]}})
+        self.assertEqual(session.reply(2, 5), {"re": 2, "ok": {}})
+        for index in range(10):
+            start = time.monotonic()
+            session.send({"id": 100 + index, "op": "ping"})
+            self.assertEqual(session.reply(100 + index, 1.0), {"re": 100 + index, "ok": {}})
+            self.assertLessEqual(time.monotonic() - start, 0.2, "ping %d" % index)
+            time.sleep(0.1)
+        event = session.jobs_event(lambda data: data["why"] == "unanswered", 5)
+        self.assertEqual((event["set"], event["changed"]), (5, []))
+        frames, code = session.close(self)
+        bye = frames[-1]["data"]
+        self.assertEqual((bye["clean"], code), (False, 0))
+        self.assertIn("read_pending", bye["why"])
 
     def test_hello_names_the_load_sources(self):
         session = Session(self, {})
