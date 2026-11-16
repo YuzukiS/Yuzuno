@@ -2812,9 +2812,11 @@ mod tests {
             VALUES('b','executor',?1,?1,?1)", [now()]).unwrap();
         closed(&store, "b", Some(now()));
         closed(&store, "c", Some(now()));
-        store.db.write().unwrap().execute("DELETE FROM agents WHERE id='d'", []).unwrap();
+        closed(&store, "d", Some(now()));
+        store.delete_closed_agent("d").unwrap();
 
-        assert!(store.pending_peer_deliveries().unwrap().is_empty());
+        let batches = store.pending_peer_deliveries().unwrap();
+        assert!(batches.is_empty(), "{batches:#?}");
         let (state, detail) = delivery_of(&store, &released);
         assert_eq!((state.as_str(), detail["reason"].as_str()), ("skipped", Some("recipient_released")), "{detail}");
         assert!(detail["at"].is_string());
