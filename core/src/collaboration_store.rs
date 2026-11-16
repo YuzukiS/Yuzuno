@@ -1361,6 +1361,8 @@ fn task_dispatch(
         .context("agent_not_found: recipient does not exist")?;
     // Said before that it is closed: an archived executor is never reopened (T-36).
     crate::executor_archive::refuse_mail(db, &recipient_id)?;
+    // Nor given work while its release closes it (YN-192).
+    crate::executor_archiving::refuse_dispatch(db, &recipient_id)?;
     ensure!(
         recipient.agent.closed_at.is_none(),
         "agent_closed: reopen the recipient before dispatching work"

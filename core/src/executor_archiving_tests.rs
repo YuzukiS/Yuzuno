@@ -18,6 +18,23 @@ fn fail_closes(agent: &str, times: usize) {
     FAILING_CLOSES.lock().unwrap().get_or_insert_with(HashMap::new).insert(agent.to_owned(), times);
 }
 
+/// What a test runs once a task's done has read its executors and before it
+/// releases them (executor_release.rs `release_on_done`), by the task's
+/// internal ID: a dispatch that lands in that gap (YN-192).
+type Hook = Box<dyn FnOnce() + Send>;
+static AFTER_CANDIDATES: Mutex<Option<HashMap<String, Hook>>> = Mutex::new(None);
+
+pub(crate) fn after_candidates(task: &str) {
+    let hook = AFTER_CANDIDATES.lock().unwrap().as_mut().and_then(|all| all.remove(task));
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+fn between_candidates_and_release(task: &str, hook: impl FnOnce() + Send + 'static) {
+    AFTER_CANDIDATES.lock().unwrap().get_or_insert_with(HashMap::new).insert(task.to_owned(), Box::new(hook));
+}
+
 fn workspace() -> (tempfile::TempDir, Arc<Workspace>) {
     let dir = tempfile::tempdir().unwrap();
     // No runtime runs: these Agents are Codex Agents that never started.
@@ -238,6 +255,74 @@ async fn setting_its_task_done_releases_the_executor_by_the_same_rule() {
     // What its done set off, awaited here: the same rule refuses it.
     ws.release_on_done(Some("plain".into()), second.clone()).await;
     assert!(!closed(s, "e2") && role(s, "e2").1.is_none(), "another Agent's done does not release it");
+}
+
+/// YN-192 (6a): an executor its dispatcher sent on to another task keeps
+/// working when its first task is set done, and is released when the task it
+/// works on now is (YN-123 → YN-141 on 2026-11-14 lost uncommitted work).
+#[tokio::test]
+async fn done_keeps_an_executor_sent_on_to_another_open_task() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    agent(s, "lead");
+    let (first, t1) = task(s, "First", None);
+    let (second, _) = task(s, "Second", None);
+    executor(s, "e1", &t1, "agent:lead");
+    ws.collaboration_call(Some("lead"), "task_dispatch",
+        json!({"requestId":"send on","taskId":second,"expectedVersion":1,"toAgentId":"e1"})).await.unwrap();
+    ws.collaboration_call(Some("lead"), "task_update",
+        json!({"requestId":"first done","taskId":first,"expectedVersion":1,"patch":{"status":"done"}})).await.unwrap();
+    // What its done set off, awaited here.
+    ws.release_on_done(Some("lead".into()), first.clone()).await;
+    assert!(!closed(s, "e1") && role(s, "e1").1.is_none(), "the first task's done leaves the executor working on the second");
+    ws.collaboration_call(Some("lead"), "task_update",
+        json!({"requestId":"second done","taskId":second,"expectedVersion":2,"patch":{"status":"done"}})).await.unwrap();
+    ws.release_on_done(Some("lead".into()), second.clone()).await;
+    assert!(closed(s, "e1"), "the done of the task it works on now releases it");
+    assert_eq!(role(s, "e1").2.as_deref(), Some("agent:lead"));
+}
+
+/// YN-192 (6a), one interleaving: a dispatch that lands after a done read its
+/// executors and before it releases them keeps the executor.
+#[tokio::test]
+async fn a_dispatch_between_the_done_and_its_release_keeps_the_executor() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    agent(s, "lead");
+    let (first, t1) = task(s, "First", None);
+    let (second, _) = task(s, "Second", None);
+    executor(s, "e1", &t1, "agent:lead");
+    let lead = ws.clone();
+    between_candidates_and_release(&t1, move || {
+        lead.store.collaboration_call(Some("lead"), "task_dispatch",
+            json!({"requestId":"send on","taskId":second,"expectedVersion":1,"toAgentId":"e1"})).unwrap();
+    });
+    // The release a done sets off, awaited here (task_update would start a second one).
+    ws.release_on_done(Some("lead".into()), first.clone()).await;
+    assert!(!closed(s, "e1") && role(s, "e1").0.as_deref() == Some("dispatched"),
+        "the dispatch that landed first keeps it: {:?}", role(s, "e1"));
+}
+
+/// YN-192 (6a), the other: once a release has begun, its executor takes no
+/// new task, which its close would end too.
+#[tokio::test]
+async fn an_executor_being_released_takes_no_new_task() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    agent(s, "lead");
+    let (first, t1) = task(s, "First", None);
+    let (second, _) = task(s, "Second", None);
+    executor(s, "e1", &t1, "agent:lead");
+    job(s, "j1", "build", "e1", &t1, true);
+    ws.release_on_done(Some("lead".into()), first.clone()).await;
+    assert_eq!(role(s, "e1").0.as_deref(), Some("archiving"), "its running Job keeps it archiving");
+    let dispatch = ws.collaboration_call(Some("lead"), "task_dispatch",
+        json!({"requestId":"too late","taskId":second,"expectedVersion":1,"toAgentId":"e1"})).await;
+    let error = format!("{:#}", dispatch.expect_err("a task is not dispatched to an executor being released"));
+    assert!(error.starts_with("executor_archiving:"), "{error}");
+    let db = s.db.read().unwrap();
+    let (id, _) = task_key(&db, &second).unwrap();
+    assert_eq!(crate::collaboration_store::load_task(&db, &id).unwrap().status, "todo", "the refused dispatch changed nothing");
 }
 
 /// T-36 S2: the close that archives an executor tells its dispatcher of each
