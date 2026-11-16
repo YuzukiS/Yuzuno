@@ -1035,13 +1035,15 @@ class GpuTests(unittest.TestCase):
             before = len(lines_of(self.pids))
             p.set_gpu(True)
             self.wait(lambda: "unavailable" in self.whys())
-            ended = time.monotonic()
+            # When the program said so: the retry counts from there, not from
+            # when this test saw it (a loaded macOS runner saw it 0.1 s late).
+            ended = min(at for at, devices, why in self.published if why == "unavailable")
             self.assertEqual(self.readings(), [], mode)
             pid = int(lines_of(self.pids)[-1][0])
             self.assertTrue(wait_until(lambda: gone(pid), 1), mode)
             # Three periods and GPU_EXTRA without a reading.
             self.assertGreaterEqual(ended - self.spawned[0], 0.4 - 0.05, mode)
-            time.sleep(0.6)
+            time.sleep(max(0.0, ended + 0.6 - time.monotonic()))
             self.assertEqual(len(lines_of(self.pids)), before + 1, "%s: not again within the retry" % mode)
             self.wait(lambda: len(lines_of(self.pids)) == before + 2)
             self.assertGreaterEqual(self.spawned[1] - ended, 1.0 - 0.05, mode)
@@ -1062,7 +1064,8 @@ class GpuTests(unittest.TestCase):
         for index, backoff in enumerate([0.1, 0.2, 0.4, 0.8]):
             waited = self.spawned[index + 1] - failed[index]
             self.assertGreaterEqual(waited, backoff - 0.02, (index, waited))
-            self.assertLess(waited, backoff + 0.3, (index, waited))
+            # Bounded above loosely: a loaded runner starts a child late.
+            self.assertLess(waited, backoff + 0.5, (index, waited))
 
     def test_off_sends_term_then_kill_after_its_wait(self):
         p = self.p
