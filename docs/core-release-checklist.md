@@ -140,7 +140,7 @@ The user's reply on this Ask authorizes the steps after it; a reply relayed by a
 ### 9. Health after the install
 
 1. Wait for the install signal: the Core's `session_changed` mail saying `This Core (<RELEASE_ID>) attached this conversation again`. The install reattaches your session, and CI subscriptions are refused (`workspace_updating`) until it finishes.
-2. Run `health --origin http://127.0.0.1:<port>`, with the Workspace from `WORKSPACE_ID`. It reads only `/api/health` and `/api/updates` (through `core-release.py health`) and the served Web UI. The served `/` and every file under `bundle/web/assets` must equal the bundle byte for byte, with the release's meta tag. This is the only step that touches the installed Core.
+2. Run `health --origin http://127.0.0.1:<port>`, with the Workspace from `WORKSPACE_ID`. It reads only `/api/health` and `/api/updates` (through `core-release.py health`) and the served Web UI. The served `/` and every file under `bundle/<platform>/web/assets` must equal the bundle byte for byte, with the release's meta tag; `<platform>` is the installed Core's `current.platform` from `/api/updates` (`linux-x86_64` or `macos-aarch64`). This is the only step that touches the installed Core.
 
 ### 10. Result
 
