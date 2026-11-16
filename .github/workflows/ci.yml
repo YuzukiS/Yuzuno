@@ -199,6 +199,13 @@ jobs:
           rustc --edition 2021 --test desktop/src/badge_rules.rs -o "$RUNNER_TEMP/desktop-badge"
           "$RUNNER_TEMP/desktop-badge"
 
+      # Likewise what a kept file dragged out of the window may fetch from
+      # Core and what its copy is called (YN-170).
+      - name: Desktop file drag rules
+        run: |
+          rustc --edition 2021 --test desktop/src/file_drag_rules.rs -o "$RUNNER_TEMP/desktop-file-drag"
+          "$RUNNER_TEMP/desktop-file-drag"
+
       # Likewise how the Windows app reads `wsl.exe --list --verbose`
       # (against the bytes a real WSL printed) and what its read-only check
       # of a distribution means (YN-109).

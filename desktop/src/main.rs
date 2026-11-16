@@ -10,6 +10,9 @@ mod badge_rules;
 mod chrome;
 mod connection;
 mod entries;
+// A kept file dragged out of the window as a real file (YN-170).
+mod file_drag;
+mod file_drag_rules;
 mod health;
 mod local_core;
 mod notification_text;
@@ -813,6 +816,20 @@ async fn open_core(
                 .permission("allow-desktop-badge"),
             )
             .map_err(|e| format!("Could not enable the taskbar badge: {e}"))?;
+        // A kept file dragged out as a real file (YN-170), likewise from the
+        // selected workspace only (the command checks the origin again).
+        window
+            .add_capability(
+                CapabilityBuilder::new(format!(
+                    "desktop-file-drag-{}",
+                    core.origin().ascii_serialization()
+                ))
+                .local(false)
+                .webview("main")
+                .remote(format!("{}/*", core.origin().ascii_serialization()))
+                .permission("allow-desktop-file-drag"),
+            )
+            .map_err(|e| format!("Could not enable dragging files out: {e}"))?;
         // The new workspace's page sends its own count once it loads.
         badge::clear(window);
         updates.forget();
@@ -1112,6 +1129,7 @@ fn main() {
         })
         .manage(update::DesktopUpdates::default())
         .manage(local_core::LocalCore::default())
+        .manage(file_drag::FileDrags::default())
         .invoke_handler(tauri::generate_handler![
             connection_info,
             connect_core,
@@ -1133,7 +1151,8 @@ fn main() {
             notify::desktop_notify,
             notify::desktop_notifications_request,
             badge::desktop_badge,
-            title_bar::desktop_title_bar
+            title_bar::desktop_title_bar,
+            file_drag::desktop_file_drag
         ])
         .setup(move |app| {
             // An update's installer restarts this app with its launch
@@ -1146,6 +1165,8 @@ fn main() {
                 *startup = update::restore_startup_core(app.handle(), opened);
                 *state.start.lock().unwrap() = start;
             }
+            // Copies dragged out in earlier runs, once they are an hour old.
+            file_drag::remove_stale_at_start(app.handle());
             let connect =
                 MenuItem::with_id(app, "connection", "Connection…", true, Some("CmdOrCtrl+,"))?;
             let quit = MenuItem::with_id(app, "quit", "Close Yuzuno", true, Some("CmdOrCtrl+Q"))?;
