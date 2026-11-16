@@ -133,7 +133,8 @@ fn input_guard(stderr: &[u8]) -> Option<String> {
     detail["problem"].as_str().filter(|problem| !problem.is_empty()).map(str::to_owned)
 }
 /// A program that could not be created at all (spawn failed): it ran nothing
-/// and was asked nothing. Shown as the OS error itself.
+/// and was asked nothing. Shown as the OS error itself, which is therefore
+/// not its source too: a chain would name it twice.
 #[derive(Debug)]
 pub(super) struct NotSpawned(std::io::Error);
 impl std::fmt::Display for NotSpawned {
@@ -141,11 +142,7 @@ impl std::fmt::Display for NotSpawned {
         self.0.fmt(f)
     }
 }
-impl std::error::Error for NotSpawned {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
+impl std::error::Error for NotSpawned {}
 async fn run(mut cmd: Command, input: Option<Value>, seconds: u64) -> Result<Value> {
     cmd.stdin(if input.is_some() {
         Stdio::piped()
