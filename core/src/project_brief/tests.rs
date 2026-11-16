@@ -1812,6 +1812,13 @@ async fn the_longest_form_reply_keeps_its_snapshot() {
     let mut turns = vec![json!({"id":"t1","items":[{"id":"i1","type":"userMessage","clientId":"f1","content":[{"type":"text","text":"x"}]}]})];
     crate::input_origin::annotate(&ws.store.db.read().unwrap(), "b", &mut turns).unwrap();
     assert_eq!(turns[0]["items"][0]["_yuzunoHome"]["snapshot"], kept);
+    // YN-201: in the conversation's window this message, over an Item's
+    // bound, is sent as its preview: with the snapshot still, within the
+    // bound a Home preview is held to, its escapes counted.
+    turns[0]["items"][0]["content"] = json!([{"type":"text","text":text}]);
+    let shown = crate::conversation_window::bounded_item(&turns[0]["items"][0]);
+    assert_eq!((shown["type"].as_str(), &shown["_yuzunoHome"]["snapshot"]), (Some("historyPreview"), &kept));
+    assert!(serde_json::to_vec(&shown).unwrap().len() <= crate::conversation_window::MAX_HOME_PREVIEW_BYTES);
     // One byte more: refused before anything is recorded.
     let error = home::reply(&ws, project.clone(), round_reply(&workspace, &format!("{text} "), &review, "f2")).await.unwrap_err();
     assert!(error.to_string().starts_with("reply_too_long"), "{error}");

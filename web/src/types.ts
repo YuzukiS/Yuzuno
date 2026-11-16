@@ -148,6 +148,9 @@ export interface NativeItem {
   /** A reply from Home (T-9), from its receipt: the section and version it
    * answered and, when Core kept one, the reply as the user saw it then. */
   _yuzunoHome?: HomeReplyOrigin;
+  /** On a `historyPreview`: the type of the Item it stands for, and that
+   * Item's size as sent (conversation_window.rs `bounded_item`). */
+  _yuzunoWindowPreview?: { type: string; bytes?: number };
   _yuzunoMailbox?: import("./MailboxNotice").MailboxSnapshot;
   /**
    * A follow-up sent while Claude worked: "queued" until Claude names it as

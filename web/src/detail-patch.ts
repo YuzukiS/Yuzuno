@@ -1,5 +1,6 @@
 import type { AgentDetail, NativeItem, TruncatedField } from "./types";
 import type { DetailEvent } from "./workspace-events.ts";
+import { homeReplyPreview } from "./home-reply/home-reply-model.ts";
 
 function replaceAt<T>(list: T[], index: number, value: T): T[] {
   const next = list.slice();
@@ -11,6 +12,18 @@ function replaceAt<T>(list: T[], index: number, value: T): T[] {
  * TRIM_ABOVE UTF-8 bytes is sent as a preview of at most PREVIEW bytes. */
 export const TRIM_ABOVE = 8 * 1024;
 export const PREVIEW = 4 * 1024;
+
+/** Core's conversation window bounds (core/src/conversation_window.rs), in
+ * UTF-8 bytes of an Item's JSON: an Item larger than WINDOW_ITEM is sent as
+ * its preview, and a reply from Home's preview may be up to
+ * WINDOW_HOME_PREVIEW (YN-201); the Items one window selects stay within
+ * WINDOW_BODY together. */
+export const WINDOW_ITEM = 32 * 1024;
+export const WINDOW_HOME_PREVIEW = WINDOW_ITEM + 128 * 1024;
+export const WINDOW_BODY = 256 * 1024;
+/** Whether an Item of `bytes` fits a window as Core sends one. */
+export const fitsWindow = (item: NativeItem, bytes: number) =>
+  bytes <= (homeReplyPreview(item) ? WINDOW_HOME_PREVIEW : WINDOW_ITEM);
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -167,7 +180,7 @@ export function patchDetail(
     let total = 0;
     for (const row of detail.turns) for (const item of row === turn ? items : row.items) {
       const size = utf8(JSON.stringify(item));
-      if (size > 32 * 1024 || (total += size) > 256 * 1024) return null;
+      if (!fitsWindow(item, size) || (total += size) > WINDOW_BODY) return null;
     }
   }
   const patched: AgentDetail = {
