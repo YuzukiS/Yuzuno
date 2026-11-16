@@ -269,6 +269,20 @@ async function check(run) {
   // in a card row pulses for ever, and is not the talk's motion.
   const settled = () => page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"
     || !(a.transitionProperty === "grid-template-columns" || String(a.animationName ?? "").startsWith("project-talk-"))), null, { timeout: 5000 });
+  // A smooth scroll is no animation `settled` waits for: until both sides' scroll positions stay put for 10 frames
+  // (at most 300), so a side is measured where its scroll lands, however far it went.
+  const scrolled = () => page.evaluate(() => new Promise((done) => {
+    const sides = [...document.querySelectorAll(".project-talk-scroll")];
+    let last = "", same = 0, frames = 0;
+    const step = () => {
+      const now = sides.map((side) => side.scrollTop).join();
+      same = now === last ? same + 1 : 0;
+      last = now;
+      if (same >= 10 || ++frames > 300) done();
+      else requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }));
   try {
     await page.goto(`http://${HOST}/#/home?w=ws-talk&p=p-dev`);
     await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
@@ -345,6 +359,7 @@ async function check(run) {
     await page.locator(".project-talk-project", { hasText: "拆成两件" }).locator(".project-talk-chip").click();
     await page.locator('.request-card[data-request="5"][data-selected]').waitFor({ timeout: 5000 });
     await settled();
+    await scrolled();
     const seen = await page.evaluate(() => {
       const card = document.querySelector('.request-card[data-request="5"]').getBoundingClientRect();
       const side = document.querySelector(".project-talk-requests .project-talk-scroll").getBoundingClientRect();
@@ -355,6 +370,7 @@ async function check(run) {
     await page.locator('.request-card[data-request="6"] .request-card-title').click();
     await page.locator('.project-talk-mine[data-words="6"]').waitFor({ timeout: 5000 });
     await settled();
+    await scrolled();
     const words6 = await page.evaluate(() => {
       const words = document.querySelector('.project-talk-mine[data-words="6"]').getBoundingClientRect();
       const side = document.querySelector(".project-talk-chat .project-talk-scroll").getBoundingClientRect();
