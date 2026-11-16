@@ -713,6 +713,8 @@ async fn jobs_alone_start_a_session_ask_it_for_their_set_and_close_it_60_s_after
     hold_jobs(&host, holding("m1", &[attempt(3)])).await;
     assert_eq!(starts(&sessions, "m1"), 2);
     assert_eq!(asked(&sessions, "m1", 1).unwrap().1, vec![attempt(3)]);
+    // Jobs held on m1 never started anything on m2.
+    assert_eq!(starts(&sessions, "m2"), 0);
     // A GET's interest that ends while Jobs are held closes nothing; once
     // both are gone it closes at the later end.
     get(&host).await;
@@ -727,7 +729,6 @@ async fn jobs_alone_start_a_session_ask_it_for_their_set_and_close_it_60_s_after
     assert!(!closed(&sessions, "m1", 1), "60 s after the last Job is the later end");
     clock.advance(30 * SECOND);
     eventually("closed at the later end", || closed(&sessions, "m1", 1)).await;
-    assert_eq!(starts(&sessions, "m2"), 0);
 }
 
 /// Jobs held there change none of S1's rules: a stop holds until a manual
