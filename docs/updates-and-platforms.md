@@ -18,7 +18,7 @@ core.12 contains everything merged up to `f5626f7`; its release notes in the pri
 
 - **Home stays up after a changed Sources block,** and a section that can't be drawn says so in its place.
 - **A recovery page instead of a blank window.** It offers **Copy diagnostics**, which needs no developer tools ([When the window can't show the app](diagnostics.md)).
-- **The new default Workspace folder** `yuzuno/workspace`. A Workspace in the older folder stays where it is until you move it with `yuzuno-workspace --move-workspace` ([Data and updates](../README.md#data-and-updates)).
+- **The new default Workspace folder** `yuzuno/workspace`. A Workspace in the older folder stays where it is until you move it with `yuzuno-workspace --move-workspace` ([Workspace data](workspace-data.md#moving-a-workspace-from-yuzuno-next)).
 - **Rolling back has a limit.** core.11 and older refuse to open a Workspace that holds settings or unfinished work they would mishandle. For example, an SSH machine added in core.12 gets strict Jobs limits by default, and core.11 then stops at start without changing anything.
 
 Later releases list their own changes on the Releases page, and the running Core's notes are in **Settings → About & help**.
