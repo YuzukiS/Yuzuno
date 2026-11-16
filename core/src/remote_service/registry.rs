@@ -1,13 +1,17 @@
 //! The Workspace's remote sessions: one Link at most per registered SSH
 //! machine (YN-83 S1 PR4b; design v4 PR4).
 //!
-//! What may start one: `GET /api/machine-live` (live.rs), and, while the
-//! interest that GET recorded lasts (60 s), the end of a backoff. Nothing
-//! else does: no other page, no Core start, no record change. Each start
+//! What may start one: `GET /api/machine-live` (live.rs); the remote Jobs
+//! held on a machine (`hold_jobs`, from each pass of the Jobs loop, YN-83 S2
+//! PR4); and, while either wants a session there, the end of a backoff. The
+//! interest a GET recorded lasts 60 s, for every machine; Jobs want one on
+//! their own machine while they are held there and for 60 s after the last
+//! went. Nothing else starts one: no other page, no Core start, no record
+//! change. Each start
 //! takes a short `Admission::enter_work` permit, so none starts once an
 //! update drains, and none once Core's shutdown watch says true
 //! (`follow_shutdown`): every start reads that watch itself. A session Core
-//! started is asked to close when the interest ends, when an update drains,
+//! started is asked to close when nothing wants it any more, when an update drains,
 //! when its machine's target or data root changes or the machine is
 //! removed, and as soon as Core's shutdown is sent.
 //!
@@ -20,14 +24,19 @@
 //! After a session ends (the transport's `After`):
 //! - `Clean`: the next interest may start one.
 //! - `Backoff`: only OpenSSH's own connect or DNS failure. Retried after
-//!   1 s, doubling to 60 s, while the interest lasts; once it has ended, the
-//!   machine is idle and nothing starts until the next interest. The count
+//!   1 s, doubling to 60 s, while something wants a session there; once
+//!   nothing does, the machine is idle and nothing starts until the next
+//!   interest or Jobs held there. The count
 //!   goes back to zero only on a session that said hello, a changed target or
 //!   root, or a qualifying manual check; a new interest keeps it.
 //! - `Stop`: nothing starts there until its target or data root changes, a
 //!   manual check that started after the stop reaches the machine as it is
-//!   now, or Core restarts. A GET, an interest, a backoff ending or an older
-//!   session's late news never clears it.
+//!   now, or Core restarts. A GET, an interest, Jobs held there, a backoff
+//!   ending or an older session's late news never clears it.
+//!
+//! A session asked to scan Jobs' records says only which attempts changed
+//! (`jobs_views`): the Jobs side then asks the attempt's helper sooner, and
+//! its answer alone is the attempt's state.
 //!
 //! One gate (`hold`) orders every final check of the records with each
 //! start, and the add, edit and removal of a machine with what they change
@@ -43,14 +52,15 @@
 //! when there is nothing left to manage or the Workspace is gone.
 //! Dropping the Workspace drops each Link, which closes its session.
 
-use super::link::{Limits, Link, Options, Snapshot};
+use super::link::{age_at, JobsScan, Limits, Link, Options, Snapshot, Stamped};
 use super::live::{self, Live, Row};
-use super::protocol::After;
+use super::protocol::{After, Attempt};
 use crate::remote::RemoteMachine;
 use crate::updates::admission::Admission;
 use anyhow::Result;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Notify};
@@ -150,6 +160,8 @@ struct Inner {
     steps: std::sync::atomic::AtomicU64,
     /// Core's shutdown watch, once `follow_shutdown` was given it.
     shutdown: std::sync::OnceLock<watch::Receiver<bool>>,
+    /// The Jobs loop's wake-up, once `wake_jobs_with` was given it.
+    jobs_wake: std::sync::OnceLock<Arc<Notify>>,
 }
 
 impl Drop for Inner {
@@ -204,6 +216,66 @@ struct State {
     manager: bool,
     /// Core is ending: nothing starts again (see also `Inner::ending`).
     closed: bool,
+    /// The Jobs side's attempts, by machine id (`hold_jobs`).
+    jobs: HashMap<String, JobsHold>,
+    /// Jobs sets numbered so far.
+    job_sets: u64,
+}
+
+/// The remote Jobs held on one machine: their attempts, as one numbered set.
+struct JobsHold {
+    set: u64,
+    attempts: Arc<Vec<Attempt>>,
+    /// When the last attempt went: the session it kept closes 60 s later.
+    emptied: Option<Instant>,
+}
+
+impl JobsHold {
+    fn wants(&self, now: Instant, interest: Duration) -> bool {
+        !self.attempts.is_empty() || self.emptied.is_some_and(|at| now.saturating_duration_since(at) < interest)
+    }
+}
+
+/// A held set's scan stands for its attempts this long: three of the
+/// session's 2 s scan periods (program.py LOAD_PERIOD), as live::CPU_STALE
+/// (S2 design v3 §3.7).
+pub(crate) const JOBS_FRESH: Duration = Duration::from_secs(6);
+
+/// What one machine's current session says of the Jobs held there.
+#[derive(Clone, Debug)]
+pub(crate) struct JobsView {
+    /// The set asked for, and its attempts.
+    pub set: u64,
+    pub attempts: Arc<Vec<Attempt>>,
+    /// The data root the session watches (the record's, as stored), and the
+    /// host its hello named.
+    pub root: String,
+    pub host_id: Option<String>,
+    pub scan: Option<Arc<Stamped<JobsScan>>>,
+    /// The session has ended (its end not yet settled here).
+    pub ended: bool,
+}
+
+/// What a session says of one attempt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Notice {
+    /// Its newest scan is of the set asked for, answered, holds this
+    /// attempt and is at most JOBS_FRESH old.
+    pub covered: bool,
+    /// When an event of this session last said it changed.
+    pub changed: Option<Instant>,
+}
+
+impl JobsView {
+    pub(crate) fn notice(&self, attempt: &Attempt, now: Instant) -> Notice {
+        let Some(scan) = &self.scan else { return Notice::default() };
+        let covered = !self.ended
+            && scan.value.why.is_none()
+            && scan.value.set == self.set
+            && self.attempts.contains(attempt)
+            && age_at(scan.received, scan.value.age, now) <= JOBS_FRESH;
+        Notice { covered, changed: scan.value.changed.get(attempt).copied() }
+    }
 }
 
 struct Entry {
@@ -339,6 +411,8 @@ impl State {
             checks: 0,
             manager: false,
             closed: false,
+            jobs: HashMap::new(),
+            job_sets: 0,
         }
     }
 
@@ -387,6 +461,62 @@ impl State {
     fn interested(&self, now: Instant) -> bool {
         self.interest.is_some_and(|at| now.saturating_duration_since(at) < self.timing.interest)
     }
+
+    /// Something wants a session on `id` now: the user's interest, or Jobs
+    /// held there (until 60 s after the last went).
+    fn wanted(&self, id: &str, now: Instant) -> bool {
+        self.interested(now) || self.jobs.get(id).is_some_and(|hold| hold.wants(now, self.timing.interest))
+    }
+
+    /// When that want ends by itself, if it does: the later of the
+    /// interest's end and 60 s after the last Job there went; never while
+    /// Jobs are held there.
+    fn wanted_until(&self, id: &str, now: Instant) -> Option<Instant> {
+        let interest = self.timing.interest;
+        let home = self.interest.filter(|_| self.interested(now)).map(|at| at + interest);
+        match self.jobs.get(id) {
+            Some(hold) if !hold.attempts.is_empty() => None,
+            Some(hold) => home.max(hold.emptied.filter(|_| hold.wants(now, interest)).map(|at| at + interest)),
+            None => home,
+        }
+    }
+
+    /// The Jobs side's attempts as one pass found them; a machine left out
+    /// holds none. A changed list is a new set. True when one changed.
+    fn hold_jobs(&mut self, mut given: BTreeMap<String, Vec<Attempt>>, now: Instant) -> bool {
+        let interest = self.timing.interest;
+        let mut sets = self.job_sets;
+        let mut changed = false;
+        for (id, hold) in &mut self.jobs {
+            let attempts = given.remove(id).unwrap_or_default();
+            if *hold.attempts != attempts {
+                sets += 1;
+                changed = true;
+                hold.set = sets;
+                hold.emptied = attempts.is_empty().then_some(now);
+                hold.attempts = Arc::new(attempts);
+            }
+        }
+        for (id, attempts) in given.into_iter().filter(|(_, attempts)| !attempts.is_empty()) {
+            sets += 1;
+            changed = true;
+            self.jobs.insert(id, JobsHold { set: sets, attempts: Arc::new(attempts), emptied: None });
+        }
+        self.job_sets = sets;
+        self.jobs.retain(|_, hold| hold.wants(now, interest));
+        changed
+    }
+
+    /// Asks each session for the set held on its machine (sent only when new,
+    /// or again when its ask looks lost; link.rs `watch_jobs`).
+    fn ask_jobs(&mut self) {
+        let State { entries, jobs, .. } = self;
+        for entry in entries.iter_mut() {
+            if let (Some(run), Some(hold)) = (&mut entry.run, jobs.get(&entry.machine.id)) {
+                run.link.watch_jobs(hold.set, &hold.attempts);
+            }
+        }
+    }
 }
 
 impl Registry {
@@ -402,6 +532,7 @@ impl Registry {
                 #[cfg(test)]
                 steps: Default::default(),
                 shutdown: std::sync::OnceLock::new(),
+                jobs_wake: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -421,7 +552,39 @@ impl Registry {
     /// How a session here is started.
     pub(crate) fn options(&self) -> Options {
         let state = self.state();
-        Options { ssh: state.ssh.clone(), limits: state.timing.limits, ..Default::default() }
+        Options {
+            ssh: state.ssh.clone(),
+            limits: state.timing.limits,
+            jobs_wake: self.inner.jobs_wake.get().cloned(),
+            ..Default::default()
+        }
+    }
+
+    /// The Jobs loop's wake-up (jobs::remote), notified when a session says
+    /// an attempt held there changed. Once; later calls change nothing.
+    pub(crate) fn wake_jobs_with(&self, wake: Arc<Notify>) {
+        let _ = self.inner.jobs_wake.set(wake);
+    }
+
+    /// What each machine's current session says of the Jobs held there, by
+    /// machine id: only machines with Jobs held and a session of this
+    /// generation, never one that went before.
+    pub(crate) fn jobs_views(&self) -> HashMap<String, JobsView> {
+        let state = self.state();
+        let mut views = HashMap::new();
+        for entry in state.entries.iter().filter(|entry| !entry.deleted) {
+            let (Some(run), Some(hold)) = (&entry.run, state.jobs.get(&entry.machine.id)) else { continue };
+            let snapshot = run.link.snapshot();
+            views.insert(entry.machine.id.clone(), JobsView {
+                set: hold.set,
+                attempts: hold.attempts.clone(),
+                root: entry.machine.root().to_owned(),
+                host_id: snapshot.hello.as_ref().and_then(|hello| hello.value.host_id.clone()),
+                scan: snapshot.jobs.clone(),
+                ended: snapshot.terminal.is_some(),
+            });
+        }
+        views
     }
 
     pub(crate) fn closing(&self) -> Duration {
@@ -539,6 +702,42 @@ impl Registry {
             _ = clock.sleep_until(deadline) => {}
         }
         Closed { waited: waits.len(), unreaped: waits.iter().filter(|(_, gate)| !gate.is_reaped()).count() }
+    }
+
+    /// A session this test drives as `machine`'s current one, online with
+    /// `host_id` as its hello's (jobs::remote_tests).
+    #[cfg(test)]
+    pub(crate) fn fake_session(&self, machine: &RemoteMachine, host_id: Option<&str>) -> FakeSession {
+        let now = self.inner.clock.now();
+        let mut state = self.state();
+        state.generations += 1;
+        let (link, fake) = Link::fake(state.generations);
+        let hello = super::protocol::Hello {
+            session_id: "ab".repeat(16),
+            host_id: host_id.map(str::to_owned),
+            boot_id: None,
+            account_key: None,
+            platform: super::protocol::Platform::Linux,
+            python: "3.12.4".into(),
+            cpu: None,
+            memory: None,
+            why: vec![],
+        };
+        fake.state.send_modify(|snapshot| {
+            snapshot.phase = super::link::Phase::Online;
+            snapshot.hello = Some(Arc::new(Stamped { value: hello, received: now }));
+            snapshot.last_frame = Some(now);
+        });
+        let run = Run { link, hello: true };
+        match state.entry(&machine.id) {
+            Some(entry) => entry.run = Some(run),
+            None => {
+                let mut entry = Entry::new(machine.clone(), now);
+                entry.run = Some(run);
+                state.entries.push(entry);
+            }
+        }
+        FakeSession(fake)
     }
 
     #[cfg(test)]
@@ -666,12 +865,16 @@ fn start<H: Host>(host: &Arc<H>, _held: &Held<'_>, id: &str, may: impl Fn(&Entry
         let checks = state.checks;
         // Core's shutdown, sent while it started, reads here too.
         let closed = inner.ending(&state);
+        let asked = state.jobs.get(id).map(|hold| (hold.set, hold.attempts.clone()));
         // Under the gate nothing else changes which machine this is.
         let Some(entry) = state.entry(id) else { return true };
         entry.retry_at = None;
         entry.since = now;
         match started {
             Ok(mut link) => {
+                if let Some((set, attempts)) = &asked {
+                    link.watch_jobs(*set, attempts);
+                }
                 let changes = link.subscribe();
                 if draining || closed {
                     // An update began draining, or Core's shutdown was
@@ -724,6 +927,26 @@ fn watch_session(inner: &Arc<Inner>, mut changes: watch::Receiver<Snapshot>, gen
             }
         }
     });
+}
+
+/// A session a test drives (`Registry::fake_session`).
+#[cfg(test)]
+pub(crate) struct FakeSession(super::link::FakeLink);
+
+#[cfg(test)]
+impl FakeSession {
+    /// The set it was last asked to scan.
+    pub(crate) fn asked(&self) -> Option<(u64, Vec<Attempt>)> {
+        self.0.wanted.borrow().as_ref().map(|want| (want.set, want.attempts.to_vec()))
+    }
+
+    /// Its newest jobs event: of `set`, received at `received` with no age,
+    /// answered or not, these changes said so far.
+    pub(crate) fn scan(&self, set: u64, answered: bool, changed: BTreeMap<Attempt, Instant>, received: Instant) {
+        let why = (!answered).then_some(super::protocol::JobsWhy::Unanswered);
+        let scan = Arc::new(Stamped { value: JobsScan { set, age: Duration::ZERO, why, changed }, received });
+        self.0.state.send_modify(|snapshot| snapshot.jobs = Some(scan));
+    }
 }
 
 /// When to look again, and whether a session runs (an update's drain then
@@ -789,10 +1012,10 @@ fn ensure_manager<H: Host>(host: &Arc<H>) {
     });
 }
 
-/// One step: settle what sessions said; close them once the interest has
-/// ended, an update drains or Core ends; start again where a backoff ended
-/// while the interest lasts, and make the rest idle. None when there is
-/// nothing left to manage (the task then ends).
+/// One step: settle what sessions said; close each once nothing wants it
+/// (no interest, no Jobs held there), an update drains or Core ends; start
+/// again where a backoff ended while something wants it, and make the rest
+/// idle. None when there is nothing left to manage (the task then ends).
 async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
     let registry = host.registry();
     let inner = &registry.inner;
@@ -803,9 +1026,16 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
     let due: Vec<String> = {
         let mut state = registry.state();
         state.settle(now);
-        let interested = state.interested(now) && !draining && !inner.ending(&state);
+        let interest = state.timing.interest;
+        state.jobs.retain(|_, hold| hold.wants(now, interest));
+        let wanted: HashSet<String> = if draining || inner.ending(&state) {
+            HashSet::new()
+        } else {
+            state.entries.iter().filter(|entry| state.wanted(&entry.machine.id, now)).map(|entry| entry.machine.id.clone()).collect()
+        };
         let mut due = vec![];
         for entry in &mut state.entries {
+            let interested = wanted.contains(&entry.machine.id);
             if let Some(run) = &mut entry.run {
                 if !interested {
                     run.link.close();
@@ -827,7 +1057,12 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
                 state.manager = false;
                 return None;
             }
-            let close_at = state.interest.filter(|_| runs && interested).map(|at| at + state.timing.interest);
+            let close_at = state
+                .entries
+                .iter()
+                .filter(|entry| entry.run.is_some() && wanted.contains(&entry.machine.id))
+                .filter_map(|entry| state.wanted_until(&entry.machine.id, now))
+                .min();
             return Some(Next { at: close_at.into_iter().chain(retry).min(), runs });
         }
         due
@@ -839,7 +1074,7 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
             registry.state().reconcile(stored, now);
             for id in &due {
                 let may = |entry: &Entry, state: &State, now: Instant| {
-                    entry.retry_at.is_some() && entry.can_start(now) && state.interested(now)
+                    entry.retry_at.is_some() && entry.can_start(now) && state.wanted(&entry.machine.id, now)
                 };
                 if !start(host, &held, id, may) {
                     break;
@@ -861,4 +1096,62 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
     }
     drop(held);
     Some(Next { at: Some(inner.clock.now()), runs: true })
+}
+
+/// The remote Jobs held on each SSH machine, as one pass of the Jobs loop
+/// found them (jobs::remote; YN-83 S2 PR4): by machine id, the attempts whose
+/// start was sent and that hold their slot; a machine left out holds none.
+/// Jobs held on a machine want a session there, as the user's interest
+/// does, until 60 s after the last went. A session that may start there by
+/// the usual rules (no stop, backoff or unreaped child, no drain, Core not
+/// ending) is started under the gate from the records read again, and each
+/// session is asked to scan its machine's set. Nothing here changes a Job.
+pub(crate) async fn hold_jobs<H: Host>(host: &Arc<H>, attempts: BTreeMap<String, Vec<Attempt>>) {
+    let registry = host.registry();
+    let inner = &registry.inner;
+    let now = inner.clock.now();
+    let (changed, starts) = {
+        let mut state = registry.state();
+        let changed = state.hold_jobs(attempts, now);
+        state.settle(now);
+        state.ask_jobs();
+        let starts: Vec<String> = if inner.ending(&state) {
+            vec![]
+        } else {
+            let state = &*state;
+            state
+                .jobs
+                .iter()
+                .filter(|(id, hold)| {
+                    !hold.attempts.is_empty()
+                        && state.entries.iter().find(|entry| &entry.machine.id == *id).is_none_or(|entry| entry.can_start(now))
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        (changed, starts)
+    };
+    if changed {
+        // When a session closes may have changed.
+        inner.wake.notify_one();
+    }
+    if starts.is_empty() || host.admission().snapshot().operation_id.is_some() {
+        return;
+    }
+    let held = registry.hold().await;
+    let Ok(stored) = host.registered().await else { return };
+    {
+        let now = inner.clock.now();
+        let mut state = registry.state();
+        state.reconcile(stored, now);
+        state.settle(now);
+    }
+    for id in starts {
+        let may = |entry: &Entry, state: &State, now: Instant| {
+            entry.can_start(now) && state.jobs.get(&entry.machine.id).is_some_and(|hold| !hold.attempts.is_empty())
+        };
+        if !start(host, &held, &id, may) {
+            break;
+        }
+    }
 }

@@ -2560,3 +2560,137 @@ async fn a_first_submit_to_a_machine_not_reached_yet_promises_no_limits() {
     let on_mac = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("next-on-mac", "m1")).await.unwrap();
     assert_eq!(on_mac["capabilities"], remote::darwin_capabilities(), "{on_mac}");
 }
+
+/// A stand-in for OpenSSH on the lab machine that logs each request first.
+fn counting(lab: &Lab) -> String {
+    let path = |name: &str| lab.dir.path().join(name);
+    let a = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
+        path("home").display(), path("machine-a").display(), path("capabilities.json").display());
+    script(path("ssh-counting"), format!(
+        "#!/bin/sh\n{ARGS}request=$(cat)\nprintf '%s\\n' \"$request\" >> '{}'\nprintf '%s' \"$request\" | {a} exec /bin/sh -c \"$1\"\n",
+        path("calls.log").display()))
+}
+
+/// The helper calls made so far about this job.
+fn calls(lab: &Lab, of: &Value) -> usize {
+    let id = of["id"].as_str().unwrap();
+    std::fs::read_to_string(lab.dir.path().join("calls.log")).unwrap_or_default().lines().filter(|line| line.contains(id)).count()
+}
+
+/// As if this job was last checked `ago`.
+fn checked_ago(lab: &Lab, of: &Value, ago: Duration) {
+    let at = Instant::now().checked_sub(ago).unwrap();
+    lab.ws.jobs.remote_seen.lock().unwrap().insert(of["id"].as_str().unwrap().to_owned(), at);
+}
+
+/// The loop's own pass, with the remote sessions.
+async fn live_pass(lab: &Lab, program: &str) {
+    let programs = remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS };
+    remote::pass(&lab.ws, &programs, true).await.unwrap();
+}
+
+/// YN-83 S2 PR4: what the machine's session says decides only when an
+/// attempt is checked; its state still comes from the helper alone.
+#[tokio::test]
+async fn a_session_that_covers_an_attempt_spaces_its_checks_and_a_change_or_cancel_brings_one_at_once() {
+    let lab = lab();
+    let ssh = counting(&lab);
+    let first = submit(&lab, "covered", "sleep 60");
+    tick(&lab, &ssh).await;
+    let running = job(&lab, &first);
+    assert_eq!(running["status"], "running", "{running}");
+    let attempt = crate::remote_service::Attempt::new(first["id"].as_str().unwrap(), first["attempt"].as_str().unwrap()).unwrap();
+    let fake = lab.ws.machine_live.fake_session(&lab.ws.store.machine("m1").unwrap(), running["remote"]["hostId"].as_str());
+    // The pass asks the session for the attempt; with no scan yet, 10 s.
+    checked_ago(&lab, &first, Duration::from_secs(11));
+    let before = calls(&lab, &first);
+    live_pass(&lab, &ssh).await;
+    let (set, held) = fake.asked().expect("asked for the set");
+    assert_eq!(held, vec![attempt.clone()]);
+    assert_eq!(calls(&lab, &first), before + 1);
+    // Covered: a fresh, answered scan of that set. Checked after 60 s, not 10 s.
+    let covered = |changed: BTreeMap<crate::remote_service::Attempt, Instant>| fake.scan(set, true, changed, Instant::now());
+    let count = calls(&lab, &first);
+    for ago in [11, 30, 59] {
+        covered(BTreeMap::new());
+        checked_ago(&lab, &first, Duration::from_secs(ago));
+        live_pass(&lab, &ssh).await;
+        assert_eq!(calls(&lab, &first), count, "covered, checked {ago} s ago");
+    }
+    covered(BTreeMap::new());
+    checked_ago(&lab, &first, Duration::from_secs(61));
+    live_pass(&lab, &ssh).await;
+    assert_eq!(calls(&lab, &first), count + 1);
+    // It says the attempt changed after that check: checked at the next pass,
+    // once; what the helper says stays the state.
+    covered(BTreeMap::from([(attempt.clone(), Instant::now())]));
+    live_pass(&lab, &ssh).await;
+    assert_eq!(calls(&lab, &first), count + 2);
+    live_pass(&lab, &ssh).await;
+    assert_eq!(calls(&lab, &first), count + 2, "the same change brings one check");
+    assert_eq!(job(&lab, &first)["status"], "running");
+    // The scan is of another set, unanswered, or stale, or the session runs
+    // on another host: back to every 10 s.
+    let count = calls(&lab, &first);
+    let stale = Instant::now().checked_sub(Duration::from_secs(7)).unwrap();
+    for (n, (of, answered, at)) in [(set + 1, true, Instant::now()), (set, false, Instant::now()), (set, true, stale)].into_iter().enumerate() {
+        fake.scan(of, answered, BTreeMap::new(), at);
+        checked_ago(&lab, &first, Duration::from_secs(11));
+        live_pass(&lab, &ssh).await;
+        assert_eq!(calls(&lab, &first), count + n + 1, "not covered ({n})");
+    }
+    let elsewhere = lab.ws.machine_live.fake_session(&lab.ws.store.machine("m1").unwrap(), Some(&"e".repeat(32)));
+    live_pass(&lab, &ssh).await;
+    let (set, _) = elsewhere.asked().unwrap();
+    elsewhere.scan(set, true, BTreeMap::new(), Instant::now());
+    let count = calls(&lab, &first);
+    checked_ago(&lab, &first, Duration::from_secs(11));
+    live_pass(&lab, &ssh).await;
+    assert_eq!(calls(&lab, &first), count + 1, "a session on another host covers nothing");
+    // Covered again, and cancelled: checked at once.
+    let fake = lab.ws.machine_live.fake_session(&lab.ws.store.machine("m1").unwrap(), running["remote"]["hostId"].as_str());
+    live_pass(&lab, &ssh).await;
+    let (set, _) = fake.asked().unwrap();
+    fake.scan(set, true, BTreeMap::new(), Instant::now());
+    checked_ago(&lab, &first, Duration::from_secs(1));
+    let count = calls(&lab, &first);
+    cancel(&lab, &first);
+    live_pass(&lab, &ssh).await;
+    assert!(calls(&lab, &first) > count, "a cancel is acted on at once");
+    let done = until(&lab, &ssh, &first, |j| j["reserved"] == false).await;
+    assert_eq!(done["status"], "cancelled", "{done}");
+    // Nothing held now: the session is asked for no attempts.
+    live_pass(&lab, &ssh).await;
+    assert_eq!(fake.asked().unwrap().1, vec![]);
+}
+
+#[test]
+fn a_check_is_due_by_the_cancel_the_change_or_the_cadence_and_roots_match_by_their_text() {
+    use crate::remote_service::Notice;
+    let now = Instant::now();
+    let ago = |seconds: u64| Some(now.checked_sub(Duration::from_secs(seconds)).unwrap());
+    let covered = Notice { covered: true, changed: None };
+    let plain = Notice::default();
+    assert!(remote::check_now(now, None, false, covered));
+    assert!(!remote::check_now(now, ago(9), false, plain));
+    assert!(remote::check_now(now, ago(10), false, plain));
+    assert!(!remote::check_now(now, ago(59), false, covered));
+    assert!(remote::check_now(now, ago(60), false, covered));
+    assert!(remote::check_now(now, ago(1), true, covered));
+    // A change counts only when said after the last check began.
+    assert!(remote::check_now(now, ago(5), false, Notice { covered: true, changed: ago(4) }));
+    assert!(!remote::check_now(now, ago(5), false, Notice { covered: true, changed: ago(5) }));
+    assert!(!remote::check_now(now, ago(5), false, Notice { covered: true, changed: ago(6) }));
+    for (sent, watched, same) in [
+        ("/srv/yuzuno", "/srv/yuzuno", true),
+        ("/home/a/.yuzuno-data", "~/.yuzuno-data", true),
+        ("~/.yuzuno", "~/.yuzuno", true),
+        ("/home/a/x.yuzuno-data", "~/.yuzuno-data", false),
+        ("/home/a/.yuzuno-data", "~/other", false),
+        ("/srv/a", "/srv/b", false),
+        ("~/.yuzuno", "/home/a/.yuzuno", false),
+        ("", "~/.yuzuno", false),
+    ] {
+        assert_eq!(remote::same_root(sent, watched), same, "{sent} {watched}");
+    }
+}

@@ -5,10 +5,12 @@ A job can run on a registered SSH machine instead of this Core's host: `job_subm
 Windows on the PC this Core's WSL runs on is a built-in machine of the same kind, reached through WSL interop instead of SSH: see [Windows on this PC](#windows-on-this-pc). A Mac is an SSH machine too, in the limited mode only: see [A Mac over SSH](#a-mac-over-ssh).
 
 Home's machine card reads each registered machine too, through a separate
-status-only program: see [the remote program](remote-program.md). That session
-starts no Job and reads no Job state. A machine can answer the card while its
-Jobs path refuses, and the other way round: each path decides by its own check.
-This page is about the Jobs path only, and the card does not change it.
+program: see [the remote program](remote-program.md). That session starts no
+Job and never decides a Job's state. While a Job's attempts hold their slots
+on an SSH machine, Core keeps that session open there, and it only says when
+one of their record files changed (see [When an attempt is checked](#when-an-attempt-is-checked)).
+A machine can answer the card while its Jobs path refuses, and the other way
+round: each path decides by its own check. This page is about the Jobs path.
 
 ## How it works
 
@@ -41,6 +43,25 @@ Every later request names the Workspace, the machine entry, the digest and the p
 
 - **A start that went unanswered.** The next check carries a fence. If the start never arrived, the fence makes that final: a late start is refused, and the job is `rejected`, certainly not started. If it did arrive, it is that same attempt.
 - **Unknown keeps the slot.** Only an outcome that is certain releases it. Cancelling an `unknown` attempt goes to the pinned machine; if that machine cannot be reached, or the name now reaches another machine, the slot stays held until it can be.
+
+### When an attempt is checked
+
+Core asks the helper about each attempt holding a slot every 10 seconds, and
+at once after a cancel. On an SSH machine whose remote session is online, that
+session also lists the record files of the attempts whose start was sent:
+every 2 seconds it reads only their metadata (whether each file exists, its
+inode, size and modification time), never their contents, and says which
+attempts changed. Core then asks the helper at its next pass, within about 3
+seconds. An attempt the session covers (a scan of the attempts Core named,
+answered, at most 6 seconds old, from the machine the attempt is pinned to and
+its data root) is otherwise asked about every 60 seconds instead of every 10.
+
+Only the helper's answer is the attempt's state, its outcome and its mail. The
+session never stands in for it: when it stops, never started, or a scan does
+not answer, every attempt goes back to every 10 seconds. A supervisor that
+died without writing a result changes no record file, so it is found by those
+checks, and a timeout is still applied at the first check after its deadline.
+This Mac and Windows on this PC are checked every 10 seconds as before.
 
 ### Stopping
 

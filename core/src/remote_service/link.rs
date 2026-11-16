@@ -24,20 +24,27 @@
 //! Every Snapshot and Terminal carries the generation it was started with,
 //! so a caller can drop what an older generation says late. The remote's
 //! values are only shown: none enters a command, a path or admission.
+//!
+//! Remote Jobs (YN-83 S2 PR4): [`Link::watch_jobs`] names the attempts the
+//! session should scan, as one numbered set; the session asks for it once
+//! online and again when the set changes. Each jobs event is kept with every
+//! change it said of those attempts, and one that names a change wakes the
+//! Jobs loop. A change only tells Jobs to ask the attempt's helper sooner.
 // What only its tests read, built where they are (mod.rs).
 #![cfg_attr(not(all(test, target_os = "linux", target_env = "gnu")), allow(dead_code))]
 
 use super::package;
-use super::protocol::{self, After, BootLine, Bye, Code, Exit, Facts, Frame, Hello, Load, Stderr};
+use super::protocol::{self, After, Attempt, BootLine, Bye, Code, Exit, Facts, Frame, Hello, Jobs, JobsWhy, Load, Stderr};
 use crate::remote::{validate_machine, RemoteMachine};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Child;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, timeout, MissedTickBehavior};
 
@@ -53,6 +60,10 @@ const FIRST_LINE_LIMIT: usize = 4096;
 /// full only while a write is stuck, which the writer's own limit ends.
 const WRITE_QUEUE: usize = 8;
 const READ_QUEUE: usize = 16;
+/// An ask for a jobs set with no event of that set this long after it went
+/// out (or after the hello, if later) was lost: three of the session's 2 s
+/// scan periods (program.py LOAD_PERIOD), as the coverage's freshness.
+pub(crate) const JOBS_ASK_LOST: Duration = Duration::from_secs(6);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
@@ -88,6 +99,8 @@ pub(crate) struct Options {
     /// OpenSSH, or a program with its argument conventions.
     pub ssh: String,
     pub limits: Limits,
+    /// Notified when a jobs event names a change (the Jobs loop's wake-up).
+    pub jobs_wake: Option<Arc<Notify>>,
     /// Tests: every wait for the child first waits until this is true, as
     /// for a child that cannot be reaped.
     #[cfg(test)]
@@ -99,6 +112,7 @@ impl Default for Options {
         Options {
             ssh: "ssh".into(),
             limits: Limits::PRODUCTION,
+            jobs_wake: None,
             #[cfg(test)]
             hold_wait: None,
         }
@@ -136,9 +150,30 @@ pub(crate) struct Snapshot {
     pub phase: Phase,
     pub hello: Option<Arc<Stamped<Hello>>>,
     pub load: Option<Arc<Stamped<Load>>>,
+    /// The newest jobs event, with every change said so far.
+    pub jobs: Option<Arc<Stamped<JobsScan>>>,
     /// The last complete frame; part of a line never counts.
     pub last_frame: Option<Instant>,
     pub terminal: Option<Arc<Terminal>>,
+}
+
+/// The attempts a session is asked to scan, as Core numbered the set.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct JobsWant {
+    pub set: u64,
+    pub attempts: Arc<Vec<Attempt>>,
+}
+
+/// What a session's jobs events said: the newest one's set, age and why,
+/// and when an event last named each attempt Core asks about as changed
+/// (this session's, on this Core's clock). Attempts Core does not ask about
+/// are left out, whatever an event says of them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct JobsScan {
+    pub set: u64,
+    pub age: Duration,
+    pub why: Option<JobsWhy>,
+    pub changed: BTreeMap<Attempt, Instant>,
 }
 
 /// What Core saw end the session first.
@@ -229,6 +264,9 @@ pub(crate) struct Link {
     state: watch::Receiver<Snapshot>,
     close: Option<oneshot::Sender<()>>,
     reap: ReapGate,
+    jobs: watch::Sender<Option<Arc<JobsWant>>>,
+    /// When the jobs set was last asked for.
+    asked: Option<Instant>,
 }
 
 impl Link {
@@ -251,11 +289,13 @@ impl Link {
             phase: Phase::Connecting,
             hello: None,
             load: None,
+            jobs: None,
             last_frame: None,
             terminal: None,
         });
         let (close, closing) = oneshot::channel();
-        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone() };
+        let (jobs, wanted) = watch::channel(None);
+        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None };
         let spawned = package::boot_command_with(&options.ssh, machine)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -350,6 +390,9 @@ impl Link {
             drain_by: None,
             last_frame: Instant::now(),
             next_id: 0,
+            wanted,
+            wanting: true,
+            jobs_wake: options.jobs_wake,
         };
         tokio::spawn(driver.run(first));
         Ok(link)
@@ -371,6 +414,34 @@ impl Link {
         self.reap.clone()
     }
 
+    /// Asks the session to scan these attempts' records (YN-83 S2 PR4), at
+    /// most 64 (MAX_JOB_ATTEMPTS). A new `set` is asked for at once, or once
+    /// online. The same set is asked for again only when the ask looks lost:
+    /// online, and no event of this set came within JOBS_ASK_LOST of the
+    /// ask or the hello (a full write queue drops a frame whole). Called on
+    /// each of the registry's rounds, so a lost ask heals by itself.
+    pub(crate) fn watch_jobs(&mut self, set: u64, attempts: &Arc<Vec<Attempt>>) {
+        let now = Instant::now();
+        let current = self.jobs.borrow().as_ref().map(|want| want.set);
+        if current != Some(set) {
+            self.jobs.send_replace(Some(Arc::new(JobsWant { set, attempts: attempts.clone() })));
+            self.asked = Some(now);
+            return;
+        }
+        let lost = {
+            let state = self.state.borrow();
+            let since = match (&state.hello, self.asked) {
+                (Some(hello), Some(asked)) if state.phase == Phase::Online => asked.max(hello.received),
+                _ => return,
+            };
+            state.jobs.as_ref().is_none_or(|scan| scan.value.set != set) && now.saturating_duration_since(since) >= JOBS_ASK_LOST
+        };
+        if lost {
+            self.jobs.send_modify(|_| {});
+            self.asked = Some(now);
+        }
+    }
+
     /// Asks the session to end: a close frame once online, so that its exit
     /// can still be proven clean, or SIGKILL while it boots. Once is enough.
     pub(crate) fn close(&mut self) {
@@ -389,13 +460,15 @@ impl Link {
             phase: Phase::Connecting,
             hello: None,
             load: None,
+            jobs: None,
             last_frame: None,
             terminal: None,
         });
         let (close, closing) = oneshot::channel();
         let reap = ReapGate(gate);
-        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone() };
-        (link, FakeLink { state, closing, reaped, reap })
+        let (jobs, wanted) = watch::channel(None);
+        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None };
+        (link, FakeLink { state, closing, reaped, reap, wanted })
     }
 
     pub(crate) async fn ended(&mut self) -> Arc<Terminal> {
@@ -416,6 +489,8 @@ pub(crate) struct FakeLink {
     pub closing: oneshot::Receiver<()>,
     pub reaped: watch::Sender<bool>,
     pub reap: ReapGate,
+    /// What it was asked to scan.
+    pub wanted: watch::Receiver<Option<Arc<JobsWant>>>,
 }
 
 /// After the session's output is done with: wait for the exit (stdout
@@ -456,6 +531,10 @@ struct Driver {
     drain_by: Option<Instant>,
     last_frame: Instant,
     next_id: u64,
+    /// The jobs set asked for, and whether the Link still asks.
+    wanted: watch::Receiver<Option<Arc<JobsWant>>>,
+    wanting: bool,
+    jobs_wake: Option<Arc<Notify>>,
 }
 
 impl Driver {
@@ -561,6 +640,9 @@ impl Driver {
         let id = self.id();
         let watch = json!({"id": id, "op": "watch", "args": {"paths": [{"role": "root", "path": self.root}]}});
         self.send(line(&watch));
+        if self.drain_by.is_none() {
+            self.ask_jobs();
+        }
         let start = Instant::now() + self.limits.ping;
         let mut ping = tokio::time::interval_at(start.into(), self.limits.ping);
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -585,6 +667,7 @@ impl Driver {
                                     now.last_frame = Some(at);
                                 });
                             }
+                            Ok(Frame::Jobs(jobs)) => self.jobs_event(jobs, at),
                             Ok(Frame::Bye(bye)) => {
                                 self.bye = Some(bye);
                                 self.state.send_modify(|now| now.last_frame = Some(at));
@@ -599,6 +682,11 @@ impl Driver {
                     let id = self.id();
                     self.send(line(&json!({"id": id, "op": "ping"})));
                 }
+                asked = self.wanted.changed(), if close_by.is_none() && self.wanting => match asked {
+                    Ok(()) => self.ask_jobs(),
+                    // The Link is gone: its close comes next.
+                    Err(_) => self.wanting = false,
+                },
                 _ = sleep_until(silent_at.into()) => return self.end(Ended::Silent, Then::Kill),
                 end = &mut self.written, if !self.write_ended => {
                     self.write_ended = true;
@@ -670,6 +758,40 @@ impl Driver {
     fn id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
+    }
+
+    /// The jobs set asked for now, if any: one jobs request.
+    fn ask_jobs(&mut self) {
+        let Some(want) = self.wanted.borrow_and_update().clone() else { return };
+        let attempts: Vec<Value> = want.attempts.iter().map(|one| json!({"job": one.job, "attempt": one.attempt})).collect();
+        let id = self.id();
+        self.send(line(&json!({"id": id, "op": "jobs", "args": {"set": want.set, "attempts": attempts}})));
+    }
+
+    /// A jobs event: kept with the changes said before it, of the attempts
+    /// asked for now only; one that names a change wakes the Jobs loop.
+    fn jobs_event(&mut self, event: Jobs, at: Instant) {
+        let want = self.wanted.borrow().clone();
+        let asked = |attempt: &Attempt| want.as_ref().is_some_and(|want| want.attempts.contains(attempt));
+        let mut changed = self.state.borrow().jobs.as_ref().map(|scan| scan.value.changed.clone()).unwrap_or_default();
+        changed.retain(|attempt, _| asked(attempt));
+        let mut news = false;
+        for attempt in event.changed {
+            if asked(&attempt) {
+                changed.insert(attempt, at);
+                news = true;
+            }
+        }
+        let scan = Arc::new(Stamped { value: JobsScan { set: event.set, age: event.age, why: event.why, changed }, received: at });
+        self.state.send_modify(|now| {
+            now.jobs = Some(scan);
+            now.last_frame = Some(at);
+        });
+        if news {
+            if let Some(wake) = &self.jobs_wake {
+                wake.notify_one();
+            }
+        }
     }
 
     /// Queues a frame for the writer; false once writing has failed. The
