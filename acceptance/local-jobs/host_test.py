@@ -600,6 +600,67 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertEqual((self.work/'cpu.txt').read_text(), f"1600 {self.folder/'cpu-millis'}\n")
         self.assertEqual(host.read(self.folder/'started.json')['limits']['cpu.weight'], '5')
 
+    # YN-194: a short TMPDIR of its own on disk for each attempt.
+    def in_data_folder(self):
+        """The attempt folder as Core lays it out: <data>/jobs/<id>."""
+        self.data = Path(self.tmp.name) / 'data'
+        self.folder = self.data / 'jobs' / 'one'
+        self.folder.mkdir(parents=True)
+        self.spec['argv'] = ['/bin/sh','-c','echo "$TMPDIR|$TMP|$TEMP" > tmp.txt; [ -n "$TMPDIR" ] && touch "$TMPDIR/x.sock"; exit 3']
+
+    def test_an_attempt_gets_a_short_tmpdir_of_its_own_that_goes_with_its_outcome(self):
+        self.in_data_folder()
+        made = self.data / 't' / ('j' + self.spec['attempt'][:8])
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), f'{made}|{made}|{made}\n', 'TMPDIR, TMP and TEMP name it')
+        self.assertTrue((made/'x.sock').exists(), 'the command wrote into it')
+        self.assertEqual(made.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(host.read(self.folder/'tmpdir.json'), {'attempt': self.spec['attempt'], 'path': str(made)})
+        # An unknown outcome is not an end: it stays.
+        host.result(self.spec, self.folder, 'unknown', {}, 'unknown')
+        self.assertTrue(made.exists())
+        outcome = self.recorded()
+        self.assertEqual(outcome['tmpdir'], {'path': str(made), 'removed': True})
+        self.assertFalse(made.exists(), 'removed with its final outcome')
+        self.assertEqual(self.recorded()['tmpdir'], outcome['tmpdir'], 'the first final outcome stays')
+
+    def test_a_jobs_own_tmpdir_wins_and_none_is_made(self):
+        self.in_data_folder()
+        own = Path(self.tmp.name) / 'own'
+        own.mkdir()
+        self.spec['env'] = {'TMPDIR': str(own)}
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), f'{own}||\n')
+        self.assertFalse((self.data/'t').exists())
+        self.assertNotIn('tmpdir', self.recorded())
+
+    def test_a_path_too_long_for_a_socket_or_another_layout_gets_none(self):
+        self.in_data_folder()
+        with patch.object(host, 'TMPDIR_LIMIT', 10):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), '||\n', 'started as before, without one')
+        self.assertFalse((self.data/'t').exists())
+        self.assertIsNone(host.tmpdir_root(Path(self.tmp.name)/'job'), 'a folder not under jobs/ has no root')
+
+    def test_a_clash_takes_a_longer_name_and_a_record_not_its_own_is_never_removed(self):
+        self.in_data_folder()
+        self.spec['attempt'] = 'abcdef0123456789'
+        (self.data/'t'/'jabcdef01').mkdir(parents=True)
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            made = host.make_tmpdir(self.spec, self.folder)
+        self.assertEqual(made, self.data/'t'/'jabcdef012345')
+        elsewhere = Path(self.tmp.name) / 'keep'
+        elsewhere.mkdir()
+        host.atomic(self.folder/'tmpdir.json', {'attempt': self.spec['attempt'], 'path': str(elsewhere)})
+        left = host.remove_tmpdir(self.spec, self.folder)
+        self.assertEqual((left['removed'], left['path']), (False, str(elsewhere)))
+        self.assertTrue(elsewhere.exists(), 'never removed')
+        host.atomic(self.folder/'tmpdir.json', {'attempt': 'another', 'path': str(made)})
+        self.assertIsNone(host.remove_tmpdir(self.spec, self.folder), "another attempt's record is not this one's")
+        self.assertTrue(made.exists())
+
     def test_an_attempt_from_before_cpu_grants_starts_at_its_request(self):
         self.spec['argv'] = ['/bin/sh','-c','echo "$YUZUNO_JOB_CPU_MILLIS" > cpu.txt; exit 3']
         self.assertEqual(self.run_worker(), 3)

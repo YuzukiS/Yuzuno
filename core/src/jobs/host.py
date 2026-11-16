@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import signal
 import selectors
+import shutil
 import stat
 import struct
 import subprocess
@@ -677,6 +678,70 @@ def attempt_env(spec, folder):
         env['YUZUNO_RESUME_FROM'] = str(Path(source['dir']) / 'manifest.json')
     return env
 
+# A short TMPDIR of its own on disk for each attempt (YN-194), under Core's
+# data folder like an OpenCode executor's (core/src/executor_temp.rs): /tmp is
+# a tmpfs whose pages count in the Job's memory, and the Job's own folder is
+# too long for a Unix socket. Only when its env names none of these.
+TMP_NAMES = ('TMPDIR', 'TMP', 'TEMP')
+# sun_path (108 on Linux) less its NUL and 40 bytes for what a tool makes
+# under it, as executor_temp.rs LINUX_LIMIT: a longer path is not given.
+TMPDIR_LIMIT = 108 - 1 - 40
+TMPDIR_RECORD = 'tmpdir.json'
+
+def tmpdir_root(folder):
+    """<Core data>/t for an attempt folder <Core data>/jobs/<id>; None for a
+    folder laid out otherwise."""
+    folder = Path(folder)
+    return folder.parent.parent / 't' if folder.parent.name == 'jobs' else None
+
+def make_tmpdir(spec, folder):
+    """This attempt's own TMPDIR, made and recorded now: <Core data>/t/j and
+    the start of its attempt ID (longer on a clash). None when its env names
+    one, the path would not fit a socket, or it cannot be made: then the
+    command starts as before, without one."""
+    if any(name in spec['env'] for name in TMP_NAMES):
+        return None
+    root = tmpdir_root(folder)
+    if root is None:
+        return None
+    for size in (8, 12, None):
+        path = root / ('j' + (spec['attempt'][:size] if size else spec['attempt']))
+        if len(os.fsencode(str(path))) > TMPDIR_LIMIT:
+            return None
+        try:
+            root.mkdir(mode=0o700, exist_ok=True)
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        try:
+            atomic(folder / TMPDIR_RECORD, {'attempt': spec['attempt'], 'path': str(path)})
+        except OSError:
+            path.rmdir()
+            return None
+        return path
+    return None
+
+def remove_tmpdir(spec, folder):
+    """Remove this attempt's TMPDIR once its outcome is final, and say how
+    that went; None when it had none. Only the folder make_tmpdir made is
+    removed: directly under this data folder's t and named j…. One that
+    cannot be removed is left where it is and said."""
+    record = read(folder / TMPDIR_RECORD)
+    if not (isinstance(record, dict) and record.get('attempt') == spec['attempt'] and isinstance(record.get('path'), str)):
+        return None
+    path = Path(record['path'])
+    if path.parent != tmpdir_root(folder) or not path.name.startswith('j'):
+        return {'path': str(path), 'removed': False, 'problem': "not this attempt's own temporary folder"}
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return {'path': str(path), 'removed': False, 'problem': str(error)[:300]}
+    return {'path': str(path), 'removed': True}
+
 def checkpoint_dir(spec):
     return Path(spec['cwd']) / CHECKPOINTS / spec['attempt']
 
@@ -928,7 +993,8 @@ def launch(spec, folder, stage):
     total = 0
     log = None
     try:
-        env = {**spec['env'], **attempt_env(spec, folder)}
+        tmp = make_tmpdir(spec, folder)
+        env = {**spec['env'], **({name: str(tmp) for name in TMP_NAMES} if tmp else {}), **attempt_env(spec, folder)}
         stage['at'] = 'process'
         child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=env,
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -1072,6 +1138,11 @@ def result(spec, folder, status, evidence, reason=None):
         previous = read(folder / 'result.json')
         if previous and previous['status'] != 'unknown':
             return previous
+        # Once its outcome is final, nothing of it runs: its TMPDIR goes.
+        if status != 'unknown':
+            left = remove_tmpdir(spec, folder)
+            if left:
+                value['tmpdir'] = left
         atomic(folder / 'result.json', value)
         return value
 
