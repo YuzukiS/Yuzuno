@@ -588,7 +588,8 @@ export function App() {
   // the phone layout, the input area on those screens was left under the
   // keyboard, which is the very thing T-170 fixed for phones.
   useEffect(() => (phone || touchInput ? followVisualViewport() : undefined), [phone, touchInput]);
-  const [phoneList, setPhoneList] = useState(true);
+  // A Project's page a reload restores (projectEntry) shows on a phone too, not behind the Agent list (YN-195).
+  const [phoneList, setPhoneList] = useState(() => projectEntry() === null);
   const [phoneInspector, setPhoneInspector] = useState(false);
   const phoneBack = useRef<HTMLButtonElement>(null);
   const listShown = phone && phoneList;
