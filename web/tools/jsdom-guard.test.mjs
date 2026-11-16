@@ -155,9 +155,12 @@ test("a failing boolean assertion carries only the boolean, never the node it wa
 });
 
 // The guard's assertions (YN-196), on stand-ins: no jsdom is needed here.
-// A rendered DOM node: React's fiber chain makes it large and cyclic.
+// A DOM object is known by its WebIDL class names on the prototype chain.
+const classed = (...names) => names.reduceRight((proto, name) => Object.create(proto, { [Symbol.toStringTag]: { value: name } }), Object.prototype);
+const NODE = classed("HTMLLIElement", "HTMLElement", "Element", "Node", "EventTarget");
+/** A rendered DOM node: React's fiber chain makes it large and cyclic. */
 function renderedNode(tag = "li", attributes = { id: "zz", class: "row" }) {
-  const node = { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null };
+  const node = Object.assign(Object.create(NODE), { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null });
   let fiber = { stateNode: node };
   node.__reactFiber$x = fiber;
   for (let i = 0; i < 2000; i++) fiber = fiber.return = { stateNode: node, child: fiber, memoizedProps: { i } };
@@ -194,44 +197,70 @@ test("a failing comparison names a DOM object in one short line instead of inspe
   }
   const unnamed = failure(() => assert.equal(node, null));
   assert.equal(unnamed.actual, '<li id="zz" class="row">');
-  assert.equal(unnamed.expected, "null");
-  assert.match(unnamed.message, /^strictEqual failed for a DOM object \(described, not inspected\)/);
+  assert.equal(unnamed.expected, null);
+  assert.match(unnamed.message, /^Expected values to be strictly equal:/);
+  assert.ok(unnamed.message.includes('<li id="zz" class="row">'));
   assert.equal(failure(() => assert.deepEqual([node, node], [])).actual, 'Array(2) [<li id="zz" class="row">, <li id="zz" class="row">]');
-  assert.match(failure(() => assert.equal(node, null, (actual) => `still ${actual.localName}`)).message, /^still li/);
+  // Two different nodes that read alike still fail as different.
+  assert.match(failure(() => assert.equal(node, renderedNode())).expected, /\(another object\)$/);
 });
 
-test("comparisons without a DOM object are Node's own, and passing ones still pass", () => {
+test("comparisons keep Node's own results, arguments and messages", () => {
   const node = renderedNode();
+  const other = renderedNode("p", {});
   assert.equal(node, node);
-  assert.notEqual(node, null);
-  assert.deepEqual([node], [node]);
-  assert.deepEqual({ a: [1, 2] }, { a: [1, 2] });
+  assert.notEqual(node, other);
+  assert.deepEqual([node, NaN], [node, NaN]);
+  failure(() => assert.deepEqual([node, 0], [node, -0]));
+  assert.notDeepEqual([node, 0], [node, -0]);
+  // Too few arguments are Node's error, not a pass (YN-196 review).
+  for (const call of [() => assert.notEqual(node), () => assert.notDeepEqual(node), () => assert.equal(node)])
+    assert.equal(failure(call).code, "ERR_MISSING_ARGS");
+  // A message is taken as this Node takes it: text, a function, an Error, or an explicit undefined.
+  const own = new TypeError("own");
+  for (const message of ["row zz is gone", () => "lazy", own, undefined]) {
+    const dom = failure(() => assert.equal(node, null, message));
+    const plain = failure(() => assert.equal("x", null, message));
+    assert.equal(dom.constructor, plain.constructor, String(message));
+    assert.equal(dom.message.split("\n")[0], plain.message.split("\n")[0], String(message));
+  }
+  assert.equal(failure(() => assert.equal(node, null, own)), own);
+  // Without a DOM object it is Node's own failure, stack included.
   const error = failure(() => assert.equal(1, 2));
   assert.equal(error.generatedMessage, true);
   assert.match(error.message, /^Expected values to be strictly equal:[\s\S]*1 !== 2/);
   assert.ok(firstFrame(error).includes(import.meta.url), `the stack starts in the test: ${firstFrame(error)}`);
-  const deep = failure(() => assert.deepEqual({ a: 1 }, { a: 2 }));
-  assert.equal(deep.generatedMessage, true);
-  assert.equal(deep.operator, "deepStrictEqual");
-  // A message that is an Error is thrown as it is, as Node's own assertions do.
-  const own = new TypeError("own");
-  assert.equal(failure(() => assert.equal(node, null, own)), own);
-  assert.equal(failure(() => assert.equal(1, 2, own)), own);
+});
+
+test("finding a DOM object runs no getter and no Proxy trap", () => {
+  let reads = 0;
+  const count = () => ++reads;
+  // A getter read early once made a failing comparison pass (YN-196 review):
+  // it fails, as in Node, and looking for a DOM object read it not at all.
+  let n = 0;
+  const lazy = { get x() { return ++n; } };
+  holdsDom(lazy);
+  holdsDom({ wrapped: lazy });
+  assert.equal(n, 0);
+  failure(() => assert.deepEqual(lazy, { x: 2 }));
+  const node = renderedNode();
+  const sneaky = { get nodeType() { return count(); }, get window() { return count(); }, get child() { count(); return node; } };
+  const trapped = new Proxy(node, { get: count, getPrototypeOf: () => (count(), NODE), ownKeys: () => (count(), []), getOwnPropertyDescriptor: count });
+  for (const value of [sneaky, trapped, [trapped], new Proxy([node], { ownKeys: () => (count(), []) })]) assert.equal(holdsDom(value), false);
+  assert.equal(reads, 0);
 });
 
 test("what counts as a DOM object, and how one is described", () => {
-  const text = { nodeType: 3, nodeName: "#text", data: "x".repeat(100) };
-  const window = {};
-  window.window = window;
+  const text = Object.assign(Object.create(classed("Text", "CharacterData", "Node")), { nodeType: 3, nodeName: "#text", data: "x".repeat(100) });
+  const window = Object.create(classed("Window", "EventTarget"));
   assert.equal(holdsDom(text), true);
   assert.equal(holdsDom(window), true);
   assert.equal(holdsDom([1, renderedNode()]), true);
   assert.equal(holdsDom({ list: [renderedNode()] }), false, "only one level down");
-  assert.equal(holdsDom({ nodeType: "1", nodeName: "LI" }), false);
-  assert.equal(holdsDom(new Proxy({}, { get() { throw new Error("trap"); } })), false);
+  assert.equal(holdsDom({ nodeType: 1, nodeName: "LI" }), false, "a plain object that looks like one is not");
   assert.equal(describe(window), "Window");
   assert.equal(describe(text), `#text "${"x".repeat(39)}…"`);
-  assert.equal(describe({ nodeType: 9, nodeName: "#document" }), "#document");
+  assert.equal(describe(Object.assign(Object.create(classed("Document", "Node")), { nodeType: 9, nodeName: "#document" })), "#document");
   assert.equal(describe(renderedNode("div", {})), "<div>");
   assert.equal(describe(null), "null");
 });

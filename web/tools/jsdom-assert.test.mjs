@@ -4,6 +4,8 @@ import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
+import { types } from "node:util";
+import { holdsDom } from "./jsdom-assert.mjs";
 
 function failure(call) {
   try {
@@ -31,12 +33,11 @@ function short(error, actual) {
   assert.equal(error.actual, actual);
 }
 
-test("a failing comparison about an element, a text node or a node list is one short line", () => {
+test("a failing comparison about an element, a text node or an array of them is one short line", () => {
   const { dom, document, row } = page();
   try {
     short(failure(() => assert.equal(row, null, "row zz is gone")), '<li id="zz" class="row">');
     short(failure(() => assert.equal(row.firstChild, null)), '#text "first"');
-    short(failure(() => assert.deepEqual(document.querySelectorAll("li"), [])), 'NodeList(2) [<li id="zz" class="row">, <li>]');
     short(failure(() => assert.deepEqual([...document.querySelectorAll("li")], [])), 'Array(2) [<li id="zz" class="row">, <li>]');
   } finally {
     dom.window.close();
@@ -47,6 +48,17 @@ test("a failing comparison about the window is one short line", () => {
   const { dom } = page();
   try {
     short(failure(() => assert.equal(dom.window, null)), "Window");
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("a NodeList is a Proxy in jsdom, so it is left to Node", () => {
+  const { dom, document } = page();
+  try {
+    const list = document.querySelectorAll("li");
+    assert.equal(types.isProxy(list), true);
+    assert.equal(holdsDom(list), false);
   } finally {
     dom.window.close();
   }

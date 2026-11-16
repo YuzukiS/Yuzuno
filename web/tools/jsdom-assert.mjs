@@ -4,12 +4,17 @@
 // a message argument does not stop it either). For a DOM node that walks,
 // through React's fiber properties, the whole app: the message alone can
 // exhaust a 4 GiB Job before it names the failing test. jsdom-guard.mjs
-// installs this for every jsdom test. When either value is, or directly
-// holds, a DOM node or a window, the comparison is made here and a failure
-// names that object in one short line. Every other comparison is Node's own,
-// with its own message. Loads nothing but node: modules.
+// installs this for every jsdom test.
+//
+// When either value is, or directly holds, a DOM node or a window, the
+// comparison is made here, as Node makes it; a failure is then Node's own
+// assertion again, with each DOM value replaced by a one-line description, so
+// its message, argument checks and operator stay Node's. Finding a DOM object
+// runs no getter and no Proxy trap: it reads data properties only, and a
+// Proxy is left to Node (jsdom makes NodeList and HTMLCollection Proxies).
+// Every other comparison is Node's own. Loads nothing but node: modules.
 import assert from "node:assert/strict";
-import { inspect, isDeepStrictEqual } from "node:util";
+import { inspect, isDeepStrictEqual, types } from "node:util";
 
 const COMPARISONS = {
   equal: (a, b) => Object.is(a, b),
@@ -21,43 +26,35 @@ const COMPARISONS = {
   notDeepEqual: (a, b) => !isDeepStrictEqual(a, b),
   notDeepStrictEqual: (a, b) => !isDeepStrictEqual(a, b),
 };
-// The operator Node reports for each, as its own strict assertions do.
-const OPERATOR = {
-  equal: "strictEqual",
-  notEqual: "notStrictEqual",
-  deepEqual: "deepStrictEqual",
-  notDeepEqual: "notDeepStrictEqual",
-};
 const INSTALLED = Symbol.for("yuzuno.jsdom-assert");
 
-/** Reads a property that may be a throwing getter or a Proxy trap. */
-function read(value, key) {
-  try {
-    return value[key];
-  } catch {
-    return undefined;
+/** A data property's value, or undefined: never a getter call. */
+function data(object, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+/** The class names (WebIDL's @@toStringTag) on an object's prototype chain,
+ *  or none for a primitive or where a Proxy is met. */
+function classes(value) {
+  const found = [];
+  if (typeof value !== "object" || value === null || types.isProxy(value)) return found;
+  for (let proto = Object.getPrototypeOf(value); proto !== null; proto = Object.getPrototypeOf(proto)) {
+    if (types.isProxy(proto)) return [];
+    const tag = data(proto, Symbol.toStringTag);
+    if (typeof tag === "string") found.push(tag);
   }
+  return found;
 }
 
-function isNode(value) {
-  return typeof value === "object" && value !== null
-    && typeof read(value, "nodeType") === "number" && typeof read(value, "nodeName") === "string";
-}
-
-function isWindow(value) {
-  return typeof value === "object" && value !== null && read(value, "window") === value;
-}
-
+const isNode = (value) => classes(value).includes("Node");
+const isWindow = (value) => classes(value).includes("Window");
 const isDom = (value) => isNode(value) || isWindow(value);
 
-/** Own enumerable values, one level down: array items, NodeList entries, object fields. */
+/** Own enumerable data values, one level down: array items, object fields. */
 function children(value) {
-  if (typeof value !== "object" || value === null) return [];
-  try {
-    return Object.values(value);
-  } catch {
-    return [];
-  }
+  if (typeof value !== "object" || value === null || types.isProxy(value)) return [];
+  return Object.keys(value).map((key) => data(value, key));
 }
 
 /** Whether a value is, or directly holds, a DOM node or a window. */
@@ -67,63 +64,59 @@ export function holdsDom(value) {
 
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-/** One short line for a value, never an inspection of a DOM object. */
+/** One short line for a value, never an inspection of a DOM object. A DOM
+ *  node's own getters are read here, only once it failed a comparison. */
 export function describe(value) {
   if (isWindow(value)) return "Window";
   if (isNode(value)) {
-    const type = read(value, "nodeType");
-    if (type === 1) {
-      const attribute = (name) => {
-        try {
-          return value.getAttribute(name);
-        } catch {
-          return null;
-        }
-      };
-      const id = attribute("id");
-      const className = attribute("class");
-      const name = String(read(value, "localName") || read(value, "nodeName")).toLowerCase();
+    if (value.nodeType === 1) {
+      const id = value.getAttribute("id");
+      const className = value.getAttribute("class");
+      const name = String(value.localName || value.nodeName).toLowerCase();
       return clip(`<${name}${id ? ` id="${id}"` : ""}${className ? ` class="${className}"` : ""}>`, 120);
     }
-    if (type === 3) return `#text ${JSON.stringify(clip(String(read(value, "data") ?? ""), 40))}`;
-    return String(read(value, "nodeName"));
+    if (value.nodeType === 3) return `#text ${JSON.stringify(clip(String(value.data ?? ""), 40))}`;
+    return String(value.nodeName);
   }
-  if (typeof value === "object" && value !== null && children(value).some(isDom)) {
-    const items = children(value);
-    const kind = Array.isArray(value) ? "Array" : (read(value, "constructor")?.name ?? "Object");
+  const items = children(value);
+  if (items.some(isDom)) {
     const shown = items.slice(0, 3).map((item) => (isDom(item) ? describe(item) : clip(inspect(item, { depth: 0 }), 40)));
-    return `${kind}(${items.length}) [${shown.join(", ")}${items.length > 3 ? ", …" : ""}]`;
+    return `${Array.isArray(value) ? "Array" : "Object"}(${items.length}) [${shown.join(", ")}${items.length > 3 ? ", …" : ""}]`;
   }
   return clip(inspect(value, { depth: 1, breakLength: Infinity }), 120);
 }
 
+/** Node's assertion, with the stack starting where the test called. */
+function call(original, wrapper, args) {
+  try {
+    return original(...args);
+  } catch (error) {
+    if (error instanceof assert.AssertionError) Error.captureStackTrace(error, wrapper);
+    throw error;
+  }
+}
+
 function wrap(name, original) {
   const holds = COMPARISONS[name];
-  const operator = OPERATOR[name] ?? name;
+  const failsWhenEqual = name.startsWith("not");
   const wrapper = {
     [name](...args) {
-      const [actual, expected, message] = args;
-      if (!holdsDom(actual) && !holdsDom(expected)) {
-        // Exactly the arguments given: Node 26 refuses an explicit undefined message.
-        try {
-          return original(...args);
-        } catch (error) {
-          // The stack starts where the test called, as it would without this.
-          if (error instanceof assert.AssertionError) Error.captureStackTrace(error, wrapper);
-          throw error;
-        }
+      const [actual, expected] = args;
+      // Too few arguments, or nothing DOM: Node's own, exactly as called.
+      if (args.length < 2 || (!holdsDom(actual) && !holdsDom(expected))) return call(original, wrapper, args);
+      if (holds(actual, expected)) return undefined;
+      // It failed: Node fails it again on descriptions that fail the same way.
+      let a;
+      let b;
+      if (failsWhenEqual) {
+        a = b = describe(holdsDom(actual) ? actual : expected);
+      } else {
+        a = holdsDom(actual) ? describe(actual) : actual;
+        b = holdsDom(expected) ? describe(expected) : expected;
+        if (isDeepStrictEqual(a, b)) b = `${String(b)} (another object)`;
       }
-      if (holds(actual, expected)) return;
-      if (message instanceof Error) throw message;
-      // A message may be a function of the two values, as Node 26 allows.
-      const text = typeof message === "function" ? String(message(actual, expected)) : message;
-      throw new assert.AssertionError({
-        message: text ?? `${operator} failed for a DOM object (described, not inspected)`,
-        actual: describe(actual),
-        expected: describe(expected),
-        operator,
-        stackStartFn: wrapper,
-      });
+      call(original, wrapper, [a, b, ...args.slice(2)]);
+      throw new assert.AssertionError({ message: `${name} failed for a DOM object`, actual: a, expected: b, operator: name, stackStartFn: wrapper });
     },
   }[name];
   return wrapper;
