@@ -7,12 +7,16 @@
 #   the window's buttons stand are in the run's log and summary.
 # - Run on request (workflow_dispatch) for the current head of main, after
 #   the CI workflow has passed on that commit's push to main, it is a
-#   candidate: the disk image, the app as a ZIP, build.json and SHA256SUMS,
-#   with a picture of its window and where its buttons stand, one artifact
-#   kept 14 days. Never a Release.
+#   candidate: the disk image, the app as a ZIP, its update package, build.json
+#   and SHA256SUMS, with a picture of its window and where its buttons stand,
+#   one artifact kept 14 days. Never a Release. Its optional version input
+#   (X.Y.Z) is the version built into the app; without it, the source's.
 #
-# The app is signed ad hoc and not notarized: there is no Developer ID, and
-# this workflow uses no secret. See desktop/README.md.
+# Every build embeds the committed update public key, desktop/desktop-update.pub,
+# and packs the update package Yuzuno.app.tar.gz. The package is not signed
+# here: no private key is in this workflow; the release machine signs it
+# (scripts/desktop.ps1). The app is signed ad hoc and not notarized: there is
+# no Developer ID, and this workflow uses no secret. See desktop/README.md.
 name: Desktop macOS
 
 on:
@@ -26,6 +30,12 @@ on:
       - .github/scripts/disk-precheck.sh
       - .github/scripts/macos-title-bar.sh
   workflow_dispatch:
+    inputs:
+      version:
+        description: The version built into the app, X.Y.Z (empty for the source's)
+        required: false
+        type: string
+        default: ''
 
 # Read-only: actions: read only to look up the CI run of a candidate's commit.
 permissions:
@@ -77,6 +87,19 @@ jobs:
           [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
           echo "CI passed on $GITHUB_SHA"
 
+      # A candidate's version input is X.Y.Z or empty, checked before checkout.
+      - name: Version input (candidate only)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: .
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version input must be X.Y.Z (digits only)"; exit 1
+          fi
+          echo "version: ${VERSION:-the source's}"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -106,12 +129,19 @@ jobs:
 
       # The pinned Tauri CLI and the crates are fetched fresh; nothing is
       # cached. SOURCE_COMMIT, which build.json records, is the commit checked
-      # out: for a PR, GitHub's merge of it into main.
-      - name: Desktop tests, app and disk image
+      # out: for a PR, GitHub's merge of it into main. Every build embeds the
+      # committed update public key; a candidate with a version input carries
+      # that version.
+      - name: Desktop tests, app, disk image and update package
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           SOURCE_COMMIT=$(git rev-parse HEAD)
           export SOURCE_COMMIT
-          scripts/desktop-macos.sh --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$RUNNER_TEMP/out" --test
+          set -- --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$RUNNER_TEMP/out" --test \
+            --update-public-key desktop/desktop-update.pub
+          [ -z "$VERSION" ] || set -- "$@" --version "$VERSION"
+          scripts/desktop-macos.sh "$@"
 
       # The window has no title bar row: the system's window buttons stand
       # over the toolbar, at its middle (YN-90). Opens the app just built and
@@ -123,40 +153,70 @@ jobs:
         run: .github/scripts/macos-title-bar.sh "$RUNNER_TEMP/out/Yuzuno.app" "$RUNNER_TEMP/out/title-bar"
 
       # What was packed: the executable is this architecture's only, and
-      # the ZIP and the disk image (mounted read-only) hold that same
-      # executable; the image also holds the Applications link to drag to.
+      # the ZIP, the disk image (mounted read-only) and the update package
+      # hold that same executable; the image also holds the Applications link
+      # to drag to. The update package, unpacked with macOS's tar as the
+      # updater unpacks it, holds Yuzuno.app alone, whose signature passes
+      # codesign's strict check and which has no quarantine attribute. The
+      # executable holds the committed update public key once, and a
+      # candidate with a version input carries that version.
       - name: Package structure
         env:
           ARCH: ${{ matrix.arch }}
+          VERSION: ${{ inputs.version }}
+          UPDATE_PUBLIC_KEY: desktop/desktop-update.pub
         run: |
           check="$RUNNER_TEMP/check"
-          mkdir -p "$check/zip" "$check/dmg"
+          mkdir -p "$check/zip" "$check/dmg" "$check/tar"
           ditto -x -k "$RUNNER_TEMP/out/Yuzuno.app.zip" "$check/zip"
+          /usr/bin/tar -xzf "$RUNNER_TEMP/out/Yuzuno.app.tar.gz" -C "$check/tar"
           hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$check/dmg" "$RUNNER_TEMP"/out/*.dmg
           status=0
           /usr/bin/python3 - "$RUNNER_TEMP/out" "$check" <<'EOF' || status=$?
-          import glob, hashlib, json, os, plistlib, sys
+          import glob, hashlib, json, os, plistlib, subprocess, sys
           out, check = sys.argv[1:]
-          arch = os.environ["ARCH"]
+          arch, version = os.environ["ARCH"], os.environ["VERSION"]
+          key = open(os.environ["UPDATE_PUBLIC_KEY"], "rb").read().strip()
           app = json.load(open(os.path.join(out, "build.json")))["app"]
           problems = []
           if app["architectures"] != [arch]:
               problems.append(f"the executable is {app['architectures']}, not [{arch}]")
+          if not app["updatePublicKeyId"]:
+              problems.append("build.json names no update public key")
+          if version and app["version"] != version:
+              problems.append(f"build.json's version is {app['version']}, not {version}")
           dmgs = glob.glob(os.path.join(out, "*.dmg"))
           if len(dmgs) != 1:
               problems.append(f"{len(dmgs)} disk images")
-          for where in ("zip", "dmg"):
+          for where in ("zip", "dmg", "tar"):
               bundle = os.path.join(check, where, "Yuzuno.app")
               info = plistlib.load(open(os.path.join(bundle, "Contents", "Info.plist"), "rb"))
               executable = os.path.join(bundle, "Contents", "MacOS", info["CFBundleExecutable"])
-              digest = hashlib.sha256(open(executable, "rb").read()).hexdigest()
+              data = open(executable, "rb").read()
+              digest = hashlib.sha256(data).hexdigest()
               if digest != app["executableSha256"]:
                   problems.append(f"{where}: the executable is {digest}, not build.json's")
+              if data.count(key) != 1:
+                  problems.append(f"{where}: the executable holds the update public key {data.count(key)} times, not once")
+              if version and info.get("CFBundleShortVersionString") != version:
+                  problems.append(f"{where}: the app's version is {info.get('CFBundleShortVersionString')}, not {version}")
           listing = sorted(os.listdir(os.path.join(check, "dmg")))
           link = os.path.join(check, "dmg", "Applications")
           if "Yuzuno.app" not in listing or not os.path.islink(link) or os.readlink(link) != "/Applications":
               problems.append(f"the disk image holds {listing}")
-          print(f"{arch}: {os.path.basename(dmgs[0]) if dmgs else '-'}, image {listing}, executable {app['executableSha256']}")
+          unpacked = sorted(os.listdir(os.path.join(check, "tar")))
+          if unpacked != ["Yuzuno.app"]:
+              problems.append(f"the update package holds {unpacked}, not Yuzuno.app alone")
+          tar_app = os.path.join(check, "tar", "Yuzuno.app")
+          signature = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", tar_app], capture_output=True, text=True)
+          if signature.returncode != 0:
+              problems.append(f"the unpacked update package fails codesign --verify: {(signature.stdout + signature.stderr).strip()}")
+          attributes = subprocess.run(["/usr/bin/xattr", "-r", tar_app], capture_output=True, text=True, check=True).stdout
+          if "com.apple.quarantine" in attributes:
+              problems.append("the unpacked update package has a quarantine attribute")
+          print(f"{arch}: {os.path.basename(dmgs[0]) if dmgs else '-'}, image {listing}, update package {unpacked}, "
+                f"version {app['version']}, key {app['updatePublicKeyId']}, executable {app['executableSha256']}")
+          print(f"extended attributes of the unpacked update package: {attributes.strip() or 'none'}")
           for problem in problems:
               print(f"::error::{problem}")
           sys.exit(1 if problems else 0)
@@ -167,7 +227,7 @@ jobs:
       - name: Checksums
         run: |
           cd "$RUNNER_TEMP/out"
-          shasum -a 256 *.dmg Yuzuno.app.zip build.json > SHA256SUMS
+          shasum -a 256 *.dmg Yuzuno.app.zip Yuzuno.app.tar.gz build.json > SHA256SUMS
           cat SHA256SUMS build.json
           {
             echo "### macOS app (${{ matrix.arch }})"
@@ -185,10 +245,11 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: github.event_name == 'workflow_dispatch'
         with:
-          name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version || 'source' }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/out/*.dmg
             ${{ runner.temp }}/out/Yuzuno.app.zip
+            ${{ runner.temp }}/out/Yuzuno.app.tar.gz
             ${{ runner.temp }}/out/build.json
             ${{ runner.temp }}/out/SHA256SUMS
             ${{ runner.temp }}/out/title-bar/title-bar.png
