@@ -90,6 +90,9 @@ type Job = {
   machine: { id?: string; name: string };
   /** Where it runs when not on this host: an SSH machine or Windows (T-108). */
   executor?: { kind: string; machineId?: string; machineName?: string } | null;
+  /** What its executor offers; `downloads` when a remote machine streams
+   * its artifacts and outputs on demand (YN-83 S2). */
+  capabilities?: { downloads?: string } | null;
   /** Where it runs as the submission named it (`agent`, `local`, an id or
    * null) and as Core resolved it then (T-162). Older Jobs have none. */
   target?: { requested?: string | null; kind: string; machineId: string; machineName?: string } | null;
@@ -1813,6 +1816,7 @@ function JobDetail({
           declared={job.artifacts}
           checked={job.result?.artifacts}
           on={job.result?.artifactsOn ?? (job.executor && job.executor.kind !== "local" ? job.machine : null)}
+          streamed={typeof job.capabilities?.downloads === "string"}
         />
       )}
       <JobCard title={t.command}>
@@ -1833,6 +1837,9 @@ function JobDetail({
       </JobCard>
       {!!job.outputs?.length && (
         <JobCard title={t.declared} className="job-outputs">
+          {job.executor && job.executor.kind !== "local" && (
+            <p className="job-footnote">{t.outputsOn(job.executor.machineName ?? job.machine.name)}</p>
+          )}
           {job.outputs.map((path, index) => (
             <a
               key={path}

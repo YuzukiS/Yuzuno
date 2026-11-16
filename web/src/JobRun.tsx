@@ -202,6 +202,8 @@ const text = strings({
   earlierWaiting: "Earlier waiting runs",
   artifacts: "Artifacts",
   checkedOn: (machine: string) => `Checked on ${machine} and kept there; not copied to this host.`,
+  checkedOnStreamed: (machine: string) =>
+    `Checked on ${machine} and kept there; a download streams it from there and stops if it is no longer the file checked.`,
   notChecked: "Not checked yet",
   verified: "Verified",
   bytes: (count: string) => `${count} bytes`,
@@ -315,6 +317,7 @@ const text = strings({
   earlierWaiting: "更早的等待中运行",
   artifacts: "产物",
   checkedOn: (machine) => `已在 ${machine} 上核对并保留在那里；未复制到此主机。`,
+  checkedOnStreamed: (machine) => `已在 ${machine} 上核对并保留在那里；下载时从那里传来，已不是核对过的文件就会中止。`,
   notChecked: "尚未核对",
   verified: "已验证",
   bytes: (count) => `${count} 字节`,
@@ -703,16 +706,19 @@ export function ArtifactsCard({
   declared,
   checked,
   on,
+  streamed = false,
 }: {
   jobId: string;
   declared: { path: string }[];
   checked?: Artifact[] | null;
   on?: { name: string } | null;
+  /** A remote job whose machine streams its files when downloaded (YN-83 S2). */
+  streamed?: boolean;
 }) {
   const t = useStrings(text);
   return (
     <JobCard title={t.artifacts} className="job-artifacts">
-      {on && <p className="job-footnote">{t.checkedOn(on.name)}</p>}
+      {on && <p className="job-footnote">{streamed ? t.checkedOnStreamed(on.name) : t.checkedOn(on.name)}</p>}
       <ul>
         {declared.map(({ path }) => {
           const index = checked?.findIndex((a) => a.path === path) ?? -1;
@@ -742,7 +748,7 @@ export function ArtifactsCard({
                 <span>{t.unchanged}</span>
               )}
               {/* Served only while the file is still the one this attempt produced. */}
-              {entry?.ok && !on && (
+              {entry?.ok && (!on || streamed) && (
                 <a href={`${API_BASE}/api/jobs/${jobId}/artifacts/${index}`} download>
                   {t.download}
                 </a>

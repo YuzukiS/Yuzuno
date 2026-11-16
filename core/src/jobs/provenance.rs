@@ -287,10 +287,15 @@ fn inputs(job: &Value, known: &mut Known) -> Value {
         "note": "Only these files were frozen, by SHA-256 at submission, and checked again before the command could start; anything else it read was not"})
 }
 
-fn artifact_file(a: &Value, remote: bool, machine: &Value) -> Value {
+/// `streamed`: a remote job whose machine streams its files when one is
+/// downloaded (capabilities.downloads, YN-83 S2).
+fn artifact_file(a: &Value, remote: bool, streamed: bool, machine: &Value) -> Value {
     let ok = a["ok"] == true;
-    let fetch = if remote {
-        json!({"available": false, "reason": format!("It stays on {}: Core checked it there and does not copy it", machine.as_str().unwrap_or("that machine"))})
+    let machine = machine.as_str().unwrap_or("that machine");
+    let fetch = if remote && ok && streamed {
+        json!({"available": true, "how": format!("Download it from this Job in Core, which streams it from {machine} and refuses or cuts off a file that is no longer this one")})
+    } else if remote {
+        json!({"available": false, "reason": format!("It stays on {machine}: Core checked it there and does not copy it")})
     } else if ok {
         json!({"available": true, "how": "Download it from this Job in Core, which checks it against this record first and refuses a file that changed"})
     } else {
@@ -308,7 +313,7 @@ fn artifacts(job: &Value) -> Value {
     let on = target(job);
     let checked = &job["result"]["artifacts"];
     let files: Vec<Value> = match checked.as_array() {
-        Some(all) => all.iter().map(|a| artifact_file(a, remote(job), &on["machineName"])).collect(),
+        Some(all) => all.iter().map(|a| artifact_file(a, remote(job), job["capabilities"]["downloads"].is_string(), &on["machineName"])).collect(),
         None => job["artifacts"].as_array().into_iter().flatten().map(|a| {
             json!({"path": a["path"].as_str().and_then(relative), "format": a["format"], "minBytes": a["minBytes"],
                 "state": "declared"})

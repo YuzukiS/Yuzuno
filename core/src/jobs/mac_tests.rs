@@ -391,3 +391,20 @@ async fn guard_git_on_this_mac_is_frozen_there_and_checked_before_the_start() {
     assert_eq!(done["status"], "succeeded", "{done}");
     assert_eq!(remote::logs_with(&lab.ws, &done, None, &lab.programs()).await.unwrap()["text"], "v2\n");
 }
+
+/// Artifacts and outputs of a Job on This Mac download through the same
+/// helper (YN-83 S2): streamed from the attempt's own record, copied nowhere.
+#[tokio::test]
+async fn artifacts_and_outputs_on_this_mac_download_through_its_helper() {
+    let lab = lab();
+    let sent = job(&lab, "files", "printf made > out.txt; printf kept > o.txt", json!({"artifacts":[{"path":"out.txt"}],"outputs":["o.txt"]}));
+    let queued = lab.call(Some("a"), "job_submit", sent).await.unwrap();
+    assert_eq!(queued["remote"]["prebound"]["request"], "v4", "{queued}");
+    let done = lab.until(&queued, |j| j["reserved"] == false).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    for (artifact, bytes) in [(true, b"made"), (false, b"kept")] {
+        let download = remote::fetch(&lab.ws, &done, artifact, 0, &lab.programs()).await.unwrap();
+        assert_eq!(download.bytes, 4);
+        assert_eq!(&axum::body::to_bytes(download.body, usize::MAX).await.unwrap()[..], bytes);
+    }
+}
