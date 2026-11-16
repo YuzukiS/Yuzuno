@@ -183,16 +183,16 @@ Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
 Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
-At most 12 topics with 4 sub-topics each; a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
+At most 12 topics with 4 report or status sub-topics each (Asks take none); a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
-edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
+edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else; a status section's edit may send status alone.\n\
 patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again. \
 On an array, @<id> names the item whose id it is, e.g. /elements/runs/props/rows/@r8/cells/status.\n\
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
-status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale.\n\
+status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale. An edit of blocks or a patch without status sets asOf to the time of the write.\n\
 attachments: up to 12 per section, {name, path (absolute, on the Core host) or url (https), caption?}. Files up to 25 MB are kept as snapshots; \
 charts read only snapshot data files (CSV, JSON, JSONL).\n\
 errors: a rejection lists problems with a code, a path and the guide part to read; nothing was changed.";
