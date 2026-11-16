@@ -279,10 +279,10 @@ async function check(run) {
     const tabs = (await page.locator(".project-talk-tabs [role=tab]").allInnerTexts()).map((t) => t.trim());
     if (narrow) {
       assert.equal(view, "requests");
-      assert.deepEqual(tabs, [`${w.requests} 5`, w.chat]);
+      assert.deepEqual(tabs, [`${w.requests} ${requests().length}`, w.chat]);
     } else {
       assert.equal(view, "both");
-      assert.deepEqual(tabs, [`${w.requests} 5`, w.both, w.chat]);
+      assert.deepEqual(tabs, [`${w.requests} ${requests().length}`, w.both, w.chat]);
     }
     let fit = await fits();
     fitsOk(fit, "the first view");
