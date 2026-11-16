@@ -978,3 +978,5 @@ fn the_route_tools_description_fits_2048_utf16_units() {
 mod route_image_tests;
 #[path = "route_file_tests.rs"]
 mod route_file_tests;
+#[path = "route_owed_tests.rs"]
+mod route_owed_tests;

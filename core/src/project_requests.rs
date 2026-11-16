@@ -10,6 +10,7 @@
 //! from its cards' tasks (progress.rs), and the user reassigns a card
 //! (reassign.rs).
 mod front_desk;
+mod owed;
 mod progress;
 mod reassign;
 pub(crate) mod routes;
@@ -309,15 +310,17 @@ pub(crate) fn images_refused(error: &anyhow::Error) -> Option<&str> {
 }
 
 /// Gives `agent` its own copy of a new message's images (input_images::adopt),
-/// when it takes images; refused (`ImagesRefused`), nothing is sent.
-async fn adopt_images(ws: &Workspace, project: &str, agent: &str, images: &[String]) -> Result<()> {
+/// when it takes images; refused (`ImagesRefused`), nothing is sent. A dsh
+/// whose initialize said it takes none (dsh_agent.rs §3.9) is refused here
+/// too, so a hand-off goes on without them (YN-173).
+pub(crate) async fn adopt_images(ws: &Workspace, project: &str, agent: &str, images: &[String]) -> Result<()> {
     if images.is_empty() {
         return Ok(());
     }
     let refused = |reason: String| anyhow::Error::new(MessageNotSubmitted(anyhow::Error::new(ImagesRefused(reason))));
     let to = agent.to_owned();
     let found = ws.stored(move |store| store.agent(&to)).await?;
-    if !crate::input_images::takes_images(&found.harness) {
+    if !crate::input_images::takes_images(&found.harness) || (found.harness == "dsh" && ws.dsh_takes_images(agent) == Some(false)) {
         return Err(refused(format!("{} can't receive images", found.name)));
     }
     let (root, project, agent, images) = (ws.data_dir.clone(), project.to_owned(), agent.to_owned(), images.to_vec());

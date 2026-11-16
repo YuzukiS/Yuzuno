@@ -79,6 +79,19 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
             OR (request_id IS NOT NULL AND request_id NOT IN (SELECT id FROM project_requests));
         DELETE FROM project_request_notes WHERE request_id NOT IN (SELECT id FROM project_requests);",
     )?;
+    // attachments: the request's images and files a route owes the Agent
+    // answering for its card, which had not started when it was routed
+    // (YN-173, owed.rs): NULL when nothing is owed, else owed, sent, gone or
+    // failed; attachments_note is its tries, last try and error, as JSON.
+    // Older Cores ignore both columns.
+    for column in ["attachments", "attachments_note"] {
+        let has: bool = db.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_routes') WHERE name='{column}')"), [], |r| r.get(0))?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE project_routes ADD COLUMN {column} TEXT"))?;
+        }
+    }
+    db.execute_batch("CREATE INDEX IF NOT EXISTS project_routes_owed ON project_routes(at) WHERE attachments='owed';")?;
     Ok(())
 }
 
@@ -141,9 +154,15 @@ pub(super) struct RouteRow {
     pub at: String,
     pub state: String,
     pub error: Option<String>,
+    /// What it owes of the request's images and files (YN-173, owed.rs):
+    /// none, or owed, sent, gone or failed.
+    pub attachments: Option<String>,
+    /// Its tries, last try and error, while owed or once it failed.
+    pub attachments_note: Option<Value>,
 }
 
-const ROUTE: &str = "id,request_id,idx,kind,input,task_id,section_id,card_key,target_agent_id,from_agent_id,why,by_agent_id,at,state,error";
+const ROUTE: &str = "id,request_id,idx,kind,input,task_id,section_id,card_key,target_agent_id,from_agent_id,why,by_agent_id,at,state,error,\
+    attachments,attachments_note";
 
 fn route_row(r: &rusqlite::Row) -> rusqlite::Result<RouteRow> {
     Ok(RouteRow {
@@ -162,6 +181,8 @@ fn route_row(r: &rusqlite::Row) -> rusqlite::Result<RouteRow> {
         at: r.get(12)?,
         state: r.get(13)?,
         error: r.get(14)?,
+        attachments: r.get(15)?,
+        attachments_note: r.get::<_, Option<String>>(16)?.and_then(|raw| serde_json::from_str(&raw).ok()),
     })
 }
 
@@ -220,6 +241,19 @@ pub(super) fn json(db: &Connection, row: &RouteRow) -> Result<Value> {
     }
     if let Some(error) = &row.error {
         shown["error"] = json!(error);
+    }
+    // Only a route that owed the request's images and files says how that
+    // stands (YN-173): every other route is shown as before.
+    if let Some(state) = &row.attachments {
+        let mut attachments = json!({"state":state});
+        if let Some(note) = &row.attachments_note {
+            for key in ["tries", "error", "unsent"] {
+                if !note[key].is_null() {
+                    attachments[key] = note[key].clone();
+                }
+            }
+        }
+        shown["attachments"] = attachments;
     }
     Ok(shown)
 }
@@ -403,16 +437,29 @@ fn desk(db: &Connection, actor: &str) -> Result<String> {
 }
 
 /// What a call's routes run with: where, the request and who routes it.
-struct Ctx {
-    workspace: String,
-    project: String,
-    name: String,
-    front: String,
-    request: Request,
+pub(super) struct Ctx {
+    pub workspace: String,
+    pub project: String,
+    pub name: String,
+    pub front: String,
+    pub request: Request,
     /// The routes of this call still to do, by index.
-    todo: Vec<RouteRow>,
+    pub todo: Vec<RouteRow>,
     /// The indices this call gave.
-    given: usize,
+    pub given: usize,
+}
+
+/// What a route that is done ran with, read again for what it still owes
+/// (owed.rs): its request, Project and Workspace, and the front desk that
+/// routed it; no routes to do.
+pub(super) fn ctx_of(db: &Connection, row: &RouteRow) -> Result<Ctx> {
+    let request = row.request_id.as_deref().context("a route of the user's has no request")?;
+    let project: String = db.query_row("SELECT project_id FROM project_requests WHERE id=?1", [request], |r| r.get(0))?;
+    let request = db.query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE id=?1"), [request], request_row)?;
+    let workspace: String = db.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
+    let name = crate::projects::project_labels(db)?.remove(&project).map(|(name, _)| name).unwrap_or_default();
+    let front = row.by_agent_id.as_deref().map(|id| agent_name(db, id)).unwrap_or_default();
+    Ok(Ctx { workspace, project, name, front, request, todo: vec![], given: 0 })
 }
 
 /// Checks the call against the request's recorded routes and records it, in
@@ -611,6 +658,22 @@ async fn save(ws: &Arc<Workspace>, id: &str, column: &'static str, value: Value)
     .await
 }
 
+/// A card route's new executor, and, when `owes`, that the request's images
+/// and files are owed to its card (YN-173): one write. Never over what an
+/// earlier try recorded of them.
+async fn save_executor(ws: &Arc<Workspace>, id: &str, agent: &str, owes: bool) -> Result<()> {
+    let (id, agent) = (id.to_owned(), agent.to_owned());
+    ws.stored(move |store| {
+        store.db.write()?.execute(
+            "UPDATE project_routes SET target_agent_id=?2,
+                attachments=CASE WHEN ?3 THEN COALESCE(attachments,'owed') ELSE attachments END WHERE id=?1",
+            params![id, agent, owes],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
 async fn save_card(ws: &Arc<Workspace>, id: &str, identity: i64, key: &str) -> Result<()> {
     let (id, key) = (id.to_owned(), key.to_owned());
     ws.stored(move |store| {
@@ -662,16 +725,44 @@ const WHY_ROOM: usize = WHY_PREFIX.len() + 3 * MAX_LINE;
 /// (Dev Lead 2, seq 12103): Core's head, a blank line and the words, in
 /// bytes, within a task description's limit less the room for why.
 fn words_fit(ctx: &Ctx) -> bool {
-    description_head(ctx).len() + 2 + ctx.request.text.len() + images_left(ctx, "a task description").len() <= MAX_DESCRIPTION - WHY_ROOM
+    description_head(ctx).len() + 2 + ctx.request.text.len() + attachments_left(ctx, Carrier::Description).len() <= MAX_DESCRIPTION - WHY_ROOM
 }
 
-/// What a task description or a mail says of the images the user attached
-/// to the request (YN-134), which neither can carry: empty without any.
-fn images_left(ctx: &Ctx, carrier: &str) -> String {
-    match ctx.request.images.len() {
-        0 => String::new(),
-        n => format!("\n\nThe user also attached {n} image{} to R-{} on Home; {carrier} can't carry them.",
-            if n == 1 { "" } else { "s" }, ctx.request.n),
+/// "2 images", "1 file", "2 images and 1 file": what a line counts.
+pub(super) fn counted(images: usize, files: usize) -> String {
+    let one = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
+    match (images, files) {
+        (images, 0) => one(images, "image"),
+        (0, files) => one(files, "file"),
+        (images, files) => format!("{} and {}", one(images, "image"), one(files, "file")),
+    }
+}
+
+/// Where the user's words go when the request's images and files do not
+/// go with them.
+#[derive(Clone, Copy)]
+pub(super) enum Carrier {
+    /// The new card's task description.
+    Description,
+    /// The front desk's mail to a card's executor still waiting for its slot.
+    Mail,
+}
+
+/// What a task description or a mail says of the images and files the user
+/// attached to the request (YN-134, YN-145), which neither can carry: who
+/// gets them, and how (owed.rs for an executor that had not started).
+/// Empty without any.
+fn attachments_left(ctx: &Ctx, carrier: Carrier) -> String {
+    let (images, files) = (ctx.request.images.len(), ctx.request.files.len());
+    if images + files == 0 {
+        return String::new();
+    }
+    let what = counted(images, files);
+    match carrier {
+        Carrier::Description => format!("\n\nThe user also attached {what} to R-{} on Home; whoever answers for this card gets them as a \
+            message from Home (an executor once it has started).", ctx.request.n),
+        Carrier::Mail => format!("\n\nThe user also attached {what} to R-{} on Home; they come to you as a message from Home once you \
+            have started.", ctx.request.n),
     }
 }
 
@@ -682,7 +773,7 @@ fn images_left(ctx: &Ctx, carrier: &str) -> String {
 fn description(ctx: &Ctx, why: &str) -> (String, bool) {
     let head = description_head(ctx);
     if words_fit(ctx) {
-        return (format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, images_left(ctx, "a task description")), true);
+        return (format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, attachments_left(ctx, Carrier::Description)), true);
     }
     let request = &ctx.request;
     (
@@ -701,7 +792,7 @@ fn description(ctx: &Ctx, why: &str) -> (String, bool) {
 /// the user named (the Project, the front desk) are in it, never an Agent's
 /// (Dev Lead 2, seq 12103): the card is named by its task's key, and the
 /// front desk's why goes by its own mail (`tell_why`).
-fn hand_off_head(ctx: &Ctx, task: &str) -> String {
+pub(super) fn hand_off_head(ctx: &Ctx, task: &str) -> String {
     format!(
         "Request R-{} from the user to the project {} (Workspace {}, Project {}), routed by the front desk {} to task {task}, \
          whose card you answer for; the user's words travel as they are:",
@@ -709,51 +800,60 @@ fn hand_off_head(ctx: &Ctx, task: &str) -> String {
     )
 }
 
-/// Sends the request's words to `agent` as one message from Home, Core's
-/// head first, the user's pasted blocks and images with them (as a
-/// follow-up is sent); without `words`, only `head` and the images, the
-/// words being in the task's description. Images `agent` can't be given (it
-/// takes none, or they could not be copied to it, YN-134) never hold the
-/// hand-off up: the words go without them, Core's head first saying why
-/// (Dev Lead 2, seq 13370), or without words only that line.
-async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, head: &str, words: bool) -> Result<()> {
+/// How a hand-off's message opens.
+#[derive(Clone, Copy)]
+pub(super) enum Opening<'a> {
+    /// Core's head (`hand_off_head`), then the user's words, byte for byte.
+    Words(&'a str),
+    /// The words went elsewhere (`Carrier`): only the line naming what is
+    /// attached and where the words are (`attachments_head`), and, for an
+    /// Agent that has had no Turn yet (`first`), where its dispatch is.
+    Attachments { task: &'a str, words: Carrier, first: bool },
+}
+
+/// Sends the request to `agent` as one message from Home (as a follow-up is
+/// sent), with its images and files: with `Opening::Words`, Core's head and
+/// the user's words with their pasted blocks; with `Opening::Attachments`,
+/// only that line, the words being in the task's description or the front
+/// desk's mail. An image or file `agent` can't be given (it takes none, or it
+/// could not be copied to it: YN-134, YN-145) never holds the hand-off up: the
+/// message goes without it, a line saying why before the opening (Dev Lead
+/// 2, seq 13370), the opening kept (YN-173). `unsent`: why none of them can
+/// go (owed.rs, once its tries are spent): the message goes without any.
+pub(super) async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, opening: Opening<'_>, unsent: Option<&str>)
+    -> Result<()> {
     let client = format!("route-{}", row.id);
     let request = &ctx.request;
     let origin = json!({"kind":ORIGIN,"projectId":ctx.project,"requestId":request.id,"request":request.n,"route":row.idx,
         "workspaceId":ctx.workspace});
-    // A file or image `agent` can't be given never holds the hand-off up: it
-    // goes without it, Core's head first saying why (YN-145 for files).
-    let (mut head, mut images, mut files) = (head.to_owned(), request.images.clone(), request.files.clone());
+    // The lines saying what could not be given and why, the newest first.
+    let mut whys: Vec<String> = Vec::new();
+    let (mut images, mut files) = (request.images.clone(), request.files.clone());
+    if let Some(reason) = unsent {
+        whys.push(not_sent(request.n, images.len(), files.len(), reason));
+        images.clear();
+        files.clear();
+    }
     loop {
-        let (said, im, fl) = (head.clone(), images.clone(), files.clone());
-        let error = match send(ws, &ctx.project, agent, &client, &fl, true, origin.clone(), |turn| match words {
-            true => message(&client, &said, &request.text, request.text_blocks.as_deref(), &im, turn),
-            false => MessageInput { client_message_id: client.clone(), text: said, text_blocks: None, images: im,
+        let (said, im, fl) = (opening_text(ctx, opening, &whys, images.len(), files.len()), images.clone(), files.clone());
+        let error = match send(ws, &ctx.project, agent, &client, &fl, true, origin.clone(), |turn| match opening {
+            Opening::Words(_) => message(&client, &said, &request.text, request.text_blocks.as_deref(), &im, turn),
+            Opening::Attachments { .. } => MessageInput { client_message_id: client.clone(), text: said, text_blocks: None, images: im,
                 expected_turn_id: turn, question: None, clarification: None },
         }).await {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
         if !files.is_empty() {
-            if let Some(reason) = files_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) {
-                let n = files.len();
-                let why = format!(
-                    "The user also attached {n} file{} to R-{} on Home, which could not be sent to you: {reason}.",
-                    if n == 1 { "" } else { "s" }, request.n
-                );
-                head = if words { format!("{why}\n{head}") } else { why };
+            if let Some(reason) = files_refused(&error) {
+                whys.insert(0, not_sent(request.n, 0, files.len(), reason));
                 files.clear();
                 continue;
             }
         }
         if !images.is_empty() {
-            if let Some(reason) = images_refused(&error).map(|reason| reason.trim_end_matches("; attach it again").to_owned()) {
-                let n = images.len();
-                let why = format!(
-                    "The user also attached {n} image{} to R-{} on Home, which could not be sent to you: {reason}.",
-                    if n == 1 { "" } else { "s" }, request.n
-                );
-                head = if words { format!("{why}\n{head}") } else { why };
+            if let Some(reason) = images_refused(&error) {
+                whys.insert(0, not_sent(request.n, images.len(), 0, reason));
                 images.clear();
                 continue;
             }
@@ -762,20 +862,54 @@ async fn hand_off(ws: &Arc<Workspace>, ctx: &Ctx, row: &RouteRow, agent: &str, h
     }
 }
 
+/// The line saying which of R-`n`'s images and files could not go, and why.
+fn not_sent(n: i64, images: usize, files: usize, reason: &str) -> String {
+    format!("The user also attached {} to R-{n} on Home, which could not be sent to you: {}.", counted(images, files),
+        reason.trim_end_matches("; attach it again"))
+}
+
+/// A hand-off message's text before any words: each line saying what could
+/// not go, then the opening for what still goes (`Opening`).
+fn opening_text(ctx: &Ctx, opening: Opening<'_>, whys: &[String], images: usize, files: usize) -> String {
+    let mut lines = whys.to_vec();
+    match opening {
+        Opening::Words(head) => lines.push(head.to_owned()),
+        Opening::Attachments { task, words, first } => {
+            let dispatch = format!("Your dispatch for task {task} is in your Workspace mailbox.");
+            match (images + files > 0, first) {
+                (true, false) => lines.push(attachments_head(ctx, task, words, images, files)),
+                (true, true) => lines.push(format!("{} {dispatch}", attachments_head(ctx, task, words, images, files))),
+                (false, true) => lines.push(dispatch),
+                (false, false) => {}
+            }
+        }
+    }
+    lines.join("\n")
+}
+
 /// The line of a message that hands an Agent a request's images and files
-/// when its words are in the task's description (Dev Lead 2, seq 13386;
-/// files YN-145).
-fn attachments_head(ctx: &Ctx, task: &str) -> String {
-    let what = match (ctx.request.images.is_empty(), ctx.request.files.is_empty()) {
-        (false, true) => "images",
-        (true, false) => "files",
+/// when its words went elsewhere (Dev Lead 2, seq 13386; files YN-145): in
+/// the task's description, or in the front desk's mail to an executor that
+/// had not started (YN-173). It names what the message carries.
+fn attachments_head(ctx: &Ctx, task: &str, words: Carrier, images: usize, files: usize) -> String {
+    let what = match (images > 0, files > 0) {
+        (true, false) => "images",
+        (false, true) => "files",
         _ => "images and files",
     };
+    let words = match words {
+        Carrier::Description => format!("the request's words are in the description of task {task}, whose card you answer for."),
+        Carrier::Mail => format!("the request's words reached you in the front desk's mail about task {task}, whose card you answer for."),
+    };
     format!(
-        "The {what} the user attached to R-{} of the project {} on Home (Workspace {}, Project {}); the request's words are in \
-         the description of task {task}, whose card you answer for.",
+        "The {what} the user attached to R-{} of the project {} on Home (Workspace {}, Project {}); {words}",
         ctx.request.n, ctx.name, ctx.workspace, ctx.project
     )
+}
+
+/// Whether the request has images or files.
+fn attached(ctx: &Ctx) -> bool {
+    !ctx.request.images.is_empty() || !ctx.request.files.is_empty()
 }
 
 /// The front desk's why, by mail from it to `agent`, about the card's task.
@@ -839,11 +973,12 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
                     "expectedVersion":1,"toAgentId":agent,"body":body}))
                     .await?;
                 if !whole {
-                    hand_off(ws, ctx, row, agent, &hand_off_head(ctx, &key), true).await?;
-                } else if !ctx.request.images.is_empty() || !ctx.request.files.is_empty() {
+                    hand_off(ws, ctx, row, agent, Opening::Words(&hand_off_head(ctx, &key)), None).await?;
+                } else if attached(ctx) {
                     // The words are in the description; the attachments go as a
                     // message (images YN-134, files YN-145).
-                    hand_off(ws, ctx, row, agent, &attachments_head(ctx, &key), false).await?;
+                    let opening = Opening::Attachments { task: &key, words: Carrier::Description, first: false };
+                    hand_off(ws, ctx, row, agent, opening, None).await?;
                 }
             }
             save(ws, &row.id, "target_agent_id", json!(agent)).await?;
@@ -859,7 +994,11 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
             }
             let answer = own_call(ws, actor, "task_dispatch", dispatch).await?;
             let agent = answer["agentId"].as_str().context("task_dispatch answered without its executor")?.to_owned();
-            save(ws, &row.id, "target_agent_id", json!(agent)).await?;
+            // A new executor takes no message before it starts: the request's
+            // images and files are owed to its card, and go once it has
+            // (owed.rs, YN-173). Saved with its executor, so a retry, which
+            // goes on from here, never loses them.
+            save_executor(ws, &row.id, &agent, attached(ctx)).await?;
             agent
         }
     };
@@ -885,7 +1024,9 @@ fn agent_name(db: &Connection, id: &str) -> String {
 /// desk itself. An executor still waiting for its slot takes no message
 /// from Home before it starts (R1 5e385a9d): it gets the words and why in
 /// one mail from the front desk, which it reads once it starts
-/// (`queued_hand_off`). Every check comes before the route records its card.
+/// (`queued_hand_off`), and the request's images and files as a message from
+/// Home once it has started (owed.rs, YN-173). Every check comes before the
+/// route records its card.
 async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Result<()> {
     let wanted = row.input["cardKey"].as_str().unwrap_or_default().to_owned();
     let project = ctx.project.clone();
@@ -913,11 +1054,15 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
         format!("no_responsible: no Agent answers for {}: its task {key} has no executor or assignee; dispatch it first", card.key)
     })?;
     let queued = (waiting && agent != actor).then(|| queued_hand_off(ctx, &row.why, &key)).transpose()?;
+    // Its images and files, which no mail carries, are owed to the card and
+    // go once its executor has started (owed.rs, YN-173), recorded with it.
+    let owes = queued.is_some() && attached(ctx);
     let (route, card_key, identity, bound) = (row.id.clone(), card.key.clone(), card.identity, task.clone());
     ws.stored(move |store| {
         store.db.write()?.execute(
-            "UPDATE project_routes SET task_id=?2,section_id=?3,card_key=?4 WHERE id=?1",
-            params![route, bound, identity, card_key],
+            "UPDATE project_routes SET task_id=?2,section_id=?3,card_key=?4,
+                attachments=CASE WHEN ?5 THEN COALESCE(attachments,'owed') ELSE attachments END WHERE id=?1",
+            params![route, bound, identity, card_key, owes],
         )?;
         Ok(())
     })
@@ -930,7 +1075,7 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
         }
         None if agent != actor => {
             let shown = format!("card {} (task {key})", card.key);
-            hand_off(ws, ctx, row, &agent, &hand_off_head(ctx, &key), true).await?;
+            hand_off(ws, ctx, row, &agent, Opening::Words(&hand_off_head(ctx, &key)), None).await?;
             tell_why(ws, actor, ctx, row, &agent, &task, &shown).await?;
         }
         None => {}
@@ -940,9 +1085,11 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
 
 /// The mail that hands a request to a card's executor still waiting for its
 /// slot (`existing`): Core's head, a blank line, the user's words byte for
-/// byte, then the front desk's why, as one mail from the front desk (so no
-/// Agent's words are ever sent as the user's). Refused, retryable once the
-/// executor has started, when that is more than a mail holds.
+/// byte, a line on the request's images and files when it has any (they
+/// follow once it has started, owed.rs), then the front desk's why, as one
+/// mail from the front desk (so no Agent's words are ever sent as the
+/// user's). Refused, retryable once the executor has started, when that is
+/// more than a mail holds.
 fn queued_hand_off(ctx: &Ctx, why: &str, task: &str) -> Result<String> {
     let head = format!(
         "Request R-{} from the user to the project {} (Workspace {}, Project {}), routed by the front desk {} to task {task}, \
@@ -950,7 +1097,7 @@ fn queued_hand_off(ctx: &Ctx, why: &str, task: &str) -> Result<String> {
          as written:",
         ctx.request.n, ctx.name, ctx.workspace, ctx.project, ctx.front
     );
-    let body = format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, images_left(ctx, "a mail"));
+    let body = format!("{head}\n\n{}{}{WHY_PREFIX}{why}", ctx.request.text, attachments_left(ctx, Carrier::Mail));
     ensure!(
         body.len() <= crate::collaboration_store::MAX_MAIL_BODY,
         "executor_queued: who answers for task {task} is an executor still waiting for its slot, which takes no message from Home \

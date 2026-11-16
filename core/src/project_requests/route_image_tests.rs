@@ -74,7 +74,8 @@ async fn a_join_hands_the_requests_images_to_who_answers_for_the_card_or_says_wh
 /// A new card for an Agent already here (Dev Lead 2, seq 13386): the words
 /// are in its task's description, and the images go to it as a message from
 /// Home of one line; one that takes no images gets the line saying why.
-/// A new executor reads only the description, which says how many there are.
+/// A new executor's description says who gets them; they are owed to its
+/// card until it starts (route_owed_tests.rs, YN-173).
 #[tokio::test]
 async fn a_new_card_for_an_agent_here_sends_it_the_images_beside_the_description() {
     let lab = lab();
@@ -86,7 +87,8 @@ async fn a_new_card_for_an_agent_here_sends_it_the_images_beside_the_description
     let states: Vec<_> = made["routes"].as_array().unwrap().iter().map(|r| r["state"].clone()).collect();
     assert_eq!(states, [json!("done"), json!("done"), json!("done")], "{made}");
     let key = |index: usize| made["routes"][index]["task"].as_str().unwrap().to_owned();
-    let line = "The user also attached 2 images to R-1 on Home; a task description can't carry them.";
+    let line = "The user also attached 2 images to R-1 on Home; whoever answers for this card gets them as a message from Home \
+        (an executor once it has started).";
     for index in 0..3 {
         let description = lab.task(&key(index))["description"].as_str().unwrap().to_owned();
         assert!(description.contains(&format!("按截图改设置页
@@ -130,25 +132,37 @@ async fn a_follow_up_with_images_goes_to_each_agent_answering_for_the_cards_or_t
 }
 
 /// Where the words go in a task description or a mail, neither of which can
-/// carry images, they say the images are there; without images, as before.
+/// carry images or files, they say what is attached and who gets it as a
+/// message from Home (YN-173); without any, exactly as before.
 #[test]
-fn a_task_description_and_a_mail_say_the_images_they_cant_carry() {
-    let ctx = |text: &str, images: usize| Ctx {
+fn a_task_description_and_a_mail_say_the_attachments_they_cant_carry_and_who_gets_them() {
+    let ctx = |text: &str, images: usize, files: usize| Ctx {
         workspace: "w".into(), project: "p".into(), name: "Code".into(), front: "Desk".into(),
-        request: Request { n: 3, images: (0..images).map(|n| format!("{n:064x}.png")).collect(), ..kept_request(text) }, todo: vec![], given: 0,
+        request: Request {
+            n: 3,
+            images: (0..images).map(|n| format!("{n:064x}.png")).collect(),
+            files: (0..files).map(|n| crate::input_files::FileRef { id: format!("{n:064x}"), name: "report.pdf".into(), bytes: 1 }).collect(),
+            ..kept_request(text)
+        },
+        todo: vec![], given: 0,
     };
-    let (text, whole) = description(&ctx("看图", 2), "要设计");
+    let (text, whole) = description(&ctx("看图", 2, 1), "要设计");
     assert!(whole);
-    assert_eq!(text, format!("{}\n\n看图\n\nThe user also attached 2 images to R-3 on Home; a task description can't carry them.{WHY_PREFIX}要设计",
-        description_head(&ctx("看图", 2))));
-    assert_eq!(description(&ctx("看图", 0), "要设计").0, format!("{}\n\n看图{WHY_PREFIX}要设计", description_head(&ctx("看图", 0))));
-    let mail = queued_hand_off(&ctx("看图", 1), "要设计", "COD-1").unwrap();
-    assert!(mail.contains("\n\n看图\n\nThe user also attached 1 image to R-3 on Home; a mail can't carry them.\n\nWhy"), "{mail}");
-    assert!(!queued_hand_off(&ctx("看图", 0), "要设计", "COD-1").unwrap().contains("attached"));
+    assert_eq!(text, format!("{}\n\n看图\n\nThe user also attached 2 images and 1 file to R-3 on Home; whoever answers for this card gets \
+        them as a message from Home (an executor once it has started).{WHY_PREFIX}要设计", description_head(&ctx("看图", 2, 1))));
+    assert!(description(&ctx("看图", 0, 2), "要设计").0.contains("\n\n看图\n\nThe user also attached 2 files to R-3 on Home; whoever"));
+    // Without any: byte for byte what it always was.
+    assert_eq!(description(&ctx("看图", 0, 0), "要设计").0, format!("{}\n\n看图{WHY_PREFIX}要设计", description_head(&ctx("看图", 0, 0))));
+    let mail = queued_hand_off(&ctx("看图", 1, 0), "要设计", "COD-1").unwrap();
+    assert!(mail.contains("\n\n看图\n\nThe user also attached 1 image to R-3 on Home; they come to you as a message from Home once you \
+        have started.\n\nWhy"), "{mail}");
+    assert!(queued_hand_off(&ctx("看图", 0, 1), "要设计", "COD-1").unwrap().contains("attached 1 file to R-3"));
+    assert_eq!(queued_hand_off(&ctx("看图", 0, 0), "要设计", "COD-1").unwrap(),
+        format!("{}\n\n看图{WHY_PREFIX}要设计", queued_hand_off(&ctx("", 0, 0), "要设计", "COD-1").unwrap().split("\n\n").next().unwrap()));
     // words_fit counts the line.
-    let line = images_left(&ctx("", 1), "a task description").len();
-    let room = MAX_DESCRIPTION - WHY_ROOM - description_head(&ctx("", 1)).len() - 2 - line;
-    assert!(words_fit(&ctx(&"a".repeat(room), 1)));
-    assert!(!words_fit(&ctx(&"a".repeat(room + 1), 1)));
-    assert!(words_fit(&ctx(&"a".repeat(room + 1), 0)), "without images, the room it always had");
+    let line = attachments_left(&ctx("", 1, 1), Carrier::Description).len();
+    let room = MAX_DESCRIPTION - WHY_ROOM - description_head(&ctx("", 1, 1)).len() - 2 - line;
+    assert!(words_fit(&ctx(&"a".repeat(room), 1, 1)));
+    assert!(!words_fit(&ctx(&"a".repeat(room + 1), 1, 1)));
+    assert!(words_fit(&ctx(&"a".repeat(room + 1), 0, 0)), "without any, the room it always had");
 }
