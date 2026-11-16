@@ -264,10 +264,11 @@ function Assert-InstallerSources($Record, [bool]$Required) {
 function Get-TauriCli {
     $cli = Join-Path $yuzunoToolchains "tauri-cli\$tauriCliVersion"
     $cliScript = Join-Path $cli 'node_modules\@tauri-apps\cli\tauri.js'
-    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
+    # The first on PATH, as the shell would run it: there may be more than one.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $node) { throw 'Bundling uses the official Tauri CLI, which needs Node.js on this machine.' }
     if (-not (Test-Path -LiteralPath $cliScript)) {
-        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction Stop
+        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction Stop | Select-Object -First 1
         New-Item -ItemType Directory -Force -Path $cli | Out-Null
         # npm.cmd runs in cmd.exe, which cannot start in a \\wsl$ folder.
         # Its output goes to the console: in a function it would otherwise
