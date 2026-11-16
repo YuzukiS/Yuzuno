@@ -24,6 +24,7 @@ import {
   earlierBefore,
   itemKey,
   replyDelivered,
+  awaitingConfirm,
   requestGroups,
   savedView,
   saveView,
@@ -39,6 +40,7 @@ import {
   forgetWords,
   pendingWords,
   readFrontDesk,
+  confirmRequest,
   readRequests,
   resendKept,
   sendWords,
@@ -466,6 +468,30 @@ export function ProjectTalk({
     }
   }
 
+  // The user's confirmation that a request is done (YN-184): its error stays on the request until the next try.
+  const [confirming, setConfirming] = useState<ReadonlySet<number>>(new Set());
+  const [confirmErrors, setConfirmErrors] = useState<ReadonlyMap<number, string>>(new Map());
+  async function confirm(n: number) {
+    setConfirming((was) => new Set(was).add(n));
+    setConfirmErrors((was) => {
+      const next = new Map(was);
+      next.delete(n);
+      return next;
+    });
+    try {
+      await confirmRequest(projectId, n, workspaceId);
+    } catch (e) {
+      setConfirmErrors((was) => new Map(was).set(n, errorText(e)));
+    } finally {
+      setConfirming((was) => {
+        const next = new Set(was);
+        next.delete(n);
+        return next;
+      });
+      setReads((r) => r + 1);
+    }
+  }
+
   function titleOrNumber(n: number) {
     const request = byN.get(n);
     return request ? titleOf(request) : `R-${n}`;
@@ -628,6 +654,9 @@ export function ProjectTalk({
         trailOpen={trails.has(request.n)}
         readOnly={readOnly}
         resending={resending.has(`r:${request.n}`)}
+        confirming={confirming.has(request.n)}
+        confirmError={confirmErrors.get(request.n) ?? ""}
+        onConfirm={() => void confirm(request.n)}
         onTitle={() => showWords(request.n)}
         onFollowUp={() => followUp(request.n)}
         onTrail={() =>
@@ -703,7 +732,11 @@ export function ProjectTalk({
         >
           <div className="project-talk-scroll" ref={requestsScroll}>
             <h3 className="project-talk-requests-title">
-              {t.requests} <span>{t.going(groups.open.length)}</span>
+              {t.requests}{" "}
+              <span>
+                {t.going(groups.open.length - groups.open.filter(awaitingConfirm).length)}
+                {groups.open.some(awaitingConfirm) ? t.awaiting(groups.open.filter(awaitingConfirm).length) : ""}
+              </span>
             </h3>
             {!page && !loadError && <p className="home-note">{t.reading}</p>}
             {page && !requests.length && <p className="home-note">{t.noRequests}</p>}

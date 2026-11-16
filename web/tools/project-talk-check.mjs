@@ -14,6 +14,7 @@
 //  - selection links the two sides, and a card's row shows that card;
 //  - a card's source line (S3b-2) is one line inside its card, its details too,
 //    with none of the user's words; See words → shows them in the conversation;
+//  - a request waiting for the user (YN-184) keeps Confirm done inside its card;
 //  - nothing is sent but the reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-talk-check.mjs
 import assert from "node:assert/strict";
@@ -94,6 +95,18 @@ const PASTE = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行：机器卡
 const TYPED = "把机器卡也搬进项目页，具体要求贴在下面：\n";
 const card = (sectionId, key, title, task, responsible, live = true) => ({ sectionId, key, title, live, task: { id: task.id, status: task.status, archived: false }, responsible });
 const requests = () => [
+  // YN-184: waiting for the user, a card's task ended (a long title beside Confirm done) and an answer.
+  { id: "r8", n: 8, text: "现在是哪个版本", textBlocks: null, title: "现在跑的是哪个版本", createdAt: at(310), frontAgentId: "l", messageId: "m8",
+    delivery: "accepted", replies: [], notes: [{ note: "core.36，11-16 装的。", by: desk, at: at(309) }],
+    routes: [{ kind: "answer", index: 0, request: 8, at: at(309), state: "done", why: "一句话能答", by: desk, to: null, task: null, cardKey: null, sectionId: null }],
+    cards: [], state: "answered", progress: { cards: 0, ended: 0 }, lines: [] },
+  { id: "r7", n: 7, text: "导出也给一份 Markdown", textBlocks: null,
+    title: "导出 Markdown：表格、标题层级和代码块都要保留（一个特意写长的标题，看它和确认按钮会不会挤）", createdAt: at(300), frontAgentId: "l",
+    messageId: "m7", delivery: "accepted", replies: [], notes: [{ note: "开一张卡。", by: desk, at: at(299) }],
+    routes: [{ kind: "card", index: 0, request: 7, at: at(299), state: "done", why: "有明确终点", by: desk, to: { agentId: "x", name: agents[2].name }, task: "YN-94", cardKey: "yn-94", sectionId: 395, title: "导出 Markdown" }],
+    cards: [card(395, "yn-94", "导出 Markdown", { id: "YN-94", status: "done" }, null)],
+    state: "ended", progress: { cards: 1, ended: 1 },
+    lines: [{ kind: "done", task: "YN-94", status: "done", at: at(280), cardSectionId: 395, title: "导出 Markdown" }] },
   { id: "r6", n: 6, text: TYPED + PASTE, textBlocks: [{ id: "p1", start: TYPED.length, end: TYPED.length + PASTE.length }], title: null,
     createdAt: at(4), frontAgentId: "l", messageId: "m6", delivery: "accepted", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r5", n: 5, text: `设置页重新排版、文案改口语，参考 ${LONG_WORD}`, textBlocks: null,
@@ -226,7 +239,7 @@ async function check(run) {
       out.columns[name] = Math.round(frame.width);
       const scroll = side.querySelector(".project-talk-scroll");
       if (scroll.scrollWidth > scroll.clientWidth + 1) out.over.push({ el: `${name} scroll`, scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth });
-      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-merged, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
+      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-merged, .request-card-confirm, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
         const at = el.getBoundingClientRect();
         if (at.width && (at.right > frame.right + 1 || at.left < frame.left - 1)) out.over.push({ el: el.className, right: Math.round(at.right), frame: Math.round(frame.right) });
       }
