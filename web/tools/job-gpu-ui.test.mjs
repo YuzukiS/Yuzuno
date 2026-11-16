@@ -153,6 +153,23 @@ test("how busy a GPU is comes from the host reading of the same device, never fr
   } finally { p.close(); }
 });
 
+test("a GPU of an SSH machine is named with its machine, and its tip says when that machine read it (YN-83 S2 PR6)", async () => {
+  const reading = (name, utilPct) => ({ name, utilPct, memUsedMiB: 1, memTotalMiB: 2, attribution: "unknown" });
+  const remote = device({ uuid: "GPU-remote-0000", index: 0, name: "NVIDIA GeForce RTX 5090", machineId: "m1",
+    machineName: "lab box", observedAt: "2026-10-17T21:00:01Z", problem: null });
+  const p = mountGpus({ gpus: gpus({ devices: [gpus().devices[0], remote] }),
+    busyNow: [reading("NVIDIA GeForce RTX 5090", 41.6), reading("NVIDIA GeForce RTX 5090", 99)] });
+  try {
+    await until(() => p.document.querySelectorAll(".jobs-gpu").length === 2);
+    const [, second] = p.document.querySelectorAll(".jobs-gpu");
+    assert.equal(second.querySelector(".jobs-gpu-name").textContent, "lab box · GPU 0 · RTX 5090");
+    assert.match((await tipOf(second.querySelector(".jobs-gpu-name"))).join("\n"),
+      /^lab box · GPU 0 · NVIDIA GeForce RTX 5090\nGPU-remote-0000\nSampled .+\. Admission among/);
+    assert.equal(second.querySelector(".jobs-gpu-busy"), null, "this host's reading never says how busy another machine's GPU is");
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test("a device an Agent closed says so", async () => {
   const p = mountGpus({ gpus: gpus({ devices: [device({ admission: "closed", closedReason: "cleanup", closedBy: "agent" })] }) });
   try {

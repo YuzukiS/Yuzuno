@@ -536,7 +536,11 @@ impl Submit {
         } else if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
-            ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
+            // An SSH machine's GPUs are admitted there (YN-83 S2 PR6); Windows' are not.
+            ensure!(
+                machine != remote::WINDOWS || self.gpu.is_none(),
+                "GPU admission is not available on Windows on this PC; omit gpu"
+            );
             ensure!(
                 self.resources.cpu().max == self.resources.cpu_millis,
                 "A CPU range up to cpuMillisMax is for this Core's host only: a remote machine runs at cpuMillis. Omit cpuMillisMax for machineId"
@@ -1100,6 +1104,40 @@ async fn remote_download(ws: &Arc<Workspace>, job: &Value, artifact: bool, index
         }
     }
 }
+/// Why an SSH machine takes no GPU Job (YN-83 S2 PR6): a macOS one (its
+/// platform as last seen), or one machine-live names the same as this
+/// Core's own host or as another registered machine while its session is
+/// online. None of these is admitted a second time under another name.
+async fn gpu_machine_refusal(ws: &Arc<Workspace>, id: &str) -> Result<()> {
+    let key = id.to_owned();
+    let machine = ws.stored(move |s| s.machine(&key)).await?;
+    let key = id.to_owned();
+    if ws.stored(move |s| s.machine_platform(&key)).await?.as_deref() == Some("Darwin") {
+        bail!("GPU admission is not available on {}: it runs macOS, which has no NVIDIA GPU; omit gpu", machine.name);
+    }
+    let same = crate::remote_service::same_as(ws, id);
+    let other = match same.as_deref() {
+        Some(other) if other != "local" => {
+            let key = other.to_owned();
+            ws.stored(move |s| s.machine(&key)).await.ok().map(|m| m.name)
+        }
+        _ => None,
+    };
+    match same_machine_refusal(&machine.name, same.as_deref(), other.as_deref()) {
+        Some(refusal) => bail!("{refusal}"),
+        None => Ok(()),
+    }
+}
+
+/// The refusal of a GPU Job for a machine machine-live names the same as
+/// `same` (`local`: this Core's host; else another machine, `other` its name).
+fn same_machine_refusal(name: &str, same: Option<&str>, other: Option<&str>) -> Option<String> {
+    Some(match same? {
+        "local" => format!("{name} is this Core's own host (machine-live: sameAs local), whose GPUs this Core admits itself: submit the GPU Job without machineId"),
+        id => format!("{name} is the same machine as {} (machine-live: sameAs {id}): submit the GPU Job with machineId {id}", other.unwrap_or(id)),
+    })
+}
+
 /// The whole file with its length, never a range (200), or why not: 404 for
 /// no such file of the attempt, 409 for a refusal before any byte, 503 while
 /// that machine serves another download.
@@ -1279,6 +1317,12 @@ pub async fn call(
             }
             let windows = input.machine_id.as_deref() == Some(remote::WINDOWS);
             let mac = input.machine_id.as_deref() == Some(remote::MAC);
+            // A GPU Job on an SSH machine (YN-83 S2 PR6): not on a Mac, and
+            // not on a machine that is the same as another record or as this
+            // Core's own host, so one card is never admitted twice.
+            if let (Some(id), Some(_)) = (input.machine_id.clone().filter(|_| !windows && !mac), &input.gpu) {
+                gpu_machine_refusal(&ws, &id).await?;
+            }
             if input.machine_id.is_some() {
                 if windows || mac {
                     // Windows on this PC and This Mac hold this host's
@@ -1937,9 +1981,9 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     registered SSH machine, or this host for an Agent here), resolved by Core from your Agent at submit and kept by the job; \"local\" \
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
-    mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, service; \
-    guardGit reads the Git there and outputs download from there (on windows set guardGit to false and declare artifacts), and a run's \
-    stages may name one too (job_run_submit); pause only where the job's capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
+    mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: exclusive, service; gpu only on an \
+    SSH Linux machine, never on windows or a Mac; guardGit reads the Git there and outputs download from there (on windows set guardGit \
+    to false and declare artifacts), and a run's stages may name one too (job_run_submit); pause only where the job's capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. On a macOS Core this host is \"mac\", This Mac: without machineId, with local, or agent for an Agent here, a job runs \
     there in the limited mode (limits declared only, within this Core's Jobs budget and maxActive), and what is not available with \
@@ -2004,7 +2048,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let mut properties = properties;
     properties["artifacts"] = artifacts.clone();
     properties["machineId"] = json!({"type":"string","description":MACHINE});
-    properties["gpu"] = json!({"type":"object","description":"Local NVIDIA GPUs the command needs, admitted with its CPU and RAM: devices by UUID (any device when omitted), the GPU memory it needs in MiB, and mode exclusive (default: the only managed GPU job on the device) or shared (only on a device the user opened for sharing). The job gets CUDA_VISIBLE_DEVICES set to the reserved UUIDs. It waits, with the device and the shortfall named, while the device is busy, closed to new jobs, short of memory or not freshly sampled. Free memory is the whole card's, other programs included; this is admission, not memory isolation or a compute share.",
+    properties["gpu"] = json!({"type":"object","description":"Local NVIDIA GPUs the command needs, admitted with its CPU and RAM: devices by UUID (any device when omitted), the GPU memory it needs in MiB, and mode exclusive (default: the only managed GPU job on the device) or shared (only on a device the user opened for sharing). The job gets CUDA_VISIBLE_DEVICES set to the reserved UUIDs. It waits, with the device and the shortfall named, while the device is busy, closed to new jobs, short of memory or not freshly sampled. Free memory is the whole card's, other programs included; this is admission, not memory isolation or a compute share. With machineId (an SSH Linux machine), that machine's GPUs, read by its remote session while the job waits or runs.",
         "properties":{"count":{"type":"integer","minimum":1,"maximum":8,"default":1},"devices":{"type":"array","items":{"type":"string"},"maxItems":8},"memoryMiB":{"type":"integer","minimum":64},"mode":{"type":"string","enum":["exclusive","shared"],"default":"exclusive"}},
         "required":["memoryMiB"],"additionalProperties":false});
     properties["service"] = json!({"type":"object","description":SERVICE,

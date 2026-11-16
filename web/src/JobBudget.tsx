@@ -917,6 +917,11 @@ export type GpuDevice = {
   sharing: boolean;
   headroomMiB: number;
   reservations: { jobId: string; name: string; memoryMiB: number; mode: "exclusive" | "shared" }[];
+  /** On an SSH machine (YN-83 S2 PR6): which, and how current its reading is. */
+  machineId?: string;
+  machineName?: string;
+  problem?: string | null;
+  observedAt?: string | null;
 };
 export type GpuView = {
   devices: GpuDevice[];
@@ -925,8 +930,10 @@ export type GpuView = {
   scope: string;
 };
 
-/** A device's name as the card and Settings show it. */
-const gpuName = (d: GpuDevice) => `${d.index == null ? "" : `GPU ${d.index} · `}${d.name}`;
+/** A device's name as the card and Settings show it; another machine's
+ * device is named with that machine first. */
+const gpuName = (d: GpuDevice) =>
+  `${d.machineName ? `${d.machineName} · ` : ""}${d.index == null ? "" : `GPU ${d.index} · `}${d.name}`;
 
 /** Local GPUs by UUID: the latest sample, what managed jobs hold on each,
  * whether each takes new jobs and how, and the pause of the user's GPU work
@@ -979,11 +986,12 @@ export function GpuDevices({
       {gpus.devices.map((d, position) => {
         const name = gpuName(d);
         // The card's own name without the maker's prefix fits a cell; the tip has it whole.
-        const short = `${d.index == null ? "" : `GPU ${d.index} · `}${d.name.replace(/^NVIDIA (GeForce )?/, "")}`;
+        const short = `${d.machineName ? `${d.machineName} · ` : ""}${d.index == null ? "" : `GPU ${d.index} · `}${d.name.replace(/^NVIDIA (GeForce )?/, "")}`;
         const used = d.memoryFreeMiB == null ? null : d.memoryTotalMiB - d.memoryFreeMiB;
         const held = d.reservations.reduce((sum, r) => sum + r.memoryMiB, 0);
-        // The host reading lists GPUs in the same order; a name that differs is not matched.
-        const reading = busyNow?.[position];
+        // The host reading lists this host's GPUs in the same order; a name
+        // that differs, or another machine's GPU, is not matched.
+        const reading = d.machineId ? undefined : busyNow?.[position];
         const busyPct = reading && reading.name === d.name ? reading.utilPct : null;
         const inUse = used == null ? t.unknown : memoryText(used);
         return (
@@ -991,7 +999,7 @@ export function GpuDevices({
             key={d.uuid}
             className={`jobs-gpu${d.admission === "closed" ? " is-closed" : ""}`}
             label={
-              <Tip content={<TipLines text={`${name}\n${d.uuid}\n${sampled}${gpus.scope}`} />} size="wide">
+              <Tip content={<TipLines text={`${name}\n${d.uuid}\n${d.machineId ? `${d.observedAt ? t.sampled(clock(d.observedAt)) : ""}${d.problem ? `${t.gpuWait(d.problem)} ` : ""}` : sampled}${gpus.scope}`} />} size="wide">
                 <span className="jobs-gpu-name">
                   {short}
                 </span>

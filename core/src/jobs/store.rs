@@ -459,7 +459,9 @@ pub(super) fn new_job(
         ensure!(reservation.fits(&limit),"Job can never fit this machine budget (including 64 MiB / 100 millicore collector overhead); reduce resources or change the machine budget");
     }
     if let Some(gpu) = &input.gpu {
-        if let Some(reason) = super::gpu::never_fits(tx, gpu)? {
+        // On an SSH machine, by the devices known there (YN-83 S2 PR6).
+        let on = input.machine_id.as_deref().filter(|_| remote);
+        if let Some(reason) = super::gpu::never_fits_on(tx, gpu, on)? {
             anyhow::bail!("{reason}");
         }
     }

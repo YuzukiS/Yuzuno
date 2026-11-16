@@ -559,6 +559,17 @@ pub(super) fn spec(job: &Value) -> Value {
         spec["upstream"] = list("upstream");
         spec["guardChecks"] = list("guardChecks");
     }
+    // A GPU request on an SSH machine (v4, YN-83 S2 PR6): the request, and
+    // once its slot was taken the devices reserved there (reserve_remote),
+    // by UUID; its supervisor gives the command those and only those.
+    if kind == Some(SSH) {
+        if let Some(gpu) = job["gpu"].as_object() {
+            let reserved = job["gpuReservation"].as_array().map(|held| held.iter().map(|d| d["uuid"].clone()).collect::<Vec<_>>());
+            spec["gpu"] = json!({"count": gpu.get("count").cloned().unwrap_or(json!(1)), "memoryMiB": gpu.get("memoryMiB"),
+                "mode": gpu.get("mode").cloned().unwrap_or(json!("exclusive")),
+                "devices": gpu.get("devices").cloned().unwrap_or(json!([])), "reserved": reserved});
+        }
+    }
     spec
 }
 
@@ -587,7 +598,8 @@ fn git_guarded(job: &Value) -> bool {
 pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     let nonempty = |value: &Value| value.as_array().is_some_and(|items| !items.is_empty());
     let kind = job["executor"]["kind"].as_str();
-    let v4 = git_guarded(job) || remote_stage(job) || matches!(kind, Some(SSH | MAC)) && nonempty(&job["outputs"]);
+    let v4 = git_guarded(job) || remote_stage(job) || matches!(kind, Some(SSH | MAC)) && nonempty(&job["outputs"])
+        || kind == Some(SSH) && job["gpu"].is_object();
     if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(v4 || nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
         return;
     }
@@ -719,17 +731,37 @@ pub(super) fn digest(spec: &Value) -> String {
             }
         }
         // A list of names by count, or "none": declared outputs (downloaded
-        // from there) and a run's stage needs (YN-83 S2); gpu is filled by
-        // its slice.
-        for key in &V4_FIELDS[1..] {
-            let items = if matches!(*key, "outputs" | "needs") { spec.get(*key).and_then(Value::as_array) } else { None };
+        // from there) and a run's stage needs (YN-83 S2).
+        for key in &V4_FIELDS[1..3] {
             put(&mut hash, key);
-            match items {
+            match spec.get(*key).and_then(Value::as_array) {
                 None => put(&mut hash, "none"),
                 Some(items) => {
                     put(&mut hash, &items.len().to_string());
                     for item in items {
                         put(&mut hash, item.as_str().unwrap_or_default());
+                    }
+                }
+            }
+        }
+        // A GPU request (PR6): count, memory, mode and named devices, then
+        // the devices reserved for it, or "unreserved" before its slot.
+        put(&mut hash, "gpu");
+        match spec.get("gpu").filter(|gpu| gpu.is_object()) {
+            None => put(&mut hash, "none"),
+            Some(gpu) => {
+                put(&mut hash, &gpu["count"].as_u64().unwrap_or_default().to_string());
+                put(&mut hash, &gpu["memoryMiB"].as_u64().unwrap_or_default().to_string());
+                put(&mut hash, gpu["mode"].as_str().unwrap_or_default());
+                for list in [&gpu["devices"], &gpu["reserved"]] {
+                    match list.as_array() {
+                        None => put(&mut hash, "unreserved"),
+                        Some(items) => {
+                            put(&mut hash, &items.len().to_string());
+                            for item in items {
+                                put(&mut hash, item.as_str().unwrap_or_default());
+                            }
+                        }
                     }
                 }
             }
@@ -1121,6 +1153,24 @@ impl Store {
                     machine_name(&job), need.cpu_millis, need.memory_mi_b));
             }
         }
+        // A GPU Job on an SSH machine (YN-83 S2 PR6): only on a reading of
+        // that machine's GPUs at most 60 s old (gpu.rs STALE_SECS), fitted to
+        // its devices and their reservations as this host's are (gpu::fit).
+        let mut devices = None;
+        if wait.is_none() && job["executor"]["kind"] == SSH {
+            if let Some(request) = serde_json::from_value::<Option<super::gpu::GpuRequest>>(job["gpu"].clone())? {
+                let view = super::gpu::view_on(&tx, Some(&machine))?;
+                match super::gpu::fit(&request, &view, &std::collections::HashSet::new()) {
+                    Ok(fitted) => devices = Some(fitted),
+                    Err((reason, _)) => wait = Some(match &view.problem {
+                        Some(problem) if reason.starts_with("Waiting for a current GPU sample") => format!(
+                            "Waiting for a current GPU sample from {}: {problem}. GPU Jobs start there only on a reading at most {} s old",
+                            machine_name(&job), super::gpu::STALE_SECS),
+                        _ => format!("{reason} (GPUs of {})", machine_name(&job)),
+                    }),
+                }
+            }
+        }
         if let Some(reason) = wait {
             if job["reason"] != reason.as_str() {
                 job["reason"] = json!(reason);
@@ -1128,6 +1178,13 @@ impl Store {
                 tx.commit()?;
             }
             return Ok(None);
+        }
+        // Its devices go with its start (v4): bound now, while nothing has
+        // been sent, as the request it was bound with at submit plus them.
+        if let Some(fitted) = devices {
+            job["gpuReservation"] = json!(fitted);
+            job["remote"]["digest"] = json!(digest(&spec(&job)));
+            job["remote"]["prebound"]["gpuReservedAt"] = json!(now());
         }
         // A job bound at submit (prebind) keeps the mode it was bound with.
         if job["executor"]["kind"] == SSH && !job["remote"]["prebound"].is_object() {
@@ -1346,6 +1403,18 @@ pub(super) async fn pass(ws: &Arc<Workspace>, programs: &Programs<'_>, sessions:
         return Ok(true);
     };
     let views = if sessions { ws.machine_live.jobs_views() } else { Default::default() };
+    // Each machine's newest GPU reading from its session, while a GPU Job
+    // there asks for one (remote_service PR5), kept for admission (PR6).
+    for (id, view) in &views {
+        let Some(gpu) = &view.gpu else { continue };
+        if !new_gpu_reading(ws, id, gpu.received) {
+            continue;
+        }
+        let (id, sample) = (id.clone(), gpu_sample(&gpu.value, Instant::now().saturating_duration_since(gpu.received)));
+        if let Err(error) = ws.stored(move |s| s.record_remote_gpu_sample(&id, sample)).await {
+            eprintln!("Remote jobs: a GPU reading could not be kept: {error:#}");
+        }
+    }
     let checks = jobs
         .iter()
         .filter(|job| job["reserved"] == true && due(ws, job, &views))
@@ -1390,6 +1459,35 @@ pub(super) async fn pass(ws: &Arc<Workspace>, programs: &Programs<'_>, sessions:
     }
     ws.jobs.remote_seen.lock().unwrap().retain(|id, _| jobs.iter().any(|j| j["id"] == id.as_str()));
     Ok(true)
+}
+
+/// The readings already kept, by Workspace data folder and machine: one is
+/// kept once, however many passes see it.
+static GPU_READINGS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Instant>>> =
+    std::sync::OnceLock::new();
+
+fn new_gpu_reading(ws: &Workspace, machine: &str, received: Instant) -> bool {
+    let key = format!("{}\0{machine}", ws.data_dir.display());
+    GPU_READINGS.get_or_init(Default::default).lock().unwrap().insert(key, received) != Some(received)
+}
+
+/// A machine's gpu event as gpu.rs keeps a sample: its devices, or why it
+/// has none, observed when Core received it less how old it was then.
+fn gpu_sample(gpu: &crate::remote_service::GpuReading, since: Duration) -> Value {
+    let age = since.saturating_add(gpu.age);
+    let observed = chrono::Utc::now() - chrono::TimeDelta::from_std(age).unwrap_or_default();
+    let devices = gpu.devices.as_ref().map(|devices| {
+        devices.iter().map(|d| json!({"index": d.index, "uuid": d.uuid, "name": d.name, "memoryTotalMiB": d.memory_total_mib,
+            "memoryFreeMiB": d.memory_free_mib, "memoryUsedMiB": d.memory_used_mib, "utilizationPercent": d.utilization_percent}))
+            .collect::<Vec<_>>()
+    });
+    let why = gpu.why.map(|why| match format!("{why:?}").as_str() {
+        "NoTool" => "no_tool",
+        "Unavailable" => "unavailable",
+        "Failed" => "failed",
+        _ => "starting",
+    });
+    json!({"observedAt": observed.to_rfc3339(), "devices": devices, "why": why, "source": "remote session"})
 }
 
 async fn machine_of(ws: &Arc<Workspace>, job: &Value) -> Result<Machine> {
@@ -1608,6 +1706,15 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
             {
                 return not_started(ws, &job, format!(
                     "Not started on {}: it now reaches a different machine than the one its inputs were frozen on at submit; nothing was sent there",
+                    machine.name())).await;
+            }
+            // A GPU Job whose machine is this Core's own host would admit
+            // the same cards twice (YN-83 S2 PR6): never started there.
+            Reply::Answer(reply) if reply["status"] == "hello" && job["gpu"].is_object()
+                && crate::remote_service::local_host_id(ws).is_some_and(|local| reply["hostId"] == local.as_str()) =>
+            {
+                return not_started(ws, &job, format!(
+                    "Not started on {}: it is this Core's own host, whose GPUs this Core admits itself; submit the GPU Job without machineId. Nothing was sent there",
                     machine.name())).await;
             }
             Reply::Answer(reply) if reply["status"] == "hello" && reply["hostId"].is_string() => {
@@ -2130,7 +2237,7 @@ pub(super) fn capabilities() -> Value {
         "limits": "Declared CPU, RAM and swap go with each attempt. Where the account's systemd user manager has the controllers, the helper holds memory (and CPU, where the cpu controller is delegated) in the attempt's own transient scope and reads them back before the command runs; swap only where the kernel accounts it, and nothing unless the account lingers (a scope of a user manager that may stop with the last session is not made). The machine's mode decides the rest: strict (a machine added now) starts nothing it cannot hold, limited runs and records what is only declared, and a machine registered before limits only records them, as before. Each attempt records what was held, and nothing limits the machine's own load",
         "slots": SLOTS,
         "admission": "Per machine: at most maxJobs attempts (2 unless set), within the machine's own budget when one is set; this host's budget is not used",
-        "gpu": "unavailable",
+        "gpu": "By device UUID on that machine, as for local jobs: its remote session runs one nvidia-smi there while a GPU Job for it is queued or holds its slot, and a GPU Job starts only on a reading at most 60 s old, with CUDA_VISIBLE_DEVICES set to the devices reserved. Free memory is the whole card's, other programs and other Cores included; admission, not isolation",
         "pause": "Only for an attempt that runs in a scope of its own on that machine (its limits are held there: strict, or limited on an account that lingers): its scope is frozen through the account's systemd and read back from its cgroup, as for local jobs; its memory and the machine's reservation stay, and its timeout keeps counting. Otherwise unavailable, with the reason: nothing is stopped with signals instead",
         "inputs": "Files on that machine, frozen there by SHA-256 at submit and checked again there before the command runs; one that changed stops the start",
         "guardGit": "On the machine: its helper freezes cwd's Git work tree there at submit, with the Git on that account's PATH, by the rules, bounds and words of local jobs (HEAD, or with guardPaths only the content under those paths, and the changed tracked files, which count with the inputs), and checks it again there before the command runs; a change rejects the start",
@@ -2149,6 +2256,7 @@ pub(super) fn darwin_capabilities() -> Value {
     value["platform"] = json!("macOS");
     value["limits"] = json!("Declared CPU, RAM and swap are reserved for this Core's admission (the machine's maxJobs and its own budget, when set) and recorded with each attempt; macOS holds none of them: it has no cgroup, so nothing caps the command's CPU share or memory. The machine's mode decides the rest: strict starts nothing there, limited runs and records them as declared only, and a machine registered before limits only records them. Nothing limits the machine's own load");
     value["pause"] = json!("unavailable: pause freezes only an attempt's own scope, and macOS gives an attempt none; nothing is stopped with signals instead");
+    value["gpu"] = json!("unavailable: macOS has no NVIDIA GPU");
     value
 }
 

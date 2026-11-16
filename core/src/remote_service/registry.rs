@@ -785,6 +785,20 @@ impl Registry {
         self.state().interest
     }
 
+    /// What machine-live says `id` is the same as now (`local`, or another
+    /// machine's id), without recording an interest or starting anything:
+    /// known only while its session is online (YN-83 S2 PR6, where a GPU Job
+    /// for it is refused, so one card is never admitted twice).
+    pub(crate) fn same_as(&self, id: &str, local: Option<&str>) -> Option<String> {
+        let now = self.inner.clock.now();
+        let (rows, silence) = {
+            let mut state = self.state();
+            (state.settle(now), state.timing.limits.silence)
+        };
+        let answer = live::answer(&rows, local, now, self.inner.clock.wall(), silence);
+        answer["machines"].as_array()?.iter().find(|machine| machine["id"] == id)?["sameAs"].as_str().map(str::to_owned)
+    }
+
     /// The answer as a GET would give it now, without recording an interest
     /// or starting anything.
     #[cfg(test)]

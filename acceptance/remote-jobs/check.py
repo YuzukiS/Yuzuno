@@ -22,7 +22,7 @@ attempt's process tree; the alias re-pointed at another machine mid-run
 (unknown and held; cancel cannot release it until the alias is back); a
 supervisor killed while its command runs, the command then exiting with a
 child left (unknown and held until cancel stops the child); and what is
-not available (GPU, pause).
+not available (GPU on this Core's own host behind a machine name, pause).
 """
 import getpass
 import json
@@ -321,11 +321,29 @@ def main():
         check("A killed supervisor leaves the job unknown with its slot held; the command exiting with a child left "
               "is still no outcome; cancel stops the child and only then releases the slot")
 
-        # 6. What this executor does not do.
-        no_gpu = mcp.call("job_submit", {"requestId": str(uuid.uuid4()), "taskId": "T-1", "name": "gpu",
-            "cwd": str(work), "argv": ["/bin/true"], "guardGit": False, "machineId": machine["id"],
-            "resources": {"cpuMillis": 500, "memoryMiB": 128, "swapMiB": 0}, "gpu": {"memoryMiB": 1000}}, error=True)
-        assert "GPU admission is not available" in no_gpu, no_gpu
+        # 6. What this executor does not do. Over loopback with this host's
+        # own machine-id the machine is this Core's host, whose GPUs this Core
+        # admits itself (YN-83 S2 PR6): a GPU Job for it is refused at submit
+        # (machine-live: sameAs local), waits for a reading there, or is
+        # rejected at its first contact. It never runs.
+        gpu_job = {"requestId": str(uuid.uuid4()), "taskId": "T-1", "name": "gpu", "cwd": str(work),
+                   "argv": ["/bin/sh", "-c", "touch gpu-ran"], "env": {"PATH": "/usr/bin:/bin"}, "guardGit": False,
+                   "machineId": machine["id"], "resources": {"cpuMillis": 500, "memoryMiB": 128, "swapMiB": 0},
+                   "gpu": {"memoryMiB": 1000}}
+        answer = mcp.rpc("tools/call", {"name": "job_submit", "arguments": gpu_job})
+        if answer.get("isError"):
+            no_gpu = answer["content"][0]["text"]
+            assert "is this Core's own host (machine-live: sameAs local)" in no_gpu, no_gpu
+        else:
+            gpu = wait_for(lambda: request("/jobs/" + answer["structuredContent"]["id"]),
+                           lambda j: j["status"] == "rejected" or (j["reason"] or "").startswith("Waiting for a current GPU sample from"), 60)
+            no_gpu = gpu["reason"]
+            assert gpu["status"] in ("rejected", "queued"), gpu
+            assert gpu["status"] == "queued" or "it is this Core's own host" in no_gpu, gpu
+            if gpu["status"] == "queued":
+                request(f"/jobs/{gpu['id']}/cancel", {})
+                status(gpu["id"], "cancelled", seconds=60)
+        assert not (work / "gpu-ran").exists(), "the GPU Job never ran on this host's cards a second time"
         paused = submit("paused", "sleep 20")
         status(paused["id"], "running")
         pause_error = refused(f"/jobs/{paused['id']}/pause", {})
@@ -333,7 +351,7 @@ def main():
         request(f"/jobs/{paused['id']}/cancel", {})
         status(paused["id"], "cancelled", seconds=60)
         REPORT["unavailable"] = {"gpu": no_gpu, "pause": pause_error}
-        check("GPU admission and pause are refused for a remote job, with the reason")
+        check("A GPU Job for this Core's own host behind a machine name never runs there, and pause is refused for a remote job, with the reason")
         assert not (Path.home() / ".yuzuno" / "jobs" / ok["id"]).exists(), "nothing in the real home"
         REPORT["passed"] = True
     finally:

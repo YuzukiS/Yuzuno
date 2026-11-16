@@ -1072,7 +1072,10 @@ if pid == 0:
             os._exit(125)
         os.close(go_r)
         os.chdir(spec["cwd"])
-        os.execvpe(spec["argv"][0], spec["argv"], spec["env"])
+        # The GPUs reserved for this attempt, and only those (as host.py).
+        reserved = (spec.get("gpu") or {}).get("reserved") or []
+        env = dict(spec["env"], CUDA_VISIBLE_DEVICES=",".join(reserved), YUZUNO_JOB_GPUS=",".join(reserved)) if reserved else spec["env"]
+        os.execvpe(spec["argv"][0], spec["argv"], env)
     except BaseException as error:
         try:
             os.write(err_w, (str(error) or "exec failed").encode("utf-8", "replace")[:500])
@@ -1416,10 +1419,21 @@ def digest(spec):
             for path in git["guardExclude"]:
                 put(path)
         # A list of names by count, or "none": declared outputs and a
-        # stage's needs; gpu is filled by its slice.
+        # stage's needs; then a GPU request with the devices reserved for it.
+        gpu = spec.get("gpu")
         for key in ("outputs", "needs", "gpu"):
-            items = spec.get(key) if key in ("outputs", "needs") else None
+            items = spec.get(key) if key != "gpu" else None
             put(key)
+            if key == "gpu" and gpu is not None:
+                items = None
+                for value in (gpu["count"], gpu["memoryMiB"]):
+                    put(str(value))
+                put(gpu["mode"])
+                for names in (gpu["devices"], gpu["reserved"]):
+                    put("unreserved" if names is None else str(len(names)))
+                    for name in names or []:
+                        put(name)
+                continue
             put("none" if items is None else str(len(items)))
             for item in items or []:
                 put(item)
@@ -1775,6 +1789,15 @@ def start(request, host):
             raise Refused("artifacts must be declared as path, format (bytes, json or jsonl) and minBytes")
         if artifacts:
             spec["artifacts"] = artifacts
+    if "gpu" in request:
+        # A GPU request (YN-83 S2 PR6), with the devices reserved for it by UUID.
+        gpu = request["gpu"]
+        if not (isinstance(gpu, dict) and all(type(gpu.get(k)) is int and gpu[k] > 0 for k in ("count", "memoryMiB"))
+                and gpu.get("mode") in ("exclusive", "shared") and all(
+                    isinstance(gpu.get(k), list) and all(isinstance(u, str) and u.startswith("GPU-") for u in gpu[k])
+                    for k in ("devices", "reserved"))):
+            raise Refused("gpu must be the request with the devices reserved for it, by UUID")
+        spec["gpu"] = {k: gpu[k] for k in ("count", "memoryMiB", "mode", "devices", "reserved")}
     if "needs" in request:
         # A run's stage (YN-83 S2): the stages it needs, bound by the digest,
         # and the artifacts their attempts succeeded with, checked again by

@@ -1407,6 +1407,35 @@ class InputsAndArtifactsTests(unittest.TestCase):
             self.assertIn("fetch needs kind artifact or output", refused["error"])
         self.assertEqual(self.call(dict(fetch, kind="output", index=0))["status"], "absent")
 
+    def test_digest_v4_binds_a_gpu_request_and_its_devices(self):
+        # The same vectors as core/src/jobs/remote_tests.rs (YN-83 S2 PR6).
+        base = {"argv": ["true"], "cwd": "/w", "env": {}, "timeoutSeconds": 5}
+        gpu = {"count": 1, "memoryMiB": 4096, "mode": "exclusive", "devices": [], "reserved": None}
+        self.assertEqual(remote_job.digest(dict(base, gpu=gpu)),
+                         "a2921e796f0605909717e2de6b5d807acf273d1f23e41ec7c4e114e6749f2606")
+        reserved = dict(gpu, reserved=["GPU-11111111-2222-3333-4444-555555555555"])
+        self.assertEqual(remote_job.digest(dict(base, gpu=reserved)),
+                         "7e8303630f048580e0974ccb216b499125a2fa3de37253f7a58f56bd3c4ac632")
+        named = {"count": 2, "memoryMiB": 4096, "mode": "shared", "devices": ["GPU-a", "GPU-b"], "reserved": ["GPU-a", "GPU-b"]}
+        self.assertEqual(remote_job.digest(dict(base, gpu=named)),
+                         "afb6a0a826f758024cf07407445ee3a043740f9339eb4a93a71f52bfad010175")
+        self.assertEqual(remote_job.digest(dict(base, gpu=None)), remote_job.digest(base))
+
+    def test_a_gpu_start_runs_with_only_its_reserved_devices_and_a_malformed_one_is_refused(self):
+        uuid_a = "GPU-0a0a0a0a-1111-2222-3333-444444444444"
+        attempt = self.attempt("printf '%s|%s' \"$CUDA_VISIBLE_DEVICES\" \"$YUZUNO_JOB_GPUS\" > gpus.txt")
+        spec = {key: attempt[key] for key in ("argv", "cwd", "env", "timeoutSeconds")}
+        gpu = {"count": 1, "memoryMiB": 1000, "mode": "exclusive", "devices": [], "reserved": [uuid_a]}
+        for bad in (dict(gpu, reserved=None), dict(gpu, count=0), dict(gpu, mode="any"), dict(gpu, reserved=["0"]), "gpu"):
+            refused = self.call(dict(attempt, action="start", gpu=bad), expect=3)
+            self.assertIn("gpu must be the request with the devices reserved for it", refused["error"])
+        # Bound with its devices: a start without them is refused.
+        attempt["digest"] = remote_job.digest(dict(spec, gpu=gpu))
+        self.assertIn("digest does not match", self.call(dict(attempt, action="start"), expect=3)["error"])
+        self.assertFalse(self.folder(attempt).exists(), "nothing written")
+        self.assertEqual(self.run_to_end(dict(attempt, gpu=gpu))["status"], "succeeded")
+        self.assertEqual((self.work / "gpus.txt").read_text(), uuid_a + "|" + uuid_a)
+
     def test_a_v4_start_without_its_git_state_is_refused_before_anything_is_written(self):
         # A guardGit attempt is bound with v4 at submit; a Core from before it
         # sends the same start without the Git state, as this request does.
