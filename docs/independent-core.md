@@ -105,7 +105,7 @@ The commands below install into `~/.local/share/yuzuno-core` and keep the Worksp
 
 ## Installed by the desktop app
 
-The Windows desktop app is to install and start Core in a WSL distribution you choose, without the steps above; that part of the app is not released yet. It runs two commands of the release's update helper, which releases whose `yuzuno-update-helper --help` lists `install` and `first-start` have. They do what the steps above and below do, and you can run them yourself. Older helpers exit with code 2 (unknown command).
+The Windows desktop app installs and starts Core in a WSL distribution you choose, without the steps above: "Install Core on this computer" on its connection page, released from `desktop-0.5.0`. It runs two commands of the release's update helper, which releases whose `yuzuno-update-helper --help` lists `install` and `first-start` have. They do what the steps above and below do, and you can run them yourself. Older helpers exit with code 2 (unknown command).
 
 - **Where:** the same folders as above by default, owned by the account that runs the commands (in WSL, the distribution's default account, not root).
 - **Install** (steps 3 and 4 in one), run by the unpacked release's own helper:
