@@ -20,6 +20,7 @@ on:
       - web/package-lock.json
       - web/tools/jsdom-guard.mjs
       - web/tools/jsdom-limits.mjs
+      - web/tools/jsdom-assert.mjs
       - web/src/assets/yuzu-character.png
       - .github/workflows/ios.yml
       - .github/scripts/hosted-guard.sh
