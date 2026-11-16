@@ -368,7 +368,8 @@ async fn guard_git_on_this_mac_is_frozen_there_and_checked_before_the_start() {
     git(&["add", "."]);
     git(&["commit", "-qm", "first"]);
     let none: &[String] = &[];
-    let freeze = || remote::remote_snapshot_with(&lab.ws, &lab.programs(), "mac", &lab.work.to_string_lossy(), &[], Some((none, none)));
+    let (programs, cwd) = (lab.programs(), lab.work.to_string_lossy().into_owned());
+    let freeze = || remote::remote_snapshot_with(&lab.ws, &programs, "mac", &cwd, &[], Some((none, none)));
     let submit = |id: &str, command: &str, snapshot: Value| {
         let mut input: Submit = serde_json::from_value(job(&lab, id, command, json!({"guardGit":true,"machineId":"mac"}))).unwrap();
         input.validate().unwrap();
