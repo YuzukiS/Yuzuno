@@ -68,7 +68,10 @@ fn decorate_named(
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .is_none_or(|t| chrono::Utc::now().signed_duration_since(t).num_seconds() > 180);
-    v["stale"] = json!(old || !v["error"].is_null());
+    // A merged PR is final: GitHub cannot reopen it, so its state and head
+    // no longer change however old the read (YN-193).
+    let merged = v["snapshot"]["state"] == "merged";
+    v["stale"] = json!((old && !merged) || !v["error"].is_null());
     Ok(v)
 }
 pub(crate) fn task_links(db: &Connection, task: &str) -> Result<Vec<Value>> {
