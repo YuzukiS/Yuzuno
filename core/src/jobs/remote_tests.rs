@@ -288,7 +288,7 @@ async fn a_remote_job_runs_there_once_and_its_outcome_and_output_come_from_the_m
     assert!(!remote::tick(&lab.ws, &lab.ssh).await.unwrap());
     let first = submit(&lab, "first", "echo begin; echo once >> runs.txt; sleep 1; echo end");
     assert_eq!(first["executor"], json!({"kind":"ssh","machineId":"m1","machineName":"lab box"}));
-    assert_eq!(first["capabilities"]["gpu"], "unavailable");
+    assert!(first["capabilities"]["gpu"].as_str().unwrap().starts_with("By device UUID on that machine"), "{first}");
     tick(&lab, &lab.ssh).await;
     let running = job(&lab, &first);
     assert_eq!(running["status"], "running", "{running}");
@@ -2535,7 +2535,10 @@ fn a_mac_is_described_as_holding_no_limits_and_no_pause() {
     assert_eq!(mac["platform"], "macOS");
     assert!(mac["limits"].as_str().unwrap().contains("macOS holds none of them: it has no cgroup"));
     assert!(mac["pause"].as_str().unwrap().starts_with("unavailable"));
-    for same in ["executor", "slots", "admission", "gpu", "inputs", "artifacts", "outputs", "processes", "bootId"] {
+    // A Mac has no NVIDIA GPU; an SSH Linux machine's GPUs are admitted there (YN-83 S2 PR6).
+    assert_eq!(mac["gpu"], "unavailable: macOS has no NVIDIA GPU");
+    assert!(linux["gpu"].as_str().unwrap().starts_with("By device UUID on that machine"));
+    for same in ["executor", "slots", "admission", "inputs", "artifacts", "outputs", "processes", "bootId"] {
         assert_eq!(mac[same], linux[same], "{same}");
     }
 }

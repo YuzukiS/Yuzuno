@@ -287,7 +287,7 @@ async fn this_macs_jobs_take_this_cores_budget_and_its_max_active() {
         "Waiting for this Mac's Jobs budget: needs 600 mCPU / 192 MiB RAM / 0 MiB swap including its supervisor; 400 mCPU / 832 MiB RAM / 0 MiB swap free");
     // What a Job on This Mac is told, and why it cannot be paused.
     let capabilities = remote::mac_capabilities();
-    assert_eq!((capabilities["executor"].as_str(), capabilities["platform"].as_str(), capabilities["gpu"].as_str()), (Some("mac"), Some("macOS"), Some("unavailable")));
+    assert_eq!((capabilities["executor"].as_str(), capabilities["platform"].as_str(), capabilities["gpu"].as_str()), (Some("mac"), Some("macOS"), Some("unavailable: macOS has no NVIDIA GPU")));
     assert!(capabilities.get("slots").is_none(), "its slots are this Core's maxActive");
     assert_eq!(remote::pause_refusal(&lab.job(&first)).unwrap(),
         "Pause is not available for jobs on This Mac: macOS gives an attempt no scope of its own (it has no cgroup), and pause freezes only an attempt's own scope; nothing was changed");
