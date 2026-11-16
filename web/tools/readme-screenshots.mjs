@@ -4,8 +4,11 @@
 // Optional: YUZUNO_BROWSER_BIN, YUZUNO_PLAYWRIGHT_MODULE (installed package path).
 // No Core, model, account, external network, preview UI, or injected UI styling.
 // The sample world: three Projects (Fieldnotes, Thesis data, Garden site), their
-// leads Mori, Ren and Hana, one executor (FN-12) and four Jobs (YN-115).
+// leads Mori, Ren and Hana, one executor (FN-12) and four Jobs (YN-115). Home's
+// Ask reply and the Thesis data page attach sketches the browser draws and a
+// sample log, which the script answers for as the Project's saved attachments.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, extname, resolve } from "node:path";
@@ -62,13 +65,29 @@ const projects = [
 const owner = (agent) => ({ agentId: agent.id, name: agent.name, state: "active" });
 const node = (type, props, children) => (children ? { type, props, children } : { type, props });
 const md = (text) => node("Markdown", { text });
-const spec = (top, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, top), ...elements } });
+const spec = (top, elements, summary) =>
+  ({ root: "body", elements: { body: node("BriefBody", summary ? { summary } : {}, top), ...elements } });
 let nextId = 300;
 const section = (key, kind, title, agent, body, extra = {}) => ({
   id: nextId++, key, kind, title, version: 2, owner: owner(agent), updatedAt: ago(600), updatedTurnId: "t1",
   body, attachments: [], refs: {}, seen: null, history: false, ...extra,
 });
 const [mori, kai, hana, ren] = agents;
+/** A report its lead refreshes every morning (YN-113): the schedule as GET /api/home reads it. */
+function dailyRefresh() {
+  const next = new Date(now);
+  next.setUTCHours(7, 0, 0, 0);
+  if (next.getTime() <= now) next.setUTCDate(next.getUTCDate() + 1);
+  const last = new Date(next.getTime() - 86400 * 1000).toISOString();
+  return {
+    version: 1, cadence: { every: "day", at: "07:00" }, zone: "UTC", utcOffset: "+00:00",
+    instruction: "Run the browser checks and summarise them.", enabled: true, pausedReason: null, weeklyRuns: 7,
+    nextAt: next.toISOString(), lastSlot: last,
+    run: { slot: last, missed: 0, state: "refreshed", agentId: "mori", sentAt: last, endedAt: last },
+    recent: [{ slot: last, state: "refreshed", missed: 0 }], failures: 0, waiting: null, versions: 9,
+    createdAt: ago(9 * 86400), createdBy: "mori", updatedAt: ago(9 * 86400),
+  };
+}
 const notesSections = [
   section("copy", "ask", "Choose the welcome message", mori, spec(["q"], { q: md("Both fit the new empty state. The first is warmer; the second says what to do.") }), {
     updatedAt: ago(240),
@@ -93,11 +112,45 @@ const notesSections = [
       rows: [{ id: "r1", cells: { d: "As you type", speed: "40 ms", fit: "Yes" } }, { id: "r2", cells: { d: "Search page", speed: "120 ms", fit: "Yes" } }] }),
   }), { updatedAt: ago(5400), seen: { version: 2, at: ago(3000) } }),
 ];
+// Its reports are unread: a report read at its version folds into Done on the Project's page (project-deck.ts).
 const thesisSections = [
   section("figures", "report", "Chapter 3 figures regenerated", ren, spec(["a", "m"], {
     a: md("All twelve figures now come from the runs of this week; two changed visibly."),
     m: node("Metrics", { items: [{ label: "Figures", value: 12 }, { label: "Changed", value: 2 }, { label: "GPU hours", value: 6.5 }] }),
-  }), { updatedAt: ago(1800) }),
+  }, { lead: "a", visual: "m", size: "small" }), { updatedAt: ago(1800) }),
+  section("week", "status", "This week", ren, spec(["a", "c"], {
+    a: md("The baseline run is training; the ablation table comes next."),
+    c: node("Checklist", { items: [
+      { id: "c1", text: "Regenerate chapter 3 figures", done: true },
+      { id: "c2", text: "Baseline training run", done: false },
+      { id: "c3", text: "Ablation table", done: false },
+    ] }),
+  }, { lead: "a", conditions: "c", size: "small" }), { status: { asOf: ago(1200), validFor: 86400, stale: false }, updatedAt: ago(1200), seen: { version: 2, at: ago(900) } }),
+  section("nightly", "report", "Nightly evaluation", ren, spec(["a", "m"], {
+    a: md("Last night's checkpoint on the held-out set."),
+    m: node("Metrics", { items: [{ label: "Accuracy", value: "91.4", unit: "%", previous: "90.8" }, { label: "Loss", value: 0.27, previous: 0.31 }] }),
+  }, { lead: "a", visual: "m", size: "small" }), { updatedAt: ago(4 * 3600), refresh: dailyRefresh() }),
+  section("runs", "report", "Runs compared", ren, spec(["a", "t"], {
+    a: md("Wider layers gain 0.6 points for 45 more minutes."),
+    t: node("Table", { id: "t", columns: [{ key: "run", label: "Run" }, { key: "acc", label: "Accuracy" }, { key: "time", label: "Time" }],
+      rows: [
+        { id: "r1", cells: { run: "Baseline", acc: "90.8 %", time: "3 h 10 min" } },
+        { id: "r2", cells: { run: "Wider layers", acc: "91.4 %", time: "3 h 55 min" } },
+        { id: "r3", cells: { run: "Smaller batch", acc: "90.1 %", time: "4 h 20 min" } },
+      ] }),
+  }, { lead: "a", visual: "t", size: "wide" }), { updatedAt: ago(7200) }),
+  section("draft", "status", "Before the draft goes out", ren, spec(["a", "c"], {
+    a: md("Two items left before the chapter goes to the advisor."),
+    c: node("Checklist", { items: [
+      { id: "c1", text: "Figures from this week's runs", done: true },
+      { id: "c2", text: "Ablation table", done: false },
+      { id: "c3", text: "Captions checked", done: false },
+    ] }),
+  }, { lead: "a", conditions: "c", size: "small" }), { status: { asOf: ago(2400), validFor: 86400, stale: false }, updatedAt: ago(2400), seen: { version: 2, at: ago(2000) } }),
+  section("gpu", "report", "GPU time this month", ren, spec(["a", "m"], {
+    a: md("On track for the month's 100 hours."),
+    m: node("Metrics", { items: [{ label: "Used", value: 41, unit: "h" }, { label: "Left", value: 59, unit: "h" }] }),
+  }, { lead: "a", visual: "m", size: "small" }), { updatedAt: ago(10800) }),
 ];
 const siteSections = [
   section("gallery", "report", "Photo gallery loads twice as fast", hana, spec(["a"], { a: md("Images are resized when they are added.") }), {
@@ -261,6 +314,18 @@ await context.route("**/*", async (route) => {
     return route.abort();
   }
   if (method !== "GET") {
+    // Attachments Home saves to the Project (home-images.ts, home-files.ts): the sample ones only.
+    if (method === "POST" && /^\/api\/projects\/p-[a-z]+\/images$/.test(path)) {
+      const sent = createHash("sha256").update(request.postDataBuffer() ?? Buffer.alloc(0)).digest("hex");
+      const image = sketches.find((one) => one.id === `${sent}.png`);
+      assert.ok(image, "Only the drawn sample sketches are attached");
+      return route.fulfill({ json: { id: image.id, width: image.width, height: image.height, bytes: image.bytes.length } });
+    }
+    if (method === "POST" && /^\/api\/projects\/p-[a-z]+\/files$/.test(path)) {
+      const name = url.searchParams.get("name");
+      assert.equal(name, sampleLog.name, "Only the sample log is attached");
+      return route.fulfill({ json: { id: sampleLog.id, name, bytes: sampleLog.bytes.length } });
+    }
     // Linked repositories are read with a POST (home-api.ts): none here.
     if (path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
@@ -270,6 +335,8 @@ await context.route("**/*", async (route) => {
   } else {
     const json = responses()[path];
     if (json) return route.fulfill({ json });
+    const image = sketches.find((one) => /^\/api\/projects\/p-[a-z]+\/images\//.test(path) && path.endsWith(`/${one.id}`));
+    if (image) return route.fulfill({ body: image.bytes, contentType: "image/png" });
     if (/^\/api\/jobs\/sample-[a-z]+\/logs$/.test(path)) {
       const text =
         "Sample data — browser capture\n✓ Desktop viewport ready\n✓ Phone layout checked\nCapturing final screenshots…\n";
@@ -301,13 +368,20 @@ await context.route("**/*", async (route) => {
 });
 const page = await context.newPage();
 page.setDefaultTimeout(15000);
+/** A sample file and its content-addressed reference, as Core would name it. */
+const sample = (name, bytes) => ({ name, bytes, id: createHash("sha256").update(bytes).digest("hex") });
+const sampleLog = sample("baseline-run.log", Buffer.from(
+  "Sample data — baseline training run\nepoch 1  loss 0.92  accuracy 71.0 %\nepoch 2  loss 0.61  accuracy 84.2 %\nepoch 3  loss 0.31  accuracy 90.8 %\n",
+));
+/** Marked-up sketches the browser draws below (drawSketch): no captured screen or real image. */
+const sketches = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => {
   if (message.type() === "error") errors.push(message.text());
 });
-async function capture(name) {
+async function capture(name, height = 1000) {
   await page.evaluate(() => document.fonts.ready);
-  await page.mouse.move(1598, 998);
+  await page.mouse.move(1598, height - 2);
   assert.deepEqual(errors, [], "No UI exceptions");
   assert.deepEqual(
     unexpected,
@@ -326,8 +400,68 @@ async function capture(name) {
     animations: "disabled",
   });
   console.log(
-    `Captured ${name}.png (1600 × 1000, synthetic sample data)`,
+    `Captured ${name}.png (1600 × ${height}, synthetic sample data)`,
   );
+}
+/** Types into a composer (a CodeMirror editor, PastedTextComposer.tsx) as a person would. */
+async function typeInto(editor, text) {
+  await editor.click();
+  await page.keyboard.type(text);
+}
+/** Draws a sample sketch in the page's own canvas, with a red circle on it as markup: "phone", the first-run
+ * screen on a phone; "plot", two training curves. */
+async function drawSketch(kind) {
+  const [width, height] = kind === "phone" ? [360, 480] : [480, 320];
+  const data = await page.evaluate(({ kind, width, height }) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#f4f1e8";
+    g.fillRect(0, 0, width, height);
+    g.lineWidth = 4;
+    g.strokeStyle = "#57534e";
+    if (kind === "phone") {
+      g.fillStyle = "#ffffff";
+      g.beginPath();
+      g.roundRect(90, 40, 180, 400, 26);
+      g.fill();
+      g.stroke();
+      g.fillStyle = "#44403c";
+      g.font = "bold 17px sans-serif";
+      g.fillText("A space for", 112, 190);
+      g.fillText("your next", 112, 214);
+      g.fillText("idea", 112, 238);
+      g.fillStyle = "#c8a13a";
+      g.beginPath();
+      g.roundRect(112, 270, 136, 34, 10);
+      g.fill();
+    } else {
+      g.beginPath();
+      g.moveTo(50, 30);
+      g.lineTo(50, 270);
+      g.lineTo(450, 270);
+      g.stroke();
+      const curve = (colour, top) => {
+        g.strokeStyle = colour;
+        g.beginPath();
+        for (let x = 0; x <= 380; x += 10) g.lineTo(60 + x, 260 - (top * (1 - Math.exp(-x / 90))));
+        g.stroke();
+      };
+      curve("#6b8f71", 190);
+      curve("#c8a13a", 205);
+    }
+    g.strokeStyle = "#dc2626";
+    g.lineWidth = 5;
+    g.beginPath();
+    if (kind === "phone") g.ellipse(160, 212, 92, 52, -0.08, 0, Math.PI * 2);
+    else g.ellipse(380, 70, 70, 34, 0, 0, Math.PI * 2);
+    g.stroke();
+    return canvas.toDataURL("image/png");
+  }, { kind, width, height });
+  const bytes = Buffer.from(data.slice(data.indexOf(",") + 1), "base64");
+  const id = `${createHash("sha256").update(bytes).digest("hex")}.png`;
+  return { name: kind === "phone" ? "first-run-sketch.png" : "figure-sketch.png", bytes, id, width, height };
 }
 try {
   await page.goto(`https://${HOST}/`);
@@ -335,7 +469,34 @@ try {
   await page.locator(".catchup-nav:not(.collab-nav)").first().click();
   await page.locator('[data-glance-project="p-notes"]').waitFor();
   await page.waitForFunction(() => document.querySelectorAll("[data-needs-you]").length === 2);
+  const phone = await drawSketch("phone");
+  const plot = await drawSketch("plot");
+  sketches.push(phone, plot);
+  // Answer the Ask in words, with the marked-up sketch attached (YN-134).
+  const ask = page.locator("[data-needs-you]").first();
+  await typeInto(ask.locator(".home-composer [data-composer-input]"), "The first, but shorter: it wraps on a phone. See the circled line.");
+  await ask.locator('input[type="file"][aria-label="Choose images"]').setInputFiles(
+    { name: phone.name, mimeType: "image/png", buffer: phone.bytes });
+  await ask.locator(".home-composer img").first().waitFor();
+  await page.evaluate(() => document.activeElement?.blur?.());
   await capture("home");
+  // A Project's own page, taller than the others so that its cards show below the talk box (480 px,
+  // project-talk.css): the cards in columns, and a request with an image and a file attached (YN-145).
+  await page.setViewportSize({ width: 1600, height: 1430 });
+  await page.locator('[data-glance-project="p-thesis"] .project-glance-open').click();
+  const projectPage = page.locator('[data-project-home="p-thesis"]');
+  await projectPage.locator(".home-brief .home-summary-card").nth(5).waitFor();
+  const talk = projectPage.locator(".project-talk .home-composer");
+  await typeInto(talk.locator("[data-composer-input]"), "Add the wider-layers run to chapter 3, drawn like this sketch. Its log is attached.");
+  await talk.locator('input[type="file"][aria-label="Choose images"]').setInputFiles(
+    { name: plot.name, mimeType: "image/png", buffer: plot.bytes });
+  await talk.locator('input[type="file"][aria-label="Choose files"]').setInputFiles(
+    { name: sampleLog.name, mimeType: "text/plain", buffer: sampleLog.bytes });
+  await talk.locator("img").first().waitFor();
+  await talk.getByText(sampleLog.name).first().waitFor();
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await capture("project", 1430);
+  await page.setViewportSize({ width: 1600, height: 1000 });
   await page.locator(".agent-rail-row, .agent-select").filter({ hasText: "Mori" }).first().click();
   await page.locator("[data-composer-input]").waitFor();
   await page.locator(".conversation-scroll").evaluate((element) => {
@@ -355,7 +516,7 @@ try {
   await page.locator(".job-log").waitFor();
   await capture("jobs");
   console.log(
-    "PASS: 3 actual UI screenshots; no external requests or UI exceptions.",
+    "PASS: 4 actual UI screenshots; no external requests or UI exceptions.",
   );
 } finally {
   await browser.close();
