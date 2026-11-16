@@ -3455,7 +3455,7 @@ async fn a_gpu_job_on_a_machine_starts_on_a_current_reading_there_with_its_devic
     // A session that finds no tool says so.
     lab.ws.store.record_remote_gpu_sample("m1", json!({"observedAt": chrono::Utc::now().to_rfc3339(), "devices": null, "why": "no_tool"})).unwrap();
     tick(&lab, &lab.ssh).await;
-    assert!(job(&lab, &first)["reason"].as_str().unwrap().contains("its session there finds no nvidia-smi"), "{}", job(&lab, &first));
+    assert!(job(&lab, &first)["reason"].as_str().unwrap().contains("its session there finds no NVIDIA GPU tool"), "{}", job(&lab, &first));
     // A current reading: admitted with that device.
     gpu_reading(&lab, 20000, 0);
     let running = until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;

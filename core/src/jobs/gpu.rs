@@ -173,9 +173,9 @@ pub(super) fn view_on(db: &Connection, machine: Option<&str>) -> Result<View> {
     } else if let Some(why) = sample["why"].as_str() {
         // A machine's session said why it has no reading (remote_service Gpu).
         Some(match why {
-            "no_tool" => "its session there finds no nvidia-smi".to_owned(),
-            "unavailable" => "its session there reads no GPU (nvidia-smi gave none, or it is a Mac)".to_owned(),
-            "failed" => "nvidia-smi there stopped giving readings".to_owned(),
+            "no_tool" => "its session there finds no NVIDIA GPU tool".to_owned(),
+            "unavailable" => "its session there reads no GPU (the NVIDIA tool gave none, or it is a Mac)".to_owned(),
+            "failed" => "the NVIDIA tool there stopped giving readings".to_owned(),
             _ => "its session there has started reading GPUs, with no reading yet".to_owned(),
         })
     } else if let Some(error) = sample["error"].as_str() {
