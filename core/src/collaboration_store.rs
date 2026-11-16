@@ -635,20 +635,21 @@ fn required_text(input: &Value, field: &str, max: usize) -> Result<String> {
         !value.trim().is_empty(),
         "invalid_input: {field} must not be empty"
     );
-    if value.len() > max {
-        return Err(too_long(field, value.len(), max));
-    }
+    ensure!(value.len() <= max, "{}", too_long(field, value.len(), max));
     Ok(value.into())
 }
 
 /// The refusal of a text over its limit, which Core counts in UTF-8 bytes,
 /// not characters (YN-192): what was sent and the limit.
-fn too_long(field: &str, bytes: usize, max: usize) -> anyhow::Error {
-    anyhow::anyhow!("invalid_input: {field} is {bytes} bytes in UTF-8; at most {max} (a CJK character takes 3)")
+fn too_long(field: &str, bytes: usize, max: usize) -> String {
+    format!("invalid_input: {field} is {bytes} bytes in UTF-8; at most {max} (a CJK character takes 3)")
 }
 
 /// A string parameter's schema that says its limit in UTF-8 bytes, as Core
-/// checks it (YN-192); JSON Schema's maxLength would count characters.
+/// checks it (YN-192); JSON Schema's maxLength would count characters. Give
+/// it the same number as the check (task_submit_result's summary and
+/// task_comment's body: 16_384, where web/tools/long-text-fields-ui.test.mjs
+/// reads them).
 fn bytes_schema(max: usize) -> Value {
     json!({"type":"string","description":format!("At most {max} UTF-8 bytes (a CJK character takes 3).")})
 }
@@ -669,10 +670,6 @@ pub(crate) const MAX_DESCRIPTION: usize = 32_768;
 
 /// The longest mail body (peer_send), in UTF-8 bytes.
 pub(crate) const MAX_MAIL_BODY: usize = 16_384;
-
-/// The longest result summary and task comment, in UTF-8 bytes.
-pub(crate) const MAX_RESULT_SUMMARY: usize = 16_384;
-pub(crate) const MAX_COMMENT_BODY: usize = 16_384;
 
 /// A task's short name from `input`: one line of at most SHORT_NAME_CHARS
 /// characters, trimmed; null or empty is none.
@@ -696,9 +693,7 @@ fn optional_text(input: &Value, field: &str, max: usize) -> Result<Option<String
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => {
-            if value.len() > max {
-                return Err(too_long(field, value.len(), max));
-            }
+            ensure!(value.len() <= max, "{}", too_long(field, value.len(), max));
             Ok(Some(value.clone()))
         }
         _ => bail!("invalid_input: {field} must be a string or null"),
@@ -1162,7 +1157,7 @@ fn task_comment(
 ) -> Result<Value> {
     allowed(input, &["requestId", "taskId", "body", "research"])?;
     let task = load_task(db, &required_text(input, "taskId", 128)?)?;
-    let body = required_text(input, "body", MAX_COMMENT_BODY)?;
+    let body = required_text(input, "body", 16_384)?;
     let mut extra = json!({"body":body});
     // A research record (T-17) is a comment too: fixed, and nothing else changes.
     if let Some(record) = research::validate(db, &task, input.get("research"))? {
@@ -1213,7 +1208,7 @@ fn task_submit_result(
         task.assignee_agent_id = Some(actor.id.clone());
         task.assignee = Some(actor.clone());
     }
-    let summary = required_text(input, "summary", MAX_RESULT_SUMMARY)?;
+    let summary = required_text(input, "summary", 16_384)?;
     let links = input.get("links").cloned().unwrap_or_else(|| json!([]));
     let entries = links
         .as_array()
@@ -1841,9 +1836,9 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"shortName":short_name.clone(),"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, ask in a Home Ask; nothing changes until you set it. An executor never sets its own task done (executor_done_refused): it submits its result, and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"shortName":short_name,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
-        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":bytes_schema(MAX_COMMENT_BODY),"research":research::schema()}), &["requestId","taskId","body"]),
+        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":bytes_schema(16_384),"research":research::schema()}), &["requestId","taskId","body"]),
         definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
-        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":bytes_schema(MAX_RESULT_SUMMARY),"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":bytes_schema(16_384),"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),
         mail_preferences::tool_definition(&task_reference),
