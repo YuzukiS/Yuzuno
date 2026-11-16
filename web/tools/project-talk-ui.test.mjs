@@ -429,6 +429,71 @@ test("a request whose cards ended waits for the user's Confirm done, and only th
   assert.deepEqual([...page.errors, ...quiet.errors], []);
 });
 
+// YN-184: a request with one card shows it on its own line: who answers for it, its state and Open →, no row of
+// its own and no "In progress" beside it; several cards keep their rows. A card whose task ended says how it ended
+// (Cancelled, not its released executor's state), and a done request with its one card done says Done once.
+test("a request with one card shows it on its own line; several keep their rows, each ended one saying how it ended", async (t) => {
+  const settings = { sectionId: 21, key: "yn-91", title: "Settings layout", live: true, task: { id: "YN-91", status: "doing", archived: false },
+    responsible: { agentId: "x", name: "YN-91 · Design", kind: "executor", state: "running" } };
+  const dropped = { sectionId: 23, key: "yn-93", title: "Dark mode research", live: true, task: { id: "YN-93", status: "cancelled", archived: false },
+    responsible: null };
+  const one = (n, card, state, title) => ({ id: `r${n}`, n, text: `Request ${n}`, textBlocks: null, title, createdAt: ago(n), frontAgentId: "d",
+    messageId: `m${n}`, delivery: "accepted", replies: [], notes: [], cards: [card], state, progress: { cards: 1, ended: state === "doing" ? 0 : 1 },
+    lines: [], routes: [{ kind: "card", index: 0, request: n, at: ago(n), state: "done", why: "One card", by: desk, to: null, task: card.task.id,
+      cardKey: card.key, sectionId: card.sectionId, title: card.title }] });
+  const mountWith = async (options) => {
+    const page = mount(options);
+    page.state.requests = [
+      one(6, settings, "doing", "Settings page, again"),
+      one(7, dropped, "ended", "Dark mode"),
+      ...page.state.requests.map((r) => (r.n === 3 ? { ...r, cards: [r.cards[0], { ...r.cards[1], task: { ...r.cards[1].task, status: "cancelled" } }] } : r)),
+    ];
+    page.window.renderTalk();
+    await until(() => page.request(7), "the requests are read");
+    await tick();
+    return page;
+  };
+  const page = await mountWith();
+  t.after(page.close);
+
+  const six = page.request(6);
+  assert.ok(!six.querySelector(".request-card-cards"), "no row of its own");
+  assert.ok(!six.querySelector(".request-card-state"), "its card's state says it is going on");
+  const line = six.querySelector(".request-card-one");
+  assert.equal(line.getAttribute("aria-label"), "Show the card “Settings layout” on this page");
+  assert.equal(line.querySelector(".request-card-one-who").textContent, "YN-91 · Design");
+  assert.ok(line.querySelector(".request-card-one-state").textContent, "who answers for it, with its state");
+  assert.equal(line.querySelector(".request-card-row-go").textContent, "Open →");
+  line.click();
+  assert.deepEqual(plain(page.window.shownCards), ["yn-91"], "the line shows that card on the page");
+
+  const seven = page.request(7);
+  assert.equal(seven.querySelector(".request-card-state").textContent, "Waiting for you");
+  assert.ok(page.button("Confirm done", seven));
+  assert.equal(seven.querySelector(".request-card-one-state").textContent, "Cancelled", "how its task ended");
+
+  const three = page.request(3);
+  const rows = [...three.querySelectorAll(".request-card-row")];
+  assert.equal(rows.length, 2, "several cards keep their rows");
+  assert.equal(three.querySelector(".request-card-count").textContent, "2 cards · 0/2 done");
+  assert.equal(rows[1].querySelector(".request-card-row-state").textContent, "Cancelled");
+  assert.notEqual(rows[0].querySelector(".request-card-row-state").textContent, "Cancelled");
+
+  // R-1 is done, joined to a card whose task is done: Done once, the card it joined named, no row.
+  const done = page.request(1);
+  assert.equal(done.querySelector(".request-card-state").textContent, "Done");
+  assert.equal(done.querySelector(".request-card-merged").textContent, "Joined “Export research”");
+  assert.ok(done.querySelector(".request-card-one") && !done.querySelector(".request-card-one-state"), "Done is said once");
+  assert.ok(!done.querySelector(".request-card-cards"));
+
+  const zh = await mountWith({ lang: "zh" });
+  t.after(zh.close);
+  assert.equal(zh.request(7).querySelector(".request-card-one-state").textContent, "已取消");
+  assert.equal(zh.request(6).querySelector(".request-card-one").getAttribute("aria-label"), "在本页显示卡片「Settings layout」");
+  assert.equal(zh.request(6).querySelector(".request-card-row-go").textContent, "打开 →");
+  assert.deepEqual([...page.errors, ...zh.errors], []);
+});
+
 test("the conversation has each request's words once, the project's short replies, follow-ups and Core's lines", async (t) => {
   const page = await talk();
   t.after(page.close);

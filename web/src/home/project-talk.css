@@ -293,6 +293,45 @@
   color: var(--home-error-ink, var(--ink));
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+/* A request's one card on its own line (YN-184): who and its state, then Open →; who gives way first. */
+.request-card-one {
+  display: inline-flex;
+  flex: 1 1 140px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-card-one:hover {
+  background: var(--home-soft);
+}
+.request-card-one > span:not(.status-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.request-card-one-who {
+  flex: 0 1 auto;
+  color: var(--ink);
+}
+.request-card-one-state {
+  flex: 0 0 auto;
+}
+.request-card-one .request-card-row-go {
+  flex: none;
+  color: var(--accent-ink, var(--ink));
+}
 .request-card-merged {
   min-width: 0;
   max-width: 100%;
@@ -303,6 +342,10 @@
   color: var(--home-ink-2);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Beside a request's one card, the card it joined gives way first. */
+.request-card-head[data-one] .request-card-merged {
+  max-width: 45%;
 }
 .request-card-actions {
   display: inline-flex;

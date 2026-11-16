@@ -306,12 +306,12 @@ test("the source line and the dialog in Chinese", async (t) => {
   assert.deepEqual(p.errors, []);
 });
 
-test("a card no longer on the page opens its task instead, from its request's row and its handoff (R1 56f63019 P3)", async (t) => {
+test("a card no longer on the page opens its task instead, from its request's line and its handoff (R1 56f63019 P3)", async (t) => {
   const p = await openPage();
   t.after(p.close);
   const request = await until(() => p.document.querySelector('.request-card[data-request="2"]'), "R-2 in Done");
   assert.equal(p.cardOf("yn-6"), null, "its card is not on the page");
-  request.querySelector(".request-card-row").click();
+  request.querySelector(".request-card-one").click();
   assert.deepEqual(realm(p.opened), [{ taskId: "YN-6" }]);
   p.button("Handoffs 3", request).click();
   await tick();

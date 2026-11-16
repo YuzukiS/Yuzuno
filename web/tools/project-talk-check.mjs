@@ -245,7 +245,7 @@ async function check(run) {
       out.columns[name] = Math.round(frame.width);
       const scroll = side.querySelector(".project-talk-scroll");
       if (scroll.scrollWidth > scroll.clientWidth + 1) out.over.push({ el: `${name} scroll`, scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth });
-      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-merged, .request-card-confirm, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
+      for (const el of side.querySelectorAll(".request-card, .request-card-row, .request-card-one, .request-card-merged, .request-card-confirm, .project-talk-mine, .project-talk-bubble, .pasted-text-chip, .project-talk-project, .project-talk-line, .routing-event")) {
         const at = el.getBoundingClientRect();
         if (at.width && (at.right > frame.right + 1 || at.left < frame.left - 1)) out.over.push({ el: el.className, right: Math.round(at.right), frame: Math.round(frame.right) });
       }
