@@ -352,14 +352,20 @@ The Windows app updates itself only when it was installed by its own NSIS instal
 
 ### Building and publishing a desktop release
 
-The installer is built with the official prebuilt Tauri CLI. It is pinned to `2.12.3` (matching `desktop/Cargo.lock`) and installed on first use under `%LOCALAPPDATA%\Yuzuno\toolchains\tauri-cli`. The global toolchain is untouched. Bundling needs Node.js; plain builds still do not.
+One release carries both platforms. The [desktop release checklist](../docs/desktop-release-checklist.md) gives the order of a whole release: the cut, the Mac and Windows candidates, the notes, the Ask, the signing and the checks.
+
+The installer is built with the official prebuilt Tauri CLI. It is pinned to `2.12.3` (matching `desktop/Cargo.lock`) and installed on first use under `%LOCALAPPDATA%\Yuzuno\toolchains\tauri-cli`. The global toolchain is untouched. Bundling and signing need Node.js; plain builds still do not.
 
 ```powershell
 # Once, on the release machine; keep the private key out of the repository.
 node "$env:LOCALAPPDATA\Yuzuno\toolchains\tauri-cli\2.12.3\node_modules\@tauri-apps\cli\tauri.js" signer generate --write-keys D:\keys\yuzuno-desktop.key
 # Each release; set TAURI_SIGNING_PRIVATE_KEY_PASSWORD first if the key has one.
-.\scripts\desktop.ps1 -Bundle -Version 0.2.0 -SigningKeyPath D:\keys\yuzuno-desktop.key -UpdatePublicKeyPath D:\keys\yuzuno-desktop.key.pub
+.\scripts\desktop.ps1 -Bundle -Version <version> -SigningKeyPath D:\keys\yuzuno-desktop.key -UpdatePublicKeyPath desktop\desktop-update.pub
+# Then the Mac candidate of the same commit, downloaded and checked (see below).
+.\scripts\desktop.ps1 -StageMac D:\release\mac -Version <version> -SigningKeyPath D:\keys\yuzuno-desktop.key -SourceCommit <commit>
 ```
+
+The project's key is the one whose public key is committed as [`desktop/desktop-update.pub`](desktop-update.pub) (key ID `E8881810BE226D78`). Both platforms build that file in.
 
 **Third-party notices.** Every installer but a lab one installs them in `licenses\` beside the app: `THIRD_PARTY_NOTICES-desktop.txt`, the project's `LICENSE` and `rust-std-COPYRIGHT-library.html`.
 1. **Generate them** in WSL for the Cargo.lock you bundle:
@@ -386,6 +392,15 @@ node "$env:LOCALAPPDATA\Yuzuno\toolchains\tauri-cli\2.12.3\node_modules\@tauri-a
    ```
 
    It refuses unless the app and the three notices are stored in the installer byte for byte, so the ZIP carries the installer's own app. It writes `yuzuno-desktop-windows-x86_64-portable.zip`. Core does not serve this file; it is a download from the release page.
+
+**Mac files.** The Mac app is built by the [Desktop macOS workflow](#macos-desktop-core-on-another-computer) as a candidate with `-f version=<version>`, from the same commit; its update package is not signed there.
+- **Before staging.** Download the candidate's artifact into a folder of its own and run `shasum -a 256 -c SHA256SUMS`.
+- **What `-StageMac` refuses.** It checks that folder against this release first and refuses unless:
+  - `SHA256SUMS` matches the disk image, the update package and `build.json`;
+  - `build.json` names `-Version`, `arm64`, `-SourceCommit` and the key ID of `desktop/desktop-update.pub`;
+  - this script's git checkout, if it runs from one, is at `-SourceCommit` (a source copy made with `git archive` has no checkout).
+- **What it stages.** It copies `Yuzuno.app.tar.gz` and the disk image into the release folder as `yuzuno-desktop-darwin-aarch64.app.tar.gz` and `yuzuno-desktop-darwin-aarch64.dmg`. Then it signs the update package with `tauri signer sign -f <key> --app-version <version>`, which writes `yuzuno-desktop-darwin-aarch64.app.tar.gz.sig`.
+- **The key.** It never reads the key, and clears `TAURI_SIGNING_PRIVATE_KEY` for the call. At the end it lists the release folder's files with their SHA-256 and the key ID that signed the update package.
 
 The release files are staged under `<target>\release\bundle\desktop-release\desktop-<version>\`, already carrying the asset names Core expects. Publishing them as a `desktop-<version>` GitHub Release is a separate, explicit step. Every installed build verifies against the public key it was built with. Changing the key therefore needs one manual reinstall.
 

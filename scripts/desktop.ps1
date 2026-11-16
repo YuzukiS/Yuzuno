@@ -19,6 +19,16 @@ param(
     # Public key built into the desktop (plugins > updater > pubkey); every
     # update is verified against it. Without one, the build cannot update.
     [string]$UpdatePublicKeyPath,
+    # Stage a Mac candidate into the desktop-<Version> release folder and sign
+    # its update package: the folder the Desktop macOS workflow's candidate
+    # artifact was downloaded to and checked in (shasum -a 256 -c SHA256SUMS).
+    # With -Version, -SigningKeyPath and -SourceCommit only; never with -Bundle
+    # in the same call.
+    [string]$StageMac,
+    # The release's commit, as 40 hex digits: the Mac candidate's build.json
+    # must name it, and this script's checkout, if it is a git checkout, must
+    # be at it (a release built from `git archive` has no checkout).
+    [string]$SourceCommit,
     # Hard memory limit for the whole build (cargo, rustc, linker, bundler).
     [ValidateRange(1, 64)]
     [int]$MemoryLimitGB = 8,
@@ -35,7 +45,7 @@ $manifest = Join-Path $desktopDir 'Cargo.toml'
 $tauriCliVersion = '2.12.3'
 
 if ($PSBoundParameters.ContainsKey('DesktopBin')) {
-    if ($BuildOnly -or $Check -or $Test -or $Bundle) { throw '-DesktopBin cannot be combined with building.' }
+    if ($BuildOnly -or $Check -or $Test -or $Bundle -or $StageMac) { throw '-DesktopBin cannot be combined with building.' }
     $executable = (Resolve-Path -LiteralPath $DesktopBin).Path
     $desktopArgs = @()
     if ($PSBoundParameters.ContainsKey('CoreUrl')) { $desktopArgs += @('--core-url', $CoreUrl) }
@@ -43,15 +53,27 @@ if ($PSBoundParameters.ContainsKey('DesktopBin')) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     return
 }
-if (($Lab -or $Version -or $SigningKeyPath) -and -not $Bundle) { throw '-Lab, -Version and -SigningKeyPath apply to -Bundle.' }
-if ($SigningKeyPath -and -not $UpdatePublicKeyPath) { throw '-SigningKeyPath needs the matching -UpdatePublicKeyPath.' }
+if ($StageMac) {
+    if ($Bundle -or $Lab -or $Release -or $BuildOnly -or $Check -or $Test -or $Features -or $UpdatePublicKeyPath -or
+            $PSBoundParameters.ContainsKey('CoreUrl')) {
+        throw '-StageMac takes only -Version, -SigningKeyPath and -SourceCommit; run -Bundle in a call of its own.'
+    }
+    if (-not $Version -or -not $SigningKeyPath -or -not $SourceCommit) { throw '-StageMac needs -Version, -SigningKeyPath and -SourceCommit.' }
+    if ($Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "-Version must be X.Y.Z, not $Version." }
+    if ($SourceCommit -cnotmatch '\A[0-9a-f]{40}\z') { throw '-SourceCommit must be a full commit SHA: 40 lower-case hex digits.' }
+} elseif ($SourceCommit) {
+    throw '-SourceCommit applies to -StageMac.'
+} else {
+    if (($Lab -or $Version -or $SigningKeyPath) -and -not $Bundle) { throw '-Lab, -Version and -SigningKeyPath apply to -Bundle.' }
+    if ($SigningKeyPath -and -not $UpdatePublicKeyPath) { throw '-SigningKeyPath needs the matching -UpdatePublicKeyPath.' }
+}
 if ($Bundle -and ($Check -or $Test)) { throw '-Bundle cannot be combined with -Check or -Test.' }
 if ($Bundle -and $Features) { throw '-Features cannot be combined with -Bundle.' }
 
 $cargoCommand = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue
 $yuzunoToolchains = Join-Path $env:LOCALAPPDATA 'Yuzuno\toolchains'
 $privateCargo = Join-Path $yuzunoToolchains 'cargo\bin\cargo.exe'
-if (-not $cargoCommand -and -not (Test-Path -LiteralPath $privateCargo)) {
+if (-not $StageMac -and -not $cargoCommand -and -not (Test-Path -LiteralPath $privateCargo)) {
     throw 'Install Rust for Windows (MSVC toolchain), then reopen PowerShell. See desktop/README.md.'
 }
 
@@ -237,6 +259,37 @@ function Assert-InstallerSources($Record, [bool]$Required) {
     }
 }
 
+# The pinned official Tauri CLI (node and its tauri.js), installed on first
+# use under the Yuzuno toolchains folder.
+function Get-TauriCli {
+    $cli = Join-Path $yuzunoToolchains "tauri-cli\$tauriCliVersion"
+    $cliScript = Join-Path $cli 'node_modules\@tauri-apps\cli\tauri.js'
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $node) { throw 'Bundling uses the official Tauri CLI, which needs Node.js on this machine.' }
+    if (-not (Test-Path -LiteralPath $cliScript)) {
+        $npm = Get-Command npm.cmd -CommandType Application -ErrorAction Stop
+        New-Item -ItemType Directory -Force -Path $cli | Out-Null
+        # npm.cmd runs in cmd.exe, which cannot start in a \\wsl$ folder.
+        Push-Location -LiteralPath $cli
+        try {
+            & $npm.Source install --prefix $cli --no-save --no-audit --no-fund --ignore-scripts "@tauri-apps/cli@$tauriCliVersion"
+        } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw "Could not install @tauri-apps/cli $tauriCliVersion" }
+    }
+    return @($node.Source, $cliScript)
+}
+
+# The key ID minisign prints for a key or a signature, as Tauri writes them
+# (one base64 line): that line decodes to minisign's text, whose second line
+# decodes to the algorithm ("Ed" or "ED"), the key ID as a little-endian
+# 64-bit number, then the key or signature.
+function Get-MinisignKeyId([string]$Box) {
+    $lines = [Text.Encoding]::ASCII.GetString([Convert]::FromBase64String($Box.Trim())) -split "`r?`n"
+    $raw = [Convert]::FromBase64String($lines[1].Trim())
+    if ($raw.Length -lt 10 -or $raw[0] -ne 0x45) { throw 'Not a minisign key or signature.' }
+    return -join ($raw[9..2] | ForEach-Object { $_.ToString('X2') })
+}
+
 $cargoProgram = if ($cargoCommand) { $cargoCommand.Source } else { $privateCargo }
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $env:LOCALAPPDATA 'Yuzuno\build\desktop' }
 
@@ -244,7 +297,7 @@ $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Pa
 # without modifying global PATH. Scope their environment to this invocation.
 $previous = @{}
 foreach ($name in 'CARGO_HOME', 'RUSTUP_HOME', 'PATH', 'CARGO_TARGET_DIR', 'CARGO_BUILD_JOBS', 'TAURI_CONFIG',
-        'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') {
+        'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PATH', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') {
     $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -259,21 +312,67 @@ try {
         $publicKey = (Get-Content -Raw -LiteralPath $UpdatePublicKeyPath).Trim()
         $keyConfig = @{ plugins = @{ updater = @{ pubkey = $publicKey } } } | ConvertTo-Json -Compress -Depth 4
     }
-    if ($Bundle) {
-        $cli = Join-Path $yuzunoToolchains "tauri-cli\$tauriCliVersion"
-        $cliScript = Join-Path $cli 'node_modules\@tauri-apps\cli\tauri.js'
-        $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
-        if (-not $node) { throw 'Bundling uses the official Tauri CLI, which needs Node.js on this machine.' }
-        if (-not (Test-Path -LiteralPath $cliScript)) {
-            $npm = Get-Command npm.cmd -CommandType Application -ErrorAction Stop
-            New-Item -ItemType Directory -Force -Path $cli | Out-Null
-            # npm.cmd runs in cmd.exe, which cannot start in a \\wsl$ folder.
-            Push-Location -LiteralPath $cli
-            try {
-                & $npm.Source install --prefix $cli --no-save --no-audit --no-fund --ignore-scripts "@tauri-apps/cli@$tauriCliVersion"
-            } finally { Pop-Location }
-            if ($LASTEXITCODE -ne 0) { throw "Could not install @tauri-apps/cli $tauriCliVersion" }
+    if ($StageMac) {
+        # 1. The candidate is this release's: its build.json names this
+        # version, Apple silicon, the release's commit and the committed update
+        # key, and SHA256SUMS holds the files that are staged and build.json.
+        $candidate = (Resolve-Path -LiteralPath $StageMac).Path
+        $problems = @()
+        $sums = @{}
+        foreach ($line in (Get-Content -LiteralPath (Join-Path $candidate 'SHA256SUMS'))) {
+            if ($line -cmatch '\A([0-9a-f]{64}) [ *](.+)\z') { $sums[$Matches[2]] = $Matches[1] }
         }
+        $dmg = "Yuzuno_$($Version)_aarch64.dmg"
+        foreach ($name in @($dmg, 'Yuzuno.app.tar.gz', 'build.json')) {
+            $path = Join-Path $candidate $name
+            $actual = if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() } else { 'missing' }
+            if ($sums[$name] -cne $actual) { $problems += "$name is $actual; SHA256SUMS says $($sums[$name])" }
+        }
+        $build = Get-Content -Raw -LiteralPath (Join-Path $candidate 'build.json') | ConvertFrom-Json
+        $keyId = Get-MinisignKeyId (Get-Content -Raw -LiteralPath (Join-Path $desktopDir 'desktop-update.pub'))
+        if ($build.app.version -cne $Version) { $problems += "build.json's app.version is $($build.app.version), not $Version" }
+        if ((@($build.app.architectures) -join ',') -cne 'arm64') { $problems += "build.json's app.architectures is $(@($build.app.architectures) -join ','), not arm64" }
+        if ($build.sourceCommit -cne $SourceCommit) { $problems += "build.json's sourceCommit is $($build.sourceCommit), not $SourceCommit" }
+        if ($build.app.updatePublicKeyId -cne $keyId) { $problems += "build.json's app.updatePublicKeyId is $($build.app.updatePublicKeyId), not $keyId (desktop\desktop-update.pub)" }
+        # Only this script's own checkout counts, never a repository it lies in.
+        $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
+        $top = if ($git) { & { $ErrorActionPreference = 'Continue'; (& $git.Source -C $repoRoot rev-parse --show-toplevel 2>$null | Out-String).Trim() } } else { '' }
+        if ($top -and (Test-Path -LiteralPath $top) -and (Resolve-Path -LiteralPath $top).Path -eq (Resolve-Path -LiteralPath $repoRoot).Path) {
+            $head = (& $git.Source -C $repoRoot rev-parse HEAD | Out-String).Trim()
+            if ($head -cne $SourceCommit) { $problems += "this checkout is at $head, not $SourceCommit" }
+        }
+        if ($problems) { throw ("The Mac candidate in $candidate is not this release's:`n- " + ($problems -join "`n- ")) }
+
+        # 2. Stage it under the names Core relays, beside the Windows files.
+        $publish = Join-Path $targetDir "release\bundle\desktop-release\desktop-$Version"
+        New-Item -ItemType Directory -Force -Path $publish | Out-Null
+        $package = Join-Path $publish 'yuzuno-desktop-darwin-aarch64.app.tar.gz'
+        Remove-Item -LiteralPath "$package.sig" -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath (Join-Path $candidate 'Yuzuno.app.tar.gz') $package -Force
+        Copy-Item -LiteralPath (Join-Path $candidate $dmg) (Join-Path $publish 'yuzuno-desktop-darwin-aarch64.dmg') -Force
+
+        # 3. Sign it for this version (requireSignedVersion). The key goes to
+        # the CLI by its path only; this script never reads it. clap refuses
+        # -f beside TAURI_SIGNING_PRIVATE_KEY, so that is cleared first.
+        # Without TAURI_SIGNING_PRIVATE_KEY_PASSWORD the CLI takes the empty
+        # password when its input is not a terminal: it gets an empty pipe,
+        # so it never waits at a password prompt.
+        $node, $cliScript = Get-TauriCli
+        $env:TAURI_SIGNING_PRIVATE_KEY = $null
+        $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null
+        if ($null -eq $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '' }
+        '' | & $node $cliScript signer sign -f $SigningKeyPath --app-version $Version $package
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$package.sig" -PathType Leaf)) { throw "Signing $package failed." }
+
+        # 4. What the release folder holds now.
+        $signer = Get-MinisignKeyId (Get-Content -Raw -LiteralPath "$package.sig")
+        Write-Host "desktop release desktop-$($Version): $publish (the Mac update package is signed by key $signer)"
+        foreach ($file in (Get-ChildItem -LiteralPath $publish -File | Sort-Object Name)) {
+            Write-Host ('  {0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant(), $file.Name)
+        }
+        $exit = 0
+    } elseif ($Bundle) {
+        $node, $cliScript = Get-TauriCli
         $env:CARGO_TARGET_DIR = if ($Lab) { "$targetDir-lab" } else { $targetDir }
         if ($SigningKeyPath) {
             $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw -LiteralPath $SigningKeyPath).Trim()
@@ -302,7 +401,7 @@ try {
         if ($keyConfig) { $tauriArgs += @('--config', $keyConfig) }
         if (-not $SigningKeyPath) { $tauriArgs += @('--config', '{"bundle":{"createUpdaterArtifacts":false}}') }
         $tauriArgs += @('--', '--locked')
-        $exit = Invoke-Limited $node.Source $tauriArgs $desktopDir
+        $exit = Invoke-Limited $node $tauriArgs $desktopDir
         if ($exit -eq 0 -and $notices) {
             Assert-InstallerSources $notices $true
             $built = Get-ChildItem -LiteralPath (Join-Path $env:CARGO_TARGET_DIR 'release\bundle\nsis') -Filter '*-setup.exe' |
