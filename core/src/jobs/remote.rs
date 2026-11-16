@@ -113,6 +113,8 @@ const MAC_NAME: &str = "This Mac";
 const MAC_ROOT: &str = "local-jobs";
 /// Without the Command Line Tools, /usr/bin/python3 is Apple's stand-in,
 /// which only offers to install them; it is never run then.
+/// Windows' helper has no fetch: its files stay there.
+pub(super) const WINDOWS_DOWNLOAD: &str = "This file is on Windows on this PC; Core checks it there and does not copy it, so it cannot be downloaded here";
 const NO_MAC_TOOLS: &str = "Jobs on This Mac need the Xcode Command Line Tools, and xcode-select names none (install them with xcode-select --install); without them /usr/bin/python3 is Apple's stand-in, so it was not run";
 
 /// A machine a remote Job runs on, and how a call reaches it.
@@ -410,12 +412,7 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
             if !mac_tools_installed(programs.mac.xcode_select).await {
                 return Reply::Unusable(NO_MAC_TOOLS.into());
             }
-            let mut command = tokio::process::Command::new(programs.mac.python);
-            command.arg("-c").arg(HELPER).env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
-            if let Some(home) = std::env::var_os("HOME") {
-                command.env("HOME", home);
-            }
-            command
+            mac_helper(programs)
         }
     };
     let spawned = command
@@ -535,6 +532,13 @@ pub(super) fn spec(job: &Value) -> Value {
                 .collect();
         }
     }
+    // Declared outputs on an SSH machine or This Mac (v4): files there that
+    // its helper streams when one is downloaded, by position (fetch).
+    if matches!(kind, Some(SSH | MAC)) {
+        if let Some(outputs) = job["outputs"].as_array().filter(|outputs| !outputs.is_empty()) {
+            spec["outputs"] = json!(outputs);
+        }
+    }
     // guardGit on an SSH machine or This Mac (v4): the work tree's state as
     // that machine's helper froze it at submit (null: cwd is in none), which
     // its supervisor reads again before the command runs.
@@ -568,7 +572,7 @@ fn git_guarded(job: &Value) -> bool {
 pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     let nonempty = |value: &Value| value.as_array().is_some_and(|items| !items.is_empty());
     let kind = job["executor"]["kind"].as_str();
-    let v4 = git_guarded(job);
+    let v4 = git_guarded(job) || matches!(kind, Some(SSH | MAC)) && nonempty(&job["outputs"]);
     if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(v4 || nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
         return;
     }
@@ -699,9 +703,20 @@ pub(super) fn digest(spec: &Value) -> String {
                 put(&mut hash, path.as_str().unwrap_or_default());
             }
         }
-        // Filled by the slices that bring them (outputs, needs, gpu); until
-        // then a start never carries them.
-        for key in &V4_FIELDS[1..] {
+        // Declared outputs (downloaded from there), by path.
+        put(&mut hash, "outputs");
+        match spec.get("outputs").and_then(Value::as_array) {
+            None => put(&mut hash, "none"),
+            Some(outputs) => {
+                put(&mut hash, &outputs.len().to_string());
+                for path in outputs {
+                    put(&mut hash, path.as_str().unwrap_or_default());
+                }
+            }
+        }
+        // Filled by the slices that bring them (needs, gpu); until then a
+        // start never carries them.
+        for key in &V4_FIELDS[2..] {
             put(&mut hash, key);
             put(&mut hash, "none");
         }
@@ -1710,6 +1725,261 @@ pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u
     }
 }
 
+/// How long a download waits for the one its machine serves at a time, for
+/// the helper's first line, and between any two of its bytes (YN-83 S2):
+/// `call`'s 30 s, and the remote session's silence and write-stall limits.
+#[cfg(not(test))]
+const FETCH_WAIT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+pub(super) const FETCH_WAIT: Duration = Duration::from_secs(2);
+
+/// One download at a time per machine, as remote_images.rs's TRANSFERS has
+/// one permit: by Workspace data folder and machine.
+static FETCHES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>> =
+    std::sync::OnceLock::new();
+
+/// Why a remote attempt's file is not served (the HTTP status it answers).
+#[derive(Debug)]
+pub(super) enum FetchRefusal {
+    /// No such file of this attempt: 404.
+    Missing(String),
+    /// Refused before any byte, by Core or by the helper there: 409.
+    Refused(String),
+    /// Another download from that machine still runs: 503.
+    Busy(String),
+}
+
+/// A remote attempt's file as it streams from its machine. The body ends in
+/// an error, so a client sees fewer bytes than `bytes` and fails, unless
+/// every byte came, the helper ended cleanly with its last line, and the
+/// SHA-256 Core computed is the one the helper read and the one recorded.
+pub(super) struct Download {
+    pub bytes: u64,
+    pub body: axum::body::Body,
+}
+
+/// The helper run on This Mac by its own python3, with only what it needs
+/// of Core's environment.
+fn mac_helper(programs: &Programs<'_>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(programs.mac.python);
+    command.arg("-c").arg(HELPER).env_clear().env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    if let Some(home) = std::env::var_os("HOME") {
+        command.env("HOME", home);
+    }
+    command
+}
+
+/// A verified artifact (`artifact`) or a declared output of a remote attempt
+/// on an SSH machine or This Mac, by position, streamed from there on demand
+/// and copied nowhere (YN-83 S2): the helper's `fetch` names the file from
+/// the attempt's own records, never from this request. Its own connection,
+/// so the one session other calls share (ssh_mux) is never held by it.
+pub(super) async fn fetch(ws: &Arc<Workspace>, job: &Value, artifact: bool, index: usize, programs: &Programs<'_>)
+    -> std::result::Result<Download, FetchRefusal> {
+    use FetchRefusal::*;
+    let name = machine_name(job);
+    let recorded = if artifact {
+        let entry = job["result"]["artifacts"].as_array().and_then(|all| all.get(index))
+            .ok_or_else(|| Missing("This attempt has no verified artifact at that position".into()))?;
+        if entry["ok"] != true {
+            return Err(Refused(format!("{} did not pass its check ({}), so it is not served",
+                entry["path"].as_str().unwrap_or("This artifact"), entry["problem"].as_str().unwrap_or("not verified"))));
+        }
+        Some(entry.clone())
+    } else {
+        job["outputs"].as_array().and_then(|all| all.get(index)).ok_or_else(|| Missing("Declared output not found".into()))?;
+        None
+    };
+    if job["remote"]["startSentAt"].is_null() || job["remote"]["hostId"].is_null() {
+        return Err(Missing(format!("Output file is not available yet: this attempt has not been started on {name}")));
+    }
+    let machine = machine_of(ws, job).await.map_err(|error| Refused(format!("{error:#}")))?;
+    let key = format!("{}\0{}", ws.data_dir.display(), job["executor"]["machineId"].as_str().unwrap_or_default());
+    let gate = FETCHES.get_or_init(Default::default).lock().unwrap().entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))).clone();
+    let busy = || Busy(format!("Another download from {name} is still running, and a machine serves one at a time; try again when it ends"));
+    let permit = tokio::time::timeout(FETCH_WAIT, gate.acquire_owned()).await.map_err(|_| busy())?.map_err(|_| busy())?;
+    let workspace = workspace_key(ws).await.map_err(|error| Refused(format!("{error:#}")))?;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let mut request = bound(job, &workspace, "fetch");
+    request["kind"] = json!(if artifact { "artifact" } else { "output" });
+    request["index"] = json!(index);
+    request["replyNonce"] = json!(nonce);
+    let mut command = match &machine {
+        Machine::Ssh(registered) => {
+            crate::remote::validate_machine(registered).map_err(|error| Refused(format!("{error:#}")))?;
+            let mut command = crate::remote::ssh_with_control(programs.ssh, crate::remote::Control::Off);
+            command.args(["-o", "ClearAllForwardings=yes"]).arg(&registered.target)
+                .arg(format!("python3 -c {}", crate::remote::shell_quote(HELPER)));
+            command
+        }
+        Machine::Local { .. } if !mac_tools_installed(programs.mac.xcode_select).await => return Err(Refused(NO_MAC_TOOLS.into())),
+        Machine::Local { .. } => mac_helper(programs),
+        Machine::Windows => return Err(Refused(WINDOWS_DOWNLOAD.into())),
+    };
+    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn()
+        .map_err(|error| Refused(format!("The download from {name} could not start: {error}")))?;
+    let (mut stdin, mut stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    // What it says on stderr, kept for a refusal; the rest is drained.
+    let mut stderr = child.stderr.take().unwrap();
+    let said = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            kept.extend_from_slice(&chunk[..n.min(2048usize.saturating_sub(kept.len()))]);
+        }
+        String::from_utf8_lossy(&kept).trim().to_owned()
+    });
+    let payload = serde_json::to_vec(&request).unwrap_or_default();
+    let _ = async { stdin.write_all(&payload).await?; stdin.shutdown().await }.await;
+    drop(stdin);
+    // Its first line, after whatever the account's login scripts print: one
+    // complete line with this call's mark, within REPLY_LIMIT and FETCH_WAIT.
+    let prefix = format!("{REPLY_MARK}{nonce} ");
+    let mut buffer = Vec::new();
+    let head = tokio::time::timeout(FETCH_WAIT, async {
+        let mut skipped = 0usize;
+        loop {
+            while let Some(end) = buffer.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = buffer.drain(..=end).collect();
+                if let Some(rest) = line.strip_prefix(prefix.as_bytes()) {
+                    return Ok(serde_json::from_slice::<Value>(&rest[..rest.len() - 1]).ok().filter(Value::is_object));
+                }
+                skipped += line.len();
+            }
+            if (skipped + buffer.len()) as u64 > REPLY_LIMIT {
+                return Err(format!("more than {} KiB came before its first line", REPLY_LIMIT / 1024));
+            }
+            let mut chunk = vec![0u8; 65536];
+            match stdout.read(&mut chunk).await {
+                Ok(0) => return Ok(None),
+                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }).await;
+    let refused = |why: String| Refused(format!("{name} did not send it: {why}"));
+    let head = match head {
+        Err(_) => return Err(refused("no answer within 30 seconds".into())),
+        Ok(Err(why)) => return Err(refused(why)),
+        Ok(Ok(None)) => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+            let stderr = tokio::time::timeout(Duration::from_secs(1), said).await.ok().and_then(Result::ok).unwrap_or_default();
+            return Err(refused(format!("no reply from its Jobs helper ({stderr})")));
+        }
+        Ok(Ok(Some(head))) => head,
+    };
+    if let Some(error) = head["error"].as_str() {
+        return Err(Refused(error.to_owned()));
+    }
+    match head["status"].as_str() {
+        Some("fetch") if head["hostId"] == job["remote"]["hostId"] => {}
+        Some("missing") => return Err(Missing(head["reason"].as_str().unwrap_or("Output file is not available").to_owned())),
+        Some("fetch") | Some("other_host") => return Err(Refused(format!(
+            "{name} now reaches a different machine than the one this attempt ran on; nothing was downloaded"))),
+        other => return Err(Refused(format!("This attempt's record on {name} is {}; nothing was downloaded",
+            head["reason"].as_str().or(other).unwrap_or("not readable")))),
+    }
+    let bytes = head["bytes"].as_u64().ok_or_else(|| refused("its first line names no size".into()))?;
+    // The SHA-256 the bytes must have: the attempt's own record, which the
+    // helper read the file against, or none (an output, or over 1 GiB).
+    let expected = recorded.as_ref().and_then(|a| a["sha256"].as_str()).map(str::to_owned);
+    if expected.is_some() && head["sha256"].as_str() != expected.as_deref() {
+        return Err(Refused(format!("{name} has another record of this artifact; nothing was downloaded")));
+    }
+    let state = Streaming { stdout, child, _permit: permit, left: bytes, held: None, tail: buffer, hasher: Sha256::new(),
+        expected, prefix, done: false };
+    let body = futures_util::stream::unfold(state, |mut state| async move {
+        if state.done {
+            return None;
+        }
+        match state.next().await {
+            Ok(Some(bytes)) => Some((Ok(bytes), state)),
+            Ok(None) => None,
+            Err(why) => {
+                state.done = true;
+                // Ended here: its process is killed and reaped, not left behind.
+                let _ = state.child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(5), state.child.wait()).await;
+                Some((Err(std::io::Error::other(why)), state))
+            }
+        }
+    });
+    Ok(Download { bytes, body: axum::body::Body::from_stream(body) })
+}
+
+/// A download in flight: what is left to come, the last bytes held back
+/// until every check passed, and its permit.
+struct Streaming {
+    stdout: tokio::process::ChildStdout,
+    child: tokio::process::Child,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    left: u64,
+    held: Option<axum::body::Bytes>,
+    tail: Vec<u8>,
+    hasher: Sha256,
+    expected: Option<String>,
+    prefix: String,
+    done: bool,
+}
+
+impl Streaming {
+    async fn read(&mut self) -> std::result::Result<Vec<u8>, String> {
+        if !self.tail.is_empty() {
+            return Ok(std::mem::take(&mut self.tail));
+        }
+        let mut chunk = vec![0u8; 256 * 1024];
+        let n = tokio::time::timeout(FETCH_WAIT, self.stdout.read(&mut chunk)).await
+            .map_err(|_| "no byte came for 30 seconds".to_owned())?
+            .map_err(|error| error.to_string())?;
+        chunk.truncate(n);
+        Ok(chunk)
+    }
+
+    /// The next bytes to send, None at the end, or why it stopped.
+    async fn next(&mut self) -> std::result::Result<Option<axum::body::Bytes>, String> {
+        while self.left > 0 {
+            let mut chunk = self.read().await?;
+            if chunk.is_empty() {
+                return Err(format!("it ended with {} byte(s) still to come", self.left));
+            }
+            if chunk.len() as u64 > self.left {
+                self.tail = chunk.split_off(self.left as usize);
+            }
+            self.left -= chunk.len() as u64;
+            self.hasher.update(&chunk);
+            if let Some(previous) = self.held.replace(chunk.into()) {
+                return Ok(Some(previous));
+            }
+        }
+        // Every byte came: its last line, a clean exit and the digests, and
+        // only then the bytes held back.
+        let mut line = std::mem::take(&mut self.tail);
+        while !line.contains(&b'\n') {
+            let more = self.read().await?;
+            if more.is_empty() || line.len() > 64 * 1024 {
+                return Err("its last line did not come".into());
+            }
+            line.extend_from_slice(&more);
+        }
+        let end = line.iter().position(|b| *b == b'\n').unwrap_or_default();
+        let last = line[..end].strip_prefix(self.prefix.as_bytes()).and_then(|rest| serde_json::from_slice::<Value>(rest).ok());
+        let status = tokio::time::timeout(FETCH_WAIT, self.child.wait()).await.map_err(|_| "it did not end".to_owned())?
+            .map_err(|error| error.to_string())?;
+        let actual = format!("{:x}", std::mem::take(&mut self.hasher).finalize());
+        match last {
+            Some(last) if status.success() && last["status"] == "fetched" && last["sha256"] == actual.as_str()
+                && self.expected.as_deref().is_none_or(|expected| expected == actual) => {}
+            _ => return Err(format!("its bytes were not the file it checked (SHA-256 {actual}, exit {status})")),
+        }
+        self.done = true;
+        Ok(self.held.take())
+    }
+}
+
 /// What a remote Job freezes at submit. Its inputs are files on its machine:
 /// that machine's helper reads them there now (inspect, which writes
 /// nothing) and they are frozen by SHA-256 with the machine that answered.
@@ -1823,8 +2093,9 @@ pub(super) fn capabilities() -> Value {
         "pause": "Only for an attempt that runs in a scope of its own on that machine (its limits are held there: strict, or limited on an account that lingers): its scope is frozen through the account's systemd and read back from its cgroup, as for local jobs; its memory and the machine's reservation stay, and its timeout keeps counting. Otherwise unavailable, with the reason: nothing is stopped with signals instead",
         "inputs": "Files on that machine, frozen there by SHA-256 at submit and checked again there before the command runs; one that changed stops the start",
         "guardGit": "On the machine: its helper freezes cwd's Git work tree there at submit, with the Git on that account's PATH, by the rules, bounds and words of local jobs (HEAD, or with guardPaths only the content under those paths, and the changed tracked files, which count with the inputs), and checks it again there before the command runs; a change rejects the start",
-        "artifacts": "Checked on that machine after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran (noted, not judged: a file left there earlier passes if it meets the rules); never copied here",
-        "outputs": "unavailable",
+        "artifacts": "Checked on that machine after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran (noted, not judged: a file left there earlier passes if it meets the rules); never copied here: a download streams it from there, refused or cut off unless it is still that file",
+        "outputs": "Files on that machine, streamed from there as they are now when one is downloaded; never copied here",
+        "downloads": "One at a time per machine, the whole file (no ranges), over a connection of its own",
         "processes": "Cancel and timeouts stop the attempt's own process group, checking each process (boot, PID, start time) before signalling it. A process group is not a cgroup: a process that starts its own session or group leaves it and is not stopped",
         "bootId": null,
     })
@@ -1853,9 +2124,9 @@ pub(super) fn mac_capabilities() -> Value {
     }
     value["inputs"] = json!("Files on this Mac, frozen by SHA-256 at submit by the Jobs helper and checked again before the command runs; one that changed stops the start");
     value["guardGit"] = json!("On this Mac, as on a machine over SSH: the Jobs helper freezes cwd's Git work tree at submit with the Command Line Tools' git, by the rules of local jobs, and checks it again before the command runs");
-    value["artifacts"] = json!("Checked on this Mac after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran");
-    value["outputs"] = json!("unavailable: declare the files as artifacts");
-    value["unavailable"] = json!("GPU admission, pause, a CPU range, exclusive, outputs, runs of stages, services and checkpoints need Linux with a systemd user manager: they are refused, with the reason, before anything is queued");
+    value["artifacts"] = json!("Checked on this Mac after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran; a download streams it through the Jobs helper, refused or cut off unless it is still that file");
+    value["outputs"] = json!("Files on this Mac, streamed through the Jobs helper as they are now when one is downloaded");
+    value["unavailable"] = json!("GPU admission, pause, a CPU range, exclusive, runs of stages, services and checkpoints need Linux with a systemd user manager: they are refused, with the reason, before anything is queued");
     value
 }
 

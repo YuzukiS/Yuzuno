@@ -1361,6 +1361,25 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(remote_job.digest(dict(base, git={"frozen": None, "guardExclude": []})),
                          "a4824b22996bd6066dff00a43359796b584755cf040b4d41ee511e26810e0a99")
         self.assertEqual(remote_job.digest(dict(base, git=None)), remote_job.digest(base))
+        # Declared outputs (PR2); a git-only v4 start keeps its digest above.
+        self.assertEqual(remote_job.digest(dict(base, outputs=["out/report.txt", "log.txt"])),
+                         "b747ee11539f0f6dd4118a903ae3078c0f828be7770839838abd209c4e7bf62c")
+        self.assertEqual(remote_job.digest(dict(whole, outputs=["out/report.txt"])),
+                         "e1e454342aa4147a5f9de15f279217d27d9a4cb7ad5cdb14f65e029912897140")
+
+    def test_outputs_and_a_fetch_are_checked_before_anything_is_done(self):
+        attempt = self.attempt("true")
+        for bad in (["/etc/passwd"], ["../up.txt"], [""], "o.txt"):
+            refused = self.call(dict(attempt, action="start", outputs=bad), expect=3)
+            self.assertIn("outputs must be 1-20 paths relative to cwd", refused["error"])
+        self.assertFalse(self.folder(attempt).exists())
+        # A fetch names a kind and a position, never a path.
+        keys = ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")
+        fetch = dict({key: attempt[key] for key in keys}, action="fetch")
+        for extra in ({"kind": "path", "index": 0}, {"kind": "output", "index": -1}, {"kind": "output", "index": "0"}):
+            refused = self.call(dict(fetch, **extra), expect=3)
+            self.assertIn("fetch needs kind artifact or output", refused["error"])
+        self.assertEqual(self.call(dict(fetch, kind="output", index=0))["status"], "absent")
 
     def test_a_v4_start_without_its_git_state_is_refused_before_anything_is_written(self):
         # A guardGit attempt is bound with v4 at submit; a Core from before it
