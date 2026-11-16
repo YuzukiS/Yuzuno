@@ -42,6 +42,8 @@ end of a run, and the artifacts named with --artifact. Not covered:
 - a change that is reverted again before the run ends;
 - files outside the inputs (by default the workspace members' directories,
   Cargo.toml and Cargo.lock; add others with --input);
+- files under .git, target, node_modules and __pycache__ directories within
+  the inputs (Python writes __pycache__ when a test imports a module there);
 - environment variables a build script reads;
 - runs that use the same target directory without this script.
 
@@ -67,7 +69,7 @@ import time
 import tomllib
 
 STATE = ".source-build"
-SKIP = {".git", "target", "node_modules"}
+SKIP = {".git", "target", "node_modules", "__pycache__"}
 SOURCE_CHANGED = 3
 USAGE = 4
 NOT_PRODUCED = 5
