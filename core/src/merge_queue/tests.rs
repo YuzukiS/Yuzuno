@@ -419,7 +419,7 @@ async fn a_released_head_with_green_ci_on_the_current_main_merges_and_is_followe
         (json!("merged"), json!(head()), json!(merge_commit()), json!(false)),
         "{link}"
     );
-    let current = lab.ws.store.collaboration_call(Some("lead"), "task_get", json!({"taskId":lab.task})).unwrap();
+    let current = lab.ws.store.collaboration_call(Some("lead"), "task_get", json!({"taskId":lab.task,"view":"current"})).unwrap();
     let row = &current["current"]["delivery"]["pullRequests"][0];
     assert_eq!((row["state"].clone(), row["headSha"].clone(), row["mergeQueue"]["state"].clone()), (json!("merged"), json!(head()), json!("merged")), "{row}");
     assert!(row["mergeQueue"].get("blocker").is_none(), "nothing holds a merged entry: {row}");
