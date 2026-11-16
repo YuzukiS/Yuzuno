@@ -316,6 +316,7 @@ impl Workspace {
         }
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
+            let mut last: Option<tokio::time::Instant> = None;
             loop {
                 let Some(ws) = weak.upgrade() else {
                     break;
@@ -326,7 +327,12 @@ impl Workspace {
                     _ = ws.collaboration_wakeup.notified() => {},
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {},
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                // At most one round a second, however many changes wake it
+                // (YN-197, approved with batch A's design): a wake-up meanwhile
+                // is kept by the Notify and starts the next round.
+                let coalesced = tokio::time::Instant::now() + Duration::from_millis(200);
+                tokio::time::sleep_until(last.map_or(coalesced, |at| coalesced.max(at + Duration::from_secs(1)))).await;
+                last = Some(tokio::time::Instant::now());
                 if let Err(error) = ws.deliver_update_notices().await {
                     eprintln!("Update pause delivery: {error:#}");
                 }
