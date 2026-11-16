@@ -321,18 +321,23 @@ fn paused_for_reads_before_the_deadline_and_the_end() {
     assert!(!paused_for(&op, &json!({"firstReadAt":at(-20)})), "read after the deadline");
 }
 
-/// Spoils `turn`'s row, so reading the Agent's Turns since the pause fails;
-/// gives back what it held, for `mend` (YN-197).
-fn spoil(ws: &Workspace, turn: &str) -> String {
+/// Spoils `turn`'s row, so reading the Agent's Turns since the pause fails
+/// (YN-197). The open-Turns index reads each row's JSON, so it goes too, and
+/// with it every read of the open Turns. Gives back the row and the index,
+/// for `mend`.
+fn spoil(ws: &Workspace, turn: &str) -> (String, String) {
     let db = ws.store.db.write().unwrap();
+    let index = db.query_row("SELECT sql FROM sqlite_master WHERE name='agent_turns_open'", [], |r| r.get(0)).unwrap();
+    db.execute_batch("DROP INDEX agent_turns_open").unwrap();
     let data = db.query_row("SELECT data FROM agent_turns WHERE agent_id='a' AND turn_id=?1", [turn], |r| r.get(0)).unwrap();
     db.execute("UPDATE agent_turns SET data='not json' WHERE agent_id='a' AND turn_id=?1", [turn]).unwrap();
-    data
+    (data, index)
 }
 
-fn mend(ws: &Workspace, turn: &str, data: &str) {
-    ws.store.db.write().unwrap()
-        .execute("UPDATE agent_turns SET data=?2 WHERE agent_id='a' AND turn_id=?1", [turn, data]).unwrap();
+fn mend(ws: &Workspace, turn: &str, (data, index): (String, String)) {
+    let db = ws.store.db.write().unwrap();
+    db.execute("UPDATE agent_turns SET data=?2 WHERE agent_id='a' AND turn_id=?1", [turn, data.as_str()]).unwrap();
+    db.execute_batch(&index).unwrap();
 }
 
 /// What the listed view settles is decided without reading a Turn: a busy
@@ -347,12 +352,12 @@ async fn a_busy_or_closed_agent_is_decided_without_reading_its_turns() {
     let held = spoil(&ws, "original-turn");
     ws.resume_after_update().await.unwrap();
     assert!(resume(&ws, &op).is_null(), "{}", resume(&ws, &op));
-    mend(&ws, "original-turn", &held);
+    mend(&ws, "original-turn", held);
     close(&ws).await;
     let held = spoil(&ws, "original-turn");
     ws.resume_after_update().await.unwrap();
     assert_eq!(resume(&ws, &op)["reason"], "closed", "{}", resume(&ws, &op));
-    mend(&ws, "original-turn", &held);
+    mend(&ws, "original-turn", held);
 }
 
 /// A decision that fails is the outcome, with its error, and is not made
@@ -369,7 +374,7 @@ async fn a_decision_that_fails_is_its_outcome() {
     assert!(state["error"].as_str().is_some_and(|e| !e.is_empty()), "{state}");
     assert!(ws.store.update_resume_candidates(&op.id).unwrap().is_empty());
     assert_eq!(ws.update_resume_status(&ended_op(&ws, &op)).unwrap()[0]["state"], "failed");
-    mend(&ws, "original-turn", &held);
+    mend(&ws, "original-turn", held);
     ws.resume_after_update().await.unwrap();
     assert!(starts(dir.path()).is_empty(), "a failed decision is not made again");
     assert_eq!(resume(&ws, &op)["state"], "failed");
