@@ -4,7 +4,14 @@
 # what to build.json.
 #
 #   scripts/desktop-macos.sh --tools DIR --out DIR [--version X.Y.Z] [--update-public-key FILE]
-#                            [--toolchain NAME] [--test]
+#                            [--lab] [--toolchain NAME] [--test]
+#   scripts/desktop-macos.sh --tools DIR --install-cli [--toolchain NAME]
+#
+# --lab builds Yuzuno Lab (desktop/tauri.lab.conf.json: its own name, bundle
+# identifier and data) for update tests; its files are named after it
+# (Yuzuno Lab.app, Yuzuno Lab.app.zip, Yuzuno Lab.app.tar.gz).
+# --install-cli only installs the pinned Tauri CLI into --tools and prints
+# its path, for its signer commands.
 #
 # Run from a checkout's root (or an export of desktop/ and this script). Needs
 # Xcode's command line tools and a rustup toolchain for this Mac's
@@ -24,19 +31,21 @@
 set -eu
 
 TAURI_CLI_VERSION=2.12.3 # matches desktop/Cargo.lock; bump both together
-tools= out= version= test= channel=stable key_file=
+tools= out= version= test= channel=stable key_file= lab= cli_only=
 while [ $# -gt 0 ]; do
   case "$1" in
     --tools) tools=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --version) version=$2; shift 2 ;;
     --update-public-key) key_file=$2; shift 2 ;;
+    --lab) lab=1; shift ;;
+    --install-cli) cli_only=1; shift ;;
     --toolchain) channel=$2; shift 2 ;;
     --test) test=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
   esac
 done
-[ -n "$tools" ] && [ -n "$out" ] || { echo "--tools and --out are required" >&2; exit 64; }
+[ -n "$tools" ] && { [ -n "$out" ] || [ -n "$cli_only" ]; } || { echo "--tools and --out are required" >&2; exit 64; }
 [ "$(uname -s)" = Darwin ] || { echo "This builds the macOS app; run it on a Mac." >&2; exit 69; }
 [ -f desktop/Cargo.lock ] || { echo "Run from the repository root." >&2; exit 66; }
 grep -A1 '^name = "tauri"$' desktop/Cargo.lock | grep -q "^version = \"$TAURI_CLI_VERSION\"$" ||
@@ -80,8 +89,9 @@ case "$arch" in
 esac
 toolchain=$(ls -d "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/"$channel-$triple" 2>/dev/null) ||
   { echo "No $channel-$triple toolchain under ${RUSTUP_HOME:-$HOME/.rustup}." >&2; exit 69; }
-mkdir -p "$tools" "$out"
-tools=$(cd "$tools" && pwd) out=$(cd "$out" && pwd)
+mkdir -p "$tools"
+tools=$(cd "$tools" && pwd)
+if [ -z "$cli_only" ]; then mkdir -p "$out" && out=$(cd "$out" && pwd); fi
 # The toolchain itself, not rustup's proxies, and no global cargo home.
 export PATH="$toolchain/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export CARGO_HOME="$tools/cargo-home" CARGO_TARGET_DIR="$tools/target"
@@ -92,6 +102,10 @@ cli="$tools/tauri-cli-$TAURI_CLI_VERSION/bin/cargo-tauri"
 if [ ! -x "$cli" ]; then
   cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked --root "$tools/tauri-cli-$TAURI_CLI_VERSION"
 fi
+if [ -n "$cli_only" ]; then
+  echo "$cli"
+  exit 0
+fi
 
 cd desktop
 if [ -n "$test" ]; then
@@ -101,24 +115,31 @@ rm -rf "$CARGO_TARGET_DIR/release/bundle"
 set -- build --ci --bundles app,dmg --config "{\"bundle\":{\"macOS\":{\"minimumSystemVersion\":\"$minimum\"}}}"
 [ -z "$version" ] || set -- "$@" --config "{\"version\":\"$version\"}"
 [ -z "$key" ] || set -- "$@" --config "{\"plugins\":{\"updater\":{\"pubkey\":\"$key\"}}}"
+[ -z "$lab" ] || set -- "$@" --config "$(pwd)/tauri.lab.conf.json"
 "$cli" "$@"
 
 bundle="$CARGO_TARGET_DIR/release/bundle"
-app="$bundle/macos/Yuzuno.app"
-dmg=$(ls "$bundle"/dmg/*.dmg)
-rm -rf "$out/Yuzuno.app"
-ditto "$app" "$out/Yuzuno.app"
+# The one app and the one disk image the bundler made; the app is named after
+# the product (Yuzuno, or Yuzuno Lab with --lab).
+set -- "$bundle"/macos/*.app
+[ $# -eq 1 ] && [ -d "$1" ] || { echo "Expected one app in $bundle/macos, found: $*" >&2; exit 70; }
+app=$1 name=$(basename "$1")
+set -- "$bundle"/dmg/*.dmg
+[ $# -eq 1 ] && [ -f "$1" ] || { echo "Expected one disk image in $bundle/dmg, found: $*" >&2; exit 70; }
+dmg=$1
+rm -rf "$out/$name"
+ditto "$app" "$out/$name"
 cp "$dmg" "$out/"
-ditto -c -k --keepParent "$app" "$out/Yuzuno.app.zip"
+ditto -c -k --keepParent "$app" "$out/$name.zip"
 # The update package, as Tauri's bundler packs one (the .app with its own
 # folder as the root, symbolic links kept as links; the updater skips that
 # first level when it unpacks): written here because the bundler signs the
 # packages it makes and needs the private key for that. GNU format, without
 # the ._ files and extended attributes macOS's own tar would add.
-/usr/bin/python3 -I - "$app" "$out/Yuzuno.app.tar.gz" <<'EOF'
-import sys, tarfile
+/usr/bin/python3 -I - "$app" "$out/$name.tar.gz" <<'EOF'
+import os, sys, tarfile
 with tarfile.open(sys.argv[2], "w:gz", format=tarfile.GNU_FORMAT) as tar:
-    tar.add(sys.argv[1], arcname="Yuzuno.app")  # does not follow symbolic links
+    tar.add(sys.argv[1], arcname=os.path.basename(sys.argv[1]))  # does not follow symbolic links
 EOF
 plist="$app/Contents/Info.plist"
 /usr/bin/python3 - "$out/build.json" <<EOF

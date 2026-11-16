@@ -11,6 +11,14 @@
 #   and SHA256SUMS, with a picture of its window and where its buttons stand,
 #   one artifact kept 14 days. Never a Release. Its optional version input
 #   (X.Y.Z) is the version built into the app; without it, the source's.
+# - Run on request with lab (not with a version), from main with passed CI as
+#   a candidate, it builds the update lab's Yuzuno Lab 0.0.1, 0.0.2 and 0.0.3
+#   (desktop/tauri.lab.conf.json) instead. It makes a lab key for this run
+#   only, in the runner's temporary folder, signs each version's update
+#   package with it and deletes the private key before anything is uploaded.
+#   Two artifacts, kept 14 days: 0.0.1's disk image to install, and the feed
+#   (the three signed update packages, the lab public key and build.json).
+#   The regular app trusts only the committed key, never a lab key.
 #
 # Every build embeds the committed update public key, desktop/desktop-update.pub,
 # and packs the update package Yuzuno.app.tar.gz. The package is not signed
@@ -36,6 +44,11 @@ on:
         required: false
         type: string
         default: ''
+      lab:
+        description: Build the update lab's Yuzuno Lab 0.0.1-0.0.3 with a lab key made in this run (not with a version)
+        required: false
+        type: boolean
+        default: false
 
 # Read-only: actions: read only to look up the CI run of a candidate's commit.
 permissions:
@@ -87,18 +100,23 @@ jobs:
           [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
           echo "CI passed on $GITHUB_SHA"
 
-      # A candidate's version input is X.Y.Z or empty, checked before checkout.
+      # A candidate's version input is X.Y.Z or empty, and a lab run takes
+      # none: checked before checkout.
       - name: Version input (candidate only)
         if: github.event_name == 'workflow_dispatch'
         working-directory: .
         env:
           VERSION: ${{ inputs.version }}
+          LAB: ${{ inputs.lab }}
         shell: bash
         run: |
           if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::the version input must be X.Y.Z (digits only)"; exit 1
           fi
-          echo "version: ${VERSION:-the source's}"
+          if [ "$LAB" = true ] && [ -n "$VERSION" ]; then
+            echo "::error::a lab run builds its own versions; leave the version input empty"; exit 1
+          fi
+          echo "version: ${VERSION:-the source's}, lab: $LAB"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +151,7 @@ jobs:
       # committed update public key; a candidate with a version input carries
       # that version.
       - name: Desktop tests, app, disk image and update package
+        if: ${{ !inputs.lab }}
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -150,6 +169,7 @@ jobs:
       # Written inside out/, so that a candidate's artifact keeps out/ as its
       # root and holds these in title-bar/.
       - name: Window buttons over the toolbar
+        if: ${{ !inputs.lab }}
         run: .github/scripts/macos-title-bar.sh "$RUNNER_TEMP/out/Yuzuno.app" "$RUNNER_TEMP/out/title-bar"
 
       # What was packed: the executable is this architecture's only, and
@@ -161,6 +181,7 @@ jobs:
       # executable holds the committed update public key once, and a
       # candidate with a version input carries that version.
       - name: Package structure
+        if: ${{ !inputs.lab }}
         env:
           ARCH: ${{ matrix.arch }}
           VERSION: ${{ inputs.version }}
@@ -225,6 +246,7 @@ jobs:
           exit "$status"
 
       - name: Checksums
+        if: ${{ !inputs.lab }}
         run: |
           cd "$RUNNER_TEMP/out"
           shasum -a 256 *.dmg Yuzuno.app.zip Yuzuno.app.tar.gz build.json > SHA256SUMS
@@ -243,7 +265,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.lab
         with:
           name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version || 'source' }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
@@ -254,6 +276,163 @@ jobs:
             ${{ runner.temp }}/out/SHA256SUMS
             ${{ runner.temp }}/out/title-bar/title-bar.png
             ${{ runner.temp }}/out/title-bar/geometry.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      # The update lab (lab only). The lab key is made here, in the runner's
+      # temporary folder, without a password (--ci; signing then reads no
+      # terminal and takes the empty one), and nothing prints it:
+      # `signer generate -w` prints only the files' paths, and `signer sign`
+      # only the signature. Each version is built with --lab, embedding the
+      # lab public key; 0.0.1 also runs the desktop tests. Each update package
+      # is staged under the name Core relays (feed/desktop-<version>/) and
+      # signed for its version with the lab key, which is deleted at the end
+      # of this step, also when it fails. The artifacts are written to their
+      # own folders, apart from the key's.
+      - name: Update lab builds, signed with a lab key (lab only)
+        if: github.event_name == 'workflow_dispatch' && inputs.lab
+        shell: bash
+        run: |
+          lab="$RUNNER_TEMP/lab" builds="$RUNNER_TEMP/lab-builds"
+          feed="$RUNNER_TEMP/lab-feed" install="$RUNNER_TEMP/lab-install"
+          mkdir "$lab" "$builds" "$feed" "$install" "$feed/feed" "$feed/builds"
+          trap 'rm -f "$lab/lab.key"' EXIT
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          export SOURCE_COMMIT
+          cli=$(scripts/desktop-macos.sh --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --install-cli | tail -n 1)
+          "$cli" signer generate --ci -w "$lab/lab.key" > /dev/null
+          cp "$lab/lab.key.pub" "$feed/lab.key.pub"
+          for version in 0.0.1 0.0.2 0.0.3; do
+            set -- --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$builds/$version" --lab \
+              --update-public-key "$lab/lab.key.pub" --version "$version"
+            [ "$version" != 0.0.1 ] || set -- "$@" --test
+            scripts/desktop-macos.sh "$@"
+            release="$feed/feed/desktop-$version"
+            mkdir "$release" "$feed/builds/$version"
+            cp "$builds/$version/Yuzuno Lab.app.tar.gz" "$release/yuzuno-desktop-darwin-aarch64.app.tar.gz"
+            cp "$builds/$version/build.json" "$feed/builds/$version/build.json"
+            env -u TAURI_SIGNING_PRIVATE_KEY -u TAURI_SIGNING_PRIVATE_KEY_PATH TAURI_SIGNING_PRIVATE_KEY_PASSWORD= \
+              "$cli" signer sign -f "$lab/lab.key" --app-version "$version" \
+              "$release/yuzuno-desktop-darwin-aarch64.app.tar.gz" < /dev/null > /dev/null
+          done
+          rm -f "$lab/lab.key"
+          [ ! -e "$lab/lab.key" ]
+          cp "$builds/0.0.1/"*.dmg "$install/"
+          (cd "$install" && shasum -a 256 *.dmg > SHA256SUMS)
+          (cd "$feed" && find feed builds lab.key.pub -type f | sort | xargs -I{} shasum -a 256 {} > SHA256SUMS)
+
+      # What the lab feed holds, before it is uploaded: the three releases with
+      # their two files each, each version's app (unpacked with macOS's tar)
+      # being Yuzuno Lab at that version under the lab bundle identifier, with
+      # the lab public key in its executable once and a valid ad hoc
+      # signature; each signature made by the lab key (not the release key)
+      # for that version; the disk image the one build.json names; and no
+      # private key anywhere in either artifact.
+      - name: Update lab feed (lab only)
+        if: github.event_name == 'workflow_dispatch' && inputs.lab
+        shell: bash
+        run: |
+          /usr/bin/python3 - "$RUNNER_TEMP/lab-feed" "$RUNNER_TEMP/lab-install" "$RUNNER_TEMP/lab-check" <<'EOF'
+          import base64, hashlib, json, os, plistlib, re, struct, subprocess, sys
+          feed, install, check = sys.argv[1:]
+          problems = []
+
+          def key_number(raw):
+              # "Ed" or "ED", then the key ID as a little-endian 64-bit number.
+              return "%016X" % struct.unpack("<Q", raw[2:10])[0]
+
+          def minisign_box(path):
+              """The decoded second line of a minisign box as Tauri writes one
+              (base64 of the box's text), or None for any other file. A public
+              key decodes to 42 bytes and a signature to 74; a secret key to more."""
+              try:
+                  lines = base64.b64decode(open(path, "rb").read(8192).strip(), validate=True).decode().splitlines()
+                  return base64.b64decode(lines[1], validate=True) if lines[0].startswith("untrusted comment:") else None
+              except (ValueError, IndexError, UnicodeDecodeError):
+                  return None
+
+          pub_line = open(os.path.join(feed, "lab.key.pub")).read().strip()
+          lab_id = key_number(base64.b64decode(base64.b64decode(pub_line).decode().splitlines()[1]))
+          if lab_id == "E8881810BE226D78":
+              problems.append("the lab key is the release key")
+          releases = sorted(os.listdir(os.path.join(feed, "feed")))
+          versions = ["0.0.1", "0.0.2", "0.0.3"]
+          if releases != [f"desktop-{v}" for v in versions]:
+              problems.append(f"the feed holds {releases}")
+          package = "yuzuno-desktop-darwin-aarch64.app.tar.gz"
+          for version in versions:
+              release = os.path.join(feed, "feed", f"desktop-{version}")
+              if sorted(os.listdir(release)) != [package, package + ".sig"]:
+                  problems.append(f"{version}: the release holds {sorted(os.listdir(release))}")
+                  continue
+              app = json.load(open(os.path.join(feed, "builds", version, "build.json")))["app"]
+              expected = {"version": version, "bundleIdentifier": "dev.yuzuno.workspace.lab",
+                          "updatePublicKeyId": lab_id, "architectures": ["arm64"]}
+              for field, value in expected.items():
+                  if app.get(field) != value:
+                      problems.append(f"{version}: build.json's {field} is {app.get(field)}, not {value}")
+              unpacked = os.path.join(check, version)
+              os.makedirs(unpacked)
+              subprocess.run(["/usr/bin/tar", "-xzf", os.path.join(release, package), "-C", unpacked], check=True)
+              if os.listdir(unpacked) != ["Yuzuno Lab.app"]:
+                  problems.append(f"{version}: the update package holds {os.listdir(unpacked)}")
+                  continue
+              bundle = os.path.join(unpacked, "Yuzuno Lab.app")
+              info = plistlib.load(open(os.path.join(bundle, "Contents", "Info.plist"), "rb"))
+              if (info.get("CFBundleShortVersionString"), info.get("CFBundleIdentifier")) != (version, "dev.yuzuno.workspace.lab"):
+                  problems.append(f"{version}: the app is {info.get('CFBundleIdentifier')} {info.get('CFBundleShortVersionString')}")
+              data = open(os.path.join(bundle, "Contents", "MacOS", info["CFBundleExecutable"]), "rb").read()
+              if hashlib.sha256(data).hexdigest() != app["executableSha256"]:
+                  problems.append(f"{version}: the executable is not build.json's")
+              if data.count(pub_line.encode()) != 1:
+                  problems.append(f"{version}: the executable holds the lab public key {data.count(pub_line.encode())} times")
+              if subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", bundle]).returncode != 0:
+                  problems.append(f"{version}: codesign --verify fails")
+              signature = base64.b64decode(open(os.path.join(release, package + ".sig")).read().strip()).decode().splitlines()
+              if key_number(base64.b64decode(signature[1])) != lab_id:
+                  problems.append(f"{version}: the signature is not by the lab key")
+              if not (signature[2].startswith("trusted comment: ") and signature[2].endswith(f"\tversion:{version}")):
+                  problems.append(f"{version}: the signature's trusted comment is {signature[2]!r}")
+              print(f"{version}: {info.get('CFBundleIdentifier')} {info.get('CFBundleShortVersionString')}, lab key {lab_id}, {signature[2]!r}")
+          dmgs = sorted(name for name in os.listdir(install) if name.endswith(".dmg"))
+          files = json.load(open(os.path.join(feed, "builds", "0.0.1", "build.json")))["files"]
+          if len(dmgs) != 1 or files.get(dmgs[0], {}).get("sha256") != hashlib.sha256(open(os.path.join(install, dmgs[0]), "rb").read()).hexdigest():
+              problems.append(f"the install artifact holds {dmgs}, not 0.0.1's disk image")
+          for folder in (feed, install):
+              for directory, _, names in os.walk(folder):
+                  for name in names:
+                      raw = minisign_box(os.path.join(directory, name))
+                      if name == "lab.key" or (raw is not None and len(raw) not in (42, 74)):
+                          problems.append(f"{os.path.join(directory, name)} may be a private key")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          EOF
+          {
+            echo "### Update lab feed (${{ matrix.arch }})"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/lab-install/SHA256SUMS" "$RUNNER_TEMP/lab-feed/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'workflow_dispatch' && inputs.lab
+        with:
+          name: yuzuno-macos-${{ matrix.arch }}-lab-install-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/lab-install/*.dmg
+            ${{ runner.temp }}/lab-install/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'workflow_dispatch' && inputs.lab
+        with:
+          name: yuzuno-macos-${{ matrix.arch }}-lab-feed-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lab-feed/
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
