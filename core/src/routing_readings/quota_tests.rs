@@ -23,8 +23,8 @@ fn only_an_enabled_policy_that_reads_quotas_needs_them() {
     let codex_home_plain = json!({"enabled": true, "harness": "codex", "credential": {"kind": "codexHome"}, "conditions": []});
     let off = |mut c: Value| { c["enabled"] = json!(false); c };
     for (enabled, candidates, want) in [
-        (true, vec![claude_pool.clone()], Needs { cswap: true, codex: false }),
-        (true, vec![claude_login_quota.clone(), codex_home_quota.clone()], Needs { cswap: true, codex: true }),
+        (true, vec![claude_pool.clone()], Needs { cswap: true, codex: false, ..Needs::default() }),
+        (true, vec![claude_login_quota.clone(), codex_home_quota.clone()], Needs { cswap: true, codex: true, ..Needs::default() }),
         (true, vec![codex_home_plain.clone()], Needs::default()),
         (true, vec![off(claude_pool.clone()), off(codex_home_quota.clone())], Needs::default()),
         (false, vec![claude_pool, codex_home_quota], Needs::default()),
@@ -103,7 +103,7 @@ for line in sys.stdin:
     script(&cswap, &format!("#!/bin/sh\ncat '{}'\n", dir.path().join("list.json").display()));
     ws.store.save_cswap_settings(&crate::routing_accounts::CswapSettings { command: cswap.display().to_string() }).unwrap();
 
-    ws.refresh_quotas(&Needs { cswap: true, codex: true }).await.unwrap();
+    ws.refresh_quotas(&Needs { cswap: true, codex: true, ..Needs::default() }).await.unwrap();
 
     let app = crate::server::router(ws.clone(), dir.path().join("assets"));
     let request = Request::builder().uri("/api/routing/readings").header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop")
@@ -127,15 +127,144 @@ for line in sys.stdin:
 
     // A home taken off the list leaves the readings at the next refresh; the host's login stays (#800 R1 P3).
     ws.store.save_codex_homes(&[]).unwrap();
-    ws.refresh_quotas(&Needs { cswap: false, codex: true }).await.unwrap();
+    ws.refresh_quotas(&Needs { cswap: false, codex: true, ..Needs::default() }).await.unwrap();
     let (_, codex) = view(&ws.store.quotas().unwrap(), Utc::now());
     assert_eq!(codex.as_array().unwrap().iter().map(|c| c["home"].clone()).collect::<Vec<_>>(), [json!("login")], "{codex}");
 
     // claude-swap that cannot be read is kept as unavailable, with its reason.
     ws.store.save_cswap_settings(&crate::routing_accounts::CswapSettings { command: dir.path().join("missing-cswap").display().to_string() }).unwrap();
-    ws.refresh_quotas(&Needs { cswap: true, codex: false }).await.unwrap();
+    ws.refresh_quotas(&Needs { cswap: true, codex: false, ..Needs::default() }).await.unwrap();
     let kept = ws.store.quotas().unwrap();
     let (cswap, _) = view(&kept, Utc::now());
     assert_eq!((cswap["unavailable"]["code"].clone(), cswap["accounts"].clone()), (json!("cswapMissing"), json!([])), "{cswap}");
     assert!(stale(&(Utc::now() - chrono::Duration::seconds(601)).to_rfc3339(), Utc::now()), "over 10 minutes is stale");
+}
+
+/// YN-175: a login with a quota condition that limits needs its own login read
+/// on each other machine it may run on: every machine without a machine
+/// condition, else those its machine conditions all name.
+#[test]
+fn a_login_with_a_quota_condition_needs_its_machines_own_logins_read() {
+    let login = |harness: &str, conditions: Value| json!({"enabled": true, "harness": harness, "credential": {"kind": "login"}, "conditions": conditions});
+    let week = json!({"kind": "quota", "weekLeftPct": 20});
+    let on = |machines: &[&str]| json!({"kind": "machine", "machines": machines});
+    let only = |ids: &[&str]| Machines::Only(ids.iter().map(|s| s.to_string()).collect());
+    let read = |candidates: Vec<Value>| {
+        let n = needs(&json!({"enabled": true, "candidates": candidates}));
+        (n.claude_machines, n.codex_machines)
+    };
+    assert_eq!(read(vec![login("codex", json!([week]))]), (Machines::None, Machines::All), "no machine condition: any machine");
+    assert_eq!(read(vec![login("claude", json!([week, on(&["local", "mac-mini", "lab"]), on(&["mac-mini"])]))]), (only(&["mac-mini"]), Machines::None),
+        "the machines every condition names, this host left out");
+    assert_eq!(read(vec![login("claude", json!([week, on(&["mac-mini"])])), login("claude", json!([week, on(&["lab"])])),
+        login("codex", json!([week, on(&["local"])]))]), (only(&["lab", "mac-mini"]), Machines::None), "two add up; one for this host only reads none there");
+    assert_eq!(read(vec![login("claude", json!([week, on(&["mac-mini"])])), login("claude", json!([week]))]), (Machines::All, Machines::None));
+    let pool = json!({"enabled": true, "harness": "claude", "credential": {"kind": "pool"}, "conditions": [week]});
+    let mut off = login("codex", json!([week]));
+    off["enabled"] = json!(false);
+    assert_eq!(read(vec![login("claude", json!([{"kind": "quota"}])), pool, off]), (Machines::None, Machines::None),
+        "a condition naming no week's share limits nothing; a pool runs here only; one turned off needs nothing");
+    let all = Machines::All;
+    assert!(all.wants("any") && only(&["a"]).wants("a") && !only(&["a"]).wants("b") && !Machines::None.wants("a"));
+}
+
+/// YN-175: what a machine's helper answers becomes a reading of that machine's
+/// own logins, named with the machine, in the words this host's readings use.
+#[test]
+fn a_machines_helper_answer_is_kept_as_its_week_or_why_not_named_with_the_machine() {
+    let claude = |answer: Value| machine_claude("Mac mini", &answer);
+    assert_eq!(claude(json!({"schemaVersion": 1, "active": {"usageStatus": "ok", "sevenDay": {"pct": 70.0, "resetsAt": "2026-11-12T09:00:00Z"}}})),
+        json!({"week": {"leftPct": 30.0, "resetsAt": "2026-11-12T09:00:00Z"}, "source": "cswap"}));
+    let code = |part: Value| (part["unknown"]["code"].clone(), part["unknown"]["messageZh"].clone());
+    for (answer, want, zh) in [
+        (json!({"error": "cswapMissing"}), "cswapMissing", "Mac mini 没装 claude-swap，读不到那台机器上 Claude 登录的额度"),
+        (json!({"error": "cswapTimeout", "seconds": 40}), "cswapTimeout", "Mac mini：cswap list 在 40 秒内没有回答"),
+        (json!({"error": "cswapError", "type": "auth error!"}), "cswapError", "Mac mini：cswap list 报错：autherror"),
+        (json!({"error": "cswapFailed"}), "cswapFailed", "Mac mini：cswap list 没有给出账号列表"),
+        (Value::Null, "cswapFailed", "Mac mini：cswap list 没有给出账号列表"),
+        (json!({"schemaVersion": 2, "active": {}}), "cswapSchema", "Mac mini：cswap list 的格式版本是 2（Core 读的是 claude-swap 1.0.0 的版本 1）"),
+        (json!({"schemaVersion": 1}), "noActiveAccount", "Mac mini 上的 claude-swap 没标出当前登录的账号"),
+        (json!({"schemaVersion": 1, "active": {"usageStatus": "token_expired", "sevenDay": null}}), "usage:token_expired",
+            "Mac mini：claude-swap 没有当前登录账号的用量（token_expired）"),
+    ] {
+        assert_eq!(code(claude(answer.clone())), (json!(want), json!(zh)), "{answer}");
+    }
+    let codex = |answer: Value| machine_codex("Mac mini", &answer);
+    let mut week = codex(json!({"signedIn": true, "accountType": "chatgpt",
+        "limits": {"rateLimits": {"secondary": {"usedPercent": 88, "windowDurationMins": 10080, "resetsAt": 1794500000}}}}));
+    assert_eq!(week.as_object_mut().unwrap().remove("source"), Some(json!("codex")));
+    assert_eq!(week, json!({"week": {"leftPct": 12.0, "resetsAt": "2026-11-12T16:13:20+00:00"}}));
+    for (answer, want, zh) in [
+        (json!({"error": "codexTimeout", "seconds": 15}), "codexTimeout", "Mac mini：Codex 没有及时回答"),
+        (json!({"error": "codexMissing"}), "codexMissing", "Mac mini：那里找不到 Codex"),
+        (json!({"error": "codexUnreadable"}), "codexUnreadable", "Mac mini：无法向 Codex 读取账号"),
+        (json!({"signedIn": true, "accountType": "chatgpt", "error": "limitsUnreadable"}), "limitsUnreadable", "Mac mini：Codex 没有给出额度"),
+        (json!({"signedIn": false}), "notSignedIn", "Mac mini：Codex 没有登录"),
+        (json!({"signedIn": true, "accountType": "apiKey"}), "notSubscription", "Mac mini：这个 Codex 登录不是 ChatGPT 订阅，没有额度"),
+        (Value::Null, "codexUnreadable", "Mac mini：无法向 Codex 读取账号"),
+    ] {
+        assert_eq!(code(codex(answer.clone())), (json!(want), json!(zh)), "{answer}");
+    }
+}
+
+/// YN-175: a refresh reads each machine a login may run on through its helper,
+/// one request per machine with what it needs, and keeps only usage. A contained
+/// machine's Claude is unknown without asking and runs no Codex; a machine that
+/// doesn't answer is unknown; one no longer needed leaves the readings.
+#[tokio::test]
+async fn a_refresh_reads_each_needed_machines_own_logins_there_and_keeps_only_their_usage() {
+    use crate::remote::{StandIn, STAND_INS};
+    use std::sync::Mutex;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "codex".into()).unwrap();
+    for (id, name, contained) in [("yn175-mac", "Mac mini", false), ("yn175-boxed", "Boxed", true), ("yn175-down", "Down", false), ("yn175-idle", "Idle", false)] {
+        ws.store.add_machine(&RemoteMachine { id: id.into(), name: name.into(), target: "tester@192.0.2.20".into(), codex: "/opt/codex/bin/codex".into(),
+            contained, ..Default::default() }).unwrap();
+    }
+    let asked: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+    {
+        let mut stand_ins = STAND_INS.lock().unwrap();
+        for id in ["yn175-mac", "yn175-boxed", "yn175-down", "yn175-idle"] {
+            let log = asked.clone();
+            stand_ins.push((id.into(), StandIn { program: String::new(), answer: Arc::new(move |request| {
+                log.lock().unwrap().push((id.to_owned(), request.clone()));
+                anyhow::ensure!(id != "yn175-down", "ssh: connect to host 192.0.2.20 port 22: Connection timed out");
+                // What the Mac's helper answers, with an email that must not be kept.
+                Ok(json!({"cswap": {"schemaVersion": 1, "email": "person@example.com",
+                        "active": {"usageStatus": "ok", "sevenDay": {"pct": 70.0, "resetsAt": "2026-11-12T09:00:00Z"}}},
+                    "codex": {"signedIn": true, "accountType": "chatgpt", "email": "person@example.com",
+                        "limits": {"rateLimits": {"secondary": {"usedPercent": 88, "windowDurationMins": 10080, "resetsAt": 1794500000}}}}}))
+            }) }));
+        }
+    }
+    let wanted = || Machines::Only(["yn175-mac", "yn175-boxed", "yn175-down"].iter().map(|s| s.to_string()).collect());
+    ws.refresh_quotas(&Needs { claude_machines: wanted(), codex_machines: wanted(), ..Needs::default() }).await.unwrap();
+
+    let requests = asked.lock().unwrap().clone();
+    assert_eq!(requests, [
+        ("yn175-mac".to_owned(), json!({"action": "quota", "root": crate::remote::DEFAULT_ROOT, "contained": false, "cswap": true, "codex": "/opt/codex/bin/codex"})),
+        ("yn175-down".to_owned(), json!({"action": "quota", "root": crate::remote::DEFAULT_ROOT, "contained": false, "cswap": true, "codex": "/opt/codex/bin/codex"})),
+    ], "one request per machine; the contained one and the one not needed are never asked");
+    let app = crate::server::router(ws.clone(), dir.path().join("assets"));
+    let request = Request::builder().uri("/api/routing/readings").header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop")
+        .body(Body::empty()).unwrap();
+    let body = String::from_utf8(to_bytes(app.oneshot(request).await.unwrap().into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert!(!body.contains("person@"), "only usage is kept: {body}");
+    let read: Value = serde_json::from_str(&body).unwrap();
+    let row = |id: &str| read["machines"].as_array().unwrap().iter().find(|m| m["machine"] == id).cloned();
+    let mac = row("yn175-mac").unwrap();
+    assert_eq!((mac["name"].clone(), mac["stale"].clone(), mac["observedAt"].is_string()), (json!("Mac mini"), json!(false), true));
+    assert_eq!((mac["claude"].clone(), mac["codex"].clone()), (json!({"week": {"leftPct": 30.0, "resetsAt": "2026-11-12T09:00:00Z"}, "source": "cswap"}),
+        json!({"week": {"leftPct": 12.0, "resetsAt": "2026-11-12T16:13:20+00:00"}, "source": "codex"})), "{read}");
+    let boxed = row("yn175-boxed").unwrap();
+    assert_eq!((boxed["claude"]["unknown"]["code"].clone(), boxed.get("codex")), (json!("containedLogin"), None), "{boxed}");
+    let down = row("yn175-down").unwrap();
+    assert_eq!((down["claude"]["unknown"]["code"].clone(), down["codex"]["unknown"]["messageZh"].clone()),
+        (json!("machineUnreachable"), json!("连不上 Down，读不到它的额度")), "{down}");
+    assert!(row("yn175-idle").is_none());
+
+    // No machine needed any more: their readings leave.
+    ws.refresh_quotas(&Needs { cswap: false, codex: false, ..Needs::default() }).await.unwrap();
+    assert_eq!(machines_view(&ws.store.quotas().unwrap(), Utc::now()), json!([]));
+    STAND_INS.lock().unwrap().retain(|(id, _)| !id.starts_with("yn175-"));
 }

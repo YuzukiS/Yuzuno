@@ -908,7 +908,7 @@ mod routing {
 
     fn gathered(with_key: bool) -> Gathered {
         Gathered { keys: if with_key { vec![("deepseek".into(), Provider::Deepseek, "local")] } else { vec![] }, codex_homes: vec![],
-            spend: DaySpend::default(), cswap: Value::Null, codex: vec![] }
+            spend: DaySpend::default(), cswap: Value::Null, codex: vec![], machines: vec![] }
     }
 
     fn routed(store: &Store, input: Value, with_key: bool) -> Plan {
@@ -1277,5 +1277,78 @@ mod routing {
         assert_eq!((release("lab-mac"), release("local")), (Some(json!("noCandidate")), None));
         save(vec![on(&["local", "lab-mac"], vec![], "claude", "opus")]);
         assert_eq!(release("lab-mac"), None, "it names the Mac too");
+    }
+
+    /// YN-175: a login with a quota condition was judged by this Core host's own
+    /// login, which another machine's may not have, so an `auto` dispatch keeps it
+    /// here, chosen or waiting. One that names a machine is judged by that machine's
+    /// own reading, and one without a quota condition still lets `auto` choose.
+    #[test]
+    fn a_logins_quota_condition_keeps_an_auto_dispatch_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        // `auto` would choose the Mac: it has the more spare memory.
+        store.add_machine(&crate::remote::RemoteMachine {
+            id: "lab-mac".into(), name: "Lab Mac".into(), target: "tester@192.0.2.10".into(),
+            budget: Some(crate::remote::MachineBudget { cpu_millis: 4000, memory_mib: 16384 }), ..Default::default()
+        }).unwrap();
+        store.db.write().unwrap().execute("INSERT INTO local_job_settings(id,data) VALUES(1,?1)",
+            [json!({"cpuMillis":2000,"memoryMiB":4096,"swapMiB":0}).to_string()]).unwrap();
+        let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+            ("lab-mac".into(), "/srv/lab/project".into())])).unwrap().id;
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer"}]));
+        let save = |conditions: Value| {
+            let version = store.routing_policy().unwrap().version;
+            store.save_routing_policy(version, json!({"enabled": true, "whenNone": "wait", "candidates": [{"id": "c-codex", "enabled": true,
+                "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "conditions": conditions}]})).unwrap().unwrap();
+        };
+        let to = |title: &str, machine: &str| {
+            let mut input = dispatch(&task(&store, title, Some(&p), None), title);
+            input["executor"]["machineId"] = json!(machine);
+            input
+        };
+        let with = |input: Value, gathered: &Gathered| match store.executor_dispatch_begin_routed(None, input, LocalDefault::Read(None), Some(gathered)) {
+            Ok(Next::Create(plan)) => *plan,
+            Ok(Next::Dispatch(_)) => panic!("went on to a dispatch"),
+            Err(error) => panic!("{error:#}"),
+        };
+        let chosen_by_auto = |request: &str| -> bool {
+            store.db.read().unwrap().query_row("SELECT choice_json IS NOT NULL FROM executor_dispatches WHERE request_id=?1", [request],
+                |r| r.get(0)).unwrap()
+        };
+        // This host's Codex has 90% of its week left; the Mac's own has 5%.
+        let mut read = gathered(false);
+        read.codex = vec![json!({"home": "login", "source": "codex", "stale": false, "observedAt": "x", "week": {"leftPct": 90.0}})];
+        read.machines = vec![json!({"machine": "lab-mac", "name": "Lab Mac", "observedAt": "x", "stale": false,
+            "codex": {"week": {"leftPct": 5.0}, "source": "codex"}})];
+
+        save(json!([{"kind": "quota", "weekLeftPct": 20}]));
+        // Chosen by this host's 90%: it stays here, and `auto` chooses no machine.
+        let plan = with(to("auto-quota", "auto"), &read);
+        let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
+        assert_eq!((plan.machine.as_str(), route["chosen"].clone()), ("local", json!("c-codex")), "{route}");
+        assert!(!chosen_by_auto("auto-quota"), "routing fixed the machine");
+        // Its row says why, in both languages (Lead 2, mail 14275).
+        let said = |route: &Value| route["candidates"][0]["reasons"].as_array().unwrap().iter()
+            .find(|r| r["code"] == "quotaHere").map(|r| (r["message"].clone(), r["messageZh"].clone()));
+        assert_eq!(said(&route), Some((json!("Stays on this Core host: its quota condition is judged by this host's own login, so auto chooses no other machine"),
+            json!("留在这台 Core 主机上：它的额度条件按这台主机自己的登录判断，所以 auto 不改选别的机器"))), "{route}");
+        // None read: it waits here, its stand-in's machine fixed too.
+        let waits = with(to("auto-quota-waits", "auto"), &gathered(false));
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((waits.machine.as_str(), route["waiting"].clone()), ("local", json!(true)), "{route}");
+        assert!(!chosen_by_auto("auto-quota-waits"));
+        assert!(said(&route).is_some(), "{route}");
+        // Sent to the Mac: judged by the Mac's own 5%, not this host's 90%.
+        let mac = with(to("on-mac", "lab-mac"), &read);
+        let route = route_of(&store, &mac.dispatch.agent_id).unwrap();
+        assert_eq!((mac.machine.as_str(), route["waiting"].clone(), route["candidates"][0]["reasons"][0]["code"].clone()),
+            ("lab-mac", json!(true), json!("quotaLow")), "{route}");
+        assert!(said(&route).is_none(), "a machine named: nothing kept it here");
+        // Without a quota condition `auto` still chooses after routing.
+        save(json!([]));
+        let anywhere = with(to("auto-anywhere", "auto"), &read);
+        assert_eq!(anywhere.machine, "lab-mac", "the machine `auto` chose");
+        assert!(chosen_by_auto("auto-anywhere"));
     }
 }
