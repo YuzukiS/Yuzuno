@@ -7,7 +7,7 @@
 //! on 127.0.0.1 with its own keys and configuration (jobs::ssh_mux_tests).
 //! No registered machine and none of the user's SSH files are used.
 
-use super::link::{drain_stderr, write_frames, Ended, LineReader, Limits, Link, Options, Phase, Read, Snapshot, Terminal, WriteEnd, FRAME_LIMIT, JOBS_ASK_LOST};
+use super::link::{drain_stderr, gpu_ask_lost, jobs_ask_lost, write_frames, Ended, LineReader, Limits, Link, Options, Phase, Read, Snapshot, Terminal, WriteEnd, FRAME_LIMIT, GPU_ON_LOST, JOBS_ASK_LOST};
 use super::package;
 use super::protocol::{After, Attempt, Code, Exit, Platform, Space, Stderr};
 use crate::jobs::ssh_mux_tests::Sshd;
@@ -771,4 +771,146 @@ async fn over_a_real_sshd_a_scan_sees_a_record_change_within_two_periods() {
     let mut machine = lab.machine();
     machine.target = "box-b".into();
     a_scan_sees_a_record_change_within_two_periods(&lab, &machine, sshd.wrapper.clone(), Limits::PRODUCTION).await;
+}
+
+/// The gpu requests the fake session received, as their `on`.
+fn gpu_asks(lab: &Lab) -> Vec<bool> {
+    lab.frames().iter().filter(|frame| frame["op"] == "gpu").map(|frame| frame["args"]["on"].as_bool().unwrap()).collect()
+}
+
+/// When an ask for a jobs set counts as lost; an empty set never does (the
+/// program sends no event for one).
+#[test]
+fn a_jobs_ask_is_lost_only_past_its_window_and_never_for_an_empty_set() {
+    let t0 = Instant::now();
+    let at = |seconds: u64| t0 + Duration::from_secs(seconds);
+    assert_eq!(JOBS_ASK_LOST, Duration::from_secs(6));
+    assert!(!jobs_ask_lost(5, false, None, Some(t0), None, at(100)), "not online");
+    assert!(!jobs_ask_lost(5, false, Some(t0), None, None, at(100)), "never asked");
+    assert!(!jobs_ask_lost(5, false, Some(t0), Some(t0), None, at(5)));
+    assert!(jobs_ask_lost(5, false, Some(t0), Some(t0), None, at(6)));
+    assert!(jobs_ask_lost(5, false, Some(t0), Some(t0), Some(4), at(6)), "an event of another set");
+    assert!(!jobs_ask_lost(5, false, Some(t0), Some(t0), Some(5), at(60)));
+    assert!(!jobs_ask_lost(5, false, Some(at(10)), Some(t0), None, at(15)), "counted from the later hello");
+    assert!(!jobs_ask_lost(5, true, Some(t0), Some(t0), Some(4), at(600)), "an empty set is never asked again");
+}
+
+/// YN-83 S2 PR5: when an ask for the GPU readings counts as lost.
+#[test]
+fn a_gpu_ask_is_lost_only_past_its_window() {
+    let t0 = Instant::now();
+    let at = |seconds: u64| t0 + Duration::from_secs(seconds);
+    assert_eq!(GPU_ON_LOST, Duration::from_secs(16));
+    // Not online, or never asked: never lost.
+    assert!(!gpu_ask_lost(true, None, Some(t0), None, at(100)));
+    assert!(!gpu_ask_lost(true, Some(t0), None, None, at(100)));
+    // On: lost once 16 s pass with no event since the ask, or the later hello.
+    assert!(!gpu_ask_lost(true, Some(t0), Some(t0), None, at(15)));
+    assert!(gpu_ask_lost(true, Some(t0), Some(t0), None, at(16)));
+    assert!(gpu_ask_lost(true, Some(t0), Some(at(1)), Some(t0), at(17)), "an event before the ask is not an answer");
+    assert!(!gpu_ask_lost(true, Some(t0), Some(t0), Some(at(1)), at(60)));
+    assert!(!gpu_ask_lost(true, Some(at(10)), Some(t0), None, at(25)), "counted from the later hello");
+    // Off: lost when an event came more than one 5 s period after the ask.
+    assert!(!gpu_ask_lost(false, Some(t0), Some(t0), None, at(60)));
+    assert!(!gpu_ask_lost(false, Some(t0), Some(t0), Some(at(5)), at(60)));
+    assert!(gpu_ask_lost(false, Some(t0), Some(t0), Some(at(6)), at(60)));
+}
+
+#[tokio::test]
+async fn gpu_readings_are_asked_on_once_online_and_off_when_asked_and_their_events_are_kept() {
+    let lab = Lab::new();
+    let mut link = start(&lab, lab.fake("gpu"));
+    // Never asked on: off asks nothing.
+    link.watch_gpu(false);
+    link.watch_gpu(true);
+    online(&link).await;
+    eventually("asked on", || gpu_asks(&lab) == vec![true]).await;
+    let now = until(&link, |now| now.gpu.is_some()).await;
+    let gpu = &now.gpu.as_ref().unwrap().value;
+    assert_eq!((gpu.devices.as_ref().unwrap()[0].uuid.as_str(), gpu.why), ("GPU-0", None));
+    // The same state again, at once: not asked again.
+    link.watch_gpu(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(gpu_asks(&lab), vec![true]);
+    link.watch_gpu(false);
+    eventually("asked off", || gpu_asks(&lab) == vec![true, false]).await;
+    link.close();
+    let end = ended(&mut link).await;
+    assert_eq!(outcome(&end), (After::Clean, None));
+}
+
+/// A stand-in for NVIDIA's tool: it records its pid and prints one reading
+/// of one device every 0.2 s. No test runs the real tool.
+const FAKE_TOOL: &str = "#!/usr/bin/python3 -I\nimport os, sys, time\nwith open(os.environ['FAKE_GPU_PIDS'], 'a') as out:\n    out.write('%d\\n' % os.getpid())\nwhile True:\n    sys.stdout.write('1, 0, GPU-0f8fad5b-d9cb-469f-a165-70867728950e, Stub GPU, 24576, 20000, 4576, 7\\n')\n    sys.stdout.flush()\n    time.sleep(0.2)\n";
+
+/// Live processes whose command line names `tool` (zombies left out).
+fn running(tool: &str) -> usize {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit())))
+        .filter(|entry| {
+            let path = entry.path();
+            let named = std::fs::read(path.join("cmdline")).is_ok_and(|line| String::from_utf8_lossy(&line).contains(tool));
+            named && std::fs::read_to_string(path.join("stat")).ok().and_then(|stat| stat.rsplit_once(") ").map(|(_, rest)| !rest.starts_with('Z'))).unwrap_or(false)
+        })
+        .count()
+}
+
+/// The real program with the stand-in tool: one child while the readings
+/// are on, none once off or once the session is closed.
+async fn one_gpu_child_while_on(lab: &Lab, machine: &RemoteMachine, ssh: String, limits: Limits, tool: &str) {
+    let mut link = Link::start(machine, 1, Options { ssh, limits, ..Default::default() }).unwrap();
+    online(&link).await;
+    assert_eq!(running(tool), 0);
+    link.watch_gpu(true);
+    let now = until(&link, |now| now.gpu.as_ref().is_some_and(|gpu| gpu.value.devices.is_some())).await;
+    let devices = now.gpu.as_ref().unwrap().value.devices.clone().unwrap();
+    assert_eq!((devices.len(), devices[0].name.as_str(), devices[0].memory_free_mib), (1, "Stub GPU", Some(20000)), "{:?}", now.terminal);
+    assert_eq!(running(tool), 1, "one child a session");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(running(tool), 1);
+    link.watch_gpu(false);
+    eventually("off ends it", || running(tool) == 0).await;
+    link.watch_gpu(true);
+    eventually("on again: one", || running(tool) == 1).await;
+    link.close();
+    let end = ended(&mut link).await;
+    assert_eq!(outcome(&end), (After::Clean, None), "{end:?}");
+    assert!(end.bye.as_ref().is_some_and(|bye| bye.clean && bye.why.is_empty()), "{end:?}");
+    assert_eq!(running(tool), 0, "the child outlived its session");
+    let pids = std::fs::read_to_string(lab.path("gpu-pids")).unwrap();
+    assert_eq!(pids.lines().count(), 2, "{pids}");
+}
+
+fn fake_tool(lab: &Lab) -> String {
+    std::fs::create_dir_all(lab.path("gpu-bin")).unwrap();
+    let tool = lab.path("gpu-bin").join("nvidia-smi");
+    std::fs::write(&tool, FAKE_TOOL).unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    tool.to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn the_real_program_runs_one_gpu_child_while_on_and_none_after() {
+    let lab = Lab::new();
+    let tool = fake_tool(&lab);
+    let pids = lab.path("gpu-pids").to_string_lossy().into_owned();
+    let ssh = lab.ssh("ssh-gpu", &format!("export YUZUNO_NVIDIA_SMI='{tool}' FAKE_GPU_PIDS='{pids}'\nexec /bin/sh -c \"exec $1\""));
+    one_gpu_child_while_on(&lab, &lab.machine(), ssh, quick(), &tool).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_a_real_sshd_one_gpu_child_runs_while_on_and_none_after() {
+    let lab = Lab::new();
+    let tool = fake_tool(&lab);
+    let pids = lab.path("gpu-pids").to_string_lossy().into_owned();
+    let sshd = Sshd::start_with(&format!("SetEnv YUZUNO_NVIDIA_SMI={tool} FAKE_GPU_PIDS={pids}\n"));
+    // Before anything is turned on: the session there must get the stand-in.
+    let seen = std::process::Command::new(&sshd.wrapper).args(["box-b", "printenv", "YUZUNO_NVIDIA_SMI"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&seen.stdout).trim(), tool, "sshd did not pass the stand-in; nothing was turned on");
+    let mut machine = lab.machine();
+    machine.target = "box-b".into();
+    one_gpu_child_while_on(&lab, &machine, sshd.wrapper.clone(), Limits::PRODUCTION, &tool).await;
 }

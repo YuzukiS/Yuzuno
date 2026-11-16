@@ -741,8 +741,9 @@ fn linux_session_samples_with_no_socket_or_child_process() {
 }
 
 /// program_tests.py: the sampling formulas, Reads, run_bounded and the exit
-/// gate, on synthetic inputs and stand-in children (YN-83 PR3), and the job
-/// record scan with its jobs event (S2 PR4).
+/// gate, on synthetic inputs and stand-in children (YN-83 PR3), the job
+/// record scan with its jobs event (S2 PR4), and the GPU readings with a
+/// stand-in tool (S2 PR5).
 #[test]
 fn program_sampling_tests_pass() {
     let temp = tempfile::tempdir().unwrap();
@@ -766,7 +767,7 @@ fn program_sampling_tests_pass() {
         .lines()
         .find_map(|line| line.strip_prefix("Ran ")?.split_whitespace().next()?.parse::<usize>().ok())
         .unwrap_or(0);
-    assert!(ran >= 36, "program_tests.py ran {ran} tests:\n{stderr}");
+    assert!(ran >= 44, "program_tests.py ran {ran} tests:\n{stderr}");
     assert!(!stderr.contains("skipped") || cfg!(target_os = "macos"), "a test was skipped:\n{stderr}");
     println!("{stderr}");
 }

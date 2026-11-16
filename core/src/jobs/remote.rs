@@ -50,7 +50,7 @@
 //! before roots were recorded is in the legacy root its Core used.
 use super::store::{budget, get, reserved, save};
 use super::{changed, Workspace};
-use crate::remote_service::{Attempt, JobsView, Notice, MAX_JOB_ATTEMPTS};
+use crate::remote_service::{Attempt, Hold, JobsView, Notice, MAX_JOB_ATTEMPTS};
 use crate::{model::now, remote::RemoteMachine, store::Store};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -1261,20 +1261,26 @@ pub(super) fn same_root(sent: &str, watched: &str) -> bool {
     sent == watched || watched.strip_prefix('~').is_some_and(|rest| rest.starts_with('/') && sent.starts_with('/') && sent.ends_with(rest))
 }
 
-/// The attempts each SSH machine's session is asked to scan: those whose
-/// start was sent and that hold their slot, at most 64 a machine.
-fn held_attempts(jobs: &[Value]) -> BTreeMap<String, Vec<Attempt>> {
-    let mut held: BTreeMap<String, Vec<Attempt>> = BTreeMap::new();
-    for job in jobs.iter().filter(|job| job["executor"]["kind"] == SSH && job["reserved"] == true && job["remote"]["startSentAt"].is_string()) {
-        let (Some(machine), Some(attempt)) = (
-            job["executor"]["machineId"].as_str(),
-            Attempt::new(job["id"].as_str().unwrap_or_default(), job["attempt"].as_str().unwrap_or_default()),
-        ) else {
+/// What each SSH machine's session is asked for (remote_service `Hold`):
+/// to scan the attempts whose start was sent and that hold their slot, at
+/// most 64 a machine, and to read the GPUs while a Job there asks for one,
+/// queued or holding its slot (YN-83 S2 PR5).
+pub(super) fn holds(jobs: &[Value]) -> BTreeMap<String, Hold> {
+    let mut held: BTreeMap<String, Hold> = BTreeMap::new();
+    for job in jobs.iter().filter(|job| job["executor"]["kind"] == SSH) {
+        let Some(machine) = job["executor"]["machineId"].as_str() else { continue };
+        let sent = job["reserved"] == true && job["remote"]["startSentAt"].is_string();
+        let attempt = Attempt::new(job["id"].as_str().unwrap_or_default(), job["attempt"].as_str().unwrap_or_default()).filter(|_| sent);
+        let gpu = job["gpu"].is_object() && (job["status"] == "queued" || job["reserved"] == true);
+        if attempt.is_none() && !gpu {
             continue;
-        };
-        let attempts = held.entry(machine.to_owned()).or_default();
-        if attempts.len() < MAX_JOB_ATTEMPTS && !attempts.contains(&attempt) {
-            attempts.push(attempt);
+        }
+        let hold = held.entry(machine.to_owned()).or_default();
+        hold.gpu |= gpu;
+        if let Some(attempt) = attempt {
+            if hold.attempts.len() < MAX_JOB_ATTEMPTS && !hold.attempts.contains(&attempt) {
+                hold.attempts.push(attempt);
+            }
         }
     }
     held
@@ -1301,7 +1307,7 @@ pub(super) async fn pass(ws: &Arc<Workspace>, programs: &Programs<'_>, sessions:
     let _gate = ws.jobs.remote_gate.lock().await;
     let jobs = ws.stored(|s| s.remote_jobs()).await?;
     if sessions {
-        crate::remote_service::hold_jobs(ws, held_attempts(&jobs)).await;
+        crate::remote_service::hold_jobs(ws, holds(&jobs)).await;
     }
     if jobs.is_empty() {
         ws.jobs.remote_seen.lock().unwrap().clear();

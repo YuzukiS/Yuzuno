@@ -33,6 +33,12 @@ const MAX_BOOT_ID: usize = 64;
 /// Attempts one jobs set or event may name: maxJobs' ceiling, 64
 /// (jobs::remote MAX_JOBS_RANGE; S2 design v3 §3.5).
 pub(crate) const MAX_JOB_ATTEMPTS: usize = 64;
+/// Devices one gpu event may name (S2 design v3 §3.6): a device is about
+/// 200 B, so 64 are about 13 KB, far under the 256 KiB frame limit; real
+/// hosts have 8–16.
+pub(crate) const MAX_GPU_DEVICES: usize = 64;
+/// A device's UUID and name: NVML's 96-byte buffers (gpu_sampler.rs).
+const MAX_GPU_TEXT: usize = 96;
 
 /// Why a session cannot go on, as a stable code. Only `ssh_unreachable`
 /// lets a caller back off and start again by itself (see `After`).
@@ -317,11 +323,46 @@ pub(crate) struct Jobs {
     pub why: Option<JobsWhy>,
 }
 
+/// One GPU as the session's reading has it (gpu_sampler.rs `Device`): a
+/// value the tool did not report stays unknown, never 0.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GpuDevice {
+    pub index: u32,
+    pub uuid: String,
+    pub name: String,
+    pub memory_total_mib: Option<u64>,
+    pub memory_free_mib: Option<u64>,
+    pub memory_used_mib: Option<u64>,
+    pub utilization_percent: Option<u32>,
+}
+
+/// Why a gpu event has no devices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GpuWhy {
+    /// No NVIDIA tool there.
+    NoTool,
+    /// A Mac, or a tool that gave no reading: not tried again for 60 s.
+    Unavailable,
+    /// A tool that gave readings, then ended: tried again after a backoff.
+    Failed,
+    /// Started, no reading yet.
+    Starting,
+}
+
+/// A gpu event (YN-83 S2 PR5): the newest complete reading, or why there is none.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Gpu {
+    pub devices: Option<Vec<GpuDevice>>,
+    pub age: Duration,
+    pub why: Option<GpuWhy>,
+}
+
 /// A frame after the hello.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Frame {
     Load(Load),
     Jobs(Jobs),
+    Gpu(Gpu),
     Bye(Bye),
     /// An answer to one of Core's requests: it only shows the session lives.
     Reply,
@@ -335,6 +376,7 @@ pub(crate) fn frame(line: &[u8]) -> Result<Frame, Code> {
         return match event.as_str() {
             Some("load") => Ok(Frame::Load(load(map(frame.get("data"))?)?)),
             Some("jobs") => Ok(Frame::Jobs(jobs(map(frame.get("data"))?)?)),
+            Some("gpu") => Ok(Frame::Gpu(gpu(map(frame.get("data"))?)?)),
             Some("bye") => Ok(Frame::Bye(bye(map(frame.get("data"))?)?)),
             Some("hello") | None => Err(Code::Protocol),
             Some(_) => Ok(Frame::Other),
@@ -439,6 +481,48 @@ fn jobs(data: &Map<String, Value>) -> Result<Jobs, Code> {
         Some(_) => return Err(Code::Protocol),
     };
     Ok(Jobs { set, age: age(data)?, changed, why })
+}
+
+fn gpu(data: &Map<String, Value>) -> Result<Gpu, Code> {
+    let devices = match data.get("devices") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.len() <= MAX_GPU_DEVICES => Some(items.iter().map(gpu_device).collect::<Result<_, _>>()?),
+        Some(_) => return Err(Code::Protocol),
+    };
+    let why = match data.get("why") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(match value.as_str() {
+            Some("no_tool") => GpuWhy::NoTool,
+            Some("unavailable") => GpuWhy::Unavailable,
+            Some("failed") => GpuWhy::Failed,
+            Some("starting") => GpuWhy::Starting,
+            _ => return Err(Code::Protocol),
+        }),
+    };
+    Ok(Gpu { devices, age: age(data)?, why })
+}
+
+fn gpu_device(item: &Value) -> Result<GpuDevice, Code> {
+    let device = map(Some(item))?;
+    let text = |key: &str| match device.get(key).and_then(Value::as_str) {
+        Some(text) if !text.is_empty() && text.len() <= MAX_GPU_TEXT && text.bytes().all(|b| (0x20..0x7f).contains(&b)) => Ok(text.to_owned()),
+        _ => Err(Code::Protocol),
+    };
+    // A count left out or null is unknown; one of the wrong type is protocol.
+    let count = |key: &str, max: u64| match device.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(|value| Some(value.min(max))).ok_or(Code::Protocol),
+    };
+    let index = device.get("index").and_then(Value::as_u64).filter(|index| *index <= u64::from(u32::MAX)).ok_or(Code::Protocol)?;
+    Ok(GpuDevice {
+        index: index as u32,
+        uuid: text("uuid")?,
+        name: text("name")?,
+        memory_total_mib: count("memoryTotalMiB", MAX_MIB as u64)?,
+        memory_free_mib: count("memoryFreeMiB", MAX_MIB as u64)?,
+        memory_used_mib: count("memoryUsedMiB", MAX_MIB as u64)?,
+        utilization_percent: count("utilizationPercent", 100)?.map(|pct| pct as u32),
+    })
 }
 
 fn bye(data: &Map<String, Value>) -> Result<Bye, Code> {

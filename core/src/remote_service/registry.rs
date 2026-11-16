@@ -35,7 +35,9 @@
 //!
 //! A session asked to scan Jobs' records says only which attempts changed
 //! (`jobs_views`): the Jobs side then asks the attempt's helper sooner, and
-//! its answer alone is the attempt's state.
+//! its answer alone is the attempt's state. A machine with a Job asking for
+//! a GPU, queued or holding its slot, wants a session too, and that session
+//! is asked to read the GPUs (PR5); with none it is asked to stop.
 //!
 //! One gate (`hold`) orders every final check of the records with each
 //! start, and the add, edit and removal of a machine with what they change
@@ -53,7 +55,7 @@
 
 use super::link::{age_at, JobsScan, Limits, Link, Options, Snapshot, Stamped};
 use super::live::{self, Live, Row};
-use super::protocol::{After, Attempt};
+use super::protocol::{After, Attempt, Gpu};
 use crate::remote::RemoteMachine;
 use crate::updates::admission::Admission;
 use anyhow::Result;
@@ -221,17 +223,32 @@ struct State {
     job_sets: u64,
 }
 
-/// The remote Jobs held on one machine: their attempts, as one numbered set.
+/// What the Jobs side holds on one machine, as one pass found it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Hold {
+    /// The attempts whose start was sent and that hold their slot.
+    pub attempts: Vec<Attempt>,
+    /// A Job there asks for a GPU, queued or holding its slot.
+    pub gpu: bool,
+}
+
+/// The remote Jobs held on one machine: their attempts, as one numbered set,
+/// and whether one asks for a GPU.
 struct JobsHold {
     set: u64,
     attempts: Arc<Vec<Attempt>>,
-    /// When the last attempt went: the session it kept closes 60 s later.
+    gpu: bool,
+    /// When the last Job went: the session it kept closes 60 s later.
     emptied: Option<Instant>,
 }
 
 impl JobsHold {
+    fn holds(&self) -> bool {
+        !self.attempts.is_empty() || self.gpu
+    }
+
     fn wants(&self, now: Instant, interest: Duration) -> bool {
-        !self.attempts.is_empty() || self.emptied.is_some_and(|at| now.saturating_duration_since(at) < interest)
+        self.holds() || self.emptied.is_some_and(|at| now.saturating_duration_since(at) < interest)
     }
 }
 
@@ -251,6 +268,8 @@ pub(crate) struct JobsView {
     pub root: String,
     pub host_id: Option<String>,
     pub scan: Option<Arc<Stamped<JobsScan>>>,
+    /// Its newest gpu event, while a Job there asks for a GPU.
+    pub gpu: Option<Arc<Stamped<Gpu>>>,
     /// The session has ended (its end not yet settled here).
     pub ended: bool,
 }
@@ -474,32 +493,42 @@ impl State {
         let interest = self.timing.interest;
         let home = self.interest.filter(|_| self.interested(now)).map(|at| at + interest);
         match self.jobs.get(id) {
-            Some(hold) if !hold.attempts.is_empty() => None,
+            Some(hold) if hold.holds() => None,
             Some(hold) => home.max(hold.emptied.filter(|_| hold.wants(now, interest)).map(|at| at + interest)),
             None => home,
         }
     }
 
-    /// The Jobs side's attempts as one pass found them; a machine left out
-    /// holds none. A changed list is a new set. True when one changed.
-    fn hold_jobs(&mut self, mut given: BTreeMap<String, Vec<Attempt>>, now: Instant) -> bool {
+    /// The Jobs side's holds as one pass found them; a machine left out
+    /// holds nothing. A changed list of attempts is a new set. True when
+    /// anything changed.
+    fn hold_jobs(&mut self, mut given: BTreeMap<String, Hold>, now: Instant) -> bool {
         let interest = self.timing.interest;
         let mut sets = self.job_sets;
         let mut changed = false;
         for (id, hold) in &mut self.jobs {
-            let attempts = given.remove(id).unwrap_or_default();
-            if *hold.attempts != attempts {
+            let next = given.remove(id).unwrap_or_default();
+            let held = hold.holds();
+            if *hold.attempts != next.attempts {
                 sets += 1;
                 changed = true;
                 hold.set = sets;
-                hold.emptied = attempts.is_empty().then_some(now);
-                hold.attempts = Arc::new(attempts);
+                hold.attempts = Arc::new(next.attempts);
+            }
+            if hold.gpu != next.gpu {
+                changed = true;
+                hold.gpu = next.gpu;
+            }
+            if held && !hold.holds() {
+                hold.emptied = Some(now);
+            } else if hold.holds() {
+                hold.emptied = None;
             }
         }
-        for (id, attempts) in given.into_iter().filter(|(_, attempts)| !attempts.is_empty()) {
+        for (id, next) in given.into_iter().filter(|(_, next)| !next.attempts.is_empty() || next.gpu) {
             sets += 1;
             changed = true;
-            self.jobs.insert(id, JobsHold { set: sets, attempts: Arc::new(attempts), emptied: None });
+            self.jobs.insert(id, JobsHold { set: sets, attempts: Arc::new(next.attempts), gpu: next.gpu, emptied: None });
         }
         self.job_sets = sets;
         self.jobs.retain(|_, hold| hold.wants(now, interest));
@@ -513,6 +542,7 @@ impl State {
         for entry in entries.iter_mut() {
             if let (Some(run), Some(hold)) = (&mut entry.run, jobs.get(&entry.machine.id)) {
                 run.link.watch_jobs(hold.set, &hold.attempts);
+                run.link.watch_gpu(hold.gpu);
             }
         }
     }
@@ -580,6 +610,7 @@ impl Registry {
                 root: entry.machine.root().to_owned(),
                 host_id: snapshot.hello.as_ref().and_then(|hello| hello.value.host_id.clone()),
                 scan: snapshot.jobs.clone(),
+                gpu: snapshot.gpu.clone().filter(|_| hold.gpu),
                 ended: snapshot.terminal.is_some(),
             });
         }
@@ -864,15 +895,16 @@ fn start<H: Host>(host: &Arc<H>, _held: &Held<'_>, id: &str, may: impl Fn(&Entry
         let checks = state.checks;
         // Core's shutdown, sent while it started, reads here too.
         let closed = inner.ending(&state);
-        let asked = state.jobs.get(id).map(|hold| (hold.set, hold.attempts.clone()));
+        let asked = state.jobs.get(id).map(|hold| (hold.set, hold.attempts.clone(), hold.gpu));
         // Under the gate nothing else changes which machine this is.
         let Some(entry) = state.entry(id) else { return true };
         entry.retry_at = None;
         entry.since = now;
         match started {
             Ok(mut link) => {
-                if let Some((set, attempts)) = &asked {
+                if let Some((set, attempts, gpu)) = &asked {
                     link.watch_jobs(*set, attempts);
+                    link.watch_gpu(*gpu);
                 }
                 let changes = link.subscribe();
                 if draining || closed {
@@ -1098,14 +1130,15 @@ async fn manage<H: Host>(host: &Arc<H>) -> Option<Next> {
 }
 
 /// The remote Jobs held on each SSH machine, as one pass of the Jobs loop
-/// found them (jobs::remote; YN-83 S2 PR4): by machine id, the attempts whose
-/// start was sent and that hold their slot; a machine left out holds none.
-/// Jobs held on a machine want a session there, as the user's interest
-/// does, until 60 s after the last went. A session that may start there by
+/// found them (jobs::remote; YN-83 S2 PR4, PR5): by machine id, the attempts
+/// whose start was sent and that hold their slot, and whether a Job there
+/// asks for a GPU; a machine left out holds nothing. Jobs held on a machine
+/// want a session there, as the user's interest does, until 60 s after the
+/// last went. A session that may start there by
 /// the usual rules (no stop, backoff or unreaped child, no drain, Core not
 /// ending) is started under the gate from the records read again, and each
 /// session is asked to scan its machine's set. Nothing here changes a Job.
-pub(crate) async fn hold_jobs<H: Host>(host: &Arc<H>, attempts: BTreeMap<String, Vec<Attempt>>) {
+pub(crate) async fn hold_jobs<H: Host>(host: &Arc<H>, attempts: BTreeMap<String, Hold>) {
     let registry = host.registry();
     let inner = &registry.inner;
     let now = inner.clock.now();
@@ -1122,7 +1155,7 @@ pub(crate) async fn hold_jobs<H: Host>(host: &Arc<H>, attempts: BTreeMap<String,
                 .jobs
                 .iter()
                 .filter(|(id, hold)| {
-                    !hold.attempts.is_empty()
+                    hold.holds()
                         && state.entries.iter().find(|entry| &entry.machine.id == *id).is_none_or(|entry| entry.can_start(now))
                 })
                 .map(|(id, _)| id.clone())
@@ -1147,7 +1180,7 @@ pub(crate) async fn hold_jobs<H: Host>(host: &Arc<H>, attempts: BTreeMap<String,
     }
     for id in starts {
         let may = |entry: &Entry, state: &State, now: Instant| {
-            entry.can_start(now) && state.jobs.get(&entry.machine.id).is_some_and(|hold| !hold.attempts.is_empty())
+            entry.can_start(now) && state.jobs.get(&entry.machine.id).is_some_and(JobsHold::holds)
         };
         if !start(host, &held, &id, may) {
             break;
