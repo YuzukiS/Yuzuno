@@ -1346,6 +1346,39 @@ class InputsAndArtifactsTests(unittest.TestCase):
         # Empty lists are no inputs or artifacts: v1 and v2 as before.
         self.assertEqual(remote_job.digest(dict(base, inputs=[], artifacts=[])), v1)
 
+    def test_digest_v4_binds_the_git_guard_and_leaves_earlier_versions_as_they_were(self):
+        # The same vectors as core/src/jobs/remote_tests.rs (YN-83 S2).
+        base = {"argv": ["true"], "cwd": "/w", "env": {}, "timeoutSeconds": 5}
+        frozen = {"root": "/w", "head": "c" * 40, "statusSha256": "d" * 64}
+        whole = dict(base, git={"frozen": frozen, "guardExclude": []})
+        self.assertEqual(remote_job.digest(whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81")
+        scoped = dict(base, limits={"mode": "strict", "cpuMillis": 500, "memoryMiB": 64, "swapMiB": 0},
+                      inputs=[{"path": "/w/gone.txt", "absolutePath": "/w/gone.txt", "sha256": None}],
+                      git={"frozen": dict(frozen, guardPaths=[{"path": "src", "object": "e" * 40, "type": "tree"},
+                                                              {"path": "new", "object": None, "type": None}]),
+                           "guardExclude": ["/w/out.txt"]})
+        self.assertEqual(remote_job.digest(scoped), "9b038eba01d76781000a299fca6a281f7113be243dd01b24aeb55c51d9bfe58c")
+        self.assertEqual(remote_job.digest(dict(base, git={"frozen": None, "guardExclude": []})),
+                         "a4824b22996bd6066dff00a43359796b584755cf040b4d41ee511e26810e0a99")
+        self.assertEqual(remote_job.digest(dict(base, git=None)), remote_job.digest(base))
+
+    def test_a_v4_start_without_its_git_state_is_refused_before_anything_is_written(self):
+        # A guardGit attempt is bound with v4 at submit; a Core from before it
+        # sends the same start without the Git state, as this request does.
+        attempt = self.attempt("touch ran")
+        spec = {key: attempt[key] for key in ("argv", "cwd", "env", "timeoutSeconds")}
+        git = {"frozen": {"root": str(self.work), "head": "c" * 40, "statusSha256": "d" * 64}, "guardExclude": []}
+        attempt["digest"] = remote_job.digest(dict(spec, git=git))
+        self.assertIn("digest does not match", self.call(dict(attempt, action="start"), expect=3)["error"])
+        self.assertFalse(self.folder(attempt).exists(), "nothing written")
+        self.assertFalse((self.work / "ran").exists())
+        # A Git state of another shape is refused too.
+        bad = dict(attempt, git={"frozen": {"root": str(self.work)}, "guardExclude": []})
+        self.assertIn("git must be the Git state Core froze", self.call(dict(bad, action="start"), expect=3)["error"])
+        # A tracked file frozen as missing (sha256 null) only comes with git.
+        gone = dict(attempt, inputs=[{"path": "/w/gone.txt", "absolutePath": "/w/gone.txt", "sha256": None}])
+        self.assertIn("inputs must be the files Core froze", self.call(dict(gone, action="start"), expect=3)["error"])
+
 
 class PauseTests(unittest.TestCase):
     """Pause and resume of an attempt's own scope (T-108), against this host's

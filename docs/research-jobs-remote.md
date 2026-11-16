@@ -90,7 +90,7 @@ Each attempt carries its declared CPU, RAM and swap and the machine's mode, boun
 | GPU admission | By device UUID (T-106) | Not available. A request with `gpu` is refused | Not available. A request with `gpu` is refused |
 | Exclusive | Alone among this host's jobs | Not available. Refused | Not available. Refused |
 | Pause and resume | Freezes the job's cgroup (T-107) | Only for an attempt that runs in a scope of its own there (its limits are held: strict, or limited on an account that lingers): the scope is frozen through the account's systemd and read back from its cgroup. Otherwise refused with the reason (see Pause and resume) | Not available. A pause is refused with the reason |
-| Git guard | Checked on this host | Not available. Set `guardGit` to `false` | Not available. Set `guardGit` to `false` |
+| Git guard | Checked on this host | Checked on that machine by its helper, with the Git on that account's `PATH`, by this host's rules (see Inputs and artifacts) | Not available. Set `guardGit` to `false` |
 | Inputs | Small files on this host, frozen by SHA-256 at submit and checked again before the command starts; one missing at submit is recorded as missing | Small files on that machine, frozen there at submit and checked again there before the command starts; one missing, unreadable or too large refuses the submit (see Inputs and artifacts) | Small files on Windows, read by its native helper there (never through `/mnt`): a drive path or one relative to `cwd`, frozen by SHA-256 and the final path Windows gives at submit, and checked again while the command is still suspended. One missing, unreadable (a file another program holds open for writing is), not a regular file or too large refuses the submit |
 | Artifacts | Checked on this host after a clean exit; downloadable from the job panel | Checked on that machine after a clean exit by the same rules; recorded with the machine and its path there, never copied or downloadable here (see Inputs and artifacts) | Checked on Windows by its native helper after a clean exit, by the same rules; json and jsonl by its own syntax check with stated bounds (see [Windows inputs and artifacts](#windows-inputs-and-artifacts)); recorded with the final path, never copied or downloadable here |
 | Outputs | Downloadable from the job panel | Not available: declare artifacts. Refused | Not available. Refused |
@@ -135,6 +135,13 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   - **Retries.** A repeated submit with the same `requestId` returns the job first inserted, with what was frozen then.
 - **Checked again before the start, there.** The attempt starts only on the machine that answered at submit: a name that now reaches another machine is not started, and nothing is sent there. Its supervisor reads every input again after its limits are in place and before the command runs. A missing file, other content or another file at the path rejects the attempt: `Inputs changed on this machine while queued (…); command was not started`.
   - This is a check before the start, not a read-only snapshot of the files while the command runs.
+- **`guardGit` is checked there too.** With `guardGit` (and `guardPaths`) the helper reads `cwd`'s Git work tree on that machine at submit, by the rules, bounds and words of this host (`host.py`'s snapshot, held to the same answers by `core/src/jobs/remote_git_parity_tests.py`):
+  - it freezes HEAD (with `guardPaths`, only the tracked content under those paths at HEAD), a SHA-256 of the changed tracked files' list, and those files, which count with the inputs: at most 128 files, 2 MiB each and 16 MiB together; Git gets 8 seconds and a change list of at most 64 KiB;
+  - a tracked file Git lists as deleted is frozen as missing, as on this host;
+  - `cwd` outside any work tree freezes no Git state (`snapshot.git` is null), unless `guardPaths` names some;
+  - it uses the `git` on that account's `PATH`, as it does `python3`: with none there, or Apple's stand-in on a Mac without the Command Line Tools, the submit is refused with why.
+
+  The job records it in `snapshot.git` (this host's shape, with the machine that answered, `hostId`). The supervisor reads the work tree again where it checks the inputs; a change rejects the attempt in this host's words: `Guarded inputs changed while queued (…); command was not started.`
 - **Artifacts are checked there after a clean exit.** The rules are those for local jobs (`host.py`):
   - a regular file inside `cwd`;
   - at least `minBytes`;
@@ -151,7 +158,7 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   - each artifact's path, format and `minBytes`;
   - whether limits are carried.
 
-  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte.
+  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte. One with `guardGit` is pinned at submit with digest v4: v3's fields, the Git state frozen there and the guard's exclusions. A Core from before v4 would send that start without them, and the machine refuses it before writing anything.
 - **Older Cores.** While a remote job is queued, Core builds from before data roots cannot open the Workspace (older_cores.rs). They also cannot open it while a machine has a setting they would ignore (a mode, which every machine added now has; a budget; or `maxJobs`), or while an attempt runs outside the legacy root. Otherwise such a Core may open it with a started v3 attempt:
   - it sends each request with the digest pinned with the attempt and does not compute it again after the start (core.11: `bound` in remote.rs);
   - its helper checks the digest only at a start (core.11: `start` in remote_job.py);
