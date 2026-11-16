@@ -700,6 +700,9 @@ export function CiJobs({
           before
             ? {
                 ...p,
+                // Subscriptions come on the first page only (YN-193).
+                subscriptions: old.subscriptions,
+                subscriptionsTruncated: old.subscriptionsTruncated,
                 runs: [
                   ...new Map(
                     [...old.runs, ...p.runs].map((r) => [r.id, r]),

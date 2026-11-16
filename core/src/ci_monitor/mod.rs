@@ -115,6 +115,10 @@ struct List {
     agent_id: Option<String>,
     task_id: Option<String>,
     before: Option<i64>,
+    /// "active" (the default) or "all": which subscriptions the first page
+    /// lists (YN-193). The GUI's page asks for all.
+    #[serde(default)]
+    subscriptions: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -172,7 +176,7 @@ async fn list(
             ws,
             None,
             "ci_list".into(),
-            json!({"agentId":q.agent_id,"taskId":q.task_id,"before":q.before}),
+            json!({"agentId":q.agent_id,"taskId":q.task_id,"before":q.before,"subscriptions":q.subscriptions.as_deref().unwrap_or("all")}),
         )
         .await?,
     ))
@@ -236,7 +240,12 @@ pub async fn call(
     match operation.as_str() {
         "ci_list" => {
             let q: List = serde_json::from_value(input)?;
-            ws.stored(move |s| s.ci_list(q.agent_id.as_deref(), q.task_id.as_deref(), q.before))
+            let all = match q.subscriptions.as_deref() {
+                None | Some("active") => false,
+                Some("all") => true,
+                Some(_) => bail!("subscriptions must be active or all"),
+            };
+            ws.stored(move |s| s.ci_list_scoped(q.agent_id.as_deref(), q.task_id.as_deref(), q.before, all))
                 .await
         }
         "ci_unsubscribe" => {
@@ -987,8 +996,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         make(
             "ci_list",
-            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
-            json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"}}),
+            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Subscriptions come on the first page only (without before): the active ones, or with subscriptions \"all\" the newest 200 including ended ones with their closure reasons; activeSubscriptionCount counts the active ones. Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
+            json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"},"subscriptions":{"type":"string","enum":["active","all"],"default":"active"}}),
             vec![],
         ),
         make(

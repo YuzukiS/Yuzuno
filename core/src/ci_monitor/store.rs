@@ -6,6 +6,13 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
+/// The most live CI targets still waiting for something (YN-193: no run
+/// yet on a current commit, or a run not finished), as before for all of
+/// them, and the most live targets in all. Finished ones are read every
+/// DONE_SECONDS, so 50 waiting at ACTIVE_SECONDS and 50 finished ask the
+/// monitor about 10% more often than 50 waiting did.
+const WAITING_TARGETS: i64 = 50;
+const LIVE_TARGETS: i64 = 100;
 // Monitoring is current local state, separate from GitHub's last run fact.
 // Match any subscriber: another Agent can still be keeping this run fresh.
 const RUN_WATCHED: &str = "EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_watches cw ON cw.id=wr.watch_id JOIN ci_subscriptions cs ON cs.watch_id=cw.id WHERE wr.run_id=r.id AND cw.failures<8 AND cs.active=1 AND cs.expires>strftime('%s','now'))";
@@ -243,10 +250,18 @@ impl Store {
             !closed || kind != "pull",
             "Reopen the task to watch a PR candidate; a specific run or commit may still be subscribed for post-merge verification"
         );
-        let active: i64 = tx.query_row(
-            "SELECT COUNT(DISTINCT watch_id) FROM ci_subscriptions WHERE active=1 AND expires>?1",
+        // The live watches, and those of them still waiting for something:
+        // a run not finished, or no run yet on a commit that is still
+        // current (YN-193). A watch whose runs all finished, or an older PR
+        // head with nothing of it still running, is read every five minutes.
+        let (waiting, live): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_runs r ON r.id=wr.run_id WHERE wr.watch_id=w.id
+                   AND (json_extract(r.data,'$.rawStatus') IS NOT 'completed' OR json_type(r.data,'$.conclusion') IS NOT 'text'))
+                 OR (NOT EXISTS(SELECT 1 FROM ci_watch_runs wr WHERE wr.watch_id=w.id) AND COALESCE(json_extract(w.data,'$.state'),'')<>'older_commit')),
+               COUNT(*)
+             FROM ci_watches w WHERE EXISTS(SELECT 1 FROM ci_subscriptions s WHERE s.watch_id=w.id AND s.active=1 AND s.expires>?1)",
             [chrono::Utc::now().timestamp()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         // A commit watch is its exact target: commit, branch and event.
         let wid = if kind == "commit" {
@@ -262,8 +277,10 @@ impl Store {
         };
         let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ci_subscriptions WHERE watch_id=?1 AND active=1 AND expires>?2)",params![wid,chrono::Utc::now().timestamp()],|r|r.get(0))?;
         ensure!(
-            existing || active < 50,
-            "At most 50 distinct CI targets can be monitored at once"
+            existing || (waiting < WAITING_TARGETS && live < LIVE_TARGETS),
+            "At most {WAITING_TARGETS} distinct CI targets still waiting for a run to finish (now {waiting}), and {LIVE_TARGETS} in all \
+             (now {live}), can be monitored at once. A target whose runs all finished, or an older PR head with nothing of it \
+             still running, does not count toward the {WAITING_TARGETS}. ci_unsubscribe a subscription you no longer need."
         );
         let mut w = json!({"id":wid,"repositoryId":repo.id,"repository":repo.full_name,"kind":kind,"number":number,"url":input.url,"expectedSha":input.expected_sha,"currentHeadSha":input.expected_sha,"state":"watching","error":null,"observedAt":null,"lastAttemptAt":null,"createdAt":now()});
         if kind == "commit" {
@@ -318,20 +335,38 @@ impl Store {
         tx.commit()?;
         Ok(sub)
     }
+    /// Every subscription in scope, ended ones too, on the first page.
     pub(crate) fn ci_list(
         &self,
         agent: Option<&str>,
         task: Option<&str>,
         before: Option<i64>,
     ) -> Result<Value> {
+        self.ci_list_scoped(agent, task, before, true)
+    }
+    /// Subscriptions do not page with runs, so they come on the first page
+    /// only (no `before`): the active ones, or `all` the newest 200 with
+    /// ended ones (YN-193: every page repeated 200 of them).
+    pub(crate) fn ci_list_scoped(
+        &self,
+        agent: Option<&str>,
+        task: Option<&str>,
+        before: Option<i64>,
+        all: bool,
+    ) -> Result<Value> {
         let db = self.db.read()?;
         let task = task
             .map(|t| collaboration::task_key(&db, t).map(|v| v.0))
             .transpose()?;
-        let mut q=db.prepare("SELECT id FROM ci_subscriptions WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) ORDER BY rowid DESC LIMIT 201")?;
-        let ids = q
-            .query_map(params![agent, task], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let ids = if before.is_some() {
+            Vec::new()
+        } else {
+            let mut q=db.prepare("SELECT id FROM ci_subscriptions WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) AND (?3 OR (active=1 AND expires>?4)) ORDER BY rowid DESC LIMIT 201")?;
+            let ids = q
+                .query_map(params![agent, task, all, chrono::Utc::now().timestamp()], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            ids
+        };
         let more = ids.len() > 200;
         let subscriptions = ids
             .iter()
@@ -607,6 +642,10 @@ impl Store {
                 if w["state"] == "waiting_for_run" || w["state"] == "conflicting" {
                     waiting_seconds(&tx, &w)?
                 } else if !runs.is_empty() && runs.iter().all(|r| r["rawStatus"] == "completed") {
+                    DONE_SECONDS
+                } else if w["state"] == "older_commit" && runs.iter().all(|r| r["rawStatus"] == "completed") {
+                    // The PR moved on to a newer head and nothing of this
+                    // one runs: no new CI comes for it (YN-193).
                     DONE_SECONDS
                 } else {
                     ACTIVE_SECONDS
