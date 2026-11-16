@@ -820,7 +820,7 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
         (json!({"exclusive":true}), "exclusive applies to this host"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardGit":true}), "guardGit is not available on Windows on this PC"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardPaths":["src"]}), "guardPaths narrows guardGit, which is not available on Windows"),
-        (json!({"outputs":["a.txt"]}), "on a remote machine they stay there, so declare them as artifacts instead"),
+        (json!({"machineId":"windows","cwd":"C:\\work","outputs":["a.txt"]}), "outputs are not available on Windows on this PC"),
         // On Windows, paths of that PC with its separators (T-108).
         (json!({"machineId":"windows","cwd":"C:\\work","inputs":["..\\a.txt"]}), "inputs on Windows are drive paths"),
         (json!({"machineId":"windows","cwd":"C:\\work","inputs":["\\a.txt"]}), "inputs on Windows are drive paths"),
@@ -836,6 +836,7 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     // its helper reads Git there (YN-83 S2).
     input(&lab, "ok", "true", json!({"inputs":["a.txt"],"artifacts":[{"path":"a.json","format":"json"}]})).validate().unwrap();
     input(&lab, "ok", "true", json!({"guardGit":true,"guardPaths":["src"]})).validate().unwrap();
+    input(&lab, "ok", "true", json!({"outputs":["out/report.txt"]})).validate().unwrap();
     // And on Windows, files of that PC.
     input(&lab, "ok", "true", json!({"machineId":"windows","cwd":"C:\\work","inputs":["a.txt","data\\b.bin","D:\\shared\\c.txt"],
         "artifacts":[{"path":"out\\result.json","format":"json"},{"path":"out/lines.jsonl","format":"jsonl"}]})).validate().unwrap();

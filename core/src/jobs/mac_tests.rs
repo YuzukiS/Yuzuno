@@ -239,7 +239,6 @@ async fn on_a_macos_core_this_host_is_this_mac_and_what_needs_linux_is_refused_b
         (json!({"gpu": {"memoryMiB": 1024}}), "GPU admission is not available on This Mac"),
         (json!({"resources": {"cpuMillis": 500, "cpuMillisMax": 2000, "memoryMiB": 128, "swapMiB": 0}}), "A CPU range up to cpuMillisMax needs a Linux host's cgroup"),
         (json!({"exclusive": true}), "exclusive is not available on This Mac"),
-        (json!({"outputs": ["out.txt"]}), "outputs are not available on This Mac"),
         (json!({"service": {"name": "lab", "port": 8080}}), "service is not available on a macOS Core in this version"),
         (json!({"checkpoint": {"graceSeconds": 10, "stoppedExitCode": 75}}), "Stop at a checkpoint is not available on a macOS Core"),
     ] {
