@@ -39,6 +39,25 @@ fn turns_read() -> u64 {
     record_rows::TURNS_READ.with(|n| n.get())
 }
 
+/// What remote recovery reads every 2 s (YN-198): the same Agents as
+/// `agents`, each as listed, without what `agents` adds to it.
+#[test]
+fn listed_agents_are_the_agents_without_their_lifecycle() {
+    let (_dir, store) = lab();
+    for id in ["a", "b"] {
+        store.insert(&detail(id)).unwrap();
+    }
+    // b an executor, whose lifecycle only `agents` reads.
+    store.db.write().unwrap().execute("INSERT INTO agent_roles(agent_id,kind,created_at,updated_at) VALUES('b','executor','now','now')", []).unwrap();
+    let (all, listed) = (store.agents().unwrap(), store.listed_agents().unwrap());
+    assert!(all[1].executor.is_some() && all[1].kind.as_deref() == Some("executor"));
+    let undecorated: Vec<Value> = all.into_iter().map(|mut a| {
+        (a.project_id, a.kind, a.released_at, a.released_by, a.executor) = (None, None, None, None, None);
+        serde_json::to_value(a).unwrap()
+    }).collect();
+    assert_eq!(undecorated, listed.iter().map(|a| serde_json::to_value(a).unwrap()).collect::<Vec<_>>());
+}
+
 fn planned_items() -> u64 {
     record_rows::PLANNED_ITEMS.with(|n| n.get())
 }
