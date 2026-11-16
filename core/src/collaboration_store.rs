@@ -635,11 +635,22 @@ fn required_text(input: &Value, field: &str, max: usize) -> Result<String> {
         !value.trim().is_empty(),
         "invalid_input: {field} must not be empty"
     );
-    ensure!(
-        value.len() <= max,
-        "invalid_input: {field} is too long (maximum {max} bytes)"
-    );
+    if value.len() > max {
+        return Err(too_long(field, value.len(), max));
+    }
     Ok(value.into())
+}
+
+/// The refusal of a text over its limit, which Core counts in UTF-8 bytes,
+/// not characters (YN-192): what was sent and the limit.
+fn too_long(field: &str, bytes: usize, max: usize) -> anyhow::Error {
+    anyhow::anyhow!("invalid_input: {field} is {bytes} bytes in UTF-8; at most {max} (a CJK character takes 3)")
+}
+
+/// A string parameter's schema that says its limit in UTF-8 bytes, as Core
+/// checks it (YN-192); JSON Schema's maxLength would count characters.
+fn bytes_schema(max: usize) -> Value {
+    json!({"type":"string","description":format!("At most {max} UTF-8 bytes (a CJK character takes 3).")})
 }
 
 /// The schema of task_create's, task_update's and task_dispatch's
@@ -658,6 +669,10 @@ pub(crate) const MAX_DESCRIPTION: usize = 32_768;
 
 /// The longest mail body (peer_send), in UTF-8 bytes.
 pub(crate) const MAX_MAIL_BODY: usize = 16_384;
+
+/// The longest result summary and task comment, in UTF-8 bytes.
+pub(crate) const MAX_RESULT_SUMMARY: usize = 16_384;
+pub(crate) const MAX_COMMENT_BODY: usize = 16_384;
 
 /// A task's short name from `input`: one line of at most SHORT_NAME_CHARS
 /// characters, trimmed; null or empty is none.
@@ -681,7 +696,9 @@ fn optional_text(input: &Value, field: &str, max: usize) -> Result<Option<String
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => {
-            ensure!(value.len() <= max, "invalid_input: {field} is too long");
+            if value.len() > max {
+                return Err(too_long(field, value.len(), max));
+            }
             Ok(Some(value.clone()))
         }
         _ => bail!("invalid_input: {field} must be a string or null"),
@@ -1145,7 +1162,7 @@ fn task_comment(
 ) -> Result<Value> {
     allowed(input, &["requestId", "taskId", "body", "research"])?;
     let task = load_task(db, &required_text(input, "taskId", 128)?)?;
-    let body = required_text(input, "body", 16_384)?;
+    let body = required_text(input, "body", MAX_COMMENT_BODY)?;
     let mut extra = json!({"body":body});
     // A research record (T-17) is a comment too: fixed, and nothing else changes.
     if let Some(record) = research::validate(db, &task, input.get("research"))? {
@@ -1196,7 +1213,7 @@ fn task_submit_result(
         task.assignee_agent_id = Some(actor.id.clone());
         task.assignee = Some(actor.clone());
     }
-    let summary = required_text(input, "summary", 16_384)?;
+    let summary = required_text(input, "summary", MAX_RESULT_SUMMARY)?;
     let links = input.get("links").cloned().unwrap_or_else(|| json!([]));
     let entries = links
         .as_array()
@@ -1639,22 +1656,33 @@ fn create_message(
         let to_id = parent["recipient"]["id"]
             .as_str()
             .context("invalid message recipient")?;
+        // Each refusal says how to send it instead (YN-192).
+        let parent_task = parent["taskId"].as_str();
+        if parent["sender"]["kind"] == "system" {
+            let about = task_id.as_deref().or(parent_task)
+                .map(|task| format!(", with taskId {}", task_shown(db, task))).unwrap_or_default();
+            bail!("invalid_reply: {parent_id} is Core's notice, which takes no reply; send without replyTo{about} to write to {to}");
+        }
         if actor.kind == "agent" {
             ensure!(
                 (actor.id == from_id && to == to_id) || (actor.id == to_id && to == from_id),
-                "invalid_reply: reply must retain the original participants"
+                "invalid_reply: a reply goes between {from_id} and {to_id}, the parent's sender and recipient; \
+                 to write to {to}, send without replyTo"
             );
         } else {
             ensure!(
                 to == from_id || to == to_id,
-                "invalid_reply: recipient is not in the original thread"
+                "invalid_reply: a reply goes to {from_id} or {to_id}, the parent's sender or recipient; \
+                 to write to {to}, send without replyTo"
             );
         }
-        let parent_task = parent["taskId"].as_str();
-        if task_id.is_some() && parent_task.is_some() {
+        if let (Some(task), Some(parent_task)) = (task_id.as_deref(), parent_task) {
             ensure!(
-                task_id.as_deref() == parent_task,
-                "invalid_reply: taskId differs from parent message"
+                task == parent_task,
+                "invalid_reply: the parent message is on {parent}, not {task}; leave taskId out to reply on {parent}, \
+                 or send without replyTo to write about {task}",
+                parent = task_shown(db, parent_task),
+                task = task_shown(db, task)
             );
         }
         if task_id.is_none() {
@@ -1806,16 +1834,16 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (the user's Agent that leads its Project and edits its Home), executor (made by Core for one task) or standing (the user's, leading no Project); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Each has a key, the prefix of its tasks' keys: a task created in or moved into a project is <KEY>-<n> there, and a task in no project, or numbered before keys came, is T-<n>. T-<n> names every task forever, as does every key a task or project had. The user changes a project's key in the Projects window (Manage projects…), as its task key prefix.", json!({}), &[]),
-        definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
+        definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":bytes_schema(MAX_MAIL_BODY),"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed. Each message has its wake: ring (it wakes you), quiet (Core's notice that asks nothing of you, e.g. a PR merged while its executor still works; it comes with your next wake-up, which counts it) or join (Core's session notice).", json!({"afterSeq":after,"limit":limit,"priority":read_priority,"wake":read_wake}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. Your rows are short unless you give compact:false (YN-69); task_get reads one task whole.", json!({"compact":{"type":"boolean","default":true,"description":"Short rows (your default): id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged. false lists whole rows, which can be more than 48 KiB in all: an OpenCode Agent is refused an answer over 51,200 bytes, with how to read it in parts."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
         definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each open PR's head and base with that head's CI as last observed and its newest review, a merged or closed PR as a short row that github_links reads whole, the newest CI subscriptions and their runs), executorSlot (when its executor waits for a slot, with its place in the queue, or is starting or running) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so; empty fields are left out. Every view has keys: the task's global T-<n> and the project keys it had before (history), which all still name it. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references. Large materials can make this answer more than 48 KiB."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"shortName":short_name.clone(),"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, ask in a Home Ask; nothing changes until you set it. An executor never sets its own task done (executor_done_refused): it submits its result, and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"shortName":short_name,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
-        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":string,"research":research::schema()}), &["requestId","taskId","body"]),
+        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":bytes_schema(MAX_COMMENT_BODY),"research":research::schema()}), &["requestId","taskId","body"]),
         definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
-        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":bytes_schema(MAX_RESULT_SUMMARY),"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),
         mail_preferences::tool_definition(&task_reference),
@@ -2986,5 +3014,63 @@ mod tests {
             assert_eq!(error, format!("task_closed: {number} is {says}, so it takes no result; restore it with task_update first if this work belongs to it"));
             assert_eq!(get(&store, &closed)["task"], before, "{request}");
         }
+    }
+
+    /// YN-192 (18): the limits Core counts in UTF-8 bytes say so in their
+    /// schema, and a refusal says what was sent.
+    #[test]
+    fn text_limits_are_said_in_utf8_bytes() {
+        let tools = tool_definitions();
+        let param = |tool: &str, path: &[&str]| {
+            let mut at = &tools.iter().find(|t| t["name"] == tool).unwrap()["inputSchema"]["properties"];
+            for key in path {
+                at = &at[*key];
+            }
+            at["description"].as_str().unwrap_or_default().to_owned()
+        };
+        assert!(param("task_submit_result", &["summary"]).contains("At most 16384 UTF-8 bytes"));
+        assert!(param("task_comment", &["body"]).contains("At most 16384 UTF-8 bytes"));
+        assert!(param("peer_send", &["body"]).contains("At most 16384 UTF-8 bytes"));
+        let criterion = ["outcome", "properties", "criteria", "items", "properties"];
+        assert!(param("task_submit_result", &[&criterion[..], &["report"]].concat()).contains("At most 4000 UTF-8 bytes"));
+        assert!(param("task_submit_result", &["outcome", "properties", "remaining"]).contains("At most 8000 UTF-8 bytes"));
+        let (_dir, store) = fixture();
+        create(&store);
+        // 1,400 CJK characters: fewer than 4000 characters, 4,200 bytes.
+        let report = "测".repeat(1400);
+        let error = store.collaboration_call(Some("a"), "task_comment",
+            json!({"requestId":"long","taskId":"T-1","body":"字".repeat(5462)})).unwrap_err().to_string();
+        assert_eq!(error, "invalid_input: body is 16386 bytes in UTF-8; at most 16384 (a CJK character takes 3)");
+        let error = store.collaboration_call(Some("a"), "task_submit_result", json!({"requestId":"report","taskId":"T-1","expectedVersion":1,
+            "summary":"Done.","outcome":{"criteria":[{"id":"c1","label":"One","report":report,"reportedStatus":"met","artifacts":[]}]}}))
+            .unwrap_err().to_string();
+        assert_eq!(error, "invalid_input: report is 4200 bytes in UTF-8; at most 4000 (a CJK character takes 3)");
+    }
+
+    /// YN-192 (24): a refused reply says how to send it instead.
+    #[test]
+    fn a_refused_reply_says_how_to_send_it_instead() {
+        let (_dir, store) = fixture();
+        create(&store);
+        store.collaboration_call(None, "task_create", json!({"requestId":"second","title":"Another outcome"})).unwrap();
+        let send = |actor: &str, input: Value| store.collaboration_call(Some(actor), "peer_send", input);
+        let first = internal_id(&store, 1);
+        let notice = {
+            let db = store.db.write().unwrap();
+            insert_message(&db, json!({"id":"notice-1","seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},
+                "recipient":{"kind":"agent","id":"b","name":"Agent b"},"body":"Local job is failed.","taskId":first,
+                "threadId":"notice-1","createdAt":"now","priority":"normal"})).unwrap()
+        };
+        let error = send("b", json!({"requestId":"to core","toAgentId":"a","replyTo":notice["id"],"body":"Seen."})).unwrap_err().to_string();
+        assert_eq!(error, "invalid_reply: notice-1 is Core's notice, which takes no reply; send without replyTo, with taskId T-1, to write to a");
+        let message = send("a", json!({"requestId":"ask","toAgentId":"b","taskId":"T-1","body":"A question."})).unwrap()["message"].clone();
+        let error = send("b", json!({"requestId":"elsewhere","toAgentId":"c","replyTo":message["id"],"body":"Forwarded."})).unwrap_err().to_string();
+        assert_eq!(error, "invalid_reply: a reply goes between a and b, the parent's sender and recipient; to write to c, send without replyTo");
+        let error = send("b", json!({"requestId":"other task","toAgentId":"a","taskId":"T-2","replyTo":message["id"],"body":"About T-2."}))
+            .unwrap_err().to_string();
+        assert_eq!(error, "invalid_reply: the parent message is on T-1, not T-2; leave taskId out to reply on T-1, or send without replyTo to write about T-2");
+        // Sent as the refusals say, both go.
+        send("b", json!({"requestId":"to core, sent","toAgentId":"a","taskId":"T-1","body":"Seen."})).unwrap();
+        send("b", json!({"requestId":"other task, sent","toAgentId":"a","taskId":"T-2","body":"About T-2."})).unwrap();
     }
 }
