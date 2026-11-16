@@ -594,7 +594,11 @@ Once an executor's work is accepted, it is released: Core closes it for good.
   `not_project_lead`, naming both Projects; anyone else with
   `not_dispatcher`, and a standing Agent or a lead with `not_executor`.
 - **Setting its task done releases it too,** when its dispatcher, a lead of
-  its Project or you set it. An executor can't set its own task done.
+  its Project or you set it. An executor can't set its own task done. The
+  task releases the executors made for it and the one it is assigned to now,
+  but not one that is still assigned another task that is not done,
+  cancelled or archived: its dispatcher sent it on there, and that task's
+  done releases it (YN-192).
 - **While its work is still going, it is archiving.** A Job of its still
   running, its delivery flow under way, or a pull request operation of its
   in flight: the release waits for it, and its answer's `archiving.reason`
