@@ -2,13 +2,13 @@
 
 This guide installs a signed Yuzuno Core release on a Linux host and connects to it from a browser or the Windows desktop app, on the same computer or another one. It does not need a source checkout.
 
-**Releases are published on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases) of `YuzukiS/Yuzuno`,** starting with core.13 and core.14 on 2026-10-21. Each has the three Linux x86_64 files used below. You can also [run from source](../README.md#run-from-source); the connection sections apply to a source build as well.
+**Releases are published on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases) of `YuzukiS/Yuzuno`,** starting with core.13 and core.14 on 2026-10-21. Each has the three Linux x86_64 files used below; from core.36 on, each also has three for macOS on Apple silicon ([on macOS](#install-start-and-stop-on-macos)). You can also [run from source](../README.md#run-from-source); the connection sections apply to a source build as well.
 
 ## What runs where
 
 | Part | Where | Holds |
 |---|---|---|
-| **Core** | One Linux host (x86_64) | The Workspace database, Agent sessions, Jobs, release packages. It serves the web UI and API on a loopback port only. |
+| **Core** | One Linux host (x86_64), or from core.36 a Mac with Apple silicon | The Workspace database, Agent sessions, Jobs, release packages. It serves the web UI and API on a loopback port only. |
 | **Native runtimes** | The Core host | Claude Code and/or Codex, installed and signed in by you. Yuzuno uses their logins; it never copies or reads credentials. |
 | **Client** | Any computer with a browser, or the Windows desktop app (its installer is on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases) from `desktop-0.3.0`). A phone's browser through [the phone entry](#connect-from-a-phone-tailscale-serve). The Mac app and the iPhone app are built from source only and have no release. | Its own connection details and unsent drafts: the browser's storage, and the saved Workspaces of the desktop and iPhone apps. The Windows app can start an already installed WSL Core it has connected to before ([Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl)); no client ever creates a Workspace. |
 | **Agent machine** | The Core host, or an SSH machine for remote Agents | Separate from connecting a client to Core; see the README's SSH Agents. |
@@ -23,7 +23,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 |---|---|---|
 | Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks, and the public core.13's first Claude start, which downloads the Agent SDK (no sign-in). Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 and the public core.13, each with registration, Core and UI file serving, restart and data-preserving reinstall; no real login, Claude start, browser rendering or systemd Jobs in that rootfs. |
 | Core on Linux aarch64 | Planned | No package yet. |
-| Core on macOS | Planned | Not supported yet. Core and its tests build on Apple silicon and the tests run in CI there, and the release's helper installs, starts and stops a managed Core there ([on macOS](#install-start-and-stop-on-macos)); Jobs on its own host run in limited mode (limits declared only), and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
+| Core on macOS (Apple silicon) | Tested within the scope below | Packages from core.36 (`core-20261116-e227333`) on, built for macOS 11 or newer and installed by hand ([on macOS](#install-start-and-stop-on-macos)); the Mac app that installs Core has no release yet. The published core.36 package was downloaded, installed, started and stopped on one Mac with macOS 27.0.1 ([What was tested](#what-was-tested)); no Agent, browser, Job or update ran on that Core. Jobs on its own host run in limited mode (limits declared only). Intel Macs are not supported (YN-161). See [macOS Core: current gaps](#macos-core-current-gaps). |
 | Core on Windows | Unavailable | On Windows, run Core in WSL2. |
 | Core as a systemd service | Planned | Start it as shown below; see the note there. |
 | Browser on the Core host | Tested | Chromium. |
@@ -330,9 +330,9 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 
 ## Install, start and stop on macOS
 
-**No published release has a macOS package yet.** The release tooling packages and signs macOS Apple silicon from YN-108 M3b on, so the first two-platform release will have `yuzuno-core-macos-aarch64.*` files ([macOS Core: status and gaps](macos-core.md)). Until then these steps cannot be followed with a published release. They say what the release's helper does on a Mac at this commit, which is what it does on Linux except where it says otherwise. Apple silicon only; Intel Macs are not supported.
+**Releases from core.36 (`core-20261116-e227333`) on have macOS packages**, the three `yuzuno-core-macos-aarch64.*` files, signed by the same publisher key as Linux ([macOS Core: status and gaps](macos-core.md)). Earlier releases have Linux files only. These steps say what the release's helper does on a Mac at this commit, which is what it does on Linux except where it says otherwise. Apple silicon only, macOS 11 or newer; Intel Macs are not supported.
 
-- **Prerequisites:** as [on Linux](#prerequisites-on-the-core-host), without systemd: Jobs on the Mac itself are refused for now ([below](#macos-core-current-gaps)). `/usr/bin/python3` and `git` come with Apple's command line tools (`xcode-select --install`); Node, `gh` and `minisign` with their own installers or Homebrew (`brew install node gh minisign`).
+- **Prerequisites:** as [on Linux](#prerequisites-on-the-core-host), without systemd: Jobs on the Mac itself run in limited mode ([below](#macos-core-current-gaps)). `/usr/bin/python3` and `git` come with Apple's command line tools (`xcode-select --install`); Node, `gh` and `minisign` with their own installers or Homebrew (`brew install node gh minisign`).
 - **Folders:** these are the ones the Mac app is to use. The Workspace folder is also where a Core started without `--data-dir` keeps it on a Mac. Both paths contain a space, so keep the quotes:
 
   ```sh
@@ -343,7 +343,7 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 - **Download and verify** the three macOS files (`yuzuno-core-macos-aarch64.json`, `.json.minisig`, `.tar.gz`). Download them in Terminal with `gh` or `curl`, not in a browser:
 
   ```sh
-  TAG=core-20261201-abcdef0        # the release you chose
+  TAG=core-20261116-e227333        # the release you chose, core.36 or later (core.36 here)
   mkdir -p ~/yuzuno-download && cd ~/yuzuno-download
   gh release download "$TAG" -R YuzukiS/Yuzuno -p 'yuzuno-core-macos-aarch64.*'
   ```
@@ -372,8 +372,15 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
   EOF
   ```
 
-  Stop if either step fails. Both platforms' descriptors are signed by the one publisher key; a release always carries both.
-- **Install** with the unpacked release's helper (`install`, as [above](#installed-by-the-desktop-app)), unpacking with macOS's own `tar`: `mkdir bundle && tar -xzf yuzuno-core-macos-aarch64.tar.gz -C bundle`, then `bundle/bin/yuzuno-update-helper install --install-dir "$ROOT" --bundle "$PWD/bundle" --manifest-sha256 "$(cat manifest.sha256)" --reviewed-source "$TAG" --initialize`.
+  Stop if either step fails. Both platforms' descriptors are signed by the one publisher key; a release from core.36 on carries both.
+- **Install** with the unpacked release's helper (`install`, as [above](#installed-by-the-desktop-app)), unpacking with macOS's own `tar`. It registers the release and allows its updates from the same publisher in one step:
+
+  ```sh
+  mkdir bundle && tar -xzf yuzuno-core-macos-aarch64.tar.gz -C bundle
+  bundle/bin/yuzuno-update-helper install --install-dir "$ROOT" --bundle "$PWD/bundle" \
+    --manifest-sha256 "$(cat manifest.sha256)" --reviewed-source "$TAG" \
+    --repository YuzukiS/Yuzuno --public-key "$KEY"
+  ```
 - **First start:** `first-start`, as above. For `--cwd`, choose a folder of your own outside Desktop, Documents, Downloads and iCloud Drive: macOS asks for permission when an Agent reads those. It reads the environment your login shell sets: the shell the user database names (macOS's default is zsh; `/bin/zsh` when it names none). So Core finds what your profile adds to `PATH`, such as `/opt/homebrew/bin`. A Core started some other way, for example by a launchd agent, has only the `PATH` it inherits. Core records the environment in `$ROOT/updates/launch.json`, and every later start uses it.
 - **Start it again** (after a restart, or after a stop):
 
@@ -388,15 +395,15 @@ Claude Code, Codex and `gh` keep their own configuration; uninstalling Yuzuno do
 
 ## macOS Core: current gaps
 
-A macOS Core is being built (YN-108). Remote Codex Agents on a Mac (over SSH) already work, but that is not a macOS Core. Today:
+From core.36 on, a macOS Core is installed by hand from a release package ([above](#install-start-and-stop-on-macos)); the Mac app that installs and starts it has no release yet. Remote Codex Agents on a Mac (over SSH) are a separate feature. Today:
 
 - **Tests:** Core and its tests build on Apple silicon, and CI runs the tests there on every change to Core (`.github/workflows/core-macos.yml`).
 - **Jobs:** Jobs on this Core's own host need systemd user units and cgroup v2 limits, plus `/proc`, for resource-limited, reported runs (`core/src/jobs/host.rs`, `core/src/jobs/host.py`); macOS has neither. A macOS Core runs them on This Mac in limited mode instead, as on a Mac over SSH: their CPU and RAM queue and are recorded, nothing enforces them, and runs of stages, checkpoints and guardGit are refused ([macOS Core](macos-core.md)). It needs the Xcode Command Line Tools. Jobs on registered machines work.
-- **Managed updates:** identify the running Core through libproc on macOS (`core/src/updates/state.rs`), but there is no macOS package to update to yet.
+- **Managed updates:** identify the running Core through libproc on macOS (`core/src/updates/state.rs`). core.36 is the first macOS package, so no update from one macOS release to the next has run yet.
 - **Start and stop:** through the release's helper, [as above](#install-start-and-stop-on-macos).
-- **Packages:** release packaging and signing build Linux x86_64 only (`tools/build-core-artifact.py`, `tools/package-release.py`).
+- **Packages:** each release from core.36 on carries Linux x86_64 and macOS Apple silicon packages, signed by the one publisher key (`tools/build-core-artifact.py`, `tools/package-release.py`, `tools/core-release.py`).
 
-Until those slices are done, a source build on macOS is not supported. [macOS Core: status and gaps](macos-core.md) lists every gap with its code and the slice that closes it.
+A source build on macOS is not supported; install a release. [macOS Core: status and gaps](macos-core.md) lists every gap with its code and the slice that closes it.
 
 ## What was tested
 
@@ -446,6 +453,12 @@ This does not test a sign-in, a conversation, an approval, a browser, an update,
 
 **Public core.19 on the same installation (2026-10-26 UTC):** it updated from core.18 to `core-20261025-6bd7683` (`2026.10.25-core.19`) with **Settings → Updates**. The update's record checks passed after restoration, all 8 native sessions came back, and the phone entry answered through Serve with the new release and the same Workspace, without being set up again. An iPhone then turned on push notifications from the Home Screen app, as described in [Connect from a phone](#connect-from-a-phone-tailscale-serve). Again with existing accounts and sign-ins: not a new user's first install.
 
+**Public core.36 on a Mac (2026-11-16 UTC):** the first release with macOS packages, `core-20261116-e227333` (`2026.11.16-core.36`).
+- **On a Mac mini (Apple silicon, macOS 27.0.1),** run as a managed Job in a new folder with a made-up home folder and its own port (YN-176 Job `1dee1d1e`). The three `yuzuno-core-macos-aarch64.*` files, downloaded with `curl`, equalled the published files' SHA-256, and neither they nor the unpacked `bin/` carried a quarantine flag. The archive matched the signed descriptor. That Mac has no `minisign`, so the descriptor's signature was verified only on the release host, after the same download. macOS's `tar` unpacked it, and the [install command above](#install-start-and-stop-on-macos) installed it (`"state":"installed"`). `first-start` started Core with the login shell's environment (`/bin/zsh`), and `/api/health` answered with that release and Workspace. `updates/start stop` stopped it, and no process of the installation was left.
+- **In CI, before signing:** the release inputs run (`43786410921`) built the macOS inputs on GitHub's Apple silicon runner and smoked them there (`tools/release-inputs-smoke.py`). Core started with new data and answered. The helper registered an unsigned package of the inputs into a new managed root, whose Core started, started again through `updates/start start` and stopped through `updates/start stop`.
+
+This does not test a sign-in, an Agent, a browser, a Job, an update or the Mac app on a macOS Core.
+
 **Not tested yet:**
 - a fresh full OS installation or a new OS account (the rootfs uses a mapped existing host user; browser tests used existing Claude Code and gh sign-ins);
 - distributions beyond the Arch environment and limited Ubuntu rootfs check above; real login/Agent/approval, the first Claude start, browser rendering and systemd Jobs inside that Ubuntu environment;
@@ -453,4 +466,5 @@ This does not test a sign-in, a conversation, an approval, a browser, an update,
 - local Jobs on a host whose user manager lacks the `cpu` controller, such as the Ubuntu 22.04.5 host above, before or after an administrator delegates it ([Prerequisites](#prerequisites-on-the-core-host));
 - the Windows desktop app through a tunnel;
 - Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, and a downloaded (quarantined) copy;
+- on a macOS Core from a release: Agents, a browser, Jobs on This Mac, an update to a later release, and verifying the signature with `minisign` on the Mac itself;
 - Core as a systemd service.
