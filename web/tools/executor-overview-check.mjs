@@ -29,6 +29,9 @@
 //   stops at about 12 lines and scrolls inside, a fade at the edge with more
 //   beyond it; a short one keeps its own height. The gate card and the
 //   red → green row in both.
+// - YN-178: the archived executor's Final report is Markdown (bold, a list,
+//   code, a table): no marker shows, every part is inside its card, at the
+//   card's size, and its text reads at 4.5:1 or more on the card.
 // Screenshots of each, for the design Ask.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-overview-check.mjs
 import assert from "node:assert/strict";
@@ -43,7 +46,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 S3/S4, YN-46, YN-58", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
+const report = { task: "T-43 S3/S4, YN-46, YN-58, YN-178", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -151,7 +154,10 @@ const overview = {
     pullRequest: { number: 705, url: "https://github.com/owner/repo/pull/705", title: "Status bar wording", state: "merged", ci: { state: "success" },
       latestReview: { reviewId: "r9", round: 1, status: "completed", conclusion: "no_findings", forCurrentHead: true }, changes: { additions: 1, deletions: 1, files: 1 } },
     merge: { id: "m5", state: "merged", reason: null },
-    result: { id: "r29", summary: "One line changed; the focused check passed; merged as #705.\nNo behaviour change, so no red test.", reportedAt: ago(35), status: "accepted" },
+    // YN-178: a result as executors write it, in Markdown.
+    result: { id: "r29", summary: ["**One line changed** in `statusbar.tsx`; merged as #705.", "",
+      "- The focused check passed", "- No behaviour change, so no red test", "",
+      "| Check | Result |", "| --- | --- |", "| CI | success |"].join("\n"), reportedAt: ago(35), status: "accepted" },
   },
 };
 const gateRef = (key) => ({ kind: "ask", projectId: "p1", key, version: 2, state: "open", since: ago(12), repliedAt: null });
@@ -473,6 +479,55 @@ async function run({ width, height, theme, lang = "en", glance = true }) {
         // A phone shows the list or the conversation: its ring is checked where the list shows beside it.
         if (!phone) assert.equal(await page.locator(`.agent-list article[data-agent-id="${id}"] .agent-island`).getAttribute("data-state"), "waiting", `${tag} ${id}: its ring needs you`);
         await page.locator("#executor-overview .gate-ask").scrollIntoViewIfNeeded();
+      }
+      if (id === "yn29") {
+        // YN-178: its Final report reads as Markdown at the card's own size,
+        // every part inside the card, its text legible on the card in each
+        // theme. Code and table headings keep Prose's own colours, as in a
+        // conversation: their ratios are kept in the report.
+        const finalReport = page.locator("#executor-overview .executor-overview-report");
+        await finalReport.scrollIntoViewIfNeeded();
+        const r = await finalReport.evaluate((el) => {
+          const rgb = (css) => {
+            const c = document.createElement("canvas");
+            c.width = c.height = 1;
+            const x = c.getContext("2d");
+            x.fillStyle = "#000";
+            x.fillStyle = css;
+            x.fillRect(0, 0, 1, 1);
+            return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3);
+          };
+          const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+            .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+          const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return Math.round((x + 0.05) / (y + 0.05) * 100) / 100; };
+          // The nearest painted background behind an element.
+          const ground = (node) => {
+            for (let n = node; n; n = n.parentElement) {
+              const bg = getComputedStyle(n).backgroundColor;
+              if (bg && bg !== "transparent" && !/rgba\(.*,\s*0\)$/.test(bg)) return rgb(bg);
+            }
+            return [255, 255, 255];
+          };
+          const card = el.closest(".executor-overview-card").getBoundingClientRect();
+          const parts = [...el.querySelectorAll("p, strong, li, code, table")];
+          const text = Object.fromEntries(["p", "strong", "li", "code", "th", "td"].map((name) => {
+            const node = el.querySelector(name);
+            return [name, ratio(rgb(getComputedStyle(node).color), ground(node))];
+          }));
+          return {
+            counts: ["strong", "li", "code", "table"].map((name) => el.querySelectorAll(name).length),
+            raw: /\*\*|^\s*- |\| --- \|/m.test(el.innerText),
+            outside: parts.filter((n) => { const b = n.getBoundingClientRect(); return b.left < card.left - 0.5 || b.right > card.right + 0.5; }).map((n) => n.tagName),
+            size: [parseFloat(getComputedStyle(el.querySelector(".prose")).fontSize), parseFloat(getComputedStyle(el.closest(".executor-overview")).fontSize)],
+            text,
+          };
+        });
+        m.report = r;
+        assert.deepEqual(r.counts, [1, 2, 1, 1], `${tag}: its report's bold, list, code and table`);
+        assert.equal(r.raw, false, `${tag}: no Markdown marker shows as text`);
+        assert.deepEqual(r.outside, [], `${tag}: every part of its report inside the card`);
+        assert.equal(r.size[0], r.size[1], `${tag}: its report at the card's size`);
+        for (const name of ["p", "strong", "li", "td"]) assert.ok(r.text[name] >= 4.5, `${tag}: its report's ${name} reads at ${r.text[name]}:1, under 4.5:1`);
       }
       await shot(`${id}-overview`);
       check(`${tag} ${id}: its Overview, inside the pane, nothing overlapping`);
