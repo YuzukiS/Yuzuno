@@ -44,6 +44,8 @@ type Attempt = {
   id: string;
   status: string;
   reason: string | null;
+  /** Waiting, but not able to start without a retry or a cancel (YN-194). */
+  stalled?: "upstream" | "costLimit" | null;
   run: { attempt: number };
   retryOf?: string | null;
   cost?: Cost | null;
@@ -163,6 +165,11 @@ const text = strings({
     unknown: "Outcome unknown",
     reused: "Reused",
   } as Record<string, string>,
+  /** A waiting stage that cannot start without a retry or a cancel (YN-194). */
+  stalled: {
+    upstream: "Blocked upstream",
+    costLimit: "Held by the cost limit",
+  } as Record<string, string>,
   /** A queued run, by what its first stage in the queue waits for (YN-30). */
   queuedFor: {
     gpu: "Queued: waiting for a GPU",
@@ -279,6 +286,10 @@ const text = strings({
     interrupted: "已中断",
     unknown: "结果未知",
     reused: "已复用",
+  },
+  stalled: {
+    upstream: "被上游挡住",
+    costLimit: "已到费用上限",
   },
   queuedFor: {
     gpu: "排队：等 GPU",
@@ -468,11 +479,14 @@ export function RunCard({
       <ol className="job-run-stages" aria-label={t.stages}>
         {run.stages.map((stage) => {
           const last = stage.attempts[stage.attempts.length - 1];
+          // A waiting stage behind one that did not succeed (YN-194).
+          const stalled = stage.status === "waiting" && last?.stalled ? last.stalled : null;
+          const state = stalled ? "stalled" : stage.status;
           return (
-            <li key={stage.key} className={`job-run-stage state-${stage.status}`}>
+            <li key={stage.key} className={`job-run-stage state-${state}`}>
               <span className="job-run-stage-key">{stage.key}</span>
-              <span className={`job-state state-${stage.status}`}>
-                {t.stage[stage.status] || stage.status}
+              <span className={`job-state state-${state}`}>
+                {stalled ? t.stalled[stalled] || stalled : t.stage[stage.status] || stage.status}
               </span>
               {stage.reusedFrom ? (
                 <button type="button" className="quiet-button" onClick={() => onOpen(stage.reusedFrom!.jobId)}>
