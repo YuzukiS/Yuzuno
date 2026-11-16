@@ -8,11 +8,14 @@ import type { Policy, Tier } from "./executor-routing";
 export type CandidateState = "chosen" | "skipped" | "unknown" | "failed" | "notTried" | "off";
 /** Why, in both languages as Core words it; `params` carry ISO times. */
 export interface Reason { code: string; message: string; messageZh: string; params?: Record<string, unknown>; condition?: number }
-export interface Reading { what: string; account?: string; value: number | string; observedAt?: string; source?: string }
+export interface Reading { what: string; account?: string; value: number | string; observedAt?: string; source?: string; machine?: string }
 export interface RouteAccount { number: number; fingerprint: string; state: "pick" | "ok" | "low" | "unknown"; weekLeftPct?: number; resetsAt?: string }
+/** A login's quota on one machine it may run on, in a preview (YN-175): `local`
+ * is this Core host; another is that machine's own login, by its name. */
+export interface RouteMachine { machine: string; name?: string; state: "ok" | "low" | "unknown"; weekLeftPct?: number; resetsAt?: string; observedAt?: string; reason?: Reason }
 export interface RouteCandidate {
   id: string; label?: string; harness?: string; model?: string; state: CandidateState;
-  reasons: Reason[]; readings: Reading[]; accounts?: RouteAccount[];
+  reasons: Reason[]; readings: Reading[]; accounts?: RouteAccount[]; machines?: RouteMachine[];
 }
 /** One choice: kept on a dispatch (`at` dispatch or start), or a preview. */
 export interface RouteRecord {
@@ -43,7 +46,8 @@ const list = <T>(v: unknown, of: (x: unknown) => T | null): T[] => (Array.isArra
 const readingOf = (v: unknown): Reading | null => {
   const r = v as Partial<Reading> | null;
   return r && text(r.what) && (typeof r.value === "number" || text(r.value))
-    ? { what: r.what, value: r.value, ...(text(r.account) ? { account: r.account } : {}), ...(text(r.observedAt) ? { observedAt: r.observedAt } : {}), ...(text(r.source) ? { source: r.source } : {}) }
+    ? { what: r.what, value: r.value, ...(text(r.account) ? { account: r.account } : {}), ...(text(r.observedAt) ? { observedAt: r.observedAt } : {}), ...(text(r.source) ? { source: r.source } : {}),
+      ...(text(r.machine) ? { machine: r.machine } : {}) }
     : null;
 };
 const accountOf = (v: unknown): RouteAccount | null => {
@@ -55,6 +59,15 @@ const accountOf = (v: unknown): RouteAccount | null => {
   return { number: a.number, fingerprint: a.fingerprint, state: a.state as RouteAccount["state"],
     ...(weekLeftPct != null ? { weekLeftPct } : {}), ...(resetsAt ? { resetsAt } : {}) };
 };
+const machineOf = (v: unknown): RouteMachine | null => {
+  const m = v as Partial<RouteMachine> | null;
+  if (!(m && text(m.machine) && ["ok", "low", "unknown"].includes(m.state as string))) return null;
+  const weekLeftPct = typeof m.weekLeftPct === "number" && Number.isFinite(m.weekLeftPct) ? m.weekLeftPct : null;
+  const reason = reasonOf(m.reason);
+  return { machine: m.machine, state: m.state as RouteMachine["state"], ...(text(m.name) && m.name.trim() ? { name: m.name } : {}),
+    ...(weekLeftPct != null ? { weekLeftPct } : {}), ...(text(m.resetsAt) && Number.isFinite(Date.parse(m.resetsAt)) ? { resetsAt: m.resetsAt } : {}),
+    ...(text(m.observedAt) && Number.isFinite(Date.parse(m.observedAt)) ? { observedAt: m.observedAt } : {}), ...(reason ? { reason } : {}) };
+};
 const candidateOf = (v: unknown): RouteCandidate | null => {
   const c = v as Partial<RouteCandidate> | null;
   if (!c || !text(c.id)) return null;
@@ -63,6 +76,7 @@ const candidateOf = (v: unknown): RouteCandidate | null => {
     reasons: list(c.reasons, reasonOf), readings: list(c.readings, readingOf),
     ...(text(c.label) ? { label: c.label } : {}), ...(text(c.harness) ? { harness: c.harness } : {}), ...(text(c.model) ? { model: c.model } : {}),
     ...(Array.isArray(c.accounts) ? { accounts: list(c.accounts, accountOf) } : {}),
+    ...(Array.isArray(c.machines) ? { machines: list(c.machines, machineOf) } : {}),
   };
 };
 const releasedOf = (v: unknown): { released?: Reason & { at?: string } } => {

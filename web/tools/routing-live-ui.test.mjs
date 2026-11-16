@@ -288,3 +288,35 @@ test("a pool's account rows show the week left and the reset time its reading kn
     assert.deepEqual(page.errors, []);
   }
 });
+
+test("a login's quota on each machine it may run on sits under its card, this host first (YN-175)", async () => {
+  const at = "2026-11-19T09:00:00+00:00";
+  const when = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(at));
+  const machines = [
+    { machine: "local", state: "ok", weekLeftPct: 40, resetsAt: at, observedAt: minutesAgo(2) },
+    { machine: "mac-mini", name: "Mac mini", state: "low", weekLeftPct: 12, resetsAt: at, observedAt: minutesAgo(3),
+      reason: { code: "quotaLow", message: "On Mac mini, 12% of the weekly quota is left, below 20%", messageZh: "Mac mini 上本周额度只剩 12%，低于 20%" } },
+    { machine: "lab-linux", name: "lab-linux", state: "unknown", reason: { code: "quotaUnknown", message: "Couldn't reach lab-linux to read its quota",
+      messageZh: "连不上 lab-linux，读不到它的额度", params: { machine: "lab-linux", cause: "machineUnreachable" } } },
+    // A state this page doesn't know is left out.
+    { machine: "later", name: "Later", state: "maybe" },
+  ];
+  const evaluate = () => [200, record({ candidates: record().candidates.map((c) => (c.id === "cx" ? { ...c, machines } : c)) })];
+  const rows = (page) => [...card(page, "cx").querySelectorAll(".routing-live-machines li")]
+    .map((li) => [...li.querySelectorAll(".routing-live-account, .routing-reading, .routing-reading-at, .settings-tag")].map((x) => x.textContent.trim()));
+  for (const [language, title, host, words] of [
+    ["en", "Each machine's own login", ["This host", "Week left 40%", "2 min ago", "Enough"],
+      [["Mac mini", "Week left 12%", `resets ${when}`, "3 min ago", "Not enough"], ["lab-linux", "Couldn't reach lab-linux to read its quota", "No reading"]]],
+    ["zh-Hans", "各台机器上自己的登录", ["这台主机", "本周剩 40%", "2 分钟前", "够用"],
+      [["Mac mini", "本周剩 12%", `${when} 重置`, "3 分钟前", "不够"], ["lab-linux", "连不上 lab-linux，读不到它的额度", "读不到"]]],
+  ]) {
+    const page = mount(core({ evaluate }), language);
+    await until(() => card(page, "cx").querySelector(".routing-live-machines"), `the machines (${language})`);
+    assert.equal(card(page, "cx").querySelector(".routing-live-title").textContent, title);
+    assert.deepEqual(rows(page), [host, ...words], language);
+    assert.ok(card(page, "cx").querySelector('[data-machine="mac-mini"] .routing-meter i').classList.contains("is-low"), "not enough there");
+    assert.ok(!card(page, "cx").querySelector('[data-machine="local"] .routing-meter i').classList.contains("is-low"));
+    assert.equal(card(page, "cl").querySelector(".routing-live-machines"), null, "a candidate without the list has none");
+    assert.deepEqual(page.errors, []);
+  }
+});
