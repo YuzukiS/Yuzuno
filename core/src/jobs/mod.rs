@@ -552,9 +552,11 @@ impl Submit {
                 machine != remote::WINDOWS || self.guard_paths.is_empty(),
                 "guardPaths narrows guardGit, which is not available on Windows on this PC; omit it"
             );
+            // On an SSH machine they are streamed from there when downloaded
+            // (YN-83 S2); Windows' helper streams nothing.
             ensure!(
-                self.outputs.is_empty(),
-                "outputs are downloaded from this host; on a remote machine they stay there, so declare them as artifacts instead"
+                machine != remote::WINDOWS || self.outputs.is_empty(),
+                "outputs are not available on Windows on this PC: its files stay there, so declare them as artifacts instead"
             );
             // On Windows, files of that PC: inputs on a drive or below cwd,
             // artifacts below cwd, with Windows' separators.
@@ -581,10 +583,6 @@ impl Submit {
             "A CPU range up to cpuMillisMax needs a Linux host's cgroup: {why}, a Job runs at cpuMillis. Omit cpuMillisMax"
         );
         ensure!(!self.exclusive, "exclusive is not available {why}; omit it");
-        ensure!(
-            self.outputs.is_empty(),
-            "outputs are not available {why}; declare the files as artifacts, which are checked there after a clean exit"
-        );
         Ok(())
     }
     /// A declared checkpoint's protocol, for a Job and for a run's stage.
@@ -1067,6 +1065,9 @@ async fn output(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ApiError> {
     let job = ws.stored(move |s| s.job(&id)).await?;
+    if let Some(response) = remote_download(&ws, &job, false, index).await? {
+        return Ok(response);
+    }
     let path = host::output_path(&job, index).await?;
     Ok(attachment(path, request).await)
 }
@@ -1078,19 +1079,47 @@ async fn artifact(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ApiError> {
     let job = ws.stored(move |s| s.job(&id)).await?;
-    if let Some(refusal) = remote_artifact_refusal(&job) {
-        return Err(anyhow::anyhow!(refusal).into());
+    if let Some(response) = remote_download(&ws, &job, true, index).await? {
+        return Ok(response);
     }
     let path = host::artifact_path(&ws.data_dir, &job, index).await?;
     Ok(attachment(path, request).await)
 }
-/// A remote Job's artifacts are files on its machine: their paths name
-/// nothing on this host, so none is served from here.
-pub(super) fn remote_artifact_refusal(job: &Value) -> Option<String> {
-    job["executor"]["kind"].as_str().filter(|kind| *kind != "local").map(|_| {
-        format!("This artifact is on {}; Core checks it there and does not copy it, so it cannot be downloaded here",
-            job["machine"]["name"].as_str().unwrap_or("the remote machine"))
-    })
+/// A remote Job's artifact or output (YN-83 S2): on an SSH machine or This
+/// Mac, streamed from there by its own helper when it is downloaded and
+/// copied nowhere (remote::fetch); on Windows refused, as its files stay
+/// there. None for a Job of this host.
+async fn remote_download(ws: &Arc<Workspace>, job: &Value, artifact: bool, index: usize)
+    -> Result<Option<axum::response::Response>, ApiError> {
+    match job["executor"]["kind"].as_str() {
+        None | Some("local") => Ok(None),
+        Some(remote::WINDOWS) => Err(anyhow::anyhow!(remote::WINDOWS_DOWNLOAD).into()),
+        Some(_) => {
+            let programs = remote::Programs { ssh: remote::SSH, windows: None, mux: None, mac: remote::MAC_TOOLS };
+            Ok(Some(download_response(remote::fetch(ws, job, artifact, index, &programs).await)))
+        }
+    }
+}
+/// The whole file with its length, never a range (200), or why not: 404 for
+/// no such file of the attempt, 409 for a refusal before any byte, 503 while
+/// that machine serves another download.
+pub(super) fn download_response(fetched: std::result::Result<remote::Download, remote::FetchRefusal>) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    let (status, why) = match fetched {
+        Ok(download) => {
+            return axum::response::Response::builder()
+                .header(header::CONTENT_LENGTH, download.bytes)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_DISPOSITION, "attachment")
+                .body(download.body)
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(remote::FetchRefusal::Missing(why)) => (StatusCode::NOT_FOUND, why),
+        Err(remote::FetchRefusal::Refused(why)) => (StatusCode::CONFLICT, why),
+        Err(remote::FetchRefusal::Busy(why)) => (StatusCode::SERVICE_UNAVAILABLE, why),
+    };
+    (status, Json(json!({"error": why}))).into_response()
 }
 async fn attachment(path: std::path::PathBuf, request: axum::extract::Request) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -1898,7 +1927,8 @@ const ARTIFACTS: &str = "Files a clean exit must leave behind, relative to cwd. 
     check. Structure only: whether the content is valid is the project's call. A file left there earlier passes if it meets the rules \
     (preExisting and unchangedSinceStart record it): for an output only this attempt can have written, give it a path of its own.";
 const REMOTE_ARTIFACTS: &str = "With machineId they are checked on that machine by the same rules and stay there: the job \
-    records the machine, each file's path there, size and SHA-256, and nothing is copied to this host or offered for download.";
+    records the machine, each file's path there, size and SHA-256, and nothing is copied to this host. On an SSH machine or mac a \
+    download streams it from there, checked against that record; on windows none is offered.";
 /// machineId in short; how each kind of machine runs a job, holds its limits
 /// and checks its files is the guide's jobs topic (references/jobs.md).
 const MACHINE: &str = "Run on a registered machine from the Machines list instead of this Core's host: an SSH machine \
@@ -1907,9 +1937,9 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     registered SSH machine, or this host for an Agent here), resolved by Core from your Agent at submit and kept by the job; \"local\" \
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
-    mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
-    (declare artifacts) and service (a run's stages may name one: job_run_submit); guardGit reads the Git there (on windows set it to false); pause only where the job's \
-    capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
+    mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, service; \
+    guardGit reads the Git there and outputs download from there (on windows set guardGit to false and declare artifacts), and a run's \
+    stages may name one too (job_run_submit); pause only where the job's capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. On a macOS Core this host is \"mac\", This Mac: without machineId, with local, or agent for an Agent here, a job runs \
     there in the limited mode (limits declared only, within this Core's Jobs budget and maxActive), and what is not available with \
@@ -1968,7 +1998,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
-        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"guardPaths":{"type":"array","items":string,"maxItems":128,"description":GUARD_PATHS},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
+        "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"guardPaths":{"type":"array","items":string,"maxItems":128,"description":GUARD_PATHS},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel; with machineId streamed from that machine when downloaded. Not on windows: declare artifacts there."}});
     let artifacts = json!({"type":"array","maxItems":20,"description":ARTIFACTS,
         "items":{"type":"object","properties":{"path":string,"format":{"type":"string","enum":["bytes","json","jsonl"],"default":"bytes"},"minBytes":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}});
     let mut properties = properties;

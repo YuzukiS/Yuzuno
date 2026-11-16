@@ -1367,6 +1367,11 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(remote_job.digest(dict(root, upstream=[])), remote_job.digest(root))
         self.assertEqual(remote_job.digest(dict(base, needs=["prep", "train"])),
                          "0a051faf789cd2f61f28a3bbd83510c5bcadaf7fb9ce8f1a11ad05121bc91e1c")
+        # Declared outputs (PR2); a git-only v4 start keeps its digest above.
+        self.assertEqual(remote_job.digest(dict(base, outputs=["out/report.txt", "log.txt"])),
+                         "b747ee11539f0f6dd4118a903ae3078c0f828be7770839838abd209c4e7bf62c")
+        self.assertEqual(remote_job.digest(dict(whole, outputs=["out/report.txt"])),
+                         "e1e454342aa4147a5f9de15f279217d27d9a4cb7ad5cdb14f65e029912897140")
 
     def test_a_stages_start_without_its_needs_is_refused_and_one_without_its_upstream_never_runs(self):
         # Bound with needs at submit; a Core from before them sends no needs.
@@ -1387,6 +1392,20 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(started["result"]["status"], "rejected", started)
         self.assertEqual(started["result"]["reason"], "Not started on this machine: no upstream record came for stage prep")
         self.assertFalse((self.work / "ran").exists())
+
+    def test_outputs_and_a_fetch_are_checked_before_anything_is_done(self):
+        attempt = self.attempt("true")
+        for bad in (["/etc/passwd"], ["../up.txt"], [""], "o.txt"):
+            refused = self.call(dict(attempt, action="start", outputs=bad), expect=3)
+            self.assertIn("outputs must be 1-20 paths relative to cwd", refused["error"])
+        self.assertFalse(self.folder(attempt).exists())
+        # A fetch names a kind and a position, never a path.
+        keys = ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")
+        fetch = dict({key: attempt[key] for key in keys}, action="fetch")
+        for extra in ({"kind": "path", "index": 0}, {"kind": "output", "index": -1}, {"kind": "output", "index": "0"}):
+            refused = self.call(dict(fetch, **extra), expect=3)
+            self.assertIn("fetch needs kind artifact or output", refused["error"])
+        self.assertEqual(self.call(dict(fetch, kind="output", index=0))["status"], "absent")
 
     def test_a_v4_start_without_its_git_state_is_refused_before_anything_is_written(self):
         # A guardGit attempt is bound with v4 at submit; a Core from before it
