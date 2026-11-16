@@ -572,6 +572,22 @@ test('Actions share the Jobs shell, preserve old SHA and show paged jobs without
   }finally{p.close();}
 });
 
+// YN-193: Core lists subscriptions on the first page only; earlier runs keep them.
+test('earlier CI runs keep the subscriptions the first page listed',async()=>{
+  const older = { ...ciRun, id:'github:123:41:1', runId:'41', attempt:'1', cursor:0 };
+  const p=mount(url=>url.startsWith('/api/ci?') && url.includes('before=1')?{runs:[older],subscriptions:[],hasMore:false,nextBefore:null}
+    :url.startsWith('/api/ci?')?{runs:[ciRun],subscriptions:[ciSub],hasMore:true,nextBefore:1}:page([]));
+  try{
+    await open(p);button(p,'GitHub Actions').click();
+    await until(()=>button(p,'Earlier CI runs'));
+    assert.equal(p.doc.querySelectorAll('.ci-subscription').length,1);
+    button(p,'Earlier CI runs').click();
+    await until(()=>p.calls.some(c=>c.url.startsWith('/api/ci?') && c.url.includes('before=1')));
+    await until(()=>p.doc.querySelectorAll('.ci-jobs .job-row').length===2);
+    assert.equal(p.doc.querySelectorAll('.ci-subscription').length,1,'the subscription stays listed');
+  }finally{p.close();}
+});
+
 test('explicit CI subscription pins commit, retries same request and stops without cancelling a run',async()=>{
   let count=0;
   const p=mount((url,body)=>{

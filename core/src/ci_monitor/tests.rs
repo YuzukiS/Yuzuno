@@ -6,6 +6,8 @@ mod stopped_refresh;
 #[cfg(unix)]
 #[path = "commit_watch_tests.rs"]
 mod commit_watch;
+#[path = "limits_tests.rs"]
+mod limits;
 fn setup() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
