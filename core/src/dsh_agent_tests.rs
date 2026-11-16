@@ -713,6 +713,39 @@ async fn images_go_as_acp_image_blocks_to_a_dsh_that_takes_them() {
     lab.ws.close_agent(OTHER).await.unwrap();
 }
 
+/// YN-173: a hand-off from Home to a running dsh whose initialize said it
+/// takes no images is refused them as images (`ImagesRefused`), before any
+/// is copied, so the hand-off goes on without them, saying why; a dsh that
+/// takes images is given its own copy.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hand_off_to_a_dsh_that_takes_no_images_is_refused_them_as_images() {
+    let lab = Lab::new();
+    let project = "synthetic-project";
+    let home = crate::input_images::home_dir(&lab.root.join("data"), project).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(4, 3).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    let picture = format!("{}.png", sha256_bytes(&png));
+    std::fs::write(home.join(&picture), &png).unwrap();
+    std::fs::write(home.join(format!("{picture}.thumb.png")), &png).unwrap();
+    const BLIND: &str = "dsh-blind";
+    lab.agent(BLIND, Some("ask"), Some("deepseek"), json!({"initialize": {"agentCapabilities": {"promptCapabilities": {"image": false}}}}), json!({}));
+    lab.ws.dsh_ensure(BLIND).await.unwrap();
+    assert_eq!(lab.ws.dsh_takes_images(BLIND), Some(false));
+    let refused = crate::project_requests::adopt_images(&lab.ws, project, BLIND, std::slice::from_ref(&picture)).await.unwrap_err();
+    assert_eq!(crate::project_requests::images_refused(&refused), Some("dsh can't receive images"), "{refused}");
+    assert!(!lab.root.join("data/input-images").join(BLIND).exists(), "nothing copied");
+    lab.ws.close_agent(BLIND).await.unwrap();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    lab.ws.dsh_ensure(ID).await.unwrap();
+    assert_eq!(lab.ws.dsh_takes_images(ID), Some(true));
+    crate::project_requests::adopt_images(&lab.ws, project, ID, std::slice::from_ref(&picture)).await.unwrap();
+    assert!(lab.root.join("data/input-images").join(ID).join(&picture).is_file(), "its own copy");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// The user's disconnect (§3.8): only while idle; its dsh stopped, nothing
 /// starts it again until they reconnect, and that resumes the session.
 #[cfg(unix)]

@@ -127,3 +127,162 @@ async fn a_queued_executor_gets_the_words_by_mail_and_the_attachments_once_it_ha
     assert!(mail[0]["body"].as_str().unwrap().contains("\n\n文案也改\n\nThe user also attached 1 image and 1 file to R-2 on Home; they come to you \
         as a message from Home once you have started.\n\nWhy"), "{mail:?}");
 }
+
+/// Its folders full: what can't be copied is left out, one line saying why
+/// before the opening, which still names what goes (YN-173: before, the line
+/// replaced it); with neither copied, a line for each, the newest first
+/// (before, only the images' line was left).
+#[tokio::test]
+async fn an_executor_whose_folders_are_full_gets_what_fits_and_a_line_for_each_that_does_not() {
+    let lab = lab();
+    let (images, files) = (vec![image(&lab, 1)], vec![file(&lab, 1, "report.pdf")]);
+    let n = lab.say_words(with(lab.words("按附件改", "m1"), &images, &files)).await;
+    let made = lab.route("desk", n, "改版", "好。", vec![design("改版一", "先出布局"), design("改版二", "再出一版")]).await.unwrap();
+    let key = |index: usize| made["routes"][index]["task"].as_str().unwrap().to_owned();
+    let executor = |index: usize| made["routes"][index]["to"]["agentId"].as_str().unwrap().to_owned();
+    // Each folder's 256 MiB taken by one sparse file.
+    let fill = |dir: std::path::PathBuf| {
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::File::create(dir.join("filler")).unwrap().set_len(256 * 1024 * 1024).unwrap();
+    };
+    fill(images_dir(&lab, &executor(0)));
+    fill(images_dir(&lab, &executor(1)));
+    fill(files_dir(&lab, &executor(1)).join("filler"));
+    for index in 0..2 {
+        start(&lab, &executor(index));
+        running(&lab.ws, &executor(index));
+    }
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    let images_full = "The user also attached 1 image to R-1 on Home, which could not be sent to you: The receiving Agent's saved images \
+        reached the 256 MiB limit.";
+    let sent = lab.receipt(&executor(0), &format!("route-{}", lab.route_id(n, 0))).expect("its file still goes");
+    assert_eq!((sent.input.images.clone(), sent.files.clone()), (vec![], files.clone()));
+    assert_eq!(sent.input.text, format!("{images_full}\n{}", head(&lab, "files", 1,
+        &format!("the request's words are in the description of task {}, whose card you answer for.", key(0)))));
+    let sent = lab.receipt(&executor(1), &format!("route-{}", lab.route_id(n, 1))).expect("the lines still go");
+    assert!(sent.input.images.is_empty() && sent.files.is_empty());
+    // Images are copied first (`send`), so their line comes second.
+    assert_eq!(sent.input.text, format!("The user also attached 1 file to R-1 on Home, which could not be sent to you: \
+        The receiving Agent's saved files reached the 256 MiB limit.\n{images_full}"));
+    assert_eq!(shown(&lab, n, 1)["attachments"]["state"], "sent");
+}
+
+/// Refused for another reason (here a remote executor whose runtime is not
+/// confirmed yet): tried again a minute later at the soonest, three times,
+/// then the message goes without them, the line saying why; that refused
+/// too, it failed. The user's words were never held up: they are in the
+/// task's description.
+#[tokio::test]
+async fn a_hand_off_refused_three_times_goes_without_the_attachments_saying_why() {
+    let lab = lab();
+    let files = vec![file(&lab, 1, "report.pdf")];
+    let n = lab.say_words(with(lab.words("看附件", "m1"), &[], &files)).await;
+    let made = lab.route("desk", n, "附件", "好。", vec![design("看附件", "要设计")]).await.unwrap();
+    let executor = made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned();
+    lab.ws.store.update(&executor, "test/remote", &json!({}), |d| {
+        d.agent.remote = Some(serde_json::from_value(json!({"machine": {
+            "id":"offline", "name":"offline", "target":"-must-not-run-ssh", "codex":"codex", "defaultCwd":"/synthetic"}})).unwrap());
+    }).unwrap();
+    start(&lab, &executor);
+    running(&lab.ws, &executor);
+    let earlier = |lab: &Lab| lab.ws.store.db.write().unwrap().execute(
+        "UPDATE project_routes SET attachments_note=json_set(attachments_note,'$.at','2026-01-01T00:00:00Z') WHERE attachments='owed'", []).unwrap();
+    for tries in 1..=3 {
+        lab.ws.deliver_owed_attachments().await.unwrap();
+        let attachments = shown(&lab, n, 0)["attachments"].clone();
+        assert_eq!((attachments["state"].clone(), attachments["tries"].clone()), (json!("owed"), json!(tries)), "{attachments}");
+        assert!(attachments["error"].as_str().unwrap().contains("远程运行实例尚未确认"), "{attachments}");
+        lab.ws.deliver_owed_attachments().await.unwrap();
+        assert_eq!(shown(&lab, n, 0)["attachments"]["tries"], tries, "not again within a minute");
+        earlier(&lab);
+    }
+    assert_eq!(lab.sent(&executor), 0);
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    let sent = lab.receipt(&executor, &format!("route-{}", lab.route_id(n, 0))).expect("the line alone");
+    assert!(sent.files.is_empty());
+    assert_eq!(sent.input.text, "The user also attached 1 file to R-1 on Home, which could not be sent to you: 远程运行实例尚未确认，文件未发送；草稿保留.");
+    let attachments = shown(&lab, n, 0)["attachments"].clone();
+    assert_eq!((attachments["state"].clone(), attachments["unsent"].clone(), attachments["tries"].clone()), (json!("sent"), json!(true), json!(3)));
+}
+
+/// Owed to the card, not to an Agent: reassigned before they went, they go
+/// to who answers for it now, with the words when that one never had the
+/// front desk's mail; a card whose task ended first is owed nothing, and
+/// nothing is copied.
+#[tokio::test]
+async fn owed_attachments_follow_the_card_and_end_with_its_task() {
+    let lab = lab();
+    let first = lab.say("设置页重新排版", "m1").await;
+    let made = lab.route("desk", first, "排版", "好。", vec![design("排版", "要设计"), design("配色", "也要设计")]).await.unwrap();
+    let key = |index: usize| made["routes"][index]["task"].as_str().unwrap().to_owned();
+    let executor = made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned();
+    let images = vec![image(&lab, 1)];
+    let words = "按这张图";
+    let second = lab.say_words(with(lab.words(words, "m2"), &images, &[])).await;
+    lab.route("desk", second, "截图", "并进去。", vec![join(&key(0).to_lowercase(), "同一件事"), join(&key(1).to_lowercase(), "也相关")])
+        .await.unwrap();
+    // The first card goes to Lead, already running, before its executor started.
+    let section = made["routes"][0]["sectionId"].clone();
+    let (status, _) = reassign_on_page(&lab, &section, json!({"workspaceId":lab.workspace,"to":{"agentId":"lead"},"why":"给 Lead",
+        "clientRequestId":"r1"}), false).await;
+    assert_eq!(status, StatusCode::OK);
+    // The second card's task ends before its executor started.
+    lab.end(&key(1), "cancelled");
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    let sent = lab.receipt("lead", &format!("route-{}", lab.route_id(second, 0))).expect("to who answers for the card now");
+    assert_eq!(sent.input.images, images);
+    assert!(sent.input.text.starts_with(&format!("Request R-2 from the user to the project Code (Workspace {}, Project {}), routed by the front \
+        desk Desk to task {}", lab.workspace, lab.project, key(0))), "{}", sent.input.text);
+    assert!(sent.input.text.ends_with(&format!("\n\n{words}")), "the words, which Lead never had: {}", sent.input.text);
+    assert_eq!(lab.sent(&executor), 0);
+    assert_eq!(shown(&lab, second, 1)["attachments"], json!({"state":"gone"}));
+    let other = made["routes"][1]["to"]["agentId"].as_str().unwrap().to_owned();
+    assert!(!images_dir(&lab, &other).exists(), "nothing copied for an ended card");
+}
+
+/// Without attachments nothing changes: no route owes anything, the task's
+/// description and the queued mail are what they always were, and the step
+/// sends nothing.
+#[tokio::test]
+async fn a_request_without_attachments_owes_nothing_and_reads_as_before() {
+    let lab = lab();
+    let n = lab.say("设置页重新排版", "m1").await;
+    let made = lab.route("desk", n, "排版", "好。", vec![design("排版", "要设计")]).await.unwrap();
+    let (key, executor) = (made["routes"][0]["task"].as_str().unwrap().to_owned(), made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned());
+    let head = "Request R-1 from the user to the project Code, routed to this task's card by the front desk Desk. The user's words, exactly as written:";
+    assert_eq!(lab.task(&key)["description"], format!("{head}\n\n设置页重新排版{WHY_PREFIX}要设计"));
+    let second = lab.say("文案也改", "m2").await;
+    lab.route("desk", second, "文案", "并进去。", vec![join(&key.to_lowercase(), "同一张")]).await.unwrap();
+    let mail: Vec<_> = lab.mail(&executor).into_iter().filter(|m| m["dispatchId"].is_null()).collect();
+    assert!(mail[0]["body"].as_str().unwrap().ends_with("\n\n文案也改\n\nWhy, in the front desk's words (not the user's): 同一张"), "{mail:?}");
+    assert_eq!(lab.count("SELECT COUNT(*) FROM project_routes WHERE attachments IS NOT NULL OR attachments_note IS NOT NULL"), 0);
+    for (request, index) in [(n, 0), (second, 0)] {
+        assert!(shown(&lab, request, index).get("attachments").is_none());
+    }
+    start(&lab, &executor);
+    running(&lab.ws, &executor);
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    assert_eq!(lab.sent(&executor), 0);
+}
+
+/// The opening of a hand-off whose words went elsewhere keeps naming what
+/// still goes after each line saying what can't (YN-173), and a message with
+/// the words is opened as before.
+#[test]
+fn a_hand_offs_opening_keeps_what_still_goes_after_each_line_saying_what_cant() {
+    let ctx = Ctx { workspace: "w".into(), project: "p".into(), name: "Code".into(), front: "Desk".into(), request: kept_request("看"),
+        todo: vec![], given: 0 };
+    let opening = Opening::Attachments { task: "COD-1", words: Carrier::Description, first: false };
+    let files = not_sent(1, 0, 1, "dsh can't receive files");
+    assert_eq!(files, "The user also attached 1 file to R-1 on Home, which could not be sent to you: dsh can't receive files.");
+    assert_eq!(opening_text(&ctx, opening, std::slice::from_ref(&files), 2, 0), format!("{files}\nThe images the user attached to R-1 of the \
+        project Code on Home (Workspace w, Project p); the request's words are in the description of task COD-1, whose card you answer for."));
+    let images = not_sent(1, 2, 0, "Saved image is missing; attach it again");
+    assert_eq!(opening_text(&ctx, opening, &[images.clone(), files.clone()], 0, 0), format!("{images}\n{files}"));
+    let first = Opening::Attachments { task: "COD-1", words: Carrier::Mail, first: true };
+    assert!(opening_text(&ctx, first, &[], 1, 0).ends_with("reached you in the front desk's mail about task COD-1, whose card you answer for. \
+        Your dispatch for task COD-1 is in your Workspace mailbox."));
+    assert_eq!(opening_text(&ctx, Opening::Words("Head:"), &[images.clone()], 0, 0), format!("{images}\nHead:"));
+    assert_eq!(not_sent(1, 2, 1, "it was refused"), "The user also attached 2 images and 1 file to R-1 on Home, which could not be sent to you: \
+        it was refused.");
+}

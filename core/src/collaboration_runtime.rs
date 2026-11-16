@@ -340,6 +340,13 @@ impl Workspace {
                 if let Err(error) = ws.check_brief_turns().await {
                     eprintln!("Brief turn-end check: {error:#}");
                 }
+                // Before mail: a request's images and files owed to an Agent
+                // that had not started (YN-173), so a dsh, which takes no
+                // message while a Turn runs, gets them before its dispatch's
+                // mail begins one; the others take them into that Turn.
+                if let Err(error) = ws.deliver_owed_attachments().await {
+                    eprintln!("Owed request attachments: {error:#}");
+                }
                 if let Ok(pending) = ws.stored(|store| store.pending_peer_deliveries()).await {
                     futures_util::stream::iter(pending)
                         .for_each_concurrent(2, |batch| {

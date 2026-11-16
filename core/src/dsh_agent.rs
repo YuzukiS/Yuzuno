@@ -1124,6 +1124,13 @@ impl Workspace {
         self.changed(id);
     }
 
+    /// Whether this dsh Agent's running dsh takes images in a prompt, as its
+    /// initialize said (§3.9); none while no dsh runs for it (YN-173: a
+    /// hand-off to it goes on without them, project_requests.rs).
+    pub(crate) fn dsh_takes_images(&self, id: &str) -> Option<bool> {
+        self.dshs.lock().unwrap().get(id).map(|c| c.images)
+    }
+
     /// Before a receipt is recorded (send_message): what a dsh Agent takes is
     /// a new message while it is idle; a form's answers are one too.
     pub(crate) async fn dsh_admit(self: &Arc<Self>, id: &str, input: &MessageInput, detail: &AgentDetail) -> Result<()> {
