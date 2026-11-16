@@ -1660,7 +1660,7 @@ fn create_message(
         let parent_task = parent["taskId"].as_str();
         if parent["sender"]["kind"] == "system" {
             let about = task_id.as_deref().or(parent_task)
-                .map(|task| format!(", with taskId {}", task_shown(db, task))).unwrap_or_default();
+                .map(|task| format!(", with taskId {},", task_shown(db, task))).unwrap_or_default();
             bail!("invalid_reply: {parent_id} is Core's notice, which takes no reply; send without replyTo{about} to write to {to}");
         }
         if actor.kind == "agent" {
