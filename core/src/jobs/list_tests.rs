@@ -330,6 +330,56 @@ fn compact_projection_bounds_text_and_both_modes_omit_environment() {
     );
 }
 
+/// YN-194: the history page filtered by status, time and reason; the live
+/// page never; rows with the peak a Job used and what it retried.
+#[test]
+fn history_filters_by_status_since_and_reason_and_rows_say_peak_and_retry() {
+    let f = Fixture::new();
+    let mut oom = f.job("a", "T-1", "failed", false);
+    oom["reason"] = json!("Killed by OOM-KILL at its memory limit");
+    oom["createdAt"] = json!("2026-11-16T08:00:00.5+00:00");
+    oom["retryOf"] = json!("11111111-1111-4111-8111-111111111111");
+    oom["executor"] = Value::Null;
+    oom["result"] = json!({"jobId":oom["id"],"attempt":oom["attempt"],"bootId":oom["bootId"],
+        "started":{"attempt":oom["attempt"],"bootId":oom["bootId"],"invocationId":"inv"},
+        "evidence":{"systemd":{"InvocationID":"inv","MainPID":"0","SubState":"failed","MemoryPeak":"134217728",
+            "CPUUsageNSec":"1000000000","ExecMainStartTimestampMonotonic":"1000000","ExecMainExitTimestampMonotonic":"4000000"}}});
+    store::save(&f.store.db.write().unwrap(), &oom).unwrap();
+    let mut old = f.job("a", "T-1", "failed", false);
+    old["reason"] = json!("exit-code 127");
+    old["createdAt"] = json!("2026-11-15T08:00:00+00:00");
+    store::save(&f.store.db.write().unwrap(), &old).unwrap();
+    let done = f.job("a", "T-1", "succeeded", false);
+    let live = f.job("a", "T-1", "queued", false);
+    let id = |job: &Value| job["id"].as_str().unwrap().to_owned();
+    let page = |args: Value| ids(&f.list(args), "jobs");
+    assert_eq!(page(json!({"status":["failed"]})), HashSet::from([id(&oom), id(&old)]));
+    assert_eq!(page(json!({"status":["succeeded","queued"]})), HashSet::from([id(&done), id(&live)]));
+    assert_eq!(page(json!({"reasonContains":"oom-kill"})), HashSet::from([id(&oom)]), "ignoring ASCII case");
+    assert_eq!(page(json!({"since":"2026-11-16T08:00:00Z","status":["failed"]})), HashSet::from([id(&oom)]));
+    assert_eq!(page(json!({"since":"2026-11-16T03:00:00-05:00","status":["failed"]})), HashSet::from([id(&oom)]), "any offset, read as UTC");
+    // The live page is not filtered: the queued Job stays visible.
+    let filtered = f.list(json!({"status":["failed"]}));
+    assert!(filtered["liveJobIds"].as_array().unwrap().contains(&json!(id(&live))));
+    assert_eq!(filtered["filters"]["status"], json!(["failed"]));
+    // Rows: the peak it used (MiB, one decimal) and what it retried.
+    let rows = f.list(json!({"status":["failed"],"reasonContains":"OOM"}));
+    assert_eq!(rows["jobs"][0]["memoryPeakMiB"], 128.0);
+    assert_eq!(rows["jobs"][0]["retryOf"], "11111111-1111-4111-8111-111111111111");
+    let plain = f.list(json!({"reasonContains":"127"}));
+    assert!(plain["jobs"][0].get("memoryPeakMiB").is_none() && plain["jobs"][0].get("retryOf").is_none());
+    for (args, words) in [
+        (json!({"status":["paused"]}), "not a Job status"),
+        (json!({"status":[]}), "status lists"),
+        (json!({"since":"yesterday"}), "RFC 3339"),
+        (json!({"reasonContains":""}), "reasonContains must contain"),
+        (json!({"reasonContains":"x".repeat(65)}), "reasonContains must contain"),
+    ] {
+        let error = f.store.list_jobs_for(Some("a"), args).unwrap_err().to_string();
+        assert!(error.contains(words), "{words}: {error}");
+    }
+}
+
 #[test]
 fn synthetic_response_size_receipt() {
     let f = Fixture::new();

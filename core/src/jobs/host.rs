@@ -576,6 +576,35 @@ pub(super) async fn command_exited(data: &Path, job: &Value) -> bool {
 }
 
 pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Result<Value> {
+    let (chunks, oldest, total) = ring(data, job).await?;
+    let requested = offset.unwrap_or(total.saturating_sub(32768));
+    let start = requested.max(oldest).min(total);
+    let end = (start + 32768).min(total);
+    let bytes = slice(&chunks, start, end);
+    Ok(
+        json!({"jobId":job["id"],"offset":start,"nextOffset":end,"oldestOffset":oldest,"totalBytes":total,"truncated":requested<oldest,"text":String::from_utf8_lossy(&bytes),"retainedBytesLimit":2097152}),
+    )
+}
+/// The whole output the attempt's ring still holds (at most 2 MiB): where it
+/// starts, where it ends, and the bytes, for a search over all of it (YN-194).
+pub(super) async fn retained(data: &Path, job: &Value) -> Result<(u64, u64, Vec<u8>)> {
+    let (chunks, oldest, total) = ring(data, job).await?;
+    Ok((oldest, total, slice(&chunks, oldest, total)))
+}
+fn slice(chunks: &[(u64, Vec<u8>)], start: u64, end: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (at, part) in chunks {
+        let lo = start.saturating_sub(*at).min(part.len() as u64) as usize;
+        let hi = end.saturating_sub(*at).min(part.len() as u64) as usize;
+        if hi > lo {
+            bytes.extend_from_slice(&part[lo..hi]);
+        }
+    }
+    bytes
+}
+/// The ring's two segments in order, each with its start offset, and the
+/// oldest and total offsets.
+async fn ring(data: &Path, job: &Value) -> Result<(Vec<(u64, Vec<u8>)>, u64, u64)> {
     let dir = folder(data, job)?;
     let mut chunks = Vec::new();
     for index in 0..2 {
@@ -596,20 +625,7 @@ pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Resul
     chunks.sort_by_key(|c| c.0);
     let oldest = chunks.first().map_or(0, |c| c.0);
     let total = chunks.last().map_or(0, |c| c.0 + c.1.len() as u64);
-    let requested = offset.unwrap_or(total.saturating_sub(32768));
-    let start = requested.max(oldest).min(total);
-    let end = (start + 32768).min(total);
-    let mut bytes = Vec::new();
-    for (at, part) in chunks {
-        let lo = start.saturating_sub(at).min(part.len() as u64) as usize;
-        let hi = end.saturating_sub(at).min(part.len() as u64) as usize;
-        if hi > lo {
-            bytes.extend_from_slice(&part[lo..hi]);
-        }
-    }
-    Ok(
-        json!({"jobId":job["id"],"offset":start,"nextOffset":end,"oldestOffset":oldest,"totalBytes":total,"truncated":requested<oldest,"text":String::from_utf8_lossy(&bytes),"retainedBytesLimit":2097152}),
-    )
+    Ok((chunks, oldest, total))
 }
 /// How much output an attempt's log ring holds, from its two segment
 /// headers and sizes alone: none of the output is read.

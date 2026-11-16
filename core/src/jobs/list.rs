@@ -29,7 +29,18 @@ pub(super) struct Input {
     live_before: Option<i64>,
     limit: Option<u64>,
     compact: Option<bool>,
+    // History filters (YN-194): Job statuses, created at or after, and text
+    // its reason contains. The live page is never filtered.
+    status: Option<Vec<String>>,
+    since: Option<String>,
+    reason_contains: Option<String>,
 }
+
+/// Every status a Job record can have (store.rs, runs.rs).
+const STATUSES: [&str; 12] = [
+    "queued", "waiting", "waiting_analysis", "starting", "running", "cancelling",
+    "succeeded", "failed", "cancelled", "rejected", "interrupted", "unknown",
+];
 
 fn project_filter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(d).map(Some)
@@ -95,6 +106,30 @@ impl Store {
                 "workspace"
             }
         };
+        let status = match &input.status {
+            Some(list) => {
+                ensure!(!list.is_empty() && list.len() <= STATUSES.len(), "status lists 1–{} Job statuses", STATUSES.len());
+                for one in list {
+                    ensure!(STATUSES.contains(&one.as_str()), "status {one:?} is not a Job status; use {}", STATUSES.join(", "));
+                }
+                Some(serde_json::to_string(list)?)
+            }
+            None => None,
+        };
+        // As createdAt is kept (model::now, RFC 3339 in UTC), so that text
+        // order is time order.
+        let since = match &input.since {
+            Some(at) => Some(
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .map_err(|_| anyhow::anyhow!("since must be an RFC 3339 time, such as 2026-11-16T08:00:00Z"))?
+                    .with_timezone(&chrono::Utc)
+                    .to_rfc3339(),
+            ),
+            None => None,
+        };
+        if let Some(text) = &input.reason_contains {
+            ensure!(!text.is_empty() && text.chars().count() <= 64, "reasonContains must contain 1–64 characters");
+        }
         let db = self.db.read()?;
         let (project_mode, project) = match input.project_id {
             None => (0, None),
@@ -119,6 +154,9 @@ impl Store {
              WHERE (?1 IS NULL OR j.agent_id=?1) AND (?2 IS NULL OR j.task_id=?2)
                AND (?3=0 OR (?3=1 AND p.project_id IS NULL) OR (?3=2 AND p.project_id=?4))
                AND j.seq<?5 AND (?6=0 OR j.reserved=1 OR j.status IN ('queued','waiting'))
+               AND (?6=1 OR ?8 IS NULL OR j.status IN (SELECT value FROM json_each(?8)))
+               AND (?6=1 OR ?9 IS NULL OR json_extract(j.data,'$.createdAt')>=?9)
+               AND (?6=1 OR ?10 IS NULL OR instr(lower(COALESCE(json_extract(j.data,'$.reason'),'')),lower(?10))>0)
              ORDER BY j.seq DESC LIMIT ?7",
         )?;
         let mut page = |before: Option<i64>, live: bool| -> Result<(Vec<Value>, bool, Value)> {
@@ -131,7 +169,10 @@ impl Store {
                         project,
                         before.unwrap_or(i64::MAX),
                         live,
-                        limit as i64 + 1
+                        limit as i64 + 1,
+                        status,
+                        since,
+                        input.reason_contains
                     ],
                     |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
                 )?
@@ -171,7 +212,8 @@ impl Store {
             "liveJobs":live, "liveJobIds":live_ids,
             "liveHasMore":live_more, "nextLiveBefore":live_next,
             "limit":limit, "compact":compact,
-            "scope":{"kind":scope_name,"agentId":agent,"taskId":input.task_id,"projectId":project}
+            "scope":{"kind":scope_name,"agentId":agent,"taskId":input.task_id,"projectId":project},
+            "filters":{"status":input.status,"since":input.since,"reasonContains":input.reason_contains}
         }))
     }
 }
@@ -218,10 +260,26 @@ fn compact_job(job: &Value) -> Value {
     if !job["run"]["id"].is_null() {
         out["run"] = json!({"id":job["run"]["id"],"stage":job["run"]["stage"],"attempt":job["run"]["attempt"]});
     }
+    // What it used and what it retried (YN-194), from its record alone.
+    let peak = &super::resource_summary::attempt(job)["actual"]["memoryPeakMiB"];
+    if let Some(peak) = peak.as_f64() {
+        out["memoryPeakMiB"] = json!((peak * 10.0).round() / 10.0);
+    }
+    if job["retryOf"].is_string() {
+        out["retryOf"] = job["retryOf"].clone();
+    }
     out
 }
 
-pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. job_get has full details. GUI global history/live behavior is unchanged.";
+/// The last line a failed Job on this host printed (YN-194), from the tail
+/// of its log: no more than 200 characters, None without any.
+pub(super) fn last_line(text: &str) -> Option<String> {
+    let line = text.lines().rev().map(str::trim).find(|line| !line.is_empty())?;
+    let end = line.char_indices().nth(200).map_or(line.len(), |(i, _)| i);
+    Some(if end < line.len() { format!("{}…", &line[..end]) } else { line.to_owned() })
+}
+
+pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. History filters (live page unfiltered): status (Job statuses), since (createdAt at or after, RFC 3339), reasonContains (case-insensitive). Compact rows add memoryPeakMiB when measured, retryOf, and for a failed Job on this host lastLine, its last output line. job_get has full details. GUI global history/live behavior is unchanged.";
 
 pub(super) fn schema() -> Value {
     json!({
@@ -232,6 +290,9 @@ pub(super) fn schema() -> Value {
         "limit":{"type":"integer","minimum":1,"maximum":50,"default":10,"description":"Maximum rows in each history/live page; at most twice this many distinct jobs in one response."},
         "compact":{"type":"boolean","default":true,"description":"Short rows with state, resources, times and capped reason. false returns the prior list projection, still without env; full details use job_get."},
         "before":{"type":"integer","description":"History cursor from nextBefore; retain filters. Existing integer cursors remain valid."},
-        "liveBefore":{"type":"integer","description":"Independent live cursor from nextLiveBefore; omit for the newest live page, including jobs older than history. Consult liveJobIds even when liveJobs is empty due to overlap."}
+        "liveBefore":{"type":"integer","description":"Independent live cursor from nextLiveBefore; omit for the newest live page, including jobs older than history. Consult liveJobIds even when liveJobs is empty due to overlap."},
+        "status":{"type":"array","items":{"type":"string","enum":STATUSES},"minItems":1,"maxItems":STATUSES.len(),"description":"History only: Jobs in any of these statuses."},
+        "since":{"type":"string","description":"History only: Jobs created at or after this RFC 3339 time, such as 2026-11-16T08:00:00Z."},
+        "reasonContains":{"type":"string","minLength":1,"maxLength":64,"description":"History only: Jobs whose reason contains this text, ignoring ASCII case, such as oom-kill or exit-code 127."}
     })
 }
