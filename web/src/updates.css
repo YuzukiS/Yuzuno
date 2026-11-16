@@ -665,6 +665,10 @@
 .updates-blockers .is-idle .updates-blocker-dot {
   background: var(--sage, #7e987b);
 }
+/* An Agent the update continued, and one it did not (YN-131). */
+.updates-blockers .is-sent .updates-blocker-dot {
+  background: var(--sage, #7e987b);
+}
 .updates-notice,
 .updates-note,
 .updates-error {

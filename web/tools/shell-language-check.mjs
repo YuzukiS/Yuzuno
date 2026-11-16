@@ -104,7 +104,6 @@ const frame = () => page.evaluate(() => {
   return {
     lang: [attr("header.toolbar", "lang"), attr("aside.rail", "lang")],
     nav: texts(".toolbar-nav .toolbar-nav-label"),
-    workspace: document.querySelector(".workspace-name").textContent,
     core: { text: document.querySelector(".connection").textContent, status: attr(".connection", "data-core-status") },
     settings: attr("button.workspace-settings", "aria-label"),
     heading: document.querySelector(".rail-heading > span").textContent,
@@ -152,7 +151,6 @@ try {
   const zh = await frame();
   assert.deepEqual(zh.lang, ["zh-Hans", "zh-Hans"]);
   assert.deepEqual(zh.nav, ["Home", "任务与消息", "Job"]);
-  assert.equal(zh.workspace, "个人 Workspace");
   assert.deepEqual(zh.core, { text: "Core 已连接", status: "Core connected" }, "data-core-status keeps its English key");
   assert.equal(zh.settings, "设置与更新");
   assert.deepEqual([zh.heading, zh.scope], ["你的 Agent", ["活跃 4", "已关闭 1"]]);

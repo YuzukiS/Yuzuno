@@ -52,8 +52,9 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
     if agent.disconnected_at.is_some() {
         return Some("you already disconnected this Agent".into());
     }
-    if !matches!(agent.harness.as_str(), "codex" | "claude") {
-        return Some("only Codex and Claude Code Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
+    // dsh's tools run in its process group, which ends with it (YN-119 §3.8).
+    if !matches!(agent.harness.as_str(), "codex" | "claude" | "dsh") {
+        return Some("only Codex, Claude Code and DeepSeek Harness Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
     }
     if agent.connection_state != "connected" {
         return Some("this Agent isn't connected, so there is no native session to stop".into());
@@ -78,7 +79,7 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
 
 /// A Turn of a Claude Agent with a sub-agent or background task still able
 /// to report (crate::claude::subagent_running).
-fn claude_task_running(turn: &Value) -> bool {
+pub(crate) fn claude_task_running(turn: &Value) -> bool {
     turn["items"].as_array().into_iter().flatten().any(|item| {
         crate::claude::TASK_RECORDS.iter().any(|key| crate::claude::subagent_running(&item[*key]))
     })
@@ -106,7 +107,7 @@ fn codex_thread_at_rest(status: &Value) -> bool {
 impl Workspace {
     /// What `refusal` reads: the metadata, the open and newest Turns, and
     /// those with a Claude task still able to report (found by their keys).
-    async fn disconnect_view(&self, id: &str) -> Result<AgentDetail> {
+    pub(crate) async fn disconnect_view(&self, id: &str) -> Result<AgentDetail> {
         let agent = id.to_owned();
         let running = self.stored(move |store| store.keyed_turns(&agent, "running", None)).await?;
         self.view(id, crate::store::Sel::Turns(running)).await
@@ -171,6 +172,11 @@ impl Workspace {
                         .await
                         .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?,
                 }
+            }
+            "dsh" => {
+                let connection = self.dshs.lock().unwrap().get(id).cloned()
+                    .context("Not disconnected: this Agent has no live dsh. Nothing changed.")?;
+                self.dsh_stop_idle(id, &connection).await.map_err(|error| anyhow!("Not disconnected: {error}. Nothing changed."))?;
             }
             other => bail!("Not disconnected: {other} Agents can't be disconnected. Nothing changed."),
         }

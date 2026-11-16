@@ -21,12 +21,13 @@ use tokio::{
 
 const HELPER: &str = include_str!("remote_images.py");
 // Acquired before reading/decoding images, so buffering is bounded across Agents.
-static TRANSFERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+// A file copy shares this queue (remote_files).
+pub(crate) static TRANSFERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 #[cfg(not(test))]
-const QUEUE_WAIT: Duration = Duration::from_secs(75);
+pub(crate) const QUEUE_WAIT: Duration = Duration::from_secs(75);
 // Exercise the same pre-I/O timeout path without a 75-second test delay.
 #[cfg(test)]
-const QUEUE_WAIT: Duration = Duration::from_secs(1);
+pub(crate) const QUEUE_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +66,7 @@ pub(crate) fn destination(agent: &Agent) -> Value {
         "remote":agent.remote})
 }
 
-fn owner(workspace: &str, agent: &Agent) -> Result<Value> {
+pub(crate) fn owner(workspace: &str, agent: &Agent) -> Result<Value> {
     let remote = agent
         .remote
         .as_ref()
@@ -76,7 +77,8 @@ fn owner(workspace: &str, agent: &Agent) -> Result<Value> {
     )
 }
 
-fn cache_key(owner: &Value) -> Result<String> {
+/// The cache folder one owner's copies are kept in.
+pub(crate) fn cache_key(owner: &Value) -> Result<String> {
     let parts = ["workspace", "agent", "machine", "target", "harness"]
         .map(|k| owner[k].as_str().context("Invalid image destination"));
     let parts = parts.into_iter().collect::<Result<Vec<_>>>()?;
@@ -85,18 +87,29 @@ fn cache_key(owner: &Value) -> Result<String> {
 
 fn obligation_path(root: &Path, owner: &Value) -> Result<PathBuf> {
     // Reuse the original-image owner validation; no caller-supplied paths.
-    Ok(input_images::image_path(
-        root,
-        owner["agent"].as_str().context("Missing image owner")?,
-        &format!("{}.png", "0".repeat(64)),
-    )?
-    .with_file_name(".remote-transfer.json"))
+    Ok(marker_path(
+        input_images::image_path(
+            root,
+            owner["agent"].as_str().context("Missing image owner")?,
+            &format!("{}.png", "0".repeat(64)),
+        )?
+        .parent()
+        .context("Missing image owner folder")?,
+    ))
 }
 
-fn has_obligation(root: &Path, owner: &Value) -> Result<bool> {
+/// The cleanup marker a transfer leaves in its owner's folder before SSH
+/// starts: the owner of every copy one may have left (remote_files too).
+pub(crate) fn marker_path(folder: &Path) -> PathBuf {
+    folder.join(".remote-transfer.json")
+}
+
+/// Whether `marker` names this exact owner: a changed destination keeps the
+/// copies, and the Agent, until they can be removed.
+pub(crate) fn has_marker(marker: &Path, owner: &Value) -> Result<bool> {
     use rustix::fs::{Mode, OFlags, open};
     let fd = match open(
-        obligation_path(root, owner)?,
+        marker,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     ) {
@@ -119,24 +132,25 @@ fn has_obligation(root: &Path, owner: &Value) -> Result<bool> {
     Ok(true)
 }
 
-fn remember_transfer(root: &Path, owner: &Value) -> Result<()> {
+/// Writes `marker` (once) and syncs it and its folders before SSH starts.
+/// Never erased on timeout, cancellation or lost acknowledgement: even a
+/// partially completed request can have left copies behind.
+pub(crate) fn remember_marker(marker: &Path, root: &Path, owner: &Value) -> Result<()> {
     use rustix::fs::{Mode, OFlags, open};
-    let path = obligation_path(root, owner)?;
-    let parent = path.parent().context("Missing image directory")?;
+    let parent = marker.parent().context("Missing image directory")?;
     // Preparation already verified originals in this directory. Never erase
-    // this record on timeout, cancellation or lost acknowledgement: even a
-    // partially completed SSH request can have left remote copies behind.
-    if !has_obligation(root, owner)? {
+    // this record on timeout, cancellation or lost acknowledgement.
+    if !has_marker(marker, owner)? {
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         temporary.write_all(&serde_json::to_vec(owner)?)?;
         temporary.as_file().sync_all()?;
-        temporary.persist_noclobber(&path)?;
+        temporary.persist_noclobber(marker)?;
     }
     // Persist the name and its containing directories before starting SSH.
     // Repeat syncs even for an existing record (a prior write may have failed
     // between persisting the name and syncing its directory).
     File::from(open(
-        &path,
+        marker,
         OFlags::RDONLY | OFlags::NOFOLLOW,
         Mode::empty(),
     )?)
@@ -145,6 +159,14 @@ fn remember_transfer(root: &Path, owner: &Value) -> Result<()> {
     File::open(parent.parent().context("Missing image root")?)?.sync_all()?;
     File::open(root)?.sync_all()?;
     Ok(())
+}
+
+fn has_obligation(root: &Path, owner: &Value) -> Result<bool> {
+    has_marker(&obligation_path(root, owner)?, owner)
+}
+
+fn remember_transfer(root: &Path, owner: &Value) -> Result<()> {
+    remember_marker(&obligation_path(root, owner)?, root, owner)
 }
 
 pub(crate) async fn transfer(
@@ -188,7 +210,8 @@ pub(crate) async fn transfer(
     let machine = &agent.remote.as_ref().unwrap().machine;
     // Beside the owner, not in it: cleanup records name only the owner.
     request["root"] = machine.root().into();
-    let response = exchange(machine, &request, &files)
+    let bodies: Vec<&[u8]> = files.iter().map(|file| file.data.as_slice()).collect();
+    let response = exchange(machine, &request, &bodies)
         .await
         .context(
             "Remote image transfer failed; message was not submitted and the draft is preserved",
@@ -277,6 +300,7 @@ pub(crate) async fn cleanup(
     workspace: &str,
     agent: &Agent,
     image_attempted: bool,
+    file_attempted: bool,
 ) -> Result<()> {
     let Some(remote) = agent.remote.as_ref() else {
         return Ok(());
@@ -285,8 +309,14 @@ pub(crate) async fn cleanup(
     let (root, obligation) = (root.to_owned(), request.clone());
     // The receipt fallback covers pre-marker builds, including partial
     // transfers rejected before native submission. Read errors still fail.
-    if !tokio::task::spawn_blocking(move || has_obligation(&root, &obligation)).await??
+    if !tokio::task::spawn_blocking(move || {
+        Ok::<bool, anyhow::Error>(
+            has_obligation(&root, &obligation)? || crate::remote_files::has_obligation(&root, &obligation)?,
+        )
+    })
+    .await??
         && !image_attempted
+        && !file_attempted
     {
         return Ok(());
     }
@@ -300,7 +330,7 @@ pub(crate) async fn cleanup(
     Ok(())
 }
 
-async fn exchange(machine: &RemoteMachine, request: &Value, images: &[Image]) -> Result<Value> {
+pub(crate) async fn exchange(machine: &RemoteMachine, request: &Value, bodies: &[&[u8]]) -> Result<Value> {
     crate::remote::validate_machine(machine)?;
     let mut header = serde_json::to_vec(request)?;
     header.push(b'\n');
@@ -330,8 +360,8 @@ async fn exchange(machine: &RemoteMachine, request: &Value, images: &[Image]) ->
             .take(8193);
         let write = async {
             stdin.write_all(&header).await?;
-            for image in images {
-                stdin.write_all(&image.data).await?;
+            for body in bodies {
+                stdin.write_all(body).await?;
             }
             stdin.shutdown().await?;
             drop(stdin);
@@ -500,7 +530,7 @@ mod tests {
         // Failure even before SSH starts leaves a conservative durable record.
         assert!(has_obligation(dir.path(), &owner).unwrap());
         assert!(
-            cleanup(dir.path(), "workspace-a", &agent, false)
+            cleanup(dir.path(), "workspace-a", &agent, false, false)
                 .await
                 .is_err()
         );

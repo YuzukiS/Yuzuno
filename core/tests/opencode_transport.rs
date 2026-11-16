@@ -192,13 +192,14 @@ async fn a_start_that_fails_says_what_opencode_said_and_which_one_it_is() {
     other.switch("exitStderr", "fixture: no");
     other.switch("versionLine", "opencode v2.0.16");
     assert_eq!(Server::start(&other.launch).await.err().expect("not started").to_string(), "OpenCode exited before it was listening: fixture: no");
-    // One newer than the verified release is noted, not refused (Lead 4669).
+    // One newer than the release support stops at is noted as unverified, not refused (Lead 4669, YN-119).
     let newer = lab();
     newer.switch("exit", "1");
     newer.switch("exitStderr", "fixture: no");
     newer.switch("versionLine", "opencode v2.9.0");
     assert_eq!(Server::start(&newer.launch).await.err().expect("not started").to_string(),
-        "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.9.0\u{201d}, newer than the verified 2.2.5): fixture: no");
+        "OpenCode exited before it was listening (the installed OpenCode says \u{201c}opencode v2.9.0\u{201d}; OpenCode support stops at 2.2.5: \
+        this release is unverified, and problems with it are not fixed; to be safe, install 2.2.5 with npm i -g @opencode/cli@2.2.5): fixture: no");
     let (pid, child) = refused.pids();
     assert!(ends(pid).await && ends(child).await, "what it started has ended");
 

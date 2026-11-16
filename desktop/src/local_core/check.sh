@@ -246,5 +246,9 @@ out tool.claude "$(version_of claude)"
 out tool.codex "$(version_of codex)"
 out tool.python3 "$(version_of /usr/bin/python3)"
 out gh.auth "$gh_auth"
+# PID 1 is systemd in a distribution that booted with systemd (YN-156).
+out init "$(head -c 64 /proc/1/comm </dev/null 2>/dev/null | tr -d '\r\n')"
 out systemd "$systemd"
 out cgroup "$cgroup"
+# DeepSeek Harness (YN-119 S4b), last, so that a reader of the keys before it reads them as before.
+out tool.dsh "$(version_of dsh)"

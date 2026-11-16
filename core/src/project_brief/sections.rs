@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 const COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
 
 #[derive(Clone, Debug)]
 pub(super) struct Row {
@@ -27,7 +27,8 @@ pub(super) struct Row {
     pub deferred_until: Option<String>,
     pub updated_at: String,
     pub updated_turn_id: Option<String>,
-    /// Why a section is history: seen, removed or resolved.
+    /// Why a section is history: seen, removed, resolved, archived, or
+    /// refreshed (a past issue of a card that refreshes itself, YN-113).
     pub history_reason: Option<String>,
     /// When it became history.
     pub history_at: Option<String>,
@@ -37,6 +38,12 @@ pub(super) struct Row {
     /// The task this section is the card of, by its own `task` (YN-86 S2a):
     /// its internal ID. See cards.rs for the bindings read from elsewhere.
     pub task_id: Option<String>,
+    /// The images the user's reply to this version of an ask carried
+    /// (YN-134), by ID; none for any other section or reply.
+    pub reply_images: Vec<String>,
+    /// The files the user's reply to this version of an ask carried
+    /// (YN-145); none for any other section or reply.
+    pub reply_files: Vec<crate::input_files::FileRef>,
 }
 
 impl Row {
@@ -60,7 +67,7 @@ fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Resu
 /// SQLite extracts these, so a large body is never read into Core.
 const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
 json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
 
 fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
     let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
@@ -87,6 +94,9 @@ fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl ru
                 history_at: r.get(17)?,
                 identity: r.get(18)?,
                 task_id: r.get(19)?,
+                // As kept by mark_replied_form; a value Core cannot read shows none.
+                reply_images: r.get::<_, Option<String>>(20)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
+                reply_files: r.get::<_, Option<String>>(21)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
             },
             r.get::<_, String>(8)?,
         ))
@@ -138,12 +148,25 @@ pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
     )
 }
 
-/// Seen reports, removed and resolved sections of the last 30 days, newest first.
+/// Seen reports, removed and resolved sections of the last 30 days, newest
+/// first: Home's history. Not a card's past issues (`refreshed`, YN-113 §3.4):
+/// a card refreshed every 2 hours would put 360 of them here in 30 days; they
+/// are read by the card's identity (`of_identity`).
 pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
     read(
         db,
-        "project_id=?1 AND live=0 AND history_at>=?2 ORDER BY history_at DESC, seq DESC",
+        "project_id=?1 AND live=0 AND history_at>=?2 AND history_reason IS NOT 'refreshed' ORDER BY history_at DESC, seq DESC",
         params![project, history_cutoff()],
+    )
+}
+
+/// Every version of the section with this identity on Home that is live or
+/// that history still keeps, newest first (YN-113 §3.4, a card's issues).
+pub(super) fn of_identity(db: &Connection, project: &str, identity: i64) -> Result<Vec<Row>> {
+    read(
+        db,
+        "project_id=?1 AND COALESCE(lineage,seq)=?2 AND (live=1 OR history_at>=?3) ORDER BY version DESC, seq DESC",
+        params![project, identity, history_cutoff()],
     )
 }
 
@@ -438,6 +461,12 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
                 ask[field] = json!(value);
             }
         }
+        if !row.reply_images.is_empty() {
+            ask["replyImages"] = json!(row.reply_images);
+        }
+        if !row.reply_files.is_empty() {
+            ask["replyFiles"] = json!(row.reply_files);
+        }
         // An executor's gate (T-43 S4), only when it names one.
         if data["ask"]["gate"].is_object() {
             ask["gate"] = data["ask"]["gate"].clone();
@@ -588,17 +617,21 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
 /// no longer the live unresolved ask: a reply to it never marks a newer ask
 /// under the same key (T-9), as when its owner asked again meanwhile.
 pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
-    mark_replied_form(store, project, key, version, text, None)
+    mark_replied_form(store, project, key, version, text, None, &[], &[])
 }
 
 /// `mark_replied` with the form answers Home checked (form_answers), kept
-/// with the version they answer (YN-74); a reply without them clears any.
-pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>) -> Result<bool> {
+/// with the version they answer (YN-74), and the images the reply carried
+/// (YN-134); a reply without them clears any.
+pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>, images: &[String],
+    files: &[crate::input_files::FileRef]) -> Result<bool> {
     let form = form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
+    let images = (!images.is_empty()).then(|| json!(images).to_string());
+    let files = (!files.is_empty()).then(|| json!(files).to_string());
     let changed = store.db.write()?.execute(
-        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6
+        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8
          WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text, version, form],
+        params![project, key, now(), text, version, form, images, files],
     )?;
     Ok(changed == 1)
 }

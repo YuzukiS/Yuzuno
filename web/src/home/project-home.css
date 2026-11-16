@@ -31,7 +31,10 @@
   align-items: start;
   margin-top: 18px;
 }
-@container home (min-width: 1100px) {
+/* The team stands beside the cards only where the cards keep three columns
+   beside it: 932 + 18 (the gap above) + 300 = 1250 (YN-157, ProjectHome.tsx's
+   TEAM_BESIDE). Below that it folds under them. */
+@container home (min-width: 1250px) {
   .project-home-body {
     grid-template-columns: minmax(0, 1fr) 300px;
   }

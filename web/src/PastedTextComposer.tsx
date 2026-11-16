@@ -1,5 +1,5 @@
 import { textLabel } from "./message-content";
-import { clipboardImages } from "./image-input";
+import { splitDropped } from "./file-input";
 import { touchKeyboard } from "./touch-input";
 import { returnKey, type SendKey } from "./device-preferences";
 import {
@@ -44,7 +44,7 @@ import {
   type ComposerDraft,
   type PastedText,
 } from "./composer-draft";
-import { slashCommands, withCodexSkills, withModelControl, withOpencodeControls, type CommandList, type SlashCommand } from "./slash-commands";
+import { dshControls, slashCommands, withCodexSkills, withModelControl, withOpencodeControls, type CommandList, type SlashCommand } from "./slash-commands";
 import type { LineExtent } from "./composer-shape";
 import { api } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -68,13 +68,15 @@ type Props = {
   readOnly?: boolean;
   /** When the draft starts with "/": a Claude Agent's commands, the
    * controls Yuzuno runs for a Codex Agent and the skills its Codex lists
-   * (also after "$"), or an OpenCode Agent's own commands (T-10). */
-  slashCommands?: "claude" | "codex" | "opencode" | false;
+   * (also after "$"), an OpenCode Agent's own commands (T-10), or the
+   * controls Yuzuno runs for a DeepSeek Harness Agent (YN-119). */
+  slashCommands?: "claude" | "codex" | "opencode" | "dsh" | false;
   onChange: (draft: ComposerDraft) => void;
   /** A Codex skill chosen from the list: for the draft's chosen skills. */
   onSkill?: (skill: SlashCommand) => void;
   onSubmit: () => void;
   onImages?: (files: File[]) => void;
+  onFiles?: (files: File[]) => void;
   /** Which key sends (device-preferences.ts); unset, as `auto`. */
   sendKey?: SendKey;
   /** More attributes of the field itself (YN-103): a form's text answer
@@ -232,7 +234,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                   ).then(withOpencodeControls),
                 "opencode",
               )
-            : [],
+            : callbacks.current.slashCommands === "dsh" && !callbacks.current.readOnly
+              // Yuzuno's own controls only: nothing is read for a DeepSeek Harness Agent (YN-119).
+              ? slashCommands(() => Promise.resolve(dshControls), "dsh")
+              : [],
     ];
     function stateFor(draft: ComposerDraft) {
       const initial = draftDocument(draft);
@@ -344,12 +349,13 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 return true;
               },
               paste(event, v) {
-                const files = clipboardImages(event.clipboardData);
-                if (files.length && !v.state.readOnly) {
+                const dropped = splitDropped(event.clipboardData);
+                if ((dropped.images.length || dropped.files.length) && !v.state.readOnly) {
                   event.preventDefault();
                   const text = event.clipboardData?.getData("text/plain");
                   if (text) v.dispatch(shouldFoldPaste(text) ? insertPaste(v.state, text) : v.state.update(v.state.replaceSelection(text), { userEvent: "input.paste" }));
-                  callbacks.current.onImages?.(files);
+                  if (dropped.images.length) callbacks.current.onImages?.(dropped.images);
+                  if (dropped.files.length) callbacks.current.onFiles?.(dropped.files);
                   return true;
                 }
                 const text = event.clipboardData?.getData("text/plain");
@@ -382,12 +388,15 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
               drop(event, v) {
                 const internal = dragSource.current === v;
                 dragSource.current = null;
-                // Images dropped in go with the draft, as pasted ones do
-                // (T-44); CodeMirror would read them as text.
-                const images = clipboardImages(event.dataTransfer);
-                if (!internal && images.length) {
+                // Images and files dropped in go with the draft, as pasted
+                // ones do (T-44); CodeMirror would read them as text.
+                const dropped = splitDropped(event.dataTransfer);
+                if (!internal && (dropped.images.length || dropped.files.length)) {
                   event.preventDefault();
-                  if (!v.state.readOnly) callbacks.current.onImages?.(images);
+                  if (!v.state.readOnly) {
+                    if (dropped.images.length) callbacks.current.onImages?.(dropped.images);
+                    if (dropped.files.length) callbacks.current.onFiles?.(dropped.files);
+                  }
                   return true;
                 }
                 // Let CodeMirror move/copy ordinary text using its normal drag
@@ -412,7 +421,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 update.state.field(pasteField).anchors
             )
               return;
-            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images, skills: callbacks.current.draft.skills };
+            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images, files: callbacks.current.draft.files, skills: callbacks.current.draft.skills };
             published.current = next;
             callbacks.current.onChange(next);
           }),

@@ -980,7 +980,8 @@ async fn acceptance_to_kill_is_within_117s() {
     assert_eq!(a.answer, Some(Answer::Reject(Reason::PreparationTimeout)));
     assert_eq!(a.outcome, Outcome::Killed);
     let first = native.sent_for("per_a")[0].at - accepted_at;
-    assert!(first >= Duration::from_secs(42) && first < PREPARE_LIMIT + FIRST_POST_LIMIT, "its first POST waited its turn: {first:?}");
+    // accepted_at can be read a timer tick after the three POSTs began.
+    assert!(first >= Duration::from_secs(42) - TICK && first < PREPARE_LIMIT + FIRST_POST_LIMIT, "its first POST waited its turn: {first:?}");
     let killed = runtime.killed_at.lock().unwrap().unwrap() - accepted_at;
     assert!(killed <= BOUND, "{killed:?} > {BOUND:?}");
     assert!(killed >= first + Duration::from_secs(67), "{killed:?}");

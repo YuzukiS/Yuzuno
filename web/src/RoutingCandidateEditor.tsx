@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { errorText } from "./api";
-import { DEEPSEEK_PEAK, EFFORTS, HARNESSES, MODEL_HINTS, credentialFits, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type Schedule, type Slot } from "./executor-routing";
+import { DEEPSEEK_PEAK, LOCAL_MACHINE, MODEL_HINTS, credentialFits, effortsOf, harnessesOffered, isKnown, keyFits, sameSchedule, usesApi, type AnyCondition, type Candidate, type Condition, type Credential, type Harness, type NamedMachine, type Schedule, type Slot } from "./executor-routing";
+import { dshAvailable, useDsh } from "./dsh";
 import { TIER_CHOICES, tierChoiceOf, withTierChoice } from "./routing-tiers";
-import { chipText, harnessName, providerName, type Text } from "./executor-routing-text";
+import { chipText, providerName, type Text } from "./executor-routing-text";
 import { useLanguage } from "./i18n";
 import { KEY_PROVIDERS, announceCredentialsChanged, putLocalKey, putReferenceKey, shortFingerprint, type AccountsView, type KeyProvider, type RoutingKey } from "./routing-keys";
 import { NewKeyForm, keysText } from "./RoutingKeys";
@@ -20,7 +21,8 @@ type Choice = { value: string; label: string; disabled?: boolean };
  * (YN-57 S3): "key:<id>" for each key it takes, then "new:<provider>" for each provider it takes a key of, which adds
  * one in place; always offered, unusable only while the keys can't be read here. */
 function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRead: boolean, accounts: AccountsView | null, current: Credential): { accounts: Choice[]; keys: Choice[] } {
-  const accountChoices: Choice[] = [
+  // DeepSeek Harness has no login of its own here: only a DeepSeek key (YN-119 §3.10).
+  const accountChoices: Choice[] = harness === "dsh" ? [] : [
     { value: "login", label: harness === "claude" ? t.credLoginClaude : harness === "codex" ? t.credLoginCodex : t.credLoginOpencode },
   ];
   if (harness === "claude") accountChoices.push({ value: "pool", label: t.credPool });
@@ -36,7 +38,8 @@ function credentialChoices(harness: Harness, t: Text, keys: RoutingKey[], keysRe
   if (![...accountChoices, ...keyChoices].some((c) => c.value === value)) {
     (current.kind === "apiKey" ? keyChoices : accountChoices).unshift({ value,
       label: current.kind === "apiKey" ? (keysRead ? t.keyMissing(current.keyId) : t.keyPending(current.keyId))
-        : current.kind === "codexHome" ? (accounts ? t.codexHomeMissing(current.id) : t.codexHomePending(current.id)) : value });
+        : current.kind === "codexHome" ? (accounts ? t.codexHomeMissing(current.id) : t.codexHomePending(current.id))
+          : harness === "dsh" ? t.dshKeyOnly : value });
   }
   return { accounts: accountChoices, keys: keyChoices };
 }
@@ -46,16 +49,20 @@ const credentialOf = (value: string): Credential =>
     : value.startsWith("key:") ? { kind: "apiKey", keyId: value.slice(4) }
       : value.startsWith("home:") ? { kind: "codexHome", id: value.slice(5) } : { kind: "login" };
 
-export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refusedCondition, onManageKeys, onEdit, onRemove, onClose }: {
+export function CandidateEditor({ c, t, keys, keysRead, accounts, machines, issues, refusedCondition, onManageKeys, onEdit, onRemove, onClose }: {
   c: Candidate; t: Text; keys: RoutingKey[];
   /** Whether the Workspace's keys were read here: a key is added from a candidate only then (YN-57 S3). */
   keysRead: boolean;
+  /** The SSH machines a machine condition can name (YN-139); null while the Machines list isn't read. */
+  machines: readonly NamedMachine[] | null;
   accounts: AccountsView | null; issues: { at: string; text: string }[]; refusedCondition?: number;
   /** Opens Accounts & keys, where these are managed (YN-84 S2). */
   onManageKeys?: () => void;
   onEdit: (change: (c: Candidate) => Candidate) => void; onRemove: () => void; onClose: () => void;
 }) {
   const keysT = keysText(useLanguage());
+  // DeepSeek Harness is offered while this Core starts it; a candidate saved with it keeps it shown.
+  const dsh = dshAvailable(useDsh());
   // A key being added in place (YN-57 S3), by its provider; what it said when refused; and the keys added here, shown
   // until the page's own read of the keys lists them.
   const [adding, setAdding] = useState<KeyProvider | null>(null);
@@ -109,22 +116,27 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
             onEdit((x) => {
               const { reasoningEffort: _, ...rest } = x;
               const keyKept = x.credential.kind !== "apiKey" || keys.some((k) => k.id === (x.credential as { keyId: string }).keyId && keyFits(harness, k.provider));
-              // A reasoning effort is Codex's only (S3a); an account or key the new tool can't use goes back to the host's login,
-              // and then, as when the credential is chosen, a daily spend cap goes with the key (R1 75964dfb).
-              const credential: Credential = credentialFits(harness, x.credential) && keyKept ? x.credential : { kind: "login" };
-              return { ...(harness === "codex" ? x : rest), harness, model: MODEL_HINTS[harness][0], credential,
+              // A reasoning effort is Codex's and DeepSeek Harness's (S3a, YN-119 S3), each its own: one the new tool lists
+              // stays. An account or key the new tool can't use goes back to the host's login, or for DeepSeek Harness,
+              // which has none, to the Workspace's first DeepSeek key (named "deepseek" while there is none, as a preset
+              // names it); and then, as when the credential is chosen, a daily spend cap goes with the key (R1 75964dfb).
+              const fallback: Credential = harness === "dsh"
+                ? { kind: "apiKey", keyId: keys.find((k) => k.provider === "deepseek")?.id ?? "deepseek" } : { kind: "login" };
+              const credential: Credential = credentialFits(harness, x.credential) && keyKept ? x.credential : fallback;
+              const effortKept = !!x.reasoningEffort && effortsOf(harness).includes(x.reasoningEffort);
+              return { ...(effortKept ? x : rest), harness, model: MODEL_HINTS[harness][0], credential,
                 conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) } as Candidate;
             });
           }}>
-            {HARNESSES.map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
+            {harnessesOffered(dsh, c.harness).map((h) => <option key={h} value={h}>{t.harnessOption(h)}</option>)}
           </select>
         </label>
         <ModelField c={c} t={t} keyProvider={keyProvider} onChange={(model) => onEdit((x) => ({ ...x, model }))} />
-        {c.harness === "codex" && (
+        {(c.harness === "codex" || c.harness === "dsh") && (
           <label className="routing-field"><span>{t.effort}</span>
             <select className="settings-select" value={c.reasoningEffort ?? ""} onChange={(e) => field("reasoningEffort", e.target.value)}>
-              <option value="">{t.effortDefault}</option>
-              {[...EFFORTS, ...(c.reasoningEffort && !EFFORTS.includes(c.reasoningEffort) ? [c.reasoningEffort] : [])].map((v) => <option key={v} value={v}>{v}</option>)}
+              <option value="">{c.harness === "dsh" ? t.effortDshDefault : t.effortDefault}</option>
+              {[...effortsOf(c.harness), ...(c.reasoningEffort && !effortsOf(c.harness).includes(c.reasoningEffort) ? [c.reasoningEffort] : [])].map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </label>
         )}
@@ -136,9 +148,11 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
             const credential = credentialOf(e.target.value);
             onEdit((x) => ({ ...x, credential, conditions: x.conditions.filter((cond) => fitsCredential(cond, credential)) }));
           }}>
-            <optgroup label={t.credGroupAccounts}>
-              {choices.accounts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </optgroup>
+            {choices.accounts.length > 0 && (
+              <optgroup label={t.credGroupAccounts}>
+                {choices.accounts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </optgroup>
+            )}
             <optgroup label={t.credGroupKeys}>
               {choices.keys.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
             </optgroup>
@@ -177,14 +191,24 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           ) : <p className="settings-row-meta">{accounts ? t.noAccounts : t.poolUnread}</p>)}
         </fieldset>
       )}
+      {pool && (
+        <fieldset className="routing-field routing-pick">
+          <legend>{t.poolPick}</legend>
+          <label><input type="radio" name={`pick-${c.id}`} checked={pool.pick !== "soonestReset"}
+            onChange={() => onEdit((x) => ({ ...x, credential: { ...pool, pick: "mostRemaining" } }))} /> {t.poolPickMost}</label>
+          <label><input type="radio" name={`pick-${c.id}`} checked={pool.pick === "soonestReset"}
+            onChange={() => onEdit((x) => ({ ...x, credential: { ...pool, pick: "soonestReset" } }))} /> {t.poolPickSoonest}</label>
+          {pool.pick === "soonestReset" && <p className="settings-row-meta">{t.poolPickHelp}</p>}
+        </fieldset>
+      )}
       <div className="routing-field routing-conditions">
         <span>{t.conditions}</span>
         {c.conditions.length === 0 && <p className="settings-row-meta">{t.noConditions}</p>}
         <ul className="routing-conds">
           {c.conditions.map((cond, i) => (
             <li key={i} className={`routing-cond${refusedCondition === i ? " is-refused" : ""}`}>
-              <ConditionEditor cond={cond} n={i} t={t} onChange={(next) => setConditions((list) => list.map((x, k) => (k === i ? next : x)))} />
-              <button type="button" className="icon-button routing-cond-remove" aria-label={`${t.removeCondition} (${chipText(cond, t)})`}
+              <ConditionEditor cond={cond} n={i} t={t} machines={machines} onChange={(next) => setConditions((list) => list.map((x, k) => (k === i ? next : x)))} />
+              <button type="button" className="icon-button routing-cond-remove" aria-label={`${t.removeCondition} (${chipText(cond, t, machines)})`}
                 onClick={() => setConditions((list) => list.filter((_, k) => k !== i))}><X size={14} /></button>
               {issues.filter((p) => p.at === String(i)).map((p) => <span key={p.text} className="inline-error routing-cond-error">{p.text}</span>)}
             </li>
@@ -194,6 +218,9 @@ export function CandidateEditor({ c, t, keys, keysRead, accounts, issues, refuse
           {!has("timeWindow") && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "timeWindow", inside: false, schedule: DEEPSEEK_PEAK, minMinutesLeft: 30 }])}><Plus size={13} /> {t.addTime}</button>}
           {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
           {!has("dailyApiCap") && api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "dailyApiCap", usd: 5 }])}><Plus size={13} /> {t.addCap}</button>}
+          {/* YN-139: only a login runs on another machine; an account pool, an API key and OpenCode run on this Core host only. */}
+          {!has("machine") && c.credential.kind === "login" && c.harness !== "opencode" && <button type="button" className="quiet-button"
+            onClick={() => setConditions((l) => [...l, { kind: "machine", machines: [] }])}><Plus size={13} /> {t.addMachine}</button>}
         </div>
       </div>
       {/* YN-84 S1: one choice — strong only, fast only, or both; both is no list, as before. */}
@@ -229,8 +256,29 @@ const numberOrUnset = (value: string) => (value === "" ? undefined : Number(valu
 const toField = (to: string) => (to === "24:00" ? "00:00" : to);
 const fromField = (value: string) => (value === "00:00" ? "24:00" : value);
 
-function ConditionEditor({ cond, n, t, onChange }: { cond: AnyCondition; n: number; t: Text; onChange: (next: AnyCondition) => void }) {
+function ConditionEditor({ cond, n, t, machines, onChange }: {
+  cond: AnyCondition; n: number; t: Text; machines: readonly NamedMachine[] | null; onChange: (next: AnyCondition) => void;
+}) {
   if (!isKnown(cond)) return <span className="routing-cond-kind">{t.chipUnknownKind(cond.kind)}</span>;
+  if (cond.kind === "machine") {
+    // This Core host, each listed SSH machine, then any it names that isn't listed (removed, or the list unread).
+    const listed = [{ id: LOCAL_MACHINE, name: t.machineHere }, ...(machines ?? [])];
+    const choices = [...listed, ...cond.machines.filter((id) => !listed.some((m) => m.id === id)).map((id) => ({ id, name: t.machineGone(id) }))];
+    const toggle = (id: string) => onChange({ ...cond, machines: cond.machines.includes(id) ? cond.machines.filter((m) => m !== id) : [...cond.machines, id] });
+    return (
+      <div className="routing-machines">
+        <b className="routing-cond-kind">{t.machines}</b>
+        <span className="routing-machine-choices" role="group" aria-label={`${t.machines} ${n + 1}`}>
+          {choices.map((m) => (
+            <label key={m.id} className="routing-inline-field">
+              <input type="checkbox" checked={cond.machines.includes(m.id)} onChange={() => toggle(m.id)} /> {m.name}
+            </label>
+          ))}
+        </span>
+        <p className="settings-row-meta">{t.machineQuotaNote}</p>
+      </div>
+    );
+  }
   if (cond.kind === "quota") {
     const set = (value: string) => {
       const next: Condition = { ...cond };

@@ -51,7 +51,7 @@ fn close(ws: &Workspace, id: &str) {
 }
 
 fn words(ws: &Workspace, text: &str, id: &str) -> Words {
-    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into() }
+    Words { workspace_id: ws.store.workspace_id().unwrap(), text: text.into(), text_blocks: None, client_message_id: id.into(), images: vec![], files: vec![] }
 }
 
 fn receipt(ws: &Workspace, agent: &str, id: &str) -> Option<MessageReceipt> {
@@ -212,7 +212,7 @@ fn the_longest_head_fits_beside_the_longest_words() {
     assert_eq!(name.len(), 100);
     let words = longest();
     for head in [request_head(&workspace, &name, &project_id, i64::MAX), follow_up_head(&workspace, &name, &project_id, i64::MAX)] {
-        let sent = message("m", &head, &words, None, None);
+        let sent = message("m", &head, &words, None, &[], None);
         assert!(sent.text.len() - words.len() <= MAX_MESSAGE_TEXT - MAX_REPLY, "a head of {} bytes", sent.text.len() - words.len());
         assert!(sent.text.len() <= MAX_MESSAGE_TEXT);
     }
@@ -418,7 +418,7 @@ async fn a_number_given_back_is_never_taken_twice_at_once() {
 async fn another_messages_client_id_is_not_taken_for_this_one() {
     let (_dir, ws, project) = lab();
     choose(&ws, &project, Some("b")).unwrap();
-    let typed = MessageReceipt { binding: None, skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+    let typed = MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
         turn_id: Some("t1".into()), error: None, input: MessageInput { client_message_id: "typed".into(), text: "hi".into(),
             text_blocks: None, images: vec![], expected_turn_id: None, question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(typed)).unwrap();
@@ -430,3 +430,8 @@ async fn another_messages_client_id_is_not_taken_for_this_one() {
     assert!(request["replies"].as_array().unwrap().is_empty(), "nothing kept");
     assert_eq!(request["delivery"], json!(receipt(&ws, "b", "m1").unwrap().status), "the request's own message");
 }
+
+#[path = "image_tests.rs"]
+mod image_tests;
+#[path = "file_tests.rs"]
+mod file_tests;

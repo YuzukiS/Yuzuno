@@ -9,7 +9,8 @@ import "./image-input.css";
 
 export const inputImageUrl = (agent: string, id: string, thumb = false) =>
   `${API_BASE}/api/agents/${encodeURIComponent(agent)}/images/${encodeURIComponent(id)}${thumb ? "?thumb=true" : ""}`;
-type PreviewImage = { id: string; agentId: string; name?: string };
+/** An image to show: an Agent's own, or one read where `imageUrl` says (Home's, YN-134). */
+type PreviewImage = { id: string; agentId?: string; name?: string };
 // The attachments' own words (T-189); an image's name as it came.
 const text = strings({
   open: (n: number, name: string) => `Open image ${n}: ${name}`,
@@ -36,29 +37,34 @@ const text = strings({
   closeDialog: "关闭对话框",
   pixels: (width, height) => `${width} × ${height} 像素`,
 });
-export function ImageAttachments({
+export function ImageAttachments<Image extends PreviewImage>({
   images,
   onRemove,
   onAnnotate,
   annotateThumbnails = false,
   description,
+  imageUrl,
 }: {
-  images: readonly PreviewImage[];
+  images: readonly Image[];
   onRemove?: (id: string) => void;
   /** Point & Fix (T-167): mark areas on an opened image. */
-  onAnnotate?: (image: PreviewImage) => void;
+  onAnnotate?: (image: Image & PreviewImage) => void;
   /** Offer Mark up on each thumbnail too, as for images in a draft. */
   annotateThumbnails?: boolean;
   /** What the full preview shows, if not simply the original. */
   description?: string;
+  /** Where an image is read, or its thumbnail: unset, its Agent's own images (`inputImageUrl`). */
+  imageUrl?: (id: string, thumb: boolean) => string;
 }) {
-  const [opened, setOpened] = useState<PreviewImage | null>(null);
+  const [opened, setOpened] = useState<Image | null>(null);
   const t = useStrings(text);
+  const url = (image: PreviewImage, thumb = false) =>
+    imageUrl ? imageUrl(image.id, thumb) : inputImageUrl(image.agentId ?? "", image.id, thumb);
   if (!images.length) return null;
   return (
     <div className="input-images">
       {images.map((image, index) => (
-        <div className="input-image" key={`${image.agentId}:${image.id}`}>
+        <div className="input-image" key={`${image.agentId ?? ""}:${image.id}`}>
           {/* A larger look and its name in the app's one tip (Tip.tsx), the
               Preview kind; its button already says the name. */}
           <Tip
@@ -67,7 +73,7 @@ export function ImageAttachments({
             describe={false}
             className="input-image-hover"
             content={<>
-              <img className="tip-image" src={inputImageUrl(image.agentId, image.id, true)} alt="" />
+              <img className="tip-image" src={url(image, true)} alt="" />
               <small className="tip-meta">{image.name || t.image(index + 1)}</small>
             </>}
           >
@@ -78,7 +84,7 @@ export function ImageAttachments({
               onClick={() => setOpened(image)}
             >
               <img
-                src={inputImageUrl(image.agentId, image.id, true)}
+                src={url(image, true)}
                 alt={image.name || t.image(index + 1)}
                 loading="lazy"
               />
@@ -113,7 +119,7 @@ export function ImageAttachments({
       ))}
       <ImagePreview
         open={!!opened}
-        src={opened ? inputImageUrl(opened.agentId, opened.id) : ""}
+        src={opened ? url(opened) : ""}
         name={opened?.name || t.attached}
         description={description ?? t.original}
         unavailable={t.unavailable}

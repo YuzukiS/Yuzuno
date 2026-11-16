@@ -1,0 +1,4 @@
+A stand-in for yuzuno-core-<platform>.tar.gz in the desktop's release verifier tests
+(desktop/src/local_core/release.rs). The verifier checks an archive only by its size
+and SHA-256 against the signed descriptor, and these bytes are the archive the test
+descriptors sign. It is not a tarball and nothing unpacks it.

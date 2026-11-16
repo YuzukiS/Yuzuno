@@ -3,7 +3,7 @@ import { nativeSession } from "./machine-checks";
 import type { Agent } from "./types";
 
 /** What an Agent's action menu can offer (T-184), in its order. */
-export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "disconnect" | "settings" | "copyLink" | "manage";
+export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "disconnect" | "rename" | "settings" | "copyLink" | "manage";
 
 // The menu's entries in the interface language (T-189).
 const labels = strings({
@@ -13,6 +13,7 @@ const labels = strings({
   endMissing: "End unconfirmed turn…",
   interrupt: "Interrupt current turn",
   disconnect: "Disconnect…",
+  rename: "Rename…",
   settings: "Agent settings…",
   copyLink: "Copy agent link",
   manage: "Manage…",
@@ -23,6 +24,7 @@ const labels = strings({
   endMissing: "结束未确认的 Turn…",
   interrupt: "中断当前 Turn",
   disconnect: "断开连接…",
+  rename: "重命名…",
   settings: "Agent 设置…",
   copyLink: "复制 Agent 链接",
   manage: "管理…",
@@ -52,6 +54,9 @@ export interface AgentActionHandlers {
   endMissing?: (id: string) => void;
   /** Opens the confirmation that disconnects the Agent (T-184). */
   disconnect?: (id: string) => void;
+  /** Opens the dialog that renames the Agent (YN-112), where names can be
+   * changed. */
+  rename?: (id: string) => void;
   /** Copies a link to the Agent itself (T-184), where links are offered. */
   copyLink?: (id: string) => void;
 }
@@ -108,7 +113,8 @@ export function agentMenuItems(
     missingTurns = false,
     disconnect = false,
     link = false,
-  }: { missingTurns?: boolean; disconnect?: boolean; link?: boolean } = {},
+    rename = false,
+  }: { missingTurns?: boolean; disconnect?: boolean; link?: boolean; rename?: boolean } = {},
 ): AgentMenuItem[] {
   const items: AgentMenuItem[] = [];
   const reconnect = reconnectOffer(agent);
@@ -124,6 +130,8 @@ export function agentMenuItems(
     items.push(entry("endMissing"));
   if (interruptible(agent)) items.push(entry("interrupt"));
   if (disconnect && disconnectable(agent)) items.push(entry("disconnect"));
+  // Only its name: any Agent, a closed one too (YN-112).
+  if (rename) items.push(entry("rename"));
   if (!agent.closedAt) items.push(entry("settings"));
   // Any Agent can be linked, a closed one or one with no Turn yet.
   if (link) items.push(entry("copyLink"));

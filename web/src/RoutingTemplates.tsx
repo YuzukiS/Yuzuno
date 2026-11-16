@@ -4,13 +4,14 @@ import { errorText } from "./api";
 import {
   keepsLevel, readExecutorTemplates, saveExecutorTemplates, type ExecutorHarness, type ExecutorTemplate, type ExecutorTemplatesView,
 } from "./executor-templates";
+import { DSH_NAME, dshAvailable, useDsh } from "./dsh";
 import { strings, useLanguage } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 
 /** A template as kept, with what a later Core added. */
 type Kept = ExecutorTemplate & { [field: string]: unknown };
-const harnessName: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
-const HARNESSES: ExecutorHarness[] = ["claude", "codex", "opencode"];
+const harnessName: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", dsh: DSH_NAME };
+const HARNESSES: ExecutorHarness[] = ["claude", "codex", "opencode", "dsh"];
 
 const text = strings({
   title: "Templates",
@@ -58,6 +59,8 @@ const text = strings({
 export function RoutingTemplates({ active }: { active: boolean }) {
   const language = useLanguage();
   const t = text(language);
+  // DeepSeek Harness is offered while this Core starts it; a template fixed to it keeps it shown.
+  const dsh = dshAvailable(useDsh());
   const [view, setView] = useState<ExecutorTemplatesView | null>(null);
   // Each template's tool when fixed; null when it follows routing.
   const [fixed, setFixed] = useState<Record<string, ExecutorHarness | null>>({});
@@ -149,7 +152,7 @@ export function RoutingTemplates({ active }: { active: boolean }) {
                   {tool && (
                     <select className="settings-select" aria-label={t.fixedTo(tp.label)} value={tool}
                       onChange={(e) => setFixed((f) => ({ ...f, [tp.id]: e.target.value as ExecutorHarness }))}>
-                      {HARNESSES.filter((h) => h !== "opencode" || view.opencodeEnabled || tool === "opencode").map((h) => (
+                      {HARNESSES.filter((h) => (h !== "opencode" || view.opencodeEnabled || tool === "opencode") && (h !== "dsh" || dsh || tool === "dsh")).map((h) => (
                         <option key={h} value={h}>{harnessName[h]}</option>
                       ))}
                     </select>

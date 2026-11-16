@@ -1,6 +1,7 @@
 import type { NeedsYouItem } from "./home/types";
 import type { NotificationCategory } from "./notification-prefs";
 import type { Agent } from "./types";
+import type { RefreshItem } from "./brief-refreshes";
 
 /**
  * What a system notification would say about a change the Workspace read
@@ -38,7 +39,7 @@ const clip = (text: string) => {
 };
 const tag = (kind: NotificationCategory, id: string) => `yuzuno:${kind}:${id}`;
 
-function agentNotice(before: AgentState, after: AgentState, preview: boolean): Notice | null {
+function agentNotice(before: AgentState, after: AgentState, preview: boolean, refreshTurns: ReadonlySet<string>): Notice | null {
   if (after.closedAt) return null;
   const summary = after.workSummary;
   const said = (fallback: string) => (preview && summary?.text ? clip(summary.text) : fallback);
@@ -46,6 +47,9 @@ function agentNotice(before: AgentState, after: AgentState, preview: boolean): N
     return { kind: "needsYou", tag: tag("needsYou", after.id), title: `${after.name} needs you`, body: said("Waiting for your response."), agentId: after.id };
   // A Turn's end: from working to anything but working or waiting.
   if (before.status !== "working" || after.status === "working" || after.status === "waiting") return null;
+  // A refresh Turn's own notice says how it went (YN-113 R4): its generic end
+  // would be a second notice of one event.
+  if (summary?.turnId && refreshTurns.has(summary.turnId)) return null;
   if (after.status === "error" || summary?.kind === "error") {
     const why = preview ? clip(after.error || summary?.text || "") : "";
     return { kind: "failed", tag: tag("failed", after.id), title: `${after.name}: the Turn failed`, body: why || "Open the conversation to see why.", agentId: after.id };
@@ -60,13 +64,66 @@ function agentNotice(before: AgentState, after: AgentState, preview: boolean): N
  * per Agent. The first read has nothing to compare with, so it gives none;
  * nor does an Agent new to the list.
  */
-export function agentNotices(before: AgentState[] | null, after: AgentState[], preview: boolean): Notice[] {
+export function agentNotices(before: AgentState[] | null, after: AgentState[], preview: boolean, refreshTurns: ReadonlySet<string> = new Set()): Notice[] {
   if (!before) return [];
   const earlier = new Map(before.map((agent) => [agent.id, agent]));
   return after.flatMap((agent) => {
     const was = earlier.get(agent.id);
-    const notice = was && agentNotice(was, agent, preview);
+    const notice = was && agentNotice(was, agent, preview, refreshTurns);
     return notice ? [notice] : [];
+  });
+}
+
+/** The Turns Home cards' refreshes ran in, as the last read of them names
+ * them (YN-113 R4): their Agent's generic Turn end is not notified. */
+export function refreshTurns(refreshes: readonly RefreshItem[]): Set<string> {
+  return new Set(refreshes.flatMap((refresh) => (refresh.run?.turnId ? [refresh.run.turnId] : [])));
+}
+
+/** A refresh's notices (YN-113 design §4): one when its run ends as
+ * refreshed, failed or skipped, and one when Core pauses it for a reason of
+ * its own. A pause by the user or the owner tells of nothing, and the failed
+ * run that reached the failure limit and the pause it caused are one notice.
+ * The first read tells of nothing, and a run read again tells of nothing. */
+export function refreshNotices(before: RefreshItem[] | null, after: RefreshItem[], preview: boolean): Notice[] {
+  if (!before) return [];
+  const earlier = new Map(before.map((refresh) => [`${refresh.projectId}/${refresh.identity}`, refresh]));
+  return after.flatMap((refresh) => {
+    const was = earlier.get(`${refresh.projectId}/${refresh.identity}`);
+    const named = refresh.title?.trim() || refresh.key;
+    const project = refresh.projectName?.trim() || "Home";
+    const found: Notice[] = [];
+    const run = refresh.run;
+    let reported = false;
+    if (run && ["refreshed", "failed", "skipped"].includes(run.state)) {
+      const same = was?.run?.state === run.state && was?.run?.slot === run.slot;
+      if (!same) {
+        const refreshed = run.state === "refreshed";
+        const why = run.reason ? (preview ? clip(run.reason.message) : "") : "";
+        found.push({
+          kind: refreshed ? "finished" : "failed",
+          tag: tag(refreshed ? "finished" : "failed", `refresh:${refresh.projectId}:${refresh.identity}`),
+          title: refreshed ? `“${named}” refreshed` : `“${named}” didn’t refresh`,
+          body: refreshed
+            ? `${project}${run.missed > 0 ? ` · caught up, ${run.missed} missed` : ""}`
+            : `${project} · ${why || "Open Settings → Home → Refreshes to see why."}`,
+          home: true,
+        });
+        reported = true;
+      }
+    }
+    const paused = refresh.pausedReason?.code;
+    const chosen = paused === "paused" || paused === "paused_by_owner" || paused === "restored";
+    if (paused && !chosen && was?.pausedReason?.code !== paused && !(paused === "failures" && reported)) {
+      found.push({
+        kind: "failed",
+        tag: tag("failed", `refresh-paused:${refresh.projectId}:${refresh.identity}`),
+        title: `“${named}” paused`,
+        body: `${project} · ${preview ? clip(refresh.pausedReason!.message) : "It stopped refreshing itself."}`,
+        home: true,
+      });
+    }
+    return found;
   });
 }
 

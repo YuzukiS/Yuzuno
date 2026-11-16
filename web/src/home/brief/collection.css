@@ -1,0 +1,382 @@
+/* Collection (YN-128, YN-113 §3.6): items as a carousel, a grid of tiles or a
+ * list of rows; tags to filter by and a search on the report page. The app's
+ * own variables, as brief.css uses them. */
+.brief-collection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-collection-items,
+.brief-collection-tags {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+/* Its own lines, also on a card, outside the body's typography. */
+.brief-collection :is(p, h4) {
+  margin: 0;
+}
+.brief-collection button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* A tile (a grid's, a carousel page's): the picture over its text. */
+.brief-collection-tile {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 10px;
+  background: var(--surface-soft, var(--cream));
+}
+/* Without a picture (none, or one not kept or not loaded), the text alone. */
+.brief-collection-tile:not(:has(> .brief-collection-picture)) {
+  grid-template-rows: 1fr;
+}
+.brief-collection-picture {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--line);
+  cursor: zoom-in;
+}
+.brief-collection-picture img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.brief-collection-tile .brief-collection-picture {
+  aspect-ratio: 16 / 9;
+}
+.brief-collection-picture:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: -2px;
+}
+.brief-collection-text {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px 10px;
+}
+.brief-collection-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.brief-collection-title {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.brief-collection-title a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+.brief-collection-title a:hover {
+  text-decoration-color: currentColor;
+}
+.brief-collection-line {
+  color: var(--text-secondary, var(--muted));
+  font-size: 0.84rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+/* In a tile, two lines each; the page's list has room for all of it. */
+.brief-collection-tile :is(.brief-collection-title, .brief-collection-line) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.brief-collection-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.brief-collection-tags li {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 12%, transparent);
+  color: var(--accent-ink, var(--green));
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+/* A grid: as many columns of at least 180 px as fit, never fewer than two. */
+.brief-collection[data-layout="grid"] .brief-collection-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, calc((100% - 10px) / 2)), 1fr));
+  gap: 10px;
+}
+/* A list: one row per item, a small picture beside its text. */
+.brief-collection[data-layout="list"] .brief-collection-items {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+.brief-collection-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.brief-collection-row .brief-collection-picture {
+  width: 72px;
+  aspect-ratio: 3 / 2;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.brief-collection-row:not(:has(> .brief-collection-picture)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.brief-collection-row .brief-collection-text {
+  padding: 0;
+}
+.brief-collection-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+/* The page's tools: tags to filter by, and a list's search. */
+.brief-collection-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.brief-collection-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-collection-filters button {
+  min-height: 30px;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-collection-filters button[aria-pressed="true"] {
+  border-color: var(--accent-ink, var(--ink));
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 12%, var(--paper));
+  font-weight: 600;
+}
+.brief-collection-filters button.brief-collection-more-tags {
+  border-style: dashed;
+  color: var(--muted);
+}
+.brief-collection-search {
+  display: flex;
+  flex: 0 1 220px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--muted);
+}
+.brief-collection-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  outline: none;
+}
+/* The field draws the focus, as a table's filter does (ResultTable.tsx). */
+.brief-collection-search input:focus {
+  outline: 0;
+  box-shadow: none;
+}
+.brief-collection-search button {
+  display: flex;
+  padding: 2px;
+  color: var(--muted);
+}
+.brief-collection-search:focus-within,
+.brief-collection-filters button:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .brief-collection-filters button,
+  .brief-collection-search input {
+    min-height: 44px;
+  }
+}
+.brief-collection-shown,
+.brief-collection-none,
+.brief-collection-total {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* A carousel: one page per item side by side, the next one's edge showing;
+ * scrolled by its arrows, a swipe or the wheel, snapping to a page. */
+.brief-carousel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-carousel-track {
+  position: relative;
+  display: grid;
+  grid-auto-columns: calc((100% - 12px) / 2.2);
+  grid-auto-flow: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 2px 0 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.brief-carousel-track::-webkit-scrollbar {
+  display: none;
+}
+.brief-carousel-track:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+.brief-carousel-page {
+  min-width: 0;
+  scroll-snap-align: start;
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-carousel-track {
+    scroll-behavior: auto;
+  }
+}
+.brief-carousel-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.brief-carousel-move:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.brief-carousel-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brief-carousel-dots li {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+}
+.brief-carousel-dots li[data-current] {
+  width: 14px;
+  background: var(--accent-ink, var(--green));
+}
+.brief-carousel-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 560px) {
+  .brief-carousel-track {
+    grid-auto-columns: 86%;
+  }
+  .brief-collection-search {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}
+
+/* On a card (YN-113 §3.6): no tools, smaller type; a carousel's pages a
+ * little narrower, a grid's row three tiles (two where the card is one
+ * column), a small card's one item. */
+/* Under the card's text, never beside it: it needs the card's width (YN-113 §3.6). */
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-summary-body.has-figure.has-collection {
+  display: flex;
+  flex-direction: column;
+}
+.home-card-frame.kind-collection {
+  min-width: 0;
+}
+.home-card-frame .brief-collection {
+  gap: 6px;
+}
+.home-card-frame .brief-collection-title {
+  font-size: 0.84rem;
+}
+.home-card-frame .brief-collection-line {
+  font-size: 0.78rem;
+}
+.home-card-frame .brief-collection-tile :is(.brief-collection-title, .brief-collection-line) {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.home-card-frame .brief-collection-row .brief-collection-line {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+.home-card-frame .brief-carousel-track {
+  grid-auto-columns: calc((100% - 24px) / 2.4);
+}
+.home-card-frame .brief-collection[data-layout="grid"] .brief-collection-items {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.home-card-frame .brief-collection[data-face="small"] .brief-collection-items {
+  display: block;
+  border-top: 0;
+}
+.home-card-frame .brief-collection[data-face="small"] .brief-collection-row {
+  border-bottom: 0;
+  padding: 0;
+}
+@container deck (max-width: 559px) {
+  .home-card-frame .brief-carousel-track {
+    grid-auto-columns: 86%;
+  }
+  .home-card-frame .brief-collection[data-layout="grid"] .brief-collection-items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-card-frame .brief-collection[data-layout="grid"][data-face="wide"] .brief-collection-items > li:nth-child(n + 3),
+  .home-card-frame .brief-collection[data-layout="grid"][data-face="large"] .brief-collection-items > li:nth-child(n + 5) {
+    display: none;
+  }
+}

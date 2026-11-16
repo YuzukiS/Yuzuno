@@ -45,9 +45,9 @@ const executor = (id, state, extra = {}, lifecycle = {}) => agent(id, {
   executor: { state, agentId: id, dispatcher: { kind: "user" }, task: { id: `T-${id}`, title: `Work ${id}` }, since: at(5), ...lifecycle },
   ...extra,
 });
-// In the workspace's own order; the sidebar orders them.
-const agents = () => [
-  executor("q", "queued", {}, { position: 2 }),
+// In the workspace's own order; the sidebar orders them. `urgent`: q's dispatch was urgent (YN-137).
+const agents = ({ urgent = false } = {}) => [
+  executor("q", "queued", {}, { position: 2, ...(urgent ? { urgent: true } : {}) }),
   agent("s"),
   executor("r", "running", { status: "working" }),
   executor("a", "archived", { closedAt: CLOSED, releasedAt: CLOSED, releasedBy: "user" }),
@@ -63,13 +63,15 @@ const task = (id, extra) => ({
   id, title: `Work ${id}`, description: "", status: "doing", version: 1, projectId: "p", progress: "", blocker: "", result: null, github: [],
   createdAt: at(500), updatedAt: at(5), createdBy: person, updatedBy: person, ...extra,
 });
-const tasks = () => [
+const tasks = ({ urgent = false } = {}) => [
   task("T-d", { status: "review", assigneeAgentId: "d", executor: agents().find((a) => a.id === "d").executor }),
   task("T-q", {
-    assigneeAgentId: "q", executor: agents().find((a) => a.id === "q").executor,
+    assigneeAgentId: "q", executor: agents({ urgent }).find((a) => a.id === "q").executor,
     // T-35's slot, which the lifecycle replaces on the card.
-    executorSlot: { agentId: "q", state: "waiting", machine: "local", position: 2 },
+    executorSlot: { agentId: "q", state: "waiting", machine: "local", position: 2, ...(urgent ? { urgent: true } : {}) },
   }),
+  // A slot without a lifecycle (an older Core's answer): its own chip.
+  ...(urgent ? [task("T-u", { executorSlot: { agentId: "u", state: "waiting", machine: "local", position: 1, urgent: true } })] : []),
 ];
 // What Core lists: the user's executor only (Core leaves a lead's out).
 const home = () => ({
@@ -80,7 +82,7 @@ const home = () => ({
     errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] } }],
 });
 
-async function mount({ storage = {} } = {}) {
+async function mount({ storage = {}, urgent = false } = {}) {
   const errors = [];
   const calls = [];
   const vc = new VirtualConsole();
@@ -100,14 +102,14 @@ async function mount({ storage = {} } = {}) {
     const text = JSON.stringify(value);
     return { ok: status === 200, status, json: async () => JSON.parse(text), text: async () => text };
   };
-  const listed = agents();
+  const listed = agents({ urgent });
   w.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : {};
     calls.push({ url, method: init.method || "GET", body });
     if (url.endsWith("/api/workspace")) return respond({ workspace: { id: "ws-exec" }, projects: [project], agents: listed, runtime: { connected: true }, defaultCwd: "/w" });
     if (url.endsWith("/api/home")) return respond(home());
-    if (url.endsWith("/task_list")) return respond({ tasks: tasks(), counts: { review: 1, doing: 1 }, hasMore: false });
-    if (url.endsWith("/task_get")) return respond({ task: tasks().find((t) => t.id === body.taskId), activities: [], executions: [], hasMore: false });
+    if (url.endsWith("/task_list")) return respond({ tasks: tasks({ urgent }), counts: { review: 1, doing: 1 }, hasMore: false });
+    if (url.endsWith("/task_get")) return respond({ task: tasks({ urgent }).find((t) => t.id === body.taskId), activities: [], executions: [], hasMore: false });
     const detail = url.match(/\/api\/agents\/(\w)$/);
     if (detail) return respond({ agent: listed.find((a) => a.id === detail[1]), pending: [], artifacts: [], messageReceipts: [], turns: [] });
     if (url.endsWith("/api/machines")) return respond({ machines: [] });
@@ -243,6 +245,28 @@ test("a task's card says its executor's state in place of its slot, and its view
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
+  }
+});
+
+test("YN-137: an urgent queued executor's card says urgent beside its place, and its tip why; an older slot chip says urgent too", async () => {
+  for (const [language, label, why, chip] of [
+    ["en", "Executor · Queued · urgent · 2 in line", "Urgent dispatch: may take one slot over its machine's limit", "Queued (number 1) · urgent"],
+    ["zh-Hans", "执行者 · 排队中 · 加急 · 第 2 位", "加急派发：机器满额时可多用一个名额", "排队中（第 1 位） · 加急"],
+  ]) {
+    const p = await mount({ urgent: true, storage: { "yuzuno.language": JSON.stringify({ language }) } });
+    try {
+      p.button(language === "en" ? "Tasks & messages" : "任务与消息").click();
+      const card = (id) => p.doc.querySelector(`.collab-task-card[data-task-id="${id}"]`);
+      await waitFor(() => card("T-q") && card("T-u"), `the task list (${language})`);
+      const state = card("T-q").querySelector(".collab-executor-state");
+      assert.equal(state?.textContent, label, language);
+      const tip = await hoverTip(p.w, state);
+      assert.ok(tip.includes(why), `${language}: ${tip.join(" | ")}`);
+      assert.equal(card("T-u").querySelector(".collab-executor-slot")?.textContent, chip, language);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
   }
 });
 

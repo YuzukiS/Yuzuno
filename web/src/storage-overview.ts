@@ -37,11 +37,15 @@ export const entryLabels: Record<string, string> = {
   databaseJournal: "Database rollback journal",
   lock: "Workspace lock",
   inputImages: "Images sent to Agents",
+  homeImages: "Images written on Home",
+  inputFiles: "Files attached in conversations",
+  homeFiles: "Files attached on Home",
   briefAttachments: "Brief attachments",
   reviews: "Code review sources",
   jobs: "Job records and output logs",
   claudeRuntime: "Claude runtime cache",
   opencode: "OpenCode session databases",
+  dsh: "DeepSeek Harness Agent folders (its home, settings and sessions)",
   desktopDownloads: "Desktop app downloads",
   previews: "Copies of conversation files being previewed",
   backupOperations: "Record of backups and restores",
@@ -53,7 +57,7 @@ export const entryLabels: Record<string, string> = {
   unknown: "Not made by this Core",
 };
 
-export const harnessNames: Record<string, string> = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
+export const harnessNames: Record<string, string> = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode", dsh: "DeepSeek Harness" };
 
 /** Bytes in binary units; never rounds a non-zero size to 0. */
 export function sizeText(bytes: number): string {

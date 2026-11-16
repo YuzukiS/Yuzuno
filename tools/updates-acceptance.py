@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Run under target/heavy-slot.sh against isolated, prebuilt releases.
+"""Run as a resource-limited Job against isolated, prebuilt releases.
 
-Uses prebuilt complete releases, a NEW on-disk directory and an isolated port.
-Does not build, touch an existing installation or open/refresh any window.
-Optional --native creates two disposable authenticated native sessions and sends
-one no-tool prompt to each; omit it for the real Core/helper/storage smoke test.
+Uses prebuilt complete releases, a NEW directory under this checkout's target/
+and an isolated port. Does not build, touch an existing installation or
+open/refresh any window. Optional --native creates two disposable authenticated
+native sessions and sends one no-tool prompt to each; omit it for the real
+Core/helper/storage smoke test. --scripted also plays the busy Agent's part in
+the A -> B update (YN-131): it reads its pause message while the request
+applies, and B, once installed, must send it exactly one continue.
 """
 import argparse
 import hashlib
@@ -20,7 +23,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-PROJECT = (Path.home() / 'yuzuno-next').resolve()
+# The checkout this tool is in: runs go to a new folder under its target/.
+PROJECT = Path(__file__).resolve().parents[1]
 
 
 def identity(pid):
@@ -133,16 +137,20 @@ def main(args):
             return {key.removeprefix('collaboration.mcp.agent.'): value for key, value in db.execute(
                 "SELECT key,value FROM workspace_meta WHERE key GLOB 'collaboration.mcp.agent.*'")}
 
-    def probe_credential(agent_id, token, revoked=False):
+    def mcp(agent_id, token, name, arguments):
+        # One collaboration tool call as the fixture Agent makes it.
         body = {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'peers_list', 'arguments': {}}}
+                'params': {'name': name, 'arguments': arguments}}
         req = urllib.request.Request(f'http://127.0.0.1:{args.port}/mcp/{agent_id}',
             data=json.dumps(body).encode(), headers={'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream', 'Authorization': f'Bearer {token}',
             'MCP-Protocol-Version': '2025-03-26'})
+        with opener.open(req, timeout=8) as response:
+            return json.load(response)
+
+    def probe_credential(agent_id, token, revoked=False):
         try:
-            with opener.open(req, timeout=8) as response:
-                result = json.load(response)
+            result = mcp(agent_id, token, 'peers_list', {})
         except urllib.error.HTTPError as error:
             assert revoked and error.code == 401, 'Unexpected fixture MCP authentication failure'
             return
@@ -246,10 +254,22 @@ def main(args):
                 pending = until(lambda: (d['pending'][0] if (d := request(f'/api/agents/{aid}')).get('pending') else None), 20)
                 assert identity(old_process['pid']) == old_process
                 assert status()['operation']['phase'] == 'waiting'
+                # The Agent's part (YN-131): read this update's pause message
+                # as its doorbell says, with the fixture's own credential.
+                pause = f'update-pause-{accepted["operationId"]}-{aid}'
+                def pause_seq():
+                    with sqlite3.connect(f'file:{data / "workspace.sqlite"}?mode=ro', uri=True) as db:
+                        row = db.execute('SELECT seq FROM collaboration_messages WHERE id=?', (pause,)).fetchone()
+                    return row and row[0]
+                seq = until(pause_seq, 20)
+                read = mcp(aid, previous_credentials[aid], 'peer_read', {'priority': 'urgent', 'afterSeq': seq - 1, 'limit': 1})['result']
+                page = read.get('structuredContent', {}).get('messages', [])
+                assert not read.get('isError') and [m.get('id') for m in page] == [pause], 'peer_read did not return this pause message'
+                assert page[0].get('updateWait') == {'active': True, 'operationId': accepted['operationId']}, page[0].get('updateWait')
                 request(f'/api/requests/{pending["id"]}/respond', {'response': {'decision': 'decline'}})
                 # During final seal ordinary API reads are fenced too; inspect
                 # the snapshot once the replacement is serving again below.
-                receipt['checks'].append('busy/approval preserved; fresh send fenced; duplicate apply deduplicated; cancellation reopened; approval answered while waiting')
+                receipt['checks'].append('busy/approval preserved; fresh send fenced; duplicate apply deduplicated; cancellation reopened; pause message read while active; approval answered while waiting')
             # No connected browser is involved while the independent helper runs.
             time.sleep(1)
             final = until(lambda: (s if (s := status()).get('operation', {}).get('phase') in ('complete', 'rolledBack', 'failed') else None), 300)
@@ -264,6 +284,32 @@ def main(args):
             assert health['storageReady'] and health['apiReady']
             assert f'content="{health["releaseId"]}"' in request('/')
             assert project in request('/api/projects')['projects']
+            if args.scripted and index == 1:
+                # YN-131: once B has installed itself, the Agent that yielded
+                # for this update gets exactly one continue, in a Turn of its
+                # own, and the update card says it continued.
+                op_id = accepted['operationId']
+                client = 'update-resume-' + op_id
+                rows = until(lambda: (r if (r := status()['resumes']) and all(row['state'] != 'pending' for row in r) else None), 60)
+                assert [(row['agentId'], row['state']) for row in rows] == [(aid, 'sent')] and rows[0].get('turnId'), rows
+                until(lambda: (d := request(f'/api/agents/{aid}'))['agent']['status'] not in ('working', 'waiting')
+                      and d['turns'][-1]['id'] == rows[0]['turnId'], 60)
+                # One more collaboration round (at most 5 s apart) sends nothing more.
+                time.sleep(6)
+                full = request(f'/api/agents/{aid}')
+                sent = [r for r in full.get('messageReceipts', []) if r['input']['clientMessageId'].startswith('update-resume-')]
+                assert [r['input']['clientMessageId'] for r in sent] == [client], [r['input']['clientMessageId'] for r in sent]
+                assert sent[0].get('origin', {}).get('kind') == 'update_resume' and sent[0]['origin'].get('operationId') == op_id, sent[0].get('origin')
+                assert sent[0].get('turnId') == rows[0]['turnId'], sent[0].get('turnId')
+                turn = full['turns'][-1]
+                first = next(item for item in turn.get('items', []) if item.get('type') == 'userMessage')
+                assert turn['id'] == rows[0]['turnId'] and turn.get('status') == 'completed', turn.get('status')
+                assert first.get('clientId') == client and first.get('_yuzunoInput') == 'update', (first.get('clientId'), first.get('_yuzunoInput'))
+                assert status()['resumes'] == rows, 'the update card changed after the continue'
+                receipt['resume'] = {'operationId': op_id, 'pauseMessageSeq': seq, 'updateWaitActive': True,
+                                     'clientMessageId': client, 'turnId': rows[0]['turnId'], 'card': rows}
+                receipt['checks'].append('complete: the Agent that read its pause message while it applied got exactly one continue '
+                                         '(origin update_resume, its own Turn, input marked update); the update card says sent')
             after = [snapshot(a['id']) for a in agents]
             after_payloads = payload_hashes(agents)
             assert all(after_payloads.get(key) == digest for key, digest in before_payloads.items()), 'Full payload changed'
@@ -281,7 +327,8 @@ def main(args):
                 for before, current in zip(agents, after):
                     assert all(current[key] == before[key] for key in ('id','harness','threadId','claudeSessionId','reviewedSeq','settings','projectId'))
                     assert current['turnIds'][:len(before['turnIds'])] == before['turnIds']
-                    assert len(current['turnIds']) == len(before['turnIds']) + 1
+                    # The busy Turn, and for the Agent that yielded its continue.
+                    assert len(current['turnIds']) == len(before['turnIds']) + (2 if current['id'] == aid else 1)
                 agents = after
                 full = request(f'/api/agents/{agents[0]["id"]}')
                 assert not any(r.get('input', {}).get('clientMessageId') == fresh_id for r in full.get('messageReceipts', []))
@@ -293,8 +340,11 @@ def main(args):
                 assert after == agents, 'Native identity/history/read cursor/settings changed'
             assert old_process and identity(old_process['pid']) != old_process, 'the old packaged Core must really exit'
             with sqlite3.connect(f'file:{data / "workspace.sqlite"}?mode=ro', uri=True) as db:
-                layouts = [row[0] for row in db.execute('SELECT DISTINCT layout FROM agents')]
-                assert all(layout == 1 for layout in layouts)
+                # Since T-140 the Agents' rows have one layout, marked once in
+                # workspace_meta (record_rows::STORE_KEY, STORE_VERSION "2"),
+                # not an `agents` column; core-release-smoke.py reads it so too.
+                layouts = [int(value) for (value,) in db.execute("SELECT value FROM workspace_meta WHERE key='sessionStore'")]
+                assert layouts == [2], layouts
             receipt.setdefault('storage', []).append({'phase': expected_phase, 'layouts': layouts, 'recordsReady': final['operation']['recordsProof']['recordsReady'], 'proof': final['operation']['recordsProof']})
             for a in agents:
                 restored = request(f'/api/agents/{a["id"]}')

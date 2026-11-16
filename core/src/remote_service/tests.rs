@@ -891,7 +891,14 @@ fn shutdown_reaps_children_before_bye_and_reports_a_pending_read() {
     let root = home.join("data");
     install(&root);
     let child_script = home.join("child.py");
-    std::fs::write(&child_script, b"import os,sys,time\nopen(sys.argv[1],'w').write(str(os.getpid()))\ntime.sleep(60)\n").unwrap();
+    // Its pid file appears whole: an `open(path, 'w')` creates it empty
+    // first, and the test that saw it could read nothing (macOS, core-macos
+    // 43571105451, YN-147). Write a neighbour and rename it into place.
+    std::fs::write(
+        &child_script,
+        b"import os,sys,time\npath=sys.argv[1]\nwith open(path+'.tmp','w') as out: out.write(str(os.getpid()))\nos.replace(path+'.tmp',path)\ntime.sleep(60)\n",
+    )
+    .unwrap();
     let pid_file = home.join("child.pid");
     let child_command = format!("{} {} {}", python(), child_script.display(), pid_file.display());
 

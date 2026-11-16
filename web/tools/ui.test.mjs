@@ -2325,7 +2325,7 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
     await pause();
     assert.deepEqual(
       [...row.querySelectorAll('.composer-add-menu [role="menuitem"]')].map((b) => b.getAttribute("aria-label")),
-      ["Add images", "Mark up an image", "Ask for an interactive result"],
+      ["Add images", "Mark up an image", "Add files", "Ask for an interactive result"],
     );
     row.querySelector('.composer-tools button[aria-label="Add"]').click();
     await pause();
@@ -3098,7 +3098,8 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
   const uploads = [];
   let drawn;
   const page = await mount({
-    harness: "opencode",
+    // An Agent whose harness takes no images (Core's input_images::takes_images): the reason shows.
+    harness: "dsh",
     artifacts: [{ path: "/workspace/shot.png", name: "shot.png", kind: "image", sourceItemId: "r1" }],
     beforeLoad: (window) => { drawn = pointFixBrowser(window, uploads, { failFirst: true }); },
   });
@@ -3118,7 +3119,7 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     button(page, "Mark up").click();
     await until(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
     // Mori owns the image but cannot take one: said, and nothing can be added.
-    assert.match(dialog().textContent, /Mori cannot receive images; Codex and Claude Agents can/);
+    assert.match(dialog().textContent, /Mori cannot receive images; Codex, Claude and OpenCode Agents can/);
     assert.equal(button(page, "Add to Mori’s draft").disabled, true);
     // Two areas without a pointer: Add area, its fields and its note.
     button(page, "Add area").click();
@@ -3176,6 +3177,32 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     assert.match(text, /1\. Area at x 10, y 20, 50×40 px: Too tight, by 4 px\n2\. Area at x 150, y 113, 100×75 px: Wrong colour/);
     assert.equal(page.document.querySelector(".composer-area").querySelectorAll(".input-image").length, 2);
     assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0, "nothing is sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("Point & Fix takes an OpenCode Agent, as Core does (YN-134 §7-1)", async () => {
+  const uploads = [];
+  const page = await mount({
+    harness: "opencode",
+    artifacts: [{ path: "/workspace/shot.png", name: "shot.png", kind: "image", sourceItemId: "r1" }],
+    beforeLoad: (window) => { pointFixBrowser(window, uploads); },
+  });
+  try {
+    const dialog = () => page.document.querySelector(".point-fix-dialog");
+    button(page, "Mori").click();
+    await until(() => page.document.querySelector(".artifacts-panel .artifact-row"), "Mori's artifacts");
+    page.document.querySelector(".artifacts-panel .artifact-row").click();
+    await until(() => button(page, "Mark up"), "an image artifact can be marked up");
+    button(page, "Mark up").click();
+    await until(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
+    assert.doesNotMatch(dialog().textContent, /cannot receive images/);
+    const select = dialog().querySelector(".point-fix-target select");
+    assert.equal(select.value, "a", "its owner, an OpenCode Agent, is the one told");
+    assert.equal(select.querySelector('option[value="a"]').disabled, false);
+    button(page, "Add area").click();
+    await pause();
+    assert.equal(button(page, "Add to Mori’s draft").disabled, false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -3369,7 +3396,7 @@ test("without a system frame the toolbar moves the window and carries its own wi
     assert.deepEqual(calls, ["minimize", "toggleMaximize", "close"]);
     calls.length = 0;
     const press = (target, detail = 1) => target.dispatchEvent(new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail }));
-    press(toolbar.querySelector(".workspace-name"));
+    press(toolbar.querySelector(".toolbar-middle"));
     press(toolbar, 2);
     press(toolbar.querySelector('[aria-label="Settings and updates"]'));
     press(toolbar.querySelector(".catchup-nav"));
@@ -3433,7 +3460,7 @@ test("on macOS the toolbar leaves the system's window buttons their room, none i
     assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "71.5px");
     const press = (type, target, detail = 1, clientX = 300) => target.dispatchEvent(
       new page.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail, clientX, clientY: 20 }));
-    press("mousedown", toolbar.querySelector(".workspace-name"));
+    press("mousedown", toolbar.querySelector(".toolbar-middle"));
     press("mousedown", toolbar.querySelector('[aria-label="Settings and updates"]'));
     press("mousedown", toolbar.querySelector(".catchup-nav"));
     assert.deepEqual(calls, ["startDragging"], "buttons keep their own clicks");
@@ -3492,7 +3519,7 @@ test("a browser, another system or an older shell keeps the toolbar as it is", a
       assert.equal(toolbar.classList.contains("title-bar-overlay"), false);
       assert.equal(toolbar.classList.contains("window-frame"), false);
       assert.equal(toolbar.style.getPropertyValue("--title-bar-inset"), "");
-      toolbar.querySelector(".workspace-name").dispatchEvent(
+      toolbar.querySelector(".toolbar-middle").dispatchEvent(
         new page.window.MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
       assert.deepEqual(calls, [], "the toolbar does not move the window");
     } finally { page.close(); }
@@ -4129,6 +4156,38 @@ test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays
     assert.match(old.querySelector('[data-item-id="u0"]').textContent, /Earlier input.*No record says where this message came from/s);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+test("Yuzuno's own continues carry their own labels, not “You” (YN-131)", async () => {
+  const user = (id, text, by) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [
+    { id: "t-update", status: "completed", items: [
+      user("u-update", "[Yuzuno · continue after update] Workspace update core.34 has ended.", "update"), reply("r-update", "Continued."),
+    ] },
+    { id: "t-limit", status: "completed", items: [
+      user("u-limit", "The usage limit reset; continue the turn.", "resume"), reply("r-limit", "Continued."),
+    ] },
+  ];
+  const english = await mount({ extraTurns });
+  try {
+    await pause(); await pause();
+    const label = (id) => english.document.querySelector(`[data-item-id="${id}"] .message-label`).textContent.replace(/\s+/g, " ").trim();
+    assert.match(label("u-update"), /^Yuzuno · continued after update/);
+    assert.match(label("u-limit"), /^Yuzuno · continued after usage limit/);
+    assert.ok(english.document.querySelector('[data-item-id="u-update"] .message-label .you-avatar svg'), "an icon, not the user's avatar");
+    assert.equal(english.document.querySelector('[data-item-id="u-update"] .message-label .you-avatar').textContent.trim(), "", "no “Y”");
+    assert.equal(english.document.querySelector("#turn-t-update .input-divider"), null, "not read as your input");
+    assert.deepEqual(english.errors, []);
+  } finally { english.close(); }
+  const chinese = await mount({ extraTurns, stored: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    await pause(); await pause();
+    const label = (id) => chinese.document.querySelector(`[data-item-id="${id}"] .message-label`).textContent.replace(/\s+/g, " ").trim();
+    assert.match(label("u-update"), /^Yuzuno · 更新后继续/);
+    assert.match(label("u-limit"), /^Yuzuno · 额度自动继续/);
+    assert.deepEqual(chinese.errors, []);
+  } finally { chinese.close(); }
 });
 
 test("a link to folded mail opens its fold, which stays open once the link has led there (T-6)", async () => {

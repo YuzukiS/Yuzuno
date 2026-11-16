@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { openJobs } from "../../Jobs";
 import { boardText } from "../../collaboration-text";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import { useHomeRead } from "../home-read";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useBrief, type BriefContextValue } from "./BriefContext";

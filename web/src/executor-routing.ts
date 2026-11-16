@@ -4,12 +4,21 @@
  * replaced at once, against the version it was read at. Fields this version
  * doesn't know are kept as they came and sent back on save. */
 import { API_BASE, NetworkError, api } from "./api";
+import { DSH_EFFORTS, DSH_MODEL_HINTS } from "./dsh";
 
-export type Harness = "claude" | "codex" | "opencode";
-export const HARNESSES: readonly Harness[] = ["claude", "codex", "opencode"];
+export type Harness = "claude" | "codex" | "opencode" | "dsh";
+/** Every tool a candidate can name. DeepSeek Harness is offered only while
+ * Core starts it (`harnessesOffered`); a candidate saved with it stays shown. */
+export const HARNESSES: readonly Harness[] = ["claude", "codex", "opencode", "dsh"];
+/** The tools offered for a new choice: dsh only while this Core starts it (`dsh.available` of /api/workspace), and
+ * `kept`, the one already chosen, always. */
+export const harnessesOffered = (dsh: boolean, kept?: Harness) => HARNESSES.filter((h) => h !== "dsh" || dsh || kept === "dsh");
+/** Which of a pool's accounts it uses first (YN-150): the one with the most of
+ * its week left (the default), or the one whose week resets soonest. */
+export type PoolPick = "mostRemaining" | "soonestReset";
 export type Credential =
   | { kind: "login" }
-  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: "mostRemaining" }
+  | { kind: "pool"; manager: "cswap"; accounts: "all" | string[]; pick: PoolPick }
   | { kind: "apiKey"; keyId: string }
   | { kind: "codexHome"; id: string };
 /** One weekly period: ISO days (Monday 1 … Sunday 7), from and to as HH:MM, `to` exclusive ("24:00" allowed). */
@@ -19,7 +28,9 @@ export type Condition =
   | { kind: "timeWindow"; inside: boolean; schedule: Schedule; minMinutesLeft?: number }
   /** The share of the week left: Claude and Codex have no 5-hour quota now (YN-60). */
   | { kind: "quota"; weekLeftPct?: number }
-  | { kind: "dailyApiCap"; usd: number };
+  | { kind: "dailyApiCap"; usd: number }
+  /** The machines it may run on (YN-139): "local" for this Core host, else a registered machine's id. */
+  | { kind: "machine"; machines: string[] };
 /** A condition of a kind this version doesn't know: shown, kept, never edited. */
 export type AnyCondition = Condition | ({ kind: string } & Record<string, unknown>);
 export interface Candidate {
@@ -46,7 +57,12 @@ export interface PolicyView { version: number; policy: Policy; updatedAt?: strin
 /** The kinds of work a candidate takes (YN-70, YN-84 S1): its own module, re-exported here as the page had them. */
 export { TIERS, tiersOf, type Tier } from "./routing-tiers";
 
-export const isKnown = (c: AnyCondition): c is Condition => c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap";
+export const isKnown = (c: AnyCondition): c is Condition =>
+  c.kind === "timeWindow" || c.kind === "quota" || c.kind === "dailyApiCap" || c.kind === "machine";
+/** This Core host, as a machine condition names it (YN-139). */
+export const LOCAL_MACHINE = "local";
+/** A machine a machine condition can name: its id and its name in the Machines list (SSH machines only). */
+export interface NamedMachine { id: string; name: string }
 export const emptyPolicy = (): Policy => ({ enabled: false, candidates: [], whenNone: "wait" });
 
 /** The view as this client reads it: lists and switches even from an answer without them. */
@@ -113,12 +129,16 @@ export const DEEPSEEK_PEAK: Schedule = {
 export const sameSchedule = (a: Schedule, b: Schedule) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Which credentials a harness takes (Core refuses the rest): Claude Code an
- * Anthropic key, Codex an OpenAI key, OpenCode any of the three. */
+ * Anthropic key, Codex an OpenAI key, OpenCode any of the three, DeepSeek
+ * Harness a DeepSeek key (YN-119 §3.10). */
 export const keyFits = (harness: Harness, provider: string) =>
-  harness === "claude" ? provider === "anthropic" : harness === "codex" ? provider === "openai" : ["deepseek", "anthropic", "openai"].includes(provider);
+  harness === "claude" ? provider === "anthropic" : harness === "codex" ? provider === "openai"
+    : harness === "dsh" ? provider === "deepseek" : ["deepseek", "anthropic", "openai"].includes(provider);
+/** DeepSeek Harness takes only a key: it has no login of its own here (YN-119 §3.10, §4). */
 export const credentialFits = (harness: Harness, credential: Credential) =>
-  credential.kind === "login" || credential.kind === "apiKey"
-  || (credential.kind === "pool" && harness === "claude") || (credential.kind === "codexHome" && harness === "codex");
+  harness === "dsh" ? credential.kind === "apiKey"
+    : credential.kind === "login" || credential.kind === "apiKey"
+      || (credential.kind === "pool" && harness === "claude") || (credential.kind === "codexHome" && harness === "codex");
 export const usesApi = (c: Candidate) => c.credential.kind === "apiKey";
 
 /** A tool's first model for a new or changed candidate, and Yuzuno's short list when the tool's own can't be read (YN-57 S2b). */
@@ -126,8 +146,11 @@ export const MODEL_HINTS: Record<Harness, string[]> = {
   claude: ["opus", "sonnet", "haiku"],
   codex: ["gpt-6.1-sol"],
   opencode: ["deepseek/deepseek-flash"],
+  dsh: DSH_MODEL_HINTS,
 };
 export const EFFORTS = ["low", "medium", "high", "xhigh"];
+/** The reasoning efforts a candidate of `harness` offers: Codex's, or DeepSeek Harness's own (YN-119 S3); none for the others. */
+export const effortsOf = (harness: Harness): readonly string[] => (harness === "codex" ? EFFORTS : harness === "dsh" ? DSH_EFFORTS : []);
 /** A model's short name, as a card's title shows it: "deepseek-flash" for "deepseek/deepseek-flash". */
 export const modelShort = (model: string) => (model.includes("/") ? model.split("/").pop()! : model);
 

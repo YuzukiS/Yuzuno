@@ -23,11 +23,18 @@ const KNOWN: &[(&str, &str)] = &[
     ("workspace.sqlite-journal", "databaseJournal"),
     ("workspace.lock", "lock"),
     ("input-images", "inputImages"),
+    ("home-images", "homeImages"),
+    ("input-files", "inputFiles"),
+    ("home-files", "homeFiles"),
     ("brief-attachments", "briefAttachments"),
     ("pr-reviews", "reviews"),
     ("jobs", "jobs"),
     ("claude-runtime", "claudeRuntime"),
     ("opencode", "opencode"),
+    // dsh Agents' own folders, and Core's own dsh runs (YN-119 §3.1, §3.9).
+    ("dsh", "dsh"),
+    ("dsh-version", "dsh"),
+    ("dsh-catalog", "dsh"),
     ("desktop-updates", "desktopDownloads"),
     ("previews", "previews"),
     (crate::routing_keys::DIR, "routingKeys"),
@@ -125,13 +132,14 @@ fn describe(path: &Path, name: &str) -> Value {
 
 /// The Agents whose native sessions their CLI keeps outside the Workspace,
 /// by harness and machine. Codex and Claude keep them in their own folders on
-/// that machine; OpenCode's are in this data folder (`opencode/`).
+/// that machine; OpenCode's and dsh's are in this data folder (`opencode/`, `dsh/`).
 fn native(agents: &[crate::model::Agent]) -> Value {
     let mut groups: BTreeMap<(String, Option<String>), (u64, u64)> = BTreeMap::new();
     for agent in agents {
         let session = match agent.harness.as_str() {
             "claude" => agent.claude_session_id.is_some(),
             "opencode" => agent.opencode_session_id.is_some(),
+            "dsh" => agent.dsh_session_id.is_some(),
             _ => agent.thread_id.is_some(),
         };
         if !session {

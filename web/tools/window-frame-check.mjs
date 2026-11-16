@@ -74,7 +74,7 @@ try {
       assert.ok(layout.atRightEdge < 24, `${theme} ${width}: ${JSON.stringify(layout)}`);
       assert.deepEqual(layout.buttons, ["Minimize", "Maximize", "Close window"]);
       // Empty bar moves the window; a double press maximizes; buttons click.
-      const box = await page.locator(".workspace-name").boundingBox();
+      const box = await page.locator(".toolbar-middle").boundingBox();
       await page.mouse.click(box.x + 4, box.y + box.height / 2);
       await page.mouse.dblclick(box.x + 4, box.y + box.height / 2);
       await page.getByRole("button", { name: "Settings and updates" }).click();
@@ -173,7 +173,7 @@ try {
       assert.equal(layout.windowGroup, false, `${label}: the system draws the window buttons`);
       await page.locator(".toolbar").screenshot({ path: `${output}/toolbar-mac-${theme}-${width}.png` });
       // Empty bar moves the window; a double click zooms, as the setting says.
-      const box = await page.locator(".workspace-name").boundingBox();
+      const box = await page.locator(".toolbar-middle").boundingBox();
       await page.mouse.click(box.x + 4, box.y + box.height / 2);
       await page.mouse.dblclick(box.x + 4, box.y + box.height / 2);
       await page.getByRole("button", { name: "Settings and updates" }).click();

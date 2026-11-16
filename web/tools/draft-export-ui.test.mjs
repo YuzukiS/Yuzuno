@@ -228,12 +228,12 @@ test("ticked drafts are read only when downloaded, kept apart by Agent ID under 
   assert.match(file.note, /text typed since it was last saved is not included\. Each draft says the Workspace and Agent it was written in, unless it was saved before Yuzuno recorded the Workspace \(workspace: notRecorded\)\./);
   // In list order, each its own, as saved: pasted text in place, images only counted.
   assert.deepEqual(file.drafts, [
-    { agentId: "a1", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 1, skills: [],
+    { agentId: "a1", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 1, files: 0, skills: [],
       parts: [{ kind: "text", text: "Hello there " }, { kind: "paste", number: 1, lines: 2, text: "PASTED BODY line one\nline two" }] },
-    { agentId: "a6", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "the other Cedar's words" }] },
+    { agentId: "a6", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, files: 0, skills: [], parts: [{ kind: "text", text: "the other Cedar's words" }] },
     // Each draft says whether it names the Workspace it was written in, so a
     // file holding both cannot be mistaken for all one Workspace's (T-195).
-    { agentId: "a2", name: "Pine", closed: true, workspace: "notRecorded", savedBy: "earlierVersion", images: 0, skills: [], parts: [{ kind: "text", text: "legacy words" }] },
+    { agentId: "a2", name: "Pine", closed: true, workspace: "notRecorded", savedBy: "earlierVersion", images: 0, files: 0, skills: [], parts: [{ kind: "text", text: "legacy words" }] },
   ]);
   assert.ok(!JSON.stringify(file).includes("screen.png"), "no image is in the file, not even by name");
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [`yuzuno.paste.v1:${mine("a1")}:b1`], "only the ticked drafts' pasted text is read");
@@ -288,7 +288,7 @@ test("ticked drafts are saved as they are when downloaded: one another window re
   p.button("Download selected (.json)").click();
   await until(() => p.saves.links.length === 1);
   assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts, [
-    { agentId: "a7", name: "Willow", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
+    { agentId: "a7", name: "Willow", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, files: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
   ]);
   assert.deepEqual(p.writes, [], "the page wrote nothing");
 });
@@ -355,4 +355,28 @@ test("switched to Chinese in another window, the page's words change and the cho
   assert.equal(alert.textContent, "没有下载任何内容：所选的 3 份草稿中有 1 份无法读取（Rowan：保存的粘贴文本已丢失）。取消勾选它即可保存其余草稿。");
   assert.deepEqual([p.writes, p.saves.links.length], [[], 1], "no partial file");
   assert.deepEqual(p.errors, []);
+});
+
+// YN-145 F5: a draft can carry files, kept as references as images are.
+const fileRef = { id: "b".repeat(64), agentId: "a8", name: "q3-report.pdf", bytes: 2400000 };
+const withFiles = {
+  [`yuzuno.composer.v1:${mine("a8")}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [], files: [fileRef] }),
+};
+const fileAgents = [...agents, { id: "a8", name: "Fir" }];
+
+test("a draft with only files is a draft: counted, opened and exported as references (YN-145)", async (t) => {
+  const p = mount({ extra: withFiles }); t.after(p.close);
+  p.w.renderDrafts({ active: true, agents: fileAgents });
+  await until(() => p.row("a8"), "the file-only draft is listed");
+  assert.match(p.row("a8").textContent, /1 file \(referenced; not saved in the file\)/);
+  p.row("a8").querySelector("button").click();
+  const text = await until(() => p.shown(), "the chosen draft");
+  assert.match(text, /Files in the draft: 1 \(references only; the files themselves are not in this file\)/);
+  p.tick("a8").click();
+  await until(() => /1 draft chosen/.test(p.section().textContent));
+  p.button("Download selected (.json)").click();
+  await until(() => p.saves.links.length === 1);
+  const draft = JSON.parse(await p.blobText(p.saves.blobs[0])).drafts[0];
+  assert.equal(draft.files, 1);
+  assert.ok(!JSON.stringify(draft).includes("q3-report.pdf"), "the file is counted, not named in the file");
 });

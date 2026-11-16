@@ -15,6 +15,11 @@ pub const FORMAT: &str = "1";
 /// 4317 (core/src/main.rs), and the nine after it (design 4.7).
 pub const PORTS: std::ops::RangeInclusive<u16> = 4317..=4326;
 
+/// Where the Mac app looks for a free port for a new Core (YN-108 design
+/// 4.2): Core's default, 4317, then 4318 to 4337, the first free one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const MAC_PORTS: std::ops::RangeInclusive<u16> = 4317..=4337;
+
 fn named(text: &str, max: usize, more: &[char]) -> bool {
     !text.is_empty() && text.len() <= max && text.chars().all(|c| c.is_ascii_alphanumeric() || more.contains(&c))
 }
@@ -57,6 +62,40 @@ pub fn linux_path_ok(path: &str) -> bool {
 pub fn same_or_nested(a: &str, b: &str) -> bool {
     let within = |inner: &str, outer: &str| inner == outer || inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'));
     within(a, b) || within(b, a)
+}
+
+/// The shape of an absolute macOS path this app passes as one argument to a
+/// command: at most 512 bytes, no control characters, no empty, `.` or `..`
+/// part, and not an external volume. Spaces and non-ASCII characters are
+/// allowed: the path is never part of a shell command (YN-108 design 4.2).
+pub fn mac_path_shape_ok(path: &str) -> bool {
+    // The default Mac disk ignores case: `/volumes/x` is `/Volumes/x`.
+    let lowered = path.to_ascii_lowercase();
+    path.starts_with('/')
+        && path.len() <= 512
+        && !path.chars().any(char::is_control)
+        && path[1..].split('/').all(|part| !matches!(part, "" | "." | ".."))
+        && lowered != "/volumes"
+        && !lowered.starts_with("/volumes/")
+}
+
+/// Where the Mac app may put Core and its Workspace (YN-108 design 4.2): a
+/// path of [`mac_path_shape_ok`] inside `home` and not below one of the
+/// folders macOS guards with a privacy prompt, nor on an external volume.
+/// `home` is the checked account's home folder.
+pub fn mac_path_ok(path: &str, home: &str) -> bool {
+    let home = home.trim_end_matches('/');
+    let guarded = ["/desktop", "/documents", "/downloads", "/library/mobile documents"];
+    // The default Mac disk ignores case, so the home and the guarded folders
+    // are compared that way: `~/desktop` is `~/Desktop`.
+    let (path_lower, home_lower) = (path.to_ascii_lowercase(), home.to_ascii_lowercase());
+    mac_path_shape_ok(path)
+        && mac_path_shape_ok(home)
+        && path_lower.strip_prefix(&home_lower).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+        && !guarded.iter().any(|folder| {
+            let folder = format!("{home_lower}{folder}");
+            path_lower == folder || path_lower.strip_prefix(&folder).is_some_and(|rest| rest.starts_with('/'))
+        })
 }
 
 /// The `key=value` lines the check printed.
@@ -141,6 +180,51 @@ pub enum State {
     Unknown,
 }
 
+/// Whether this app may start a stopped distribution (YN-156, rule R1): only
+/// the WSL default one, or one stopped while nothing else runs. The page
+/// shows it with each target; every command checks it again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Boot {
+    /// It is the default distribution: `wsl` starts it for the user anyway.
+    Own,
+    /// It is running, so using it starts nothing.
+    Running,
+    /// It is stopped and no other distribution runs: there is no victim.
+    Alone,
+    /// It is stopped and another distribution runs: this app does not start
+    /// it.
+    Risky,
+}
+
+impl Boot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Boot::Own => "own",
+            Boot::Running => "running",
+            Boot::Alone => "alone",
+            Boot::Risky => "risky",
+        }
+    }
+
+    pub fn can_start(self) -> bool {
+        self != Boot::Risky
+    }
+}
+
+/// Rule R1: a stopped `distro` may be started when it is the default one or
+/// no other distribution runs.
+pub fn boot(is_default: bool, running: bool, peers_running: bool) -> Boot {
+    if running {
+        Boot::Running
+    } else if is_default {
+        Boot::Own
+    } else if peers_running {
+        Boot::Risky
+    } else {
+        Boot::Alone
+    }
+}
+
 /// One line of the check list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -183,7 +267,7 @@ fn tool<'a>(report: &'a Report, key: &str) -> Option<&'a str> {
 }
 
 /// The leading `major.minor` of a version such as `v22.11.0` or `2.39`.
-fn major_minor(version: &str) -> Option<(u32, u32)> {
+pub fn major_minor(version: &str) -> Option<(u32, u32)> {
     let version = version.trim().trim_start_matches('v');
     let mut parts = version.split(|c: char| !c.is_ascii_digit());
     let major = parts.next()?.parse().ok()?;
@@ -204,8 +288,10 @@ fn path_note(report: &Report) -> String {
 }
 
 /// Every check item, in the shared table's order, for a WSL distribution
-/// whose list entry says `wsl2`.
-pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item> {
+/// whose list entry says `wsl2`, and whether it is the WSL default one (rule
+/// R2: a non-default distribution that runs systemd may not be installed
+/// into).
+pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found, is_default: bool) -> Vec<Item> {
     use Level::{Recommended, Required};
     let item = |id, level, state, detail: Option<String>| Item { id, level, state, detail };
     let mut items = Vec::new();
@@ -223,6 +309,23 @@ pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item
             }
         }
         _ => item("user", Required, State::Unknown, None),
+    });
+
+    // Rule R2: systemd in a distribution that is not the default one clears
+    // the shared binfmt table and writes the shared cgroup tree, so Core is
+    // not installed there. "Unknown" is treated as risky by the page.
+    items.push(match report.get("init").map(str::trim) {
+        None | Some("") => item("peers", Required, State::Unknown, None),
+        Some("systemd") if !is_default => item(
+            "peers",
+            Required,
+            State::Missing,
+            Some(
+                "systemd runs in this distribution, which is not the default one; it shares Windows interop and cgroups with the other distributions."
+                    .into(),
+            ),
+        ),
+        Some(_) => item("peers", Required, State::Ok, None),
     });
 
     items.push(match report.get("arch") {
@@ -287,6 +390,12 @@ pub fn judge(report: &Report, wsl2: bool, port: &Port, found: Found) -> Vec<Item
         items.push(present(report, id, key, "Not found on PATH"));
     }
 
+    // DeepSeek Harness (YN-119 S4b): optional, as Codex and Claude Code are,
+    // and only in a report that names it (a check script from before it doesn't).
+    if report.get("tool.dsh").is_some() {
+        items.push(dsh(report));
+    }
+
     items.push(match (tool(report, "tool.gh"), report.get("gh.auth")) {
         (None, _) => item("gh", Recommended, State::Unknown, None),
         (Some("-"), _) => item("gh", Recommended, State::Missing, Some(format!("gh is not found on PATH{}.", path_note(report)))),
@@ -307,6 +416,24 @@ fn present(report: &Report, id: &'static str, key: &str, missing: &str) -> Item 
         Some(version) => (State::Ok, Some(version.to_owned())),
     };
     Item { id, level: Level::Recommended, state, detail }
+}
+
+/// DeepSeek Harness on the distribution's PATH (YN-119 S4b): there when it
+/// answers `--version`, and usable only with Node.js 24.9 or newer, which its
+/// CLI needs (`engines` of @deepseek-ai/dsh).
+fn dsh(report: &Report) -> Item {
+    let found = present(report, "dsh", "tool.dsh", "Not found on PATH");
+    if found.state != State::Ok {
+        return found;
+    }
+    match tool(report, "tool.node").and_then(major_minor) {
+        Some(node) if node < (24, 9) => Item {
+            state: State::Missing,
+            detail: Some(format!("{}; DeepSeek Harness needs Node.js 24.9 or newer.", found.detail.clone().unwrap_or_default())),
+            ..found
+        },
+        _ => found,
+    }
 }
 
 fn systemd(report: &Report) -> Item {
@@ -399,6 +526,7 @@ tool.claude=2.1.3 (Claude Code)
 tool.codex=codex-cli 0.80.0
 tool.python3=Python 3.12.3
 gh.auth=ok
+init=init
 systemd=running
 cgroup=cpu memory pids
 ";
@@ -427,7 +555,7 @@ cgroup=cpu memory pids
     }
 
     fn judged(changes: &[(&str, &str)]) -> Vec<Item> {
-        judge(&with(changes), true, &Port::Free(4317), Found::Nothing)
+        judge(&with(changes), true, &Port::Free(4317), Found::Nothing, true)
     }
 
     #[test]
@@ -436,13 +564,52 @@ cgroup=cpu memory pids
         let ids: Vec<_> = items.iter().map(|item| item.id).collect();
         assert_eq!(
             ids,
-            ["wsl2", "user", "arch", "glibc", "paths", "tools", "port", "node", "git", "python3", "systemd", "claude", "codex", "gh"]
+            ["wsl2", "user", "peers", "arch", "glibc", "paths", "tools", "port", "node", "git", "python3", "systemd", "claude", "codex", "gh"]
         );
         let required: Vec<_> = items.iter().filter(|item| item.level == Level::Required).map(|item| item.id).collect();
-        assert_eq!(required, ["wsl2", "user", "arch", "glibc", "paths", "tools", "port"]);
+        assert_eq!(required, ["wsl2", "user", "peers", "arch", "glibc", "paths", "tools", "port"]);
         assert!(items.iter().all(|item| item.state == State::Ok), "{items:?}");
         assert!(installable(&items, Found::Nothing));
         assert!(!installable(&items, Found::Installation));
+    }
+
+    #[test]
+    fn a_stopped_distribution_is_started_only_as_the_default_or_alone() {
+        assert_eq!(boot(true, false, false), Boot::Own);
+        assert_eq!(boot(true, false, true), Boot::Own);
+        assert_eq!(boot(true, true, true), Boot::Running);
+        assert_eq!(boot(false, true, true), Boot::Running);
+        assert_eq!(boot(false, false, false), Boot::Alone);
+        assert_eq!(boot(false, false, true), Boot::Risky);
+        assert!(Boot::Own.can_start() && Boot::Running.can_start() && Boot::Alone.can_start());
+        assert!(!Boot::Risky.can_start());
+        let names: Vec<_> = [Boot::Own, Boot::Running, Boot::Alone, Boot::Risky].iter().map(|boot| boot.as_str()).collect();
+        assert_eq!(names, ["own", "running", "alone", "risky"]);
+    }
+
+    #[test]
+    fn a_non_default_distribution_running_systemd_cannot_be_installed_into() {
+        let report = with(&[]);
+        let default = judge(&report, true, &Port::Free(4317), Found::Nothing, true);
+        assert_eq!(state(&default, "peers").0, State::Ok);
+        assert!(installable(&default, Found::Nothing));
+        // The default distribution may run systemd.
+        let systemd_default = judge(&with(&[("init", "systemd")]), true, &Port::Free(4317), Found::Nothing, true);
+        assert_eq!(state(&systemd_default, "peers").0, State::Ok);
+
+        let non_default = judge(&with(&[("init", "systemd")]), true, &Port::Free(4317), Found::Nothing, false);
+        let (found, detail) = state(&non_default, "peers");
+        assert_eq!(found, State::Missing);
+        assert!(detail.unwrap().contains("systemd runs"));
+        assert!(!installable(&non_default, Found::Nothing));
+
+        let no_systemd = judge(&with(&[("init", "init")]), true, &Port::Free(4317), Found::Nothing, false);
+        assert_eq!(state(&no_systemd, "peers").0, State::Ok);
+        assert!(installable(&no_systemd, Found::Nothing));
+
+        let unknown = judge(&with(&[("init", "")]), true, &Port::Free(4317), Found::Nothing, false);
+        assert_eq!(state(&unknown, "peers").0, State::Unknown);
+        assert!(!installable(&unknown, Found::Nothing));
     }
 
     #[test]
@@ -506,10 +673,10 @@ cgroup=cpu memory pids
         assert!(detail.unwrap().contains("holds a workspace"));
         // An installation is started, not installed again.
         let report = with(&[("root.state", "installed")]);
-        let items = judge(&report, true, &Port::Free(4317), Found::Installation);
+        let items = judge(&report, true, &Port::Free(4317), Found::Installation, true);
         assert_eq!(state(&items, "paths").0, State::Ok);
         assert!(!installable(&items, Found::Installation));
-        let items = judge(&report, true, &Port::Free(4317), Found::Unreadable);
+        let items = judge(&report, true, &Port::Free(4317), Found::Unreadable, true);
         assert_eq!(state(&items, "paths").0, State::Missing);
         assert!(!installable(&items, Found::Unreadable));
         assert_eq!(state(&judged(&[("root.state", "<none>")]), "paths").0, State::Unknown);
@@ -523,11 +690,11 @@ cgroup=cpu memory pids
             (Port::NoneFree, State::Missing),
             (Port::Unknown("no saved list".into()), State::Unknown),
         ] {
-            let items = judge(&report, true, &port, Found::Nothing);
+            let items = judge(&report, true, &port, Found::Nothing, true);
             assert_eq!(state(&items, "port").0, expected);
             assert_eq!(installable(&items, Found::Nothing), expected == State::Ok);
         }
-        assert!(!installable(&judge(&report, false, &Port::Free(4317), Found::Nothing), Found::Nothing));
+        assert!(!installable(&judge(&report, false, &Port::Free(4317), Found::Nothing, true), Found::Nothing));
     }
 
     #[test]
@@ -593,6 +760,69 @@ cgroup=cpu memory pids
         }
         assert!(same_or_nested("/a/b", "/a/b") && same_or_nested("/a/b/c", "/a/b") && same_or_nested("/a", "/a/b"));
         assert!(!same_or_nested("/a/b", "/a/bc"));
+    }
+
+    #[test]
+    fn mac_paths_are_absolute_inside_the_home_and_away_from_guarded_folders() {
+        let home = "/Users/someone";
+        assert!(mac_path_ok("/Users/someone/Library/Application Support/yuzuno/managed-core", home));
+        assert!(mac_path_ok("/Users/someone/Library/Application Support/yuzuno/workspace", home));
+        // Spaces and non-ASCII are allowed: a path is one argument, never a
+        // shell command.
+        assert!(mac_path_ok("/Users/someone/我的 Core/yuzuno core", home));
+        for bad in [
+            "",
+            "/",
+            "relative/core",
+            "/Users/someone",
+            "/Users/someone/../root",
+            "/Users/someone//core",
+            "/Users/someone/./core",
+            "/Users/someone/core/",
+            "/Users/other/core",
+            "/Volumes/External/yuzuno",
+            "/volumes/External/yuzuno",
+            "/Users/someone/Desktop/core",
+            "/Users/someone/desktop/core",
+            "/Users/someone/Documents/yuzuno",
+            "/Users/someone/documents/yuzuno",
+            "/Users/someone/Downloads/yuzuno",
+            "/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/yuzuno",
+            "/Users/someone/library/mobile documents/com~apple~CloudDocs/yuzuno",
+            "/Users/someone/a\nb",
+        ] {
+            assert!(!mac_path_ok(bad, home), "{bad:?}");
+        }
+        // A shared prefix is not inside the home.
+        assert!(!mac_path_ok("/Users/someone2/core", home));
+        // The shape alone is platform-agnostic: an external volume is refused.
+        assert!(!mac_path_shape_ok("/Volumes/External/yuzuno"));
+        for bad in ["", "/", "relative", "/a//b", "/a/./b", "/a/../b", "/a/", "/a\nb"] {
+            assert!(!mac_path_shape_ok(bad), "{bad:?}");
+        }
+        assert!(mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(500))));
+        // The same rules hold when the home is spelled in another case.
+        assert!(!mac_path_ok("/Users/Someone/desktop/core", "/Users/someone"));
+        assert!(!mac_path_shape_ok(&format!("/Users/a/{}", "b".repeat(520))));
+    }
+
+    /// DeepSeek Harness (YN-119 S4b): an optional item after Codex, in a report
+    /// that names it; there with its version, missing without it, and missing
+    /// with a Node.js older than 24.9, which its CLI needs.
+    #[test]
+    fn dsh_is_an_optional_item_that_needs_node_24_9() {
+        assert!(judged(&[]).iter().all(|item| item.id != "dsh"), "a report from before dsh names none");
+        let items = judged(&[("tool.dsh", "0.2.2-rc.3"), ("tool.node", "v24.9.0")]);
+        let ids: Vec<_> = items.iter().map(|item| item.id).collect();
+        assert_eq!(ids[ids.iter().position(|id| *id == "codex").unwrap() + 1], "dsh");
+        assert_eq!(items.iter().find(|item| item.id == "dsh").unwrap().level, Level::Recommended);
+        assert_eq!(state(&items, "dsh"), (State::Ok, Some("0.2.2-rc.3".into())));
+        assert_eq!(state(&judged(&[("tool.dsh", "-")]), "dsh").0, State::Missing);
+        assert_eq!(state(&judged(&[("tool.dsh", "?")]), "dsh").0, State::Unknown);
+        let (old, detail) = state(&judged(&[("tool.dsh", "0.2.2-rc.3"), ("tool.node", "v22.11.0")]), "dsh");
+        assert_eq!(old, State::Missing);
+        assert!(detail.unwrap().contains("needs Node.js 24.9 or newer"));
+        assert!(installable(&judged(&[("tool.dsh", "-")]), Found::Nothing), "it is not required");
     }
 
     #[test]

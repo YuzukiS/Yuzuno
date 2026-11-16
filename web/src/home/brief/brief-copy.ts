@@ -35,6 +35,7 @@ import {
   type FigureProps,
   type StepsProps,
   type TimelineProps,
+  type CollectionProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -368,6 +369,15 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         const { title, items } = part.props as TimelineProps;
         return [...heading(depth, title), items.map((item) => `- ${inline(item.at)} · ${inline(item.title)} — ${b.timelineState[item.state ?? "done"]}${item.text ? `: ${inline(item.text)}` : ""}`).join("\n")];
       }
+      // A Collection copies as one line per item, its title linked to its page, its tags after it (YN-128).
+      case "Collection": {
+        const { title, items } = part.props as CollectionProps;
+        return [...heading(depth, title), items.map((item) => {
+          const name = link(item.title, item.href) ?? itemText(item.title);
+          const tags = (item.tags ?? []).map((tag) => `#${inline(tag)}`).join(" ");
+          return `- ${name}${item.text ? ` — ${inline(item.text)}` : ""}${tags ? ` ${tags}` : ""}`;
+        }).join("\n")];
+      }
       case "Sources": {
         const { items } = part.props as SourcesProps;
         if (!items.length) return [];
@@ -397,7 +407,8 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
     const part = element(key);
     if (!part || seen.has(key)) return [];
     seen.add(key);
-    if (part.type === "BriefBody" || part.type === "Columns" || part.type === "Group") {
+    // A Tabs copies as its pages, each a section under its title (YN-113 R6).
+    if (part.type === "BriefBody" || part.type === "Columns" || part.type === "Tabs" || part.type === "Group") {
       const title = part.type === "Group" ? (part.props as GroupProps).title : undefined;
       const inner = (part.children ?? []).flatMap((child) => walk(child, title ? depth + 1 : depth));
       return inner.length ? [...heading(depth, title), ...inner] : [];

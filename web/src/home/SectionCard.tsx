@@ -26,6 +26,10 @@ import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
 import { collapseFrom } from "../surface";
 import { Tip, TipText } from "../Tip";
+import { ImageAttachments } from "../ImageAttachments";
+import { FileAttachments } from "../FileAttachments";
+import { homeImageUrl } from "./home-images";
+import { homeFileUrl } from "./home-files";
 
 /** When a status's data is from, and whether it is past its validity. */
 export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -382,6 +386,15 @@ export const SectionCard = memo(function SectionCard({
               </blockquote>
             </Tip>
           )}
+          {/* The images and files that reply took (YN-134, YN-145), to open and download. */}
+          <ImageAttachments
+            images={(section.ask?.replyImages ?? []).map((id) => ({ id }))}
+            imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)}
+          />
+          <FileAttachments
+            files={section.ask?.replyFiles ?? []}
+            href={(file) => homeFileUrl(projectId, file.id, file.name)}
+          />
           {updatedSinceReply ? (
             <div className="home-answer-update">
               <p className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>

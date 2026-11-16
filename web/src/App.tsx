@@ -1,11 +1,14 @@
 import { flushSync } from "react-dom";
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { FileAttachments } from "./FileAttachments";
 import { SkillChips } from "./SkillChips";
 import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
+import { useFileUploads } from "./useFileUploads";
+import { agentTakesFiles, splitDropped } from "./file-input";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
-import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import { copyText } from "./clipboard";
 import { desktopBadge } from "./desktop-badge";
 import {
@@ -50,6 +53,7 @@ import {
   MessageSquare,
   Minimize2,
   Monitor,
+  Paperclip,
   PanelLeft,
   PanelRight,
   Plus,
@@ -109,6 +113,7 @@ import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
+import { useReadingHold } from "./useReadingHold";
 import { MessageLinks, agentLinkHref, homeLinkHref, messageLinkHref, parseAppLink, reportLinkHref, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi, type ReportLink } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
@@ -117,6 +122,7 @@ import { hasAgentContent, isCompacting } from "./conversation-blocks";
 import { ContextUsage } from "./ContextUsage";
 import { AgentSettings } from "./AgentSettings";
 import { agentHarnessName, nativeSession } from "./machine-checks";
+import { DshContext } from "./dsh";
 import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
 import { CodexReviewDialog, startCodexReview } from "./CodexReview";
@@ -125,6 +131,7 @@ import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { EndMissingTurnDialog } from "./EndMissingTurn";
 import { DisconnectAgentDialog } from "./DisconnectAgent";
+import { RenameAgentDialog } from "./RenameAgent";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
@@ -238,7 +245,7 @@ import {
 import { markTurnSeen, useTurnSeen } from "./turn-seen";
 import { useOpenAsks } from "./home/open-asks";
 import { GateAsks } from "./GateAsks";
-import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
+import { useBackupRun, useRefreshRuns, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
 import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
 import { ExecutorOverview, ExecutorPaneTabs, type ExecutorPaneTab } from "./ExecutorOverview";
@@ -407,6 +414,9 @@ export function App() {
   const [settingsAt, setSettingsAt] = useState<SettingsOpenAt | null>(null);
   // Core said the daily backup's last run changed: read again for notifications.
   const [backupRevision, setBackupRevision] = useState(0);
+  // Core said a Home card's scheduled refresh changed (YN-113 R4): read the
+  // refresh list again for notifications.
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
@@ -492,6 +502,8 @@ export function App() {
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
+  // The Agent the rename dialog is open on (YN-112), from its actions menu.
+  const [renameFor, setRenameFor] = useState<string | null>(null);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
@@ -933,6 +945,10 @@ export function App() {
     if (inner.parentElement) observer.observe(inner.parentElement);
     return () => observer.disconnect();
   }, [measureLatest]);
+  // The column changing width under the reader, as the work dock comes or
+  // goes on a wide pane, or what is below them folding away near the end,
+  // keeps what they are reading where it is (YN-114).
+  useReadingHold(scroller, stickToBottom);
   const fileReturn = useRef<{
     agentId: string;
     scrollTop: number;
@@ -1070,6 +1086,8 @@ export function App() {
           else if (event.scope === "brief" || event.scope === "home") {
             homeRefresh.soon(250);
             asksRefresh.soon(250);
+            // A refresh's send, settle or pause is a Brief change (YN-113 R4).
+            setRefreshRevision((n) => n + 1);
           }
           // A Project's requests (YN-86 §4.2): read again with Home, whose page shows them.
           else if (event.scope === "requests") homeRefresh.soon(250);
@@ -1098,6 +1116,7 @@ export function App() {
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.
           if (event.reason !== "poll") setBackupRevision((n) => n + 1);
+          if (event.reason !== "poll") setRefreshRevision((n) => n + 1);
           return;
       }
     },
@@ -1311,6 +1330,11 @@ export function App() {
   // Which way the reader last scrolled, by their own wheel, keys, finger or
   // scrollbar, never by the app's own scrolling: pages load only that way.
   const readerWay = useRef<"up" | "down" | null>(null);
+  // When that scroll of the reader's last moved the conversation; the scroll
+  // it sets going (a fling, a smooth wheel) keeps it current while it runs.
+  // Only a scroll down of the reader's, still going, takes the conversation
+  // back to following the end (YN-114).
+  const readerScrolledAt = useRef(0);
   const lastTop = useRef(0);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
@@ -1407,6 +1431,19 @@ export function App() {
     heldPlace.current = () => { if (restore()) still = 0; };
     return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
+  // A newer page's room comes in above the window with its read, while the
+  // page target makes the reading anchor stand aside (ConversationWindow),
+  // and nothing holds the place until the page is in. It moved what was
+  // being read a screen down, and the place the reader then scrolled to was
+  // the one held when the page came in: their scroll was lost (YN-114). The
+  // conversation moves by the same height in the same commit instead. Once
+  // the newer window is shown, putting the place back is the page target's.
+  const roomAbove = !!(pageSpace?.before && currentDetail?.conversation?.hasBefore);
+  useLayoutEffect(() => {
+    const room = beforeSpace.current, el = scroll.current, shown = currentDetail?.conversation;
+    if (!roomAbove || !room || !el || !pageTarget || !shown || shown.start !== pageTarget.start || shown.end !== pageTarget.end) return;
+    el.scrollTop += room.offsetHeight;
+  }, [roomAbove]);
   // The newest window is the one shown, with no read of another on its way
   // (Back to latest's pin waits for it, YN-19).
   const newestShown = useRef(false);
@@ -1546,11 +1583,19 @@ export function App() {
     ),
   ), [currentDetail?.pending]);
   const hasDraft = hasDraftContent(draft);
-  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode");
+  const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude" || agent?.harness === "opencode" || agent?.harness === "dsh");
+  // Files go to the harnesses whose own slice reads them (core/src/input_files.rs,
+  // takes_files); dsh cannot, and on another machine only Codex and Claude can
+  // (YN-145 §2.5, F4). The rule is Home's too (file-input.ts).
+  const fileSupported = agentTakesFiles(agent);
   // What happens to an image on its way to this Agent, said beside the image button.
-  const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages : null;
+  const imageNote = agent?.harness === "claude" ? shell.claudeImages : agent?.harness === "opencode" ? shell.openCodeImages
+    : agent?.harness === "dsh" ? shell.dshImages : null;
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
+  const fileUploads = useFileUploads(selected, fileSupported && !previewMode && !draftBlocked,
+    shell.filesOnly, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
   const pointFixPicker = useRef<HTMLInputElement>(null);
   const closed = !!agent?.closedAt;
   const busy =
@@ -1562,6 +1607,10 @@ export function App() {
   const outsidePending = pendingElsewhere(workspace?.agents || [], scope);
   const isClaude = agent?.harness === "claude";
   const isOpenCode = agent?.harness === "opencode";
+  const isDsh = agent?.harness === "dsh";
+  // Codex's own panels and controls go to a Codex Agent only, named so: an Agent from before harnesses were named ran
+  // Codex, and no other harness falls through to them (YN-119 W1).
+  const isCodex = !!agent && (!agent.harness || agent.harness === "codex");
   const logicalTurns = sessionHistory.navigationTurns;
   // The Turn being read, counted from 1: the latest while none is.
   const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
@@ -1613,7 +1662,8 @@ export function App() {
         .reverse()
         .find((turn) => turn.status === "inProgress")?.id || null
     : null;
-  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy && !openCodeTurnId);
+  // DeepSeek Harness takes one prompt at a time (ACP): nothing joins its running turn (YN-119 §3.5).
+  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy && !openCodeTurnId) || (isDsh && busy);
   // Codex would refuse to add to a Turn whose result is unconfirmed; the
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
@@ -1624,7 +1674,7 @@ export function App() {
   // Why Send waits, in its tip and to assistive technology.
   const sendWaits =
     cannotSendWhileWorking || closed
-      ? shell.waitOrInterrupt
+      ? isDsh && !closed ? shell.dshWaitTurn : shell.waitOrInterrupt
       : holdForRecovery
         ? recovery === "collaboration"
           ? shell.reconnectWorkspace
@@ -1680,7 +1730,7 @@ export function App() {
       .find((turn) => turn.status === "inProgress")?.id || null;
   // The turn a message joins: Claude's follow-up, OpenCode's or Codex's
   // running turn.
-  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? openCodeTurnId : activeTurnId;
+  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? openCodeTurnId : isDsh ? null : activeTurnId;
   const {
     submit: submitMessage,
     sending,
@@ -1710,7 +1760,7 @@ export function App() {
   const { shape: composerShape, short: placeholderShort, tall: composerTall } = useComposerShape(
     composerBox,
     () => composer.current?.lineExtent() ?? null,
-    expanded || !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    expanded || !!draft.images?.length || !!draft.files?.length || !!draft.skills?.length || !!imageUploads.error || !!fileUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
     [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
     composerPlaceholder,
     () => composer.current?.rows() ?? 0,
@@ -1874,6 +1924,7 @@ export function App() {
   // This device's system notifications, where it chose them and its system
   // allows them (T-188). A preview's sample Workspace has none.
   const backupRun = useBackupRun(backupRevision, !previewMode);
+  const refreshRuns = useRefreshRuns(workspaceId, refreshRevision, !previewMode);
   useSystemNotifications(workspaceId, previewMode ? undefined : workspace?.agents, previewMode ? null : needsYouItems, (notice) => {
     if (notice.backup) {
       // Only this Workspace's Backup status: retrying or anything else is the user's to choose there.
@@ -1882,7 +1933,7 @@ export function App() {
       setUpdatesOpen(true);
     } else if (notice.home) goHome();
     else if (notice.agentId) selectAgent(notice.agentId);
-  }, backupRun);
+  }, backupRun, refreshRuns);
   // Settings closed, however (its own close, or a card that opens another
   // dialog): a notification's request is used up, not repeated next time.
   useEffect(() => {
@@ -2509,6 +2560,8 @@ export function App() {
       setEndMissingFor(id);
     },
     disconnect: (id) => setDisconnectFor(id),
+    // In place, without opening the Agent: only its name changes.
+    rename: previewMode ? undefined : (id) => setRenameFor(id),
     copyLink: linkBase && workspaceId && !previewMode ? copyAgentLink : undefined,
   };
   useEffect(() => {
@@ -3075,6 +3128,21 @@ export function App() {
   useEffect(() => {
     if (!detailError) setWindowPage(page => (page?.failed ? null : page));
   }, [detailError]);
+  /** The reader's own scroll up, by wheel, finger, key or scrollbar: the
+   * conversation stops following the end at once, however short the scroll
+   * (YN-114). Before, a scroll up that stayed within 72px of the end left it
+   * following, and the next output took the reader back down. */
+  function readerScrollsUp() {
+    readerWay.current = "up";
+    readerScrolledAt.current = performance.now();
+    stopLatestPin();
+    live.pinWindow();
+    stickToBottom.current = false;
+  }
+  function readerScrollsDown() {
+    readerWay.current = "down";
+    readerScrolledAt.current = performance.now();
+  }
   function readerScrollIntent() {
     requestAnimationFrame(() => {
       const el = scroll.current;
@@ -3135,6 +3203,7 @@ export function App() {
     if (
       !hasDraft ||
       imageUploads.busy ||
+      fileUploads.busy ||
       draftBlocked ||
       !agent ||
       !currentDetail ||
@@ -3160,7 +3229,7 @@ export function App() {
     try {
       // `/model` and a Codex `/compact` are Yuzuno controls: run here, never
       // sent to the model as a prompt. Anything else is a message as before.
-      const control = sentDraft.images?.length || sentDraft.skills?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
+      const control = sentDraft.images?.length || sentDraft.files?.length || sentDraft.skills?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
       if (control?.command === "model") {
         if (/\s/.test(control.args)) throw new Error("Give one model name, for example /model followed by a name from this Agent's settings. Your draft is kept.");
         // The notice comes once the settings have opened for it.
@@ -3208,7 +3277,7 @@ export function App() {
       if (control?.command === "new" || control?.command === "resume") {
         const claudeAgent = agent.harness === "claude";
         setCreateInitial(control.command === "new"
-          ? { nonce: Date.now(), mode: "new", harness: claudeAgent ? "claude" : "codex", machineId: agent.remote?.machine.id || "local",
+          ? { nonce: Date.now(), mode: "new", harness: claudeAgent ? "claude" : agent.harness === "dsh" ? "dsh" : "codex", machineId: agent.remote?.machine.id || "local",
             cwd: agent.cwd, projectId: agent.projectId || "" }
           : { nonce: Date.now(), mode: claudeAgent ? "claude" : "existing" });
         setCreateOpen(true);
@@ -3253,9 +3322,11 @@ export function App() {
         return;
       }
       if (sentDraft.images?.some(image => image.agentId !== target)) throw new Error("These images belong to the original Agent. Attach them again in this Agent; your draft is kept.");
+      if (sentDraft.files?.some(file => file.agentId !== target)) throw new Error("These files belong to the original Agent. Attach them again in this Agent; your draft is kept.");
       if (sentDraft.skills?.some(skill => skill.agentId !== target)) throw new Error("Some skills here were listed for another Agent. Remove them and choose this Agent's own; your draft is kept.");
       await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft),
-        sentDraft.skills?.map(({ name, path }) => ({ name, path })));
+        sentDraft.skills?.map(({ name, path }) => ({ name, path })),
+        sentDraft.files?.map(({ id, name, bytes }) => ({ id, name, bytes })));
       clearIfUnchanged(target, sentDraft);
       refresh();
       if (here()) composer.current?.focus();
@@ -3537,6 +3608,7 @@ export function App() {
       : searched;
 
   return (
+    <DshContext.Provider value={workspace?.dsh ?? null}>
     <HandoffContext.Provider value={handoffApi}>
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
@@ -3593,7 +3665,6 @@ export function App() {
               <PanelLeft size={17} />
             </button>
           </Tip>
-          <span className="workspace-name">{shell.workspace}</span>
           <span className="toolbar-context">
             {isNative ? shell.desktop : shell.web}
           </span>
@@ -4044,6 +4115,10 @@ export function App() {
                     // Only Codex has context settings to apply.
                     setNotice(shell.settingsSaved(agent.harness !== "codex"));
                   }}
+                  onRenamed={(name) => {
+                    refresh();
+                    setNotice(shell.renamed(name));
+                  }}
                 />
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
@@ -4191,14 +4266,9 @@ export function App() {
                 data-agent-id={selected}
                 onWheel={(e) => {
                   if (!ownEvent(e)) return;
-                  if (e.deltaY < 0) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (e.deltaY < 0) readerScrollsUp();
                   if (e.deltaY > 0) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
                 }}
@@ -4207,13 +4277,14 @@ export function App() {
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false, y: e.touches[0]?.clientY };
                 }}
                 // Which way a finger moves the conversation; one moving it
-                // back up ends Back to latest's pin, as a wheel up does.
+                // back up stops following and ends Back to latest's pin, as a
+                // wheel up does (YN-114: it used to leave following on).
                 onTouchMove={(e) => {
                   const now = touch.current, y = e.touches[0]?.clientY;
                   if (!ownEvent(e) || !now || y === undefined) return;
                   if (now.y !== undefined && Math.abs(y - now.y) >= 2) {
-                    readerWay.current = y < now.y ? "down" : "up";
-                    if (y > now.y) stopLatestPin();
+                    if (y > now.y) readerScrollsUp();
+                    else readerScrollsDown();
                   }
                   now.y = y;
                 }}
@@ -4247,15 +4318,10 @@ export function App() {
                   // Space on a disclosure opens or closes it rather than scrolling.
                   if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
                     (e.key === " " && !(e.target as Element).closest?.("summary"))) {
-                    readerWay.current = "down";
+                    readerScrollsDown();
                     readerScrollIntent();
                   }
-                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
-                    readerWay.current = "up";
-                    stopLatestPin();
-                    live.pinWindow();
-                    stickToBottom.current = false;
-                  }
+                  if (["Home", "PageUp", "ArrowUp"].includes(e.key)) readerScrollsUp();
                 }}
                 onClickCapture={(e) => {
                   // The reader opens or closes a disclosure (by pointer, key or
@@ -4293,7 +4359,15 @@ export function App() {
                       noteReading(true);
                       return;
                     }
-                    if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
+                    if (draggingScrollbar.current && Math.abs(moved) >= 1) {
+                      if (moved > 0) readerScrollsDown();
+                      else readerScrollsUp();
+                    }
+                    // The reader's scroll still going (a fling, a smooth
+                    // wheel) is still the reader's.
+                    const now = performance.now();
+                    const readers = now - readerScrolledAt.current < 250;
+                    if (readers) readerScrolledAt.current = now;
                     // Still scrolling while a page is on its way: the place
                     // to hold is where the reader is now (pageHold).
                     const shown = currentDetail?.conversation;
@@ -4315,7 +4389,16 @@ export function App() {
                     const latest = bottom && !elsewhere;
                     setAtBottomState(latest);
                     setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
-                    stickToBottom.current = latest;
+                    // Following the end is the reader's to start and stop
+                    // (YN-114). A scroll stops it once the end is out of view;
+                    // only the reader's own scroll down, reaching the end,
+                    // starts it again (or Back to latest). Within 72px of the
+                    // end counts as the end, but never for a scroll the reader
+                    // did not make: a tool group folding above clamped the
+                    // pane to the end, and the next output took what was being
+                    // read off the screen.
+                    if (!latest) stickToBottom.current = false;
+                    else if (readers && readerWay.current === "down") stickToBottom.current = true;
                     noteReading(latest);
                     autoPage();
                   }
@@ -4610,7 +4693,7 @@ export function App() {
                 {/* What the conversation asks of you before you write; on a short
                     phone screen it gives way to the composer (T-170). */}
                 <div className="composer-notices">
-                  {currentDetail && !isClaude && !previewMode && (
+                  {currentDetail && isCodex && !previewMode && (
                     <CodexWriterNotice
                       detail={currentDetail}
                       agents={workspace?.agents || []}
@@ -4683,11 +4766,15 @@ export function App() {
                     if (e.dataTransfer.types.includes("Files")) e.preventDefault();
                   }}
                   onDrop={(e) => {
-                    // Images dropped on the box go with the draft, as pasted
-                    // ones do; the editor takes those dropped on its text.
+                    // Images and files dropped on the box go with the draft,
+                    // as pasted ones do; the editor takes those dropped on
+                    // its text.
                     if (e.defaultPrevented || !e.dataTransfer.types.includes("Files")) return;
                     e.preventDefault();
-                    if (!previewMode && !draftBlocked) void imageUploads.add(clipboardImages(e.dataTransfer));
+                    if (previewMode || draftBlocked) return;
+                    const dropped = splitDropped(e.dataTransfer);
+                    if (dropped.images.length) void imageUploads.add(dropped.images);
+                    if (dropped.files.length) void fileUploads.add(dropped.files);
                   }}
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -4718,7 +4805,7 @@ export function App() {
                     placeholder={placeholderShort ? shortPlaceholder : composerPlaceholder}
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
+                    slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : isDsh ? "dsh" : "codex"}
                     sendKey={sendKey}
                     onChange={next => setDraft(selected, next)}
                     onSkill={skill => skill.path && setDraft(selected, current => {
@@ -4726,6 +4813,7 @@ export function App() {
                       return { ...current, skills: [...others, { agentId: selected, name: skill.name, path: skill.path!, scope: skill.scope || "" }].slice(-MAX_DRAFT_SKILLS) };
                     })}
                     onImages={files => void imageUploads.add(files)}
+                    onFiles={files => void fileUploads.add(files)}
                     onSubmit={() => void send()}
                   />
                   {offerExpand && (
@@ -4744,16 +4832,21 @@ export function App() {
                   )}
                   <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
+                  <FileAttachments files={draft.files || []}
+                    onRemove={previewMode || draftBlocked ? undefined : file => setDraft(selected, current => ({ ...current,
+                      files: current.files?.filter(saved => !(saved.id === file.id && saved.agentId === file.agentId && saved.name === file.name)) }))} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
                   <SkillChips skills={draft.skills || []}
                     onRemove={previewMode || draftBlocked ? undefined : skill => setDraft(selected, current => ({ ...current,
                       skills: current.skills?.filter(s => !(s.name === skill.name && s.path === skill.path)) }))} />
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}
+                  {fileUploads.error && <p className="inline-error" role="alert">{fileUploads.error}</p>}
                   {draftError && <p className="inline-error" role="alert">{draftError}</p>}
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
                   <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
+                      <input ref={filePicker} type="file" multiple hidden aria-label={shell.chooseFiles} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void fileUploads.add(files); }} />
                       <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
@@ -4763,10 +4856,10 @@ export function App() {
                           so it can say why. */}
                       <ComposerAddMenu
                         label={shell.addMenu}
-                        tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, shell.askResult]} />}
+                        tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, shell.addFiles, shell.askResult]} />}
                         menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
-                        busy={imageUploads.busy}
+                        busy={imageUploads.busy || fileUploads.busy}
                         items={[
                           {
                             key: "images",
@@ -4785,6 +4878,16 @@ export function App() {
                             icon: <SquareDashedMousePointer size={16} />,
                             tip: <TipText title="Point & Fix" body={shell.markUpBody} />,
                             onSelect: () => pointFixPicker.current?.click(),
+                          },
+                          {
+                            key: "files",
+                            label: fileUploads.busy ? shell.savingFiles : shell.addFiles,
+                            icon: <Paperclip size={16} />,
+                            tip: fileSupported ? <TipText body={shell.fileRules} /> : undefined,
+                            note: fileSupported ? undefined : shell.filesOnly,
+                            unavailable: !fileSupported,
+                            disabled: draftBlocked || fileUploads.busy,
+                            onSelect: () => filePicker.current?.click(),
                           },
                           {
                             key: "result",
@@ -4828,7 +4931,7 @@ export function App() {
                     </span>
                     <div className="composer-send-actions">
                       {/* Codex's Plan mode, beside Send as a mode is in ChatGPT. */}
-                      {!previewMode && !isClaude && !isOpenCode && (
+                      {!previewMode && isCodex && (
                         <CodexPlanChip state={currentDetail?.codexPlan}
                           onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
                       )}
@@ -4869,6 +4972,7 @@ export function App() {
                           disabled={
                             !hasDraft ||
                             imageUploads.busy ||
+                            fileUploads.busy ||
                             draftBlocked ||
                             !currentDetail ||
                             sending ||
@@ -5052,7 +5156,7 @@ export function App() {
                 {isClaude && currentDetail && !agent.remote && (
                   <AutoContinueSetting key={agent.id} detail={currentDetail} disabled={!!agent.closedAt} />
                 )}
-                {!isClaude && !isOpenCode && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
+                {isCodex && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
               </dl>
             </section>
             <ArtifactsPanel
@@ -5063,7 +5167,7 @@ export function App() {
               onOpen={openFile}
             />
             {isClaude && <ClaudeMcpStatus agent={agent} language={language} />}
-            {!isClaude && !isOpenCode && !previewMode && <CodexMcpStatus agent={agent} language={language} />}
+            {isCodex && !previewMode && <CodexMcpStatus agent={agent} language={language} />}
             <section className="inspector-section">
               <div className="section-title">
                 <h2>
@@ -5136,7 +5240,8 @@ export function App() {
         onNeedsReloadChange={setUpdatesNeedReload}
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         workspaceId={previewMode ? "" : workspaceId}
-        preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
+        onOpenCard={(projectId, key) => { setUpdatesOpen(false); openProject(projectId, key); }}
+        preserveDrafts={() => { if (imageUploads.hasPending() || fileUploads.hasPending()) throw new Error("Wait for images and files to finish saving before updating."); preserveDrafts(); }}
         pages={{
           // Settings › Projects and › Machines (YN-8). Each request (the rail,
           // a search result) opens the projects page anew, at what it names.
@@ -5184,7 +5289,7 @@ export function App() {
         focus={taskFocus}
         workspaceId={previewMode ? "" : workspaceId}
       />
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexGoalDialog
           key={`goal-${agent.id}-${goalRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5199,7 +5304,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexPlanDialog
           key={`plan-${agent.id}-${planRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5216,7 +5321,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <CodexReviewDialog
           key={`review-${agent.id}-${reviewRequest?.nonce ?? 0}`}
           agent={agent}
@@ -5225,7 +5330,7 @@ export function App() {
           onStarted={() => { if (reviewRequest) reviewStarted(reviewRequest.agentId, reviewRequest.draft); }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && changesRequest?.agentId === agent.id && (
+      {agent && isCodex && changesRequest?.agentId === agent.id && (
         <CodexChangesDialog
           key={`changes-${agent.id}-${changesRequest.nonce}`}
           agent={agent}
@@ -5243,7 +5348,7 @@ export function App() {
           }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && terminalsRequest?.agentId === agent.id && (
+      {agent && isCodex && terminalsRequest?.agentId === agent.id && (
         <CodexTerminalsDialog
           key={`terminals-${agent.id}-${terminalsRequest.nonce}`}
           agent={agent}
@@ -5252,7 +5357,7 @@ export function App() {
           onOpenChange={(open) => { if (!open) setTerminalsRequest(null); }}
         />
       )}
-      {agent && !isClaude && !isOpenCode && diffRequest?.agentId === agent.id && (
+      {agent && isCodex && diffRequest?.agentId === agent.id && (
         <CodexDiffDialog
           key={`diff-${agent.id}-${diffRequest.nonce}`}
           agent={agent}
@@ -5272,6 +5377,15 @@ export function App() {
           }}
         />
       )}
+      <RenameAgentDialog
+        agent={workspace?.agents.find((candidate) => candidate.id === renameFor) ?? null}
+        open={!!renameFor}
+        onOpenChange={(open) => { if (!open) setRenameFor(null); }}
+        onRenamed={(name) => {
+          setNotice(shell.renamed(name));
+          refresh();
+        }}
+      />
       <DisconnectAgentDialog
         agent={workspace?.agents.find((candidate) => candidate.id === disconnectFor) ?? null}
         open={!!disconnectFor}
@@ -5281,7 +5395,7 @@ export function App() {
           refresh();
         }}
       />
-      {agent && !isClaude && !isOpenCode && (
+      {agent && isCodex && (
         <ForkCodexDialog
           key={`fork-${workspaceId}-${agent.id}`}
           agent={agent}
@@ -5328,6 +5442,7 @@ export function App() {
         }}
         defaultCwd={workspace?.defaultCwd || ""}
         opencode={!!workspace?.opencode?.enabled}
+        dsh={workspace?.dsh ?? null}
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}
@@ -5398,5 +5513,6 @@ export function App() {
     </MessageLinks.Provider>
     </PointFixOpen.Provider>
     </HandoffContext.Provider>
+    </DshContext.Provider>
   );
 }

@@ -58,7 +58,9 @@ pub(crate) struct Attachment {
 ///    replacement. Every insert into or removal from `rpcs`/`claudes` for that
 ///    Agent happens under it as well. Held only across store work, never
 ///    across a native request or response, and never two Agents' at once. It
-///    is per Agent, so one Agent's slow event never delays another's.
+///    is per Agent, so one Agent's slow event never delays another's. Never
+///    held while waiting for that Agent's events (`EventBarrier::drain`):
+///    applying them takes it.
 /// 3. `rpcs` / `claudes`: lookups only; std locks, never held across `.await`.
 /// 4. Store's own: the Agent's record lock, then one SQLite connection (the
 ///    single writer or a reader), then its in-memory state (see `store::Store`
@@ -111,12 +113,21 @@ pub struct Workspace {
     pub(crate) rpcs: std::sync::Mutex<HashMap<String, Connection>>,
     pub(crate) claudes: std::sync::Mutex<HashMap<String, crate::claude::Connection>>,
     pub(crate) opencodes: std::sync::Mutex<HashMap<String, crate::opencode_agent::Connection>>,
+    /// Each dsh Agent's running dsh (YN-119 S2a, `dsh_agent`).
+    pub(crate) dshs: std::sync::Mutex<HashMap<String, crate::dsh_agent::Connection>>,
+    /// A test's stand-in dsh and model address, in place of `YUZUNO_DSH_BIN` and `YUZUNO_DSH_BASE_URL`.
+    #[cfg(test)]
+    pub(crate) dsh_test: std::sync::Mutex<Option<(PathBuf, Option<String>)>>,
     pub(crate) claude_mcp: crate::claude_mcp::State,
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     owners: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) next_generation: AtomicU64,
     #[cfg(test)]
     pub(crate) reconnect_timeout_ms: AtomicU64,
+    /// While true, each connection's event loop holds `yuzuno/disconnected`
+    /// before applying it, as a loaded host can (YN-130).
+    #[cfg(test)]
+    pub(crate) disconnects_held: tokio::sync::watch::Sender<bool>,
     /// Native events Core has received but not yet applied, per connection.
     pub(crate) backlogs: crate::backlog::Backlogs,
     pub(crate) collaboration_url: OnceLock<String>,
@@ -148,6 +159,8 @@ pub struct Workspace {
     pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
     /// The daily backup (T-196); see `workspace_backup::schedule`.
     pub(crate) backup_schedule: Arc<crate::workspace_backup::schedule::Planner>,
+    /// Home cards that refresh themselves (YN-113); see `project_brief::refresh`.
+    pub(crate) brief_refresh: Arc<crate::project_brief::refresh::Timer>,
     /// The phone entry's listener and its last check (T-185); see `remote_access`.
     pub(crate) remote_access: crate::remote_access::State,
     /// Push notifications to Home Screen web apps (T-200); see `web_push`.
@@ -200,6 +213,7 @@ impl Workspace {
             default_cwd: cwd,
             backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             backup_schedule: Arc::new(crate::workspace_backup::schedule::Planner::open(&data_dir)),
+            brief_refresh: Default::default(),
             data_dir,
             program,
             session_reads: tokio::sync::Semaphore::new(1),
@@ -207,12 +221,17 @@ impl Workspace {
             rpcs: std::sync::Mutex::new(HashMap::new()),
             claudes: std::sync::Mutex::new(HashMap::new()),
             opencodes: std::sync::Mutex::new(HashMap::new()),
+            dshs: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            dsh_test: std::sync::Mutex::new(None),
             claude_mcp: Default::default(),
             gates: Mutex::new(HashMap::new()),
             owners: std::sync::Mutex::new(HashMap::new()),
             next_generation: AtomicU64::new(1),
             #[cfg(test)]
             reconnect_timeout_ms: AtomicU64::new(45_000),
+            #[cfg(test)]
+            disconnects_held: tokio::sync::watch::Sender::new(false),
             backlogs: Default::default(),
             collaboration_url: OnceLock::new(),
             collaboration_wakeup: Notify::new(),
@@ -518,14 +537,12 @@ impl Workspace {
         self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
+        let name = crate::model::agent_name(&name)?;
         validate_settings(&settings)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
-        if name.trim().is_empty() || name.len() > 100 {
-            bail!("请填写名称（最多 100 字节）");
-        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -545,7 +562,7 @@ impl Workspace {
         let count = self.stored(|store| store.agents()).await?.len();
         let a = Agent {
             id: id.clone(),
-            name: name.trim().into(),
+            name,
             goal: String::new(),
             work_summary: None, turn_wait: None,
             project_id,
@@ -562,6 +579,8 @@ impl Workspace {
             opencode_session_id: None,
             opencode_version: None,
             opencode_major: None,
+            dsh_session_id: None,
+            dsh_version: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
@@ -701,6 +720,10 @@ impl Workspace {
             while let Some(message) = rx.recv().await {
                 let native = crate::backlog::is_native(&message);
                 if event_barrier.upgrade().is_some_and(|barrier| barrier.acknowledge(&message)) { continue; }
+                #[cfg(test)]
+                if message["method"] == "yuzuno/disconnected" {
+                    let _ = this.disconnects_held.subscribe().wait_for(|held| !held).await;
+                }
                 let _event = this.admission.enter_event();
                 this.dispatch_event(&agent_id, generation, message).await;
                 if native { backlog.applied(); }
@@ -754,7 +777,22 @@ impl Workspace {
         let agent = id.to_owned();
         anyhow::ensure!(!self.stored(move |store| store.codex_handoff_pending(&agent)).await?, "导入会话尚未接续；请结束原客户端当前 Turn，然后点击重新连接或发送消息");
         anyhow::ensure!(a.harness == "codex", "此操作需要 Codex 原生会话；不会为其他 Harness 创建 Codex 会话");
-        let existing = self.rpcs.lock().unwrap().get(id).cloned();
+        let mut existing = self.rpcs.lock().unwrap().get(id).cloned();
+        // A stopped transport queued its `yuzuno/disconnected` before it said
+        // it stopped (rpc.rs), but stays in `rpcs` until the event loop applies
+        // that event. Wait for it there, so this attaches anew instead of
+        // handing out a closed channel (YN-130). `dispatch_event` takes the
+        // owner lock, which no caller of `ensure` holds. An unfinished attach
+        // still finishes from the reply it kept, as before.
+        if let Some(stopped) = existing.clone().filter(|c| !c.rpc.is_running()) {
+            if stopped.attachment.lock().await.is_none() {
+                if let Some(events) = &stopped.events {
+                    // Not applied in time: as before, its first request fails.
+                    let _ = events.drain().await;
+                }
+                existing = self.rpcs.lock().unwrap().get(id).cloned();
+            }
+        }
         if let Some(connection) = existing {
             let attaching = connection.attachment.lock().await.is_some();
             if attaching { return self.finish_attach(id, connection).await; }
@@ -1162,6 +1200,7 @@ impl Workspace {
         let codex = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
         codex.or_else(|| self.claudes.lock().unwrap().get(id).map(|c| c.generation))
             .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
+            .or_else(|| self.dshs.lock().unwrap().get(id).map(|c| c.generation))
     }
 
     /// Ensure, then reconcile the thread with the record, as a Reconnect
@@ -1265,6 +1304,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_accepted(id, permit).await,
             "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
+            "dsh" => return self.dsh_reconnect_accepted(id, permit).await,
             _ => {}
         }
         self.reconnect_codex(id, true).await?.context("record")
@@ -1292,6 +1332,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_gated(id, permit, false).await.map(drop),
             "opencode" => return self.opencode_reconnect_gated(id, permit, false).await.map(drop),
+            "dsh" => return self.dsh_reconnect_gated(id, permit, false).await.map(drop),
             _ => {}
         }
         self.reconnect_codex(id, false).await.map(drop)
@@ -1363,6 +1404,8 @@ impl Workspace {
             self.claude_close_runtime(id).await?;
         } else if view.agent.harness == "opencode" {
             self.opencode_close_runtime(id).await?;
+        } else if view.agent.harness == "dsh" {
+            self.dsh_close_runtime(id).await?;
         } else {
             // A detached remote turn may still be running. Reconcile native
             // history first, without sending/replaying any task.
@@ -1496,21 +1539,37 @@ impl Workspace {
                 self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
             }
         }
+        if closed.harness == "dsh" {
+            // Its dsh stopped above; its folder of Core's own goes before anything of the Agent is deleted (YN-119 §3.8).
+            let (data, agent) = (self.data_dir.clone(), id.to_owned());
+            tokio::task::spawn_blocking(move || crate::dsh_agent::remove_folder(&data, &agent)).await?
+                .map_err(|error| anyhow::anyhow!("dsh Agent 的文件夹没有删除（{error:#}）；Agent 没有删除"))?;
+        }
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.
             // Even a rejected/uncertain attempt may have installed a partial
             // batch before failing; pure drafts have no message/requested.
             let agent = id.to_owned();
-            let image_attempted = self.stored(move |store| {
-                let mut any = false;
-                store.each_receipt(&agent, |r| any |= !r.input.images.is_empty())?;
-                Ok(any)
+            let (image_attempted, file_attempted) = self.stored(move |store| {
+                let (mut images, mut files) = (false, false);
+                store.each_receipt(&agent, |r| {
+                    images |= !r.input.images.is_empty();
+                    files |= !r.files.is_empty();
+                })?;
+                Ok((images, files))
             }).await?;
-            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed, image_attempted).await?;
+            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed,
+                image_attempted, file_attempted).await?;
         }
         let agent = id.to_owned();
         self.stored(move |store| store.delete_closed_agent(&agent)).await?;
+        // Its attached files go with it (YN-145); one left behind is only logged.
+        let (root, agent) = (self.data_dir.clone(), id.to_owned());
+        let removed = tokio::task::spawn_blocking(move || crate::input_files::remove_agent_dir(&root, &agent)).await;
+        if let Err(error) = removed.map_err(anyhow::Error::from).and_then(|removed| removed) {
+            eprintln!("Agent {id} was deleted; its attached files were not removed: {error:#}");
+        }
         self.changed(id);
         // A source must not keep pointing at a deleted continuation; it shows
         // its writer conflict again and can be forked by an explicit request.
@@ -1571,6 +1630,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_send(id, text).await,
             "opencode" => return self.opencode_send(id, text).await,
+            "dsh" => return self.dsh_send(id, text).await,
             _ => {}
         }
         let _permit = self.admission.enter_work()?;
@@ -1589,6 +1649,11 @@ impl Workspace {
     }
 
     async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], skills: &[SkillRef]) -> Result<Value> {
+        // A dsh Agent's own path (a Brief reminder Turn, brief_turns): not Codex's.
+        if self.listed(id).await?.harness == "dsh" {
+            anyhow::ensure!(skills.is_empty(), "dsh Agent 不接收 skill 引用。A dsh Agent takes no skill references.");
+            return self.dsh_send_locked(id, text, client_id, images).await;
+        }
         self.ensure_rewind_settled(id).await?;
         // Its checks read the metadata, receipts and Turn statuses: the open
         // and newest Turns as the Agent holds them (`Sel::Named`).
@@ -1698,6 +1763,9 @@ impl Workspace {
         if detail.agent.harness == "opencode" {
             return self.opencode_admit(id, input, detail).await;
         }
+        if detail.agent.harness == "dsh" {
+            return self.dsh_admit(id, input, detail).await;
+        }
         if detail.agent.harness == "claude" {
             if input.clarification.is_some() { return self.claude_admit_form(id).await; }
             if input.expected_turn_id.is_none() {
@@ -1722,14 +1790,30 @@ impl Workspace {
 
     /// A message without an origin: nothing confirms who wrote it (T-6).
     pub async fn send_message(self: &Arc<Self>, id: &str, input: MessageInput) -> Result<MessageReceipt> {
-        self.send_message_from(id, input, Vec::new(), None).await
+        self.send_message_from(id, input, Vec::new(), Vec::new(), None).await
     }
 
     /// A message with where Core took it from, its `origin`, on its receipt
-    /// (T-6), and any Codex skills it invokes that the Agent's Codex listed
-    /// (`codex_skills`): typed `skill` items after its text, kept on its
-    /// receipt beside the input.
-    pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>, origin: Option<Value>) -> Result<MessageReceipt> {
+    /// (T-6), any Codex skills it invokes that the Agent's Codex listed
+    /// (`codex_skills`), and the files the user attached (`input_files`):
+    /// typed `skill` items after its text, kept on its receipt beside the
+    /// input with the paths this Agent reads them at.
+    pub async fn send_message_from(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>,
+        files: Vec<crate::input_files::FileRef>, origin: Option<Value>) -> Result<MessageReceipt> {
+        // Boxed: the send's state is large, and a caller's future (a Home
+        // reply's, inside a test's block_on) would otherwise hold it on the
+        // stack, one level deeper than before the guard (YN-131).
+        Box::pin(self.send_message_guarded(id, input, skills, files, origin, |_| Ok(()))).await
+    }
+
+    /// `send_message_from` with one more check, `guard`: it reads the Agent
+    /// as the send's own checks do, with the Agent's gate held, before
+    /// anything is recorded. When it refuses, nothing is sent, and the
+    /// `MessageNotSubmitted` returned holds its error (YN-131, resume.rs).
+    /// An ID that has a receipt already returns it without the guard.
+    pub(crate) async fn send_message_guarded(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>,
+        files: Vec<crate::input_files::FileRef>, origin: Option<Value>,
+        guard: impl FnOnce(&AgentDetail) -> Result<()> + Send) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -1739,7 +1823,7 @@ impl Workspace {
         // the first send may have gone, and the client keeps its id.
         let (agent, client) = (id.to_owned(), input.client_message_id.clone());
         if let Some(previous) = self.stored(move |store| store.receipt(&agent, &client)).await? {
-            if previous.input != input || previous.skills != skills { bail!("同一消息编号不能提交不同的内容"); }
+            if previous.input != input || previous.skills != skills || previous.files != files { bail!("同一消息编号不能提交不同的内容"); }
             return Ok(previous);
         }
         // What the checks read: the metadata, the open and newest Turns (as
@@ -1753,7 +1837,8 @@ impl Workspace {
         // so every refusal up to there says so. The client keeps its draft
         // and shows no delivery to confirm.
         let admitted = async {
-            if (input.text.trim().is_empty() && input.images.is_empty()) || input.text.len() > crate::model::MAX_MESSAGE_TEXT || input.images.len() > crate::input_images::MAX_IMAGES
+            if (input.text.trim().is_empty() && input.images.is_empty() && files.is_empty())
+                || input.text.len() > crate::model::MAX_MESSAGE_TEXT || input.images.len() > crate::input_images::MAX_IMAGES
                 || input.client_message_id.is_empty() || input.client_message_id.len() > 100 {
                 bail!("消息或消息编号无效");
             }
@@ -1761,9 +1846,18 @@ impl Workspace {
             crate::codex_skills::check(&skills)?;
             ensure_agent_open(&detail.agent)?;
             ensure_not_disconnected(&detail.agent)?;
+            guard(&detail)?;
             anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
                 "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";
+            anyhow::ensure!(files.len() <= crate::input_files::MAX_FILES, "Attach at most 8 files per message");
+            anyhow::ensure!(files.is_empty() || crate::input_files::takes_files(&detail.agent.harness),
+                "{} can't receive files; Codex, Claude and OpenCode Agents can", detail.agent.name);
+            anyhow::ensure!(files.is_empty() || (input.question.is_none() && input.clarification.is_none()),
+                "Attach files to a message, not to an answer or form reply");
+            anyhow::ensure!(files.is_empty() || detail.agent.remote.is_none()
+                || matches!(detail.agent.harness.as_str(), "codex" | "claude"),
+                "远程 Agent 只有 Codex 和 Claude 能接收附件；消息未发送，草稿保留");
             anyhow::ensure!(input.clarification.is_none() || (input.question.is_none() && input.images.is_empty()),
                 "Submit form answers separately from image attachments and native questions");
             if !input.images.is_empty() { crate::input_images::supported(&detail.agent)?; }
@@ -1800,7 +1894,7 @@ impl Workspace {
                 anyhow::ensure!(detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
-            if !claude && detail.agent.harness != "opencode" {
+            if !claude && !matches!(detail.agent.harness.as_str(), "opencode" | "dsh") {
                 let agent = id.to_owned();
                 self.stored(move |store| store.activate_codex_import(&agent)).await?;
             }
@@ -1815,33 +1909,77 @@ impl Workspace {
             if let Some(form) = &input.clarification {
                 self.validate_clarification(&self.listed(id).await?, form, &input.text).await?;
             }
-            Ok::<_, anyhow::Error>(claude)
+            // What the Agent reads: the user's words, then the notice naming
+            // the path of each file; without files, exactly the user's words.
+            // Each file is checked again now, under the Agent's gate. A remote
+            // Agent's copies are made first (F4), so a failure is a message
+            // that was not submitted and a draft kept (design D14).
+            let (text, file_paths) = if files.is_empty() {
+                (input.text.clone(), Vec::new())
+            } else if let Some(remote) = &detail.agent.remote {
+                let claude_connection = if claude {
+                    Some(self.claudes.lock().unwrap().get(id).cloned()
+                        .context("远程 Claude 连接尚未确认，文件未发送；草稿保留")?)
+                } else {
+                    None
+                };
+                let instance = match &claude_connection {
+                    Some(connection) => connection.remote_instance.clone()
+                        .context("远程 Claude 运行实例尚未确认，文件未发送；草稿保留")?,
+                    None => remote.runtime.as_ref()
+                        .context("远程运行实例尚未确认，文件未发送；草稿保留")?
+                        .instance_id.clone(),
+                };
+                let workspace = self.stored(|store| store.workspace_id()).await?;
+                let paths = crate::remote_files::transfer(self.data_dir.clone(), &workspace,
+                    &detail.agent, &instance, &files).await?;
+                let current = self.listed(id).await?;
+                anyhow::ensure!(crate::remote_images::destination(&detail.agent)
+                    == crate::remote_images::destination(&current)
+                    && claude_connection.as_ref().is_none_or(|c| self.claudes.lock().unwrap()
+                        .get(id).is_some_and(|now| now.generation == c.generation)),
+                    "远程文件目标已变化，消息未发送；草稿保留");
+                (crate::input_files::with_notice(&input.text, &paths, &files), paths)
+            } else {
+                let (root, agent, refs) = (self.data_dir.clone(), id.to_owned(), files.clone());
+                let paths = tokio::task::spawn_blocking(move || crate::input_files::send_paths(&root, &agent, &refs)).await??;
+                (crate::input_files::with_notice(&input.text, &paths, &files), paths)
+            };
+            Ok::<_, anyhow::Error>((claude, text, file_paths))
         }.await;
-        let claude = match admitted {
-            Ok(claude) => claude,
+        let (claude, text, file_paths) = match admitted {
+            Ok(admitted) => admitted,
             Err(error) if error.is::<crate::collaboration_credentials::MessageNotSubmitted>() => return Err(error),
             Err(error) => return Err(crate::collaboration_credentials::MessageNotSubmitted(error).into()),
         };
-        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(), origin, status: "sending".into(), turn_id: None, error: None };
+        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(),
+            files: files.clone(), file_paths: file_paths.clone(), origin, status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
         let result = if detail.agent.harness == "opencode" {
             match &input.expected_turn_id {
-                Some(expected) => self.opencode_add_input_locked(id, &input.text, expected, &input.client_message_id, &input.images).await,
-                None => self.opencode_send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, true).await,
+                Some(expected) => self.opencode_add_input_locked(id, &text, expected, &input.client_message_id, &input.images).await,
+                None => self.opencode_send_images_locked(id, text.clone(), Some(&input.client_message_id), &input.images, true).await,
             }
+        } else if detail.agent.harness == "dsh" {
+            // A new message only (`dsh_admit`); a form's answers are one too.
+            self.dsh_send_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images).await
         } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
-            self.claude_answer_form_locked(id, &input).await
+            // The same input, with the words the Agent reads: its files are
+            // kept, its images and pasted blocks unchanged.
+            let mut sent = input.clone();
+            sent.text = text.clone();
+            self.claude_answer_form_locked(id, &sent).await
         } else if input.question.is_some() || input.clarification.is_some() {
             self.answer_locked(id, &input).await
         } else if let Some(expected) = &input.expected_turn_id {
             if claude {
-                self.claude_steer_locked(id, &input.text, expected, &input.client_message_id, &input.images).await
+                self.claude_steer_locked(id, &text, expected, &input.client_message_id, &input.images).await
             } else {
-                self.steer_images_locked(id, &input.text, expected, &input.client_message_id, &input.images, &skills).await
+                self.steer_images_locked(id, &text, expected, &input.client_message_id, &input.images, &skills).await
             }
         } else {
-            self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, &skills).await
+            self.send_images_locked(id, text, Some(&input.client_message_id), &input.images, &skills).await
         };
         let (status, turn_id, error) = match result {
             // Queued at Claude, not yet confirmed: a turn naming its uuid confirms it.
@@ -2076,6 +2214,32 @@ impl Workspace {
         self.finish_attach(id, connection).await
     }
 
+    /// The user renames an Agent (YN-112): its name only, by the rule every
+    /// way of making one checks (`model::agent_name`). Its ID stays, and with
+    /// it its tasks, mail and Home; records that keep the name it had then
+    /// (mail, task activity, results) keep that name. Nothing starts or
+    /// stops, so it takes no work permit, as moving it to a Project takes
+    /// none, and a closed Agent can be renamed too. Under its ownership lock,
+    /// so the comparison and the write are one step: an unchanged name writes
+    /// nothing and announces nothing.
+    pub async fn rename_agent(self: &Arc<Self>, id: &str, raw: &str) -> Result<Agent> {
+        let name = crate::model::agent_name(raw)?;
+        let owned = self.owner(id).await;
+        let agent = id.to_owned();
+        let renamed = self.stored_owned(owned, move |store| {
+            if store.agent(&agent)?.name == name {
+                return Ok(false);
+            }
+            store.update_meta(&agent, "agent/renamed", &json!({"name":name}), |m| m.agent.name = name.clone())?;
+            Ok(true)
+        }).await?;
+        if renamed {
+            // Every open page, a phone's too, reads the list again.
+            self.changed(id);
+        }
+        self.listed(id).await
+    }
+
     pub async fn update_settings(self: &Arc<Self>, id: &str, model: String, mut settings: AgentSettings) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         validate_settings(&settings)?;
@@ -2287,6 +2451,7 @@ impl Workspace {
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_interrupt(id).await,
             "opencode" => return self.opencode_interrupt(id).await,
+            "dsh" => return self.dsh_interrupt(id).await,
             _ => {}
         }
         let d = self.send_view(id).await?;
@@ -2629,6 +2794,11 @@ impl Workspace {
             }
             if a.harness == "opencode" {
                 if self.opencode_respond(&a.id, request_id, &response).await? { return Ok(()); }
+                continue;
+            }
+            // A request past a dsh Agent's sandbox at Ask you first (YN-119 §3.6).
+            if a.harness == "dsh" {
+                if self.dsh_respond(&a.id, request_id, &response).await? { return Ok(()); }
                 continue;
             }
             // Re-read Pending under the same lock as disconnect; reply and
@@ -3258,6 +3428,10 @@ pub fn validate_response(request: &PendingRequest, response: &Value) -> Result<(
 #[path = "concurrency_tests.rs"]
 mod concurrency_tests;
 
+#[cfg(test)]
+#[path = "agent_rename_tests.rs"]
+mod agent_rename_tests;
+
 #[cfg(all(test, unix))]
 #[path = "collaboration_admission_tests.rs"]
 mod collaboration_admission_tests;
@@ -3309,6 +3483,10 @@ mod metadata_event_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_reads_tests.rs"]
 mod reconnect_reads_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_exit_tests.rs"]
+mod reconnect_exit_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3370,7 +3548,7 @@ mod tests {
         assert_eq!(p["approvalPolicy"], "on-request");
         assert_eq!(p["approvalsReviewer"], "user");
         assert_eq!(p["sandbox"], "workspace-write");
-        agent.settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort: Some("high".into()), approval_policy: "never".into(), sandbox: "read-only".into(), permission_preset: None, permission_mode: None };
+        agent.settings = AgentSettings { context_window: None, auto_compact_token_limit: None, reasoning_effort: Some("high".into()), approval_policy: "never".into(), sandbox: "read-only".into(), permission_preset: None, permission_mode: None, permission_level: None };
         let p = resume_params("thread", &agent);
         assert_eq!(p["approvalPolicy"], "never");
         assert_eq!(p["sandbox"], "read-only");

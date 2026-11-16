@@ -68,6 +68,7 @@ export const shellText = strings({
   interruptHere: "Interrupt requested. Your conversation is preserved.",
   interruptFor: (name: string) => `Interrupt requested for ${name}. The conversation is preserved.`,
   disconnected: (name: string) => `${name} is disconnected. Nothing starts it again until you reconnect it.`,
+  renamed: (name: string) => `Renamed to “${name}”.`,
   endedMissing: "Ended as interrupted, result unknown. Reconnect to go on in the same session.",
   // The conversation's own controls (T-189 slice 18): its header strip and
   // the composer's chrome. Messages, names and file names stay as written.
@@ -107,6 +108,11 @@ export const shellText = strings({
   addImages: "Add images",
   imageRules: "PNG, JPEG or WebP, up to 8 per message. A photo over 10 MiB or 24 megapixels is made smaller here first.",
   imagesOnly: "Images are available for Codex, Claude and OpenCode Agents",
+  chooseFiles: "Choose files",
+  savingFiles: "Saving files…",
+  addFiles: "Add files",
+  fileRules: "Any file type, up to 8 per message and 40 MiB in all. The Agent reads them from a path; nothing is opened or run.",
+  filesOnly: "Files go to Codex, Claude and OpenCode Agents",
   chooseToMark: "Choose an image to mark",
   markUp: "Mark up an image",
   markUpBody: "Mark areas on a screenshot or image; your notes go into the draft.",
@@ -132,6 +138,8 @@ export const shellText = strings({
   claudeImages: "Large images are scaled or compressed when sent to Claude · originals are kept",
   // OpenCode takes images only for a chosen model that reads them (core/src/opencode_agent.rs).
   openCodeImages: "Images need a model chosen in Settings that reads images · large ones are scaled or compressed when sent · originals are kept",
+  dshImages: "Images need a model that reads images, such as deepseek-flash · originals are kept",
+  dshWaitTurn: "DeepSeek Harness takes nothing more until this turn finishes: wait for it, or interrupt it",
   // The context panel (T-189 slice 19); the work summary, names, paths and
   // the session ID stay as they came.
   atGlance: "At a glance",
@@ -249,6 +257,7 @@ export const shellText = strings({
   interruptHere: "已请求中断。你的会话会保留。",
   interruptFor: (name) => `已请求中断 ${name}。会话会保留。`,
   disconnected: (name) => `${name} 已断开连接。在你重新连接之前，没有任何东西会再次启动它。`,
+  renamed: (name) => `已重命名为「${name}」。`,
   endedMissing: "已作为中断结束，结果未知。重新连接即可在同一会话中继续。",
   conversationTools: "会话工具",
   backHome: "返回 Home",
@@ -284,6 +293,11 @@ export const shellText = strings({
   addImages: "添加图片",
   imageRules: "PNG、JPEG 或 WebP，每条消息最多 8 张。超过 10 MiB 或 2400 万像素的照片会先在这里缩小。",
   imagesOnly: "Codex、Claude 和 OpenCode Agent 可以使用图片",
+  chooseFiles: "选择文件",
+  savingFiles: "正在保存文件…",
+  addFiles: "添加文件",
+  fileRules: "任意类型，每条最多 8 个、合计 40 MiB。Agent 按路径读取，不会被打开或运行。",
+  filesOnly: "Codex、Claude 和 OpenCode Agent 能接收文件",
   chooseToMark: "选择要标注的图片",
   markUp: "标注图片",
   markUpBody: "在截图或图片上标出区域；你的说明会加入草稿。",
@@ -307,6 +321,8 @@ export const shellText = strings({
   addInput: "向当前 Turn 添加输入",
   claudeImages: "发送给 Claude 时，大图片会被缩放或压缩 · 原图会保留",
   openCodeImages: "需要在设置里选定能读图片的模型 · 发送时大图片会被缩放或压缩 · 原图会保留",
+  dshImages: "需要能读图片的模型，例如 deepseek-flash · 原图会保留",
+  dshWaitTurn: "DeepSeek Harness 在这一轮结束前不接受追加：请等它结束，或先中断",
   atGlance: "概览",
   closePanel: "关闭上下文面板",
   currentWork: "当前工作",

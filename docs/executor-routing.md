@@ -21,7 +21,10 @@ version; a later slice adds to it.
 | YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
 | YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
 | YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | Done |
-| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | This version |
+| YN-66 | [A waiting executor's harness](#routing-at-dispatch-s3b2), given at its first start | Done |
+| YN-138 PR 1 | [A queued executor whose candidate, account or key left](#routing-at-dispatch-s3b2) is routed again before it starts | Done |
+| YN-138 PR 2 | [A started Claude executor whose account left its pool](#claude-swap-accounts) moves to another account of it and resumes its session | This version |
+| YN-119 S3 | [DeepSeek Harness](dsh.md) (`dsh`) candidates: a DeepSeek key only, on this Core host, with dsh's own reasoning effort; the [levels](#permission-levels-yn-56) dsh keeps | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -30,7 +33,8 @@ routing policy is on ([Routing at dispatch](#routing-at-dispatch-s3b2)).
 ## Routing keys
 
 A routing key is an API key an executor may later be started with: for
-Anthropic (Claude Code), OpenAI (Codex) or DeepSeek (OpenCode). Each key has an
+Anthropic (Claude Code), OpenAI (Codex) or DeepSeek (OpenCode and
+[DeepSeek Harness](dsh.md)). Each key has an
 id (1 to 48 of `a-z`, `0-9` and `-`) and chooses its source:
 
 - **local**: you enter the value, and Core keeps it in the key file.
@@ -176,10 +180,53 @@ profile, refreshes its tokens and guards the default login.
     account;
   - any other listed account starts through
     `cswap run <slot> --require-session`;
-  - an account no longer listed is gone, and the executor does not start.
-    Core never starts it as another account. A refusal at launch (the account
-    became the default login after the list was read) fails that start the
-    same way: an executor is never moved to another account during its life.
+  - an account no longer listed is gone, and the executor does not start
+    on it. A refusal at launch (the account became the default login after
+    the list was read) fails that start the same way.
+- **An account that left its pool (YN-138).** While routing is on and the
+  executor's route chose a pool candidate (on or off), an account taken out
+  of that pool's `accounts`, or no longer in the list just read, is changed
+  at that launch for another account of the pool: among the accounts the
+  list has, each `quota` condition holding, by the pool's `pick`, as a
+  dispatch picks one. That account
+  becomes its runtime profile and its route's `account`, and its route's
+  `accountChanged` keeps a line `{code, message, messageZh, from, to, at}`
+  (the last 10). None to change to refuses the launch, saying so. The
+  session resumes on the new account (its `claudeSessionId` is kept):
+  claude-swap 1.0.0 shares chat history by default, so every account's
+  `projects/` is a link to `~/.claude/projects` ([the auto memory
+  folder](#claude-swap-accounts), below), and `--resume` finds the session
+  under any of them. Routing off, or a candidate that is not a pool, never
+  changes an account. Before its first start, routing gives an executor
+  whose account left another candidate altogether ([Routing at
+  dispatch](#routing-at-dispatch-s3b2)).
+- **A connected executor on such an account moves once idle.** At each slot
+  pass, while routing is on, a Claude executor of this Core host, connected
+  and not disconnected by you, whose account left its pool, is moved when
+  the readings, fresh and available, give another account of the pool:
+  - only while nothing of it is under way: no Turn running, no request shown
+    or approval waited for, no background task or sub-agent still able to
+    report, and its status idle or error. A Turn under way is never cut
+    short; the pass after it ends moves it (one runs every 5 seconds, and
+    saving the policy wakes one);
+  - its bridge is detached as an update detaches one (the bridge confirms it
+    is idle, its events are drained, only that connection is closed), then
+    started again, and that launch changes the account as above. It is idle
+    after, its error cleared, and mail waiting for it is delivered. No Turn
+    is started for it;
+  - each move runs on its own, so the pass never waits for it and starts no
+    second move of the same executor. It takes the executor's gate only if
+    free: a gate another operation holds skips it for that pass, which writes
+    nothing to the executor, and the next pass tries again. Its detach and
+    restart run within the Workspace's start time limit ([the start time
+    limit](executor-model.md#executors-at-once), as a start is). A start that
+    fails, or a detach and restart the limit cuts off, is its failure, as a
+    Reconnect's is: it is shown with why and left to you, never closed. No
+    other account to move to leaves it connected as it is.
+
+  One you disconnected moves at your Reconnect; one whose bridge already
+  ended moves at its next start. Codex homes and API keys are not changed
+  for a started executor: a Codex thread lives in its own home.
 - **The launcher.** claude-swap 1.0.0's `run` has no quiet or JSON option and
   prints a notice to stdout before it execs Claude Code, while the Agent SDK
   reads Claude's JSON from that stdout. So a Claude executor on an account
@@ -233,7 +280,7 @@ Core runs.
 
 [An executor's account or key](executor-model.md#an-executors-account-or-key)
 has the rules: where the profile lives, that each start reads it again, and
-that an executor is never moved to another account. This is what each harness
+that a started Claude executor moves to another account of its pool only when its account left it. This is what each harness
 gets, and what its tools can see. The key goes to that executor's process only:
 Core's own environment never holds it, so no other Agent, Job, review run or
 catalog read sees it.
@@ -243,6 +290,7 @@ catalog read sees it.
 | Claude Code | API key (Anthropic) | `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` | Not the key: with the scrub, Claude Code strips credentials from the environment of its Bash commands, hooks and stdio MCP servers ([env vars](https://code.claude.com/docs/en/env-vars)). On Linux the scrub also runs Bash commands in their own PID namespace. |
 | Claude Code | claude-swap account | `YUZUNO_CSWAP_PYTHON` and `YUZUNO_CSWAP_ACCOUNT` for the launcher, which `cswap run` turns into that account's `CLAUDE_CONFIG_DIR` | The profile folder's path, as with any `CLAUDE_CONFIG_DIR`. Its login files are files, readable by anything running as you. |
 | OpenCode | API key | Its provider's variable: `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | **The key.** OpenCode's shell tool runs with the server's environment. Its per-session environment setting covers the main session but not sub-sessions, so it is not used. This is a known limit. A login saved in that Agent's OpenCode takes precedence over the variable. |
+| DeepSeek Harness (`dsh`) | API key (DeepSeek) | `DEEPSEEK_API_KEY`, and nothing else of Core's `DSH_*` or `DEEPSEEK_*` variables | Not the key: dsh's subprocess service leaves credential-shaped variables (`*KEY*`, `*PASSWORD*`, `*SECRET*`, `*TOKEN*`) out of every command its tools run. That is dsh's own rule, by name, and a lab probe saw it hold at Full access on 0.2.2-rc.3 and 0.2.2-rc.1; see [DeepSeek Harness](dsh.md#a-dsh-agent). |
 | Codex | Codex home | `CODEX_HOME` set to that home | The home's path. Its login file (`auth.json`, or the system keyring if the home is set up so) is readable by anything running as you. |
 | Codex | API key (OpenAI) | `CODEX_HOME` set to Core's own `codex-api-home` folder in the Workspace folder (mode 0700), `-c cli_auth_credentials_store="ephemeral"`, and the key sent once over its connection, after `initialize`, with `account/login/start {"type": "apiKey"}` ([app-server](https://developers.openai.com/codex/app-server)) | Not the key: it is in no environment variable, and the ephemeral store keeps it in that app-server's memory only, never in `auth.json` ([authentication](https://developers.openai.com/codex/auth)). `codex app-server` does not read `CODEX_API_KEY`, which is for `codex exec`. |
 
@@ -284,6 +332,7 @@ cost, as its harness reports it:
 - **Claude Code:** what the turn added to its result's `total_cost_usd`. Claude Code reports that as the running total of its session, so Core keeps the last total it saw from each executor, across restarts, and counts the increase. A total below the last (after `/clear`, or in a new session) counts from zero. A zero total, as a crashed turn reports, counts nothing.
 - **OpenCode:** each finished step's `cost`, the executor's sub-agents' too.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
+- **DeepSeek Harness (dsh):** not counted: dsh reports no spend, only the context it uses. Routing treats a dsh candidate's spend as unknown too (`spendNotCounted`).
 
 Each entry is counted once, by key id, on the Core host's local date.
 
@@ -379,9 +428,9 @@ executors as it says, whatever the policy is.
     "candidates": [
       { "id": "c-deepseek", "label": "DeepSeek off-peak", // label optional, at most 60; empty shows "harness · model"
         "enabled": true,
-        "harness": "opencode",                        // "claude" | "codex" | "opencode"
+        "harness": "opencode",                        // "claude" | "codex" | "opencode" | "dsh"
         "model": "deepseek/deepseek-flash",           // as that harness names it; empty is its default
-        "reasoningEffort": "high",                    // Codex only, optional
+        "reasoningEffort": "high",                    // Codex (its catalog's) or dsh (off, low, high or max), optional
         "tiers": ["fast"],                            // optional (YN-70): "strong", "fast" or both; left out serves both
         "credential": { "kind": "apiKey", "keyId": "deepseek" },
         "conditions": [                               // all must hold
@@ -402,11 +451,12 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 
 `credential` takes one of these forms:
 - `{ "kind": "login" }`: the host's own login for that harness.
-- `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" }`: Claude Code only.
+- `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" | "soonestReset" }`: Claude Code only. `pick` is which of the pool's accounts it uses first, and is optional: `mostRemaining` (the one with the most of its week left, the default) or `soonestReset` (the one whose week resets soonest). Any other value is refused (`path: "candidates[0].credential.pick"`).
 - `{ "kind": "apiKey", "keyId": "<routing key id>" }`. Its provider comes from the key; a provider that doesn't fit the harness is refused:
   - Claude Code takes `anthropic`;
   - Codex takes `openai`;
-  - OpenCode takes `deepseek`, `anthropic` or `openai`.
+  - OpenCode takes `deepseek`, `anthropic` or `openai`;
+  - DeepSeek Harness (`dsh`) takes `deepseek` only. It has no `login` of its own here: a dsh candidate needs an `apiKey`. A dispatch from a template fixed to dsh that routing gives no key is refused (`dsh_needs_key`).
 - `{ "kind": "codexHome", "id": "<Codex home id>" }`: Codex only. Use one candidate per home.
 
 `conditions[]` entries take one of these forms:
@@ -414,7 +464,12 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 - `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
   - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
   - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
+  - It reads this Core host's readings, even for an executor on another machine: claude-swap's active account for a Claude Code `login`, this host's Codex for a Codex `login`. A candidate only for other machines should not have one.
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
+- `{ "kind": "machine", "machines": ["local" | "<machine id>", …] }` (YN-139): the machines the candidate may run on, 1 to 16, each once; `local` is this Core host.
+  - With no machine named (the dispatch and its template name none, or `auto`, and a preview), the executor's machine counts as this Core host. A dispatch like that given such a candidate runs here: `auto` chooses no other machine after routing.
+  - A save takes it on any credential and doesn't check that each machine is still registered: one removed never matches. It widens nothing: a candidate that runs on this Core host only (below) still does. The page offers it for a Claude Code or Codex `login`, the only candidates that run on another machine.
+  - A Core before YN-139 keeps it and reads it as a kind it doesn't know: unknown, so with `unknown: "skip"` the candidate is passed over there rather than run on that Core's host.
 
 ### `route_json`: why a candidate was chosen (S3b)
 
@@ -426,15 +481,22 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
   "tier": "fast", "tierSource": "template",                       // only with a tier (YN-70): "template" | "lead" | "user"
   "chosen": "c-deepseek",                                         // null when none could be chosen
   "account": { "number": 2, "fingerprint": "3f2a…" },             // or { "home": "work" }, when the credential has one
+  "accountChanged": [ { "code": "accountLeftPool", "message": "…", "messageZh": "…", // a started Claude executor moved
+                        "from": { "number": 2, "fingerprint": "3f2a…" },        // off an account that left its pool
+                        "to": { "number": 3, "fingerprint": "9c1d…" }, "at": "…" } ], // (YN-138), the last 10
   "candidates": [
     { "id": "c-claude", "label": "Claude pool", "harness": "claude", "model": "opus",
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
       "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
-      "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
-  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds
+      "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low", "weekLeftPct": 12, "resetsAt": "…" } ] } ],   // pick | ok | low | unknown; the last two only when the reading is known
+  "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds:
+                                                                  // from its candidate before, when that left (YN-138), else null
+                      "fromAccount": { "number": 2, "fingerprint": "3f2a…" }, // only when it had an account then
                       "harnessFrom": "opencode" },                // only when its harness changed then (YN-66)
+  "left": { "code": "accountLeftPool", "message": "…", "messageZh": "…", "at": "…", // only when what it was routed to left
+            "from": "c-claude", "fromAccount": { "number": 2, "fingerprint": "3f2a…" } }, // before it started (YN-138)
   "applyFailed": { "candidate": "c-codex", "message": "…", "at": "…" }, // still waiting: it could not be given that one now
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
@@ -447,13 +509,13 @@ is chosen. The other candidates are marked `notTried`.
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
 - **Of a harness it can be given:** at dispatch (YN-70) and at a waiting executor's start (YN-66), a harness its machine can't run now is `harnessUnavailable`, with `params: { harness, machine }`: OpenCode while this Core has it off, Codex on a contained machine. At dispatch `machine` is null when the dispatch and its template name none (this Core host) or `auto`. An executor something of which already ran is given its own harness only (`otherHarness`).
-- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
+- **Runs on the machine:** a credential other than `login`, and any OpenCode or dsh candidate, runs on this Core host only (`hostOnly`). A candidate whose `machine` condition doesn't name the executor's machine is `otherMachine`, with `params: { machine }` (null when none is named: this Core host).
 - **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Serves the tier:** with a [tier](#tiers-yn-70), a candidate whose `tiers` don't include it is `skipped`, with `tierNotServed` and `params: { tier }`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
-- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of its week left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, by its `pick` (YN-150). `mostRemaining` (the default) takes the one with the most of its week left, ties to the lower number. `soonestReset` takes the one whose week resets at the earliest known time still ahead; an account whose reset time is unknown, or has already passed, comes after one still ahead, and those are ordered by the week left and then the lower number. Under `soonestReset`, an account whose reading shows 0% left counts as used up even with no `quota` condition. Either way each account is marked `pick`, `ok`, `low` or `unknown`, and carries the share of its week left (`weekLeftPct`) and when it resets (`resetsAt`) when its reading is known.
 - **Its conditions hold:**
   - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
   - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);
@@ -461,7 +523,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
 A reading that is missing, stale or unknown, or a kind this Core doesn't
-know, is unknown. Codex API-key spend is unknown too. The candidate's
+know, is unknown. Codex and dsh API-key spend is unknown too. The candidate's
 `unknown` rule then decides: `skip`, the default, marks it `unknown`, and
 `pass` lets it be chosen, with the unknowns kept as its reasons.
 
@@ -478,16 +540,20 @@ this evaluator, with the readings as Core last observed them.
 A permission level is a permission said once for every harness. Core maps it
 to each harness's own setting, so it holds whichever harness routing chooses.
 
-| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
-| --- | --- | --- | --- | --- |
-| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list |
-| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks |
-| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed |
-| `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below |
+| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode (support stops at 2.2.5) | DeepSeek Harness (`dsh`) |
+| --- | --- | --- | --- | --- | --- |
+| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Everything asks but reading (a `.env` file asks), searching, listing, asking you and its to-do list | `workspace-write` sandbox, approval `ask`: leaving it asks you (a card) |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | A local executor on Unix: Core answers every permission request itself, never you (see [Core answers an OpenCode executor at Auto-approve](#core-answers-an-opencode-executor-at-auto-approve-yn-78)). Another OpenCode Agent at this level: everything is allowed but a folder outside its own and a loop of the same failing call, which ask; reading a `.env` file asks | The same sandbox: Core refuses leaving it and asks no one. dsh has no reviewer |
+| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Everything is allowed | `danger-full-access`, approval `never`: nothing is sandboxed |
+| `read-only` | Read only | `read-only`: its read-only sandbox without network, never asks; see [Read only](#read-only-yn-74) | `default`, without its shell, file writes, web or sub-agents; see [Read only](#read-only-yn-74) | Everything is denied but reading (not a `.env` file), searching, listing and the Yuzuno tools below | Doesn't keep it: its network, `web_fetch` and MCP tools are open at every level |
 
 No level is each harness's own default for new Agents, kept everywhere. On
 OpenCode that is its own configuration: its default agent allows everything
-but reading a `.env` file.
+but reading a `.env` file. On dsh it is Ask you first.
+
+dsh keeps a level as its sandbox and approval policy, written in Core's own
+configuration patch at each start and read back before dsh runs; a level
+change starts a new dsh ([DeepSeek Harness](dsh.md#permission-levels-and-approvals)).
 
 OpenCode keeps a level as rules of its own. Each start of an OpenCode
 executor that has a level gives that executor's `opencode serve`, and no
@@ -530,8 +596,9 @@ Every other Agent and level starts as the table says.
 
 - **Only on OpenCode 2.2.5.** Core's answers were checked against that
   release's own source, so they are its alone. This is kept apart from the
-  release Core is otherwise verified with: verifying a newer OpenCode for
-  the rest of Core does not widen it. On any other release, an executor at
+  release the rest of Core's OpenCode support stops at, also 2.2.5 (YN-119,
+  [OpenCode Agents](opencode.md)): a newer release that starts at another
+  level does not widen it. On any other release, an executor at
   Auto-approve gets no working connection, and its error says which release
   it found and that only 2.2.5 is supported. Ask you first, Full access,
   Read only and an Agent that is not an executor are not affected.
@@ -681,12 +748,15 @@ dispatch is routed:
   readings as Core last observed them, and gives the executor:
   - its harness, model and effort. Its permission is the template's [permission level](#permission-levels-yn-56) on that harness; a template with none gets that harness's defaults for new Agents. A candidate whose harness doesn't keep the level is passed over;
   - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
-  A candidate that runs on this Core host only makes it run here. The record
+  A candidate that runs on this Core host only makes it run here, and so
+  does one with a `machine` condition when the dispatch names no machine or
+  `auto` (it held for this Core host). The record
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
   harness of the first candidate that could run there (of a harness its
-  machine runs), keeps its level and serves its tier, a stand-in, and stays in the queue while executors after it start. At each
+  machine runs, and not one its `machine` condition leaves out), keeps its
+  level and serves its tier, a stand-in, and stays in the queue while executors after it start. At each
   slot pass routing is read again, among every candidate it could be given,
   whatever its harness (YN-66). The first that holds gives it its harness,
   model, effort, permission and account or key, and it starts in turn:
@@ -702,20 +772,46 @@ dispatch is routed:
   - A candidate it can't be given now, such as a default model that can't be
     checked, leaves it waiting with `applyFailed`; the next pass tries again.
   - Its machine is fixed at its dispatch: waiting on another machine, it is
-    never given a candidate that runs on this Core host only.
+    never given a candidate that runs on this Core host only, nor one whose
+    `machine` condition leaves that machine out.
 
   If none ever could, it is released and starts in turn as it would without
   routing, on the host's own login: its route says `released`, with
   `routingOff` when routing was turned off, or `noCandidate` when no candidate
   it could be given is left: none enabled that is not excluded for it after a
   failed start, of a harness its machine runs, that keeps its level and
-  serves its tier, and, while it waits on another machine, not this Core
-  host's only.
+  serves its tier, whose `machine` condition, if it has one, names its
+  machine, and, while it waits on another machine, not this Core host's
+  only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.
-- **An executor already routed is not routed again at its start,** nor ever
-  moved to another account once started.
+- **An executor routed but not started yet keeps what it was given while it
+  is there (YN-138).** When it has left, the executor is routed again before
+  it starts, among every candidate, as one that waited from its dispatch.
+  It has left, for certain, when:
+  - its candidate was removed (`candidateRemoved`) or turned off (`candidateOff`);
+  - its claude-swap account was taken out of its pool's `accounts`
+    (`accountLeftPool`), or a fresh claude-swap list no longer lists it
+    (`accountNotListed`);
+  - its candidate runs on another account or key now (`credentialChanged`),
+    or its key or Codex home is gone (`keyMissing`, `homeMissing`).
+
+  A quota running low or a time window closing is not leaving, and a
+  reading that is missing, stale or unavailable decides nothing. Routing
+  off, nothing is judged. At each slot pass, under the executor's own lock
+  and only while its slot still waits, one transaction writes its route
+  `waiting` with `left` (why, and the candidate and account it had) and
+  removes its runtime profile. The same pass then routes it: the first
+  candidate that holds, whatever its harness, and its route's
+  `changedAtStart` says `from` (with `fromAccount`) and `left`'s reason; none
+  now, it waits, keeping `left`; none it could ever be given, it is
+  released onto the host's own login. Saving the policy wakes a pass at
+  once. One a pass took to start first starts as it was routed.
+- **Once started, an executor keeps its candidate.** A Claude executor's
+  claude-swap account that left its pool is changed for another account of
+  the pool ([claude-swap accounts](#claude-swap-accounts)); nothing else of
+  it is.
 
 ### A real DeepSeek executor: the lab check (S3b3)
 

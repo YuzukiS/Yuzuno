@@ -20,8 +20,12 @@ export interface Agent {
   workSummary?: WorkSummary | null;
   /** Absent from a Core without it (before YN-51), and while nothing holds its Turn. */
   turnWait?: TurnWait | null;
-  harness?: "codex" | "claude" | "opencode";
+  harness?: "codex" | "claude" | "opencode" | "dsh";
   claudeSessionId?: string;
+  /** A DeepSeek Harness Agent's ACP session, once it has one (YN-119 S2a). */
+  dshSessionId?: string;
+  /** The dsh version Core found when it last started this Agent (design §5.1). */
+  dshVersion?: string;
   opencodeSessionId?: string;
   /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
   opencodeVersion?: string;
@@ -120,10 +124,17 @@ export interface Workspace {
   /** Whether this Core creates OpenCode Agents: yes unless it was started
    * with `YUZUNO_EXPERIMENTAL_OPENCODE=0` (YN-27). They stay experimental. */
   opencode?: { enabled: boolean; version?: string };
+  /** Whether this Core starts DeepSeek Harness Agents (YN-119): absent from a Core without them. */
+  dsh?: import("./dsh").DshStatus;
 }
 export interface NativeItem {
   _yuzunoTextBlocks?: import("./message-content").TextBlock[];
   _yuzunoInputText?: string;
+  /**
+   * The files a user message carried (YN-145), as Core restored them from its
+   * receipt: each with the path its Agent reads it at.
+   */
+  _yuzunoFiles?: (import("./file-input").SavedFile & { path: string })[];
   id: string;
   type: string;
   /** A particular collaboration reminder added to an existing turn, or
@@ -307,7 +318,7 @@ export interface RunningCall {
   item: NativeItem;
 }
 export type RunningSubAgent = RunningCall;
-export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "native";
+export type InputOrigin = "you" | "home" | "form" | "answer" | "unconfirmed" | "peer" | "reminder" | "resume" | "schedule" | "update" | "native";
 /** Where a Home reply came from, as its receipt names it (T-9). `key` and
  * `version` are null for a reply to the whole Project; `workspaceId` is null
  * on receipts written before Core kept it. `snapshot` is absent on older
@@ -505,6 +516,8 @@ export interface AgentSettings {
   permissionPreset?: "config" | "ask" | "auto" | "full" | null;
   /** Claude Code native permission mode, as last selected or reported. */
   permissionMode?: string | null;
+  /** A DeepSeek Harness Agent's permission level (YN-119 §3.6): ask, auto or full. */
+  permissionLevel?: string | null;
 }
 export interface PermissionCatalog {
   presets: {
@@ -540,6 +553,8 @@ export interface MessageInput {
   textBlocks?: import("./message-content").TextBlock[];
   /** Codex only. Sent beside the input; Core keeps them on the receipt. */
   skills?: SkillRef[];
+  /** Files attached to the message (YN-145), sent beside the input. */
+  files?: import("./file-input").SavedFile[];
   clarification?: import("./intelligent-ui/clarification").ClarificationAnswer;
   images?: string[];
   clientMessageId: string;
@@ -551,6 +566,9 @@ export interface MessageReceipt {
   binding?: { turnId: string; itemId: string; userIndex: number };
   input: MessageInput;
   skills?: SkillRef[];
+  /** The files the message carried, and where each Agent reads it (YN-145). */
+  files?: import("./file-input").SavedFile[];
+  file_paths?: string[];
   /**
    * Claude adds "queued" (sent to Claude, not yet read) and "unknown" (its
    * connection ended before it said it read it; never sent again).

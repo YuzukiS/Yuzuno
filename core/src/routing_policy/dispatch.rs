@@ -14,7 +14,14 @@
 //!   its gate, and its route, written last, lets it start.
 //! - **A rebuild** (a definite start failure) leaves out the candidates the
 //!   executor it replaces was started with, so each is tried once.
-use super::evaluate::{evaluate, serves, Assume, Gathered};
+//! - **One routed but not started yet whose candidate, account or key has left**
+//!   (left.rs) waits again (YN-138): in one transaction, while its slot still
+//!   waits, its route says `waiting` and `left`, and its runtime profile is
+//!   removed. The same pass then reads routing for it among every candidate,
+//!   as for one that waited from its dispatch; none it could ever be given
+//!   releases it onto the host's own login.
+use super::evaluate::{evaluate, has_machine_condition, machine_allows, serves, Assume, Gathered};
+use super::left::{left, Left};
 use crate::{executor_templates::Template, routing_launch::RuntimeProfile};
 use anyhow::Result;
 use chrono::Utc;
@@ -27,7 +34,8 @@ pub(crate) struct Routed {
     pub template: Template,
     pub route: Value,
     pub profile: Option<RuntimeProfile>,
-    /// "local" when the chosen candidate runs on this Core host only.
+    /// "local" when the chosen candidate runs on this Core host only, or, with no
+    /// machine named (`auto` or unset), has a machine condition (YN-139).
     pub machine: Option<String>,
 }
 
@@ -44,16 +52,17 @@ fn failed_before(tx: &Connection, request_id: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A template made to start as `candidate` says: its harness, model and effort,
-/// and the template's permission level as that harness's own permission (YN-56).
-/// No level, or one the harness doesn't keep (the evaluator passes over such a
-/// candidate), is that harness's defaults for new Agents.
+/// A template made to start as `candidate` says: its harness, model and effort
+/// (Codex's and dsh's, YN-119 §3.9), and the template's permission level as that
+/// harness's own permission (YN-56). No level, or one the harness doesn't keep
+/// (the evaluator passes over such a candidate), is that harness's defaults for
+/// new Agents.
 pub(crate) fn apply(template: &Template, candidate: &Value) -> Template {
     let mut t = template.clone();
     let harness = candidate["harness"].as_str().unwrap_or("codex").to_owned();
     let model = candidate["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned);
     t.model = model;
-    t.reasoning_effort = if harness == "codex" { candidate["reasoningEffort"].as_str().map(str::to_owned) } else { None };
+    t.reasoning_effort = if matches!(harness.as_str(), "codex" | "dsh") { candidate["reasoningEffort"].as_str().map(str::to_owned) } else { None };
     let native = template.permission_level.as_deref().and_then(|level| crate::permission_levels::native(level, &harness));
     t.permission_preset = native.filter(|_| harness == "codex").map(str::to_owned);
     t.permission_mode = native.filter(|_| harness == "claude").map(str::to_owned);
@@ -61,8 +70,18 @@ pub(crate) fn apply(template: &Template, candidate: &Value) -> Template {
     t
 }
 
+/// Whether `candidate` runs on this Core host only: an account pool, a key or a
+/// Codex home, and OpenCode and dsh whatever their credential (YN-119 §4).
 fn host_only(candidate: &Value) -> bool {
-    candidate["credential"]["kind"] != "login" || candidate["harness"] == "opencode"
+    candidate["credential"]["kind"] != "login" || matches!(candidate["harness"].as_str(), Some("opencode" | "dsh"))
+}
+
+/// Whether a dispatch to `machine` that gives its executor `candidate` fixes it on this
+/// Core host: a host-only one; or, with no machine named (`auto` or unset), one with a
+/// machine condition (YN-139), which held for this Core host, so `auto` choosing another
+/// machine after routing can't take it where its condition leaves it out.
+fn here(candidate: &Value, machine: Option<&str>) -> bool {
+    host_only(candidate) || (machine.is_none() && has_machine_condition(candidate))
 }
 
 /// The tier a dispatch wants and whose it is (YN-70): `template`, `lead` or `user`.
@@ -96,16 +115,19 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     let mut record = route.record;
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
-        let machine = host_only(&candidate).then(|| "local".to_owned());
+        let machine = here(&candidate, machine).then(|| "local".to_owned());
         return Ok(Some(Routed { template: apply(template, &candidate), route: record, profile: route.profile, machine }));
     }
     // None now: the first enabled candidate that could run there, keeps the
     // template's permission level and serves its tier, stands in for its
     // harness while it waits. One that doesn't serve the tier would pin it to
-    // this Core host for nothing (a host-only one's machine is fixed here).
+    // this Core host for nothing (a host-only one's machine is fixed here). One
+    // whose machine condition leaves the machine out never holds there, so it
+    // stands in for none (YN-139).
     let first = stored.policy["candidates"].as_array().into_iter().flatten()
         .find(|c| c["enabled"] == true && !exclude.iter().any(|e| c["id"] == e.as_str())
             && (!host_only(c) || machine.is_none_or(|m| m == "local"))
+            && machine_allows(c, machine)
             && crate::permission_levels::keeps(level, c["harness"].as_str().unwrap_or_default())
             && !unavailable.contains(&c["harness"].as_str().unwrap_or_default())
             && serves(c, tier.map(|(tier, _)| tier)));
@@ -116,7 +138,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     let mut waiting = apply(template, first);
     waiting.model = None;
     waiting.reasoning_effort = None;
-    let machine = host_only(first).then(|| "local".to_owned());
+    let machine = here(first, machine).then(|| "local".to_owned());
     Ok(Some(Routed { template: waiting, route: record, profile: None, machine }))
 }
 
@@ -174,7 +196,7 @@ fn unstarted(data: &Value, turns: bool, receipts: bool) -> bool {
     let agent = &data["agent"];
     let remote = &agent["remote"];
     !turns && !receipts && agent["closedAt"].is_null() && agent["threadId"].is_null()
-        && agent["claudeSessionId"].is_null() && agent["opencodeSessionId"].is_null()
+        && agent["claudeSessionId"].is_null() && agent["opencodeSessionId"].is_null() && agent["dshSessionId"].is_null()
         && agent.get("connectionState").is_none_or(|state| state == "disconnected")
         && remote["runtime"].is_null() && remote["launchRequested"] != true && remote["hostInstance"].is_null()
         && data["pending"].as_array().is_none_or(Vec::is_empty)
@@ -224,13 +246,74 @@ pub(crate) fn waiting_list(db: &Connection) -> Result<Vec<WaitingExecutor>> {
     waiting_where(db, None)
 }
 
+/// An executor routed at its dispatch, queued for a slot, nothing of which ran (YN-138).
+pub(crate) struct QueuedRouted {
+    pub agent: String,
+    pub route: Value,
+    pub profile: Option<RuntimeProfile>,
+}
+
+/// The executors routed, queued for a slot and not started: not waiting for a
+/// candidate, not released onto the host's login. Or the one `agent` names while it still is.
+fn left_queued(db: &Connection, agent: Option<&str>) -> Result<Vec<QueuedRouted>> {
+    let mut statement = db.prepare(
+        "SELECT d.agent_id, d.route_json, a.data, p.profile,
+                EXISTS(SELECT 1 FROM agent_turns t WHERE t.agent_id=d.agent_id),
+                EXISTS(SELECT 1 FROM agent_receipts r WHERE r.agent_id=d.agent_id)
+         FROM executor_dispatches d JOIN agents a ON a.id=d.agent_id JOIN executor_slots s ON s.agent_id=d.agent_id
+              LEFT JOIN agent_runtime_profiles p ON p.agent_id=d.agent_id
+         WHERE d.route_json IS NOT NULL AND s.state='waiting' AND (?1 IS NULL OR d.agent_id=?1)")?;
+    let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+        r.get::<_, Option<String>>(3)?, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (agent, route, data, profile, turns, receipts) in rows {
+        let (Ok(route), Ok(data)) = (serde_json::from_str::<Value>(&route), serde_json::from_str::<Value>(&data)) else { continue };
+        if route["waiting"] == true || !route["released"].is_null() || !unstarted(&data, turns, receipts) {
+            continue;
+        }
+        // A profile this Core can't read is not judged: its start says why.
+        let Ok(profile) = profile.map(|p| serde_json::from_str::<RuntimeProfile>(&p)).transpose() else { continue };
+        out.push(QueuedRouted { agent, route, profile });
+    }
+    Ok(out)
+}
+
+/// Makes `agent`, routed by `route`, wait for a candidate again because what it was
+/// given has left, in one transaction and only while its slot still waits: its
+/// route says `waiting` and `left` (with the candidate and account it had), and its
+/// runtime profile is removed, so no start uses that account or key. Whether it did:
+/// a pass that took it to start first leaves it as it is.
+fn mark_left(db: &mut Connection, agent: &str, left: &Left, route: &Value) -> Result<bool> {
+    let mut route = route.clone();
+    let mut why = left.reason();
+    why["at"] = json!(Utc::now().to_rfc3339());
+    why["from"] = route["chosen"].clone();
+    if !route["account"].is_null() {
+        why["fromAccount"] = route["account"].clone();
+    }
+    route["waiting"] = json!(true);
+    route["left"] = why;
+    let tx = db.transaction()?;
+    let written = tx.execute(
+        "UPDATE executor_dispatches SET route_json=?2
+         WHERE agent_id=?1 AND EXISTS(SELECT 1 FROM executor_slots WHERE agent_id=?1 AND state='waiting')",
+        rusqlite::params![agent, route.to_string()])? > 0;
+    if written {
+        tx.execute("DELETE FROM agent_runtime_profiles WHERE agent_id=?1", [agent])?;
+    }
+    tx.commit()?;
+    Ok(written)
+}
+
 /// Why an executor waiting for a candidate starts without one: routing is off, or no
 /// candidate it could ever be given is left, so none could be chosen (#805 R1 P2). A
 /// candidate it can be given is what `evaluate` would not pass over for it whatever the
 /// readings: enabled; not `excluded` for it (a rebuild's); of a harness its machine runs
 /// (YN-66), and its own once something of it ran; not this Core host's only while it
-/// waits on another machine (#805 R2 P3); of a harness that keeps its permission level;
-/// and serving its tier (YN-70).
+/// waits on another machine (#805 R2 P3); with no machine condition that leaves its
+/// machine out (YN-139); of a harness that keeps its permission level; and serving its
+/// tier (YN-70).
 pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Option<Value> {
     let excluded = waiting.excluded();
     let possible = |c: &Value| {
@@ -238,6 +321,7 @@ pub(crate) fn release_reason(policy: &Value, waiting: &WaitingExecutor) -> Optio
         c["enabled"] == true && waiting.harness_only().is_none_or(|own| own == harness)
             && !excluded.iter().any(|e| c["id"] == e.as_str())
             && !(waiting.machine != "local" && host_only(c))
+            && machine_allows(c, Some(waiting.machine.as_str()))
             && !waiting.unavailable.contains(&harness)
             && crate::permission_levels::keeps(waiting.level(), harness)
             && serves(c, waiting.tier())
@@ -325,6 +409,26 @@ impl crate::store::Store {
         set_route(&*self.db.write()?, agent, route)
     }
 
+    /// What routing gave `agent` at its dispatch or start: None when it wasn't routed.
+    pub(crate) fn routing_route(&self, agent: &str) -> Result<Option<Value>> {
+        let raw: Option<Option<String>> = self.db.read()?
+            .query_row("SELECT route_json FROM executor_dispatches WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?;
+        Ok(raw.flatten().and_then(|r| serde_json::from_str(&r).ok()))
+    }
+
+    pub(crate) fn routing_left_queued(&self) -> Result<Vec<QueuedRouted>> {
+        left_queued(&*self.db.read()?, None)
+    }
+
+    /// `agent`, while it is routed, queued and not started.
+    pub(crate) fn routing_left_queued_one(&self, agent: &str) -> Result<Option<QueuedRouted>> {
+        Ok(left_queued(&*self.db.read()?, Some(agent))?.pop())
+    }
+
+    pub(crate) fn mark_routing_left(&self, agent: &str, left: &Left, route: &Value) -> Result<bool> {
+        mark_left(&mut *self.db.write()?, agent, left, route)
+    }
+
     pub(crate) fn routing_choices(&self, limit: usize) -> Result<Vec<Value>> {
         choices(&*self.db.read()?, limit)
     }
@@ -354,7 +458,12 @@ impl crate::workspace::Workspace {
     /// (`start_as`), and it joins the queue to start. Each under its gate: a
     /// start and another pass routing or releasing it wait for this one, which
     /// reads it again there.
+    ///
+    /// First, while routing is on, each executor routed but not started whose
+    /// candidate, account or key has left waits again (YN-138, `mark_left`), so
+    /// this pass routes it with the others.
     pub(crate) async fn route_waiting(self: &Arc<Self>) {
+        let gathered = self.route_left_queued().await;
         let listed = match self.stored(|store| store.routing_waiting()).await {
             Ok(listed) if !listed.is_empty() => listed,
             Ok(_) => return,
@@ -371,9 +480,12 @@ impl crate::workspace::Workspace {
             }
         };
         // Once for the pass. Without it one none can take is still released.
-        let gathered = self.routing_gathered().await.map_err(|error| {
-            eprintln!("Routing: its readings could not be gathered for the executors waiting for a candidate: {error:#}");
-        }).ok();
+        let gathered = match gathered {
+            Some(gathered) => Some(gathered),
+            None => self.routing_gathered().await.map_err(|error| {
+                eprintln!("Routing: its readings could not be gathered for the executors waiting for a candidate: {error:#}");
+            }).ok(),
+        };
         #[cfg(test)]
         self.route_meet("unlocked").await;
         for listed in listed {
@@ -383,6 +495,56 @@ impl crate::workspace::Workspace {
                 eprintln!("Routing: executor {} could not be routed: {error:#}", listed.agent);
             }
         }
+    }
+
+    /// Makes each executor routed but not started whose candidate, account or key
+    /// has left wait for a candidate again (YN-138), each under its gate, read
+    /// again there. Only while routing is on and its readings could be gathered:
+    /// what isn't known decides nothing. Answers the readings, when it gathered them.
+    async fn route_left_queued(self: &Arc<Self>) -> Option<Gathered> {
+        let read = self.stored(|store| Ok((store.routing_left_queued()?, store.routing_policy()?))).await;
+        let (queued, stored) = match read {
+            Ok((queued, stored)) if !queued.is_empty() && stored.policy["enabled"] == true => (queued, stored),
+            Ok(_) => return None,
+            Err(error) => {
+                eprintln!("Routing: the executors queued to start could not be read: {error:#}");
+                return None;
+            }
+        };
+        let gathered = match self.routing_gathered().await {
+            Ok(gathered) => gathered,
+            Err(error) => {
+                eprintln!("Routing: its readings could not be gathered, so no queued executor is routed again: {error:#}");
+                return None;
+            }
+        };
+        let keys: Vec<String> = gathered.keys.iter().map(|(id, _, _)| id.clone()).collect();
+        for queued in queued {
+            let gate = self.gate(&queued.agent).await;
+            let _held = gate.lock().await;
+            let id = queued.agent.clone();
+            let again = match self.stored(move |store| store.routing_left_queued_one(&id)).await {
+                Ok(Some(again)) => again,
+                Ok(None) => continue,
+                Err(error) => {
+                    eprintln!("Routing: executor {} could not be read again: {error:#}", queued.agent);
+                    continue;
+                }
+            };
+            let Some(why) = left(&stored.policy, &again.route, again.profile.as_ref(), &keys, &gathered.codex_homes, &gathered.cswap) else {
+                continue;
+            };
+            let (id, route, code) = (again.agent.clone(), again.route, why.code);
+            match self.stored(move |store| store.mark_routing_left(&id, &why, &route)).await {
+                Ok(true) => {
+                    eprintln!("Routing: executor {} is routed again before its start ({code})", again.agent);
+                    self.changed(&again.agent);
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("Routing: executor {} could not be routed again: {error:#}", again.agent),
+            }
+        }
+        Some(gathered)
     }
 
     /// One waiting executor's routing, under its gate.
@@ -405,6 +567,11 @@ impl crate::workspace::Workspace {
         let route = evaluate(stored.version, &stored.policy, "start", &inputs);
         let mut record = route.record;
         record["excluded"] = json!(excluded);
+        // What it was given before, when that left (YN-138): kept on each record
+        // after, so its start says what it was changed from.
+        if !waiting.route["left"].is_null() {
+            record["left"] = waiting.route["left"].clone();
+        }
         match route.chosen {
             Some(candidate) => self.start_as(&waiting, &candidate, route.profile, record).await,
             None => {
@@ -417,7 +584,7 @@ impl crate::workspace::Workspace {
 
     /// `waiting` given `candidate` at its start: its Agent record's harness, model
     /// and settings as a dispatch choosing that candidate makes them (YN-66), its
-    /// account or key, and an OpenCode executor's permission level, then its route,
+    /// account or key, and an OpenCode or dsh executor's permission level, then its route,
     /// last, which lets a slot pass start it. A candidate it can't be made as now
     /// (its model can't be checked, say) leaves it waiting, with why, for the next pass.
     async fn start_as(self: &Arc<Self>, waiting: &WaitingExecutor, candidate: &Value, profile: Option<RuntimeProfile>, mut record: Value) -> Result<()> {
@@ -434,7 +601,17 @@ impl crate::workspace::Workspace {
         };
         #[cfg(test)]
         self.route_meet("locked").await;
-        let mut changed = json!({"from": null, "reason": "It waited for a candidate, and this one holds now"});
+        // One whose candidate, account or key left (YN-138) was changed from that
+        // candidate, and why; one that waited from its dispatch from none.
+        let left = &waiting.route["left"];
+        let mut changed = if left.is_null() {
+            json!({"from": null, "reason": "It waited for a candidate, and this one holds now"})
+        } else {
+            json!({"from": left["from"], "reason": {"code": left["code"], "message": left["message"], "messageZh": left["messageZh"]}})
+        };
+        if !left["fromAccount"].is_null() {
+            changed["fromAccount"] = left["fromAccount"].clone();
+        }
         let mut event = json!({"candidate": candidate["id"], "model": born.model, "harness": born.harness});
         if born.harness != waiting.harness {
             changed["harnessFrom"] = json!(waiting.harness);
@@ -443,7 +620,7 @@ impl crate::workspace::Workspace {
         record["changedAtStart"] = changed;
         // As a dispatch's executor keeps it (collaboration_store/executor_dispatch.rs `Plan::then`).
         // Read-only on every harness: each start applies it (permission_levels.rs, YN-74 ④b).
-        let level = waiting.level().filter(|level| born.harness == "opencode" || *level == crate::permission_levels::READ_ONLY).map(str::to_owned);
+        let level = waiting.level().filter(|level| crate::permission_levels::kept_as_level(&born.harness, level)).map(str::to_owned);
         let crate::server::Born { harness, model, settings } = born;
         self.record_meta(&agent, "routing/chosen", event, move |m| {
             m.agent.harness = harness;

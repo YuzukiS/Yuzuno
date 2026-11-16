@@ -138,10 +138,10 @@ not a template's or a Project's.
 | --- | --- |
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Routing** (`routing`) | Unset: the template follows routing. Its executors get their harness, model, effort and account from the Workspace's [routing](executor-routing.md#routing-at-dispatch-s3b2). While routing is off, or none of its candidates keeps the template's permission level, they get the default harness and model for new Agents: the task's Project's, then the Workspace's, then Codex. Such a template names no harness, model or effort. `"fixed"`: its executors start with this template's own harness, model and machine on the host's login, whatever the [routing policy](executor-routing.md#the-policy-get-and-put-apiroutingpolicy-s3a) says. In Settings it is the template's **Runs with**: **Follows routing**, or the tool it is fixed to. Executor routing's **Templates** section sets it too: one switch per template. On, the template is routed by the rules. Off, it is fixed to a tool you choose beside the switch, which starts as the Workspace's default tool for new Agents. A tool that doesn't keep the template's permission level isn't saved: choose another tool, or change the level. |
-| **Harness** | A fixed template's only: Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
+| **Harness** | A fixed template's only: Codex, Claude Code, [DeepSeek Harness](dsh.md) (`dsh`), or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. A dsh executor's DeepSeek key comes from a routing candidate: a dispatch from a template fixed to dsh that routing gives none is refused (`dsh_needs_key`). |
 | **Permissions** (`permissionLevel`) | **Ask you first** (`ask`), **Auto-approve** (`auto`) or **Full access** (`full`): one permission for every harness, which Core maps to each harness's own. The page shows what the chosen level is on each tool, and which tools routing passes over for it. See [Permission levels](executor-routing.md#permission-levels-yn-56). Left unset, each harness's default for new Agents. A fixed template's level must be one its harness keeps: Claude Code doesn't keep Full access, and OpenCode keeps each, as rules of its own. A fixed Codex template may instead follow its machine's own Codex configuration (`permissionPreset: "config"`). A dispatch whose harness doesn't keep the level is refused (`level_not_kept`). Its executor's materials name the level. |
 | **Model**, **Reasoning effort** | A fixed template's only, shown once it runs with a tool, as for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. The template form's Model field takes it, as does `executor_templates_change`. |
-| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
+| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode and dsh offer this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
@@ -251,9 +251,9 @@ not a template's or a Project's.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
-  [Which machine](#dispatching-to-a-new-executor)). OpenCode executors run on
-  this Core host only, and a Codex executor can't run on a machine that
-  keeps its Agents contained.
+  [Which machine](#dispatching-to-a-new-executor)). OpenCode and dsh
+  executors run on this Core host only, and a Codex executor can't run on a
+  machine that keeps its Agents contained.
 - **Who changes them.** You, in Settings, and a lead of a Project, with
   `executor_templates_change` (YN-24). Your save replaces the whole list, and
   a save against a list changed meanwhile is refused, so the page reloads
@@ -407,8 +407,8 @@ and is chosen unless you pick a template. Core then:
 - **What a lead reads of the machines.** `machines_list` lists the machines a
   dispatch can name, for a lead choosing one. For each it gives the id, the
   name, the kind (`local`, this Core host, or `ssh`), the harnesses an
-  executor there can use (OpenCode on this Core host only, no Codex on a
-  machine that keeps its Agents contained), its executor slots (`limit`;
+  executor there can use (OpenCode and dsh on this Core host only, no Codex
+  on a machine that keeps its Agents contained), its executor slots (`limit`;
   `running`, those starting or running there; `waiting`, those queued for a
   slot there), `connected` (whether Core holds a live connection to an Agent
   there now; always true for this Core host, and false says only that none
@@ -473,8 +473,9 @@ Each machine has a number of executors that run on it at once: this Core
 host, and each registered machine. It is 3 unless you change it, a whole
 number from 1 to 64, in **Machines**: a registered machine's in its editor,
 this Core host's on its card (`PUT /api/machines/{id}/executor-slots`, `local`
-for this Core host; null for the default). There is no other limit: the
-Workspace runs at most the machines' numbers added up, and a Project or a
+for this Core host; null for the default). There is no other limit, apart
+from the one slot over it an urgent dispatch may take (below): the Workspace
+runs at most the machines' numbers added up, plus that, and a Project or a
 template has none of its own. Settings, under **Executor templates**, lists
 each machine's number and the total. Only you change them. Lowering a number
 under the executors running on that machine stops none of them: no more start
@@ -498,9 +499,23 @@ there until fewer hold a slot.
   their turn together. One whose machine is full is passed by the next that
   has room on its own machine, so a full machine holds back none bound for
   another.
+- **Urgent dispatches (YN-137).** A dispatch with `priority: "urgent"` queues
+  its executor first: urgent ones go before every other, the aged ones too,
+  and among themselves in the order they were dispatched. It may also start
+  while its machine holds fewer than its number + 1, so it never waits for a
+  normal executor to close; any other starts only under the number. A machine
+  therefore runs at most its number + 1, and the one over it is always
+  urgent. The 1 is fixed, not a setting: it is the least that lets an urgent
+  executor start at once (Settings reads it as `limits.urgentExtra`). Taking
+  an urgent one leaves the Projects' turns as they were. A reopened urgent
+  executor, and the one Core rebuilds for it, are urgent too; one already
+  queued can't be made urgent (release it and dispatch again). Jobs have no
+  urgent lane: an urgent executor's Jobs queue as any other's. Keep it for a
+  release and what a release waits on.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first) and
   the machine it waits for (`waitsFor`: `{machine, name, running, limit}`),
+  and `urgent: true` for an urgent dispatch's,
   starting (with `reason` when its start did not finish), or running. On a
   machine `auto` chose, the card's executor chip names it, with every
   candidate's numbers, or why it was left out, in its title: the lifecycle
@@ -769,7 +784,7 @@ first that holds names the state:
 | 2 | `archiving` | 归档中 · Archiving | It was released and waits for its work to end, or for its close to be confirmed. `reason` says what it waits for. |
 | 3 | `failed` | 失败 · Failed | Its start stopped short: it is held open with its slot and a reason (an uncertain start, or a reopened executor's start that failed), or it is closed while its task is blocked and the task's newest dispatch is still its own. |
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
-| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
+| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first, and `urgent` is true for an urgent dispatch's (shown as 排队中 · 加急 · Queued · urgent). |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
 | 7 | `delivering` | 已交 · Handed in | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
@@ -857,8 +872,12 @@ It never holds a key's value or an account's email.
     otherwise grey. At work on its task with no Turn running, it is grey
     with a pill, the first that holds: what it left running (在等 Job
     Awaits a Job, below; its line two then says only what it said and its
-    clock, not the wait again); its PR's (审查中 In review, 等负责人 Lead's turn and
-    the others below); 受阻 Blocked, its task blocked; 已交结果 Result in, a
+    clock, not the wait again); its PR's (审查中 In review, 要改 Changes asked,
+    CI 红了 CI failed, 等合并 Ready to merge, 已合入 Merged, and 在等 CI
+    Awaits CI while the checks on its head are pending or running; a PR it
+    hasn't handed in never says 等负责人 Lead's turn — that is the handed-in
+    executor's pill — so one with no review round yet is 等下一轮 Between
+    turns); 受阻 Blocked, its task blocked; 已交结果 Result in, a
     result in on its own dispatch (`resultAt`); else 等下一轮 Between turns.
   - A standing Agent's: working while a Turn runs (compacting too); needs
     you; ✕ for an error or a failed Turn not yet shown; ✓ for a Turn it
@@ -994,11 +1013,18 @@ executor starts on the host's own login, as before.
     and the host login is that same account;
   - any other listed account starts through `cswap run <slot> --require-session`;
   - an account no longer listed does not start.
-- **An executor is never moved to another account during its life.** A
-  refusal, an account that is gone, or a key that cannot be read fails that
-  start with its reason. The start is then a failed start like any other
-  (see [Executors at once](#executors-at-once)). Its session lives in that
-  account's profile, so another account could not resume it anyway.
+- **An executor keeps its account or key while it is there (YN-138).**
+  Before its first start, one whose candidate, account or key left the
+  routing policy is routed again ([Routing at dispatch](executor-routing.md#routing-at-dispatch-s3b2)).
+  Once started, only a Claude executor's claude-swap account changes, and
+  only when it left the executor's pool candidate: at its next start, or
+  once it is idle, it moves to another account of that pool and resumes its
+  session there, since claude-swap shares chat history between its accounts
+  ([claude-swap accounts](executor-routing.md#claude-swap-accounts)). A
+  Codex home or API key is never changed for a started executor. A refusal,
+  an account that is gone with no other in its pool, or a key that cannot be
+  read fails that start with its reason. The start is then a failed start
+  like any other (see [Executors at once](#executors-at-once)).
 - **On another machine** an executor with a profile does not start: keys and
   accounts stay on this Core host.
 - **It is not forked.** A fork is a new Agent, without the profile, so it
@@ -1007,7 +1033,8 @@ executor starts on the host's own login, as before.
 - **With an older Core**, the profile is not read: such an executor is
   reconnected on the host's own login. A Claude session started in a
   claude-swap profile is then not found. Close such executors before going
-  back to an older Core.
+  back to an older Core. A Core before YN-138 also never changes a started
+  executor's account.
 
 ## An executor's session
 

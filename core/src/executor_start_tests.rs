@@ -205,6 +205,36 @@ fn a_cut_off_start_is_definite_only_when_its_close_confirmed_the_runtime_ended()
         "unconfirmed: uncertain, never rebuilt, so no second executor works in its folder");
 }
 
+/// YN-137: an urgent dispatch's executor starts though its machine is at its
+/// limit, and the one Core rebuilds for it is urgent too (a rebuild is the
+/// same request), in the first one's place: it starts past the limit as
+/// well, fails as well, and the task is blocked as for any other.
+#[tokio::test]
+async fn an_urgent_dispatch_starts_past_the_limit_and_its_rebuild_is_urgent_too() {
+    let lab = Lab::new(missing).await;
+    lab.occupy_the_slot();
+    let task = lab.task("Release").await;
+    let input = json!({"requestId":"first","taskId":task,"expectedVersion":1,"priority":"urgent","executor":{"templateId":"reviewer"}});
+    let first = lab.ws.collaboration_call(Some("lead"), "task_dispatch", input).await.unwrap()["agentId"].as_str().unwrap().to_owned();
+    let urgent = |agent: &str| -> bool {
+        lab.ws.store.db.read().unwrap().query_row("SELECT urgent FROM executor_slots WHERE agent_id=?1", [agent], |r| r.get(0)).unwrap()
+    };
+    assert!(urgent(&first));
+    let seq = lab.slot(&first).2;
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    // Neither waits for the holder's slot: a normal rebuild would, and the task would never be blocked.
+    until("the task is blocked", || lab.task_view(&task)["task"]["status"] == "blocked").await;
+    let second: String = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT to_agent FROM executor_rebuilds WHERE from_agent=?1 AND state='done'", [&first], |r| r.get(0))
+        .optional().unwrap().expect("the first failure is rebuilt once");
+    let (_, _, kept_seq, rebuilt_from) = lab.slot(&second);
+    assert_eq!((kept_seq, rebuilt_from.as_deref(), urgent(&second)), (seq, Some(first.as_str()), true),
+        "the rebuilt one is urgent, in the first one's place");
+    assert_eq!(lab.slot("holder").0, "running", "the holder kept its slot throughout");
+}
+
 /// D3, E1, E2: a fresh dispatch's executor whose start fails is closed and
 /// kept, and rebuilt once, as a new dispatch D2 of the same request by the
 /// same lead, which keeps its place in the queue. When that one fails too,

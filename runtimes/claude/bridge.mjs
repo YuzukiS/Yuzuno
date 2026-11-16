@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { CredentialMask } from './credentials.mjs';
@@ -62,6 +63,49 @@ function readOnlyOption(value) {
     throw new Error('Invalid read-only configuration');
   }
   return { disallowedTools: [...value.disallowedTools], allowedTools: new Set(value.allowedTools) };
+}
+
+/**
+ * The folder `dir` names on this machine, resolved the way `remote_images.py`
+ * resolves an Agent's data root (YN-145 §2.5): a leading `~/` is this user's
+ * home, and the deepest existing ancestor is replaced by its real path, with
+ * the rest appended as given. Core names a remote Agent's
+ * `<root>/file-cache/<key>`, which need not exist before its first file does.
+ */
+export function resolvedDirectory(dir, home = homedir()) {
+  const expanded = dir.startsWith('~/') ? join(home, dir.slice(2)) : dir;
+  if (!isAbsolute(expanded) || expanded === '/' || expanded === home) throw new Error('Invalid readable directories');
+  const rest = [];
+  let current = expanded;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      if (!statSync(real).isDirectory()) throw new Error('Invalid readable directories');
+      return join(real, ...rest);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+      const parent = dirname(current);
+      if (parent === current) throw new Error('Invalid readable directories');
+      rest.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The folders a message's attached files are read from (YN-145 F3a, F4):
+ * absolute paths Core names, or one below the Agent's home on its machine,
+ * readable without a prompt and never writable. A relative path, a pattern or
+ * a `..` is refused: Core joins these as the Agent's rules.
+ */
+const MAX_READABLE_DIRS = 8;
+function readableDirsOption(value) {
+  if (value === undefined) return undefined;
+  const valid = Array.isArray(value) && value.length > 0 && value.length <= MAX_READABLE_DIRS
+    && value.every(dir => typeof dir === 'string' && (isAbsolute(dir) || dir.startsWith('~/'))
+      && dir.length <= 1000 && !dir.includes('\0') && !dir.includes('*') && !dir.split('/').includes('..'));
+  if (!valid) throw new Error('Invalid readable directories');
+  return value.map(dir => resolvedDirectory(dir));
 }
 // Reasoning effort levels the Agent SDK accepts (`Options.effort`,
 // `applyFlagSettings({ effortLevel })`); each model lists those it supports.
@@ -599,6 +643,10 @@ export class ClaudeBridge {
     if (readOnly && command.permissionMode !== undefined && command.permissionMode !== 'default') {
       throw new Error('A read-only runtime starts in default mode');
     }
+    const readable = readableDirsOption(command.readableDirs);
+    // Readable, never writable: one Edit deny a folder (Edit covers Claude's
+    // own Write, Edit and NotebookEdit; `//…` is an absolute path).
+    const editDenies = (readable ?? []).map(dir => `Edit(/${dir.replace(/\/+$/, '')}/**)`);
     if (command.sessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(command.sessionId)) throw new Error('Invalid native session UUID');
     const located = this.resolveCli(command.executable);
     // A test's resolver may give only the path.
@@ -660,7 +708,11 @@ export class ClaudeBridge {
       // Read-only (YN-74 ④b): its tools removed, the mode fixed at default,
       // and below a hook that lets only its own tools run and no request
       // that would ask the user.
-      ...(readOnly ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...readOnly.disallowedTools], permissionMode: 'default' } : {}),
+      ...(readOnly ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...readOnly.disallowedTools, ...editDenies], permissionMode: 'default' } : {}),
+      // Folders of attached files: readable without a prompt, and no tool
+      // that writes may touch them (a read-only level already removed them).
+      ...(readable ? { additionalDirectories: [...(this.internalOptions.additionalDirectories ?? []), ...readable] } : {}),
+      ...(!readOnly && editDenies.length ? { disallowedTools: [...(this.internalOptions.disallowedTools ?? []), ...editDenies] } : {}),
       hooks: {
         ...this.internalOptions.hooks,
         Stop: [...(this.internalOptions.hooks?.Stop ?? []), { hooks: [(input, toolUseId, context) => this.stopHook(input, context)] }],

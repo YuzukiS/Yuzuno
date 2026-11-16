@@ -208,12 +208,11 @@ impl Workspace {
     /// again with the same request, it goes on from where that attempt is,
     /// and never writes the copy twice.
     pub async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
+        let name = crate::model::agent_name(&request.name)?;
         let permit = self.admission.enter_work()?;
         self.refuse_profiled_fork(id).await?;
         ensure!(uuid::Uuid::parse_str(&request.request_id).is_ok(), "fork 请求编号无效");
         ensure!(!request.turn_id.is_empty() && request.turn_id.len() <= 200 && !request.turn_id.chars().any(char::is_control), "fork 的 Turn 无效");
-        let name = request.name.trim().to_owned();
-        ensure!(!name.is_empty() && name.len() <= 100, "请填写名称（最多 100 字节）");
         let (ws, id) = (self.clone(), id.to_owned());
         tokio::spawn(async move {
             let _permit = permit;
@@ -406,7 +405,7 @@ impl Workspace {
                 id: row.target_agent_id.clone(), name: row.name.clone(), goal: String::new(), work_summary: None, turn_wait: None, project_id: None, kind: None, released_at: None, released_by: None, executor: None,
                 cwd: frozen.cwd.clone(), model: source.model.clone(), settings: source.settings.clone(), color: source.color.clone(),
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(session.into()),
-                opencode_version: Some(version.into()), opencode_major: crate::opencode::major(version), thread_id: None,
+                opencode_version: Some(version.into()), opencode_major: crate::opencode::major(version), dsh_session_id: None, dsh_version: None, thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
                 created_at: at.clone(), updated_at: at, unread_count: 0, pending_count: 0, open_questions: 0, last_turn_end: None, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),

@@ -308,12 +308,15 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
     }
     if state == "queued" {
         if let Some(task) = &role.task {
-            let position = crate::executor_slots::views(db, &[task.as_str()])?
+            let slot = crate::executor_slots::views(db, &[task.as_str()])?
                 .remove(task.as_str())
-                .filter(|slot| slot["agentId"] == role.agent.as_str())
-                .map(|slot| slot["position"].clone());
-            if let Some(position) = position.filter(|p| !p.is_null()) {
+                .filter(|slot| slot["agentId"] == role.agent.as_str());
+            if let Some(position) = slot.as_ref().map(|slot| slot["position"].clone()).filter(|p| !p.is_null()) {
                 view["position"] = position;
+            }
+            // An urgent dispatch's (YN-137): first in the queue, one slot over the limit.
+            if slot.is_some_and(|slot| slot["urgent"] == true) {
+                view["urgent"] = json!(true);
             }
         }
     }

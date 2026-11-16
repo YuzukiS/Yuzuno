@@ -27,7 +27,7 @@ def assemble(args):
         raise ValueError('Core release tags must begin with core-')
     root = args.bundle.resolve(strict=True)
     manifest = json.loads((root / 'manifest.json').read_text())
-    if manifest['platform'] not in ('linux-x86_64', 'linux-aarch64'):
+    if manifest['platform'] not in ('linux-x86_64', 'linux-aarch64', 'macos-aarch64'):
         raise ValueError('Unsupported Core release platform')
     files = manifest['files']
     actual = {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}

@@ -95,7 +95,8 @@ class NewDirectoryFlowTests(unittest.TestCase):
         (self.base / 'publisher.pub').write_text('unit test placeholder, never signed')
         (self.base / 'notes.txt').write_text('Reviewed changes')
         self.args = dict(repository='owner/repo', sha='a' * 40, release_id='core-test', version='test.1',
-            review='Accepted PR review reference', ci_run=42, artifact_id=7, baseline=baseline,
+            review='Accepted PR review reference', ci_run=42, inputs_run=51,
+            artifact_id=['linux-x86_64=7', 'macos-aarch64=8'], baseline=baseline,
             public_key=self.base / 'publisher.pub', notes=self.base / 'notes.txt')
 
     def flow(self, name, **extra):
@@ -108,7 +109,9 @@ class NewDirectoryFlowTests(unittest.TestCase):
         def execute(command):
             argv.extend(map(str, command))
             write(flow.root / 'smoke.json', receipt)
-        with patch.object(flow, 'signed'), patch.object(flow, 'execute', side_effect=execute):
+        with patch.object(flow, 'signed'), \
+             patch.object(flow, 'macos_smoke', side_effect=lambda platform: {'platform': platform, 'binaries': {}, 'ciSmoke': {}}), \
+             patch.object(flow, 'execute', side_effect=execute):
             try:
                 flow.run('smoke', flow.smoke)
             finally:

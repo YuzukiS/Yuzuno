@@ -1,36 +1,60 @@
-"""Tests for the desktop's read-only WSL check (desktop/src/local_core/check.sh,
-YN-107 design 4.3), run under a fake HOME and a PATH of stand-ins.
+"""Tests for the desktop's scripts for WSL (YN-107), run under a fake HOME:
 
-Each case runs the script as the desktop does (`sh -s -- <install> <data>`,
-the script on stdin), under every POSIX shell found here (dash and bash: a
-distribution's /bin/sh is either), and checks what it printed and that
-nothing changed in HOME, TMPDIR or the working folder.
+- the read-only check (desktop/src/local_core/check.sh, design 4.3), under a
+  PATH of stand-ins: what it printed, and that nothing changed in HOME,
+  TMPDIR or the working folder;
+- the temporary folder of an installation (desktop/src/local_core/stage.sh,
+  design 4.5): what it makes, that it removes only a folder named as it
+  names one, holding its marker and belonging to this account, and an
+  unpack from stdin into it as the desktop runs one;
+- the built-in Core release key (desktop/core-release.pub): the key the
+  documentation publishes.
+
+Each script runs as the desktop runs it (`sh -s -- …`, the script on stdin),
+under every POSIX shell found here (dash and bash: a distribution's /bin/sh
+is either).
 
 Standard library only; no network. Run: python3 desktop/tests/local_core_scripts.py
 """
 
 import base64
+import io
 import os
+import re
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "..", "src", "local_core", "check.sh")
+DESKTOP = os.path.join(HERE, "..")
+SCRIPT = os.path.join(DESKTOP, "src", "local_core", "check.sh")
 with open(SCRIPT, "rb") as _script:
     SCRIPT_BYTES = _script.read()
+STAGE = os.path.join(DESKTOP, "src", "local_core", "stage.sh")
+with open(STAGE, "rb") as _script:
+    STAGE_BYTES = _script.read()
+GUARD = os.path.join(DESKTOP, "src", "local_core", "guard.sh")
+with open(GUARD, "rb") as _script:
+    GUARD_BYTES = _script.read()
+MAC_CHECK = os.path.join(DESKTOP, "src", "local_core", "mac_check.sh")
+with open(MAC_CHECK, "rb") as _script:
+    MAC_CHECK_BYTES = _script.read()
+FIXTURES = os.path.join(HERE, "fixtures", "release")
 
 # Every key the script prints; check_rules.rs reads them.
 KEYS = [
     "format", "user", "uid", "home", "shell", "arch", "glibc", "tools.missing",
     "env.source", "env.note", "root", "root.state", "data", "data.state",
     "tool.node", "tool.git", "tool.gh", "tool.claude", "tool.codex",
-    "tool.python3", "gh.auth", "systemd", "cgroup",
+    "tool.python3", "gh.auth", "init", "systemd", "cgroup",
 ]
 INSTALLED_KEYS = ["root.current", "root.launch", "root.entry"]
+# DeepSeek Harness (YN-119 S4b), printed last.
+KEYS += ["tool.dsh"]
 
 # Real programs the stand-in PATH links to: what the script and the
 # installation use.
@@ -173,6 +197,7 @@ class CheckScript(unittest.TestCase):
                 self.assertEqual(printed["tool.gh"], "gh version 2.45.0")
                 self.assertEqual(printed["tool.claude"], "-")
                 self.assertEqual(printed["tool.codex"], "-")
+                self.assertEqual(printed["tool.dsh"], "-")
                 python = "/usr/bin/python3"
                 self.assertEqual(printed["tool.python3"].startswith("Python 3"), os.access(python, os.X_OK))
                 self.assertEqual(printed["gh.auth"], "ok")
@@ -320,6 +345,369 @@ class CheckScript(unittest.TestCase):
         for sh, printed, _ in self.each_shell("default", "default"):
             with self.subTest(sh=sh):
                 self.assertEqual((printed["env.source"], printed["env.note"]), ("inherited", "failed"))
+
+
+STAGE_NAME = re.compile(r"^\.yuzuno-core-install\.[A-Za-z0-9]{8}$")
+MARKER = ".yuzuno-desktop-stage"
+
+
+class StageScript(unittest.TestCase):
+    """stage.sh, as the desktop runs it: `sh -s -- prepare <installDir>` and
+    `sh -s -- clean <stage>`, the script on stdin, with the system's tools."""
+
+    def setUp(self):
+        self.assertTrue(SHELLS, "no dash or bash here")
+        self.base = tempfile.mkdtemp(prefix="yn107-stage-")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.home = os.path.join(self.base, "home", "someone")
+        self.share = os.path.join(self.home, ".local", "share")
+        self.root = os.path.join(self.share, "yuzuno-core")
+        os.makedirs(self.home)
+
+    def run_stage(self, interpreter, *arguments):
+        done = subprocess.run(
+            [interpreter, "-s", "--", *arguments],
+            input=STAGE_BYTES,
+            capture_output=True,
+            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "TMPDIR": self.base},
+            cwd=self.home,
+            timeout=60,
+        )
+        printed = dict(line.partition("=")[::2] for line in done.stdout.decode().splitlines())
+        return done.returncode, printed
+
+    def prepare(self, interpreter):
+        code, printed = self.run_stage(interpreter, "prepare", self.root)
+        self.assertEqual(code, 0, printed)
+        return printed["stage"], printed
+
+    def fake_stage(self, name, marker=True, age=0):
+        """A folder as stage.sh makes one (or not quite), `age` seconds old."""
+        path = os.path.join(self.share, name)
+        os.makedirs(os.path.join(path, "bundle", "bin"))
+        with open(os.path.join(path, "bundle", "bin", "file"), "w") as handle:
+            handle.write("x")
+        if marker:
+            open(os.path.join(path, MARKER), "w").close()
+        if age:
+            past = time.time() - age
+            os.utime(path, (past, past))
+        return path
+
+    def test_prepare_makes_a_private_folder_beside_the_install_folder(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                stage, printed = self.prepare(interpreter)
+                self.assertEqual(os.path.dirname(stage), self.share)
+                self.assertRegex(os.path.basename(stage), STAGE_NAME)
+                self.assertEqual(printed["swept"], "0")
+                self.assertEqual(sorted(os.listdir(stage)), sorted(["bundle", MARKER]))
+                self.assertEqual(os.listdir(os.path.join(stage, "bundle")), [])
+                self.assertEqual(stat.S_IMODE(os.lstat(stage).st_mode), 0o700)
+                # The missing parents were made, private (XDG's 0700).
+                self.assertEqual(stat.S_IMODE(os.lstat(self.share).st_mode), 0o700)
+                # Nothing at the install folder itself: install makes it.
+                self.assertFalse(os.path.exists(self.root))
+                code, printed = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual((code, printed), (0, {"removed": stage}))
+                self.assertFalse(os.path.exists(stage))
+
+    def test_an_unpack_from_stdin_as_the_desktop_runs_it(self):
+        # A small release-shaped archive, as the release tool packs one.
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.USTAR_FORMAT) as tar:
+            for name, data, mode in (
+                ("bin/yuzuno-update-helper", b"#!/bin/sh\nexit 1\n", 0o755),
+                ("manifest.json", b"{}\n", 0o600),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(data), mode
+                tar.addfile(info, io.BytesIO(data))
+        archive = buffer.getvalue()
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                stage, _ = self.prepare(interpreter)
+                # The arguments after `wsl.exe … --exec` (local_core/mod.rs, Steps::unpack).
+                done = subprocess.run(
+                    ["/usr/bin/env", "tar", "-xzf", "-", "-C", f"{stage}/bundle"],
+                    input=archive,
+                    capture_output=True,
+                    env={"HOME": self.home, "PATH": "/usr/bin:/bin"},
+                    cwd=self.home,
+                    timeout=60,
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                bundle = os.path.join(stage, "bundle")
+                self.assertEqual(sorted(os.listdir(bundle)), ["bin", "manifest.json"])
+                self.assertTrue(os.access(os.path.join(bundle, "bin", "yuzuno-update-helper"), os.X_OK))
+                code, _ = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual(code, 0)
+                self.assertFalse(os.path.exists(stage))
+
+    def test_clean_removes_nothing_but_a_marked_folder_of_its_own_name(self):
+        os.makedirs(self.share)
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                kept = [
+                    self.fake_stage("other.Ab3dEf9h"),
+                    self.fake_stage(".yuzuno-core-install.Ab3dEf9"),
+                    self.fake_stage(".yuzuno-core-install.Ab3d-f9h"),
+                    self.fake_stage(".yuzuno-core-install.NoMarker", marker=False),
+                ]
+                linked = self.fake_stage(".yuzuno-core-install.LinkedTo")
+                os.symlink(linked, os.path.join(self.share, ".yuzuno-core-install.ALinkHer"))
+                marker_link = self.fake_stage(".yuzuno-core-install.MarkLink", marker=False)
+                os.symlink(os.path.join(linked, MARKER), os.path.join(marker_link, MARKER))
+                for path in kept + [
+                    os.path.join(self.share, ".yuzuno-core-install.ALinkHer"),
+                    marker_link,
+                    os.path.join(self.share, "x", "..", ".yuzuno-core-install.LinkedTo"),
+                    os.path.join(self.share, ".", ".yuzuno-core-install.LinkedTo"),
+                    "relative/.yuzuno-core-install.LinkedTo",
+                    "/.yuzuno-core-install.LinkedTo",
+                ]:
+                    code, printed = self.run_stage(interpreter, "clean", path)
+                    self.assertEqual(code, 1, path)
+                    self.assertIn("nothing was removed", printed["error"])
+                for path in kept + [linked, marker_link]:
+                    self.assertTrue(os.path.isdir(path), path)
+                self.assertTrue(os.path.exists(os.path.join(linked, "bundle", "bin", "file")))
+                shutil.rmtree(self.share)
+                os.makedirs(self.share)
+
+    def test_clean_leaves_another_accounts_folder(self):
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode != 0:
+            self.skipTest("needs sudo without a password to give a folder to another account")
+        os.makedirs(self.share)
+        stage = self.fake_stage(".yuzuno-core-install.NotMine1")
+        subprocess.run(["sudo", "-n", "chown", "0:0", stage], check=True)
+        self.addCleanup(subprocess.run, ["sudo", "-n", "rm", "-rf", "--", stage])
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                code, printed = self.run_stage(interpreter, "clean", stage)
+                self.assertEqual(code, 1, printed)
+                self.assertTrue(os.path.isdir(stage))
+
+    def test_prepare_sweeps_only_old_marked_folders_of_its_own_name(self):
+        os.makedirs(self.share)
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                old = self.fake_stage(".yuzuno-core-install.OldOne01", age=61 * 60)
+                young = self.fake_stage(".yuzuno-core-install.Young001", age=50 * 60)
+                unmarked = self.fake_stage(".yuzuno-core-install.OldOne02", marker=False, age=61 * 60)
+                named = self.fake_stage("yuzuno-core-install.OldOne03", age=61 * 60)
+                target = self.fake_stage("elsewhere", age=61 * 60)
+                link = os.path.join(self.share, ".yuzuno-core-install.OldLink1")
+                os.symlink(target, link)
+                past = time.time() - 61 * 60
+                os.utime(link, (past, past), follow_symlinks=False)
+                stage, printed = self.prepare(interpreter)
+                self.assertEqual(printed["swept"], "1")
+                self.assertFalse(os.path.exists(old))
+                for path in (young, unmarked, named, target, stage):
+                    self.assertTrue(os.path.isdir(path), path)
+                self.assertTrue(os.path.islink(link))
+                self.assertTrue(os.path.exists(os.path.join(target, MARKER)))
+                shutil.rmtree(self.share)
+                os.makedirs(self.share)
+
+    def test_prepare_refuses_a_folder_it_cannot_put_one_beside(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                for root in ("/yuzuno-core", "relative/core", f"{self.home}/../core", f"{self.home}//core", f"{self.home}/core/"):
+                    code, printed = self.run_stage(interpreter, "prepare", root)
+                    self.assertEqual(code, 1, root)
+                    self.assertIn("error", printed)
+                code, printed = self.run_stage(interpreter, "remove", self.root)
+                self.assertEqual((code, printed["error"]), (1, "Unknown step: remove"))
+                self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+
+
+class GuardScript(unittest.TestCase):
+    """guard.sh, as the desktop runs it: `sh -s`, the script on stdin, in a
+    distribution that is already running. A fake root supplies its /proc and
+    /sys (the script's YUZUNO_GUARD_ROOT, which wsl.exe never passes) and
+    nothing may change under it."""
+
+    def setUp(self):
+        self.assertTrue(SHELLS, "no dash or bash here")
+        self.base = tempfile.mkdtemp(prefix="yn156-guard-")
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.root = os.path.join(self.base, "root")
+        self.binfmt = os.path.join(self.root, "proc", "sys", "fs", "binfmt_misc")
+        self.cgroup = os.path.join(self.root, "sys", "fs", "cgroup")
+        self.user = os.path.join(self.cgroup, "user.slice", "user-1000.slice", "user@1000.service")
+        self.make()
+
+    def make(self):
+        write(os.path.join(self.binfmt, "status"), "enabled\n")
+        self.entry("WSLInterop", "enabled", "4d5a", "/init", "P")
+        self.entry("OtherInterop", "enabled", "4d5a", "/init", "")
+        self.entry("Elsewhere", "enabled", "7f454c46", "/usr/bin/wine")
+        write(os.path.join(self.cgroup, "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.cgroup, "user.slice", "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.cgroup, "system.slice", "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.user, "cgroup.subtree_control"), "+cpu +memory +pids\n")
+        write(os.path.join(self.user, "app.slice", "cgroup.subtree_control"), "+cpu\n")
+
+    def entry(self, name, state, magic, interpreter, flags=""):
+        lines = [state, f"interpreter {interpreter}", "offset 0", f"magic {magic}"]
+        if flags:
+            lines.append(f"flags: {flags}")
+        write(os.path.join(self.binfmt, name), "\n".join(lines) + "\n")
+
+    def run_guard(self, interpreter, root=True):
+        env = {"PATH": "/usr/bin:/bin", "TMPDIR": self.base}
+        if root:
+            env["YUZUNO_GUARD_ROOT"] = self.root if root is True else root
+        before = snapshot(self.base)
+        done = subprocess.run(
+            [interpreter, "-s"],
+            input=GUARD_BYTES,
+            capture_output=True,
+            env=env,
+            cwd=self.base,
+            timeout=30,
+        )
+        self.assertEqual(snapshot(self.base), before, "the guard changed files")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        printed = []
+        for line in done.stdout.decode().splitlines():
+            key, _, value = line.partition("=")
+            printed.append((key, value))
+        return printed
+
+    def values(self, printed, key):
+        return [value for printed_key, value in printed if printed_key == key]
+
+    def test_what_the_witness_sees(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertEqual(self.values(printed, "format"), ["1"])
+                self.assertEqual(self.values(printed, "binfmt.status"), ["enabled"])
+                self.assertEqual(
+                    sorted(self.values(printed, "interop")),
+                    ["OtherInterop enabled -", "WSLInterop enabled P"],
+                )
+                self.assertEqual(self.values(printed, "binfmt.other"), ["1"])
+                self.assertEqual(self.values(printed, "cgroup.root"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "cgroup.user-slice"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "cgroup.system-slice"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "user.1000.control"), ["+cpu +memory +pids"])
+                self.assertEqual(self.values(printed, "user.1000.app"), ["+cpu"])
+                # Keys are printed once each, in the order the app reads.
+                keys = [key for key, _ in printed]
+                self.assertEqual(keys.count("interop"), 2)
+                self.assertEqual(len(keys), len(set(keys)) + 1)
+
+    def test_a_fake_root_without_anything(self):
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter, root=os.path.join(self.base, "missing"))
+                self.assertEqual(self.values(printed, "binfmt.status"), ["absent"])
+                self.assertEqual(self.values(printed, "binfmt.other"), ["0"])
+                self.assertEqual(self.values(printed, "interop"), [])
+                self.assertEqual(self.values(printed, "cgroup.root"), ["(absent)"])
+
+    def test_a_disabled_table_and_entries_that_are_not_interop(self):
+        write(os.path.join(self.binfmt, "status"), "disabled\n")
+        self.entry("WSLInterop", "disabled", "4d5a", "/init", "P")
+        self.entry("NoFlags", "enabled", "4d5a", "/init", "")
+        self.entry("OtherInit", "enabled", "4d5a", "/bin/not-init", "P")
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertEqual(self.values(printed, "binfmt.status"), ["disabled"])
+                self.assertEqual(
+                    sorted(self.values(printed, "interop")),
+                    ["NoFlags enabled -", "OtherInterop enabled -", "WSLInterop disabled P"],
+                )
+                # Elsewhere, OtherInit: not an interop rule.
+                self.assertEqual(self.values(printed, "binfmt.other"), ["2"])
+
+    def test_a_manager_directory_that_is_not_a_number_is_left_out(self):
+        odd = os.path.join(self.cgroup, "user.slice", "user-nobody.slice", "user@nobody.service")
+        write(os.path.join(odd, "cgroup.subtree_control"), "+cpu\n")
+        for interpreter in SHELLS:
+            with self.subTest(sh=os.path.basename(interpreter)):
+                printed = self.run_guard(interpreter)
+                self.assertNotIn("user.nobody.control", [key for key, _ in printed])
+                self.assertEqual(self.values(printed, "user.1000.control"), ["+cpu +memory +pids"])
+
+
+class MacCheckScript(unittest.TestCase):
+    """The Mac's tools script (YN-108 design 4.2): the app runs it with
+    /bin/sh and the PATH it read from the login shell, and it prints only
+    versions and the gh sign-in's exit code. It writes nothing."""
+
+    def run_script(self, path, extra_env=None):
+        with tempfile.TemporaryDirectory() as base:
+            bin = os.path.join(base, "bin")
+            os.makedirs(bin)
+            for name in ("head",):
+                os.symlink(shutil.which(name), os.path.join(bin, name))
+            for name, body in [
+                ("node", 'echo v22.11.0\necho a second line'),
+                ("git", "echo 'git version 2.43.0'"),
+                ("gh", 'case "$1" in auth) exit 1 ;; --version) echo "gh version 2.45.0" ;; esac'),
+                ("claude", "echo '2.1.3 (Claude Code)'"),
+                ("codex", "echo 'codex-cli 0.80.0'"),
+            ]:
+                write(os.path.join(bin, name), "#!/bin/sh\n" + body + "\n", 0o755)
+            env = {"PATH": f"{bin}:{os.environ.get('PATH', '')}", "HOME": base}
+            env.update(extra_env or {})
+            before = snapshot(bin)
+            done = subprocess.run(["/bin/sh", MAC_CHECK], capture_output=True, env=env, cwd=base, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(before, snapshot(bin), "the script changed a program")
+            printed = {}
+            for line in done.stdout.decode().splitlines():
+                key, _, value = line.partition("=")
+                self.assertNotIn(key, printed, f"{key} printed twice")
+                printed[key] = value
+            return printed
+
+    def test_versions_are_the_programs_own_first_lines(self):
+        printed = self.run_script(MAC_CHECK)
+        self.assertEqual(printed["format"], "1")
+        self.assertEqual(printed["tool.node"], "v22.11.0")
+        self.assertEqual(printed["tool.git"], "git version 2.43.0")
+        self.assertEqual(printed["tool.gh"], "gh version 2.45.0")
+        self.assertEqual(printed["gh.auth"], "1")
+        self.assertEqual(printed["tool.claude"], "2.1.3 (Claude Code)")
+        self.assertEqual(printed["tool.codex"], "codex-cli 0.80.0")
+        self.assertEqual(printed["done"], "1")
+
+    def test_missing_programs_are_a_dash(self):
+        with tempfile.TemporaryDirectory() as base:
+            done = subprocess.run(
+                ["/bin/sh", MAC_CHECK],
+                capture_output=True,
+                env={"PATH": base, "HOME": base},
+                cwd=base,
+                timeout=60,
+            )
+            printed = dict(line.split("=", 1) for line in done.stdout.decode().splitlines())
+            for key in ("tool.node", "tool.git", "tool.gh", "tool.claude", "tool.codex"):
+                self.assertEqual(printed[key], "-", key)
+            self.assertEqual(printed["gh.auth"], "-")
+
+    def test_the_missing_command_line_tools_keep_git_from_being_run(self):
+        printed = self.run_script(MAC_CHECK, {"YUZUNO_CHECK_GIT": "0"})
+        self.assertEqual(printed["tool.git"], "?", "not run, because /usr/bin/git is Xcode's installer shim")
+
+
+class ReleaseKey(unittest.TestCase):
+    def test_the_built_in_key_is_the_published_one(self):
+        with open(os.path.join(DESKTOP, "core-release.pub")) as handle:
+            built_in = handle.read()
+        with open(os.path.join(DESKTOP, "..", "docs", "independent-core.md")) as handle:
+            published = re.findall(r"^\s*KEY=(RW[A-Za-z0-9+/=]+)$", handle.read(), re.M)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(built_in, published[0] + "\n")
+        with open(os.path.join(FIXTURES, "test-key.pub")) as handle:
+            self.assertNotEqual(handle.read().strip(), published[0], "the tests' throwaway key is not the publisher's")
 
 
 if __name__ == "__main__":

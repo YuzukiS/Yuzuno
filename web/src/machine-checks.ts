@@ -1,4 +1,5 @@
 import { post } from "./api";
+import { DSH_NAME } from "./dsh";
 import { strings, type Language } from "./i18n";
 
 /** Whether a Harness CLI answered `--version`, and for Claude Code what its
@@ -101,14 +102,17 @@ export const harnessName = (harness: string) =>
       ? "Codex"
       : harness === "opencode"
         ? "OpenCode"
-        : harness;
+        : harness === "dsh"
+          ? DSH_NAME
+          : harness;
 
 /** The harness an Agent runs; Agents from before harnesses were named ran Codex. */
 export const agentHarnessName = (agent: { harness?: string }) => harnessName(agent.harness || "codex");
 
 /** The native session an Agent continues, once its harness has one. */
-export const nativeSession = (agent: { harness?: string; claudeSessionId?: string; opencodeSessionId?: string; threadId?: string }) =>
-  agent.harness === "claude" ? agent.claudeSessionId : agent.harness === "opencode" ? agent.opencodeSessionId : agent.threadId;
+export const nativeSession = (agent: { harness?: string; claudeSessionId?: string; opencodeSessionId?: string; dshSessionId?: string; threadId?: string }) =>
+  agent.harness === "claude" ? agent.claudeSessionId : agent.harness === "opencode" ? agent.opencodeSessionId
+    : agent.harness === "dsh" ? agent.dshSessionId : agent.threadId;
 
 export function harnessLabel(check: HarnessCheck, language: Language = "en") {
   const t = harnessWords(language);

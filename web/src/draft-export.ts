@@ -98,7 +98,7 @@ export function listDrafts(
 }
 
 /** The whole saved draft of one Agent: its text and pasted texts in order;
- * images and skills are named by count and name only. */
+ * images, files and skills are named by count and name only. */
 export function draftExportText(draft: ComposerDraft, agentName: string, at = new Date(), attributed: boolean): string {
   const lines = [
     `Yuzuno draft for ${agentName}`,
@@ -109,6 +109,8 @@ export function draftExportText(draft: ComposerDraft, agentName: string, at = ne
   ];
   if (draft.images?.length)
     lines.push(`Images in the draft: ${draft.images.length} (references only; the images themselves are not in this file)`);
+  if (draft.files?.length)
+    lines.push(`Files in the draft: ${draft.files.length} (references only; the files themselves are not in this file)`);
   if (draft.skills?.length) lines.push(`Skills chosen: ${draft.skills.map((skill) => skill.name).join(", ")}`);
   const body = draft.parts
     .map((part) =>
@@ -148,6 +150,7 @@ export type ExportedDraft = {
   savedBy: "thisVersion" | "earlierVersion";
   parts: ({ kind: "text"; text: string } | { kind: "paste"; number: number; lines: number; text: string })[];
   images: number;
+  files: number;
   skills: string[];
 };
 export const DRAFTS_FORMAT = "yuzuno-drafts";
@@ -184,6 +187,7 @@ export function exportDrafts(
           part.kind === "text" ? { kind: "text", text: part.text } : { kind: "paste", number: part.number, lines: part.lines, text: part.text },
         ),
         images: draft.images?.length ?? 0,
+        files: draft.files?.length ?? 0,
         skills: (draft.skills ?? []).map((skill) => skill.name),
       });
     } catch (error) {

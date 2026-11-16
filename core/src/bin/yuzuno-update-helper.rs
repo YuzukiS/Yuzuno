@@ -96,9 +96,10 @@ enum Command {
         #[arg(long)]
         no_remote: bool,
     },
-    /// Stop this installation's Core on its port, as an interrupt does,
-    /// only when it is the one process of this installation and holds the
-    /// port. Prints one JSON result. Never kills.
+    /// Stop this installation's Core on its port (SIGINT on Linux, SIGTERM
+    /// on macOS), only when it is the one process of this installation and
+    /// was started with that port (and, on Linux, holds it). Prints one JSON
+    /// result. Never kills.
     Stop {
         #[arg(long)]
         install_dir: PathBuf,

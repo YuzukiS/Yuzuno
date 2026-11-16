@@ -1,0 +1,41 @@
+/* Settings → Home → Refreshes (YN-113 R4): a card's name opens it, and the
+   rows keep the settings list's own rhythm. */
+.brief-refresh-row .settings-row-main {
+  gap: 5px;
+}
+.settings-section-heading .brief-refresh-total {
+  color: var(--ink);
+  font-weight: 550;
+}
+.brief-refresh-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.brief-refresh-open:hover {
+  text-decoration: underline;
+}
+.brief-refresh-open:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.brief-refresh-settings .settings-row-action .spin {
+  color: var(--text-quiet);
+}
+/* A phone: the switch stays on its own line, and the row's words take the width. */
+@media (max-width: 560px) {
+  .brief-refresh-row {
+    flex-wrap: wrap;
+  }
+  .brief-refresh-row .settings-row-action {
+    justify-content: flex-start;
+    padding-left: 0;
+  }
+}

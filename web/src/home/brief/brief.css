@@ -470,9 +470,6 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.home-view[data-density="low"] .brief-body .result-table-scroll td {
-  padding-block: 6px;
-}
 @media (prefers-reduced-motion: reduce) {
   .brief-body .result-table-scroll th[aria-sort="none"] button svg {
     transition: none;
@@ -1213,9 +1210,10 @@ p.brief-preview-frame {
   }
 }
 
-/* Density (T-9): the same blocks, chosen per device on Home. Low shows a
- * card's main point (the Home board design); high every field and row in a
- * compact layout, at the same text size and touch targets. */
+/* Density (T-9; density.ts): the same blocks in two forms. Low, on a Home
+ * card's front, shows a card's main point (the Home board design); high,
+ * everywhere else, every field and row in a compact layout, at the same
+ * text size and touch targets. */
 
 /* Plans: a step's marker, its name and what more it says, its state. */
 .brief-plan ol {

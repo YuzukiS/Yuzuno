@@ -3,10 +3,8 @@ use super::{
     api, catalog,
     controller::{Blocker, Controller, Runtime},
     package,
-    state::{Launch, Layout, ReleaseRef, SessionRef},
+    state::{Launch, Layout, Phase, ReleaseRef, SessionRef},
 };
-#[cfg(target_os = "linux")]
-use super::state::Phase;
 use anyhow::Result;
 use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
@@ -25,8 +23,22 @@ struct FakeRuntime {
     restore_failed: AtomicBool,
     restored: AtomicUsize,
     flush_failed: AtomicBool,
+    /// Its Workspace's admission, for the late writer below.
+    admission: std::sync::OnceLock<Arc<Admission>>,
+    /// The flush (counted from 1) after which a late event-lane writer
+    /// enters and ends on its own 200 ms later (YN-169); 0 for none.
+    writer_on_flush: AtomicUsize,
+    /// Native work shows up while detaching (YN-169).
+    busy_after_detach: AtomicBool,
+    /// One connected native session to detach and restore.
+    session: AtomicBool,
+    restored_ids: std::sync::Mutex<Vec<String>>,
+    ended: AtomicUsize,
 }
 impl Runtime for FakeRuntime {
+    fn update_ended(&self) {
+        self.ended.fetch_add(1, Ordering::SeqCst);
+    }
     fn workspace_id(&self) -> Result<String> {
         Ok("same-workspace".into())
     }
@@ -42,14 +54,29 @@ impl Runtime for FakeRuntime {
         })
     }
     fn sessions(&self) -> Result<Vec<SessionRef>> {
-        Ok(vec![])
+        Ok(if self.session.load(Ordering::SeqCst) {
+            vec![SessionRef {
+                agent_id: "agent".into(),
+                harness: "codex".into(),
+                native_id: "thread-1".into(),
+            }]
+        } else {
+            vec![]
+        })
     }
     fn health(&self) -> Result<Value> {
         Ok(json!({"storageReady":true,"apiReady":true,"schema":2,"recordsReady":true}))
     }
     fn flush(&self) -> BoxFuture<'_, Result<()>> {
         async {
-            self.flushed.fetch_add(1, Ordering::SeqCst);
+            let flush = self.flushed.fetch_add(1, Ordering::SeqCst) + 1;
+            if flush == self.writer_on_flush.load(Ordering::SeqCst) {
+                let writer = self.admission.get().unwrap().enter_event();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    drop(writer);
+                });
+            }
             anyhow::ensure!(
                 !self.flush_failed.load(Ordering::SeqCst),
                 "injected pending record write failure"
@@ -67,6 +94,9 @@ impl Runtime for FakeRuntime {
                 !self.detach_failed.load(Ordering::SeqCst),
                 "transport stopped but consumer did not acknowledge"
             );
+            if self.busy_after_detach.load(Ordering::SeqCst) {
+                self.busy.store(true, Ordering::SeqCst);
+            }
             Ok(())
         }
         .boxed()
@@ -74,6 +104,10 @@ impl Runtime for FakeRuntime {
     fn restore<'a>(&'a self, sessions: &'a [SessionRef]) -> BoxFuture<'a, Result<usize>> {
         async move {
             self.restored.fetch_add(1, Ordering::SeqCst);
+            self.restored_ids
+                .lock()
+                .unwrap()
+                .extend(sessions.iter().map(|s| s.native_id.clone()));
             anyhow::ensure!(
                 !self.restore_failed.load(Ordering::SeqCst),
                 "one session is unavailable"
@@ -84,7 +118,6 @@ impl Runtime for FakeRuntime {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelled_helpers_yield_to_a_new_operation_with_a_bounded_wait() {
     let f = fixture();
@@ -106,7 +139,6 @@ async fn cancelled_helpers_yield_to_a_new_operation_with_a_bounded_wait() {
     drop(acquired);
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn failed_final_flush_never_accepts_stop_or_changes_the_old_core_phase() {
     use super::control::{self, Command, Request};
@@ -142,7 +174,6 @@ struct Fixture {
     _temp: tempfile::TempDir,
     controller: Arc<Controller>,
     layout: Layout,
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code, reason = "read only by tests that need Linux's process identity (YN-108 M2a)"))]
     runtime: Arc<FakeRuntime>,
 }
 fn fixture() -> Fixture {
@@ -166,6 +197,8 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
     std::fs::create_dir(&data).unwrap();
     drop(crate::store::Store::open(&data.join("workspace.sqlite")).unwrap());
     let runtime = Arc::new(FakeRuntime::default());
+    let admission = Arc::new(Admission::default());
+    runtime.admission.set(admission.clone()).ok().unwrap();
     let controller = Controller::new(
         Some(layout.clone()),
         Some(a),
@@ -176,7 +209,7 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
             codex: "fixture".into(),
         },
         runtime.clone(),
-        Arc::new(Admission::default()),
+        admission,
     )
     .unwrap();
     Fixture {
@@ -187,7 +220,6 @@ fn fixture_in(cwd: impl FnOnce(&std::path::Path) -> std::path::PathBuf) -> Fixtu
     }
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn update_probe_socket_timeout_and_verifier_spawn_keep_distinct_evidence() {
     use std::{io::{BufRead, BufReader}, os::unix::{net::UnixListener, process::CommandExt}, time::Duration};
@@ -236,7 +268,6 @@ async fn update_probe_socket_timeout_and_verifier_spawn_keep_distinct_evidence()
     assert!(!diagnostic.contains("Timed out reading"));
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn preparation_survives_request_end_without_closing_admission() {
     let f = fixture();
@@ -263,7 +294,6 @@ async fn preparation_survives_request_end_without_closing_admission() {
     assert!(public["operation"].get("launch").is_none());
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn helper_launch_failure_reopens_admission_and_retry_does_not_repeat_operation() {
     let f = fixture();
@@ -327,6 +357,53 @@ fn a_release_starts_with_the_storage_it_was_packaged_with_and_no_other() {
     }
 }
 
+/// Core finds its release by the file that runs, resolved (YN-108 M2a): a
+/// path through a link to a release's `bin/yuzuno-workspace`, as macOS's
+/// current_exe() can give it, is that release; a copy elsewhere is not.
+#[test]
+fn a_running_release_is_found_by_its_resolved_executable() {
+    let f = fixture();
+    let core = f.layout.root.join("releases/a/bin/yuzuno-workspace");
+    let release = |path: &std::path::Path| super::helper::bundle_of(&f.layout, path).map(|bundle| bundle.manifest.release_id);
+    assert_eq!(release(&core).unwrap(), "a");
+    let link = f._temp.path().join("linked-core");
+    std::os::unix::fs::symlink(&core, &link).unwrap();
+    assert_eq!(release(&link).unwrap(), "a");
+    let copy = f._temp.path().join("yuzuno-workspace");
+    std::fs::copy(&core, &copy).unwrap();
+    let error = format!("{:#}", release(&copy).unwrap_err());
+    assert!(error.contains("outside the managed, reviewed release paths"), "{error}");
+}
+
+/// Log pruning keeps the six newest logs and, older or not, the one the
+/// pruning process writes to (its stdout): that open file is told by its
+/// device and inode on every Unix, where it used to be /proc/self/fd/1,
+/// which macOS does not have (YN-108 M2a).
+#[test]
+fn log_pruning_keeps_the_log_its_process_writes_to() {
+    let f = fixture();
+    let updates = f.layout.updates();
+    let now = std::time::SystemTime::now();
+    for n in 0..8u64 {
+        let log = std::fs::File::create(updates.join(format!("old-{n}.log"))).unwrap();
+        log.set_modified(now - std::time::Duration::from_secs(3600 * (8 - n))).unwrap();
+    }
+    let logs = || {
+        let mut names: Vec<String> = std::fs::read_dir(&updates).unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("old-"))
+            .collect();
+        names.sort();
+        names
+    };
+    let written = std::fs::OpenOptions::new().append(true).open(updates.join("old-0.log")).unwrap();
+    super::helper::prune_logs_but(&f.layout, "op-1", &written).unwrap();
+    assert_eq!(logs(), ["old-0.log", "old-2.log", "old-3.log", "old-4.log", "old-5.log", "old-6.log", "old-7.log"], "the oldest is kept while written to");
+    let elsewhere = std::fs::File::open("/dev/null").unwrap();
+    super::helper::prune_logs_but(&f.layout, "op-1", &elsewhere).unwrap();
+    assert_eq!(logs(), ["old-2.log", "old-3.log", "old-4.log", "old-5.log", "old-6.log", "old-7.log"]);
+}
+
 #[test]
 fn catalog_registration_never_replaces_an_existing_release_identity() {
     let f = fixture();
@@ -347,7 +424,6 @@ fn catalog_registration_never_replaces_an_existing_release_identity() {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn accepted_requests_prevent_seal_and_cancel_reopens_work() {
     use super::control::{self, Command, Request};
@@ -388,7 +464,6 @@ async fn accepted_requests_prevent_seal_and_cancel_reopens_work() {
     assert_eq!(f.controller.admission.snapshot().in_flight, 0);
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn private_control_requires_operation_secret_before_any_transition() {
     use super::control::{self, Command, Request};
@@ -415,7 +490,6 @@ async fn private_control_requires_operation_secret_before_any_transition() {
     panic!("Preparation did not finish");
 }
 
-#[cfg(target_os = "linux")]
 async fn prepared(f: &Fixture) -> super::state::Operation {
     f.controller.prepare("b").await.unwrap();
     for _ in 0..200 {
@@ -429,7 +503,6 @@ async fn prepared(f: &Fixture) -> super::state::Operation {
     op
 }
 
-#[cfg(target_os = "linux")]
 async fn waiting(f: &Fixture) -> super::state::Operation {
     let op = prepared(f).await;
     f.layout
@@ -442,7 +515,6 @@ async fn waiting(f: &Fixture) -> super::state::Operation {
     f.layout.journal().unwrap().operation.unwrap()
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn partial_detach_and_failed_restore_are_visible_and_reopen_admission() {
     use super::control::{self, Command, Request};
@@ -485,7 +557,6 @@ async fn partial_detach_and_failed_restore_are_visible_and_reopen_admission() {
     assert!(!f.controller.admission.snapshot().sealed);
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn busy_turns_and_completion_responses_prevent_native_detach() {
     use super::control::{self, Command, Request};
@@ -516,7 +587,6 @@ async fn busy_turns_and_completion_responses_prevent_native_detach() {
     assert!(f.controller.admission.enter_completion().is_err());
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelling_a_stalled_seal_releases_transition_and_allows_recovery() {
     use super::control::{self, Command, Request};
@@ -553,7 +623,6 @@ async fn cancelling_a_stalled_seal_releases_transition_and_allows_recovery() {
     assert!(f.controller.admission.enter_work().is_ok());
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn expired_wait_reopens_while_busy_turn_keeps_running() {
     let f = fixture();
@@ -581,7 +650,6 @@ async fn expired_wait_reopens_while_busy_turn_keeps_running() {
     assert!(f.controller.admission.enter_work().is_ok());
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn preparation_prunes_unused_packages_and_failed_backups_do_not_accumulate() {
     let f = fixture();
@@ -636,7 +704,6 @@ async fn preparation_prunes_unused_packages_and_failed_backups_do_not_accumulate
     );
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn locked_backup_has_a_deadline_and_never_replaces_source_records() {
     let f = fixture();
@@ -661,7 +728,6 @@ async fn locked_backup_has_a_deadline_and_never_replaces_source_records() {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn restarted_core_recovers_stopping_for_old_or_failed_candidate() {
     for candidate_stopped in [false, true] {
@@ -711,7 +777,6 @@ async fn restarted_core_recovers_stopping_for_old_or_failed_candidate() {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stopping_recovery_never_races_live_helper_or_stopping_process() {
     let f = fixture();
@@ -804,7 +869,6 @@ fn interrupted_registration_stage_does_not_poison_the_catalog() {
     assert!(!stage.exists());
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn recovery_reopens_even_if_current_pointer_cannot_be_written() {
     let f = fixture();
@@ -829,7 +893,6 @@ async fn recovery_reopens_even_if_current_pointer_cannot_be_written() {
 /// enterable, apply refuses before new work pauses, saying where and why. No
 /// operation begins, no helper starts, nothing stops, and the Core keeps
 /// taking work.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn apply_refuses_before_pausing_when_the_launch_directory_cannot_be_used() {
     use std::os::unix::fs::PermissionsExt;
@@ -872,7 +935,6 @@ async fn apply_refuses_before_pausing_when_the_launch_directory_cannot_be_used()
 /// is refused, saying where and why: the Core stays Flushing and doesn't shut
 /// down, and the helper's Abort gives it back its sessions and new work. With
 /// the directory there, the same Stop goes on as before.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stop_is_refused_when_the_launch_directory_went_away_while_waiting() {
     use super::control::{self, Command, Request};
@@ -912,7 +974,6 @@ async fn stop_is_refused_when_the_launch_directory_went_away_while_waiting() {
 /// A Core that can't start says which release, where and why (T-11): the
 /// candidate, or after it fails, the previous release, which starts in the
 /// same directory.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_core_that_cannot_start_names_its_release_and_launch_directory() {
     let f = fixture_in(|temp| temp.join("launch"));
@@ -946,4 +1007,127 @@ fn the_files_the_desktop_app_reads_keep_their_names_and_fields() {
     );
     let current = serde_json::to_value(ReleaseRef { release_id: "core-a".into(), manifest_sha256: "0".repeat(64) }).unwrap();
     assert_eq!(current["releaseId"], "core-a");
+}
+
+async fn send(f: &Fixture, op: &super::state::Operation, command: super::control::Command) -> Result<Value> {
+    let request = super::control::Request { operation_id: op.id.clone(), token: op.token.clone(), command };
+    super::control::dispatch(&f.controller, request).await
+}
+
+/// On 2026-11-15 a seal failed the update: a background read entered on the
+/// event lane, which sealing does not close, just as the final barrier
+/// looked (YN-169). The barrier now waits such a writer out.
+#[tokio::test]
+async fn a_writer_that_enters_after_the_final_flush_is_waited_out() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    // Flush 1 is before the first seal, flush 2 the final barrier's.
+    f.runtime.writer_on_flush.store(2, Ordering::SeqCst);
+    let sealed = send(&f, &op, Command::Seal).await.unwrap();
+    assert_eq!(sealed["sealed"], true);
+    assert!(f.runtime.flushed.load(Ordering::SeqCst) >= 3, "flushed again after the writer ended");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert!(f.controller.admission.snapshot().sealed);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 0, "nothing was reattached");
+}
+
+/// Native work found after detach takes the seal back to Waiting with its
+/// sessions reattached; the helper's next Seal then holds (YN-169). The
+/// update has not ended, so no continue-after-update notice is due (YN-131).
+#[tokio::test]
+async fn native_work_after_detach_goes_back_to_waiting_and_the_next_seal_holds() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.session.store(true, Ordering::SeqCst);
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    let back = send(&f, &op, Command::Seal).await.unwrap();
+    assert_eq!(back["sealed"], false);
+    assert_eq!(back["retry"], 1);
+    assert!(back["reason"].as_str().unwrap().contains("Mori: Turn is running"), "{back}");
+    assert_eq!(*f.runtime.restored_ids.lock().unwrap(), vec!["thread-1".to_owned()]);
+    let again = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(again.phase, Phase::Waiting);
+    assert!(again.sessions.is_empty() && again.total_sessions == 0 && again.error.is_none());
+    assert!(again.old_process == op.old_process && again.deadline == op.deadline);
+    let admission = f.controller.admission.snapshot();
+    assert!(!admission.sealed);
+    assert_eq!(admission.operation_id.as_deref(), Some(op.id.as_str()));
+    assert!(f.controller.admission.enter_work().is_err(), "new work still waits");
+    drop(f.controller.admission.enter_completion().unwrap());
+    assert_eq!(f.runtime.ended.load(Ordering::SeqCst), 0);
+    // The Agent's Turn ends; the helper's next round seals.
+    f.runtime.busy_after_detach.store(false, Ordering::SeqCst);
+    f.runtime.busy.store(false, Ordering::SeqCst);
+    assert_eq!(send(&f, &again, Command::Seal).await.unwrap()["sealed"], true);
+    let flushing = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(flushing.phase, Phase::Flushing);
+    assert_eq!(flushing.sessions.len(), 1);
+    assert_eq!(f.runtime.ended.load(Ordering::SeqCst), 0);
+}
+
+/// Three returns to Waiting at most (YN-169); the fourth seal that meets
+/// native work fails as before, naming it, and Abort reopens this Core.
+#[tokio::test]
+async fn a_seal_goes_back_to_waiting_at_most_three_times_then_fails_as_before() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    for attempt in 1..=3 {
+        f.runtime.busy.store(false, Ordering::SeqCst);
+        assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["retry"], attempt);
+    }
+    f.runtime.busy.store(false, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Seal).await.unwrap_err().to_string();
+    assert!(error.contains("Native work arrived during final flush (Mori: Turn is running)"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 3);
+    send(&f, &op, Command::Abort).await.unwrap();
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Failed);
+    assert_eq!(f.runtime.restored.load(Ordering::SeqCst), 4, "Abort gives the sessions back");
+    assert!(f.controller.admission.enter_work().is_ok());
+}
+
+/// A seal that cannot reattach stays Flushing, sealed, and fails as before:
+/// the helper's Abort restores the sessions again and reopens (YN-169).
+#[tokio::test]
+async fn a_seal_that_cannot_reattach_stays_flushing_for_abort() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    f.runtime.busy_after_detach.store(true, Ordering::SeqCst);
+    f.runtime.restore_failed.store(true, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Seal).await.unwrap_err().to_string();
+    assert!(error.contains("one session is unavailable"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
+    assert!(f.controller.admission.snapshot().sealed);
+    send(&f, &op, Command::Abort).await.unwrap();
+    let failed = f.layout.journal().unwrap().operation.unwrap();
+    assert_eq!(failed.phase, Phase::Failed);
+    assert!(failed.error.unwrap().contains("Reconnect affected sessions manually"));
+    assert!(f.controller.admission.enter_work().is_ok());
+}
+
+/// Stop's barrier waits a late writer out too, and still refuses native
+/// work (YN-169).
+#[tokio::test]
+async fn stop_waits_out_a_late_writer_and_still_refuses_native_work() {
+    use super::control::Command;
+    let f = fixture();
+    let op = waiting(&f).await;
+    assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["sealed"], true);
+    // Flushes 1 and 2 were the seal's; Stop's barrier flushes next.
+    f.runtime.writer_on_flush.store(3, Ordering::SeqCst);
+    assert_eq!(send(&f, &op, Command::Stop).await.unwrap()["stopping"], true);
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Stopping);
+
+    let f = fixture();
+    let op = waiting(&f).await;
+    assert_eq!(send(&f, &op, Command::Seal).await.unwrap()["sealed"], true);
+    f.runtime.busy.store(true, Ordering::SeqCst);
+    let error = send(&f, &op, Command::Stop).await.unwrap_err().to_string();
+    assert!(error.contains("Core still has accepted work"), "{error}");
+    assert_eq!(f.layout.journal().unwrap().operation.unwrap().phase, Phase::Flushing);
 }

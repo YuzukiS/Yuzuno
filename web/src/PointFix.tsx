@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { LoaderCircle, Plus, Trash2, Undo2 } from "lucide-react";
 import { Modal } from "./components";
 import { api, errorText } from "./api";
-import { IMAGE_TYPES, MAX_IMAGE_BYTES, type DraftImage } from "./image-input";
+import { IMAGE_TYPES, MAX_IMAGE_BYTES, type DraftImage, type SavedImage } from "./image-input";
+import { strings, useStrings } from "./i18n";
 import {
   MAX_NOTE,
   MAX_REGIONS,
@@ -17,14 +18,15 @@ import {
   type Size,
 } from "./point-fix";
 import type { Agent } from "./types";
+import { takesImages } from "./home/home-images";
 import "./point-fix.css";
 
 /** Why an Agent cannot take an image, or null. Never a path in its place. */
 export function imageRefusal(agent: Agent | undefined) {
   if (!agent) return "That Agent is no longer in this Workspace.";
   if (agent.closedAt) return `${agent.name} is closed and cannot receive messages.`;
-  if (agent.harness !== "codex" && agent.harness !== "claude")
-    return `${agent.name} cannot receive images; Codex and Claude Agents can.`;
+  // As Core decides (input_images::takes_images, YN-134 §7-1).
+  if (!takesImages(agent.harness)) return `${agent.name} cannot receive images; Codex, Claude and OpenCode Agents can.`;
   return null;
 }
 
@@ -85,21 +87,59 @@ async function upload(agentId: string, blob: Blob, name: string): Promise<DraftI
 const BOX = [["x", "Left"], ["y", "Top"], ["width", "Width"], ["height", "Height"]] as const;
 
 /**
+ * Where Point & Fix adds when it is not an Agent's draft (Home's fields,
+ * YN-134): nothing is chosen, and the field says itself whether the images
+ * can go where it sends them.
+ */
+export type PointFixInto = {
+  /** What it adds to, in the words the field gives itself. */
+  label: string;
+  /** Why the field cannot take these images (none: any images), or null. */
+  room: (images: { bytes: number }[]) => string | null;
+  /** Saves an image where the field keeps its images. */
+  upload: (blob: Blob, name: string) => Promise<SavedImage>;
+  /** Adds to the field: why it could not, or null once added. */
+  add: (images: SavedImage[], text: string) => string | null;
+  /** Where in the field the image with this ID is now (from 1), or 0. */
+  position: (imageId: string) => number;
+};
+
+// Point & Fix's words for a field (YN-134); its others are English only, as before.
+const intoText = strings({
+  addsTo: (label: string) => `Adds to: ${label}`,
+  add: "Add",
+  already: "The original is already there; only the annotated copy is added.",
+}, {
+  addsTo: (label) => `加到：${label}`,
+  add: "加入",
+  already: "原图已经在里面，只加入标注后的副本。",
+});
+
+type Props = { source: PointFixSource | null; onClose: () => void } & (
+  | {
+      into?: undefined;
+      agents: readonly Agent[];
+      /** Where in that Agent's draft the image with this ID is now (from 1), or 0. */
+      draftPosition: (agentId: string, imageId: string) => number;
+      /** Why that Agent's draft cannot take these images (none: any images), or null. */
+      room: (agentId: string, images: { bytes: number }[]) => string | null;
+      /** Adds to that Agent's draft: why it could not, or null once added. */
+      onAdd: (agentId: string, images: DraftImage[], text: string) => string | null;
+    }
+  | { into: PointFixInto }
+);
+
+/**
  * Point & Fix (T-167): mark areas on an image, say what to change in each,
  * and add the annotated image (and the original) with that text to an
- * Agent's draft. Nothing is sent: the user edits and sends the draft.
+ * Agent's draft, or to the field `into` names. Nothing is sent: the user
+ * edits and sends it.
  */
-export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }: {
-  source: PointFixSource | null;
-  agents: readonly Agent[];
-  /** Where in that Agent's draft the image with this ID is now (from 1), or 0. */
-  draftPosition: (agentId: string, imageId: string) => number;
-  /** Why that Agent's draft cannot take these images (none: any images), or null. */
-  room: (agentId: string, images: { bytes: number }[]) => string | null;
-  /** Adds to that Agent's draft: why it could not, or null once added. */
-  onAdd: (agentId: string, images: DraftImage[], text: string) => string | null;
-  onClose: () => void;
-}) {
+export function PointFix(props: Props) {
+  const { source, onClose } = props;
+  const into = props.into ?? null;
+  const agents = props.into ? [] : props.agents;
+  const it = useStrings(intoText);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState("");
   const [regions, setRegions] = useState<Region[]>([]);
@@ -119,6 +159,7 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
     setDrawing(null); setProblem(""); setBusy(false); setOriginal(true);
     if (!source) return;
     const owner = agents.find((a) => a.id === source.ownerId);
+    // A field (`into`) has no Agent to choose: `target` stays empty.
     // Its owner first, even one that cannot take images: the reason shows.
     setTarget(owner?.id || (source.chooseWithoutOwner ? "" : agents.find((a) => !imageRefusal(a))?.id) || "");
     const controller = new AbortController();
@@ -182,11 +223,13 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
     loaded.blob.size <= MAX_IMAGE_BYTES && outputScale(loaded.size) === 1;
   // An image from the draft it goes back to is there already: only the
   // annotated copy is added. Another Agent's draft gets the original too.
-  const inTargetDraft = !!source?.inDraft && source.inDraft.agentId === target && draftPosition(target, source.inDraft.id) > 0;
+  const position = (imageId: string) => (props.into ? props.into.position(imageId) : props.draftPosition(target, imageId));
+  const inTargetDraft = !!source?.inDraft && (into || source.inDraft.agentId === target) && position(source.inDraft.id) > 0;
 
   async function add() {
     if (!source || !loaded || busy) return;
-    const refusal = imageRefusal(agent);
+    // A field says itself whether its images can go (`into.room`).
+    const refusal = into ? null : imageRefusal(agent);
     if (refusal) return setProblem(refusal);
     if (!regions.length) return setProblem("Mark at least one area first.");
     setBusy(true);
@@ -195,21 +238,29 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
       // Whether that Agent's draft can take images at all. How many it can
       // take is checked once the images are saved: an image already in the
       // draft has the same ID and is not added again.
-      const blocked = room(target, []);
+      const blocked = props.into ? props.into.room([]) : props.room(target, []);
       if (blocked) throw new Error(blocked);
       const marked = await annotate(loaded, regions);
       // Named by its place in the draft: pasted images often share a name.
-      const position = source.inDraft && source.inDraft.agentId === target ? draftPosition(target, source.inDraft.id) : 0;
-      const withOriginal = !position && original && originalFits;
-      // Saved as that Agent's images, which are content-addressed: trying
-      // again after a failure adds the same images, never a second copy.
-      const images = [await upload(target, marked.blob, `Annotated ${source.name}`)];
-      if (withOriginal) images.push(await upload(target, loaded.blob, source.name));
+      const at = source.inDraft && (into || source.inDraft.agentId === target) ? position(source.inDraft.id) : 0;
+      const withOriginal = !at && original && originalFits;
       const text = feedbackText({
         name: source.name, provenance: source.provenance, regions, size: loaded.size,
-        original: position ? { position } : withOriginal, annotated: marked.size,
+        original: at ? { position: at } : withOriginal, annotated: marked.size,
       });
-      const refused = onAdd(target, images, text);
+      // Saved as that Agent's images, or where the field keeps its own; both
+      // are content-addressed: trying again after a failure adds the same
+      // images, never a second copy.
+      let refused: string | null;
+      if (props.into) {
+        const images = [await props.into.upload(marked.blob, `Annotated ${source.name}`)];
+        if (withOriginal) images.push(await props.into.upload(loaded.blob, source.name));
+        refused = props.into.add(images, text);
+      } else {
+        const images = [await upload(target, marked.blob, `Annotated ${source.name}`)];
+        if (withOriginal) images.push(await upload(target, loaded.blob, source.name));
+        refused = props.onAdd(target, images, text);
+      }
       if (refused) throw new Error(refused);
       onClose();
     } catch (e) {
@@ -356,25 +407,31 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
                 </li>
               ))}
             </ol>
-            <label className="point-fix-target">
-              Tell
-              <select value={target} disabled={busy} onChange={(event) => { setTarget(event.target.value); setProblem(""); }}>
-                {!agent && <option value="">Choose an Agent</option>}
-                {agents.filter((a) => !a.closedAt || a.id === target).map((a) => (
-                  <option key={a.id} value={a.id} disabled={!!imageRefusal(a)}>
-                    {a.name}{a.id === source?.ownerId ? " · its owner" : ""}{imageRefusal(a) ? " · cannot take images" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {!agent && !owner && source?.chooseWithoutOwner && (
+            {into ? (
+              <p className="point-fix-target" role="status">{it.addsTo(into.label)}</p>
+            ) : (
+              <label className="point-fix-target">
+                Tell
+                <select value={target} disabled={busy} onChange={(event) => { setTarget(event.target.value); setProblem(""); }}>
+                  {!agent && <option value="">Choose an Agent</option>}
+                  {agents.filter((a) => !a.closedAt || a.id === target).map((a) => (
+                    <option key={a.id} value={a.id} disabled={!!imageRefusal(a)}>
+                      {a.name}{a.id === source?.ownerId ? " · its owner" : ""}{imageRefusal(a) ? " · cannot take images" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {!into && !agent && !owner && source?.chooseWithoutOwner && (
               <p className="field-hint" role="status">Its author is no longer an Agent here. Choose whom to tell.</p>
             )}
-            {(agent ? imageRefusal(agent) : owner && imageRefusal(owner)) && (
+            {!into && (agent ? imageRefusal(agent) : owner && imageRefusal(owner)) && (
               <p className="field-hint" role="status">{agent ? imageRefusal(agent) : imageRefusal(owner)} Choose an Agent that can.</p>
             )}
             {inTargetDraft ? (
-              <p className="field-hint point-fix-original" role="status">The original is already in {agent?.name}’s draft; only the annotated copy is added.</p>
+              <p className="field-hint point-fix-original" role="status">
+                {into ? it.already : `The original is already in ${agent?.name}’s draft; only the annotated copy is added.`}
+              </p>
             ) : (
               <label className="point-fix-original">
                 <input type="checkbox" checked={original} disabled={busy} onChange={(event) => setOriginal(event.target.checked)} />
@@ -387,8 +444,9 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
             {problem && <p role="alert" className="inline-error">{problem}</p>}
             <div className="point-fix-footer">
               <button type="button" className="quiet-button" onClick={onClose} disabled={busy}>Cancel</button>
-              <button type="button" className="primary-button" onClick={add} disabled={busy || !regions.length || !agent || !!imageRefusal(agent)}>
-                {busy ? "Preparing…" : `Add to ${agent?.name || "the Agent"}’s draft`}
+              <button type="button" className="primary-button" onClick={add}
+                disabled={busy || !regions.length || (!into && (!agent || !!imageRefusal(agent)))}>
+                {busy ? "Preparing…" : into ? it.add : `Add to ${agent?.name || "the Agent"}’s draft`}
               </button>
             </div>
           </div>

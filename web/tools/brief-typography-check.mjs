@@ -2,8 +2,8 @@
 // visible steps, and a block's title stands above the body it introduces.
 // Since T-18 a report's body is read on its page, opened from its Home card,
 // so the levels are measured there. Read from getComputedStyle in a real browser on the production
-// bundle, desktop and 320 px, light and dark, in both densities and in two
-// palettes. No Core, no Agent; nothing is sent.
+// bundle, desktop and 320 px, light and dark, in two palettes. No Core, no
+// Agent; nothing is sent.
 //
 // What this does and does not show: these are the styles the browser resolved
 // and the box it laid out — the levels and the space between them. A computed
@@ -124,15 +124,14 @@ const home = () => ({
 const browser = await launchBrowser();
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
-async function open({ width, height, touch, theme, density, palette }) {
+async function open({ width, height, touch, theme, palette }) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(([theme, density, palette]) => {
+  await page.addInitScript(([theme, palette]) => {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette }));
     localStorage.setItem("yuzuno.selected", JSON.stringify("mori"));
-    localStorage.setItem("yuzuno.homeDensity.ws", JSON.stringify(density));
-  }, [theme, density, palette]);
+  }, [theme, palette]);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -226,20 +225,20 @@ try {
     { name: "narrow-320", width: 320, height: 780, touch: true },
   ]) {
     for (const theme of ["light", "dark"]) {
-      for (const [density, palette] of [["low", "garden"], ["high", "garden"], ["low", "yuzu"], ["high", "yuzu"]]) {
-        const { context, page } = await open({ ...view, theme, density, palette });
-        const where = `${view.name} ${theme} ${density} ${palette}`;
+      for (const palette of ["garden", "yuzu"]) {
+        const { context, page } = await open({ ...view, theme, palette });
+        const where = `${view.name} ${theme} ${palette}`;
         try {
           const sample = await openReport(page, "typography");
           const shown = await levels(sample);
           const overflow = await sample.evaluate((el) => el.scrollWidth - el.clientWidth);
-          const shot = `${output}/levels-${view.name}-${theme}-${density}-${palette}.png`;
+          const shot = `${output}/levels-${view.name}-${theme}-${palette}.png`;
           await sample.screenshot({ path: shot });
           report.shots.push(shot);
           await closeReport(page);
           const progressPage = await openReport(page, "development");
           const heads = await groupTitle(progressPage);
-          const cardShot = `${output}/card-${view.name}-${theme}-${density}-${palette}.png`;
+          const cardShot = `${output}/card-${view.name}-${theme}-${palette}.png`;
           await progressPage.screenshot({ path: cardShot });
           report.shots.push(cardShot);
           await closeReport(page);
@@ -248,11 +247,6 @@ try {
           // which is why the levels may not rest on colour.
           if (!baseline && palette !== "garden")
             assert.equal(shown.h2.color, shown.body.color, `${where}: this palette draws them in one ink ${JSON.stringify(shown)}`);
-          assert.equal(
-            await page.locator(".home-view").first().getAttribute("data-density"),
-            density,
-            `${where}: the density under test`,
-          );
           if (!baseline) {
             // Three heading levels, each a visible step, all above body text.
             assert.ok(shown.h1.size > shown.h2.size + 0.5, `${where}: h1 over h2 ${JSON.stringify(shown)}`);

@@ -1,7 +1,7 @@
 import { api } from "./api";
 
 /** An executor template as Core keeps it (`/api/executor-templates`, T-34). */
-export type ExecutorHarness = "codex" | "claude" | "opencode";
+export type ExecutorHarness = "codex" | "claude" | "opencode" | "dsh";
 /** A permission said once for every harness, which Core maps to each one's own (YN-56). */
 export type PermissionLevel = "ask" | "auto" | "full" | "read-only";
 /** read-only (YN-74): reads and proposes, changes nothing itself; Core serves its labels. */
@@ -15,7 +15,7 @@ export type ExecutorTemplate = {
   namePattern?: string;
   /** A fixed template's only (YN-56): one that follows routing names none. */
   harness?: ExecutorHarness;
-  /** A fixed template's: Codex or Claude Code on this Core host, OpenCode as it names it; unset inherits the defaults for new Agents. */
+  /** A fixed template's: Codex or Claude Code on this Core host, OpenCode and DeepSeek Harness as each names it; unset inherits the defaults for new Agents. */
   model?: string;
   /** A fixed Codex template's, with a model. */
   reasoningEffort?: string;
@@ -51,6 +51,8 @@ export type LevelInfo = {
   codex: { permissionPreset: string } | null;
   claude: { permissionMode: string } | null;
   opencode: Record<string, unknown> | null;
+  /** DeepSeek Harness's (YN-119 S3): absent from a Core without it, which keeps none. */
+  dsh?: Record<string, unknown> | null;
 };
 /** The levels before Core served them: Codex keeps each, Claude Code all but full, OpenCode none. */
 export const DEFAULT_LEVELS: LevelInfo[] = [
@@ -58,7 +60,8 @@ export const DEFAULT_LEVELS: LevelInfo[] = [
   { level: "auto", label: "Auto-approve", labelZh: "自动审批", codex: { permissionPreset: "auto" }, claude: { permissionMode: "auto" }, opencode: null },
   { level: "full", label: "Full access", labelZh: "完全放开", codex: { permissionPreset: "full" }, claude: null, opencode: null },
 ];
-/** Whether `harness` keeps `level`; no level is kept everywhere. */
+/** Whether `harness` keeps `level`; no level is kept everywhere. DeepSeek Harness keeps ask, auto and full, never
+ * read only (YN-119 §3.6), as Core's table says. */
 export const keepsLevel = (levels: LevelInfo[], level: string, harness: ExecutorHarness) =>
   !level || levels.some((l) => l.level === level && l[harness] != null);
 export type DeliveryMode = "pr" | "direct-commit" | "none";

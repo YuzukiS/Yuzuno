@@ -2,9 +2,9 @@
 //! paths, shell text, remote URLs, process IDs or database paths from a client.
 use super::{
     controller::Controller,
-    state::{self, Phase, ProcessIdentity},
+    state::{self, Layout, Operation, Phase, ProcessIdentity},
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
@@ -24,6 +24,26 @@ pub enum Command {
     Finish,
     Abort,
 }
+/// Rounds of the final barrier that wait out late event-lane writers before a
+/// seal goes back to Waiting (YN-169). After sealing only those can enter, and
+/// each ends on its own; the mail worker, which detach itself wakes, does a
+/// few short reads a round.
+const SETTLE_ROUNDS: usize = 3;
+/// Returns to Waiting allowed in one update (YN-169). The 2026-11-15 failure
+/// passed on its first manual retry; three in a row is no passing moment, and
+/// each return reconnects every session.
+const SEAL_RETRIES: usize = 3;
+/// Reattaching takes what Abort's restore takes (`Command::Abort` below).
+const REATTACH: Duration = Duration::from_secs(90);
+const TIMED_OUT: &str =
+    "Update transition timed out; its durable phase will be reconciled before further work";
+
+/// What a transition answers, or a seal's way back to Waiting (YN-169).
+enum Outcome {
+    Answer(Value),
+    Reattach { op: Operation, reason: String },
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
@@ -127,53 +147,131 @@ pub(super) async fn dispatch(this: &Controller, request: Request) -> Result<Valu
         Command::Abort => 120,
         _ => 60,
     };
-    tokio::time::timeout(Duration::from_secs(budget), execute(this, request))
+    let outcome = tokio::time::timeout(Duration::from_secs(budget), execute(this, request))
         .await
-        .context(
-            "Update transition timed out; its durable phase will be reconciled before further work",
-        )?
+        .context(TIMED_OUT)??;
+    match outcome {
+        Outcome::Answer(value) => Ok(value),
+        // Under the same transition lock, after the seal's own budget.
+        Outcome::Reattach { op, reason } => {
+            tokio::time::timeout(REATTACH, reattach(this, &op, &reason))
+                .await
+                .context(TIMED_OUT)?
+        }
+    }
 }
 
-async fn execute(this: &Controller, request: Request) -> Result<Value> {
+/// Seals for the switch. Once sealed, only event-lane writers can still enter
+/// (`Admission::enter_event`): the final barrier waits a late one out, and
+/// native work found after detach takes the seal back to Waiting (YN-169).
+async fn seal(this: &Controller, layout: &Layout, op: Operation) -> Result<Outcome> {
+    ensure!(op.phase == Phase::Waiting, "Update is no longer waiting");
+    ensure!(
+        chrono::DateTime::parse_from_rfc3339(&op.deadline)? > chrono::Utc::now(),
+        "Update wait expired"
+    );
+    ensure!(
+        op.old_process == ProcessIdentity::read(std::process::id())?,
+        "Original Core process changed"
+    );
+    if !this.blockers().await?.is_empty() {
+        return Ok(Outcome::Answer(json!({"sealed":false})));
+    }
+    this.runtime.flush().await?;
+    if !this.blockers().await?.is_empty() || !this.admission.try_seal(&op.id)? {
+        return Ok(Outcome::Answer(json!({"sealed":false})));
+    }
+    let sessions = this.runtime_read(|runtime| runtime.sessions()).await?;
+    let flushing = layout.edit_operation(&op.id, |op| {
+        op.total_sessions = sessions.len();
+        op.sessions = sessions;
+        op.set_phase(Phase::Flushing, None);
+        Ok(op.clone())
+    })?;
+    // Native connections are idle now; detach releases their writer
+    // leases without closing Agents or changing native session IDs.
+    this.runtime.detach().await?;
+    match settle(this, &op.id).await? {
+        None => Ok(Outcome::Answer(
+            json!({"sealed":true,"health":this.runtime_read(|runtime| runtime.health()).await?}),
+        )),
+        Some(reason) => Ok(Outcome::Reattach {
+            op: flushing,
+            reason,
+        }),
+    }
+}
+
+/// The final barrier, after detach: no native work, then no writer in flight
+/// at the moment admission seals. A writer still in flight is waited out and
+/// the barrier taken again, at most `SETTLE_ROUNDS` times; native work is not
+/// waited for. None once sealed, else what is still busy.
+async fn settle(this: &Controller, operation: &str) -> Result<Option<String>> {
+    let mut busy = String::new();
+    for _ in 0..SETTLE_ROUNDS {
+        this.admission.wait_quiescent().await;
+        this.runtime.flush().await?;
+        let blockers = this.runtime_read(|runtime| runtime.blockers()).await?;
+        if !blockers.is_empty() {
+            let named = blockers
+                .iter()
+                .map(|b| format!("{}: {}", b.name, b.reason))
+                .collect::<Vec<_>>();
+            return Ok(Some(named.join("; ")));
+        }
+        if this.admission.try_seal(operation)? {
+            return Ok(None);
+        }
+        busy = format!(
+            "{} request(s) finishing",
+            this.admission.snapshot().in_flight
+        );
+    }
+    Ok(Some(busy))
+}
+
+/// A seal that met new work after detach goes back to Waiting (YN-169): the
+/// sessions come back as Abort brings them back, the journal says Waiting
+/// again, and admission drains as before the seal, so the helper's next round
+/// seals again. In this order a crash at any step leaves a phase the existing
+/// recovery handles (Flushing restores; Waiting has nothing detached). The
+/// update is not ended: no continue notice is due (YN-131).
+async fn reattach(this: &Controller, op: &Operation, reason: &str) -> Result<Value> {
+    let (layout, _) = this.managed()?;
+    let attempt = this.seal_retry(&op.id);
+    // Past the limit, Abort restores the sessions and fails the update.
+    ensure!(
+        attempt <= SEAL_RETRIES,
+        "Native work arrived during final flush ({reason}); this update already went back to waiting {SEAL_RETRIES} times"
+    );
+    let restored = this.runtime.restore(&op.sessions).await?;
+    ensure!(
+        restored == op.sessions.len(),
+        "Only {restored} of {} sessions reconnected after the seal met new work",
+        op.sessions.len()
+    );
+    layout.edit_operation(&op.id, |op| {
+        ensure!(op.phase == Phase::Flushing, "Update phase changed");
+        op.sessions = vec![];
+        op.total_sessions = 0;
+        op.recovered_sessions = 0;
+        op.set_phase(Phase::Waiting, None);
+        Ok(())
+    })?;
+    this.admission.unseal(&op.id)?;
+    eprintln!(
+        "Update {}: new work during the final seal ({reason}); back to waiting, attempt {attempt} of {SEAL_RETRIES}",
+        op.id
+    );
+    Ok(json!({"sealed":false,"retry":attempt,"reason":reason}))
+}
+
+async fn execute(this: &Controller, request: Request) -> Result<Outcome> {
     let (layout, running) = this.managed()?;
     let op = layout.journal()?.operation.context("No update operation")?;
-    match request.command {
+    let answer: Result<Value> = match request.command {
         Command::Inspect => unreachable!(),
-        Command::Seal => {
-            ensure!(op.phase == Phase::Waiting, "Update is no longer waiting");
-            ensure!(
-                chrono::DateTime::parse_from_rfc3339(&op.deadline)? > chrono::Utc::now(),
-                "Update wait expired"
-            );
-            ensure!(
-                op.old_process == ProcessIdentity::read(std::process::id())?,
-                "Original Core process changed"
-            );
-            if !this.blockers().await?.is_empty() {
-                return Ok(json!({"sealed":false}));
-            }
-            this.runtime.flush().await?;
-            if !this.blockers().await?.is_empty() || !this.admission.try_seal(&op.id)? {
-                return Ok(json!({"sealed":false}));
-            }
-            let sessions = this.runtime_read(|runtime| runtime.sessions()).await?;
-            layout.edit_operation(&op.id, |op| {
-                op.total_sessions = sessions.len();
-                op.sessions = sessions;
-                op.set_phase(Phase::Flushing, None);
-                Ok(())
-            })?;
-            // Native connections are idle now; detach releases their writer
-            // leases without closing Agents or changing native session IDs.
-            this.runtime.detach().await?;
-            this.admission.wait_quiescent().await;
-            this.runtime.flush().await?;
-            ensure!(
-                this.blockers().await?.is_empty() && this.admission.try_seal(&op.id)?,
-                "Native work arrived during final flush"
-            );
-            Ok(json!({"sealed":true,"health":this.runtime_read(|runtime| runtime.health()).await?}))
-        }
+        Command::Seal => return seal(this, layout, op).await,
         Command::Stop => {
             ensure!(
                 matches!(
@@ -193,20 +291,23 @@ async fn execute(this: &Controller, request: Request) -> Result<Value> {
             }
             ensure!(
                 this.admission.snapshot().operation_id.as_deref() == Some(&op.id)
-                    && this.blockers().await?.is_empty(),
+                    && this
+                        .runtime_read(|runtime| runtime.blockers())
+                        .await?
+                        .is_empty(),
                 "Core still has accepted work"
             );
+            // Flushing was sealed by Seal: only event-lane writers can be in
+            // flight, and `settle` waits them out (YN-169). A candidate that
+            // failed seals here, refused while it still answers requests.
             ensure!(
-                this.admission.try_seal(&op.id)?,
+                this.admission.snapshot().sealed || this.admission.try_seal(&op.id)?,
                 "Accepted requests are still finishing"
             );
             this.runtime.detach().await?;
-            this.admission.wait_quiescent().await;
-            this.runtime.flush().await?;
-            ensure!(
-                this.blockers().await?.is_empty() && this.admission.try_seal(&op.id)?,
-                "Native writers have not finished"
-            );
+            if let Some(busy) = settle(this, &op.id).await? {
+                bail!("Native writers have not finished: {busy}");
+            }
             layout.edit_operation(&op.id, |op| {
                 op.phase = Phase::Stopping;
                 op.stopping_process = Some(ProcessIdentity::read(std::process::id())?);
@@ -278,6 +379,7 @@ async fn execute(this: &Controller, request: Request) -> Result<Value> {
                 Ok(())
             })?;
             this.admission.reopen(&op.id)?;
+            this.runtime.update_ended();
             Ok(json!({"complete":true,"releaseId":current.release_id}))
         }
         Command::Abort => {
@@ -293,5 +395,6 @@ async fn execute(this: &Controller, request: Request) -> Result<Value> {
             .await?;
             Ok(json!({"reopened":true}))
         }
-    }
+    };
+    answer.map(Outcome::Answer)
 }

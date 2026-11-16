@@ -18,6 +18,11 @@ use yuzuno_workspace::opencode_login::{KeyLogin, OAuthLogin};
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 const ID: &str = "oc";
 
+/// How long a wait here may go. It is a bound on a condition, not on a count
+/// of slices: a stand-in that answers late on a loaded machine is not a
+/// failure, and one that never does still fails the test.
+const WAIT: Duration = Duration::from_secs(120);
+
 /// One `opencode` for the whole test process: YUZUNO_OPENCODE_BIN is the
 /// process's, and every Agent's stand-in keeps its state in its own folder.
 fn program() -> &'static PathBuf {
@@ -138,14 +143,15 @@ impl Lab {
     }
 
     async fn until(&self, what: &str, done: impl Fn(&AgentDetail) -> bool) -> AgentDetail {
-        for _ in 0..400 {
-            let d = self.detail();
-            if done(&d) {
-                return d;
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let d = self.detail();
+                if done(&d) {
+                    return d;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        panic!("timed out waiting for {what}: {:#?}", self.detail());
+        }).await.unwrap_or_else(|_| panic!("timed out waiting for {what}: {:#?}", self.detail()))
     }
 
     async fn send(&self, client: &str, text: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
@@ -177,13 +183,11 @@ fn ended(pid: u64) -> bool {
 }
 
 async fn ends(pid: u64) -> bool {
-    for _ in 0..200 {
-        if ended(pid) {
-            return true;
+    tokio::time::timeout(WAIT, async {
+        while !ended(pid) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    false
+    }).await.is_ok()
 }
 
 fn journal(lab: &Lab) -> Vec<String> {
@@ -452,6 +456,32 @@ async fn a_stored_message_is_its_turns_user_message_under_its_client_id() {
         .map(|r| (r.input.client_message_id.as_str(), r.status.as_str(), r.binding.as_ref().map(|b| b.turn_id.clone()))).collect();
     assert_eq!(bound, [("c1", "accepted", Some(first.clone())), ("c3", "rejected", None), ("c2", "accepted", Some(second.clone()))]);
     assert_eq!(window_client_ids(&d), json!(["c1", "c2"]));
+}
+
+#[tokio::test]
+async fn a_message_with_files_reaches_opencode_with_the_notice_and_its_paths() {
+    let lab = lab(&[], false).await;
+    let router = server::router(lab.ws.clone(), lab.dir.path().join("web"));
+    let response = router.oneshot(Request::builder().method("POST").uri(format!("/api/agents/{ID}/files?name=log.csv"))
+        .header("host", "127.0.0.1:4317").header("x-yuzuno-client", "desktop")
+        .body(Body::from("a,b\n1,2\n")).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let file: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    let input: MessageInput = serde_json::from_value(json!({"clientMessageId":"files","text":"Read this"})).unwrap();
+    let receipt = lab.ws.send_message_from(ID, input, Vec::new(),
+        vec![serde_json::from_value(file.clone()).unwrap()], None).await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let first = receipt.turn_id.unwrap();
+    let sent = lab.prompts()[0]["body"]["text"].as_str().unwrap().to_owned();
+    assert!(sent.starts_with("Read this\n\nAttached files: the user attached 1 file to this message."), "{sent}");
+    let at = std::fs::canonicalize(lab.dir.path().join("data/input-files").join(ID)
+        .join(file["id"].as_str().unwrap()).join(file["name"].as_str().unwrap())).unwrap();
+    assert!(sent.contains(&format!("`{}`", at.display())), "{sent} lacks {}", at.display());
+    lab.control("reply", json!({"sessionID":lab.session(),"text":"Done."})).await;
+    lab.until("the turn", |d| turn(d, &first)["status"] == "completed").await;
+    // No files: exactly the words, as before.
+    lab.send("plain", "No files").await.unwrap();
+    assert_eq!(lab.prompts()[1]["body"]["text"], "No files");
 }
 
 #[tokio::test]
@@ -748,7 +778,8 @@ async fn the_version_an_agents_database_was_made_with_is_kept_and_a_newer_one_is
     assert_eq!(lab.detail().agent.opencode_version.as_deref(), Some("2.9.1"), "kept with its session");
     assert_eq!(lab.detail().agent.opencode_major.as_deref(), Some("2"), "with the major Core parsed from it");
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
-    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "newer than the verified 2.2.5"}));
+    assert_eq!(catalog["opencode"], json!({"version": "2.9.1", "verified": "2.2.5", "note": "OpenCode support stops at 2.2.5: this release \
+        is unverified, and problems with it are not fixed; to be safe, install 2.2.5 with npm i -g @opencode/cli@2.2.5"}));
     let Lab { dir, ws } = lab;
     drop(ws);
     // A later start, with the verified release: the version it was made with stays; nothing is noted.

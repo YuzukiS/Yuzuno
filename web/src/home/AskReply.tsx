@@ -16,12 +16,16 @@ import {
   type ClarificationValues,
 } from "../intelligent-ui/clarification";
 import { relative } from "./format";
-import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
+import { dropPendingReply, latestSection, olderCoreFiles, olderCoreImages, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { replyRecipient } from "./card-responsible";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { HOME_REPLY_MAX_BYTES, ReplyLength, replyTooLong, utf8Bytes } from "./reply-limit";
-import { HomeComposer, type ReplyWords } from "./HomeComposer";
+import { HomeComposer, type HomeAttach, type ReplyWords } from "./HomeComposer";
+import { ImageAttachments } from "../ImageAttachments";
+import { FileAttachments } from "../FileAttachments";
+import { homeImageUrl, takesImages, validHomeImages, type HomeImage } from "./home-images";
+import { agentTakesFiles, homeFileUrl, validHomeFiles, type HomeFile } from "./home-files";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
 import { CleanupApprovalNote, cleanupOptionView, useCleanupApproval } from "./cleanup-approval";
@@ -54,7 +58,9 @@ function askRefusal(error: unknown): "changed" | "resolved" | "removed" | "reloa
 
 /** One reply to an ask (T-9): what it says, and the version of the ask it
  * answers. `shown` is what this window shows as sent, kept with it here only. */
-type AskSend = { text: string; choice?: string; shown: string; askVersion: number; form?: HomeReplyInput["form"] };
+type AskSend = {
+  text: string; choice?: string; shown: string; askVersion: number; form?: HomeReplyInput["form"]; images?: string[]; files?: HomeFile[];
+};
 
 /** The same reply to the ask as Core has it now, when it still answers the
  * same thing there (YN-38), or null: then nothing more is sent. */
@@ -113,6 +119,12 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
     try {
       return await go();
     } catch (e) {
+      // A Core from before Home's images or files refused them before reading the reply (YN-134, YN-145): never submitted.
+      if (olderCoreImages(e) || olderCoreFiles(e)) {
+        dropPendingReply(slot);
+        setError(olderCoreFiles(e) ? t.olderCoreFiles : t.olderCoreImages);
+        throw e;
+      }
       const refused = asks ? askRefusal(e) : null;
       // An older Core refused the field before reading the reply: never submitted.
       if (refused === "reload" && e instanceof HttpError && e.code !== "message_not_submitted") dropPendingReply(slot);
@@ -169,6 +181,7 @@ function TextReply({
   busy,
   onSend,
   label,
+  attach,
 }: {
   /** Which reply it is (HomeComposer). */
   slot: string;
@@ -179,19 +192,27 @@ function TextReply({
   /** Not sendable as it is, though it can still be written in. */
   held?: boolean;
   busy: boolean;
-  onSend: (text: string) => Promise<unknown>;
+  /** The words, the IDs of the images they take, and the files (YN-134, YN-145). */
+  onSend: (text: string, images: string[], files: HomeFile[]) => Promise<unknown>;
   label: string;
+  /** Takes images and files: the words' own field, never a form's. */
+  attach?: HomeAttach;
 }) {
   const t = useStrings(homeText);
+  const [uploading, setUploading] = useState(false);
+  const images = words.images ?? [];
+  const files = words.files ?? [];
+  // Nothing goes while images or files save, nor with any who it goes to can't take.
+  const stopped = held || uploading || (images.length > 0 && !!attach?.refusal) || (files.length > 0 && !!attach?.files?.refusal);
   // Return sends as it does from the conversation's composer (YN-3), whose field this is (YN-91): this device's
   // choice, never while an input method composes; Shift+Return makes a new line.
   const { sendKey } = useDevicePreferences();
   const text = words.text;
   const submit = () => {
     const value = text.trim();
-    if (!value || disabled || held || busy || replyTooLong(value)) return;
+    if (!value || disabled || stopped || busy || replyTooLong(value)) return;
     // The text stays until the reply is delivered.
-    onSend(value).catch(() => {});
+    onSend(value, images.map((image) => image.id), files).catch(() => {});
   };
   return (
     <>
@@ -210,13 +231,15 @@ function TextReply({
           onWords={onWords}
           onSubmit={submit}
           readOnly={disabled}
+          attach={attach}
+          onUploading={setUploading}
         />
         {/* Its key, as the composer's Send says it. */}
         <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
           <button
             type="submit"
             className="primary-button"
-            disabled={disabled || held || busy || !text.trim() || replyTooLong(text)}
+            disabled={disabled || stopped || busy || !text.trim() || replyTooLong(text)}
           >
             {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
             {t.send}
@@ -259,8 +282,23 @@ function formReplyText(form: ClarificationProps, values: ClarificationValues) {
  * on screen when it is sent; `version`, the one it was begun on, is kept by
  * drafts from before and is not used.
  */
-type AskDraft = { key: string; text: string; blocks?: ReplyWords["blocks"]; version?: number; agentId: string; at: string };
+type AskDraft = { key: string; text: string; blocks?: ReplyWords["blocks"]; images?: HomeImage[]; files?: HomeFile[]; version?: number; agentId: string; at: string };
 const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
+
+/** A kept draft as read back: images and files that are not what this page keeps are left out. */
+function checkedDraft(draft: AskDraft | null): AskDraft | null {
+  if (!draft) return draft;
+  let kept = draft;
+  if (kept.images !== undefined && !validHomeImages(kept.images)) {
+    const { images: _dropped, ...rest } = kept;
+    kept = rest;
+  }
+  if (kept.files !== undefined && !validHomeFiles(kept.files)) {
+    const { files: _dropped, ...rest } = kept;
+    kept = rest;
+  }
+  return kept;
+}
 
 /**
  * The form a form's answers were given on (YN-38): its version and, from
@@ -306,7 +344,7 @@ export function AskReply({
   // Kept once the Workspace is known: another one may hold the same project
   // and key (T-195).
   const slot = outboxKey(context.workspaceId, context.projectId, section.key);
-  const stored = () => (context.workspaceId ? askDrafts.load()[slot] ?? null : null);
+  const stored = () => (context.workspaceId ? checkedDraft(askDrafts.load()[slot] ?? null) : null);
   // An unconfirmed send is not a draft: it goes again only as it was, from
   // its own record (below).
   const [draft, setDraft] = useState<AskDraft | null>(stored);
@@ -332,7 +370,8 @@ export function AskReply({
   function keep(next: AskDraft | null) {
     latest.current = next;
     setDraft(next);
-    if (context.workspaceId) setOnlyHere(!askDrafts.save(slot, next?.text.trim() ? next : null));
+    if (context.workspaceId)
+      setOnlyHere(!askDrafts.save(slot, next?.text.trim() || next?.images?.length || next?.files?.length ? next : null));
   }
   // Always to the recipient on screen: one chosen while the text was empty
   // goes with what is written next.
@@ -340,7 +379,7 @@ export function AskReply({
     const { version: _begun, ...was } = latest.current ?? { key: section.key, text: "" };
     keep({ ...was, agentId: target, ...patch, at: new Date().toISOString() } as AskDraft);
   };
-  const writeWords = ({ text, blocks }: ReplyWords) => write({ text, blocks });
+  const writeWords = ({ text, blocks, images, files }: ReplyWords) => write({ text, blocks, images, files });
   const pickTarget = (agentId: string) => {
     setTarget(agentId);
     if (latest.current?.text.trim()) write({ agentId });
@@ -361,6 +400,8 @@ export function AskReply({
   // (for example a reopened question) asks again.
   const [sentVersion, setSentVersion] = useState<number | null>(null);
   const [sentText, setSentText] = useState("");
+  const [sentImages, setSentImages] = useState<string[]>([]);
+  const [sentFiles, setSentFiles] = useState<HomeFile[]>([]);
   const form = useMemo(() => {
     if (!reply.form) return null;
     const parsed = clarificationSchema.safeParse(reply.form);
@@ -453,6 +494,10 @@ export function AskReply({
   const targetOpen = context.agents.some((a) => a.id === target);
   const disabled = context.readOnly || !targetOpen;
   const targetName = context.agents.find((a) => a.id === target)?.name || section.owner.name;
+  // Who it goes to is known here: one that takes no images or files is said before Core would refuse it (YN-134, YN-145).
+  const chosen = context.agents.find((a) => a.id === target);
+  const refusal = chosen && !takesImages(chosen.harness) ? t.cantTakeImages(chosen.name) : null;
+  const filesRefusal = chosen && !agentTakesFiles(chosen) ? t.cantTakeFiles(chosen.name) : null;
   const freeText = reply.freeText;
   const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
   // `reply` answers the version on screen; `follow` says what it is on the
@@ -465,6 +510,8 @@ export function AskReply({
     const { receipt: value, version } = await answer(target, sent, follow);
     setSentVersion(version);
     setSentText(sent.shown);
+    setSentImages(sent.images ?? []);
+    setSentFiles(sent.files ?? []);
     setAgain(false);
     setCarried(false);
     setDelivered((n) => n + 1);
@@ -485,7 +532,10 @@ export function AskReply({
     // Refused because the ask moved on, never delivered: words go to its
     // latest version; a pick or a form's answers are the user's to give again there.
     const follow: Follow | undefined = !was.choice && !was.form
-      ? (now) => ({ text: was.text, shown: was.shown ?? was.text, askVersion: now.version })
+      ? (now) => ({
+          text: was.text, shown: was.shown ?? was.text, askVersion: now.version,
+          ...(was.images?.length ? { images: was.images } : {}), ...(was.files?.length ? { files: was.files } : {}),
+        })
       : undefined;
     let went: { version: number | null };
     try {
@@ -498,6 +548,8 @@ export function AskReply({
     const version = went.version;
     setSentVersion(version);
     setSentText(previewOf(was));
+    setSentImages(was.images ?? []);
+    setSentFiles(was.files ?? []);
     setAgain(false);
     setDelivered((n) => n + 1);
     if (version !== null) onReplied?.(version, before);
@@ -569,6 +621,14 @@ export function AskReply({
         <div>
           <strong>{inRow ? t.yourReply.trim() : t.repliedWaiting(ask.state === "replied" ? section.owner.name : targetName)}</strong>
           {(ask.replyText || sentText) && <p>{ask.replyText || sentText}</p>}
+          <ImageAttachments
+            images={(ask.replyText ? ask.replyImages ?? [] : sentImages).map((id) => ({ id }))}
+            imageUrl={(id, thumb) => homeImageUrl(context.projectId, id, thumb)}
+          />
+          <FileAttachments
+            files={ask.replyText ? ask.replyFiles ?? [] : sentFiles}
+            href={(file) => homeFileUrl(context.projectId, file.id, file.name)}
+          />
           {ask.state === "replied" && repliedThenUpdated(section) && (
             <p className="home-ask-updated">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
           )}
@@ -738,14 +798,17 @@ export function AskReply({
         slot={slot}
         label={t.replyField(section.title)}
         placeholder={prompt}
-        words={{ text: draft?.text ?? "", blocks: draft?.blocks }}
+        words={{ text: draft?.text ?? "", blocks: draft?.blocks, ...(draft?.images?.length ? { images: draft.images } : {}), ...(draft?.files?.length ? { files: draft.files } : {}) }}
         onWords={writeWords}
         disabled={disabled}
         held={!!pending}
         busy={busy}
-        onSend={async (text) => {
+        // Its words' field takes images and files; a pick or a form's answers never do: they stay here.
+        attach={context.readOnly ? undefined : { projectId: context.projectId, refusal, files: { refusal: filesRefusal } }}
+        onSend={async (text, images, files) => {
+          const taken = { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
           // To the version on screen; words go to a newer one as they are.
-          await deliver({ text, shown: text, askVersion: section.version }, (now) => ({ text, shown: text, askVersion: now.version }));
+          await deliver({ text, shown: text, askVersion: section.version, ...taken }, (now) => ({ text, shown: text, askVersion: now.version, ...taken }));
           // Only what was sent leaves: anything written while it was being sent stays.
           if (!latest.current || latest.current.text.trim() === text) keep(null);
           setRestored(false);

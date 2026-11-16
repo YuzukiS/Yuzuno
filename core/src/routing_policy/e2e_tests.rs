@@ -221,7 +221,8 @@ async fn a_routed_deepseek_executors_level_holds_a_write_that_asks_under_ask_and
         assert_eq!(ws.store.permission_level(&agent).unwrap().as_deref(), Some(level), "its level is kept with it");
         until("the executor connected", 180, || (ws.store.detail(&agent).ok()?.agent.connection_state == "connected").then_some(())).await;
         let pid = ws.opencodes.lock().unwrap().get(&agent).and_then(|c| c.server.pid()).expect("its opencode serve's pid");
-        let wanted = format!("OPENCODE_CONFIG_CONTENT={}", crate::permission_levels::opencode_config(level).unwrap()).into_bytes();
+        let attached = std::fs::canonicalize(ws.data_dir.join("input-files").join(&agent)).unwrap();
+        let wanted = format!("OPENCODE_CONFIG_CONTENT={}", crate::permission_levels::opencode_config(level, Some(&attached)).unwrap()).into_bytes();
         assert!(environ(pid).contains(&wanted), "its own opencode serve has the level's rules");
         let turn = until("the executor's first turn", 120, || ws.store.detail(&agent).ok()?.turns.first().cloned()).await;
         let turn_id = turn["id"].as_str().unwrap().to_owned();
@@ -316,7 +317,8 @@ async fn a_routed_deepseek_executor_at_read_only_cannot_delete_a_file() {
     // Connected means its start read every agent's rules back and they keep the level (opencode_check).
     until("the executor connected", 180, || (ws.store.detail(&agent).ok()?.agent.connection_state == "connected").then_some(())).await;
     let pid = ws.opencodes.lock().unwrap().get(&agent).and_then(|c| c.server.pid()).expect("its opencode serve's pid");
-    let wanted = format!("OPENCODE_CONFIG_CONTENT={}", crate::permission_levels::opencode_config("read-only").unwrap()).into_bytes();
+    let attached = std::fs::canonicalize(ws.data_dir.join("input-files").join(&agent)).unwrap();
+    let wanted = format!("OPENCODE_CONFIG_CONTENT={}", crate::permission_levels::opencode_config("read-only", Some(&attached)).unwrap()).into_bytes();
     assert!(environ(pid).contains(&wanted), "its own opencode serve has the read-only rules");
     let turn = until("the executor's first turn", 120, || ws.store.detail(&agent).ok()?.turns.first().cloned()).await;
     let turn_id = turn["id"].as_str().unwrap().to_owned();

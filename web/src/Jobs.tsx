@@ -238,7 +238,9 @@ const ramReading = (raw: string | undefined, t: JobsText) => {
 /** What the Machine row adds to the machine's name: that it is the Core host,
  * and that Core chose it as the machine the submitting Agent runs on. */
 export const targetNote = (job: Pick<Job, "target" | "executor">, t: JobsText = en) => {
-  const here = job.target ? job.target.kind === "local" : !job.executor || job.executor.kind === "local";
+  // This Mac is a macOS Core's own host (YN-108 M2c).
+  const hostKind = (kind?: string) => kind === "local" || kind === "mac";
+  const here = job.target ? hostKind(job.target.kind) : !job.executor || hostKind(job.executor.kind);
   if (job.target?.requested === "agent") {
     return here ? t.hostAgent : t.agentMachine;
   }
@@ -795,6 +797,8 @@ export function Jobs({
       .catch(() => {});
     return () => controller.abort();
   }, [revision, disabled, open]);
+  // A macOS Core runs this host's Jobs on This Mac, in the limited mode.
+  const mac = budget?.mac?.available === true;
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (busy || overLimit(draft.name, coreLimits.jobName)) return;
@@ -824,7 +828,8 @@ export function Jobs({
           .split("\n")
           .map((s) => s.trim())
           .filter(Boolean),
-        guardGit: draft.guardGit,
+        // Not on This Mac: Core refuses it there (YN-108 M2c).
+        guardGit: mac ? false : draft.guardGit,
         // Keep an old unconfirmed ordinary draft's request key unchanged.
         ...(draft.exclusive ? { exclusive: true } : {}),
         ...(draft.gpuMemory?.trim()
@@ -1243,6 +1248,7 @@ export function Jobs({
                       owners={owners}
                       locked={!!pending.current}
                       busy={busy}
+                      mac={mac}
                       onSubmit={submit}
                     />
                   ) : (
@@ -1921,6 +1927,7 @@ function JobForm({
   owners,
   locked,
   busy,
+  mac = false,
   onSubmit,
 }: {
   draft: Draft;
@@ -1929,6 +1936,8 @@ function JobForm({
   /** An unconfirmed submission keeps its Agent and mode. */
   locked: boolean;
   busy: boolean;
+  /** A macOS Core: the job runs on This Mac, its limits declared only. */
+  mac?: boolean;
   onSubmit: (event: React.FormEvent) => void;
 }) {
   const t = useStrings(jobsText);
@@ -1937,6 +1946,7 @@ function JobForm({
     <form className="job-form" onSubmit={onSubmit}>
       <fieldset className="job-form-group">
         <legend>{t.whatRuns}</legend>
+        {mac && <p className="job-footnote job-wide job-mac-host">{t.macHost}</p>}
         <label className="job-wide">
           {t.requesting}
           <select
@@ -2117,11 +2127,13 @@ function JobForm({
           <label className="job-checkbox">
             <input
               type="checkbox"
-              checked={draft.guardGit}
+              checked={mac ? false : draft.guardGit}
+              disabled={mac}
               onChange={(e) => setDraft({ ...draft, guardGit: e.target.checked })}
             />
             {t.guardGit}
           </label>
+          {mac && <p className="job-footnote">{t.macGuardGit}</p>}
           <label>
             {t.inputs}
             <textarea

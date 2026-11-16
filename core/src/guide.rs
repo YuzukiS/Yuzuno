@@ -39,7 +39,7 @@ const TOPICS: [Topic; 9] = [
     Topic { name: "async", covers: "Asynchronous operations: identifiers, mailbox notifications, retries with the same requestId.", section: Some("Asynchronous operations"), reference: None },
     Topic { name: "delivery", covers: "Delivering a code change: candidate, delivery flow, CI, independent review and the result.", section: Some("Delivering"), reference: Some("delivery.md") },
     Topic { name: "results", covers: "Showing a table, chart, metrics or sources in a reply's yuzuno-ui block, with each component's props.", section: Some("Showing a result"), reference: None },
-    Topic { name: "brief", covers: "Keeping the Project Brief: capabilities, sections, layout, attachments and asks.", section: Some("Keeping the Project Brief"), reference: None },
+    Topic { name: "brief", covers: "Keeping the Project Brief: capabilities, sections, layout, attachments, asks and cards that refresh themselves.", section: Some("Keeping the Project Brief"), reference: None },
     Topic { name: "rewind", covers: "Conversation rewind and file restore.", section: None, reference: Some("rewind.md") },
     Topic { name: "maintenance", covers: "When tools and instructions disagree, when changes reach a session, and changing this guide.", section: Some("When the tools disagree with your instructions"), reference: Some("maintenance.md") },
 ];

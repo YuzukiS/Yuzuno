@@ -78,7 +78,7 @@ const LONG = `${"A long line of pasted log text, 0123456789.\n".repeat(60)}end`;
 const done = (status) => ({ id: "YN-90", status, archived: false });
 /** Four requests, newest first as Core gives them: R-1 done (joined to a card), R-2 not confirmed, R-3 in progress
  * with two cards, a follow-up and an Ask, R-4 just said and long. */
-const requests = (t39 = ago(39)) => [
+const requests = (t39 = ago(39), t119 = ago(119)) => [
   { id: "r4", n: 4, text: LONG, textBlocks: null, title: null, createdAt: ago(5), frontAgentId: "d", messageId: "m4",
     delivery: "accepted", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r3", n: 3, text: "Rework the settings page and make the copy casual", textBlocks: null, title: "Settings page layout",
@@ -103,8 +103,8 @@ const requests = (t39 = ago(39)) => [
   { id: "r2", n: 2, text: "Make the backup faster please", textBlocks: null, title: null, createdAt: ago(50), frontAgentId: "d",
     messageId: "m2", delivery: "uncertain", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r1", n: 1, text: "Compare export formats again", textBlocks: null, title: "Export formats", createdAt: ago(120), frontAgentId: "d",
-    messageId: "m1", delivery: "accepted", replies: [], notes: [{ note: "Same thing as the export card", by: desk, at: ago(119) }],
-    routes: [{ kind: "existing", index: 0, request: 1, at: ago(119), state: "done", why: "The same thing as the earlier request", by: desk,
+    messageId: "m1", delivery: "accepted", replies: [], notes: [{ note: "Same thing as the export card", by: desk, at: t119 }],
+    routes: [{ kind: "existing", index: 0, request: 1, at: t119, state: "done", why: "The same thing as the earlier request", by: desk,
       to: { agentId: "x", name: "YN-91 · Design" }, task: "YN-90", cardKey: "yn-90", sectionId: 20 }],
     cards: [{ sectionId: 20, key: "yn-90", title: "Export research", live: false, task: done("done"), responsible: null }],
     state: "done", progress: { cards: 1, ended: 1 },
@@ -288,6 +288,75 @@ test("the requests show the project's titles, states, cards and handoffs; never 
   const list = page.side("requests").textContent;
   for (const said of ["Rework the settings page", "Make the backup faster", "Compare export formats"]) assert.ok(!list.includes(said), said);
   assert.deepEqual(page.errors, []);
+});
+
+// YN-136: a question the front desk answers with no card. R-5 is answered: settled with the done ones,
+// its answer on the card, its handoff saying no card was opened, and no "All done".
+const answered = (state = "answered") => {
+  // One time for the note and the answer it is about: the trail is sorted by
+  // time, and two `ago(2)` calls can land 1 ms apart, which puts the note
+  // first (main 6e9a3cfa, run 43648337865).
+  const at = ago(2);
+  return { id: "r5", n: 5, text: "Is the README done?", textBlocks: null, title: "README status",
+    createdAt: ago(3), frontAgentId: "d", messageId: "m5", delivery: "accepted", replies: [],
+    notes: [{ note: "Yes: YN-115 merged it this morning.", by: desk, at }],
+    routes: [{ kind: "answer", index: 0, request: 5, at, state: "done", why: "Only asks for progress", by: desk,
+      to: null, task: null, cardKey: null, sectionId: null }],
+    cards: [], state, progress: { cards: 0, ended: 0 }, lines: [] };
+};
+
+async function answeredTalk(options, state) {
+  const page = mount(options);
+  page.state.requests = [answered(state), ...page.state.requests];
+  page.window.renderTalk();
+  await until(() => page.request(5), "the requests are read");
+  await tick();
+  return page;
+}
+
+test("an answered request is settled with the done ones, says its answer, and its handoff says no card was opened", async (t) => {
+  const page = await answeredTalk();
+  t.after(page.close);
+  const five = page.request(5);
+  assert.equal(five.querySelector(".request-card-state").textContent, "Answered");
+  assert.equal(five.querySelector(".request-card-answer").textContent, "Answer: Yes: YN-115 merged it this morning.");
+  assert.ok(!five.querySelector(".request-card-wait"), "not waiting");
+  assert.ok(!five.querySelector(".request-card-count"), "no cards");
+  const fold = page.document.querySelector(".project-talk-done");
+  assert.equal(fold.querySelector("summary").textContent, "Done 2");
+  assert.ok(fold.contains(five));
+  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress");
+  // A request still waiting says so as before.
+  assert.equal(page.request(4).querySelector(".request-card-wait").textContent, "The project is looking at it; no card yet.");
+
+  page.button("Handoffs 2", five).click();
+  await tick();
+  const events = [...five.querySelectorAll(".routing-event")];
+  assert.deepEqual(events.map((e) => e.dataset.kind), ["answer", "note"]);
+  assert.equal(events[0].querySelector(".routing-event-text").textContent, "Project answered here, no card: Only asks for progress");
+  assert.ok(!events[0].querySelector("small"), "its why is on its line, not again below");
+  assert.ok(!events[0].querySelector(".routing-event-link"), "no card to open");
+  assert.ok(!five.querySelector('.routing-event[data-kind="done"]'), "no All done for an answer");
+  assert.deepEqual(page.errors, []);
+});
+
+test("an answered request in Chinese, and one reopened by a follow-up", async (t) => {
+  const zh = await answeredTalk({ lang: "zh" });
+  t.after(zh.close);
+  const five = zh.request(5);
+  assert.equal(five.querySelector(".request-card-state").textContent, "已回答");
+  assert.equal(five.querySelector(".request-card-answer").textContent, "回答：Yes: YN-115 merged it this morning.");
+  zh.button("转交记录 2", five).click();
+  await tick();
+  assert.equal(five.querySelector('.routing-event[data-kind="answer"] .routing-event-text').textContent, "项目 直接回答，没开卡：Only asks for progress");
+
+  const reopened = await answeredTalk({}, "waiting");
+  t.after(reopened.close);
+  const again = reopened.request(5);
+  assert.equal(again.querySelector(".request-card-state").textContent, "Waiting for the front desk");
+  assert.ok(!again.querySelector(".request-card-answer"), "no answer while it waits");
+  assert.ok(!reopened.document.querySelector(".project-talk-done").contains(again), "going on again");
+  assert.deepEqual([...zh.errors, ...reopened.errors], []);
 });
 
 test("the conversation has each request's words once, the project's short replies, follow-ups and Core's lines", async (t) => {

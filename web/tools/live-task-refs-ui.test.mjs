@@ -28,7 +28,7 @@ try {
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
-import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
+import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/brief/density.ts"))};
 import {HomeReadContext} from ${JSON.stringify(path.join(root, "src/home/home-read.ts"))};
 import {checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {parseWorkspaceEvent} from ${JSON.stringify(path.join(root, "src/workspace-events.ts"))};

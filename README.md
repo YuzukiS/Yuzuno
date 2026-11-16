@@ -93,7 +93,7 @@ Open **http://127.0.0.1:4317**, create an Agent, choose its runtime and project 
 | --- | --- |
 | **Core** | Linux x86_64 with glibc 2.35 or newer, including WSL2 on Windows. |
 | **Clients** | Chromium-based browsers; the Windows desktop app; the Mac app, built from source; a phone's browser through the [phone entry](docs/independent-core.md#connect-from-a-phone-tailscale-serve). An iPhone app builds from source; there is no Linux desktop app. |
-| **Agent runtimes** | Claude Code (with Node.js 20 or newer), Codex, or [OpenCode](docs/opencode.md) (experimental), installed and signed in where the Agent runs. |
+| **Agent runtimes** | Claude Code (with Node.js 20 or newer), Codex, or [OpenCode](docs/opencode.md) (experimental), installed and signed in where the Agent runs. Optionally [DeepSeek Harness](docs/dsh.md) (`dsh`, Node.js 24.9+), on the Core host only, with a DeepSeek routing key. |
 | **Agent machines** | The Core's computer, or Linux and macOS machines reached over SSH with Python 3. |
 | **Jobs** | Linux: a systemd user manager with cgroup v2 `cpu`, `memory` and `pids`, which enforce each Job's limits. Macs over SSH run Jobs in limited mode, where limits are recorded, not enforced. |
 
@@ -120,7 +120,7 @@ Yuzuno is an early alpha in active development, published as source and as signe
 
 - **No user accounts.** Anyone who can reach Core's port can use the Workspace; keep it on loopback.
 - **Jobs are resource control, not a sandbox.** They run as the Core's user, outside the Agents' sandboxes.
-- **Windows runs Core only in WSL2.** **macOS Core is [being built](docs/macos-core.md)**; a Mac connects to a Core on Linux for now. There is no Linux aarch64 package yet.
+- **Windows runs Core only in WSL2.** **macOS Core (Apple silicon only) is [being built](docs/macos-core.md)**; a Mac connects to a Core on Linux for now. There is no Linux aarch64 package yet.
 - **The apps are not signed by a recognised publisher.** Windows may warn about the installer; the Mac app is signed ad hoc and not notarized; the iPhone app is built from source and lapses after about a week.
 - **OpenCode Agents are experimental**, and some features differ by runtime (for example [rewind](docs/rewind.md)).
 

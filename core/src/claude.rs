@@ -680,14 +680,12 @@ impl Workspace {
         settings: crate::model::AgentSettings,
         birth: Option<crate::workspace::Birth>,
     ) -> Result<Agent> {
+        let name = crate::model::agent_name(&name)?;
         check_settings(&settings)?;
         // An executor is made under its dispatch's work permit (T-34, R3
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
-        if name.trim().is_empty() || name.len() > 100 {
-            bail!("请填写名称（最多 100 字节）");
-        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -708,7 +706,7 @@ impl Workspace {
         let count = self.stored(|store| store.agents()).await?.len();
         let agent = Agent {
             id: id.clone(),
-            name: name.trim().into(),
+            name,
             goal: String::new(),
             work_summary: None, turn_wait: None,
             project_id,
@@ -725,6 +723,8 @@ impl Workspace {
             opencode_session_id: None,
             opencode_version: None,
             opencode_major: None,
+            dsh_session_id: None,
+            dsh_version: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
@@ -856,6 +856,18 @@ impl Workspace {
             }
         });
         let mut start = start_params(&d.agent);
+        // The Agent's own attached files, readable without a prompt and never
+        // writable (YN-145): on this machine its own folder, made before the
+        // rule names it; on a machine, the file cache the helper copies them
+        // to, which the bridge resolves as the helper resolves its data root.
+        if d.agent.remote.is_none() {
+            let (root, agent) = (self.data_dir.clone(), d.agent.id.clone());
+            let dir = tokio::task::spawn_blocking(move || crate::input_files::readable_agent_dir(&root, &agent)).await??;
+            start["readableDirs"] = json!([dir]);
+        } else {
+            let workspace = self.stored(|store| store.workspace_id()).await?;
+            start["readableDirs"] = json!([crate::remote_files::readable_dir(&workspace, &d.agent)?]);
+        }
         // The read-only level (YN-74 ④b): `default` mode, and the tools the
         // bridge removes and the only ones its hook lets run.
         let level = { let agent = id.to_owned(); self.stored(move |store| store.permission_level(&agent)).await? };

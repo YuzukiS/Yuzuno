@@ -9,7 +9,7 @@ export type CandidateState = "chosen" | "skipped" | "unknown" | "failed" | "notT
 /** Why, in both languages as Core words it; `params` carry ISO times. */
 export interface Reason { code: string; message: string; messageZh: string; params?: Record<string, unknown>; condition?: number }
 export interface Reading { what: string; account?: string; value: number | string; observedAt?: string; source?: string }
-export interface RouteAccount { number: number; fingerprint: string; state: "pick" | "ok" | "low" | "unknown" }
+export interface RouteAccount { number: number; fingerprint: string; state: "pick" | "ok" | "low" | "unknown"; weekLeftPct?: number; resetsAt?: string }
 export interface RouteCandidate {
   id: string; label?: string; harness?: string; model?: string; state: CandidateState;
   reasons: Reason[]; readings: Reading[]; accounts?: RouteAccount[];
@@ -48,8 +48,12 @@ const readingOf = (v: unknown): Reading | null => {
 };
 const accountOf = (v: unknown): RouteAccount | null => {
   const a = v as Partial<RouteAccount> | null;
-  return a && typeof a.number === "number" && text(a.fingerprint) && ["pick", "ok", "low", "unknown"].includes(a.state as string)
-    ? { number: a.number, fingerprint: a.fingerprint, state: a.state as RouteAccount["state"] } : null;
+  if (!(a && typeof a.number === "number" && text(a.fingerprint) && ["pick", "ok", "low", "unknown"].includes(a.state as string))) return null;
+  // A Core from before YN-150 carries neither; one from after carries what its reading knew.
+  const weekLeftPct = typeof a.weekLeftPct === "number" && Number.isFinite(a.weekLeftPct) ? a.weekLeftPct : null;
+  const resetsAt = text(a.resetsAt) && Number.isFinite(Date.parse(a.resetsAt)) ? a.resetsAt : null;
+  return { number: a.number, fingerprint: a.fingerprint, state: a.state as RouteAccount["state"],
+    ...(weekLeftPct != null ? { weekLeftPct } : {}), ...(resetsAt ? { resetsAt } : {}) };
 };
 const candidateOf = (v: unknown): RouteCandidate | null => {
   const c = v as Partial<RouteCandidate> | null;

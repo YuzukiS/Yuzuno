@@ -13,22 +13,45 @@ use tokio::{
 
 const SCRIPT: &[u8] = include_bytes!("host.py");
 /// Test fault injection: Cores with these data folders run on macOS, as far
-/// as `local_host` can tell, while the test itself runs on Linux.
+/// as `local_host` and `mac_core` can tell, while the test itself runs on Linux.
 #[cfg(test)]
 pub(super) static NOT_LINUX: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-/// Whether this Core's own host can run local Jobs. They need Linux with a
-/// systemd user manager (host.py); elsewhere, macOS for one, they are refused
-/// before the helper is written or run and before anything is queued.
-pub(super) fn local_host(data: &Path) -> Result<()> {
+fn host_os(data: &Path) -> &'static str {
     #[cfg(test)]
-    let os = if NOT_LINUX.lock().unwrap().iter().any(|d| data.starts_with(d)) { "macos" } else { std::env::consts::OS };
-    #[cfg(not(test))]
-    let (os, _) = (std::env::consts::OS, data);
+    if NOT_LINUX.lock().unwrap().iter().any(|d| data.starts_with(d)) {
+        return "macos";
+    }
+    let _ = data;
+    std::env::consts::OS
+}
+/// Whether this Core runs on a Mac (YN-108 M2c): its own Jobs then run on
+/// This Mac (remote.rs `MAC`) through the Jobs helper a Mac reached over SSH
+/// runs, never as local Jobs here.
+pub(super) fn mac_core(data: &Path) -> bool {
+    host_os(data) == "macos"
+}
+/// Whether this Core's own host can run local Jobs. They need Linux with a
+/// systemd user manager (host.py); elsewhere they are refused before the
+/// helper is written or run and before anything is queued. On macOS a Job
+/// runs on This Mac instead, which has no runs of stages or checkpoints.
+pub(super) fn local_host(data: &Path) -> Result<()> {
+    let os = host_os(data);
+    if os == "macos" {
+        bail!("Runs of stages and checkpoints need Linux with a systemd user manager, and this Core runs on macOS, where job_submit runs a Job on This Mac in the limited mode instead: nothing was written, run or queued on this host. A Job for a registered remote machine (machineId) is not affected by this.");
+    }
     ensure!(
         os == "linux",
         "Local Jobs need Linux with a systemd user manager, and this Core runs on {os}: nothing was written, run or queued on this host. A Job for a registered remote machine (machineId) is not affected by this."
     );
     Ok(())
+}
+/// Whether this host's Jobs budget is used here: by its local Jobs on Linux,
+/// by This Mac's on macOS, where it only queues and records them.
+pub(super) fn budget_host(data: &Path) -> Result<()> {
+    if mac_core(data) {
+        return Ok(());
+    }
+    local_host(data)
 }
 pub(super) async fn helper(data: &Path) -> Result<PathBuf> {
     local_host(data)?;
@@ -178,6 +201,13 @@ pub(super) async fn invoke(
     run(cmd, input, 40).await
 }
 pub(super) async fn machine_info() -> Result<Value> {
+    #[cfg(target_os = "macos")]
+    return mac::machine_info();
+    #[cfg(not(target_os = "macos"))]
+    linux_machine_info().await
+}
+#[cfg(not(target_os = "macos"))]
+async fn linux_machine_info() -> Result<Value> {
     ensure!(
         cfg!(target_os = "linux"),
         "Local managed jobs require Linux with a systemd user manager"
@@ -208,6 +238,72 @@ pub(super) async fn machine_info() -> Result<Value> {
         "hostHeadroomMiB":headroom,
         "scope":"Only jobs managed by this Core share this budget. CPU is a quota, not physical-core reservation. WSL shares host RAM with Windows; other applications are outside this budget."}),
     )
+}
+/// This Mac's facts in Linux's shape (YN-108 M2c): its logical CPUs, its
+/// memory (hw.memsize), the machine (gethostuuid, hashed as /etc/machine-id
+/// is) and this boot (kern.bootsessionuuid, as remote_job.py reads it). macOS
+/// names no available memory or swap in these terms: they are unknown.
+#[cfg(target_os = "macos")]
+mod mac {
+    use anyhow::{ensure, Context, Result};
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use std::ffi::CStr;
+
+    pub(super) fn machine_info() -> Result<Value> {
+        let total = sysctl_u64(c"hw.memsize")? / 1_048_576;
+        let cpus = std::thread::available_parallelism()?.get() as u64;
+        let (suggested, headroom) = super::budget_defaults(cpus, total);
+        let identity = host_uuid()?;
+        let boot = sysctl_string(c"kern.bootsessionuuid")?;
+        Ok(json!({"id":format!("local-{:x}",Sha256::digest(identity.as_bytes())),"name":host_name(),"bootId":boot,
+            "memoryTotalMiB":total,"memoryAvailableMiB":null,"swapTotalMiB":null,"swapFreeMiB":null,"logicalCpus":cpus,
+            "suggestedBudget":suggested,
+            "hostHeadroomMiB":headroom,
+            "scope":"Only Jobs managed by this Core share this budget, and only to queue and record them: macOS holds no CPU or RAM limit, so a Job on This Mac can use more than it declared. Other applications are outside this budget."}))
+    }
+
+    /// A sysctl the kernel answers with a 64-bit integer.
+    fn sysctl_u64(name: &CStr) -> Result<u64> {
+        let mut value = 0u64;
+        let mut size = std::mem::size_of::<u64>();
+        // SAFETY: `name` is NUL-terminated; the kernel writes at most `size`
+        // bytes into `value`, which has that size, and reports what it wrote.
+        let done = unsafe { libc::sysctlbyname(name.as_ptr(), (&raw mut value).cast(), &mut size, std::ptr::null_mut(), 0) };
+        ensure!(done == 0 && size == std::mem::size_of::<u64>(), "sysctl {name:?} could not be read: {}", std::io::Error::last_os_error());
+        Ok(value)
+    }
+
+    /// A sysctl the kernel answers with a string.
+    fn sysctl_string(name: &CStr) -> Result<String> {
+        let mut buffer = [0u8; 256];
+        let mut size = buffer.len();
+        // SAFETY: as for sysctl_u64, into a buffer of `size` bytes.
+        let done = unsafe { libc::sysctlbyname(name.as_ptr(), buffer.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) };
+        ensure!(done == 0 && size <= buffer.len(), "sysctl {name:?} could not be read: {}", std::io::Error::last_os_error());
+        let text = CStr::from_bytes_until_nul(&buffer[..size]).context("its value is not a string")?;
+        let text = text.to_str().context("its value is not UTF-8")?.trim().to_owned();
+        ensure!(!text.is_empty(), "sysctl {name:?} is empty");
+        Ok(text)
+    }
+
+    /// This Mac's hardware UUID, as 32 hex digits.
+    fn host_uuid() -> Result<String> {
+        let mut uuid = [0u8; 16];
+        let wait = libc::timespec { tv_sec: 1, tv_nsec: 0 };
+        // SAFETY: gethostuuid writes exactly 16 bytes (a uuid_t) into `uuid`.
+        let done = unsafe { libc::gethostuuid(uuid.as_mut_ptr(), &wait) };
+        ensure!(done == 0, "this Mac's hardware UUID could not be read: {}", std::io::Error::last_os_error());
+        Ok(uuid.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    fn host_name() -> String {
+        let mut buffer = [0u8; 256];
+        // SAFETY: gethostname writes at most `len` bytes, NUL-terminated when it fits.
+        let done = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+        let name = (done == 0).then(|| CStr::from_bytes_until_nul(&buffer).ok()).flatten();
+        name.and_then(|name| name.to_str().ok()).map(str::trim).filter(|name| !name.is_empty()).unwrap_or("unknown").to_owned()
+    }
 }
 // The budget a Workspace starts with stays conservative. The user may save
 // any budget within the fixed input bounds (see validate_budget): this host's

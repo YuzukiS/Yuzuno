@@ -12,7 +12,10 @@
 //  - an unread report opened from its card comes back with New gone and the
 //    card in the same place and the same group;
 //  - on a phone (390), the whole of Home from the address and a project's
-//    page from its glance; 1440, 940 and Chinese at 1440 otherwise;
+//    page from its glance; 1920, 1440, 940 and Chinese at 1440 otherwise;
+//  - a project's cards in three columns from 932 px of card area and the
+//    team's facts beside them only from 1250 px of page, under them below
+//    that (YN-157);
 //  - nothing is wider than the window, and nothing is sent but the reads and
 //    the opened receipt.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-home-check.mjs
@@ -141,7 +144,7 @@ const words = {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [];
-for (const [name, viewport, phone] of [["1440", { width: 1440, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
+for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
   runs.push({ name: `${name}`, viewport, phone, language: "en" });
 }
 runs.push({ name: "zh-1440", viewport: { width: 1440, height: 1000 }, phone: false, language: "zh-Hans" });
@@ -349,6 +352,32 @@ async function check(run) {
     assert.equal(await page.locator(".project-deck-done .home-history").count(), 1, "the 30-day history is inside Done");
     await shot("project");
     pass("Needs you, In progress and Done in order; Done closed with the history inside; no overflow", titles);
+    // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page,
+    // and the cards' own third column from 932 px of card area.
+    const shape = await page.evaluate(() => {
+      const page = document.querySelector('[data-project-home="p-dev"]');
+      const main = page.querySelector(".project-home-main");
+      const deck = main.querySelector(".project-deck .home-brief");
+      const team = page.querySelector(".project-team");
+      const teamBox = team.getBoundingClientRect(), mainBox = main.getBoundingClientRect();
+      return { width: Math.round(page.clientWidth), cardArea: Math.round(main.clientWidth),
+        columns: getComputedStyle(deck).gridTemplateColumns.split(" ").length,
+        team: team.tagName.toLowerCase(), beside: teamBox.left > mainBox.right - 1,
+        spans: [...new Set([...deck.querySelectorAll("[data-section-key]")].map((el) => el.dataset.deckCols ?? "none"))] };
+    });
+    assert.equal(shape.columns, shape.cardArea >= 1248 ? 4 : shape.cardArea >= 932 ? 3 : shape.cardArea >= 560 ? 2 : 1, JSON.stringify(shape));
+    assert.equal(shape.team, shape.width >= 1250 ? "aside" : "details", `the team beside only from 1250 px: ${JSON.stringify(shape)}`);
+    assert.equal(shape.beside, shape.width >= 1250, JSON.stringify(shape));
+    if (run.name === "1440") {
+      assert.equal(shape.columns, 3, `three columns at 1440: ${JSON.stringify(shape)}`);
+      assert.equal(shape.team, "details", `the team below at 1440: ${JSON.stringify(shape)}`);
+    }
+    if (run.name === "1920") {
+      assert.equal(shape.columns, 4, `four columns at 1920: ${JSON.stringify(shape)}`);
+      assert.equal(shape.team, "aside", `the team beside at 1920: ${JSON.stringify(shape)}`);
+    }
+    if (run.phone) assert.equal(shape.columns, 1, `one column on a phone: ${JSON.stringify(shape)}`);
+    pass("the cards' columns follow the card area, and the team stands beside them only from 1250 px", shape);
     // The unread report: New, open it, read it, come back with New gone and the card in the same place.
     const unread = card("design");
     await unread.scrollIntoViewIfNeeded();

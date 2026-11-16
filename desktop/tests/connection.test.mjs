@@ -9,17 +9,53 @@ import { createRequire } from 'node:module';
 const require = createRequire(new URL('../../web/package.json', import.meta.url));
 const { JSDOM } = require('jsdom');
 const html = await readFile(new URL('../connection/index.html', import.meta.url), 'utf8');
+const i18n = await readFile(new URL('../connection/i18n.js', import.meta.url), 'utf8');
 const script = await readFile(new URL('../connection/connection.js', import.meta.url), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+// Objects made in the page are another realm's: compare their JSON.
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
-async function mount(invoke, nativeWindow) {
+// Tauri's ipc Channel, as the page makes one: the app sends progress to
+// `onmessage`.
+class FakeChannel {
+  constructor() {
+    this.onmessage = undefined;
+  }
+}
+
+async function mount(invoke, nativeWindow, { lang, guideDismissed } = {}) {
   const dom = new JSDOM(html, { url: 'http://tauri.localhost/index.html', runScripts: 'outside-only' });
-  if (invoke) dom.window.__TAURI__ = { core: { invoke } };
+  dom.window.localStorage.clear();
+  if (lang) dom.window.localStorage.setItem('yuzuno.connection.lang', lang);
+  if (guideDismissed) dom.window.localStorage.setItem('yuzuno.connection.guideDismissed', 'yes');
+  if (invoke) dom.window.__TAURI__ = { core: { invoke, Channel: FakeChannel } };
   if (nativeWindow) dom.window.__TAURI__.window = { getCurrentWindow: () => nativeWindow };
+  dom.window.eval(i18n);
   dom.window.eval(script);
   await settle();
   return dom;
 }
+
+const status = (document) => document.querySelector('#connection-message');
+const visible = (element) => {
+  for (let at = element; at; at = at.parentElement) if (at.hidden) return false;
+  return true;
+};
+const offline = 'Core is not reachable yet. Start it in WSL or on your chosen host, then try again.';
+const wslTargets = {
+  platform: 'wsl',
+  available: true,
+  targets: [
+    { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+    { id: 'old-distro', label: 'old-distro', kind: 'wsl', selectable: false, isDefault: false, running: false, boot: 'alone', note: 'WSL 1: run `wsl --set-version old-distro 2` in Windows first.' },
+  ],
+};
+const nothing = { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [], remembered: [] };
+const macTargets = {
+  platform: 'macos',
+  available: true,
+  targets: [{ id: 'this-mac', label: 'This Mac', kind: 'macos', selectable: true, isDefault: true, running: true, boot: 'running' }],
+};
 
 test('an offline Core keeps a visible address and an actionable retry', async () => {
   const calls = [];
@@ -31,8 +67,9 @@ test('an offline Core keeps a visible address and an actionable retry', async ()
   try {
     const document = dom.window.document;
     assert.equal(document.querySelector('#core-url').value, 'http://localhost:4321/');
-    assert.match(document.querySelector('[role="status"]').textContent, /not reachable/);
-    assert.equal(document.querySelector('button').disabled, false);
+    assert.match(status(document).textContent, /not reachable/);
+    assert.equal(document.querySelector('#connect-button').disabled, false);
+    assert.match(document.querySelector('#connect-button').textContent, /Try again/);
     document.querySelector('#core-url').value = 'http://localhost:4322';
     document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
     await settle();
@@ -42,136 +79,1013 @@ test('an offline Core keeps a visible address and an actionable retry', async ()
   } finally { dom.window.close(); }
 });
 
-// T-171: the saved Core in WSL, as connection_info names it.
-const saved = { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, startDistro: 'Ubuntu-24.04', startConfirmed: true };
+// The saved Core this app may start, as connection_info names it (T-171,
+// YN-111): one this computer has started before, and one it has not.
+const saved = {
+  coreUrl: 'http://127.0.0.1:4317/',
+  autoConnect: false,
+  startDistro: 'Ubuntu-24.04',
+  startPlatform: 'wsl',
+  startConfirmed: true,
+  autoStartLocalCore: true,
+};
 const unconfirmed = { ...saved, startConfirmed: false };
-const offline = 'Core is not reachable yet. Start it in WSL or on your chosen host, then try again.';
 
-test('a saved Core in WSL is offered a start once connecting to it fails, and starts once', async () => {
+test('a Core this computer started before is offered as Start, with its badge and switch, and starts once', async () => {
   const calls = [];
   let finish;
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
     if (command === 'connection_info') return saved;
+    if (command === 'local_core_targets') return wslTargets;
     if (command === 'start_core') return new Promise((resolve) => { finish = resolve; });
     if (command === 'connect_core') throw offline;
   });
   try {
     const document = dom.window.document;
     const startButton = document.querySelector('#start-button');
-    assert.equal(document.querySelector('#start-row').hidden, false);
-    assert.equal(startButton.textContent, "Start in this computer's WSL (Ubuntu-24.04)");
-    assert.match(document.querySelector('#start-hint').textContent, /has started it here before/);
+    assert.equal(startButton.textContent, 'Start');
+    assert.equal(startButton.classList.contains('secondary'), false, 'the main action');
+    assert.equal(visible(document.querySelector('#start-badge')), true);
+    assert.equal(document.querySelector('#start-badge').textContent, 'started here before');
+    assert.equal(document.querySelector('#start-desc').textContent, 'Ubuntu-24.04 · port 4317');
+    assert.equal(visible(document.querySelector('#auto-start')), true);
+    assert.equal(document.querySelector('#auto-start').checked, true);
     startButton.click();
     await settle();
-    assert.match(document.querySelector('[role="status"]').textContent, /Starting Core in this computer's WSL \(Ubuntu-24\.04\)/);
-    for (const control of ['#start-button', '#connect-button', '#core-url'])
+    assert.match(document.querySelector('#start-message').textContent, /Starting Core in this computer's WSL \(Ubuntu-24\.04\)/);
+    for (const control of ['#start-button', '#connect-button', '#core-url', '#install-button'])
       assert.equal(document.querySelector(control).disabled, true, control);
     // Clicking again, or connecting, while it starts asks for nothing more.
     startButton.click();
     document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
     await settle();
-    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url),
-      ['http://127.0.0.1:4317/']);
-    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
+    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url), ['http://127.0.0.1:4317/']);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 0);
     finish('http://127.0.0.1:4317/?shell=desktop');
     await settle();
-    assert.match(document.querySelector('[role="status"]').textContent, /Core is running/);
+    assert.match(document.querySelector('#start-message').textContent, /Core is running/);
   } finally { dom.window.close(); }
 });
 
-test('the start is offered only at the saved address, and a failed one keeps both choices', async () => {
+test('Start starts the saved Core at its own address, not what is typed, and a failure is shown and not retried', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
     if (command === 'connection_info') return saved;
+    if (command === 'local_core_targets') return wslTargets;
     if (command === 'start_core') throw 'Port 4317 is used by something other than Yuzuno Core. Nothing was started.';
     throw offline;
   });
   try {
     const document = dom.window.document;
-    const row = document.querySelector('#start-row');
-    const address = document.querySelector('#core-url');
-    address.value = 'http://127.0.0.1:4321';
-    address.dispatchEvent(new dom.window.Event('input'));
-    assert.equal(row.hidden, true);
-    address.value = 'http://127.0.0.1:4317';
-    address.dispatchEvent(new dom.window.Event('input'));
-    assert.equal(row.hidden, false);
+    document.querySelector('#core-url').value = 'http://127.0.0.1:4321';
     document.querySelector('#start-button').click();
     await settle();
-    const status = document.querySelector('[role="status"]');
-    assert.match(status.textContent, /used by something other than Yuzuno Core/);
-    assert.equal(status.dataset.error, 'true');
-    assert.equal(address.value, 'http://127.0.0.1:4317');
-    assert.equal(row.hidden, false);
+    await settle();
+    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url), ['http://127.0.0.1:4317/']);
+    const said = document.querySelector('#start-message');
+    assert.match(said.textContent, /used by something other than Yuzuno Core/);
+    assert.equal(said.dataset.error, 'true');
+    assert.equal(document.querySelector('#core-url').value, 'http://127.0.0.1:4321', 'what was typed stays');
     for (const control of ['#start-button', '#connect-button', '#core-url'])
       assert.equal(document.querySelector(control).disabled, false, control);
+    assert.equal(document.querySelector('#start-button').textContent, 'Start', 'still offered');
+    assert.equal(calls.filter((call) => call.command === 'start_core').length, 1, 'never retried by itself');
   } finally { dom.window.close(); }
 });
 
-test('a start no one has confirmed here says so, and goes once this computer refuses it', async () => {
+test('a start no one has confirmed here keeps its caution, has no badge or switch, and goes once this computer refuses it', async () => {
   const calls = [];
   // Native side: the profile is forgotten after this computer's WSL refused it.
   let offered = unconfirmed;
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
     if (command === 'connection_info') return offered;
+    if (command === 'local_core_targets') return wslTargets;
     if (command === 'start_core') {
-      offered = { ...unconfirmed, startDistro: undefined, startConfirmed: false };
+      offered = { ...unconfirmed, startDistro: null, startPlatform: null, startConfirmed: false };
       throw "Not started: this computer's WSL has no matching installation for this Workspace. If this address leads to another computer, such as an SSH tunnel, start Core there.";
     }
     throw offline;
   });
   try {
     const document = dom.window.document;
-    const row = document.querySelector('#start-row');
-    assert.equal(row.hidden, false);
-    assert.equal(document.querySelector('#start-button').textContent, "Start in this computer's WSL");
-    const hint = document.querySelector('#start-hint').textContent;
-    assert.match(hint, /says its Core is in WSL \(Ubuntu-24\.04\)/);
-    assert.match(hint, /only if it is installed in this computer's WSL/);
+    const startButton = document.querySelector('#start-button');
+    assert.equal(startButton.textContent, 'Start');
+    assert.equal(startButton.classList.contains('secondary'), true);
+    assert.equal(visible(document.querySelector('#start-badge')), false);
+    assert.equal(visible(document.querySelector('#auto-start')), false, 'the switch acts on confirmed starts only');
+    const desc = document.querySelector('#start-desc').textContent;
+    assert.match(desc, /says its Core is in WSL \(Ubuntu-24\.04\)/);
+    assert.match(desc, /only if it is installed in this computer's WSL/);
     // No identifiers or folders on the page.
     assert.doesNotMatch(document.body.textContent, /\/home\/|workspace-?id|[0-9a-f]{8}-[0-9a-f]{4}/i);
-    document.querySelector('#start-button').click();
+    startButton.click();
     await settle();
-    assert.match(document.querySelector('[role="status"]').textContent, /no matching installation/);
-    assert.equal(row.hidden, true, 'no longer offered');
+    await settle();
+    assert.match(document.querySelector('#start-message').textContent, /no matching installation/);
+    assert.equal(startButton.textContent, 'Find…', 'no longer offered');
     assert.equal(calls.filter((call) => call.command === 'start_core').length, 1, 'never retried by itself');
   } finally { dom.window.close(); }
 });
 
-test('a start that fails for another reason keeps what was offered, and is not retried', async () => {
+test('without a start this app can run, Start looks for an installed Core', async () => {
+  for (const info of [
+    { ...saved, startDistro: undefined, startPlatform: undefined, startConfirmed: false },
+    // A start no back end here can run: the app names no platform.
+    { ...saved, startPlatform: null },
+  ]) {
+    const dom = await mount(async (command) => {
+      if (command === 'connection_info') return info;
+      if (command === 'local_core_targets') return wslTargets;
+      throw offline;
+    });
+    try {
+      const document = dom.window.document;
+      assert.equal(document.querySelector('#start-button').textContent, 'Find…');
+      assert.equal(document.querySelector('#start-button').classList.contains('secondary'), true);
+      assert.equal(visible(document.querySelector('#start-badge')), false);
+      assert.equal(visible(document.querySelector('#auto-start')), false);
+      assert.match(document.querySelector('#start-desc').textContent, /already installed in a WSL distribution/);
+    } finally { dom.window.close(); }
+  }
+});
+
+// YN-111: starting this computer's confirmed Core when the app opens.
+function autoStartCase(info, connectError = offline) {
   const calls = [];
+  const invoke = async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return info;
+    if (command === 'local_core_targets') return wslTargets;
+    if (command === 'connect_core') throw connectError;
+    if (command === 'start_core') throw 'WSL gave no answer within 3 minutes. Core may still be starting: try Connect in a moment. Nothing was stopped, and nothing is tried again by itself.';
+  };
+  return { calls, invoke };
+}
+
+test('when the app opens and its confirmed Core does not answer, it is started once, and a failure is not retried', async () => {
+  const { calls, invoke } = autoStartCase({ ...saved, autoConnect: true });
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    await settle();
+    const order = calls.map((call) => call.command).filter((command) => ['connect_core', 'start_core'].includes(command));
+    assert.deepEqual(order, ['connect_core', 'start_core']);
+    assert.equal(calls.find((call) => call.command === 'start_core').args.url, 'http://127.0.0.1:4317/');
+    const said = document.querySelector('#start-message');
+    assert.match(said.textContent, /no answer within 3 minutes/);
+    assert.equal(said.dataset.error, 'true');
+    await settle();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'start_core').length, 1, 'once');
+    assert.equal(document.querySelector('#start-button').disabled, false, 'it can still be started by hand');
+  } finally { dom.window.close(); }
+});
+
+test('the app says it is starting by itself while it does', async () => {
+  let finish;
+  const entry = { id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: true };
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return { ...saved, autoConnect: true, saved: [entry], selected: 'core-1' };
+    if (command === 'local_core_targets') return wslTargets;
+    if (command === 'connect_core') throw offline;
+    if (command === 'start_core') return new Promise((resolve) => { finish = resolve; });
+  });
+  try {
+    assert.match(dom.window.document.querySelector('#start-message').textContent, /Starting this computer's Core automatically/);
+    assert.match(dom.window.document.querySelector('#intro').textContent, /did not answer\. Start it/);
+    finish('http://127.0.0.1:4317/?shell=desktop');
+    await settle();
+  } finally { dom.window.close(); }
+});
+
+test('nothing starts by itself unless the Core is confirmed, the switch is on, the app just opened and nothing answered', async () => {
+  const cases = [
+    ['unconfirmed', { ...unconfirmed, autoConnect: true }],
+    ['switched off', { ...saved, autoConnect: true, autoStartLocalCore: false }],
+    ['opened from the menu', { ...saved, autoConnect: false }],
+    ['no platform here', { ...saved, autoConnect: true, startPlatform: null }],
+    ['another Workspace answered', { ...saved, autoConnect: true }, '“Home” answered as a different workspace than the one saved under that name, so it was not opened.'],
+  ];
+  for (const [name, info, error] of cases) {
+    const { calls, invoke } = autoStartCase(info, error);
+    const dom = await mount(invoke);
+    try {
+      await settle();
+      assert.equal(calls.filter((call) => call.command === 'start_core').length, 0, name);
+    } finally { dom.window.close(); }
+  }
+});
+
+test('a record without the switch is on, and turning it off goes through the app', async () => {
+  const calls = [];
+  let refuse = false;
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'connection_info') return unconfirmed;
-    if (command === 'start_core') throw "WSL could not run Yuzuno's start in Ubuntu-24.04: The operation timed out. Start Core in WSL yourself, or check that the distribution and installation still exist.";
+    if (command === 'connection_info') return { ...saved, autoStartLocalCore: undefined };
+    if (command === 'local_core_targets') return wslTargets;
+    if (command === 'local_core_auto_start') {
+      if (refuse) throw { code: 'notSaved', message: 'This computer could not save the change (disk full). The setting is as it was.' };
+      return { enabled: args.enabled };
+    }
+  });
+  try {
+    const document = dom.window.document;
+    const box = document.querySelector('#auto-start');
+    assert.equal(box.checked, true, 'absent means on');
+    box.checked = false;
+    box.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.deepEqual(plain(calls.filter((call) => call.command === 'local_core_auto_start').map((call) => call.args)), [{ enabled: false }]);
+    assert.equal(box.checked, false);
+    refuse = true;
+    box.checked = true;
+    box.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(box.checked, false, 'a change that was not saved is not shown as made');
+    assert.match(document.querySelector('#auto-start-message').textContent, /could not save the change/);
+    // Changing the switch starts nothing.
+    assert.equal(calls.filter((call) => call.command === 'start_core').length, 0);
+  } finally { dom.window.close(); }
+});
+
+// YN-111: a system on which this app has no local Core back end.
+test('where this app cannot install or start Core, only Connect is shown', async () => {
+  const targets = { platform: null, available: false, reason: 'unsupported', targets: [] };
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info')
+      return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, saved: [{ id: 'core-1', name: 'Studio', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }], remembered: [] };
+    if (command === 'local_core_targets') return targets;
     throw offline;
   });
   try {
     const document = dom.window.document;
-    document.querySelector('#start-button').click();
-    await settle();
-    await settle();
-    assert.match(document.querySelector('[role="status"]').textContent, /operation timed out/);
-    assert.equal(document.querySelector('#start-row').hidden, false);
-    assert.equal(document.querySelector('#start-button').textContent, "Start in this computer's WSL");
-    assert.equal(document.querySelector('#start-button').disabled, false);
-    assert.equal(calls.filter((call) => call.command === 'start_core').length, 1);
+    assert.equal(visible(document.querySelector('#act-start')), false);
+    assert.equal(visible(document.querySelector('#act-install')), false);
+    assert.equal(visible(document.querySelector('#act-connect')), true);
+    assert.equal(visible(document.querySelector('#guide')), false, 'its steps are local steps this system has none of');
+    assert.equal(document.querySelector('#intro').textContent, 'Your last workspace did not answer. Try again, or choose another.');
   } finally { dom.window.close(); }
 });
 
-test('no start is offered without a saved Core in WSL, or while Core answers', async () => {
-  for (const [info, connected] of [[{ ...saved, startDistro: undefined }, false], [saved, true]]) {
+// YN-108 M4: the Mac app now installs and starts Core on this Mac, with the
+// Mac's own words, and a start there says so.
+test('the Mac shows the local actions, the Mac steps and a start on this Mac', async () => {
+  const calls = [];
+  const macStart = {
+    coreUrl: 'http://127.0.0.1:4317/',
+    autoConnect: false,
+    startDistro: null,
+    startPlatform: 'macos',
+    startConfirmed: true,
+    autoStartLocalCore: true,
+  };
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return macStart;
+    if (command === 'local_core_targets') return macTargets;
+    if (command === 'start_core') return new Promise(() => {});
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    assert.equal(visible(document.querySelector('#act-start')), true);
+    assert.equal(visible(document.querySelector('#act-install')), true);
+    assert.equal(document.querySelector('#start-desc').textContent, 'This Mac · port 4317');
+    assert.equal(document.querySelector('[data-t="installDesc"]').textContent, 'Downloads the signed release, checks it, installs it into the folder you choose, and starts it.');
+    document.querySelector('#start-button').click();
+    await settle();
+    assert.match(document.querySelector('#start-message').textContent, /Starting Core on this Mac/);
+    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url), ['http://127.0.0.1:4317/']);
+  } finally { dom.window.close(); }
+});
+
+test('the first-run guide on the Mac has Mac steps', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return nothing;
+    if (command === 'local_core_targets') return macTargets;
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    const guide = document.querySelector('#guide');
+    assert.equal(visible(guide), true);
+    assert.match(guide.textContent, /Check this Mac/);
+    assert.match(guide.textContent, /No administrator rights/);
+    assert.match(document.querySelector('#intro').textContent, /on this Mac/);
+    assert.match(document.querySelector('#address-hint').textContent, /Core on this Mac/);
+  } finally { dom.window.close(); }
+});
+
+test('the Mac install checks this Mac and offers its own location rules', async () => {
+  const calls = [];
+  const macCheck = {
+    target: 'this-mac',
+    platform: 'macos',
+    user: 'someone',
+    home: '/Users/someone',
+    checks: [
+      { id: 'arch', level: 'required', state: 'ok', detail: 'Apple silicon' },
+      { id: 'macos', level: 'required', state: 'ok', detail: '27.0' },
+      { id: 'paths', level: 'required', state: 'ok' },
+      { id: 'port', level: 'required', state: 'ok', detail: '4317' },
+      { id: 'clt', level: 'recommended', state: 'ok' },
+    ],
+    installation: null,
+    defaults: { installDir: '/Users/someone/Library/Application Support/yuzuno/managed-core', dataDir: '/Users/someone/Library/Application Support/yuzuno/workspace', port: 4317 },
+    installable: true,
+  };
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return { ...nothing, autoConnect: false };
+    if (command === 'local_core_targets') return macTargets;
+    if (command === 'local_core_check') return macCheck;
+    if (command === 'local_core_install') return new Promise(() => {});
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    // The page lists targets when it opens; the click lists them again.
+    calls.length = 0;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.deepEqual(calls.map((call) => call.command), ['local_core_targets', 'local_core_check']);
+    assert.equal(document.querySelector('#distro-label').textContent, 'Install to');
+    assert.equal(document.querySelector('#checks').textContent.includes('Folders are in your home'), true);
+    assert.equal(document.querySelector('#where-install').textContent, '~/Library/Application Support/yuzuno/managed-core');
+    // A Mac folder may hold a space; the WSL rule's "no spaces" does not apply.
+    document.querySelector('#change').click();
+    document.querySelector('#edit-install').value = '~/My Core';
+    document.querySelector('#edit-install').dispatchEvent(new dom.window.Event('input'));
+    await settle();
+    assert.equal(document.querySelector('#where-error').hidden, true, document.querySelector('#where-error').textContent);
+    document.querySelector('#go').click();
+    await settle();
+    const install = calls.find((call) => call.command === 'local_core_install');
+    assert.equal(install.args.installDir, '/Users/someone/My Core');
+    assert.equal(install.args.dataDir, '/Users/someone/Library/Application Support/yuzuno/workspace');
+  } finally { dom.window.close(); }
+});
+
+// YN-111: the first-run guide.
+
+test('the first-run guide shows while nothing is saved and the default address does not answer, until it is dismissed', async () => {
+  const invoke = async (command) => {
+    if (command === 'connection_info') return nothing;
+    if (command === 'local_core_targets') return wslTargets;
+    throw offline;
+  };
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    const guide = document.querySelector('#guide');
+    assert.equal(visible(guide), true);
+    assert.equal(guide.querySelectorAll('ol li').length, 3);
+    assert.match(guide.textContent, /No administrator rights/);
+    assert.match(document.querySelector('#intro').textContent, /this computer's WSL/);
+    document.querySelector('#guide-dismiss').click();
+    assert.equal(visible(guide), false);
+    assert.equal(dom.window.localStorage.getItem('yuzuno.connection.guideDismissed'), 'yes');
+  } finally { dom.window.close(); }
+  const again = await mount(invoke, undefined, { guideDismissed: true });
+  try {
+    assert.equal(visible(again.window.document.querySelector('#guide')), false, 'not shown again');
+  } finally { again.window.close(); }
+});
+
+test('the guide is not shown once something is saved, before the address is tried, when the list cannot be read, or on the Mac', async () => {
+  for (const [info, targets = wslTargets] of [
+    [{ ...nothing, saved: [{ id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: false }] }],
+    [{ ...nothing, remembered: [{ url: 'http://127.0.0.1:4319/', workspaceId: 'w-three' }] }],
+    [{ ...nothing, autoConnect: false }],
+    [{ ...nothing, savedError: 'it could not be read (denied)' }],
+  ]) {
     const dom = await mount(async (command) => {
       if (command === 'connection_info') return info;
-      if (command === 'connect_core' && connected) return 'http://127.0.0.1:4317/?shell=desktop';
+      if (command === 'local_core_targets') return targets;
       throw offline;
     });
     try {
-      assert.equal(dom.window.document.querySelector('#start-row').hidden, true);
+      assert.equal(visible(dom.window.document.querySelector('#guide')), false, JSON.stringify(info));
     } finally { dom.window.close(); }
+  }
+});
+
+// YN-111: install. Targets, then the check, then the install, in that order,
+// with what the check gave.
+const check = {
+  target: 'main-distro',
+  platform: 'wsl',
+  user: 'someone',
+  home: '/home/someone',
+  checks: [
+    { id: 'wsl2', level: 'required', state: 'ok' },
+    { id: 'user', level: 'required', state: 'ok', detail: 'someone' },
+    { id: 'arch', level: 'required', state: 'ok', detail: 'x86_64' },
+    { id: 'glibc', level: 'required', state: 'ok', detail: '2.39' },
+    { id: 'paths', level: 'required', state: 'ok' },
+    { id: 'tools', level: 'required', state: 'ok' },
+    { id: 'port', level: 'required', state: 'ok', detail: '4318' },
+    { id: 'node', level: 'recommended', state: 'ok', detail: 'v22.11.0' },
+    { id: 'git', level: 'recommended', state: 'ok', detail: 'git version 2.43.0' },
+    { id: 'python3', level: 'recommended', state: 'ok', detail: 'Python 3.12.3' },
+    { id: 'systemd', level: 'recommended', state: 'ok', detail: 'running' },
+    { id: 'claude', level: 'recommended', state: 'ok', detail: '2.1.3 (Claude Code)' },
+    { id: 'codex', level: 'recommended', state: 'missing', detail: 'Not found on PATH.' },
+    { id: 'gh', level: 'recommended', state: 'missing', detail: 'gh is not signed in to github.com (gh auth login).' },
+  ],
+  installation: null,
+  defaults: { installDir: '/home/someone/.local/share/yuzuno-core', dataDir: '/home/someone/.local/share/yuzuno-core-data', port: 4318 },
+  installable: true,
+};
+const installed = {
+  ...check,
+  installation: { installDir: '/home/someone/.local/share/yuzuno-core', releaseId: '20261113-b870c92', port: 4317, workspaceId: 'ws-1', recorded: true },
+  installable: false,
+};
+
+function installCase(answers = {}) {
+  const calls = [];
+  const pending = {};
+  const invoke = async (command, args) => {
+    calls.push({ command, args });
+    if (command in answers) return answers[command](args);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return wslTargets;
+    if (command === 'local_core_check') return check;
+    if (command === 'local_core_install') return new Promise((resolve, reject) => Object.assign(pending, { resolve, reject, channel: args.onProgress }));
+    if (command === 'local_core_cancel') return null;
+  };
+  return { calls, pending, invoke };
+}
+
+const steps = (document) => [...document.querySelectorAll('#steps li')].map((step) => step.dataset.state);
+
+test('installing lists the targets, checks the chosen one, then installs with its defaults and shows each step', async () => {
+  const { calls, pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    calls.length = 0;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.deepEqual(calls.map((call) => call.command), ['local_core_targets', 'local_core_check']);
+    assert.equal(calls[1].args.target, 'main-distro', 'the default, selectable one');
+    const options = [...document.querySelectorAll('#distro option')];
+    assert.deepEqual(options.map((option) => option.disabled), [false, true], 'WSL 1 is listed and cannot be chosen');
+    assert.match(options[1].textContent, /wsl --set-version old-distro 2/);
+    assert.equal(visible(document.querySelector('#install-body')), true);
+    assert.equal(document.querySelector('#act-install').dataset.open, 'true');
+    // Required and recommended items, each with how to fix what is missing.
+    const checks = document.querySelector('#checks');
+    assert.deepEqual([...checks.querySelectorAll('h3')].map((heading) => heading.textContent), ['Required', 'Recommended']);
+    assert.equal(checks.querySelector('[data-id="codex"]').dataset.state, 'missing');
+    assert.match(checks.querySelector('[data-id="gh"]').textContent, /gh auth login/);
+    assert.match(checks.querySelector('[data-id="glibc"]').textContent, /2\.35 or newer.*2\.39/);
+    assert.equal(document.querySelector('#where-install').textContent, '~/.local/share/yuzuno-core');
+    assert.equal(document.querySelector('#where-port').textContent, '4318');
+    const go = document.querySelector('#go');
+    assert.equal(go.textContent, 'Install and start');
+    assert.equal(go.disabled, false);
+    go.click();
+    await settle();
+    const install = calls.find((call) => call.command === 'local_core_install');
+    assert.deepEqual(
+      { target: install.args.target, installDir: install.args.installDir, dataDir: install.args.dataDir, port: install.args.port },
+      { target: 'main-distro', installDir: '/home/someone/.local/share/yuzuno-core', dataDir: '/home/someone/.local/share/yuzuno-core-data', port: 4318 },
+    );
+    assert.ok(install.args.onProgress instanceof FakeChannel, 'progress comes through a Channel');
+    assert.deepEqual(steps(document), ['todo', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo']);
+    pending.channel.onmessage({ phase: 'release', detail: 'core-20261113-b870c92' });
+    pending.channel.onmessage({ phase: 'download', done: 18_200_000, total: 34_400_000 });
+    assert.deepEqual(steps(document), ['done', 'doing', 'todo', 'todo', 'todo', 'todo', 'todo']);
+    assert.match(document.querySelector('#steps').textContent, /core-20261113-b870c92/);
+    assert.match(document.querySelector('#steps li[data-phase="download"]').textContent, /18\.2 \/ 34\.4 MB/);
+    assert.equal(document.querySelector('#steps li[data-phase="download"] .bar span').style.width, '53%');
+    assert.match(document.querySelector('#steps li[data-phase="copy"]').textContent, /Copy into main-distro/);
+    const cancel = document.querySelector('#progress-cancel');
+    assert.equal(cancel.textContent, 'Cancel install');
+    assert.equal(cancel.disabled, false);
+    // A step never goes back.
+    pending.channel.onmessage({ phase: 'release' });
+    assert.deepEqual(steps(document), ['done', 'doing', 'todo', 'todo', 'todo', 'todo', 'todo']);
+    for (const control of ['#connect-button', '#start-button', '#install-button', '#core-url'])
+      assert.equal(document.querySelector(control).disabled, true, control);
+    pending.resolve('http://127.0.0.1:4318/?shell=desktop');
+    await settle();
+    assert.deepEqual(steps(document), ['done', 'done', 'done', 'done', 'done', 'done', 'done']);
+  } finally { dom.window.close(); }
+});
+
+test('cancelling is offered only in the first four steps', async () => {
+  const { calls, pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#go').click();
+    await settle();
+    const cancel = document.querySelector('#progress-cancel');
+    for (const phase of ['release', 'download', 'verify', 'copy']) {
+      pending.channel.onmessage(phase === 'copy' ? { phase, done: 8_600_000, total: 34_400_000 } : { phase });
+      assert.equal(cancel.textContent, 'Cancel install', phase);
+      assert.equal(cancel.disabled, false, phase);
+      assert.equal(visible(document.querySelector('#progress-hint')), true, phase);
+    }
+    // Copying in reports its bytes as downloading does.
+    const copy = document.querySelector('#steps li[data-phase="copy"]');
+    assert.match(copy.textContent, /8\.6 \/ 34\.4 MB/);
+    assert.equal(copy.querySelector('.bar span').style.width, '25%');
+    for (const phase of ['register', 'start', 'open']) {
+      pending.channel.onmessage({ phase });
+      assert.equal(cancel.disabled, true, phase);
+      assert.equal(cancel.textContent, 'Registering, almost done', phase);
+      assert.equal(visible(document.querySelector('#progress-hint')), false, phase);
+    }
+    cancel.click();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'local_core_cancel').length, 0);
+    pending.resolve('http://127.0.0.1:4318/?shell=desktop');
+    await settle();
+  } finally { dom.window.close(); }
+});
+
+test('a cancelled install says what was cleaned up, and trying again installs again', async () => {
+  const { calls, pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#go').click();
+    await settle();
+    pending.channel.onmessage({ phase: 'download', done: 1_000_000, total: 34_400_000 });
+    document.querySelector('#progress-cancel').click();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'local_core_cancel').length, 1);
+    assert.equal(document.querySelector('#progress-cancel').textContent, 'Cancelling…');
+    pending.reject({ code: 'cancelled', message: 'The install was cancelled.' });
+    await settle();
+    assert.equal(visible(document.querySelector('#problem')), true);
+    assert.equal(document.querySelector('#problem-title').textContent, 'The installation was cancelled');
+    assert.match(document.querySelector('#problem-cleaned').textContent, /Nothing was written into the distribution/);
+    assert.match(document.querySelector('#problem-detail').textContent, /cancelled: The install was cancelled\./);
+    assert.equal(document.querySelector('#steps li[data-phase="download"]').dataset.state, 'failed');
+    assert.equal(visible(document.querySelector('#progress-cancel')), false);
+    for (const control of ['#connect-button', '#start-button', '#core-url'])
+      assert.equal(document.querySelector(control).disabled, false, control);
+    document.querySelector('#retry').click();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'local_core_install').length, 2, 'installed again');
+    assert.equal(visible(document.querySelector('#problem')), false);
+    pending.resolve('http://127.0.0.1:4318/?shell=desktop');
+    await settle();
+  } finally { dom.window.close(); }
+});
+
+test('an install that fails after it is registered keeps the installation, and trying again checks first', async () => {
+  const { calls, pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#go').click();
+    await settle();
+    for (const phase of ['release', 'download', 'verify', 'copy', 'register', 'start']) pending.channel.onmessage({ phase });
+    pending.reject({ code: 'firstStart', message: 'Core exited before it answered.' });
+    await settle();
+    assert.equal(document.querySelector('#problem-title').textContent, 'The installation did not finish');
+    assert.match(document.querySelector('#problem-body').textContent, /installed, but its first start did not finish/);
+    assert.match(document.querySelector('#problem-cleaned').textContent, /installation stays/);
+    assert.match(document.querySelector('#problem-detail').textContent, /Core exited before it answered/);
+    assert.deepEqual(steps(document), ['done', 'done', 'done', 'done', 'done', 'failed', 'todo']);
+    const before = calls.filter((call) => call.command === 'local_core_check').length;
+    document.querySelector('#retry').click();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'local_core_check').length, before + 1, 'checked again');
+    assert.equal(calls.filter((call) => call.command === 'local_core_install').length, 1, 'not installed over it');
+    assert.equal(visible(document.querySelector('#pane-check')), true);
+  } finally { dom.window.close(); }
+});
+
+test('the cases the app names have their own words; any other follows the step it stopped at', async () => {
+  const cases = [
+    [[], { code: 'busy', message: 'Core is already being started.' }, /Another start or installation is under way/, /Nothing was changed/],
+    [[], { code: 'notInstallable', message: 'Required: port (Port 4400 is in use).' }, /cannot be installed here yet/, /Nothing was changed/],
+    [['release', 'download', 'verify', 'copy', 'register'], { code: 'tooOld', message: 'The release has no install command. The temporary folder was removed.' },
+      /cannot be installed from the app yet/, /Nothing was installed/],
+    [['release', 'download', 'verify', 'copy', 'register', 'start'], { code: 'starting', message: 'Core did not answer within 120 s.' },
+      /did not answer within two minutes/, /may still be starting/],
+    [['release', 'download', 'verify'], { code: 'verifyFailed', message: 'The archive checksum does not match.' },
+      /did not pass the signature or checksum check/, /only in memory/],
+  ];
+  for (const [phases, error, body, cleaned] of cases) {
+    const { pending, invoke } = installCase();
+    const dom = await mount(invoke);
+    try {
+      const document = dom.window.document;
+      document.querySelector('#install-button').click();
+      await settle();
+      document.querySelector('#go').click();
+      await settle();
+      for (const phase of phases) pending.channel.onmessage({ phase });
+      pending.reject(error);
+      await settle();
+      assert.match(document.querySelector('#problem-body').textContent, body, error.code);
+      assert.match(document.querySelector('#problem-cleaned').textContent, cleaned, error.code);
+      assert.equal(document.querySelector('#problem-detail').textContent, `${error.code}: ${error.message}`);
+    } finally { dom.window.close(); }
+  }
+});
+
+test('a check that is not installable offers no install, and says how to fix each required item', async () => {
+  const failing = {
+    ...check,
+    checks: check.checks.map((item) =>
+      item.id === 'glibc' ? { ...item, state: 'missing', detail: 'glibc 2.31; Core needs 2.35 or newer.' }
+        : item.id === 'tools' ? { ...item, state: 'unknown' }
+          : item),
+    installable: false,
+  };
+  failing.checks.push({ id: 'futureItem', level: 'recommended', state: 'missing', detail: 'Something a later app checks.' });
+  const { invoke } = installCase({ local_core_check: () => failing });
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const glibc = document.querySelector('[data-id="glibc"]');
+    assert.equal(glibc.dataset.state, 'bad');
+    assert.match(glibc.textContent, /Core needs 2\.35 or newer/);
+    assert.match(glibc.textContent, /Ubuntu 22\.04 or later/);
+    assert.equal(document.querySelector('[data-id="tools"]').dataset.state, 'unknown');
+    // An id this page does not know shows what the check said.
+    assert.equal(document.querySelector('[data-id="futureItem"]').textContent, '–Something a later app checks.');
+    assert.equal(document.querySelector('#go').disabled, true);
+    assert.equal(visible(document.querySelector('#change')), false);
+  } finally { dom.window.close(); }
+});
+
+test('a changed location is checked here and sent with home expanded', async () => {
+  const { calls, pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#change').click();
+    const go = document.querySelector('#go');
+    const field = (selector, value) => {
+      const input = document.querySelector(selector);
+      input.value = value;
+      input.dispatchEvent(new dom.window.Event('input'));
+    };
+    assert.equal(document.querySelector('#edit-install').value, '~/.local/share/yuzuno-core');
+    field('#edit-port', '80');
+    assert.equal(go.disabled, true);
+    assert.match(document.querySelector('#where-error').textContent, /1024 to 65535/);
+    field('#edit-port', '4400');
+    field('#edit-data', '~/.local/share/yuzuno-core/data');
+    assert.equal(go.disabled, true, 'one inside the other');
+    assert.match(document.querySelector('#where-error').textContent, /neither the same folder nor one inside the other/);
+    field('#edit-data', '~/my data');
+    assert.equal(go.disabled, true, 'spaces are not passed to WSL');
+    field('#edit-data', '~/core-data');
+    assert.equal(go.disabled, false);
+    go.click();
+    await settle();
+    const install = calls.find((call) => call.command === 'local_core_install');
+    assert.deepEqual(
+      { installDir: install.args.installDir, dataDir: install.args.dataDir, port: install.args.port },
+      { installDir: '/home/someone/.local/share/yuzuno-core', dataDir: '/home/someone/core-data', port: 4400 },
+    );
+    pending.resolve('http://127.0.0.1:4400/?shell=desktop');
+    await settle();
+  } finally { dom.window.close(); }
+});
+
+test('Find looks in a distribution and starts the Core already installed there', async () => {
+  const { calls, invoke } = installCase({ local_core_check: () => installed, local_core_start: () => 'http://127.0.0.1:4317/?shell=desktop' });
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    calls.length = 0;
+    document.querySelector('#start-button').click();
+    await settle();
+    assert.equal(visible(document.querySelector('#start-body #local-panel')), true, 'it opens in the start action');
+    assert.equal(document.querySelector('#distro-label').textContent, 'Look in');
+    assert.equal(visible(document.querySelector('#checks')), false);
+    assert.match(document.querySelector('#found-title').textContent, /already installed in main-distro/);
+    assert.match(document.querySelector('#found-body').textContent, /20261113-b870c92 · port 4317 · workspace ws-1/);
+    const go = document.querySelector('#go');
+    assert.equal(go.textContent, 'Start it');
+    go.click();
+    await settle();
+    assert.deepEqual(calls.map((call) => call.command), ['local_core_targets', 'local_core_check', 'local_core_start']);
+    assert.equal(calls[2].args.target, 'main-distro');
+    assert.match(document.querySelector('#check-message').textContent, /Core is running/);
+  } finally { dom.window.close(); }
+});
+
+test('Find with nothing installed moves to installing in that distribution', async () => {
+  const { invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#start-button').click();
+    await settle();
+    assert.equal(visible(document.querySelector('#install-body #local-panel')), true);
+    assert.equal(document.querySelector('#start-button').textContent, 'Find…');
+    assert.match(document.querySelector('#not-found').textContent, /No Core is installed in main-distro yet/);
+    assert.equal(document.querySelector('#go').textContent, 'Install and start');
+  } finally { dom.window.close(); }
+});
+
+test('a Core already installed is started, not installed again, and a failed start is shown', async () => {
+  const { calls, invoke } = installCase({
+    local_core_check: () => ({ ...installed, installation: { ...installed.installation, port: null, workspaceId: null, recorded: false } }),
+    local_core_start: () => { throw { code: 'startFailed', message: 'core.15 or older: start it once in WSL by hand, or update it.' }; },
+  });
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.match(document.querySelector('#found-body').textContent, /not started yet/);
+    assert.equal(visible(document.querySelector('#where')), false);
+    document.querySelector('#go').click();
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'local_core_install').length, 0);
+    const said = document.querySelector('#check-message');
+    assert.match(said.textContent, /start it once in WSL by hand/);
+    assert.equal(said.dataset.error, 'true');
+  } finally { dom.window.close(); }
+});
+
+const riskyTargets = {
+  platform: 'wsl',
+  available: true,
+  targets: [
+    { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+    { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: false, boot: 'risky', bootDetail: 'It is stopped and another WSL distribution is running.' },
+  ],
+};
+
+test('a stopped distribution with another one running is explained, not checked', async () => {
+  const calls = [];
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return riskyTargets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 1, 'the default is checked');
+    calls.length = 0;
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 0, 'never checked');
+    const card = document.querySelector('#boot-card');
+    assert.equal(visible(card), true);
+    assert.match(card.textContent, /other-distro was not started/);
+    assert.match(card.textContent, /wsl --terminate/);
+    assert.match(card.textContent, /It is stopped and another WSL distribution is running/);
+    assert.equal(visible(document.querySelector('#go')), false);
+    assert.equal(visible(document.querySelector('#checks')), false);
+    // Back to the default, which may start: checked again, no card.
+    select.value = 'main-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 1);
+    assert.equal(visible(card), false);
+  } finally { dom.window.close(); }
+});
+
+test('opening the panel with only a risky distribution checks nothing', async () => {
+  const calls = [];
+  const targets = {
+    platform: 'wsl',
+    available: true,
+    targets: [
+      { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: false, isDefault: true, running: false, boot: 'own', note: 'WSL 1: run `wsl --set-version main-distro 2` in Windows first.' },
+      { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: false, boot: 'risky', bootDetail: 'It is stopped and another WSL distribution is running.' },
+    ],
+  };
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'local_core_check').length, 0);
+    assert.equal(document.querySelector('#distro').value, 'other-distro');
+    assert.equal(visible(document.querySelector('#boot-card')), true);
+    assert.equal(visible(document.querySelector('#go')), false);
+  } finally { dom.window.close(); }
+});
+
+test('Check again reads the running names again, then checks once nothing else runs', async () => {
+  const calls = [];
+  let targets = riskyTargets;
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return check;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    assert.equal(visible(document.querySelector('#boot-card')), true);
+    // The user stopped the default distribution meanwhile.
+    targets = {
+      ...riskyTargets,
+      targets: [
+        { ...riskyTargets.targets[0], running: false, boot: 'own' },
+        { ...riskyTargets.targets[1], boot: 'alone' },
+      ],
+    };
+    calls.length = 0;
+    document.querySelector('#recheck').click();
+    await settle();
+    await settle();
+    assert.deepEqual(calls, ['local_core_targets', 'local_core_check']);
+    assert.equal(visible(document.querySelector('#boot-card')), false);
+    assert.equal(visible(document.querySelector('#go')), true);
+  } finally { dom.window.close(); }
+});
+
+test('a non-default distribution is not told to turn systemd on', async () => {
+  const targets = {
+    platform: 'wsl',
+    available: true,
+    targets: [
+      { id: 'main-distro', label: 'main-distro', kind: 'wsl', selectable: true, isDefault: true, running: true, boot: 'running' },
+      { id: 'other-distro', label: 'other-distro', kind: 'wsl', selectable: true, isDefault: false, running: true, boot: 'running' },
+    ],
+  };
+  const peersCheck = {
+    ...check,
+    target: 'other-distro',
+    checks: [
+      ...check.checks,
+      { id: 'peers', level: 'required', state: 'missing', detail: 'systemd runs in this distribution, which is not the default one; it shares Windows interop and cgroups with the other distributions.' },
+    ].map((item) => (item.id === 'systemd' ? { ...item, state: 'missing' } : item)),
+    installable: false,
+  };
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], remembered: [] };
+    if (command === 'local_core_targets') return targets;
+    if (command === 'local_core_check') return peersCheck;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const select = document.querySelector('#distro');
+    select.value = 'other-distro';
+    select.dispatchEvent(new dom.window.Event('change'));
+    await settle();
+    const systemd = document.querySelector('[data-id="systemd"]');
+    assert.match(systemd.textContent, /competes with the default one for Windows interop/);
+    assert.doesNotMatch(systemd.textContent, /add \[boot\] systemd=true/);
+    assert.match(systemd.textContent, /cannot run local Jobs/);
+    const peers = document.querySelector('[data-id="peers"]');
+    assert.equal(peers.dataset.state, 'bad');
+    assert.match(peers.textContent, /Use the default distribution/);
+    assert.equal(document.querySelector('#go').disabled, true);
+  } finally { dom.window.close(); }
+});
+
+test('a guard stop shows what changed and its commands, and runs nothing more', async () => {
+  const { pending, invoke } = installCase();
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    document.querySelector('#go').click();
+    await settle();
+    for (const phase of ['release', 'download', 'verify', 'copy', 'register']) pending.channel.onmessage({ phase });
+    pending.reject({
+      code: 'peerChanged',
+      message:
+        "The WSL distributions share Windows interop and one cgroup tree, and what main-distro can see changed while this app was working on main-distro: the Windows interop entry WSLInterop is gone, so Windows programs cannot start in any distribution. Nothing further was run in main-distro. Restore commands, run by you as root in main-distro: printf '%s' ':WSLInterop:M::MZ::/init:P' > /proc/sys/fs/binfmt_misc/register",
+    });
+    await settle();
+    const card = document.querySelector('#guard-stop');
+    assert.equal(visible(card), true);
+    assert.match(card.textContent, /Stopped: the shared state changed/);
+    assert.match(document.querySelector('#guard-text').textContent, /WSLInterop is gone/);
+    assert.match(document.querySelector('#guard-text').textContent, /printf '%s'/);
+    assert.match(document.querySelector('#problem-body').textContent, /guard saw the shared state/);
+    assert.match(document.querySelector('#problem-cleaned').textContent, /card below holds the restore commands/);
+    assert.equal(document.querySelector('#steps li[data-phase="register"]').dataset.state, 'failed');
+  } finally { dom.window.close(); }
+});
+
+test('without WSL, the page says how to install it and installs nothing', async () => {
+  const { calls, invoke } = installCase({
+    local_core_targets: () => ({ platform: 'wsl', available: false, reason: 'noWsl', message: 'WSL is not installed on this computer.', targets: [] }),
+  });
+  const dom = await mount(invoke);
+  try {
+    const document = dom.window.document;
+    document.querySelector('#install-button').click();
+    await settle();
+    const said = document.querySelector('#check-message').textContent;
+    assert.match(said, /wsl --install/);
+    assert.match(said, /https:\/\/learn\.microsoft\.com\/windows\/wsl\/install/);
+    assert.equal(calls.filter((call) => call.command === 'local_core_check').length, 0);
+    assert.equal(visible(document.querySelector('#act-install')), true);
+  } finally { dom.window.close(); }
+});
+
+// YN-111: Chinese and English.
+test('every key is in both languages, and switching redraws every text the page owns', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return { ...saved, autoConnect: true };
+    if (command === 'local_core_targets') return wslTargets;
+    if (command === 'connect_core') throw offline;
+    if (command === 'start_core') throw 'WSL gave no answer within 3 minutes.';
+  });
+  try {
+    const { document } = dom.window;
+    const words = dom.window.YUZUNO_I18N;
+    assert.deepEqual(Object.keys(words.zh).sort(), Object.keys(words.en).sort());
+    for (const key of Object.keys(words.zh)) assert.notEqual(words.zh[key], '', key);
+    const owned = [...document.querySelectorAll('[data-t]')];
+    assert.ok(owned.length > 30);
+    for (const lang of ['zh', 'en', 'zh']) {
+      document.querySelector(`[data-lang="${lang}"]`).click();
+      assert.equal(document.documentElement.lang, lang === 'zh' ? 'zh-CN' : 'en');
+      assert.equal(dom.window.localStorage.getItem('yuzuno.connection.lang'), lang);
+      for (const element of owned) {
+        const expected = words[lang][element.dataset.t];
+        assert.notEqual(expected, undefined, element.dataset.t);
+        if ('html' in element.dataset) assert.equal(element.innerHTML.replace(/<br>/g, '<br />'), expected, element.dataset.t);
+        else assert.equal(element.textContent, expected, element.dataset.t);
+      }
+      for (const element of document.querySelectorAll('[data-t-label]'))
+        assert.equal(element.getAttribute('aria-label'), words[lang][element.dataset.tLabel]);
+      assert.equal(document.querySelector(`[data-lang="${lang}"]`).getAttribute('aria-pressed'), 'true');
+    }
+    // What the page drew itself follows too.
+    assert.equal(document.querySelector('#start-button').textContent, '启动');
+    assert.equal(document.querySelector('#start-desc').textContent, 'Ubuntu-24.04 · 端口 4317');
+    assert.equal(document.querySelector('#intro').textContent, words.zh.introLocal);
+    // A command's own words stay as they are, under Details, below a title
+    // in the page's language.
+    const said = status(document);
+    assert.match(said.textContent, /^没能打开这个工作区。/);
+    assert.equal(said.querySelector('details code').textContent, offline);
+    assert.match(document.querySelector('#start-message').textContent, /^Core 没有启动。/);
+    assert.equal(document.querySelector('#start-message details code').textContent, 'WSL gave no answer within 3 minutes.');
+    document.querySelector('[data-lang="en"]').click();
+    assert.equal(said.textContent, `${words.en.connectFailed} ${offline}`, 'in English it follows the page sentence');
+    assert.equal(said.querySelector('details'), null);
+  } finally { dom.window.close(); }
+});
+
+test('the page starts in the system language, or the one picked here before', async () => {
+  const idleInfo = async (command) => (command === 'connection_info' ? { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false } : undefined);
+  const dom = await mount(idleInfo, undefined, { lang: 'zh' });
+  try {
+    assert.equal(dom.window.document.querySelector('#connect-title').textContent, '连接别的 Core');
+    assert.equal(dom.window.document.documentElement.lang, 'zh-CN');
+  } finally { dom.window.close(); }
+  const english = await mount(idleInfo);
+  try {
+    // JSDOM's navigator.language is en-US.
+    assert.equal(english.window.document.querySelector('#connect-title').textContent, 'Connect to another Core');
+  } finally { english.window.close(); }
+});
+
+test('the new controls are at least 11px', async () => {
+  const css = await readFile(new URL('../connection/connection.css', import.meta.url), 'utf8');
+  for (const selector of ['.badge', '.lang button', 'button.quiet', '.toggle', '.check small', '.step-detail', '.footer-tag']) {
+    const rule = css.match(new RegExp(`(?:^|\\n|\\})\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
+    assert.ok(rule, selector);
+    const size = rule[1].match(/font-size:\s*([\d.]+)px/);
+    assert.ok(size && Number(size[1]) >= 11, `${selector}: ${size?.[1]}`);
   }
 });
 
@@ -179,11 +1093,13 @@ test('opening Connection from the native menu waits for a deliberate new selecti
   const calls = [];
   const dom = await mount(async (command) => {
     calls.push(command);
+    if (command === 'local_core_targets') return wslTargets;
     return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false };
   });
   try {
-    assert.deepEqual(calls, ['set_appearance', 'connection_info']);
-    assert.match(dom.window.document.querySelector('[role="status"]').textContent, /Choose a workspace/);
+    assert.deepEqual(calls.slice(0, 2), ['set_appearance', 'connection_info']);
+    assert.equal(calls.filter((command) => ['connect_core', 'start_core', 'local_core_check', 'local_core_install'].includes(command)).length, 0);
+    assert.match(status(dom.window.document).textContent, /Choose a workspace/);
   } finally { dom.window.close(); }
 });
 
@@ -194,16 +1110,18 @@ test('invalid launch configuration is shown without silently connecting to the d
     return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, error: 'Core URLs cannot contain a username or password.' };
   });
   try {
-    assert.deepEqual(calls, ['set_appearance', 'connection_info']);
-    assert.match(dom.window.document.querySelector('[role="status"]').textContent, /username or password/);
+    assert.equal(calls.filter((command) => command === 'connect_core').length, 0);
+    assert.match(status(dom.window.document).textContent, /username or password/);
   } finally { dom.window.close(); }
 });
 
 test('a plain browser preview never claims that a workspace is connected', async () => {
   const dom = await mount();
   try {
-    assert.equal(dom.window.document.querySelector('button').disabled, true);
-    assert.match(dom.window.document.querySelector('[role="status"]').textContent, /preview/);
+    const document = dom.window.document;
+    for (const control of ['#connect-button', '#start-button', '#install-button'])
+      assert.equal(document.querySelector(control).disabled, true, control);
+    assert.match(status(document).textContent, /preview/);
   } finally { dom.window.close(); }
 });
 
@@ -240,8 +1158,8 @@ test('a frameless window shows its own controls and moves from the top band only
     press(document.querySelector('#core-url'), 40);
     press(document.querySelector('[data-window="close"]'), 20);
     assert.deepEqual(frame.calls, ['startDragging', 'toggleMaximize']);
-    // The Connect button is still the page's first button.
-    assert.equal(document.querySelector('button').id, 'connect-button');
+    // The page's own controls come before the window's in reading order.
+    assert.equal(document.querySelector('button').closest('.window-controls'), null);
   } finally { dom.window.close(); }
 });
 
@@ -328,6 +1246,7 @@ test('saved workspaces are listed apart by workspace, with only one able to star
     const document = dom.window.document;
     const items = [...document.querySelectorAll('#saved-list li')];
     assert.equal(items.length, 2);
+    assert.equal(visible(document.querySelector('#saved-list')), true, 'inside Connect');
     assert.deepEqual(items.map((item) => item.querySelector('.saved-name').textContent), ['Home', 'Home']);
     assert.deepEqual(items.map((item) => item.querySelector('.saved-url').textContent), [
       'http://127.0.0.1:4317/',
@@ -361,21 +1280,21 @@ test('a workspace that answers as another one is refused, and nothing is opened'
     const document = dom.window.document;
     document.querySelector('#saved-list li .saved-open').click();
     await settle();
-    const status = document.querySelector('[role="status"]');
-    assert.match(status.textContent, /answered as a different workspace/);
-    assert.equal(status.dataset.error, 'true');
-    assert.doesNotMatch(status.textContent, /Opening|Connected/i);
+    const said = status(document);
+    assert.match(said.textContent, /answered as a different workspace/);
+    assert.equal(said.dataset.error, 'true');
+    assert.doesNotMatch(said.textContent, /Opening|Connected/i);
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, 'asked once, not retried');
     // The list is still there to choose another; refusing is not forgetting.
     assert.equal(document.querySelectorAll('#saved-list li').length, 2);
     // It must not offer removal as a way to separate two workspaces' data:
     // removing forgets the entry and its start profile, and clears nothing
     // this app has stored for that address.
-    assert.doesNotMatch(status.textContent, /forgets its drafts|clear.*drafts|removing .* drafts/i);
-    assert.match(status.textContent, /does not clear what is stored for that address/);
+    assert.doesNotMatch(said.textContent, /forgets its drafts|clear.*drafts|removing .* drafts/i);
+    assert.match(said.textContent, /does not clear what is stored for that address/);
     // Removing is no longer offered as a way round this, because it is
     // not one: the address stays remembered.
-    assert.match(status.textContent, /not a way to open another one here/);
+    assert.match(said.textContent, /not a way to open another one here/);
   } finally { dom.window.close(); }
 });
 
@@ -388,13 +1307,13 @@ test('an unreadable list is not an empty list: nothing is listed, nothing is wri
   });
   try {
     const document = dom.window.document;
-    const status = document.querySelector('[role="status"]');
+    const said = status(document);
     assert.equal(document.querySelector('#saved-cores').hidden, true, 'nothing is listed');
-    assert.match(status.textContent, /could not be used \(one of its Workspaces is not one this app opens\)/);
-    assert.match(status.textContent, /has not been changed/);
-    assert.match(status.textContent, /will not open a workspace/);
+    assert.match(said.textContent, /could not be used \(one of its Workspaces is not one this app opens\)/);
+    assert.match(said.textContent, /has not been changed/);
+    assert.match(said.textContent, /will not open a workspace/);
     // Never "enter it again and it will be saved": connecting is refused.
-    assert.doesNotMatch(status.textContent, /saves it anew|saved anew/);
+    assert.doesNotMatch(said.textContent, /saves it anew|saved anew/);
     // Nothing offers to discard the record: losing what is saved is not
     // this page's to offer.
     assert.equal(
@@ -431,13 +1350,13 @@ test('renaming and removing change this computer only, and removing asks first',
     assert.equal(calls.at(-1).command, 'rename_core');
     assert.equal(calls.at(-1).args.name, ' Studio ', 'what was typed is sent; the app trims and bounds it');
     assert.equal(document.querySelector('#saved-list li .saved-name').textContent, 'Studio');
-    assert.match(document.querySelector('[role="status"]').textContent, /the workspace itself is unchanged/);
+    assert.match(status(document).textContent, /the workspace itself is unchanged/);
 
     document.querySelector('#saved-list li .saved-remove').click();
     await settle();
     assert.equal(calls.at(-1).command, 'remove_core');
     assert.equal(document.querySelectorAll('#saved-list li').length, 1, 'the other one stays');
-    assert.match(document.querySelector('[role="status"]').textContent, /no longer saved on this computer/);
+    assert.match(status(document).textContent, /no longer saved on this computer/);
   } finally { dom.window.close(); }
 });
 
@@ -491,9 +1410,26 @@ test('an address with no workspace saved is shown as remembered, and forgetting 
     assert.equal(calls.at(-1).args.url, 'http://127.0.0.1:4319/');
     assert.equal(document.querySelector('#remembered').hidden, true, 'it is no longer remembered');
     assert.match(
-      document.querySelector('[role="status"]').textContent,
+      status(document).textContent,
       /no longer remembers which workspace was at .*4319.*still there/,
     );
+  } finally { dom.window.close(); }
+});
+
+test('the questions before removing and forgetting are asked in Chinese too, and say the same', async () => {
+  let asked = '';
+  const dom = await mount(async (command) => (command === 'connection_info' ? withRemembered : undefined), undefined, { lang: 'zh' });
+  try {
+    dom.window.confirm = (text) => {
+      asked = text;
+      return false;
+    };
+    dom.window.document.querySelector('#remembered-list li .saved-forget').click();
+    assert.match(asked, /存的东西还在/);
+    assert.match(asked, /不会删除它们/);
+    assert.match(asked, /不会连接任何东西/);
+    dom.window.document.querySelector('#saved-list li .saved-remove').click();
+    assert.match(asked, /不会被清掉/);
   } finally { dom.window.close(); }
 });
 
@@ -540,4 +1476,18 @@ test('removing is not done when it is not confirmed', async () => {
     assert.equal(calls.filter((command) => command === 'remove_core').length, 0);
     assert.equal(dom.window.document.querySelectorAll('#saved-list li').length, 2);
   } finally { dom.window.close(); }
+});
+
+// The page reaches the app through its own commands and nothing else: no
+// event listener, no plugin, no shell (YN-107 design 7, part 4).
+test('the page calls only the connection page commands', async () => {
+  const allowed = JSON.parse(await readFile(new URL('../capabilities/connection.json', import.meta.url), 'utf8')).permissions
+    .filter((permission) => permission.startsWith('allow-'))
+    .map((permission) => permission.slice('allow-'.length).replace(/-/g, '_'));
+  const invoked = [...script.matchAll(/invoke\('([a-z_]+)'/g)].map((match) => match[1]);
+  assert.ok(invoked.length > 10);
+  for (const command of new Set(invoked)) assert.ok(allowed.includes(command), command);
+  for (const command of ['local_core_targets', 'local_core_check', 'local_core_install', 'local_core_start', 'local_core_cancel', 'local_core_auto_start', 'start_core'])
+    assert.ok(invoked.includes(command), command);
+  assert.doesNotMatch(script, /__TAURI__\??\.(event|shell|fs|http|process)|plugin:/);
 });

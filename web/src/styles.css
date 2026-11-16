@@ -233,15 +233,6 @@ p {
   background: #dde1d4;
   margin-right: 2px;
 }
-.workspace-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: calc(12px + var(--font-adjust, 3px));
-  font-weight: 550;
-  letter-spacing: 0.05px;
-}
 .toolbar-context {
   font-size: calc(10px + var(--font-adjust, 3px));
   color: #a2a593;
@@ -3080,9 +3071,6 @@ p {
   .toolbar-separator {
     display: none;
   }
-  .workspace-name {
-    font-size: calc(10px + var(--font-adjust, 3px));
-  }
   .toolbar-actions {
     gap: 10px;
   }
@@ -3267,9 +3255,6 @@ p {
   }
   .toolbar-middle .icon-button {
     display: none;
-  }
-  .workspace-name {
-    font-size: calc(9px + var(--font-adjust, 3px));
   }
   .conversation-title p {
     max-width: 180px;
@@ -3581,7 +3566,6 @@ p {
   overscroll-behavior: contain;
 }
 .app.phone .toolbar-middle > .icon-button,
-.app.phone .workspace-name,
 .app.phone .toolbar-context,
 .app.phone .early-label {
   display: none;

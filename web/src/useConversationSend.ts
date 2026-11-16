@@ -1,4 +1,5 @@
 import { sameMessageImages } from "./image-input";
+import { sameMessageFiles, type SavedFile } from "./file-ref";
 import { useEffect, useRef, useState } from "react";
 import { HttpError, postWithin } from "./api";
 import type {
@@ -65,7 +66,7 @@ export function useConversationSend(
   agentId: string,
   turnId: string | null,
   refresh: () => void,
-  harness?: "codex" | "claude" | "opencode",
+  harness?: "codex" | "claude" | "opencode" | "dsh",
   detail?: AgentDetail | null,
 ) {
   // A failed send may contain a large paste. Each Workspace's records are
@@ -209,8 +210,9 @@ export function useConversationSend(
         ? [...messages, next]
         : messages.map((m, i) => (i === index ? next : m));
     });
-  async function submit(text: string, question: QuestionSource | null = null, images: readonly string[] = [], clarification?: MessageInput["clarification"], textBlocks?: MessageInput["textBlocks"], skills: readonly SkillRef[] = []) {
-    if (images.length && (harness !== "codex" && harness !== "claude" && harness !== "opencode")) throw new Error("Images are supported by Codex, Claude and OpenCode Agents.");
+  async function submit(text: string, question: QuestionSource | null = null, images: readonly string[] = [], clarification?: MessageInput["clarification"], textBlocks?: MessageInput["textBlocks"], skills: readonly SkillRef[] = [], files: readonly SavedFile[] = []) {
+    if (images.length && (harness !== "codex" && harness !== "claude" && harness !== "opencode" && harness !== "dsh")) throw new Error("Images are supported by Codex, Claude, OpenCode and DeepSeek Harness Agents.");
+    if (files.length && (harness !== "codex" && harness !== "claude" && harness !== "opencode")) throw new Error("Files go to Codex, Claude and OpenCode Agents.");
     if (skills.length && (harness !== "codex" || question || clarification)) throw new Error("Skills are sent only to a Codex Agent, in a new or follow-up message.");
     // Covers both the composer and answers to nonblocking model questions.
     // Native pending approvals use their own respond endpoint and stay usable.
@@ -253,6 +255,7 @@ export function useConversationSend(
     // A retry retains the original receipt payload and its display boundaries.
     const input: MessageInput =
       previous?.text === text && sameMessageImages(previous.images, images)
+        && sameMessageFiles(previous.files, files)
         && JSON.stringify(previous.clarification) === JSON.stringify(clarification)
         && JSON.stringify(previous.skills ?? []) === JSON.stringify(skills)
         ? previous
@@ -261,6 +264,7 @@ export function useConversationSend(
             text,
             ...(textBlocks ? { textBlocks } : {}),
             ...(images.length ? { images: [...images] } : {}),
+            ...(files.length ? { files: files.map(({ id, name, bytes }) => ({ id, name, bytes })) } : {}),
             ...(skills.length ? { skills: skills.map(({ name, path }) => ({ name, path })) } : {}),
             expectedTurnId: turnId,
             question,

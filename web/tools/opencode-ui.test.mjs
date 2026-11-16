@@ -341,14 +341,19 @@ test("an OpenCode Agent's settings choose only its model and that model's varian
   } finally { page.close(); }
 });
 
-// T-32 (Lead 4669): a running OpenCode newer than the verified release is noted, never refused.
-test("an OpenCode Agent's settings say when its OpenCode is newer than the verified one, and nothing for that one", async () => {
+// T-32 (Lead 4669): a running OpenCode newer than the verified release is noted, never refused;
+// YN-127: noted as unverified, since support stops at that release, with how to install it.
+test("an OpenCode Agent's settings say when its OpenCode is newer than the one support stops at, and nothing for that one", async () => {
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
-  for (const [native, said] of [
-    [{ version: "2.9.1", verified: "2.2.5", note: "newer than the verified 2.2.5" }, "OpenCode 2.9.1 is newer than the verified 2.2.5."],
-    [{ version: "2.2.5", verified: "2.2.5" }, null],
+  for (const [native, said, language] of [
+    [{ version: "2.9.1", verified: "2.2.5", note: "OpenCode support stops at 2.2.5: this release is unverified, and problems with it are not fixed; to be safe, install 2.2.5 with npm i -g @opencode/cli@2.2.5" },
+      "OpenCode support stops at 2.2.5: 2.9.1 is unverified, and problems with it are not fixed. To be safe, install 2.2.5 (npm i -g @opencode/cli@2.2.5).", "en"],
+    [{ version: "2.9.1", verified: "2.2.5", note: "OpenCode support stops at 2.2.5: this release is unverified, and problems with it are not fixed; to be safe, install 2.2.5 with npm i -g @opencode/cli@2.2.5" },
+      "OpenCode 支持停在 2.2.5：2.9.1 未核验，出问题不修；要稳妥请装 2.2.5（npm i -g @opencode/cli@2.2.5）。", "zh-Hans"],
+    [{ version: "2.2.5", verified: "2.2.5" }, null, "en"],
   ]) {
-    const page = mount((url) => url.endsWith("/agents/oc/models") ? { models: [], opencode: native } : undefined);
+    const page = mount((url) => url.endsWith("/agents/oc/models") ? { models: [], opencode: native } : undefined,
+      (window) => window.localStorage.setItem("yuzuno.language", JSON.stringify({ language })));
     try {
       page.window.renderSettings({ agent, onSaved() {} }); await tick();
       page.document.querySelector(".agent-settings-button").click();

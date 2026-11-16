@@ -20,7 +20,7 @@ import { useStrings } from "../../i18n";
 import { chartTip } from "../../Tip";
 import { briefText } from "./brief-text";
 import { useBrief } from "./BriefContext";
-import { useBriefDensity } from "../home-density";
+import { useBriefDensity } from "./density";
 import {
   chartPath,
   formatTime,

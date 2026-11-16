@@ -102,7 +102,7 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
         (policy(vec![deepseek(), deepseek()]), "candidates[1].id", "used twice"),
         (with(&|c| c["id"] = json!("C_1")), "candidates[0].id", "a-z, 0-9"),
         (with(&|c| c["label"] = json!("x".repeat(61))), "candidates[0].label", "60"),
-        (with(&|c| c["harness"] = json!("gemini")), "candidates[0].harness", "claude, codex or opencode"),
+        (with(&|c| c["harness"] = json!("gemini")), "candidates[0].harness", "claude, codex, opencode or dsh"),
         (with(&|c| c["model"] = json!("deepseek-flash")), "candidates[0].model", "<provider>/<model>"),
         (with(&|c| c["reasoningEffort"] = json!("high")), "candidates[0].reasoningEffort", "Only a Codex"),
         (with(&|c| c["unknown"] = json!("wait")), "candidates[0].unknown", "skip"),
@@ -134,6 +134,25 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
     let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 0, "policy": policy(vec![]), "extra": 1})), vec![]).await;
     assert_eq!((status, refused["code"].clone()), (StatusCode::BAD_REQUEST, json!("invalid")), "the body is exactly {{expectedVersion, policy}}");
     assert_eq!(lab.ws.store.routing_policy().unwrap().version, 0, "no refused save changed it");
+}
+
+#[tokio::test]
+async fn a_pool_is_saved_with_either_pick_rule_and_no_other() {
+    let lab = lab();
+    let pool = |pick: Value| json!({"enabled": true, "whenNone": "wait", "dailyApiCapUsd": 5, "candidates": [
+        {"id": "c-pool", "enabled": true, "harness": "claude", "model": "opus",
+         "credential": {"kind": "pool", "manager": "cswap", "accounts": "all", "pick": pick}, "conditions": []}]});
+    let mut version = 0;
+    for pick in [json!("mostRemaining"), json!("soonestReset")] {
+        let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": version, "policy": pool(pick.clone())})), vec![]).await;
+        assert_eq!(status, StatusCode::OK, "{pick}: {saved}");
+        assert_eq!(saved["policy"]["candidates"][0]["credential"]["pick"], pick, "kept as sent");
+        version = saved["version"].as_u64().unwrap();
+    }
+    let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": version, "policy": pool(json!("fullest"))})), vec![]).await;
+    assert_eq!((status, refused["code"].clone(), refused["path"].clone()),
+        (StatusCode::BAD_REQUEST, json!("invalid"), json!("candidates[0].credential.pick")), "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("soonestReset"), "{refused}");
 }
 
 #[tokio::test]
@@ -274,4 +293,76 @@ async fn evaluate_and_simulate_answer_from_cores_own_evaluator_for_a_draft_or_th
         let (status, _) = post(&lab.local, uri, json!({}), vec![("authorization", "Bearer an-agents-token".into())]).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: an Agent's credential is refused");
     }
+}
+
+/// YN-139: a machine condition names 1 to 16 machines, each once: `local` or a machine's
+/// id. A save keeps it as sent, on any credential (only routing decides where one runs);
+/// a machine no longer registered is not checked for.
+#[tokio::test]
+async fn a_machine_condition_is_saved_as_sent_and_each_bad_list_is_refused_at_its_path() {
+    let lab = lab();
+    let login = |machines: Value| json!({"id": "c-mac", "enabled": true, "harness": "claude", "model": "opus",
+        "credential": {"kind": "login"}, "conditions": [{"kind": "machine", "machines": machines}]});
+    let mut pool = login(json!(["local"]));
+    pool["id"] = json!("c-pool");
+    pool["credential"] = json!({"kind": "pool", "manager": "cswap", "accounts": "all"});
+    let sent = policy(vec![login(json!(["ab70ea20-0000-4000-8000-000000000001", "local"])), pool]);
+    let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 0, "policy": sent.clone()})), vec![]).await;
+    assert_eq!((status, saved["policy"].clone()), (StatusCode::OK, sent), "{saved}");
+    let (_, read) = call(&lab.local, "GET", None, vec![]).await;
+    assert_eq!(read, saved, "read as saved");
+    let path = "candidates[0].conditions[0].machines";
+    let seventeen: Vec<String> = (0..17).map(|n| format!("lab-{n}")).collect();
+    for machines in [json!([]), json!(["local", "local"]), json!(["lab_mac"]), json!(["x".repeat(65)]), json!([""]), json!([7]),
+        json!("local"), Value::Null, json!(seventeen)] {
+        let mut sent = policy(vec![login(machines.clone())]);
+        if machines.is_null() {
+            sent["candidates"][0]["conditions"][0].as_object_mut().unwrap().remove("machines");
+        }
+        let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 1, "policy": sent})), vec![]).await;
+        assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!(path)), "{machines}: {refused}");
+        assert!(refused["error"].as_str().unwrap().contains("1 to 16 machines, each once"), "{refused}");
+    }
+    assert_eq!(lab.ws.store.routing_policy().unwrap().version, 1, "no refused save changed it");
+    let (status, refused) = call(&lab.local, "PUT", Some(json!({"expectedVersion": 1, "policy": policy(vec![
+        json!({"id": "c-bad", "enabled": true, "harness": "codex", "model": "", "credential": {"kind": "login"}, "conditions": [{"kind": "Not a kind"}]})])})), vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("dailyApiCap or machine"), "{refused}");
+}
+
+/// YN-119 S3: a dsh candidate runs with a DeepSeek routing key only (dsh has no
+/// login here, §3.10), with one of dsh's own efforts (§3.9) or none.
+#[test]
+fn a_dsh_candidate_takes_a_deepseek_key_and_one_of_its_own_efforts() {
+    let known = Known { keys: vec![("deepseek".into(), Provider::Deepseek), ("openai".into(), Provider::Openai)], codex_homes: vec!["work".into()] };
+    let dsh = |change: &dyn Fn(&mut Value)| {
+        let mut c = json!({"id": "c-dsh", "enabled": true, "harness": "dsh", "model": "deepseek-v4-pro", "tiers": ["strong"],
+            "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": [{"kind": "dailyApiCap", "usd": 3}]});
+        change(&mut c);
+        policy(vec![c])
+    };
+    check(&dsh(&|_| {}), &known).unwrap();
+    for effort in ["off", "low", "high", "max"] {
+        check(&dsh(&|c| c["reasoningEffort"] = json!(effort)), &known).unwrap_or_else(|e| panic!("{effort}: {e:?}"));
+    }
+    check(&dsh(&|c| c["model"] = json!(r#"["deepseek-official","deepseek-flash"]"#)), &known).expect("dsh's own option value, as its session names a model");
+    let cases: Vec<(Value, &str, &str)> = vec![
+        (dsh(&|c| c["reasoningEffort"] = json!("medium")), "candidates[0].reasoningEffort", "off, low, high or max"),
+        (dsh(&|c| c["reasoningEffort"] = json!("")), "candidates[0].reasoningEffort", "off, low, high or max"),
+        (dsh(&|c| c["credential"] = json!({"kind": "login"})), "candidates[0].credential.kind", "DeepSeek routing key"),
+        (dsh(&|c| c["credential"]["keyId"] = json!("openai")), "candidates[0].credential.keyId", "not one a dsh candidate can use"),
+        (dsh(&|c| c["credential"] = json!({"kind": "codexHome", "id": "work"})), "candidates[0].credential.kind", "Codex candidates only"),
+        (dsh(&|c| c["credential"] = json!({"kind": "pool", "manager": "cswap", "accounts": "all"})), "candidates[0].credential.kind",
+            "Claude Code candidates only"),
+        (dsh(&|c| c["conditions"] = json!([{"kind": "quota", "weekLeftPct": 30}])), "candidates[0].conditions[0].kind", "login, a pool"),
+    ];
+    for (sent, path, said) in cases {
+        let why = check(&sent, &known).unwrap_err();
+        assert_eq!(why.path, path, "{why:?}");
+        assert!(why.error.contains(said), "{path}: {why:?}");
+    }
+    // Another harness still takes none: only Codex and dsh do.
+    let opencode = json!({"id": "c-oc", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash", "reasoningEffort": "high",
+        "credential": {"kind": "apiKey", "keyId": "deepseek"}});
+    assert_eq!(check(&policy(vec![opencode]), &known).unwrap_err().error, "Only a Codex or dsh candidate takes a reasoning effort");
 }

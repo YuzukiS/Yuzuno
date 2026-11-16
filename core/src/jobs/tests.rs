@@ -1206,7 +1206,7 @@ fn machine_id_local_and_a_local_agents_agent_are_this_host_and_the_target_says_s
         let sent = named(id, name);
         // Host-only features are not refused for a name that may be this host...
         sent.validate().unwrap();
-        let resolved = s.resolve_machine(Some("a"), sent.clone()).unwrap();
+        let resolved = s.resolve_machine(Some("a"), sent.clone(), false).unwrap();
         assert_eq!(resolved.machine_id, None, "{name}");
         // ...and hold, now that it is.
         resolved.validate().unwrap();

@@ -55,6 +55,7 @@ fn agent_native_id(agent: &Agent) -> Option<&str> {
     match agent.harness.as_str() {
         "claude" => agent.claude_session_id.as_deref(),
         "opencode" => agent.opencode_session_id.as_deref(),
+        "dsh" => agent.dsh_session_id.as_deref(),
         _ => agent.thread_id.as_deref(),
     }
 }
@@ -81,6 +82,12 @@ impl Runtime for WorkspaceRuntime {
     }
     fn update_pause_status(&self, op: &super::state::Operation) -> Result<Value> {
         self.0.update_pause_status(op)
+    }
+    fn update_ended(&self) {
+        self.0.collaboration_wakeup.notify_one();
+    }
+    fn update_resume_status(&self, op: &super::state::Operation) -> Result<Value> {
+        self.0.update_resume_status(op)
     }
     fn workspace_id(&self) -> Result<String> {
         self.0.store.workspace_id()
@@ -165,6 +172,7 @@ impl Runtime for WorkspaceRuntime {
                 let connected = match before.agent.harness.as_str() {
                     "claude" => self.0.claudes.lock().unwrap().contains_key(&session.agent_id),
                     "opencode" => self.0.opencodes.lock().unwrap().contains_key(&session.agent_id),
+                    "dsh" => self.0.dshs.lock().unwrap().contains_key(&session.agent_id),
                     _ => self.0.codex_connection(&session.agent_id).is_some(),
                 };
                 // During an intentional detach the stored connected projection

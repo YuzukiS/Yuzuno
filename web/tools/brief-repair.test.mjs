@@ -224,3 +224,18 @@ test("a markdown put is repaired as the body Core builds for it (YN-14 A3)", () 
     assert.throws(() => acceptBriefSection({ ...ask, ...wrong }), (error) => error instanceof BriefError
       && error.problems.some((found) => found.path === Object.keys(wrong)[0]), JSON.stringify(wrong));
 });
+
+test("YN-113 R6 a Tabs written without props gets its element key as its id, and title as its label; its pages are not repaired into place", () => {
+  const page = (title, text) => ({ type: "Group", props: { title }, children: [text] });
+  const tabs = (more) => report({ more, news: page("News", "a"), papers: page("Papers", "b"), a: md("One story."), b: md("Two papers.") }, {}, ["more"]);
+  const { section, codes } = repaired(tabs({ type: "Tabs", children: ["news", "papers"] }));
+  assert.deepEqual(section.body.elements.more.props, { id: "more" });
+  assert.deepEqual(codes, ["filled_id"]);
+  const named = repaired(tabs({ type: "Tabs", props: { id: "more", title: "Categories" }, children: ["news", "papers"] }));
+  assert.deepEqual(named.section.body.elements.more.props, { id: "more", label: "Categories" });
+  assert.deepEqual(named.codes, ["renamed_field"]);
+  // A page that is not a titled Group is the author's to fix.
+  const untitled = tabs({ type: "Tabs", props: { id: "more" }, children: ["news", "papers"] });
+  delete untitled.body.elements.papers.props.title;
+  refused(untitled);
+});

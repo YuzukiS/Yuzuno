@@ -333,6 +333,12 @@ fn schedule(store: &Store, tx: &Connection, job: &mut Value, recovery: &mut Valu
 /// checked again at launch, a change rejects it), queued, with its delay and
 /// the period's end. Like a run stage's next attempt (`runs::new_attempt`).
 fn new_retry(store: &Store, tx: &Connection, previous: &Value, recovery: &Value, k: i64, not_before: f64, end: f64) -> Result<Value> {
+    // The ended Job and the service's first one stay: both are read here.
+    let keep = super::history::Keep {
+        runs: Vec::new(),
+        jobs: [&previous["id"], &recovery["rootJobId"]].iter().filter_map(|id| id.as_str()).map(str::to_owned).collect(),
+    };
+    super::history::make_room(tx, 1, &keep)?;
     let mut job = previous.clone();
     if let Some(map) = job.as_object_mut() {
         for key in ["cursor", "retriedBy", "gpuReservation", "pause", "checkpointStop", "resumeOf"] {

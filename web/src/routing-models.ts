@@ -1,8 +1,10 @@
 /** The models a routing candidate's tool offers (YN-57 S2b), for its model
  * picker: Claude Code's from its CLI's own list (`/api/models?harness=claude`:
  * aliases, and the version each points to now), Codex's from `model/list`
- * (`/api/models`), and OpenCode's as a new executor's OpenCode lists them
- * (`/api/routing/models?harness=opencode`, docs/executor-routing.md). */
+ * (`/api/models`), OpenCode's as a new executor's OpenCode lists them
+ * (`/api/routing/models?harness=opencode`, docs/executor-routing.md), and
+ * DeepSeek Harness's as it offers them to a new session
+ * (`/api/models?harness=dsh`, YN-119 §3.9). */
 import { api } from "./api";
 import type { Harness } from "./executor-routing";
 import type { Model } from "./types";
@@ -12,7 +14,7 @@ import type { Model } from "./types";
 export interface CatalogProvider { id: string; name: string; source: "credential" | "env" | "ready" | "routingKey" | null; keyProvider?: string }
 export interface Catalog { models: Model[]; providers?: CatalogProvider[]; opencode?: { version?: string } }
 
-const path: Record<Harness, string> = { claude: "/models?harness=claude", codex: "/models", opencode: "/routing/models?harness=opencode" };
+const path: Record<Harness, string> = { claude: "/models?harness=claude", codex: "/models", opencode: "/routing/models?harness=opencode", dsh: "/models?harness=dsh" };
 /** How long a list read is kept for the page: a tool's list changes with its release or the user's config, rarely. */
 const KEPT_MS = 10 * 60_000;
 const kept = new Map<Harness, { at: number; read: Promise<Catalog> }>();
@@ -38,6 +40,7 @@ export interface GroupWords {
   aliases: string;
   pinned: string;
   codex: string;
+  dsh: string;
   withKey: (provider: string) => string;
   needsKey: (provider: string) => string;
   env: (provider: string) => string;
@@ -64,9 +67,9 @@ export function modelGroups(harness: Harness, catalog: Catalog, words: GroupWord
     }
     return [{ label: words.aliases, options: aliases }, ...(pinned.length ? [{ label: words.pinned, options: pinned }] : [])];
   }
-  if (harness === "codex") {
+  if (harness === "codex" || harness === "dsh") {
     const shown = models.filter((m) => m.hidden !== true);
-    return [{ label: words.codex, options: shown.map((m) => ({ value: valueOf(m), label: named(m.displayName, valueOf(m)) })) }];
+    return [{ label: harness === "codex" ? words.codex : words.dsh, options: shown.map((m) => ({ value: valueOf(m), label: named(m.displayName, valueOf(m)) })) }];
   }
   const byProvider = new Map<string, Model[]>();
   for (const m of models) {

@@ -136,7 +136,7 @@ try {
       await row(page, "b").click({ button: "right", position: { x: 60, y: 18 } });
       await menu(page).waitFor();
       assert.deepEqual(await menu(page).locator('[role="menuitem"]').allTextContents(),
-        ["Interrupt current turn", "Agent settings…", "Manage…"]);
+        ["Interrupt current turn", "Rename…", "Agent settings…", "Manage…"]);
       await shot(page, "desktop-row-menu");
       await page.keyboard.press("Escape");
       await menu(page).waitFor({ state: "detached" });
@@ -145,7 +145,7 @@ try {
       await page.getByRole("button", { name: "Conversation actions", exact: true }).click();
       await menu(page).waitFor();
       assert.deepEqual(await menu(page).locator('[role="menuitem"]').allTextContents(),
-        ["Reconnect", "Agent settings…", "Manage…"]);
+        ["Reconnect", "Rename…", "Agent settings…", "Manage…"]);
       await shot(page, "desktop-header-menu");
       await page.keyboard.press("Escape");
       check("The header's Conversation actions is the same menu, for Mori");
@@ -221,7 +221,7 @@ try {
       await row(page, "a").getByRole("button", { name: "Actions for Mori" }).tap();
       await menu(page).waitFor();
       assert.deepEqual(await menu(page).locator('[role="menuitem"]').allTextContents(),
-        ["Reconnect", "Agent settings…", "Manage…"]);
+        ["Reconnect", "Rename…", "Agent settings…", "Manage…"]);
       await shot(page, `${width}-row-menu`);
       await page.keyboard.press("Escape");
       await menu(page).waitFor({ state: "detached" });

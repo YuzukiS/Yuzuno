@@ -270,10 +270,16 @@ test("an executor at work with no Turn running rests, its pill the first that ho
     [life("running"), {}, { kind: "between" }],
     [life("running", { resultAt: "2026-11-07T03:00:00Z" }), {}, { kind: "resultIn" }],
     [life("running", { blocked: "Waiting for #12", resultAt: "2026-11-07T03:00:00Z" }), {}, { kind: "blocked" }],
-    // Its PR's pill, as a handed-in one's: no round under way, the lead's turn; one under way, in review.
-    [life("running", { blocked: "Waiting for #12" }), pr(), { kind: "lead" }],
+    // Its PR's pill while it still works: a review round under way; otherwise
+    // no one else's move yet, so its own CI says whether it waits (YN-168).
+    [life("running", { blocked: "Waiting for #12" }), pr(), { kind: "between" }],
+    [life("running"), pr({ ci: "pending" }), { kind: "waits", on: "ci" }],
+    [life("running"), pr({ state: "draft", ci: "pending" }), { kind: "waits", on: "ci" }],
+    [life("running"), pr({ state: "draft" }), { kind: "between" }],
     [life("running"), pr({ reviews: { approved: 0, changesRequested: false, running: true } }), { kind: "review" }],
     [life("running"), pr({ ci: "failure" }), { kind: "ciFailed" }],
+    [life("running"), pr({ reviews: { approved: 2, changesRequested: false, running: false } }), { kind: "ready" }],
+    [life("running"), pr({ state: "merged" }), { kind: "merged" }],
   ]) {
     const view = rest(lifecycle, more);
     assert.deepEqual([view.state, view.stay, view.wait], ["idle", pill, null], JSON.stringify(pill));
@@ -288,6 +294,19 @@ test("an executor at work with no Turn running rests, its pill the first that ho
   assert.deepEqual([ci.state, ci.stay, ci.wait.pr], ["idle", { kind: "waits", on: "ci" }, 688]);
   // A Turn running: working, whatever holds.
   assert.equal(exec(life("running", { resultAt: "2026-11-07T03:00:00Z" }), agent({ status: "working" })).state, "working");
+});
+
+test("an executor that hasn't handed in never shows the lead's turn (YN-168)", () => {
+  // Its PR with no review round is no one else's move: its own CI says the wait.
+  assert.deepEqual(exec(life("running"), agent(), pr({ ci: "pending" })).stay, { kind: "waits", on: "ci" });
+  assert.deepEqual(exec(life("running"), agent(), pr()).stay, { kind: "between" }, "CI done: between Turns");
+  // The CI cache's wait comes first when it has one, as before.
+  const wait = waitOn(idle({ ci: { running: 1, discovering: 0, check: 0 }, pr: 688 }));
+  const view = islandView({ agent: agent(), lifecycle: life("running"), executor: executorView({ agent: agent(), lifecycle: life("running"), ...pr() }), statusLabel: "Ready", wait });
+  assert.deepEqual([view.stay, view.wait.kind], [{ kind: "waits", on: "ci" }, "ci"]);
+  // Handed in, the same PR is the lead's turn, unchanged.
+  assert.deepEqual(exec(life("delivering"), agent(), pr()).stay, { kind: "lead" });
+  assert.deepEqual(exec(life("delivering"), agent(), pr({ ci: "pending" })).stay, { kind: "lead" }, "handed in is the lead's, CI or not");
 });
 
 test("an executor at rest whose pill says what it waits on doesn't say it again on line two (YN-92, mail 11854)", () => {

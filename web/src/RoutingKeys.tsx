@@ -3,7 +3,8 @@ import { Bot, CircleAlert, HardDrive, KeyRound, LoaderCircle, Lock, LogIn, Plus,
 import { OPENCODE_DEFAULT, cardSlots, countRefs, providerCards, usesOf, type AccountsState, type Card, type Use } from "./accounts-cards";
 import { readAgentDefaults, type AgentDefaultsView } from "./agent-defaults";
 import { api, errorText } from "./api";
-import { HARNESSES, keyFits, readPolicy, type Candidate } from "./executor-routing";
+import { DSH_NAME, dshAvailable, useDsh } from "./dsh";
+import { harnessesOffered, keyFits, readPolicy, type Candidate } from "./executor-routing";
 import { harnessName, nameOf } from "./executor-routing-text";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import {
@@ -15,7 +16,9 @@ import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-routing.css";
 
 const providerName: Record<KeyProvider, string> = { deepseek: "DeepSeek", anthropic: "Anthropic", openai: "OpenAI" };
-const harnessOf: Record<KeyProvider, string> = { deepseek: "OpenCode", anthropic: "Claude Code", openai: "Codex" };
+const harnessNames: Record<KeyProvider, string> = { deepseek: "OpenCode", anthropic: "Claude Code", openai: "Codex" };
+/** The tool a provider's key is for, in its title: a DeepSeek key is also DeepSeek Harness's while this Core starts it (YN-119 §3.10). */
+const harnessOf = (provider: KeyProvider, dsh: boolean) => (provider === "deepseek" && dsh ? `${harnessNames.deepseek} / ${DSH_NAME}` : harnessNames[provider]);
 /** "a, b and c": a list in an English sentence. */
 const listEn = (parts: readonly string[]) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`);
 
@@ -40,6 +43,7 @@ const text = strings({
   noKey: "No key yet.",
   addKeyFor: (provider: string) => `Add ${/^[aeiou]/i.test(provider) ? "an" : "a"} ${provider} key`,
   keysOnlyKnown: (provider: string) => `Yuzuno keeps keys for Anthropic, OpenAI and DeepSeek only; ${provider} uses OpenCode's own config.`,
+  dshKeys: "DeepSeek Harness has no login of its own here: its Agents and executors run with one of these keys.",
   canUse: (tools: readonly string[]) => `${listEn(tools)} can use it`,
   opencodeProvider: "An OpenCode provider",
   opencodeOnly: "OpenCode's own login only",
@@ -150,6 +154,7 @@ const text = strings({
   noKey: "还没有 key。",
   addKeyFor: (provider) => `添加 ${provider} 的 key`,
   keysOnlyKnown: (provider) => `Yuzuno 只保存 Anthropic、OpenAI、DeepSeek 的 key；${provider} 用 OpenCode 自己的配置。`,
+  dshKeys: "DeepSeek Harness 在这里没有自己的登录：它的 Agent 和执行者用下面的某个 key 运行。",
   canUse: (tools) => `${tools.join("、")} 能用`,
   opencodeProvider: "OpenCode 的服务商",
   opencodeOnly: "只用 OpenCode 自己的登录",
@@ -312,13 +317,14 @@ const reviewerOf = (view: { harness?: unknown; model?: unknown }): Reviewer => {
 
 const cardName = (id: string, t: Text) =>
   id === "anthropic" ? "Claude" : id === "openai" ? "OpenAI / Codex" : id === "deepseek" ? "DeepSeek" : id === OPENCODE_DEFAULT ? t.opencodeDefault : id;
-/** The tools a provider's key fits, as the routing editor offers it (keyFits). */
-const toolsFor = (provider: KeyProvider) => HARNESSES.filter((h) => keyFits(h, provider)).map((h) => harnessName[h]);
-function cardSub(card: Card, t: Text) {
+/** The tools a provider's key fits, as the routing editor offers it (keyFits): DeepSeek Harness while this Core starts it. */
+const toolsFor = (provider: KeyProvider, dsh: boolean) => harnessesOffered(dsh).filter((h) => keyFits(h, provider)).map((h) => harnessName[h]);
+function cardSub(card: Card, t: Text, dsh: boolean) {
   if (card.id === OPENCODE_DEFAULT) return t.opencodeDefaultSub;
   if (!card.known) return `${t.opencodeProvider} · ${t.opencodeOnly}`;
   const provider = card.id as KeyProvider;
-  return `${provider === "deepseek" ? t.opencodeProvider : providerName[provider]} · ${t.canUse(toolsFor(provider))}`;
+  // DeepSeek is OpenCode's provider, and also DeepSeek Harness's own while this Core starts it.
+  return `${provider === "deepseek" && !dsh ? t.opencodeProvider : providerName[provider]} · ${t.canUse(toolsFor(provider, dsh))}`;
 }
 /** The card an open edit is in: drawn while the edit is open, whatever the reads say, so a draft isn't lost. */
 const editedCard = (editing: string | null) =>
@@ -331,6 +337,7 @@ const rankOf = (use: Use) => (use.kind === "candidate" ? use.place : use.kind ==
 export function RoutingKeys({ active }: { active: boolean }) {
   const language = useLanguage();
   const t = text(language);
+  const dsh = dshAvailable(useDsh());
   const time = useTimeDisplay();
   const when = (at?: string) => { const ms = at ? Date.parse(at) : NaN; return Number.isFinite(ms) ? setAtFormat(time).format(ms) : ""; };
   const [keys, setKeys] = useState<KeysView | null>(null);
@@ -467,7 +474,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
   // 1Password read also asks op for its version and can answer later, or not.
   const tokenSet = !!keys?.onePasswordToken.set;
   const keyRow = (key: RoutingKey) => {
-    const title = t.keyTitle(providerName[key.provider], harnessOf[key.provider]);
+    const title = t.keyTitle(providerName[key.provider], harnessOf(key.provider, dsh));
     const check = checks[key.id];
     const editingSource = editing?.startsWith(`key:${key.id}:`) ? editing.split(":")[2] as KeySource : null;
     const shownSource = editingSource ?? key.source;
@@ -673,7 +680,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
         <div className="routing-provider-head">
           <div className="routing-provider-name">
             <h4 id={head}>{name}</h4>
-            <p className="routing-provider-sub">{cardSub(c, t)}</p>
+            <p className="routing-provider-sub">{cardSub(c, t, dsh)}</p>
           </div>
           <p className="routing-provider-refs">{summary(c)}</p>
         </div>
@@ -684,6 +691,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
         {c.known && keys ? (
           <div className="routing-layer" data-layer="keys">
             <h5 className="routing-layer-title">{t.keys}</h5>
+            {c.id === "deepseek" && dsh && <p className="settings-row-help routing-dsh-keys">{t.dshKeys}</p>}
             {c.keys.map((id) => keys.keys.find((k) => k.id === id)).filter((k): k is RoutingKey => !!k).map(keyRow)}
             {addRow(c.id as KeyProvider, c.keys.length === 0)}
           </div>
@@ -855,7 +863,8 @@ export function NewKeyForm({ t, busy, taken, fixed, saveLabel, note, onSave, onC
   const idProblem = !KEY_ID.test(id) ? t.keyIdBad : taken.includes(id) ? t.keyIdTaken : "";
   const refBad = source === "1password" && !!reference.trim() && !reference.trim().startsWith("op://");
   const ready = !idProblem && (source === "local" ? secret.filled : !!reference.trim() && !refBad);
-  const title = fixed ? t.newKeyFor(providerName[provider]) : t.keyTitle(providerName[provider], harnessOf[provider]);
+  const dsh = dshAvailable(useDsh());
+  const title = fixed ? t.newKeyFor(providerName[provider]) : t.keyTitle(providerName[provider], harnessOf(provider, dsh));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = source === "local" ? secret.value() : reference.trim();
@@ -869,7 +878,7 @@ export function NewKeyForm({ t, busy, taken, fixed, saveLabel, note, onSave, onC
         {!fixed && <label className="routing-field"><span>{t.provider}</span>
           <select className="settings-select" value={provider} disabled={busy}
             onChange={(e) => { const p = e.target.value as KeyProvider; setProvider(p); if (!idTouched) setId(freeKeyId(p, taken)); }}>
-            {KEY_PROVIDERS.map((p) => <option key={p} value={p}>{t.keyTitle(providerName[p], harnessOf[p])}</option>)}
+            {KEY_PROVIDERS.map((p) => <option key={p} value={p}>{t.keyTitle(providerName[p], harnessOf(p, dsh))}</option>)}
           </select>
         </label>}
         <label className="routing-field"><span>{t.keyId}</span>

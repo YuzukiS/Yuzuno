@@ -130,6 +130,13 @@ export function reconnectAgent(id: string): Promise<unknown> {
 export function disconnectAgent(id: string): Promise<unknown> {
   return shared(`disconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/disconnect`));
 }
+/** Renames an Agent (YN-112): its name only; its ID, and with it its tasks,
+ * mail and Home, stay. Core trims the name and refuses an empty or too long
+ * one, or one with control characters, saying why. It answers with the
+ * Agent as listed. */
+export function renameAgent(id: string, name: string): Promise<{ id: string; name: string }> {
+  return patch<{ id: string; name: string }>(`/agents/${encodeURIComponent(id)}`, { name });
+}
 /** Ends the Turns a check found missing from the native history (T-198):
  * each becomes interrupted with its result unknown. Nothing is sent. */
 export function endMissingTurns(id: string, missing: { turnIds: string[]; generation: number }): Promise<unknown> {

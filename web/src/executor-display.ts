@@ -77,7 +77,14 @@ export type ExecutorView = {
   /** Its time on the task (ms): from its dispatch, and once it is over, to its end. */
   started: number | null;
   ended: number | null;
-  pr: { number: number; url: string | null; tone: PRTone; status: PRStatus } | null;
+  pr: {
+    number: number;
+    url: string | null;
+    tone: PRTone;
+    status: PRStatus;
+    /** The checks on its head, as Core last read them (ExecutorPR.ci). */
+    ci: string | null;
+  } | null;
 };
 
 export type ExecutorFacts = {
@@ -113,7 +120,7 @@ const time = (iso: string | null | undefined) => {
  */
 export function executorView(facts: ExecutorFacts): ExecutorView {
   const { agent, lifecycle } = facts;
-  const pr = facts.pr && Number.isSafeInteger(facts.pr.number) ? { number: facts.pr.number, url: facts.pr.url ?? null, ...prStatus(facts.pr) } : null;
+  const pr = facts.pr && Number.isSafeInteger(facts.pr.number) ? { number: facts.pr.number, url: facts.pr.url ?? null, ci: facts.pr.ci ?? null, ...prStatus(facts.pr) } : null;
   const started = time(lifecycle.dispatchedAt);
   const view = (shown: ExecutorShown, detail: ExecutorDetail | null, ended: number | null = null, waitingSince: number | null = null): ExecutorView =>
     ({ shown, detail, waitingSince, started, ended, pr });
