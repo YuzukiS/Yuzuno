@@ -394,6 +394,7 @@ export const SectionCard = memo(function SectionCard({
           <FileAttachments
             files={section.ask?.replyFiles ?? []}
             href={(file) => homeFileUrl(projectId, file.id, file.name)}
+            projectId={projectId}
           />
           {updatedSinceReply ? (
             <div className="home-answer-update">

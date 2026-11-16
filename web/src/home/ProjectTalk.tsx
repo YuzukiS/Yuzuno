@@ -506,7 +506,7 @@ export function ProjectTalk({
   /** The files a request or follow-up took (YN-145), to download from the Project. */
   const sentFiles = (list: readonly HomeFile[]) =>
     list.length > 0 && (
-      <FileAttachments files={list} href={(file) => homeFileUrl(projectId, file.id, file.name)} />
+      <FileAttachments files={list} href={(file) => homeFileUrl(projectId, file.id, file.name)} projectId={projectId} />
     );
   function item(entry: TalkItem) {
     const { request } = entry;

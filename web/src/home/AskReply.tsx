@@ -628,6 +628,7 @@ export function AskReply({
           <FileAttachments
             files={ask.replyText ? ask.replyFiles ?? [] : sentFiles}
             href={(file) => homeFileUrl(context.projectId, file.id, file.name)}
+            projectId={context.projectId}
           />
           {ask.state === "replied" && repliedThenUpdated(section) && (
             <p className="home-ask-updated">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>

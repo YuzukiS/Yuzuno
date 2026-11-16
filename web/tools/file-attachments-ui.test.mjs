@@ -61,7 +61,7 @@ const clipboard = (files, text = "") => ({
 });
 
 /** The app with one idle Agent, Mori; `messages` answers its sends in turn. */
-async function mount(harness = "codex", { messages = [], seed = {}, turns = [], remote = false } = {}) {
+async function mount(harness = "codex", { messages = [], seed = {}, turns = [], remote = false, tauri, agent: userAgent } = {}) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -75,6 +75,9 @@ async function mount(harness = "codex", { messages = [], seed = {}, turns = [], 
   window.HTMLElement.prototype.scrollIntoView = function () {};
   window.HTMLElement.prototype.scrollTo = function () {};
   for (const [key, value] of Object.entries(seed)) window.localStorage.setItem(key, value);
+  // The desktop app's command bridge (YN-170), and the browser it pretends to be.
+  if (tauri) window.__TAURI__ = { core: { invoke: tauri } };
+  if (userAgent) Object.defineProperty(window.navigator, "userAgent", { configurable: true, get: () => userAgent });
   const agent = { id: "a", name: "Mori", harness, cwd: "/workspace", model: "", color: "green", status: "idle",
     createdAt: "2026-10-28", updatedAt: "2026-10-28", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1,
     ...(remote ? { remote: { machine: { id: "m1", name: "studio-mac" }, cwd: "/Users/someone/work" } } : {}) };
@@ -307,6 +310,62 @@ test("a sent message shows its files as downloads, never the Agent's notice (YN-
     assert.equal(message.includes("Attached files:"), false, "the notice stays out of the bubble");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+test("a sent file drags out as that file (YN-170): through the desktop app as the Agent's file, in Chromium as a download, elsewhere not as a link", async () => {
+  const id = "b".repeat(64);
+  const turns = [{
+    id: "turn-1", status: "completed", items: [{
+      id: "u1", type: "userMessage", _yuzunoInputText: "see the report",
+      _yuzunoFiles: [{ id, name: "q3 report.pdf", bytes: 2400000, path: `/core/input-files/a/${id}/q3 report.pdf` }],
+      content: [{ type: "text", text: "see the report" }],
+    }],
+  }];
+  const drags = [];
+  const desktop = await mount("codex", {
+    turns,
+    tauri: (command, args = {}) => {
+      if (command !== "desktop_file_drag") return Promise.reject(new Error(`unknown command ${command}`));
+      drags.push(JSON.parse(JSON.stringify(args)));
+      return args.file ? Promise.reject("Core answered HTTP 404.") : Promise.resolve({ ready: true });
+    },
+  });
+  const link = (page) => page.document.querySelector(".user-message .input-file a");
+  const press = (page, type, x) => link(page).dispatchEvent(new page.window.PointerEvent(type, {
+    bubbles: true, cancelable: true, isPrimary: true, pointerId: 1, pointerType: "mouse", button: 0, clientX: x, clientY: 0,
+  }));
+  try {
+    await until(() => link(desktop)?.dataset.fileDrag === "ready", "the app says it drags files out");
+    assert.equal(link(desktop).getAttribute("draggable"), "false");
+    assert.equal(link(desktop).getAttribute("download"), "q3 report.pdf", "still a download to click");
+    press(desktop, "pointerdown", 0);
+    press(desktop, "pointermove", 5);
+    await until(() => drags.length === 2, "the drag is asked for");
+    assert.deepEqual(drags, [{}, { file: { kind: "agentFile", agentId: "a", fileId: id, name: "q3 report.pdf" } }]);
+    const note = () => desktop.document.querySelector('.input-files-note[role="status"]');
+    await until(() => note()?.textContent === "Couldn’t drag this file out: Core answered HTTP 404.", () => `the reason shows: ${note()?.textContent}`);
+    assert.deepEqual(desktop.errors, []);
+  } finally { desktop.close(); }
+
+  const edge = await mount("codex", {
+    turns,
+    agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+  });
+  try {
+    assert.equal(link(edge).getAttribute("draggable"), "true");
+    const data = {};
+    const event = new edge.window.Event("dragstart", { bubbles: true, cancelable: true });
+    const transfer = { effectAllowed: "uninitialized", setData: (type, value) => void (data[type] = value) };
+    Object.defineProperty(event, "dataTransfer", { value: transfer });
+    link(edge).dispatchEvent(event);
+    assert.deepEqual(data, { DownloadURL: `application/octet-stream:q3 report.pdf:http://127.0.0.1:4317/api/agents/a/files/${id}/q3%20report.pdf` });
+    assert.equal(transfer.effectAllowed, "copy");
+  } finally { edge.close(); }
+
+  const plain = await mount("codex", { turns });
+  try {
+    assert.equal(link(plain).getAttribute("draggable"), "false", "jsdom's own browser drags no file out, nor a link to it");
+  } finally { plain.close(); }
 });
 
 test("the file words are Chinese too (YN-145)", async () => {
