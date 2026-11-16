@@ -7,7 +7,7 @@ Which part of Yuzuno updates how, what is released, and what to try first when s
 | Part | What it contains | How it updates | Latest release |
 |---|---|---|---|
 | **Workspace service** | Core, the web UI and the Claude bridge, on the Linux/WSL Core host | Settings → Updates → Workspace service, in a managed installation ([Managed Workspace updates](workspace-updates.md)). A source checkout updates by building a newer checkout. | `2026.10.25-core.19` (tag `core-20261025-6bd7683`) |
-| **Windows desktop app** | The native window and its connection page; it shows the web UI that Core serves | Settings → Updates → Desktop app, for a copy installed by its own installer, through a Core at a loopback address. Otherwise, run the installer by hand ([Desktop updates](../desktop/README.md#desktop-updates)). | `Yuzuno Desktop 0.3.0 for Windows` (tag `desktop-0.3.0`) |
+| **Desktop app (Windows, Mac)** | The native window and its connection page; it shows the web UI that Core serves | Settings → Updates → Desktop app, through a Core at a loopback address. On Windows, for a copy installed by its own installer; on a Mac, from the first desktop release that carries Mac files (none yet). Otherwise, install by hand ([Desktop updates](../desktop/README.md#desktop-updates)). One desktop release carries both platforms ([desktop release checklist](desktop-release-checklist.md)). | `Yuzuno Desktop 0.3.0 for Windows` (tag `desktop-0.3.0`) |
 
 - **What a desktop update changes:** the window draws the web UI from Core, so most of what you see changes with a **Core** update, in the browser and the desktop app alike: Home, Settings, the recovery page. A desktop update changes only the native shell: the window, the connection page, link handling and the desktop's own updater.
 - **What neither update changes:** the native Codex and Claude CLIs and their sign-ins, and the OpenCode and DeepSeek Harness (`dsh`) you installed: each is yours to update.
@@ -33,9 +33,11 @@ The full matrix is in [Supported platforms](independent-core.md#supported-platfo
   - On Windows, Core runs in WSL2.
 - **Windows desktop app:** in daily use with a Core on the same computer; on 2026-10-25 its own update installed `desktop-0.3.0` over 0.2.0. Through an SSH tunnel it is untested.
   - **Blank Home:** the fix and the recovery page came with core.12, a **Core** release, not a desktop update. After installing core.12, the user reported that Home works in the Windows app; that is the user's report, not an automated check.
-- **Mac desktop app:** Apple silicon (arm64) only; Intel Macs are not supported (YN-161). It is built from source and signed ad hoc, without notarization, and no release exists. It is **not** supported as a public install.
+- **Mac desktop app:** Apple silicon (arm64) only; Intel Macs are not supported (YN-161). It is signed ad hoc, without notarization. No desktop release carries it yet, and it is **not** supported as a public install.
   - One trial build was installed on the user's Mac and reached a WSL Core through an SSH tunnel; afterwards the app and the tunnel setup were removed again. The trial does not make it a release.
-  - It never updates itself; a newer build is installed by hand ([macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer)).
+  - **Releases.** A desktop release can carry the Mac app beside the Windows one: its disk image, and its update package signed with the same key ([desktop release checklist](desktop-release-checklist.md)). The first release with Mac files waits for the Mac update lab to pass.
+  - **Installing and updating.** That first Mac release is installed by hand once, from its disk image. After that, the app updates itself through a Core that relays `darwin-aarch64` ([Desktop updates](../desktop/README.md#desktop-updates)).
+  - **Until then,** a newer build is installed by hand ([macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer)).
 - **Linux desktop app:** none. Use a browser.
 - **Phone:** a phone's browser through the phone entry (**Settings → Phone & remote access**, [Connect from a phone](independent-core.md#connect-from-a-phone-tailscale-serve)); an iPhone opened it on 2026-10-25. On 2026-10-26, with core.19, it was added to the Home Screen and turned on push notifications there: a notice that an Agent had finished arrived with the phone locked and opened that Agent, and a notice for an Ask arrived and opened Home (the user's report). The iPhone app is built from source only and has no release ([iPhone app](../ios/README.md)).
 
@@ -55,4 +57,4 @@ A Core update never changes how the operating system or the desktop app judges t
 - **The desktop's own updates** install only an installer that verifies against the key built into the app.
   - If an update does not verify, or the copy was not installed by its installer, a newer Core does not change that.
   - Install the release's installer by hand instead.
-- **The Mac app:** macOS refuses the first open of an ad hoc signed app downloaded with a browser. Allowing this one app is described in [macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer). Core plays no part in it.
+- **The Mac app:** macOS refuses the first open of an ad hoc signed app downloaded with a browser. Allowing this one app is described in [macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer). Core plays no part in it. Its own updates, once a release carries them, install only an update package that verifies against the key built into the app, as on Windows.
