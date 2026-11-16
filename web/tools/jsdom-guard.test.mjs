@@ -155,12 +155,14 @@ test("a failing boolean assertion carries only the boolean, never the node it wa
 });
 
 // The guard's assertions (YN-196), on stand-ins: no jsdom is needed here.
-// A DOM object is known by its WebIDL class names on the prototype chain.
+// A DOM object is known by its WebIDL class names on the prototype chain and
+// by jsdom's own record of what it wraps, under a symbol named "impl".
 const classed = (...names) => names.reduceRight((proto, name) => Object.create(proto, { [Symbol.toStringTag]: { value: name } }), Object.prototype);
+const jsdomOwn = (object) => Object.defineProperty(object, Symbol("impl"), { value: {} });
 const NODE = classed("HTMLLIElement", "HTMLElement", "Element", "Node", "EventTarget");
 /** A rendered DOM node: React's fiber chain makes it large and cyclic. */
 function renderedNode(tag = "li", attributes = { id: "zz", class: "row" }) {
-  const node = Object.assign(Object.create(NODE), { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null });
+  const node = jsdomOwn(Object.assign(Object.create(NODE), { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null }));
   let fiber = { stateNode: node };
   node.__reactFiber$x = fiber;
   for (let i = 0; i < 2000; i++) fiber = fiber.return = { stateNode: node, child: fiber, memoizedProps: { i } };
@@ -225,6 +227,32 @@ test("comparisons keep Node's own results, arguments and messages", () => {
     assert.equal(dom.message.split("\n")[0], plain.message.split("\n")[0], String(message));
   }
   assert.equal(failure(() => assert.equal(node, null, own)), own);
+  // A message function gets what Node gives it: the values themselves, as
+  // often as Node calls it, and its own error (YN-196 review).
+  const called = (value, message) => {
+    const seen = [];
+    const error = failure(() => assert.equal(value, null, (...values) => (seen.push(values), message(...values))));
+    return { seen, error };
+  };
+  const dom = called(node, (actual) => `still ${actual.localName}`);
+  const plain = called("x", () => "still x");
+  assert.equal(dom.seen.length, plain.seen.length, "called as often as Node calls it");
+  if (plain.seen.length) {
+    assert.equal(dom.seen[0][0], node);
+    assert.equal(dom.seen[0][1], null);
+    assert.match(dom.error.message, /^still li/);
+  }
+  const boom = new RangeError("boom");
+  const thrower = () => {
+    throw boom;
+  };
+  for (const message of [thrower, () => 42]) {
+    const fromDom = failure(() => assert.equal(node, null, message));
+    const fromPlain = failure(() => assert.equal("x", null, message));
+    assert.equal(fromDom === boom, fromPlain === boom);
+    assert.equal(fromDom.constructor, fromPlain.constructor);
+    assert.equal(fromDom.message.split("\n")[0], fromPlain.message.split("\n")[0]);
+  }
   // Without a DOM object it is Node's own failure, stack included.
   const error = failure(() => assert.equal(1, 2));
   assert.equal(error.generatedMessage, true);
@@ -249,15 +277,15 @@ test("finding a DOM object runs no getter and no Proxy trap", () => {
   for (const value of [sneaky, trapped, [trapped], new Proxy([node], { ownKeys: () => (count(), []) })]) assert.equal(holdsDom(value), false);
   // A Proxy further up the chain, as behind jsdom's Window.prototype, is not touched either.
   const traps = { get: count, getPrototypeOf: () => (count(), null), getOwnPropertyDescriptor: () => (count(), undefined), ownKeys: () => (count(), []) };
-  const windowLike = Object.create(Object.create(new Proxy(classed("EventTarget"), traps), { [Symbol.toStringTag]: { value: "Window" } }));
+  const windowLike = jsdomOwn(Object.create(Object.create(new Proxy(classed("EventTarget"), traps), { [Symbol.toStringTag]: { value: "Window" } })));
   assert.equal(holdsDom(windowLike), true);
   assert.equal(describe(windowLike), "Window");
   assert.equal(reads, 0);
 });
 
 test("what counts as a DOM object, and how one is described", () => {
-  const text = Object.assign(Object.create(classed("Text", "CharacterData", "Node")), { nodeType: 3, nodeName: "#text", data: "x".repeat(100) });
-  const window = Object.create(classed("Window", "EventTarget"));
+  const text = jsdomOwn(Object.assign(Object.create(classed("Text", "CharacterData", "Node")), { nodeType: 3, nodeName: "#text", data: "x".repeat(100) }));
+  const window = jsdomOwn(Object.create(classed("Window", "EventTarget")));
   assert.equal(holdsDom(text), true);
   assert.equal(holdsDom(window), true);
   assert.equal(holdsDom([1, renderedNode()]), true);
@@ -265,7 +293,21 @@ test("what counts as a DOM object, and how one is described", () => {
   assert.equal(holdsDom({ nodeType: 1, nodeName: "LI" }), false, "a plain object that looks like one is not");
   assert.equal(describe(window), "Window");
   assert.equal(describe(text), `#text "${"x".repeat(39)}…"`);
-  assert.equal(describe(Object.assign(Object.create(classed("Document", "Node")), { nodeType: 9, nodeName: "#document" })), "#document");
+  assert.equal(describe(jsdomOwn(Object.assign(Object.create(classed("Document", "Node")), { nodeType: 9, nodeName: "#document" }))), "#document");
+  // Only jsdom's own: a plain object with the class names is Node's to compare
+  // and report (YN-196 review), and so is a window without the record.
+  const lookalike = Object.assign(Object.create(classed("Node")), { nodeType: 1 });
+  assert.equal(holdsDom(lookalike), false);
+  assert.equal(holdsDom(Object.create(classed("Window"))), false);
+  const native = failure(() => assert.equal(lookalike, null));
+  assert.ok(native instanceof assert.AssertionError);
+  assert.equal(native.actual, lookalike, "Node's own failure, with the object itself");
+  // One of jsdom's that cannot be read as a node is named by its class, never a TypeError.
+  const unreadable = jsdomOwn(Object.assign(Object.create(NODE), { nodeType: 1 }));
+  assert.equal(describe(unreadable), "[HTMLLIElement]");
+  const named = failure(() => assert.equal(unreadable, null));
+  assert.ok(named instanceof assert.AssertionError);
+  assert.equal(named.actual, "[HTMLLIElement]");
   assert.equal(describe(renderedNode("div", {})), "<div>");
   assert.equal(describe(null), "null");
 });

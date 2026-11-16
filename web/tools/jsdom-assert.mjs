@@ -10,8 +10,9 @@
 // comparison is made here, as Node makes it; a failure is then Node's own
 // assertion again, with each DOM value replaced by a one-line description, so
 // its message, argument checks and operator stay Node's. Finding a DOM object
-// runs no getter and no Proxy trap: it reads data properties only, and a
-// Proxy is left to Node (jsdom makes NodeList and HTMLCollection Proxies).
+// runs no getter and no Proxy trap: it reads data properties only (a WebIDL
+// class name and jsdom's own "impl" record), and a Proxy is left to Node
+// (jsdom makes NodeList, HTMLCollection, <form> and <select> Proxies).
 // Every other comparison is Node's own. Loads nothing but node: modules.
 import assert from "node:assert/strict";
 import { inspect, isDeepStrictEqual, types } from "node:util";
@@ -27,6 +28,9 @@ const COMPARISONS = {
   notDeepStrictEqual: (a, b) => !isDeepStrictEqual(a, b),
 };
 const INSTALLED = Symbol.for("yuzuno.jsdom-assert");
+/** Whether this Node calls a message function with the two values (Node 26
+ *  does; Node 22 takes it as text): asked once of Node's own strictEqual. */
+let callsMessages = false;
 
 /** A data property's value, or undefined: never a getter call. */
 function data(object, key) {
@@ -47,8 +51,20 @@ function classes(value) {
   return found;
 }
 
-const isNode = (value) => classes(value).includes("Node");
-const isWindow = (value) => classes(value).includes("Window");
+/** Whether an object is one of jsdom's own: webidl2js keeps what it wraps in
+ *  an own data property under a symbol named "impl", on every DOM object and
+ *  the window. Read without a getter or trap; a plain object that only looks
+ *  like one is left to Node. Should jsdom drop it, these values go to Node's
+ *  own path again, and jsdom-assert.test.mjs fails. */
+function jsdomOwn(value) {
+  return Object.getOwnPropertySymbols(value).some((key) => {
+    const held = key.description === "impl" ? data(value, key) : undefined;
+    return typeof held === "object" && held !== null;
+  });
+}
+
+const isNode = (value) => classes(value).includes("Node") && jsdomOwn(value);
+const isWindow = (value) => classes(value).includes("Window") && jsdomOwn(value);
 const isDom = (value) => isNode(value) || isWindow(value);
 
 /** Own enumerable data values, one level down: array items, object fields. */
@@ -69,14 +85,19 @@ const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` 
 export function describe(value) {
   if (isWindow(value)) return "Window";
   if (isNode(value)) {
-    if (value.nodeType === 1) {
-      const id = value.getAttribute("id");
-      const className = value.getAttribute("class");
-      const name = String(value.localName || value.nodeName).toLowerCase();
-      return clip(`<${name}${id ? ` id="${id}"` : ""}${className ? ` class="${className}"` : ""}>`, 120);
+    try {
+      if (value.nodeType === 1) {
+        const id = value.getAttribute("id");
+        const className = value.getAttribute("class");
+        const name = String(value.localName || value.nodeName).toLowerCase();
+        return clip(`<${name}${id ? ` id="${id}"` : ""}${className ? ` class="${className}"` : ""}>`, 120);
+      }
+      if (value.nodeType === 3) return `#text ${JSON.stringify(clip(String(value.data ?? ""), 40))}`;
+      return clip(String(value.nodeName), 120);
+    } catch {
+      // Not readable as a node after all: its class name, never a TypeError.
+      return `[${classes(value)[0]}]`;
     }
-    if (value.nodeType === 3) return `#text ${JSON.stringify(clip(String(value.data ?? ""), 40))}`;
-    return String(value.nodeName);
   }
   const items = children(value);
   if (items.some(isDom)) {
@@ -115,7 +136,23 @@ function wrap(name, original) {
         b = holdsDom(expected) ? describe(expected) : expected;
         if (isDeepStrictEqual(a, b)) b = `${String(b)} (another object)`;
       }
-      call(original, wrapper, [a, b, ...args.slice(2)]);
+      let rest = args.slice(2);
+      if (callsMessages && typeof rest[0] === "function") {
+        // As Node would call it: once, with the two values themselves. Node
+        // then takes what it returned, or what it threw, as from its own call.
+        let returned;
+        let threw;
+        try {
+          returned = rest[0](actual, expected);
+        } catch (error) {
+          threw = { error };
+        }
+        rest = [() => {
+          if (threw) throw threw.error;
+          return returned;
+        }, ...rest.slice(1)];
+      }
+      call(original, wrapper, [a, b, ...rest]);
       throw new assert.AssertionError({ message: `${name} failed for a DOM object`, actual: a, expected: b, operator: name, stackStartFn: wrapper });
     },
   }[name];
@@ -125,6 +162,11 @@ function wrap(name, original) {
 /** Wraps node:assert/strict's comparisons once per process. */
 export function install() {
   if (assert[INSTALLED]) return;
+  try {
+    assert.strictEqual(1, 2, () => "yuzuno-probe");
+  } catch (error) {
+    callsMessages = String(error?.message).startsWith("yuzuno-probe");
+  }
   for (const name of Object.keys(COMPARISONS)) assert[name] = wrap(name, assert[name]);
   Object.defineProperty(assert, INSTALLED, { value: true });
 }
