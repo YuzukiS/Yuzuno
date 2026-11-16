@@ -93,7 +93,7 @@ After a restart of Windows, Core in WSL is not running until something starts it
 
 ## Install Core from the app (Windows, WSL)
 
-The connection page's local Core commands can install Core in a WSL 2 distribution you choose and start it, without the steps of [Install a Linux Core](../docs/independent-core.md#install). The commands are in this app; the page that offers them comes next and is not released yet.
+The connection page's local Core commands can install Core in a WSL 2 distribution you choose and start it, without the steps of [Install a Linux Core](../docs/independent-core.md#install). The connection page offers them, as "Install Core on this computer", in the Windows app from 0.5.0 (`desktop-0.5.0`).
 
 - **Which release.** The newest stable Core release (tagged `core-…`, not a draft or prerelease, the latest published) of the fixed `YuzukiS/Yuzuno` repository, for `linux-x86_64`, with exactly one of each of its three files. The app asks GitHub without any token, over HTTPS only, following at most 5 redirects and only to HTTPS, through Windows' own proxy settings and certificates. Without signing in, GitHub allows 60 such requests an hour from one address; an installation makes one.
 - **How it is checked**, on Windows, before anything reaches WSL:
