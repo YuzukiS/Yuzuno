@@ -64,6 +64,23 @@ a.input-file-body:focus-visible {
   flex: 0 0 auto;
   color: var(--muted);
 }
+/* A sent file the desktop app drags out itself (YN-170): no drag or text
+ * selection of the page's own, a wait while it is fetched, and why a drag
+ * failed on a line of its own below the files. */
+.input-file [data-file-drag] {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.input-file [data-file-drag="preparing"] {
+  cursor: progress;
+}
+.input-files-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .input-file-remove {
   flex: 0 0 auto;
   display: grid;

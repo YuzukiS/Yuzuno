@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
 import { Download, X } from "lucide-react";
 import { API_BASE } from "./api";
 import { fileSize } from "./file-input";
 import { strings, useStrings } from "./i18n";
+import { useFileDrag, type NativeFile } from "./native-file-drag";
 import { Tip, TipText } from "./Tip";
 import "./file-input.css";
 
@@ -42,12 +44,14 @@ function fileKind(name: string, fallback: string) {
  * The files of a draft or a sent message (YN-145 §2.6): each one line, its
  * type, its name and its size, as the composer takes them. In a draft each
  * has a remove button; in a sent message each downloads from Core, and its
- * tip names the path the Agent reads.
+ * tip names the path the Agent reads. A sent one dragged out is that file
+ * (YN-170): in the desktop app a real one, in Chromium a download.
  */
 export function FileAttachments({
   files,
   agentId,
   href,
+  projectId,
   onRemove,
 }: {
   files: readonly PreviewFile[];
@@ -56,6 +60,9 @@ export function FileAttachments({
   /** Where a sent message's file downloads from, when not its Agent's own
    * route: Home keeps its files on the Project (home-files.ts). */
   href?: (file: PreviewFile) => string;
+  /** The Project that keeps these files, when Home does (with `href`): the
+   * desktop app fetches a dragged one from there. */
+  projectId?: string;
   onRemove?: (file: PreviewFile) => void;
 }) {
   const t = useStrings(text);
@@ -73,30 +80,11 @@ export function FileAttachments({
             <span className="input-file-size">{fileSize(file.bytes)}</span>
           </>
         );
-        const owner = file.agentId ?? agentId ?? "";
-        return (
-          <div className="input-file" key={`${file.agentId ?? ""}:${file.id}:${file.name}`}>
-            {onRemove ? (
+        const key = `${file.agentId ?? ""}:${file.id}:${file.name}`;
+        if (onRemove)
+          return (
+            <div className="input-file" key={key}>
               <div className="input-file-body">{content}</div>
-            ) : (
-              <Tip
-                side="top"
-                align="start"
-                describe={false}
-                content={<TipText title={name} body={file.path} />}
-              >
-                <a
-                  className="input-file-body"
-                  href={href?.(file) ?? fileUrl(owner, file.id, file.name)}
-                  download={file.name}
-                  aria-label={t.download(name)}
-                >
-                  {content}
-                  <Download className="input-file-download" size={12} aria-hidden="true" />
-                </a>
-              </Tip>
-            )}
-            {onRemove && (
               <button
                 type="button"
                 className="input-file-remove"
@@ -105,10 +93,64 @@ export function FileAttachments({
               >
                 <X size={12} />
               </button>
-            )}
-          </div>
+            </div>
+          );
+        const owner = file.agentId ?? agentId ?? "";
+        const native: NativeFile | null = projectId
+          ? { kind: "projectFile", projectId, fileId: file.id, name: file.name }
+          : owner && !href
+            ? { kind: "agentFile", agentId: owner, fileId: file.id, name: file.name }
+            : null;
+        return (
+          <SentFile
+            key={key}
+            name={name}
+            file={file}
+            href={href?.(file) ?? fileUrl(owner, file.id, file.name)}
+            native={native}
+            label={t.download(name)}
+          >
+            {content}
+          </SentFile>
         );
       })}
     </div>
+  );
+}
+
+/** A sent file: a download to click, and the file itself to drag out. A
+ * failed drag says why on a line of its own below the files. */
+function SentFile({
+  name,
+  file,
+  href,
+  native,
+  label,
+  children,
+}: {
+  name: string;
+  file: PreviewFile;
+  href: string;
+  native: NativeFile | null;
+  label: string;
+  children: ReactNode;
+}) {
+  const drag = useFileDrag(native && file.name ? { file: native, mime: "application/octet-stream", url: href } : null);
+  return (
+    <>
+      <div className="input-file">
+        <Tip side="top" align="start" describe={false} content={<TipText title={name} body={file.path} />}>
+          <a className="input-file-body" href={href} download={file.name} aria-label={label} {...drag.props}>
+            {children}
+            <Download className="input-file-download" size={12} aria-hidden="true" />
+          </a>
+        </Tip>
+      </div>
+      {drag.error && (
+        <p className="input-files-note" role="status">
+          {drag.error}
+        </p>
+      )}
+    </>
   );
 }

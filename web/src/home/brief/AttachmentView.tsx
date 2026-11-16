@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useTimeDisplay } from "../../time-preferences";
 import {
   ArrowUpRight,
@@ -27,6 +27,9 @@ import { useKeptImagePreview } from "./image-preview";
 import { CardFoldWorkspace } from "../card-fold";
 import { pageReplyTo } from "../PageSend";
 import { Tip, TipText } from "../../Tip";
+import { useFileDrag } from "../../native-file-drag";
+// Where Chromium drags a kept file out as itself; it moved with the drag (YN-170).
+export { dragsOutAsFile } from "../../native-file-drag";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -109,29 +112,6 @@ async function readWhole(url: string): Promise<string> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Core answered ${response.status}.`);
   return response.text();
-}
-
-/**
- * Whether this page can drag a kept file out as itself (YN-102): Chromium
- * on Windows and macOS (Chrome, Edge, the Windows app's WebView2) saves a
- * `DownloadURL` dropped on a folder, the desktop or an app as that file.
- * Safari, Firefox, the Mac and iPhone apps (WKWebView) and phones have no
- * such drag, so there it is not offered; nor on Linux, where only some file
- * managers take that drop and none was checked.
- * By the user agent: `navigator.userAgentData` exists only in a secure
- * context, and Core is also opened over plain http at a LAN address.
- */
-export function dragsOutAsFile(agent = navigator.userAgent) {
-  return /\bChrome\/\d/.test(agent) && /Windows NT|Macintosh/.test(agent);
-}
-
-/** The drag of a kept file: the browser fetches its snapshot as the page
- * does (no credential in the address) and saves it under its own name,
- * which Core keeps to `[\w.-]`, so it never holds the format's colons. */
-function dragOut(event: DragEvent<HTMLElement>, attachment: SectionAttachment, url: string) {
-  const type = attachment.mime.split(";")[0].trim() || "application/octet-stream";
-  event.dataTransfer.setData("DownloadURL", `${type}:${attachment.name}:${new URL(url, window.location.href).href}`);
-  event.dataTransfer.effectAllowed = "copy";
 }
 
 type Preview<T> = { state: "loading" } | { state: "error"; error: string } | ({ state: "ready" } & T);
@@ -452,6 +432,17 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   // rather than in a browser tab (T-177), as from its card on Home (YN-3).
   const image = !!attachment?.snapshot && attachment.kind === "image";
   const viewer = useKeptImagePreview(projectId, section, image ? attachment : undefined, label);
+  // A kept file dragged out becomes that file: in the desktop app a real
+  // one, in Chromium a download (YN-102, YN-170).
+  const drag = useFileDrag(
+    attachment?.snapshot && attachment.kind !== "link" && attachment.kind !== "image"
+      ? {
+          file: { kind: "briefAttachment", projectId, section: section.key, name: attachment.name, version: section.version },
+          mime: attachment.mime,
+          url: attachmentUrl(projectId, section.key, attachment.name, section.version),
+        }
+      : null,
+  );
   if (!attachment)
     return (
       <div className="brief-attachment">
@@ -468,8 +459,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const kept = attachment.snapshot && attachment.kind !== "link";
   // A kept HTML page opens working (T-5): its source only when asked for.
   const page = kept && attachment.kind !== "image" && htmlFile(attachment.name);
-  // A kept file dragged out becomes that file, where the page can (YN-102).
-  const drags = kept && dragsOutAsFile();
+  const drags = drag.mode !== "none";
   const preview = viewer.open;
   const imagePreview = viewer.dialog;
   // A kept image (T-9): the picture whole, then what it shows; the file's
@@ -526,7 +516,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       <header>
         {drags ? (
           <Tip content={<TipText title={attachment.name} body={t.dragToSave} />}>
-            <span className="brief-file" draggable onDragStart={(event) => dragOut(event, attachment, url)}>
+            <span className="brief-file" {...drag.props}>
               <Icon size={14} aria-hidden="true" />
               <strong>{attachment.name}</strong>
             </span>
@@ -562,13 +552,19 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           />
         ) : (
           kept && (
-            <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
+            // It drags out as the file too, never as a link (YN-170).
+            <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer" {...drag.props}>
               {attachment.kind === "pdf" ? t.openPdf : t.openFile}
               <ArrowUpRight size={11} aria-hidden="true" />
             </a>
           )
         )}
       </header>
+      {drag.error && (
+        <p className="brief-attachment-note" role="status">
+          {drag.error}
+        </p>
+      )}
       {label && <p className="brief-attachment-caption">{label}</p>}
       <small className="brief-attachment-meta">
         {attachment.kind !== "link" && <>{bytes(attachment.size)} · </>}

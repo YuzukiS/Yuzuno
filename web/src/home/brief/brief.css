@@ -1181,6 +1181,17 @@ p.brief-preview-frame {
 .brief-file:active {
   cursor: grabbing;
 }
+/* In the desktop app the app drags the file out itself (YN-170): the page
+ * starts no drag or text selection of its own, and waits while the file is
+ * fetched. */
+.brief-attachment [data-file-drag] {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.brief-attachment [data-file-drag="preparing"] {
+  cursor: progress;
+}
 
 @container brief-body (max-width: 520px) {
   .brief-group {

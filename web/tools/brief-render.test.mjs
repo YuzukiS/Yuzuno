@@ -493,6 +493,151 @@ test("YN-102 a kept file drags out as itself only where Chromium saves a Downloa
   assert.deepEqual(page.errors, []);
 });
 
+/** The desktop app's command bridge, as `__TAURI__.core.invoke`: it records
+ * each call of its file drag, says it drags files out, and answers a drag
+ * with `drag`; it has no other command. */
+function desktopApp(window, drag = () => Promise.resolve({ outcome: "dropped" })) {
+  const calls = [];
+  window.__TAURI__ = {
+    core: {
+      invoke: (command, args = {}) => {
+        if (command !== "desktop_file_drag") return Promise.reject(new Error(`unknown command ${command}`));
+        calls.push({ command, args: JSON.parse(JSON.stringify(args)) });
+        return args.file ? drag(args.file) : Promise.resolve({ ready: true });
+      },
+    },
+  };
+  return calls;
+}
+const press = (window, target, type, x, y) =>
+  target.dispatchEvent(new window.PointerEvent(type, {
+    bubbles: true, cancelable: true, isPrimary: true, pointerId: 1, pointerType: "mouse", button: 0, clientX: x, clientY: y,
+  }));
+
+test("YN-170 in the desktop app a kept file and its Open link drag out through the app, as the file Core keeps: never an address, never the browser's own drag; a click still opens it", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  let finish;
+  const calls = desktopApp(window, () => new Promise((resolve) => { finish = resolve; }));
+  asAgent(window, EDGE_WINDOWS);
+  window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+  const row = () => attachmentNamed(document, "paper.pdf");
+  const chip = () => row().querySelector(".brief-file");
+  const open = () => row().querySelector("a.brief-attachment-open");
+  await until(() => chip()?.dataset.fileDrag === "ready", "the app says it drags files out");
+  assert.deepEqual(calls, [{ command: "desktop_file_drag", args: {} }], "asked once, without a file");
+  assert.deepEqual(await hoverTip(window, chip()), ["paper.pdf", "Drag to a folder or an app to save it as a file"]);
+  for (const element of [chip(), open()]) {
+    assert.equal(element.getAttribute("draggable"), "false", element.className);
+    const own = new window.Event("dragstart", { bubbles: true, cancelable: true });
+    element.dispatchEvent(own);
+    assert.equal(own.defaultPrevented, true, `${element.className}: the browser's own drag never starts`);
+  }
+  // A press that moves less than 4 px is a click, not a drag.
+  press(window, chip(), "pointerdown", 10, 10);
+  press(window, chip(), "pointermove", 13, 12);
+  press(window, chip(), "pointerup", 13, 12);
+  await tick();
+  assert.equal(calls.length, 1);
+  // 4 px with the button held: the app is asked to drag the file, once.
+  press(window, open(), "pointerdown", 10, 10);
+  press(window, open(), "pointermove", 10, 14);
+  press(window, open(), "pointermove", 30, 40);
+  await until(() => calls.length === 2, "the drag is asked for");
+  assert.deepEqual(calls[1], {
+    command: "desktop_file_drag",
+    args: { file: { kind: "briefAttachment", projectId: PROJECT, section: KEY, name: "paper.pdf", version: 3 } },
+  });
+  await until(() => open().dataset.fileDrag === "preparing", "it waits while the app fetches the file");
+  // The click that ends the drag does not open the file.
+  const ending = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+  open().dispatchEvent(ending);
+  assert.equal(ending.defaultPrevented, true);
+  finish({ outcome: "dropped" });
+  await until(() => open().dataset.fileDrag === "ready", "ready again once the drag ended");
+  // A plain click afterwards opens it as before.
+  const opened = [];
+  window.addEventListener("click", (event) => {
+    opened.push(event.defaultPrevented);
+    event.preventDefault();
+  });
+  press(window, open(), "pointerdown", 10, 10);
+  press(window, open(), "pointerup", 10, 10);
+  open().dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.deepEqual(opened, [false]);
+  assert.equal(calls.length, 2);
+  // Touch never starts a drag: it scrolls.
+  open().dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 0, clientY: 0 }));
+  open().dispatchEvent(new window.PointerEvent("pointermove", { bubbles: true, pointerType: "touch", clientX: 0, clientY: 40 }));
+  await tick();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-170 a drag the desktop app could not make says why, in the page's language as it changes, for a while", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  desktopApp(window, () => Promise.reject("Core answered HTTP 404."));
+  window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+  const row = () => attachmentNamed(document, "test.log");
+  const chip = () => row().querySelector(".brief-file");
+  await until(() => chip()?.dataset.fileDrag === "ready", "the app says it drags files out");
+  press(window, chip(), "pointerdown", 0, 0);
+  press(window, chip(), "pointermove", 6, 0);
+  const note = () => row().querySelector('.brief-attachment-note[role="status"]');
+  await until(() => note(), "the reason shows");
+  assert.equal(note().textContent, "Couldn’t drag this file out: Core answered HTTP 404.");
+  // The reason is the app's; the words around it follow the page's language.
+  window.chooseLanguage("zh-Hans");
+  await until(() => note()?.textContent === "无法拖出这个文件：Core answered HTTP 404.", "in Chinese");
+  window.chooseLanguage("en");
+  await until(() => note()?.textContent === "Couldn’t drag this file out: Core answered HTTP 404.", "in English again");
+  // A new drag clears it while it is under way.
+  press(window, chip(), "pointerdown", 0, 0);
+  press(window, chip(), "pointermove", 0, 6);
+  await until(() => note()?.textContent === "Couldn’t drag this file out: Core answered HTTP 404.", "the same reason again");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-170 a desktop app without the command, and a browser, drag as before; the Open link drags as its file does, never as a link", async (t) => {
+  const page = mount(respond);
+  t.after(page.close);
+  const { document, window } = page;
+  const render = (agent) => {
+    window.unmountSection();
+    asAgent(window, agent);
+    window.renderSection(readSection(page, everything, { attachments: everythingAttachments }), PROJECT);
+  };
+  const open = () => attachmentNamed(document, "paper.pdf").querySelector("a.brief-attachment-open");
+  const drag = (element) => {
+    const data = {};
+    const transfer = { effectAllowed: "uninitialized", setData: (type, value) => void (data[type] = value) };
+    const event = new window.Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: transfer });
+    element.dispatchEvent(event);
+    return { data, effect: transfer.effectAllowed };
+  };
+  // An older Windows app: no such command, so a DownloadURL as in Edge.
+  window.__TAURI__ = { core: { invoke: () => Promise.reject(new Error("unknown command")) } };
+  render(EDGE_WINDOWS);
+  await tick(50);
+  assert.equal(open().getAttribute("draggable"), "true");
+  assert.equal(open().dataset.fileDrag, undefined);
+  assert.deepEqual(drag(open()), {
+    data: { DownloadURL: `application/pdf:paper.pdf:http://isolated.test${base}/attachments/${encodedKey}/paper.pdf?version=3` },
+    effect: "copy",
+  });
+  delete window.__TAURI__;
+  for (const agent of [SAFARI_MAC, FIREFOX_WINDOWS, CHROME_LINUX, CHROME_ANDROID, IPHONE]) {
+    render(agent);
+    assert.equal(open().getAttribute("draggable"), "false", agent);
+    assert.equal(open().getAttribute("href"), `${base}/attachments/${encodedKey}/paper.pdf?version=3`, `${agent}: still a link to click`);
+  }
+  assert.deepEqual(page.errors, []);
+});
+
 test("a Brief image opens in the app's preview, not a browser tab; without Point & Fix there is no Mark up (T-177)", async (t) => {
   const page = mount();
   t.after(page.close);

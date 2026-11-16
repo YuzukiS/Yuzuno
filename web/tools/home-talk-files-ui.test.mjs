@@ -87,7 +87,7 @@ const requests = () => [
   request(1),
 ];
 
-function mount({ lang = "en", storage = {}, front = { version: 1, agentId: null, effectiveAgentId: "d" }, older = false } = {}) {
+function mount({ lang = "en", storage = {}, front = { version: 1, agentId: null, effectiveAgentId: "d" }, older = false, tauri } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -103,6 +103,8 @@ function mount({ lang = "en", storage = {}, front = { version: 1, agentId: null,
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
   window.agents = agents;
+  // The desktop app's command bridge (YN-170).
+  if (tauri) window.__TAURI__ = { core: { invoke: tauri } };
   const calls = [];
   const uploads = [];
   const saved = new Map();
@@ -278,6 +280,32 @@ test("a field held for a missing front desk still downloads its kept files from 
   assert.equal(link.getAttribute("href"), `/api/projects/p1/files/${id(800)}/kept.pdf`,
     "a read-only draft downloads from the project, never /api/agents//files/...");
   assert.equal(link.getAttribute("download"), "kept.pdf");
+  assert.deepEqual(page.errors, []);
+});
+
+test("in the desktop app a project's file drags out as that file, fetched from the project (YN-170)", async (t) => {
+  const kept = { id: id(800), name: "kept.pdf", bytes: 10 };
+  const drags = [];
+  const page = await talk({
+    front: { version: 1, agentId: null, effectiveAgentId: null },
+    storage: { [DRAFTS]: JSON.stringify({ [SLOT]: { text: "Kept words", files: [kept], at: new Date().toISOString() } }) },
+    tauri: (command, args = {}) => {
+      if (command !== "desktop_file_drag") return Promise.reject(new Error(`unknown command ${command}`));
+      drags.push(JSON.parse(JSON.stringify(args)));
+      return Promise.resolve(args.file ? { outcome: "dropped" } : { ready: true });
+    },
+  });
+  t.after(page.close);
+  const link = () => page.document.querySelector(".project-talk-field .input-file a");
+  await until(() => link()?.dataset.fileDrag === "ready", "the app says it drags files out");
+  const press = (type, y) => link().dispatchEvent(new page.window.PointerEvent(type, {
+    bubbles: true, cancelable: true, isPrimary: true, pointerId: 1, pointerType: "mouse", button: 0, clientX: 0, clientY: y,
+  }));
+  press("pointerdown", 0);
+  press("pointermove", 4);
+  await until(() => drags.length === 2, "the drag is asked for");
+  assert.deepEqual(drags[1], { file: { kind: "projectFile", projectId: "p1", fileId: id(800), name: "kept.pdf" } });
+  assert.equal(link().getAttribute("href"), `/api/projects/p1/files/${id(800)}/kept.pdf`, "still a download to click");
   assert.deepEqual(page.errors, []);
 });
 

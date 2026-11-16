@@ -400,7 +400,7 @@ export function KeptCardReplies({
                 <blockquote>{draft.text}</blockquote>
                 {/* Its images and files, kept with it, never sent from here. */}
                 <ImageAttachments images={draft.images ?? []} imageUrl={(id, thumb) => homeImageUrl(projectId, id, thumb)} />
-                <FileAttachments files={draft.files ?? []} href={(file) => homeFileUrl(projectId, file.id, file.name)} />
+                <FileAttachments files={draft.files ?? []} href={(file) => homeFileUrl(projectId, file.id, file.name)} projectId={projectId} />
               </>
             )}
             <span className="home-kept-reply-actions">

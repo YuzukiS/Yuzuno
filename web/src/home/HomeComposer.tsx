@@ -310,6 +310,7 @@ export const HomeComposer = forwardRef<
             <FileAttachments
               files={keptFiles}
               href={(file) => homeFileUrl(attach.projectId, file.id, file.name)}
+              projectId={attach.projectId}
               onRemove={readOnly ? undefined : removeFile}
             />
           )}
