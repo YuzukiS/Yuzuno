@@ -608,7 +608,14 @@ def health(env, args):
     tools_frozen(env)
     rc = core_release(env, 'health', '--work-dir', env.work, '--origin', origin, '--workspace-id', workspace)
     require(rc == 0, f'core-release.py health exited {rc}')
-    ui = served_ui(origin, env.work / 'bundle/web')
+    # Since M3b the work directory holds one bundle per platform: compare the
+    # UI the installed Core serves with the bundle of the platform it reports.
+    values = read(env.work / 'health.json')
+    platform = ((values.get('updates') or {}).get('current') or {}).get('platform')
+    require(platform in release.PLATFORMS, f'The installed Core reports platform {platform!r}, not one of {release.PLATFORMS}')
+    web = env.work / 'bundle' / platform / 'web'
+    require(web.is_dir() and (web / 'index.html').is_file(), f'No Web UI for the installed platform {platform} at {web}')
+    ui = served_ui(origin, web)
     write(env.run / 'served-ui.json', ui)
     say(f"served UI: index {'identical' if ui['index'] else 'DIFFERENT'}, {ui['assets'] - len(ui['different'])} of "
         f"{ui['assets']} assets identical {ui['different']}, meta {ui['releaseMeta']}")

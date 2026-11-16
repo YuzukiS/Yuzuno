@@ -546,15 +546,17 @@ class FakeGhTests(ReleaseCase):
         self.assertEqual([c['verdict'] for c in self.calls()], ['read', 'refused'])
 
 
-class HealthTests(unittest.TestCase):
-    def serve(self, directory):
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=str(directory)))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return f'http://127.0.0.1:{server.server_address[1]}'
+def serve(test, directory):
+    """A local static server for directory, stopped when test ends."""
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=str(directory)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return f'http://127.0.0.1:{server.server_address[1]}'
 
+
+class HealthTests(unittest.TestCase):
     def test_served_ui_is_the_bundle_byte_for_byte(self):
         with tempfile.TemporaryDirectory() as temp:
             web, served = Path(temp) / 'web', Path(temp) / 'served'
@@ -563,7 +565,7 @@ class HealthTests(unittest.TestCase):
                 (root / 'index.html').write_text('<head><meta name="yuzuno-release" content="core-20261109-abcdef0"></head>')
                 (root / 'assets/app.js').write_text('js')
                 (root / 'assets/fonts/a b.woff2').write_bytes(b'font')
-            origin = self.serve(served)
+            origin = serve(self, served)
             self.assertEqual(run.served_ui(origin, web), {'index': True, 'releaseMeta': ['core-20261109-abcdef0'], 'assets': 2, 'different': []})
             (served / 'assets/app.js').write_text('other')
             self.assertEqual(run.served_ui(origin, web)['different'], ['assets/app.js'])
@@ -573,6 +575,47 @@ class HealthTests(unittest.TestCase):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
                 run.local_origin(origin)
         self.assertEqual(run.local_origin('http://127.0.0.1:4317/'), 'http://127.0.0.1:4317')
+
+
+class HealthRunTests(ReleaseCase):
+    """The health command's own path: the bundle of the platform the installed Core reports."""
+
+    def bundle(self, platform):
+        web = self.t / 'release/bundle' / platform / 'web'
+        (web / 'assets').mkdir(parents=True, exist_ok=True)
+        (web / 'index.html').write_text(f'<head><meta name="yuzuno-release" content="{self.tag}"></head>')
+        (web / 'assets/app.js').write_text('js')
+        return web
+
+    def installs(self, platform):
+        def fake(env, command, *argv):
+            self.assertEqual(command, 'health')
+            write(env.work / 'health.json', {'health': {}, 'updates': {'current': {'platform': platform}}})
+            return 0
+        patcher = patch.object(run, 'core_release', side_effect=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def health(self, origin):
+        return self.call('health', '--origin', origin,
+                         env=self.env(WORKSPACE_ID='00000000-0000-4000-8000-000000000000'))
+
+    def test_each_platform_is_compared_with_its_own_bundle(self):
+        for platform in run.release.PLATFORMS:
+            with self.subTest(platform=platform):
+                origin = serve(self, self.bundle(platform))
+                self.installs(platform)
+                rc, out, err = self.health(origin)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(read(self.rundir / 'served-ui.json')['releaseMeta'], [self.tag])
+
+    def test_a_missing_platform_folder_is_named(self):
+        self.bundle('linux-x86_64')
+        self.installs('macos-aarch64')
+        rc, out, err = self.health(serve(self, self.bundle('linux-x86_64')))
+        self.assertEqual(rc, 1)
+        missing = self.t / 'release/bundle/macos-aarch64/web'
+        self.assertIn(f'No Web UI for the installed platform macos-aarch64 at {missing}', err)
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
