@@ -221,7 +221,7 @@ impl Store {
             "task_create" => task_create(self, &tx, &author, &source, &input, &sha_check)?,
             "task_update" => task_update(self, &tx, &author, &source, &input, &sha_check)?,
             "task_claim" => task_claim(&tx, &author, &source, &input)?,
-            "task_comment" => task_comment(&tx, &author, &source, &input)?,
+            "task_comment" => task_comment(self, &tx, &author, &source, &input)?,
             "task_submit_result" => task_submit_result(self, &tx, &author, &source, &input)?,
             "task_result_ack" => result_ack::acknowledge(&tx, &author, &input)?,
             "mail_preferences" => mail_preferences::call(&tx, &author, &input)?,
@@ -1150,14 +1150,20 @@ fn task_claim(db: &Connection, actor: &TaskActor, source: &Value, input: &Value)
 }
 
 fn task_comment(
+    store: &Store,
     db: &Connection,
     actor: &TaskActor,
     source: &Value,
     input: &Value,
 ) -> Result<Value> {
-    allowed(input, &["requestId", "taskId", "body", "research"])?;
+    allowed(input, &["requestId", "taskId", "body", "research", "notifyAgentId", "priority"])?;
     let task = load_task(db, &required_text(input, "taskId", 128)?)?;
     let body = required_text(input, "body", 16_384)?;
+    let notify = optional_text(input, "notifyAgentId", 128)?;
+    ensure!(notify.is_some() || input.get("priority").is_none(),
+        "invalid_input: priority goes with notifyAgentId, the Agent the comment is mailed to");
+    ensure!(notify.is_none() || input.get("research").is_none(),
+        "invalid_input: a research record notifies no one; leave notifyAgentId out, or mail its seq with peer_send");
     let mut extra = json!({"body":body});
     // A research record (T-17) is a comment too: fixed, and nothing else changes.
     if let Some(record) = research::validate(db, &task, input.get("research"))? {
@@ -1165,7 +1171,30 @@ fn task_comment(
     }
     // Comments are append-only; they never invalidate another editor's version.
     let event = activity(db, &task.id, "comment", actor, source, extra)?;
-    Ok(json!({"task":task,"activity":event}))
+    let mut output = json!({"task":task,"activity":event});
+    // Mailed in the same transaction, as peer_send mails (YN-192): its
+    // refusal leaves no comment, and the mail names the comment's seq.
+    if let Some(to) = notify {
+        let mail = json!({"toAgentId":to,"body":comment_mail(db, &task.id, event["seq"].as_i64().unwrap_or(0), &body)?,
+            "taskId":task.id,"priority":message_priority(input)?});
+        output["message"] = create_message(store, db, actor, source, &mail)?;
+    }
+    Ok(output)
+}
+
+/// The mail a comment sends to the Agent it notifies: its seq, then its body,
+/// cut to the mail's limit with a pointer to the whole comment.
+fn comment_mail(db: &Connection, task: &str, seq: i64, body: &str) -> Result<String> {
+    let head = format!("Comment seq {seq} on {}:\n\n", task_number(db, task)?);
+    if head.len() + body.len() <= MAX_MAIL_BODY {
+        return Ok(format!("{head}{body}"));
+    }
+    let tail = format!("\n\n[cut: task_get with view activity and afterSeq {} reads it whole]", seq - 1);
+    let mut end = MAX_MAIL_BODY - head.len() - tail.len();
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(format!("{head}{}{tail}", &body[..end]))
 }
 
 fn task_submit_result(
@@ -1837,7 +1866,7 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"shortName":short_name.clone(),"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, ask in a Home Ask; nothing changes until you set it. An executor never sets its own task done (executor_done_refused): it submits its result, and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"shortName":short_name,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
-        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":bytes_schema(16_384),"research":research::schema()}), &["requestId","taskId","body"]),
+        definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional notifyAgentId mails the comment, with its seq, to that Agent in the same step, as peer_send would (priority as in peer_send); without it no one is told. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":bytes_schema(16_384),"research":research::schema(),"notifyAgentId":string,"priority":priority}), &["requestId","taskId","body"]),
         definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
         definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":bytes_schema(16_384),"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
@@ -3072,5 +3101,51 @@ mod tests {
         // Sent as the refusals say, both go.
         send("b", json!({"requestId":"to core, sent","toAgentId":"a","taskId":"T-1","body":"Seen."})).unwrap();
         send("b", json!({"requestId":"other task, sent","toAgentId":"a","taskId":"T-2","body":"About T-2."})).unwrap();
+    }
+
+    /// YN-192 (19): a comment can mail one Agent, with its seq, in the same
+    /// step; a refusal leaves no comment.
+    #[test]
+    fn a_comment_can_notify_one_agent_with_its_seq() {
+        let (_dir, store) = fixture();
+        create(&store);
+        let comment = |request: &str, body: &str, extra: Value| {
+            let mut input = json!({"requestId":request,"taskId":"T-1","body":body});
+            for (key, value) in extra.as_object().unwrap() {
+                input[key] = value.clone();
+            }
+            store.collaboration_call(Some("a"), "task_comment", input)
+        };
+        let comments = || store.db.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM collaboration_task_activity WHERE json_extract(data,'$.kind')='comment'", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert!(comment("plain", "A note.", json!({})).unwrap().get("message").is_none(), "without notifyAgentId no one is told");
+        let sent = comment("notify", "Merged; please check.", json!({"notifyAgentId":"b","priority":"urgent"})).unwrap();
+        let seq = sent["activity"]["seq"].as_i64().unwrap();
+        assert_eq!(sent["message"]["recipient"]["id"], "b");
+        assert_eq!(sent["message"]["taskId"], "T-1");
+        assert_eq!(sent["message"]["priority"], "urgent");
+        assert_eq!(sent["message"]["body"], format!("Comment seq {seq} on T-1:\n\nMerged; please check."));
+        let again = comment("notify", "Merged; please check.", json!({"notifyAgentId":"b","priority":"urgent"})).unwrap();
+        assert_eq!(again["message"]["id"], sent["message"]["id"], "a retry sends nothing again");
+        let inbox = store.collaboration_call(Some("b"), "peer_read", json!({})).unwrap();
+        assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(comments(), 2);
+        for (request, extra, says) in [
+            ("alone", json!({"priority":"urgent"}), "invalid_input: priority goes with notifyAgentId"),
+            ("research", json!({"notifyAgentId":"b","research":{"type":"observation","id":"seen","title":"Seen","text":"Seen."}}),
+                "invalid_input: a research record notifies no one"),
+            ("self", json!({"notifyAgentId":"a"}), "invalid_input: choose another Agent as recipient"),
+            ("nobody", json!({"notifyAgentId":"no-such-agent"}), ""),
+        ] {
+            let error = comment(request, "Refused.", extra).unwrap_err().to_string();
+            assert!(error.starts_with(says), "{request}: {error}");
+        }
+        assert_eq!(comments(), 2, "a refused notice leaves no comment");
+        // A comment longer than a mail: the mail is cut, and says where it is whole.
+        let long = comment("long", &"字".repeat(5461), json!({"notifyAgentId":"b"})).unwrap();
+        let body = long["message"]["body"].as_str().unwrap();
+        let seq = long["activity"]["seq"].as_i64().unwrap();
+        assert!(body.len() <= MAX_MAIL_BODY && body.starts_with(&format!("Comment seq {seq} on T-1:")), "{}", body.len());
+        assert!(body.ends_with(&format!("[cut: task_get with view activity and afterSeq {} reads it whole]", seq - 1)));
     }
 }
