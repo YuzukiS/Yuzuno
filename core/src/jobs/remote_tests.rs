@@ -127,9 +127,10 @@ fn lab() -> Lab {
     // What the account can enforce there: nothing (no systemd user manager),
     // whatever this host has; the lab machine runs in the limited mode.
     std::fs::write(path("capabilities.json"), r#"{"manager": false, "busctl": false, "delegated": [], "linger": false}"#).unwrap();
+    // Git there never looks above the lab, which may be inside a checkout.
     let at = |machine: &str| {
-        format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
-            home.display(), path(machine).display(), path("capabilities.json").display())
+        format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={} GIT_CEILING_DIRECTORIES={}",
+            home.display(), path(machine).display(), path("capabilities.json").display(), dir.path().display())
     };
     let a = at("machine-a");
     let ssh = script(path("ssh"), format!("#!/bin/sh\n{ARGS}{a} exec /bin/sh -c \"$1\"\n"));
@@ -817,7 +818,8 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     for (extra, message) in [
         (json!({"gpu":{"memoryMiB":1000}}), "GPU admission is not available"),
         (json!({"exclusive":true}), "exclusive applies to this host"),
-        (json!({"guardGit":true}), "set guardGit to false"),
+        (json!({"machineId":"windows","cwd":"C:\\work","guardGit":true}), "guardGit is not available on Windows on this PC"),
+        (json!({"machineId":"windows","cwd":"C:\\work","guardPaths":["src"]}), "guardPaths narrows guardGit, which is not available on Windows"),
         (json!({"outputs":["a.txt"]}), "on a remote machine they stay there, so declare them as artifacts instead"),
         // On Windows, paths of that PC with its separators (T-108).
         (json!({"machineId":"windows","cwd":"C:\\work","inputs":["..\\a.txt"]}), "inputs on Windows are drive paths"),
@@ -830,8 +832,10 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
         let error = input(&lab, "bad", "true", extra).validate().unwrap_err().to_string();
         assert!(error.contains(message), "{error}");
     }
-    // On an SSH machine inputs and artifacts are files there (T-108).
+    // On an SSH machine inputs and artifacts are files there (T-108), and
+    // its helper reads Git there (YN-83 S2).
     input(&lab, "ok", "true", json!({"inputs":["a.txt"],"artifacts":[{"path":"a.json","format":"json"}]})).validate().unwrap();
+    input(&lab, "ok", "true", json!({"guardGit":true,"guardPaths":["src"]})).validate().unwrap();
     // And on Windows, files of that PC.
     input(&lab, "ok", "true", json!({"machineId":"windows","cwd":"C:\\work","inputs":["a.txt","data\\b.bin","D:\\shared\\c.txt"],
         "artifacts":[{"path":"out\\result.json","format":"json"},{"path":"out/lines.jsonl","format":"jsonl"}]})).validate().unwrap();
@@ -2330,9 +2334,9 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     // A retry is the same Job, matched as it was sent: before and after resolving.
     assert_eq!(lab.ws.store.previous_job(Some("r"), &sent).unwrap().unwrap()["id"], job["id"]);
     assert_eq!(create_as(&lab, "r", resolved).unwrap()["id"], job["id"]);
-    // The machine's rules hold for what it resolved to: guardGit reads this host.
-    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "git", "true", json!({"machineId":"agent","guardGit":true})), false).unwrap();
-    assert!(checked.validate().unwrap_err().to_string().contains("guardGit"));
+    // The machine's rules hold for what it resolved to: exclusive is this host's.
+    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "alone", "true", json!({"machineId":"agent","exclusive":true})), false).unwrap();
+    assert!(checked.validate().unwrap_err().to_string().contains("exclusive applies to this host's jobs only"));
     // No calling Agent: nothing is guessed, and nothing runs anywhere.
     let error = lab.ws.store.resolve_machine(None, input(&lab, "nobody", "true", json!({"machineId":"agent"})), false).unwrap_err();
     assert!(error.to_string().contains("this submission has none"), "{error}");
@@ -2559,4 +2563,235 @@ async fn a_first_submit_to_a_machine_not_reached_yet_promises_no_limits() {
     assert!(limits.starts_with("Not known yet") && limits.contains("not as held"), "{limits}");
     let on_mac = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("next-on-mac", "m1")).await.unwrap();
     assert_eq!(on_mac["capabilities"], remote::darwin_capabilities(), "{on_mac}");
+}
+
+/// The helper goes to an SSH machine as one argument of `python3 -c`, and
+/// Linux takes at most MAX_ARG_STRLEN in one argument: 32 pages, 131,072
+/// bytes with 4 KiB pages (include/uapi/linux/binfmts.h). 120 KiB leaves 8 KiB
+/// (YN-83 S2 design §3.8); past it the helper has to travel another way.
+#[test]
+fn the_jobs_helper_command_fits_one_argument() {
+    let command = format!("python3 -c {}", crate::remote::shell_quote(include_str!("remote_job.py")));
+    assert!(command.len() <= 120 * 1024, "the helper's command is {} bytes", command.len());
+}
+
+/// v4 (YN-83 S2) binds the Git state guardGit froze there and its
+/// exclusions, and names the fields later slices fill; v1 to v3 stay what
+/// they were (above). The same vectors as the helper's own test
+/// (acceptance/remote-jobs/helper_test.py).
+#[test]
+fn the_digest_v4_binds_the_git_guard_and_matches_the_helper() {
+    let base = json!({"argv":["true"],"cwd":"/w","env":{},"timeoutSeconds":5});
+    let mut whole = base.clone();
+    whole["git"] = json!({"frozen":{"root":"/w","head":"c".repeat(40),"statusSha256":"d".repeat(64)},"guardExclude":[]});
+    assert_eq!(remote::digest(&whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81");
+    let mut scoped = base.clone();
+    scoped["limits"] = json!({"mode":"strict","cpuMillis":500,"memoryMiB":64,"swapMiB":0});
+    scoped["inputs"] = json!([{"path":"/w/gone.txt","absolutePath":"/w/gone.txt","sha256":null}]);
+    scoped["git"] = json!({"frozen":{"root":"/w","head":"c".repeat(40),"statusSha256":"d".repeat(64),
+        "guardPaths":[{"path":"src","object":"e".repeat(40),"type":"tree"},{"path":"new","object":null,"type":null}]},
+        "guardExclude":["/w/out.txt"]});
+    assert_eq!(remote::digest(&scoped), "9b038eba01d76781000a299fca6a281f7113be243dd01b24aeb55c51d9bfe58c");
+    let mut no_tree = base.clone();
+    no_tree["git"] = json!({"frozen":null,"guardExclude":[]});
+    assert_eq!(remote::digest(&no_tree), "a4824b22996bd6066dff00a43359796b584755cf040b4d41ee511e26810e0a99");
+    // No git, or a null one, is v1 byte for byte.
+    let mut null = base.clone();
+    null["git"] = Value::Null;
+    assert_eq!(remote::digest(&null), "9fd6c28e5279171ad00e05426404968e28d63227503f7d147a3a41a5c78ad84b");
+    for (key, value) in [("head", json!("f".repeat(40))), ("statusSha256", json!("0".repeat(64))), ("root", json!("/v"))] {
+        let mut moved = whole.clone();
+        moved["git"]["frozen"][key] = value;
+        assert_ne!(remote::digest(&moved), remote::digest(&whole), "{key}");
+    }
+    let mut excluded = whole.clone();
+    excluded["git"]["guardExclude"] = json!(["/w/out.txt"]);
+    assert_ne!(remote::digest(&excluded), remote::digest(&whole));
+    // A job without guardGit, as every job before it, sends no git: its
+    // request and digest are as before. Windows never carries it.
+    for (kind, guard) in [("ssh", json!(false)), ("mac", json!(false)), ("ssh", Value::Null), ("windows", json!(true))] {
+        let job = json!({"argv":["true"],"cwd":"/w","env":{},"timeoutSeconds":5,"guardGit":guard,
+            "executor":{"kind":kind,"limitMode":"legacy"},"snapshot":{"cwd":"/w","remote":true}});
+        assert!(remote::spec(&job).get("git").is_none(), "{kind} {guard}");
+    }
+}
+
+/// `git` in the lab's work tree, as a person with a synthetic identity and
+/// no configuration of their own runs it.
+fn git(lab: &Lab, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&lab.work)
+        .args(args)
+        .env("HOME", lab.dir.path().join("home"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .envs([("GIT_AUTHOR_NAME", "Lab"), ("GIT_COMMITTER_NAME", "Lab")])
+        .envs([("GIT_AUTHOR_EMAIL", "lab@example.invalid"), ("GIT_COMMITTER_EMAIL", "lab@example.invalid")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+/// The lab's work folder as a Git work tree with a.txt, b.txt and src/x.txt
+/// committed; HEAD.
+fn repo(lab: &Lab) -> String {
+    std::fs::create_dir_all(lab.work.join("src")).unwrap();
+    for (name, text) in [("a.txt", "v1\n"), ("b.txt", "b\n"), ("src/x.txt", "x\n")] {
+        std::fs::write(lab.work.join(name), text).unwrap();
+    }
+    git(lab, &["init", "-q"]);
+    git(lab, &["add", "."]);
+    git(lab, &["commit", "-qm", "first"]);
+    git(lab, &["rev-parse", "HEAD"])
+}
+
+/// As job_submit with guardGit: what the machine froze there.
+async fn guarded(lab: &Lab, program: &str, paths: &[&str]) -> anyhow::Result<Value> {
+    let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+    let programs = remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS };
+    remote::remote_snapshot_with(&lab.ws, &programs, "m1", &lab.work.to_string_lossy(), &[], Some((&paths, &[]))).await
+}
+
+/// guardGit on an SSH machine (YN-83 S2): its helper freezes cwd's work tree
+/// there at submit, as host.py does here, and the job records it with the
+/// machine that answered and binds it (v4). A tracked file changed while
+/// queued, frozen or not, rejects the start in this host's words, releases
+/// the slot and is told once; unchanged, the command runs.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guard_git_freezes_the_work_tree_on_the_machine_and_a_change_while_queued_rejects_the_start() {
+    let lab = lab();
+    let head = repo(&lab);
+    std::fs::write(lab.work.join("a.txt"), "v2\n").unwrap();
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let root = lab.work.canonicalize().unwrap();
+    let a = root.join("a.txt").to_string_lossy().into_owned();
+    assert_eq!((snapshot["git"]["root"].as_str(), snapshot["git"]["head"].as_str()), (root.to_str(), Some(head.as_str())), "{snapshot}");
+    assert_eq!((snapshot["git"]["hostId"].clone(), snapshot["hostId"].clone()), (json!(host_a()), json!(host_a())));
+    assert!(snapshot["git"]["statusSha256"].as_str().is_some_and(|sha| sha.len() == 64));
+    let files = snapshot["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "only the changed tracked file: {snapshot}");
+    assert_eq!((files[0]["path"].as_str(), files[0]["tracked"].as_bool()), (Some(a.as_str()), Some(true)));
+    assert_eq!(files[0]["sha256"], json!(sha("v2\n")));
+    let changed = create_frozen(&lab, input(&lab, "changed", "touch ran", json!({"guardGit":true})), snapshot.clone());
+    assert_eq!(changed["remote"]["prebound"]["request"], "v4", "{changed}");
+    let spec = remote::spec(&changed);
+    assert_eq!(spec["git"]["frozen"]["head"], json!(head));
+    assert!(spec["git"]["frozen"].get("hostId").is_none(), "the machine is in the request's binding, not its Git state");
+    assert_eq!(changed["remote"]["digest"], json!(remote::digest(&spec)));
+    std::fs::write(lab.work.join("a.txt"), "v3\n").unwrap();
+    let ended = until(&lab, &lab.ssh, &changed, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "rejected", "{ended}");
+    assert_eq!(ended["reason"], format!("Guarded inputs changed while queued ({a} (its content changed)); command was not started."));
+    assert!(!lab.work.join("ran").exists(), "the command never ran");
+    let told = ended["notifications"].clone();
+    assert!(told["rejected"].is_string() && told.as_object().unwrap().len() == 1, "{told}");
+    tick(&lab, &lab.ssh).await;
+    assert_eq!(job(&lab, &changed)["notifications"], told, "told once");
+    // A tracked file that was unchanged at submit is named too.
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let other = create_frozen(&lab, input(&lab, "other", "touch ran", json!({"guardGit":true})), snapshot);
+    std::fs::write(lab.work.join("b.txt"), "changed\n").unwrap();
+    let ended = until(&lab, &lab.ssh, &other, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["reason"], format!("Guarded inputs changed while queued ({}); command was not started.", root.join("b.txt").display()));
+    // Unchanged, it runs; untracked files (its own output) are not frozen.
+    git(&lab, &["checkout", "--", "b.txt"]);
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let runs = create_frozen(&lab, input(&lab, "runs", "cat a.txt > out.txt", json!({"guardGit":true})), snapshot);
+    let ended = until(&lab, &lab.ssh, &runs, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!((ended["status"].as_str(), ended["reason"].as_str()), (Some("succeeded"), Some("success")), "{ended}");
+    assert_eq!(std::fs::read_to_string(lab.work.join("out.txt")).unwrap(), "v3\n");
+    // Outside any work tree no Git state is frozen, and the job still binds it.
+    let outside = lab.dir.path().join("plain");
+    std::fs::create_dir_all(&outside).unwrap();
+    let programs = remote::Programs { ssh: &lab.ssh, windows: None, mux: None, mac: remote::MAC_TOOLS };
+    let none: &[String] = &[];
+    let snapshot = remote::remote_snapshot_with(&lab.ws, &programs, "m1", &outside.to_string_lossy(), &[], Some((none, none))).await.unwrap();
+    assert!(snapshot["git"].is_null() && snapshot["files"] == json!([]), "{snapshot}");
+}
+
+/// With guardPaths HEAD may move while queued: a commit elsewhere leaves the
+/// guarded paths as they were and the command runs, with what its start
+/// found recorded as local jobs record it; a commit under a guarded path
+/// rejects it, naming the path as this host does.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guard_paths_on_the_machine_let_head_move_but_not_the_guarded_content() {
+    let lab = lab();
+    let head = repo(&lab);
+    let snapshot = guarded(&lab, &lab.ssh, &["src"]).await.unwrap();
+    let objects = snapshot["git"]["guardPaths"].as_array().unwrap();
+    assert_eq!((objects[0]["path"].as_str(), objects[0]["type"].as_str()), (Some("src"), Some("tree")), "{snapshot}");
+    let first = create_frozen(&lab, input(&lab, "elsewhere", "true", json!({"guardGit":true,"guardPaths":["src"]})), snapshot);
+    std::fs::write(lab.work.join("b.txt"), "moved on\n").unwrap();
+    git(&lab, &["commit", "-qam", "elsewhere"]);
+    let ended = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    let guard = &ended["result"]["guard"];
+    assert_eq!((guard["headAtSubmit"].as_str(), guard["guardedUnchanged"].as_bool()), (Some(head.as_str()), Some(true)), "{ended}");
+    assert_eq!(guard["headAtStart"], json!(git(&lab, &["rev-parse", "HEAD"])));
+    let snapshot = guarded(&lab, &lab.ssh, &["src"]).await.unwrap();
+    let second = create_frozen(&lab, input(&lab, "under", "touch ran", json!({"guardGit":true,"guardPaths":["src"]})), snapshot);
+    std::fs::write(lab.work.join("src/x.txt"), "y\n").unwrap();
+    git(&lab, &["commit", "-qam", "under src"]);
+    let ended = until(&lab, &lab.ssh, &second, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "rejected", "{ended}");
+    assert_eq!(ended["reason"], "Guarded inputs changed while queued (the committed content of guarded path src); command was not started.");
+    assert!(!lab.work.join("ran").exists());
+    // guardPaths outside the work tree, or without one, refuse the submit.
+    let error = guarded(&lab, &lab.ssh, &["../elsewhere"]).await.unwrap_err().to_string();
+    assert!(error.starts_with("Inputs on lab box cannot be frozen, so nothing was submitted: guardPaths must be inside the Git work tree of cwd"), "{error}");
+}
+
+/// The Git there is the account's own, on its PATH, as python3 is: none, or
+/// Apple's stand-in on a Mac without the Command Line Tools, refuses the
+/// submit with why, and nothing is frozen.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guard_git_needs_a_git_on_the_accounts_path_there() {
+    let lab = lab();
+    repo(&lab);
+    let python = std::process::Command::new("sh").args(["-c", "command -v python3"]).output().unwrap();
+    let python = String::from_utf8(python.stdout).unwrap().trim().to_owned();
+    let a = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={} GIT_CEILING_DIRECTORIES={}",
+        lab.dir.path().join("home").display(), lab.dir.path().join("machine-a").display(), lab.dir.path().join("capabilities.json").display(),
+        lab.dir.path().display());
+    let account = |name: &str, git: Option<&str>| {
+        let bin = lab.dir.path().join(name);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&python, bin.join("python3")).unwrap();
+        if let Some(body) = git {
+            script(bin.join("git"), body.to_owned());
+        }
+        script(lab.dir.path().join(format!("ssh-{name}")), format!("#!/bin/sh\n{ARGS}{a} PATH={} exec /bin/sh -c \"$1\"\n", bin.display()))
+    };
+    let none = account("no-git", None);
+    let error = guarded(&lab, &none, &[]).await.unwrap_err().to_string();
+    assert_eq!(error, "Inputs on lab box cannot be frozen, so nothing was submitted: `git` is not on this account's PATH there");
+    // Apple's /usr/bin/git without the tools: it only asks for them.
+    let apple = account("apple-git", Some("#!/bin/sh\necho 'xcode-select: note: No developer tools were found, requesting install.' >&2\nexit 1\n"));
+    let error = guarded(&lab, &apple, &[]).await.unwrap_err().to_string();
+    assert_eq!(error, "Inputs on lab box cannot be frozen, so nothing was submitted: its git is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install)");
+}
+
+/// remote_git_parity_tests.py: guardGit on a machine (remote_job.py
+/// git_snapshot) answers as guardGit on this host (host.py snapshot) on the
+/// same work trees: the same state, files and refusals (YN-83 S2).
+#[cfg(target_os = "linux")]
+#[test]
+fn guard_git_on_a_machine_answers_as_on_this_host() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = |name: &str| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/jobs").join(name);
+    let output = std::process::Command::new("/usr/bin/python3")
+        .args(["-I", "-B"])
+        .args([source("remote_git_parity_tests.py"), source("host.py"), source("remote_job.py")])
+        .env("HOME", temp.path())
+        .env("TMPDIR", temp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "remote_git_parity_tests.py failed:\n{stderr}");
+    let ran = stderr.lines().find_map(|line| line.strip_prefix("Ran ")?.split_whitespace().next()?.parse::<usize>().ok());
+    assert!(ran >= Some(10), "remote_git_parity_tests.py ran {ran:?} tests:\n{stderr}");
 }

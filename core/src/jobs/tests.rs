@@ -1456,8 +1456,11 @@ async fn guard_paths_are_checked_at_submit_and_freeze_only_the_content_under_the
     }
     assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false})).unwrap_err(),
         "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths");
+    // On an SSH machine as on this host (YN-83 S2); Windows has no Git guard.
     assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false,"machineId":"m1"})).unwrap_err(),
-        "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
+        "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths");
+    assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false,"machineId":"windows","cwd":"C:\\work"})).unwrap_err(),
+        "guardPaths narrows guardGit, which is not available on Windows on this PC; omit it");
     // Without guardPaths a submission, and so its record, is as before.
     assert!(serde_json::to_value(with(json!({})).unwrap()).unwrap().get("guardPaths").is_none());
 

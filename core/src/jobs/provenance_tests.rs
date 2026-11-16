@@ -196,6 +196,32 @@ fn an_offline_remote_job_exports_what_was_stored_and_says_what_stays_there() {
     assert_absent(&m, &report, &["/data/someone"]);
 }
 
+/// guardGit on a machine (YN-83 S2): the Git state its own helper froze
+/// there is restated as for a local attempt, with guardPaths and what the
+/// start found, and says which machine reported it; its root never leaves.
+#[test]
+fn a_remote_attempts_git_state_is_restated_as_that_machines_report() {
+    let mut done = remote_job("44444444-4444-4444-8444-444444444444", "succeeded");
+    done["guardGit"] = json!(true);
+    done["snapshot"]["git"] = json!({"root":"/data/someone/work","head":"0123456789abcdef0123456789abcdef01234567",
+        "statusSha256":CLEAN,"hostId":"f00dfeed00112233","guardPaths":[{"path":"src","object":&SHA_A[..40],"type":"tree"}]});
+    done["result"] = json!({"jobId":done["id"],"attempt":"r1","status":"succeeded","evidence":{"result":{"exitCode":0,"signal":null}},
+        "guard":{"headAtSubmit":"0123456789abcdef0123456789abcdef01234567","headAtStart":"89abcdef0123456789abcdef0123456789abcdef",
+            "guardedUnchanged":true}});
+    let (m, report) = export(std::slice::from_ref(&done), vec![Ok(Value::Null)]);
+    let code = &m["attempts"][0]["code"];
+    assert_eq!((code["state"].as_str(), code["git"]["guardedUnchanged"].as_bool()), (Some("verified"), Some(true)), "{code}");
+    assert_eq!(code["git"]["headAtStart"], "89abcdef0123456789abcdef0123456789abcdef");
+    assert_eq!(code["reportedBy"], "lab box: its own helper read the Git work tree there");
+    assert_absent(&m, &report, &["/data/someone"]);
+    // Without guardGit, or outside a work tree there, nothing was recorded.
+    let lost = remote_job("55555555-5555-4555-8555-555555555555", "unknown");
+    let (m, _) = export(std::slice::from_ref(&lost), vec![Ok(Value::Null)]);
+    assert_eq!(m["attempts"][0]["code"]["note"],
+        "No Git state was recorded on that machine: guardGit was off, or the working directory there is not in a Git work tree");
+    assert!(m["attempts"][0]["code"].get("reportedBy").is_none());
+}
+
 fn setup() -> (tempfile::TempDir, Arc<Workspace>) {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/workspace".into(), "unused".into()).unwrap();

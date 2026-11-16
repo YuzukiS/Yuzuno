@@ -43,7 +43,8 @@ root that Core recorded for the attempt and names in each of its requests
 Inputs and artifacts are files on this machine. inspect (no attempt, nothing
 written) reads a job's inputs for Core to freeze at submit; a start carries
 them as frozen and the supervisor checks them again last thing before the
-command may run, which never runs if one changed. After a clean exit it
+command may run, which never runs if one changed; with guardGit, so is
+cwd's Git work tree (git_snapshot, by host.py's rules). After a clean exit it
 checks each declared artifact as local jobs do, and records whether its path
 already held a file before the command ran and whether that file is
 unchanged: an observation, never a verdict on who wrote it.
@@ -93,6 +94,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import selectors
 import signal
 import stat
 import subprocess
@@ -433,13 +435,197 @@ def inputs_changed(spec):
     changed = []
     for frozen in spec.get("inputs") or []:
         now = input_facts(spec["cwd"], frozen["path"])
-        if now.get("problem"):
+        if frozen["sha256"] is None:
+            # A tracked file Git listed as deleted (guardGit): still none.
+            if now.get("problem") != "missing":
+                changed.append("%s (%s)" % (frozen["path"], now.get("problem") or "it now exists"))
+        elif now.get("problem"):
             changed.append("%s (%s)" % (frozen["path"], now["problem"]))
         elif now["absolutePath"] != frozen["absolutePath"]:
             changed.append("%s (now %s)" % (frozen["path"], now["absolutePath"]))
         elif now["sha256"] != frozen["sha256"]:
             changed.append("%s (its content changed)" % frozen["path"])
     return changed
+
+
+# guardGit as for local jobs: host.py's guard_scope, guarded, guard_objects,
+# compared, snapshot and guard_reason, with their rules, bounds and words
+# (remote_git_parity_tests.py holds the two to the same answers). Git is the
+# one on this account's PATH, as python3 is.
+class InputGuard(Exception):
+    pass
+
+
+def git_env():
+    return dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+
+
+def git_text(args):
+    done = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+    return done.returncode, done.stdout.decode("utf-8", "surrogateescape").strip(), done.stderr.decode("utf-8", "replace")
+
+
+def guard_scope(paths, cwd, root):
+    scope = []
+    for given in paths:
+        try:
+            inside = Path(os.path.normpath(os.path.join(str(cwd), given))).relative_to(root).as_posix()
+        except ValueError:
+            raise InputGuard("guardPaths must be inside the Git work tree of cwd (%s): %s is not" % (root, given))
+        if "\n" in inside:
+            raise InputGuard("guardPaths cannot contain a line break: %r" % given)
+        scope.append((given, "" if inside == "." else inside))
+    return scope
+
+
+def guarded(name, scope):
+    return any(not part or name == part or name.startswith(part + "/") for _, part in scope)
+
+
+def guard_objects(root, head, scope):
+    lines = "".join("%s:%s\n" % (head, part) for _, part in scope).encode()
+    try:
+        done = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check"], input=lines, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=8, env=git_env())
+    except subprocess.TimeoutExpired:
+        raise InputGuard("Git could not read the guarded paths within eight seconds")
+    answers = done.stdout.decode("utf-8", "surrogateescape").splitlines()
+    if done.returncode or len(answers) != len(scope):
+        raise InputGuard("Git could not read the guarded paths at HEAD")
+    objects = []
+    for (given, _), answer in zip(scope, answers):
+        found = answer.split(" ")
+        known = len(found) == 3 and found[1] in ("blob", "tree", "commit")
+        objects.append({"path": given, "object": found[0] if known else None, "type": found[1] if known else None})
+    return objects
+
+
+def compared(git):
+    if isinstance(git, dict) and "guardPaths" in git:
+        return {k: v for k, v in git.items() if k != "head"}
+    return git
+
+
+def git_status(args):
+    with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          env=git_env()) as process:
+        status, complete = bytearray(), False
+        try:
+            with selectors.DefaultSelector() as poll:
+                poll.register(process.stdout, selectors.EVENT_READ)
+                deadline = time.monotonic() + 8
+                while len(status) <= 64 * 1024:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not poll.select(left):
+                        raise InputGuard("Git input guard exceeded its eight-second limit; use explicit inputs and guardGit=false")
+                    chunk = os.read(process.stdout.fileno(), min(8192, 65537 - len(status)))
+                    if not chunk:
+                        complete = True
+                        break
+                    status.extend(chunk)
+        finally:
+            if not complete and process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise
+        if complete and process.returncode:
+            raise InputGuard("Git status could not verify the input guard")
+    if len(status) > 64 * 1024:
+        raise InputGuard("Git change list exceeds 64 KiB; use explicit inputs and guardGit=false")
+    return bytes(status)
+
+
+def git_snapshot(cwd, paths, exclude, explicit=()):
+    """host.py snapshot's Git state and bounds: (git, the changed tracked files
+    it guards, by absolute path). git is None when cwd is in no work tree."""
+    cwd = Path(cwd).resolve()
+    excluded = {str(Path(p).parent.resolve() / Path(p).name) for p in exclude}
+    git, tracked = None, set()
+    code, top, _ = git_text(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"])
+    if code and paths:
+        raise InputGuard("guardPaths need cwd inside a Git work tree: guardGit found none there")
+    if not code:
+        root = Path(top).resolve()
+        code, head, error = git_text(["git", "-C", str(root), "rev-parse", "HEAD"])
+        if code:
+            raise InputGuard(error.strip()[:1000] or "Git could not read HEAD")
+        scope = guard_scope(paths, cwd, root) if paths else None
+        args = ["git", "-c", "core.fsmonitor=false", "-C", str(root), "status", "--porcelain=v1", "-z",
+                "--untracked-files=no", "--ignore-submodules=all"]
+        if scope is not None and all(part for _, part in scope):
+            args += ["--"] + [":(literal)" + part for _, part in scope]
+        status = git_status(args)
+        kept = []
+        entries = iter(status.split(b"\0"))
+        for entry in entries:
+            if not entry:
+                continue
+            record = [entry]
+            moved = b"R" in entry[:2] or b"C" in entry[:2]
+            if moved:
+                record.append(next(entries, b""))
+            name = os.fsdecode(entry[3:])
+            if scope is not None and not (guarded(name, scope) or moved and guarded(os.fsdecode(record[1]), scope)):
+                continue
+            if not moved and str(root / name) in excluded:
+                continue
+            tracked.add(str(root / name))
+            kept.append(b"\0".join(record))
+        listed = b"\0".join(kept) if excluded or scope is not None else status
+        git = {"root": str(root), "head": head, "statusSha256": hashlib.sha256(listed).hexdigest()}
+        if scope is not None:
+            git["guardPaths"] = guard_objects(root, head, scope)
+    files = set(explicit) | tracked
+    if len(files) > 128:
+        why = (" (%d of them changed tracked Git files, guarded because guardGit is true)" % len(tracked)) if tracked else ""
+        raise InputGuard("At most 128 guarded input files are supported; these are %d%s" % (len(files), why))
+    total = from_git_bytes = 0
+    for name in sorted(files):
+        path = Path(name) if os.path.isabs(name) else cwd / name
+        try:
+            shown = str(path.relative_to(cwd))
+        except ValueError:
+            shown = str(path)
+        if not path.exists():
+            continue
+        if not path.is_file():
+            raise InputGuard("Guarded inputs must be files: " + shown)
+        size = path.stat().st_size
+        total += size
+        from_git_bytes += size if name in tracked else 0
+        if size > INPUT_LIMIT or total > INPUTS_LIMIT:
+            what = ("%s is %d bytes, over the 2 MiB per-file limit" % (shown, size) if size > INPUT_LIMIT else
+                    "guarded inputs reach %d bytes with %s, over the 16 MiB total limit" % (total, shown))
+            if name in tracked:
+                why = (" It is a changed tracked Git file, guarded because guardGit is true: commit it, or submit with "
+                       "guardGit=false and list the inputs the command reads.")
+            elif from_git_bytes:
+                why = " Changed tracked Git files, guarded because guardGit is true, are %d bytes of that." % from_git_bytes
+            else:
+                why = ""
+            raise InputGuard("%s: guarded inputs are at most 2 MiB each and 16 MiB together, and large data is not "
+                             "snapshotted.%s" % (what, why))
+    return git, sorted(tracked)
+
+
+def guard_reason(spec, now, tracked, changed):
+    before, after = spec["git"]["frozen"] or {}, now or {}
+    items = []
+    if "guardPaths" in before:
+        found = {g["path"]: (g["object"], g["type"]) for g in after.get("guardPaths") or []}
+        items += ["the committed content of guarded path %s" % g["path"] for g in before["guardPaths"]
+                  if found.get(g["path"]) != (g["object"], g["type"])]
+    elif before.get("head") != after.get("head"):
+        items.append("the Git commit")
+    frozen = {i["path"] for i in spec.get("inputs") or []}
+    items += changed + [p for p in tracked if p not in frozen]
+    shown = ", ".join(items[:5]) + (" and %d more" % (len(items) - 5) if len(items) > 5 else "")
+    return "Guarded inputs changed while queued (%s); command was not started." % (
+        shown or "the list of changed tracked files")
 
 
 def identity(found):
@@ -890,16 +1076,35 @@ if child and "limited" in (plan.get("memory"), plan.get("cpu")):
         sys.exit(0)
     atomic(root / "limits.json", held)
 # The inputs Core froze at submit, checked again here last thing before the
-# command may run (as local jobs do): if one changed, it never runs.
+# command may run (as local jobs do): if one changed, it never runs. With
+# guardGit the work tree is read again as at submit, and named as local jobs
+# name it.
 changed = inputs_changed(spec) if child else []
-if changed:
+guard = spec.get("git")
+refused = checked_guard = None
+if child and guard is not None:
+    frozen = guard["frozen"]
+    try:
+        now, tracked = git_snapshot(spec["cwd"], [g["path"] for g in (frozen or {}).get("guardPaths") or []],
+                                    guard.get("guardExclude") or [])
+        if changed or compared(now) != compared(frozen):
+            refused = guard_reason(spec, now, tracked, changed)
+        elif frozen and "guardPaths" in frozen:
+            # What the start found, as local jobs record it (guard.json).
+            checked_guard = {"checkedAt": time.time(), "headAtSubmit": frozen["head"], "headAtStart": now["head"],
+                             "guardedUnchanged": True}
+    except Exception as error:
+        refused = "Not started on this machine: the Git input guard could not be checked again (%s)" % error
+elif changed:
+    refused = "Inputs changed on this machine while queued (%s); command was not started" % (
+        ", ".join(changed[:5]) + (" and %d more" % (len(changed) - 5) if len(changed) > 5 else ""))
+if refused:
     os.kill(pid, signal.SIGKILL)
     os.waitpid(pid, 0)
     if kept:
         os.close(kept[1])
         os.waitpid(kept[0], 0)
-    shown = ", ".join(changed[:5]) + (" and %d more" % (len(changed) - 5) if len(changed) > 5 else "")
-    outcome(root, intent, "rejected", "Inputs changed on this machine while queued (%s); command was not started" % shown)
+    outcome(root, intent, "rejected", refused)
     sys.exit(0)
 # What each declared artifact's path holds now, recorded with the check after
 # exit (preExisting, unchangedSinceStart): an observation, not a verdict.
@@ -1022,6 +1227,8 @@ if plan:
     extra = {"limits": used}
 if thawed:
     extra = dict(extra or {}, thawedToStop=thawed)
+if checked_guard:
+    extra = dict(extra or {}, guard=checked_guard)
 if not settled:
     # Stopping was never confirmed: this machine could not be asked whether
     # anything of the group is left. Nothing terminal is written here, and
@@ -1119,9 +1326,10 @@ def host_id():
 def digest(spec):
     """What the attempt runs, encoded without ambiguity; Core computes the same.
     A start that carries limits is v2 and binds them too; one that carries
-    frozen inputs or declared artifacts is v3 and binds those as well. An
-    attempt recorded with an earlier version keeps the digest it was recorded
-    with: v1 and v2 are unchanged."""
+    frozen inputs or declared artifacts is v3 and binds those as well; one
+    with git, outputs, needs or gpu is v4: v3's fields and those. An attempt
+    recorded with an earlier version keeps the digest it was recorded with:
+    v1 to v3 are unchanged."""
     hasher = hashlib.sha256()
 
     def put(text):
@@ -1130,9 +1338,11 @@ def digest(spec):
         hasher.update(data)
         hasher.update(b",")
     limits = spec.get("limits")
+    v4 = any(spec.get(key) is not None for key in ("git", "outputs", "needs", "gpu"))
     # None or empty: no inputs or artifacts, so v1 or v2 exactly as before.
-    v3 = bool(spec.get("inputs") or spec.get("artifacts"))
-    put("yuzuno-remote-job-v3" if v3 else "yuzuno-remote-job-v2" if limits is not None else "yuzuno-remote-job-v1")
+    v3 = v4 or bool(spec.get("inputs") or spec.get("artifacts"))
+    put("yuzuno-remote-job-v4" if v4 else "yuzuno-remote-job-v3" if v3 else "yuzuno-remote-job-v2"
+        if limits is not None else "yuzuno-remote-job-v1")
     put(str(len(spec["argv"])))
     for item in spec["argv"]:
         put(item)
@@ -1154,12 +1364,34 @@ def digest(spec):
         for item in inputs:
             put(item["path"])
             put(item["absolutePath"])
-            put(item["sha256"])
+            # None: a tracked file Git listed as deleted (v4 only).
+            put(item["sha256"] or "")
         put(str(len(artifacts)))
         for item in artifacts:
             put(item["path"])
             put(item["format"])
             put(str(item["minBytes"]))
+    if v4:
+        git = spec.get("git")
+        put("git")
+        frozen = (git or {}).get("frozen")
+        put("none" if git is None else "no work tree" if frozen is None else "work tree")
+        if frozen is not None:
+            for key in ("root", "head", "statusSha256"):
+                put(frozen[key])
+            objects = frozen.get("guardPaths")
+            put("whole work tree" if objects is None else str(len(objects)))
+            for item in objects or []:
+                for key in ("path", "object", "type"):
+                    put(item.get(key) or "")
+        if git is not None:
+            put(str(len(git["guardExclude"])))
+            for path in git["guardExclude"]:
+                put(path)
+        # Filled by the slices that bring them; until then never sent.
+        for key in ("outputs", "needs", "gpu"):
+            put(key)
+            put("none")
     return hasher.hexdigest()
 
 
@@ -1406,21 +1638,57 @@ def hello(request, host):
 def inspect(request, host):
     """A job's inputs as they are on this machine, for Core to freeze at
     submit: what each path leads to, its SHA-256 and identity, or why it
-    cannot be an input. Reads only; no attempt, nothing written."""
-    cwd, paths = request.get("cwd"), request.get("inputs")
+    cannot be an input. Reads only; no attempt, nothing written. With git
+    (guardGit) also the work tree's state, and its changed tracked files
+    after the explicit inputs (tracked; one Git lists as deleted is frozen as
+    missing, sha256 null, as for local jobs)."""
+    cwd, paths, guard = request.get("cwd"), request.get("inputs"), request.get("git")
     if not (isinstance(cwd, str) and os.path.isabs(cwd)):
         raise Refused("cwd must be an absolute path")
-    if not (isinstance(paths, list) and 1 <= len(paths) <= 128
+    if not (isinstance(paths, list) and (paths or guard is not None) and len(paths) <= 128
             and all(isinstance(p, str) and p and len(p) <= 4096 and "\0" not in p for p in paths)):
         raise Refused("inputs must be 1-128 paths")
+    if guard is not None and not (isinstance(guard, dict) and all(
+            isinstance(guard.get(k), list) and all(isinstance(p, str) and "\0" not in p for p in guard[k])
+            for k in ("guardPaths", "guardExclude"))):
+        raise Refused("git must name guardPaths and guardExclude, lists of paths")
     if not os.path.isdir(cwd):
         raise Refused(f"The working directory {cwd!r} does not exist on this machine")
     files = [input_facts(cwd, p) for p in paths]
-    total = sum(f.get("bytes", 0) for f in files)
-    reply = {"status": "inspected", "cwd": cwd, "files": files, "totalBytes": total}
-    if total > INPUTS_LIMIT:
+    reply = {"status": "inspected", "cwd": cwd, "files": files}
+    if guard is not None:
+        try:
+            problem = git_usable()
+            if problem:
+                raise InputGuard(problem)
+            reply["git"], tracked = git_snapshot(cwd, guard["guardPaths"], guard["guardExclude"], paths)
+        except (InputGuard, OSError, subprocess.SubprocessError) as error:
+            reply["problem"] = str(error)
+            tracked = []
+        for path in tracked:
+            if path not in paths:
+                entry = input_facts(cwd, path)
+                if entry.get("problem") == "missing":
+                    entry = {"path": path, "absolutePath": path, "sha256": None}
+                files.append(dict(entry, tracked=True))
+    total = reply["totalBytes"] = sum(f.get("bytes", 0) for f in files)
+    if total > INPUTS_LIMIT and "problem" not in reply:
         reply["problem"] = f"{total} bytes in all: inputs are small files (at most 16 MiB together)"
     return reply
+
+
+def git_usable():
+    """Why this account's git cannot guard here: none on its PATH, or Apple's
+    stand-in without the Command Line Tools (as for python3, remote.rs)."""
+    if shutil.which("git") is None:
+        return "`git` is not on this account's PATH there"
+    done = subprocess.run(["git", "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, timeout=5)
+    said = done.stdout.decode("utf-8", "replace")
+    if "xcode-select" in said or "xcrun" in said:
+        return ("its git is Apple's stand-in, which runs nothing until the Command Line Tools are installed "
+                "(xcode-select --install)")
+    return "`git --version` exited %d there" % done.returncode if done.returncode else None
 
 
 def start(request, host):
@@ -1443,11 +1711,25 @@ def start(request, host):
     if "inputs" in request:
         inputs = request["inputs"]
         if not (isinstance(inputs, list) and len(inputs) <= 128 and all(
-                isinstance(i, dict) and all(isinstance(i.get(k), str) for k in ("path", "absolutePath", "sha256"))
+                isinstance(i, dict) and all(isinstance(i.get(k), str) for k in ("path", "absolutePath"))
+                and (isinstance(i.get("sha256"), str) or "git" in request and "sha256" in i and i["sha256"] is None)
                 for i in inputs)):
             raise Refused("inputs must be the files Core froze: path, absolutePath and sha256 of each")
         if inputs:
             spec["inputs"] = inputs
+    if "git" in request:
+        git = request["git"]
+        frozen = git.get("frozen", 0) if isinstance(git, dict) else 0
+        if not (isinstance(git, dict) and isinstance(git.get("guardExclude"), list)
+                and all(isinstance(p, str) for p in git["guardExclude"])
+                and (frozen is None or isinstance(frozen, dict)
+                     and all(isinstance(frozen.get(k), str) for k in ("root", "head", "statusSha256"))
+                     and isinstance(frozen.get("guardPaths", []), list)
+                     and all(isinstance(g, dict) and isinstance(g.get("path"), str) and all(
+                         g.get(k) is None or isinstance(g.get(k), str) for k in ("object", "type"))
+                         for g in frozen.get("guardPaths", [])))):
+            raise Refused("git must be the Git state Core froze (root, head, statusSha256, guardPaths) and guardExclude")
+        spec["git"] = {"frozen": frozen, "guardExclude": git["guardExclude"]}
     if "artifacts" in request:
         artifacts = request["artifacts"]
         if not (isinstance(artifacts, list) and len(artifacts) <= 20 and all(

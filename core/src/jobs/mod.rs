@@ -513,8 +513,16 @@ impl Submit {
                 "A CPU range up to cpuMillisMax is for this Core's host only: a remote machine runs at cpuMillis. Omit cpuMillisMax for machineId"
             );
             ensure!(!self.exclusive, "exclusive applies to this host's jobs only; omit it for a remote machine");
-            ensure!(!self.guard_git, "guardGit reads the working tree on this host; set guardGit to false for a remote machine (its files are not visible to Core)");
-            ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
+            // On an SSH machine the helper there reads Git (YN-83 S2); the
+            // Windows helper does not.
+            ensure!(
+                machine != remote::WINDOWS || !self.guard_git,
+                "guardGit is not available on Windows on this PC: its helper does not read Git; set guardGit to false and list the files to freeze as inputs"
+            );
+            ensure!(
+                machine != remote::WINDOWS || self.guard_paths.is_empty(),
+                "guardPaths narrows guardGit, which is not available on Windows on this PC; omit it"
+            );
             ensure!(
                 self.outputs.is_empty(),
                 "outputs are downloaded from this host; on a remote machine they stay there, so declare them as artifacts instead"
@@ -566,8 +574,6 @@ impl Submit {
             "A CPU range up to cpuMillisMax needs a Linux host's cgroup: {why}, a Job runs at cpuMillis. Omit cpuMillisMax"
         );
         ensure!(!self.exclusive, "exclusive is not available {why}; omit it");
-        ensure!(!self.guard_git, "guardGit is not available yet {why}; set guardGit to false and list the files to freeze as inputs");
-        ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which is not available {why}; omit it");
         ensure!(
             self.outputs.is_empty(),
             "outputs are not available {why}; declare the files as artifacts, which are checked there after a clean exit"
@@ -1249,7 +1255,10 @@ pub async fn call(
                 let machine_id = input.machine_id.clone().unwrap_or_default();
                 let helper = if windows { remote::windows_helper() } else { None };
                 let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux), mac: remote::MAC_TOOLS };
-                let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
+                // With guardGit (SSH machines and This Mac), its Git work tree there too.
+                let none: &[String] = &[];
+                let git = (input.guard_git && !windows).then_some((input.guard_paths.as_slice(), none));
+                let snapshot = remote::remote_snapshot_with(&ws, &programs, &machine_id, &input.cwd, &input.inputs, git).await?;
                 let author = actor.clone();
                 let capabilities = if windows {
                     remote::windows_capabilities()
@@ -1859,8 +1868,8 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
     mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
-    (declare artifacts), service, runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
-    on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
+    (declare artifacts), service and runs of stages; guardGit reads the Git there (on windows set it to false); pause only where the job's \
+    capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. On a macOS Core this host is \"mac\", This Mac: without machineId, with local, or agent for an Agent here, a job runs \
     there in the limited mode (limits declared only, within this Core's Jobs budget and maxActive), and what is not available with \
