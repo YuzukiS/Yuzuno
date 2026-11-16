@@ -103,6 +103,15 @@ export const jobsText = strings({
   ramTitle: (used: string, reserved: string, total: string) => `RAM: ${used} in use, ${reserved} of ${total} reserved`,
   reservedOf: (reserved: string, total: string) => `${reserved} / ${total} reserved`,
   hostFree: (free: string) => `${free} free on the host`,
+  // The first Job in the queue and who holds what it lacks (YN-194).
+  headTitle: "Head of the queue: ",
+  headWaits: (name: string, what: string, short: string) => `${name} waits for ${what}${short ? `, ${short} short` : ""}`,
+  waitsFor: { memory: "memory", cpu: "CPU", swap: "swap", gpu: "a GPU", other: "its turn" } as Record<string, string>,
+  waited: (span: string) => `waiting ${span}`,
+  holdersLabel: "Holding most of it: ",
+  holder: (name: string, held: string, typical: string | null, ends: string | null) =>
+    `${name}${held ? ` ${held}` : ""}${typical ? ` · usually about ${typical}` : ""}${ends ? ` · timeout at ${ends}` : ""}`,
+  listSeparator: "; ",
   // A job's detail.
   continueSame: "Continue the same processes",
   freeze: "Freeze every process of this job. Its memory, GPU memory and reservation stay; GPU work already sent finishes first.",
@@ -294,6 +303,14 @@ export const jobsText = strings({
   ramTitle: (used, reserved, total) => `内存：${used} 使用中，已预留 ${reserved} / ${total}`,
   reservedOf: (reserved, total) => `已预留 ${reserved} / ${total}`,
   hostFree: (free) => `主机空闲 ${free}`,
+  headTitle: "队首：",
+  headWaits: (name, what, short) => `${name} 等${what}${short ? `，还差 ${short}` : ""}`,
+  waitsFor: { memory: "内存", cpu: "CPU", swap: "swap", gpu: "GPU", other: "轮到它" },
+  waited: (span) => `已等 ${span}`,
+  holdersLabel: "占用最多：",
+  holder: (name, held, typical, ends) =>
+    `${name}${held ? ` ${held}` : ""}${typical ? ` · 通常约 ${typical}` : ""}${ends ? ` · 最晚 ${ends} 超时` : ""}`,
+  listSeparator: "；",
   continueSame: "继续同样的进程",
   freeze: "冻结此 Job 的每个进程。其内存、GPU 内存和预留保持不变；已发送的 GPU 工作会先完成。",
   resume: "继续",
