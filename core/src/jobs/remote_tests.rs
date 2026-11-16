@@ -2976,3 +2976,32 @@ time.sleep(60)
     // Its turn freed, the machine serves the next.
     assert_eq!(download(&lab, &lab.ssh, &job, true, 0).await.3.unwrap(), b"artifact bytes");
 }
+
+/// A 64 MiB artifact over a real sshd on 127.0.0.1 (ssh_mux_tests' Sshd,
+/// with its own keys and configuration): the download is the file, by
+/// SHA-256, and the one recorded (YN-83 S2 §5 PR2 8). The account is this
+/// one, with its attempts in a data root of the test's own. Opt-in: a
+/// managed Job runs it.
+#[cfg(target_os = "linux")]
+#[ignore = "a managed Job's: a real sshd and a 64 MiB file"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_64_mib_artifact_downloads_over_a_real_sshd_as_the_file_it_is() {
+    let sshd = super::ssh_mux_tests::Sshd::start();
+    let lab = lab();
+    let root = lab.dir.path().join("real-root");
+    lab.ws.store.add_machine(&RemoteMachine { id: "real".into(), name: "real sshd".into(), target: "box-b".into(),
+        codex: "codex".into(), default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()),
+        data_root: Some(root.to_string_lossy().into_owned()), ..Default::default() }).unwrap();
+    let big = create_as(&lab, "a", input(&lab, "big", "head -c 67108864 /dev/urandom > big.bin",
+        json!({"machineId":"real","artifacts":[{"path":"big.bin"}]}))).unwrap();
+    let ended = until(&lab, &sshd.wrapper, &big, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    let started = std::time::Instant::now();
+    let (status, length, _, body) = download(&lab, &sshd.wrapper, &ended, true, 0).await;
+    let body = body.unwrap();
+    assert_eq!((status, length.as_deref(), body.len()), (200, Some("67108864"), 64 << 20));
+    let digest = |bytes: &[u8]| format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes));
+    assert_eq!(digest(&body), digest(&std::fs::read(lab.work.join("big.bin")).unwrap()));
+    assert_eq!(ended["result"]["artifacts"][0]["sha256"], json!(digest(&body)));
+    println!("YN-187 PR2: 64 MiB over a real sshd in {:?}, SHA-256 {}", started.elapsed(), digest(&body));
+}
