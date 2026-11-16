@@ -317,6 +317,7 @@ impl RunSubmit {
             service: None,
             service_link: None,
             service_control: None,
+            env_from_machine: None,
         }
     }
 }

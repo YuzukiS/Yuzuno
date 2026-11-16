@@ -87,3 +87,42 @@ fn a_setting_names_a_known_machine_and_goes_with_it() {
     assert!(s.machine_envs().unwrap()["machines"].get("m1").is_none());
     assert!(s.set_machine_env("local", &env(&[("YUZUNO_JOB_ID", "x")])).is_err());
 }
+
+/// The environment a Job runs with is part of what it is (Lead's review of
+/// #1054): merged before its identity, so a changed setting makes another
+/// identity, and an earlier stage's result, recorded with the old one, is not
+/// reused for a stage that would run with the new one. A retry of the same
+/// request still gets its Job as it was.
+#[test]
+fn a_changed_machine_environment_changes_the_jobs_identity_and_a_retry_keeps_its_own() {
+    let (_dir, s) = setup();
+    let identity = |job: &Value| job["identity"]["sha256"].as_str().unwrap().to_owned();
+    s.set_machine_env("local", &env(&[("HOME", "/home/a")])).unwrap();
+    let first = create(&s, input("one", json!({}))).unwrap();
+    s.set_machine_env("local", &env(&[("HOME", "/home/b")])).unwrap();
+    let second = create(&s, input("two", json!({}))).unwrap();
+    assert_ne!(identity(&first), identity(&second), "another environment, another identity");
+    assert_ne!(first["identity"]["parts"]["command"], second["identity"]["parts"]["command"]);
+    s.set_machine_env("local", &env(&[("HOME", "/home/a")])).unwrap();
+    let third = create(&s, input("three", json!({}))).unwrap();
+    assert_eq!(identity(&first), identity(&third), "the same environment, the same identity");
+    // The retry of the first is matched as sent and returns it unchanged.
+    s.set_machine_env("local", &env(&[("HOME", "/home/b")])).unwrap();
+    let again = s.previous_job(Some("a"), &input("one", json!({}))).unwrap().unwrap();
+    assert_eq!((again["id"].clone(), again["env"]["HOME"].clone()), (first["id"].clone(), json!("/home/a")));
+
+    // A stage's identity, which decides whether an earlier result is reused,
+    // is of its env after the merge too (mod.rs job_run_submit).
+    let stage = |from: &[(&str, &str)]| {
+        let mut submit = input("stage", json!({}));
+        super::machine_env::apply(&mut submit, &env(from)).unwrap();
+        super::runs::spec_identity(&submit, &json!({"cwd":"/workspace","git":{"head":"abc"},"files":[]}), &[])
+    };
+    assert_ne!(stage(&[("HOME", "/home/a")])["parts"]["command"], stage(&[("HOME", "/home/b")])["parts"]["command"]);
+    assert_eq!(stage(&[("HOME", "/home/a")])["specSha256"], stage(&[("HOME", "/home/a")])["specSha256"]);
+    // Merged once: applying again changes nothing.
+    let mut submit = input("once", json!({}));
+    super::machine_env::apply(&mut submit, &env(&[("HOME", "/home/a")])).unwrap();
+    super::machine_env::apply(&mut submit, &env(&[("HOME", "/home/b")])).unwrap();
+    assert_eq!(submit.env["HOME"], "/home/a");
+}

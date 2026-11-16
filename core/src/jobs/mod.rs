@@ -343,6 +343,11 @@ pub(crate) struct Submit {
     /// GUI lifecycle CAS only; never deserialized from job_submit or a retained spec.
     #[serde(skip)]
     service_control: Option<service_control::StartGuard>,
+    /// The names env took from its machine's Job environment once it was
+    /// merged in (YN-194, machine_env::apply), before the Job's identity is
+    /// computed; None until then. Never part of the request.
+    #[serde(skip)]
+    env_from_machine: Option<Vec<String>>,
 }
 
 /// A command's own stop protocol: on the user's stop its wrapper sends it
@@ -1573,7 +1578,13 @@ pub async fn call(
             let mut produced: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
                 std::collections::HashMap::new();
             for stage in &input.stages {
-                let submit = input.submit(stage);
+                let mut submit = input.submit(stage);
+                // Its machine's Job environment, merged now (YN-194): the
+                // stage's identity, and whether an earlier attempt can be
+                // reused, are of the env it will run with.
+                let machine_key = machine_env::key_of(submit.machine_id.as_deref()).to_owned();
+                let from = ws.stored(move |s| s.machine_env(&machine_key)).await?;
+                machine_env::apply(&mut submit, &from).map_err(|error| anyhow::anyhow!("Stage {}: {error:#}", stage.key()))?;
                 let key = stage.key().to_owned();
                 let mut exclude = std::collections::BTreeSet::new();
                 for need in stage.needs() {

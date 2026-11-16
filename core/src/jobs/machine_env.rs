@@ -11,6 +11,13 @@
 //! the Job's record when it is created, so the record says what it ran with
 //! and a later change of the setting changes only new Jobs.
 //!
+//! The merge happens before the Job's identity is computed (`apply`), so a
+//! changed setting changes the identity too, and an earlier result is not
+//! reused for a run that would run with another environment; a retry of the
+//! same request is still matched as it was sent. On Windows names are one
+//! name whatever their case, as there: the Job's own wins there too, and a
+//! setting naming one variable twice in two cases is refused.
+//!
 //! Kept in a table of its own, not in a machine's registration, which older
 //! Cores read strictly.
 use anyhow::{ensure, Result};
@@ -55,10 +62,21 @@ fn valid_name(name: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-/// A setting as the user saved it, checked: names, Core's own prefix, NUL
-/// and the size it may have.
-pub(super) fn validate(env: &BTreeMap<String, String>) -> Result<()> {
+/// Windows' names are one name whatever their case.
+fn case_blind(machine: &str) -> bool {
+    machine == super::remote::WINDOWS
+}
+
+/// A setting as the user saved it for `machine`, checked: names, Core's own
+/// prefix, NUL, the size it may have, and on Windows one name in two cases.
+pub(super) fn validate(env: &BTreeMap<String, String>, machine: &str) -> Result<()> {
     ensure!(env.len() <= MAX_ENTRIES, "A machine's Job environment holds at most {MAX_ENTRIES} variables");
+    if case_blind(machine) {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in env.keys() {
+            ensure!(seen.insert(name.to_ascii_uppercase()), "{name} is set twice on Windows, where a name's case does not matter");
+        }
+    }
     for (name, value) in env {
         ensure!(valid_name(name), "{name:?} is not a variable name: use letters, digits and _, not starting with a digit");
         ensure!(
@@ -97,7 +115,7 @@ pub(super) fn all(db: &Connection) -> Result<Value> {
 /// Save (an empty map clears) a machine's environment: `local`, `windows`
 /// or a registered machine.
 pub(super) fn set(db: &Connection, machine: &str, env: &BTreeMap<String, String>) -> Result<Value> {
-    validate(env)?;
+    validate(env, machine)?;
     if machine != HOST && machine != super::remote::WINDOWS {
         let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM machines WHERE id=?1)", [machine], |r| r.get(0))?;
         ensure!(known, "No machine {machine:?} is registered in Machines");
@@ -129,11 +147,17 @@ pub(super) fn merged(
 ) -> Result<(BTreeMap<String, String>, Vec<String>)> {
     let mut env = job_env.clone();
     let mut taken = Vec::new();
+    let blind = case_blind(machine);
     for (name, value) in from {
-        if job_env.get(name).is_none_or(|own| is_default(name, own)) {
-            env.insert(name.clone(), value.clone());
-            taken.push(name.clone());
+        // The Job's own value of this name, by the name's rules there.
+        let own = job_env.iter().find(|(k, _)| if blind { k.eq_ignore_ascii_case(name) } else { *k == name });
+        match own {
+            None => {}
+            Some((k, v)) if !blind && is_default(k, v) => {}
+            Some(_) => continue,
         }
+        env.insert(name.clone(), value.clone());
+        taken.push(name.clone());
     }
     let bytes: usize = env.iter().map(|(k, v)| k.len() + v.len()).sum();
     ensure!(
@@ -142,6 +166,19 @@ pub(super) fn merged(
         env.len()
     );
     Ok((env, taken))
+}
+
+/// Merge the machine's Job environment into a submission, once (YN-194):
+/// before its identity is computed, so the Job is what it runs with. Its
+/// request as sent (`Submit::as_requested`) is read before this.
+pub(super) fn apply(submit: &mut super::Submit, from: &BTreeMap<String, String>) -> Result<()> {
+    if submit.env_from_machine.is_some() {
+        return Ok(());
+    }
+    let (env, taken) = merged(&submit.env, key_of(submit.machine_id.as_deref()), from)?;
+    submit.env = env;
+    submit.env_from_machine = Some(taken);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,16 +217,32 @@ mod tests {
 
     #[test]
     fn names_cores_prefix_nul_and_size_are_checked() {
-        assert!(validate(&map(&[("HOME", "/home/example"), ("_X1", "")])).is_ok());
+        assert!(validate(&map(&[("HOME", "/home/example"), ("_X1", "")]), "local").is_ok());
         for bad in [map(&[("1A", "v")]), map(&[("A-B", "v")]), map(&[("", "v")]), map(&[("A B", "v")])] {
-            assert!(validate(&bad).unwrap_err().to_string().contains("not a variable name"), "{bad:?}");
+            assert!(validate(&bad, "local").unwrap_err().to_string().contains("not a variable name"), "{bad:?}");
         }
-        assert!(validate(&map(&[("YUZUNO_JOB_ID", "x")])).unwrap_err().to_string().contains("Core's own"));
-        assert!(validate(&map(&[("yuzuno_x", "x")])).unwrap_err().to_string().contains("Core's own"));
-        assert!(validate(&map(&[("A", "a\0b")])).unwrap_err().to_string().contains("NUL"));
+        assert!(validate(&map(&[("YUZUNO_JOB_ID", "x")]), "local").unwrap_err().to_string().contains("Core's own"));
+        assert!(validate(&map(&[("yuzuno_x", "x")]), "local").unwrap_err().to_string().contains("Core's own"));
+        assert!(validate(&map(&[("A", "a\0b")]), "local").unwrap_err().to_string().contains("NUL"));
         let many: BTreeMap<String, String> = (0..33).map(|n| (format!("V{n}"), String::new())).collect();
-        assert!(validate(&many).is_err());
-        assert!(validate(&map(&[("BIG", &"x".repeat(9000))])).is_err());
+        assert!(validate(&many, "local").is_err());
+        assert!(validate(&map(&[("BIG", &"x".repeat(9000))]), "local").is_err());
+    }
+
+    #[test]
+    fn on_windows_a_name_is_one_name_whatever_its_case_and_the_jobs_own_wins() {
+        let job = map(&[("PATH", r"C:\own\bin"), ("TEMP", r"D:\t")]);
+        let machine = map(&[("Path", r"C:\Users\example\.cargo\bin"), ("CARGO_HOME", r"C:\Users\example\.cargo"), ("temp", r"E:\x")]);
+        let (env, taken) = merged(&job, "windows", &machine).unwrap();
+        assert_eq!(env, map(&[("PATH", r"C:\own\bin"), ("TEMP", r"D:\t"), ("CARGO_HOME", r"C:\Users\example\.cargo")]));
+        assert_eq!(taken, vec!["CARGO_HOME".to_owned()]);
+        // Elsewhere case is part of the name, as there.
+        let (env, _) = merged(&job, "m1", &map(&[("Path", "/x")])).unwrap();
+        assert_eq!((env["PATH"].as_str(), env["Path"].as_str()), (r"C:\own\bin", "/x"));
+        // A Windows setting naming one variable twice is refused; elsewhere they are two.
+        let twice = map(&[("Path", "a"), ("PATH", "b")]);
+        assert!(validate(&twice, "windows").unwrap_err().to_string().contains("set twice on Windows"));
+        assert!(validate(&twice, "local").is_ok());
     }
 
     #[test]

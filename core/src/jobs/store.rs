@@ -469,11 +469,9 @@ pub(super) fn new_job(
     let id = uuid::Uuid::new_v4().to_string();
     let attempt = uuid::Uuid::new_v4().to_string();
     let mut value = serde_json::to_value(input)?;
-    // Its machine's Job environment under its own (YN-194), as saved now.
-    let key = super::machine_env::key_of(input.machine_id.as_deref());
-    let (env, taken) = super::machine_env::merged(&input.env, key, &super::machine_env::get(tx, key)?)?;
-    value["env"] = json!(env);
-    if !taken.is_empty() {
+    // The names its env took from its machine's Job environment (YN-194),
+    // merged in by its caller before its identity (machine_env::apply).
+    if let Some(taken) = input.env_from_machine.as_ref().filter(|t| !t.is_empty()) {
         value["envFromMachine"] = json!(taken);
     }
     value["id"] = json!(id);
@@ -695,8 +693,16 @@ impl Store {
                 crate::service_jobs::check(&tx, &task, link)?;
             }
         }
+        // The request as sent, for its retries; then its machine's Job
+        // environment, as saved now, under its own (YN-194), before its
+        // identity: what it runs with is what it is.
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
+        let mut input = input;
+        if input.env_from_machine.is_none() {
+            let from = super::machine_env::get(&tx, super::machine_env::key_of(input.machine_id.as_deref()))?;
+            super::machine_env::apply(&mut input, &from)?;
+        }
         let identity = super::runs::job_identity(&input, &snapshot);
         // What earlier runs of the same Job suggest, read before it is in the
         // table and kept with it, its request beside it (YN-6 S2).
@@ -1528,6 +1534,10 @@ impl Store {
     /// Each machine's Job environment, as the user saved it (YN-194).
     pub(super) fn machine_envs(&self) -> Result<Value> {
         super::machine_env::all(&*self.db.read()?)
+    }
+    /// One machine's saved Job environment (empty when none).
+    pub(super) fn machine_env(&self, machine: &str) -> Result<std::collections::BTreeMap<String, String>> {
+        super::machine_env::get(&*self.db.read()?, machine)
     }
     /// Save one machine's Job environment, whole (empty clears it).
     pub(super) fn set_machine_env(&self, machine: &str, env: &std::collections::BTreeMap<String, String>) -> Result<Value> {
