@@ -1127,6 +1127,114 @@ async fn a_launch_record_that_hits_a_full_disk_is_not_started_and_releases_its_r
     assert_eq!(s.previous_job(Some("a"), &input("enospc")).unwrap().unwrap()["id"], json!(id));
 }
 
+/// A stand-in host helper: answers each mode with the job folder's
+/// `answer-<mode>.json`.
+const ANSWERING_HELPER: &str = r#"import pathlib, sys
+spec = pathlib.Path(sys.argv[2])
+answer = spec.parent / ('answer-' + sys.argv[1] + '.json')
+print(answer.read_text() if answer.exists() else '{}')
+"#;
+
+/// Test-only host stand-ins for one data folder, removed when dropped.
+struct StandIns(std::path::PathBuf);
+impl Drop for StandIns {
+    fn drop(&mut self) {
+        host::HELPERS.lock().unwrap().retain(|(dir, _)| *dir != self.0);
+        host::SYSTEMD_RUN.lock().unwrap().retain(|(dir, _)| *dir != self.0);
+    }
+}
+fn answering_helper(dir: &std::path::Path, data: &std::path::Path) -> StandIns {
+    let stub = dir.join("answering-helper.py");
+    std::fs::write(&stub, ANSWERING_HELPER).unwrap();
+    host::HELPERS.lock().unwrap().push((data.to_owned(), stub));
+    StandIns(data.to_owned())
+}
+
+/// YN-174, the 2026-11-14 incident: every new local Job's wrapper failed
+/// before its start receipt (its cgroup had lost the memory controller), and
+/// each stayed unknown, holding its reservation until cancelled by hand. The
+/// host now settles such an attempt as not started (host_test.py, the
+/// wrapper's record bound to the ended unit); Core frees its reservation,
+/// tells its Agent once, and the next Job starts. What the host cannot
+/// settle stays unknown and keeps its slot.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_wrapper_that_failed_before_creating_the_command_frees_its_slot_for_the_next_job() {
+    let (dir, s) = setup();
+    let data = dir.path().join("core-data");
+    let _stand_ins = answering_helper(dir.path(), &data);
+    let job = submit(&s, "cgroup-lost");
+    let id = job["id"].as_str().unwrap().to_owned();
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(reserved["id"], job["id"]);
+    let next = submit(&s, "after-cgroup-lost");
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none(), "the budget holds one of them at a time");
+    // Dispatched: its folder as host::launch leaves it for systemd-run.
+    let folder = host::folder(&data, &reserved).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("spec.json"), reserved.to_string()).unwrap();
+    std::fs::write(folder.join("dispatched.json"), "{}").unwrap();
+    let answer = |value: Value| std::fs::write(folder.join("answer-reconcile.json"), value.to_string()).unwrap();
+
+    // Nothing binds the ended unit to this attempt: unknown, its slot held.
+    answer(json!({"status":"unresolved","systemd":{"ActiveState":"failed","SubState":"failed","MainPID":"0"},
+        "supervisor":{"ActiveState":"inactive"},"started":null,"command":null}));
+    let seen = host::observe(&data, &reserved).await.unwrap().unwrap();
+    assert_eq!(seen["status"], "unknown");
+    assert!(s.update_job_evidence(&id, seen).unwrap());
+    let held = s.job(&id).unwrap();
+    assert_eq!((held["status"].clone(), held["reserved"].clone()), (json!("unknown"), json!(true)));
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none(), "an attempt that may run keeps its slot");
+
+    // The host's outcome once the wrapper's record binds it: not started.
+    let reason = "Not started: the Job's wrapper stopped at its prepare step, before creating the command: RuntimeError: This Job's \
+        cgroup has no memory controller (it has: cpu pids): the slice above it no longer delegates it (cgroup.subtree_control), so its \
+        limits cannot be held. No process of the command was created and the reservation is released; submit again with a new \
+        requestId once the cause is fixed";
+    answer(json!({"jobId":reserved["id"],"attempt":reserved["attempt"],"status":"rejected","reason":reason,"finishedAtUnix":1.8e9,
+        "started":null,"evidence":{"systemd":{"Result":"exit-code","ExecMainCode":"1","ExecMainStatus":"1"},
+            "notLaunched":{"attempt":reserved["attempt"],"stage":"prepare","invocationId":"invocation"}}}));
+    let seen = host::observe(&data, &reserved).await.unwrap().unwrap();
+    assert!(s.update_job_evidence(&id, seen.clone()).unwrap());
+    let after = s.job(&id).unwrap();
+    assert_eq!((after["status"].clone(), after["reserved"].clone(), after["reason"].clone()), (json!("rejected"), json!(false), json!(reason)));
+    assert!(after["finishedAt"].is_string() && after["notifications"]["rejected"].is_string(), "its Agent is told");
+    assert!(!s.update_job_evidence(&id, seen).unwrap(), "seen again: nothing changes, no second mail");
+    assert_eq!(s.reserve_next_job(None, None, None).unwrap().unwrap()["id"], next["id"], "the next Job starts");
+}
+
+/// YN-174: a systemd-run that could not even be created asked systemd for
+/// nothing, so nothing was started, for certain. One that ran and failed may
+/// have started the unit: unconfirmed, as before.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn systemd_run_that_could_not_be_created_is_not_started_and_one_that_failed_is_unconfirmed() {
+    let (dir, s) = setup();
+    let data = dir.path().join("core-data");
+    let _stand_ins = answering_helper(dir.path(), &data);
+    host::SYSTEMD_RUN.lock().unwrap().push((data.clone(), dir.path().join("no-such-systemd-run")));
+    let job = submit(&s, "no-systemd-run");
+    let id = job["id"].as_str().unwrap().to_owned();
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    let error = match host::launch(&data, &reserved).await {
+        Err(host::LaunchError::NotStarted(error)) => error,
+        other => panic!("expected not started, got {other:?}"),
+    };
+    assert!(host::dispatched(&data, &reserved).await.unwrap(), "its launch record was written first");
+    let reason = not_started_reason(&error);
+    assert!(reason.starts_with("Not started: systemd-run could not be started: No such file or directory (os error 2)."), "{reason}");
+    assert!(reason.contains("No process was created and the reservation is released"), "{reason}");
+    assert!(s.job_not_started(&id, &reason).unwrap());
+    let after = s.job(&id).unwrap();
+    assert_eq!((after["status"].clone(), after["reserved"].clone()), (json!("rejected"), json!(false)));
+
+    host::SYSTEMD_RUN.lock().unwrap().retain(|(dir, _)| *dir != data);
+    host::SYSTEMD_RUN.lock().unwrap().push((data.clone(), "/usr/bin/false".into()));
+    submit(&s, "systemd-run-fails");
+    let reserved = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert!(matches!(host::launch(&data, &reserved).await, Err(host::LaunchError::Unconfirmed(_))), "it ran: the unit may exist");
+}
+
 #[tokio::test]
 async fn an_attempt_never_dispatched_is_resolved_as_not_started_not_held_as_unknown() {
     let (dir, s) = setup();

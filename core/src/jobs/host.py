@@ -34,6 +34,9 @@ MIN_REMAINING_SECONDS = 60
 # Outcomes classify() confirms from the unit itself; the only ones an end-time
 # marker may explain.
 ENDED_BY_UNIT = ('succeeded', 'failed', 'cancelled', 'rejected')
+# The cgroup v2 controllers a Job's limits are held by (MemoryMax and
+# MemorySwapMax, CPUQuota and CPUWeight, TasksMax).
+REQUIRED_CONTROLLERS = ('cpu', 'memory', 'pids')
 # Declared artifacts: larger files are identified by size and modification
 # time only; JSON is parsed whole only up to its own, smaller bound.
 HASH_LIMIT = 1024 * 1024 * 1024
@@ -145,6 +148,11 @@ def terminal_reason(spec, folder, status, state, pids):
 def command_reason(spec, folder, status, state, pids):
     changed = read(folder / 'input-changed.json')
     reason = (changed or {}).get('reason') or state.get('Result')
+    record = unlaunched(spec, folder)
+    if status == 'rejected' and not changed and record:
+        return (f"Not started: the Job's wrapper stopped at its {record.get('stage')} step, before creating the command: "
+                f"{record.get('reason')}. No process of the command was created and the reservation is released; "
+                'submit again with a new requestId once the cause is fixed')
     if status == 'cancelled' and (read(folder / 'checkpoint.json') or {}).get('ok') is True:
         return "Stopped at the user's request at a verified checkpoint; only the user resumes it"
     if status == 'failed' and state.get('Result') == 'success' and spec.get('artifacts'):
@@ -813,7 +821,7 @@ def capabilities():
     version = command(['systemctl', '--version']).stdout.splitlines()[0]
     manager = command(['systemctl', '--user', 'show', '--property=ControlGroup']).stdout.strip().split('=', 1)[1]
     controllers = (Path('/sys/fs/cgroup') / manager.lstrip('/') / 'cgroup.controllers').read_text().split()
-    if not {'cpu', 'memory', 'pids'} <= set(controllers):
+    if not set(REQUIRED_CONTROLLERS) <= set(controllers):
         raise RuntimeError('User manager requires cgroup v2 cpu, memory and pids controllers')
     return {'available': True, 'version': version, 'bootId': boot_id(),
             'controllers': controllers, 'python': sys.version.split()[0]}
@@ -823,20 +831,39 @@ def worker(spec, folder):
     the wrapper before the command was created is recorded with its stage
     (not-launched.json), so it is never read as the command's own exit. Once
     Popen has returned, the command may be running: nothing then says it was
-    not started."""
+    not started. The record names this unit's invocation and boot, so that,
+    without a start receipt, it alone binds the unit's ending to this attempt
+    (classify, YN-174)."""
     stage = {'at': 'prepare'}
     try:
         return launch(spec, folder, stage)
     except Exception as error:
         if stage['at'] != 'started':
+            try:
+                boot = boot_id()
+            except OSError:
+                boot = None
+            try:
+                group = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
+            except (OSError, IndexError):
+                group = None
             atomic(folder / 'not-launched.json', {'attempt': spec['attempt'], 'stage': stage['at'], 'at': time.time(),
-                                                   'reason': f'{type(error).__name__}: {error}'[:500]})
+                                                   'invocationId': os.environ.get('INVOCATION_ID'), 'bootId': boot,
+                                                   'controlGroup': group, 'reason': f'{type(error).__name__}: {error}'[:500]})
         raise
 
 def launch(spec, folder, stage):
     resource = spec['resources']
     relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
+    # The controllers its limits need, as capabilities() requires of the user
+    # manager: a slice above that no longer delegates one leaves this cgroup
+    # without its files (YN-174, 2026-11-14).
+    controllers = (group / 'cgroup.controllers').read_text().split()
+    missing = [name for name in REQUIRED_CONTROLLERS if name not in controllers]
+    if missing:
+        raise RuntimeError(f"This Job's cgroup has no {', '.join(missing)} controller (it has: {' '.join(controllers) or 'none'}): "
+                           'the slice above it no longer delegates it (cgroup.subtree_control), so its limits cannot be held')
     limits = {n: (group / n).read_text().strip()
               for n in ('memory.max', 'memory.swap.max', 'cpu.max', 'cpu.weight', 'pids.max')}
     quota, period = map(int, limits['cpu.max'].split())
@@ -1061,18 +1088,42 @@ def ended_state(spec, folder, state):
     leftover = own_leftover(spec, folder)
     return leftover['unitAtExit'] if leftover and isinstance(leftover.get('unitAtExit'), dict) else state
 
+def unlaunched(spec, folder):
+    """This attempt's wrapper record of a failure before its command was
+    created (worker, not-launched.json), or None."""
+    record = read(folder / 'not-launched.json')
+    if isinstance(record, dict) and record.get('attempt') == spec['attempt'] and record.get('stage') != 'started':
+        return record
+    return None
+
 def classify(spec, folder, state):
+    """The attempt's ending, read from its worker unit, or None while it is not
+    certain. The unit is bound to this attempt by the invocation its wrapper
+    recorded: the start receipt (started.json), or, when the wrapper failed
+    before writing that, its record of the failure (not-launched.json, YN-174).
+    Without either, or with another invocation, nothing is concluded."""
     proof = read(folder / 'started.json')
     if proof and (proof['bootId'] != boot_id() or proof['attempt'] != spec['attempt']):
         return None
-    state = ended_state(spec, folder, state)
-    if not proof or not state.get('InvocationID') or state['InvocationID'] != proof['invocationId']:
+    record = unlaunched(spec, folder)
+    if not proof and record and record.get('bootId') != boot_id():
         return None
-    if state.get('MainPID') != '0' or not group_empty(proof['controlGroup']):
+    bound = proof or record
+    state = ended_state(spec, folder, state)
+    if not bound or not bound.get('invocationId') or state.get('InvocationID') != bound['invocationId']:
+        return None
+    # Nothing is left in the worker's cgroup: as its receipt names it, or, with
+    # only the failure record, as both the wrapper and systemd named it.
+    groups = [proof['controlGroup']] if proof else [record.get('controlGroup'), state.get('ControlGroup')]
+    if state.get('MainPID') != '0' or not all(group_empty(group) for group in groups):
         return None
     if state.get('SubState') not in ('exited', 'failed', 'dead'):
         return None
     if read(folder / 'input-changed.json'):
+        return 'rejected'
+    if record:
+        # The wrapper wrote it only while Popen had not returned: the command
+        # was never created, and the ended, empty unit holds nothing of it.
         return 'rejected'
     if (read(folder / 'checkpoint.json') or {}).get('ok') is True:
         # Stopped at a verified checkpoint: an end the user asked for.

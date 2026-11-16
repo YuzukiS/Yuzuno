@@ -401,6 +401,36 @@ fn a_declared_retry_is_one_new_attempt_and_keeps_the_failed_attempts_cost() {
     assert!(messages[0]["body"].as_str().unwrap().contains("attempt 2"));
 }
 
+/// YN-174: a stage attempt whose wrapper failed before creating the command
+/// is not started (rejected), with the wrapper's exit status, not the
+/// command's: a declared exit code never retries it. The run shows it
+/// failed, and job_run_retry starts the stage again, as attempt 2.
+#[test]
+fn a_stage_its_wrapper_never_started_is_not_retried_by_exit_code_but_can_be_retried() {
+    let (_dir, s) = setup();
+    let mut work = stage("work", &[]);
+    work["retry"] = json!({"attempts":3,"exitCodes":[1]});
+    let run = create(&s, "wrapper", json!([work]));
+    let id = run["id"].as_str().unwrap();
+    let first = start(&s);
+    let not_launched = json!({"attempt":first["attempt"],"stage":"prepare","invocationId":"invocation",
+        "reason":"RuntimeError: This Job's cgroup has no memory controller (it has: cpu pids)"});
+    assert!(finish(&s, &first, "rejected", exit("1"), json!({
+        "reason":"Not started: the Job's wrapper stopped at its prepare step, before creating the command",
+        "evidence":{"systemd":exit("1"),"notLaunched":not_launched}})));
+    let old = s.job(first["id"].as_str().unwrap()).unwrap();
+    assert_eq!((old["status"].clone(), old["reserved"].clone()), (json!("rejected"), json!(false)));
+    assert!(old["retriedBy"].is_null(), "exit 1 is the wrapper's, not the command's");
+    assert!(old["notifications"]["rejected"].is_string(), "its Agent is told");
+    let view = s.run(id).unwrap();
+    assert_eq!(attempts(&view, "work").len(), 1);
+    assert_eq!(view["status"], "failed");
+    s.retry_stage(Some("a"), "again", id, "work").unwrap();
+    let second = latest(&s, &run, "work");
+    assert_eq!((second["run"]["attempt"].clone(), second["status"].clone()), (json!(2), json!("queued")));
+    assert_eq!(second["retryOf"], first["id"]);
+}
+
 #[test]
 fn outcomes_not_declared_retryable_are_never_retried() {
     let (_dir, s) = setup();

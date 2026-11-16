@@ -96,6 +96,9 @@ fn end_of(job: &Value) -> End {
             Some("core_restart") => "core_restart",
             Some("insufficient_time") => return End::Ended(Some("insufficient_time")),
             _ if job["reason"].as_str().is_some_and(|r| r.starts_with("Guarded inputs changed")) => "inputs_changed",
+            // The wrapper stopped at its input check, before creating the
+            // command (host.py classify, YN-174), as a failed one said before.
+            _ if evidence["notLaunched"]["stage"] == "inputs" => "inputs_changed",
             _ => "launch_refused",
         }),
         Some("failed") => {

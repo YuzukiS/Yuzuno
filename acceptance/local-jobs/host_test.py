@@ -215,7 +215,7 @@ class SharedEndTests(unittest.TestCase):
     @patch.object(host, 'upstream_problem', return_value=None)
     def test_worker_checks_the_end_again_just_before_exec(self, *_):
         spec = {**self.spec,'snapshot':{'same':True},'deadlineAtUnix':1000+59.5}
-        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX)}
+        limits = {'cgroup.controllers':'cpu memory pids','memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX)}
         class Fake(type(Path())):
             def read_text(self, *args, **kwargs):
                 if str(self) == '/proc/self/cgroup': return '0::/fake\n'
@@ -285,6 +285,72 @@ class SharedEndTests(unittest.TestCase):
             outcome = host.supervise(self.spec, self.folder)
         self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
         self.assertEqual(show.call_count, 2, 'its identity, then once its group is empty')
+
+    # YN-174: the wrapper's record of a failure before the command was
+    # created (worker), bound to the unit's invocation, settles the attempt
+    # as not started; without that binding nothing is concluded.
+    DEAD = {'LoadState':'loaded','ActiveState':'failed','SubState':'failed','MainPID':'0','Result':'exit-code',
+            'ExecMainCode':'1','ExecMainStatus':'1','InvocationID':'invocation','ControlGroup':''}
+
+    def not_launched(self, **changes):
+        record = {'attempt':'attempt','stage':'prepare','at':1000.0,'invocationId':'invocation','bootId':host.boot_id(),
+                  'reason':"RuntimeError: This Job's cgroup has no memory controller (it has: cpu pids): the slice above it "
+                           'no longer delegates it (cgroup.subtree_control), so its limits cannot be held', **changes}
+        host.atomic(self.folder/'not-launched.json', record)
+        return record
+
+    def supervise_dead(self):
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=0, stdout='', stderr='')) as command, \
+                patch.object(host,'show',return_value=self.DEAD):
+            return host.supervise(self.spec, self.folder), [call.args[0] for call in command.call_args_list]
+
+    def test_a_worker_that_recorded_its_failure_before_its_start_receipt_is_not_started(self):
+        record = self.not_launched()
+        outcome, commands = self.supervise_dead()
+        self.assertEqual(outcome['status'], 'rejected')
+        self.assertTrue(outcome['reason'].startswith("Not started: the Job's wrapper stopped at its prepare step, before creating the "
+                                                     "command: RuntimeError: This Job's cgroup has no memory controller"), outcome['reason'])
+        self.assertIn('No process of the command was created and the reservation is released', outcome['reason'])
+        self.assertEqual(outcome['evidence']['notLaunched'], record)
+        self.assertIsNone(outcome['started'])
+        self.assertIn(['systemctl','--user','stop','worker'], commands)
+        self.assertIn(['systemctl','--user','reset-failed','worker'], commands)
+
+    def test_reconcile_settles_such_a_worker_the_same_way(self):
+        # Core's own check, when the collector recorded nothing (it stopped first).
+        record = self.not_launched()
+        with patch.object(host,'show',return_value=self.DEAD):
+            outcome = host.reconcile(self.spec, self.folder)
+        self.assertEqual(outcome['status'], 'rejected')
+        self.assertEqual(outcome['evidence']['notLaunched'], record)
+        self.assertEqual(host.read(self.folder/'result.json'), outcome)
+
+    def test_a_failure_record_that_does_not_bind_the_unit_concludes_nothing(self):
+        cases = {
+            'another invocation of the unit': ({}, {'InvocationID':'another'}),
+            'a record without its invocation (an older helper)': ({'invocationId':None}, {}),
+            'a record of another boot': ({'bootId':'another-boot'}, {}),
+            'a record of another attempt': ({'attempt':'another-attempt'}, {}),
+            'a unit still running': ({}, {'MainPID':'42','SubState':'running','ActiveState':'active'}),
+            'a unit that is not there': ({}, {'LoadState':'not-found','ActiveState':'inactive','SubState':'dead','InvocationID':''}),
+        }
+        for name, (record, unit) in cases.items():
+            with self.subTest(name):
+                self.not_launched(**record)
+                self.assertIsNone(host.classify(self.spec, self.folder, {**self.DEAD, **unit}))
+        self.not_launched()
+        with patch.object(host,'group_empty',return_value=False):
+            self.assertIsNone(host.classify(self.spec, self.folder, self.DEAD), 'its cgroup still holds processes')
+        self.not_launched(controlGroup='/still-held')
+        with patch.object(host,'group_empty',side_effect=lambda group: group != '/still-held'):
+            self.assertIsNone(host.classify(self.spec, self.folder, self.DEAD), "the wrapper's own cgroup still holds processes")
+        # The collector then records the attempt as unknown, as without any record.
+        self.not_launched(invocationId='another')
+        outcome, _ = self.supervise_dead()
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertNotIn('notLaunched', outcome['evidence'])
 
     def test_a_failed_launch_keeps_the_units_systemd_state(self):
         # R1 1604b96b: the unknown outcome of a failed systemd-run records the unit as systemd shows it, as before T-59.
@@ -451,15 +517,25 @@ class WorkerLaunchTests(unittest.TestCase):
     def tearDown(self): self.tmp.cleanup()
 
     def run_worker(self):
-        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX),
-                  **getattr(self, 'cgroup', {})}
+        limits = {'cgroup.controllers':'cpuset cpu io memory pids','memory.max':str(64*1024*1024),'memory.swap.max':'0',
+                  'cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX), **getattr(self, 'cgroup', {})}
+        gone = getattr(self, 'gone', ())
         class Fake(type(Path())):
             def read_text(self, *args, **kwargs):
                 if str(self) == '/proc/self/cgroup': return '0::/fake\n'
+                if str(self.parent) == '/sys/fs/cgroup/fake' and self.name in gone:
+                    raise FileNotFoundError(2, 'No such file or directory', str(self))
                 if str(self.parent) == '/sys/fs/cgroup/fake' and self.name in limits: return limits[self.name] + '\n'
                 return super().read_text(*args, **kwargs)
-        with patch.object(host,'Path',Fake), patch.object(host,'pids_snapshot',return_value=None):
+        # As systemd starts the unit's main process: with its invocation's ID.
+        with patch.object(host,'Path',Fake), patch.object(host,'pids_snapshot',return_value=None), \
+                patch.dict(os.environ, {'INVOCATION_ID': 'invocation'}):
             return host.worker(self.spec, self.folder)
+
+    def ended(self):
+        """The worker unit once its wrapper has exited, as systemd shows it."""
+        return {'LoadState':'loaded','ActiveState':'failed','SubState':'failed','Result':'exit-code','MainPID':'0',
+                'ExecMainCode':'1','ExecMainStatus':'1','InvocationID':'invocation','ControlGroup':''}
 
     def recorded(self):
         """The outcome the host records afterwards for the unit's exit-code."""
@@ -473,9 +549,38 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertEqual((record['attempt'], record['stage']), (self.spec['attempt'], stage))
         self.assertIn(words, record['reason'])
         self.assertIsNone(host.read(self.folder/'command.json'))
+        self.assertEqual((record['invocationId'], record['bootId'], record['controlGroup']), ('invocation', host.boot_id(), '/fake'),
+                         'the record binds the unit')
+        # The ended unit is settled as not started, with the wrapper's own reason (YN-174).
+        self.assertEqual(host.classify(self.spec, self.folder, self.ended()), 'rejected')
+        reason = host.terminal_reason(self.spec, self.folder, 'rejected', self.ended(), None)
+        self.assertTrue(reason.startswith(f"Not started: the Job's wrapper stopped at its {stage} step, before creating the command: "), reason)
+        self.assertIn(words, reason)
+        self.assertIn('No process of the command was created and the reservation is released', reason)
         outcome = self.recorded()
         self.assertEqual(outcome['evidence']['notLaunched'], record)
         self.assertNotIn('command', outcome['evidence'])
+        return record
+
+    def test_a_cgroup_without_its_controllers_never_starts_the_command(self):
+        # YN-174, 2026-11-14: a second systemd distro emptied the slice's
+        # cgroup.subtree_control, so a new worker's cgroup had no memory.max.
+        self.cgroup = {'cgroup.controllers': 'cpu pids'}
+        self.gone = ('memory.max', 'memory.swap.max')
+        record = self.assert_never_launched('prepare', "This Job's cgroup has no memory controller (it has: cpu pids)")
+        self.assertIsNone(host.read(self.folder/'started.json'), 'it failed before its start receipt')
+        self.assertIn('cgroup.subtree_control', record['reason'])
+        for name in ('started.json', 'not-launched.json', 'result.json'):
+            (self.folder/name).unlink(missing_ok=True)
+        self.cgroup = {'cgroup.controllers': ''}
+        self.gone = ('memory.max', 'memory.swap.max', 'cpu.max', 'cpu.weight', 'pids.max')
+        self.assert_never_launched('prepare', "This Job's cgroup has no cpu, memory, pids controller (it has: none)")
+
+    def test_a_limit_file_that_is_gone_never_starts_the_command(self):
+        # The same failure without the controller check's words: the read itself fails.
+        self.gone = ('memory.max',)
+        self.assert_never_launched('prepare', 'FileNotFoundError')
+        self.assertIsNone(host.read(self.folder/'started.json'))
 
     def test_a_cpu_quota_other_than_its_grant_never_starts_the_command(self):
         # T-64: Core granted 200 mCPU; the cgroup allows 100.
