@@ -202,13 +202,43 @@ test("an executor opens on its Overview: its task, materials, steps, changes, ev
       ["CI", "#688", "success", "ok"],
       ["Merge", "Waiting for its turn", "waiting", "wait"],
     ]);
-    assert.equal(p.text(".executor-overview-report"), "Red 1/1 before, green 24/24 after.");
+    assert.equal(p.text(".executor-overview-report .prose p"), "Red 1/1 before, green 24/24 after.");
     assert.equal(p.overviewPanel().querySelector(".executor-overview-banner, .executor-overview-requests"), null, "it needs nothing of you");
     // Its task opens from the header.
     const tasks = [];
     p.w.addEventListener("yuzuno:open-task-review", (event) => tasks.push(event.detail.taskId));
     [...p.overviewPanel().querySelectorAll(".chip.link")][0].click();
     assert.deepEqual(tasks, ["YN-k"]);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// YN-178: its Final report is the result's Markdown, read as on the task's
+// own Result: bold, a list, code and a table, never the raw markers, and
+// sanitized by Prose as everywhere else.
+test("its Final report reads as Markdown, not raw ** and - (YN-178)", async () => {
+  const summary = [
+    "**Fixed** the selection.", "",
+    "- Red 1/1 before", "- Green 24/24 after", "",
+    "Ran `npm test`.", "",
+    "| Check | Result |", "| --- | --- |", "| CI | green |", "",
+    '<img src="x" onerror="window.__yn178 = 1">',
+  ].join("\n");
+  const p = await mount({ overview: (id) => ({ ...overviewOf(id), result: { ...overviewOf(id).result, summary } }) });
+  try {
+    await waitFor(() => p.loaded() && !!p.overviewPanel().querySelector(".executor-overview-report .prose"), "k's Final report");
+    const report = p.overviewPanel().querySelector(".executor-overview-report");
+    assert.deepEqual([...report.querySelectorAll("strong")].map((el) => el.textContent), ["Fixed"]);
+    assert.deepEqual([...report.querySelectorAll("ul > li")].map((el) => el.textContent), ["Red 1/1 before", "Green 24/24 after"]);
+    assert.deepEqual([...report.querySelectorAll("code")].map((el) => el.textContent), ["npm test"]);
+    assert.deepEqual([...report.querySelectorAll("tbody td")].map((el) => el.textContent), ["CI", "green"]);
+    assert.ok(!/\*\*|^\s*- |\| --- \|/m.test(report.textContent), "no Markdown marker shows as text");
+    assert.ok(!report.querySelector("img, [onerror]"), "sanitized: no image, no handler");
+    assert.ok(p.w.__yn178 === undefined, "nothing ran");
+    // Its handed-in time stays beside the heading.
+    assert.match(report.closest(".executor-overview-card").querySelector("h3 .note").textContent, /^Handed in /);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { api, errorText } from "./api";
+import { Prose } from "./components";
 import { strings, useLanguage } from "./i18n";
 import { lifecycleText, type ExecutorLifecycle, type TempUsage } from "./executor-lifecycle";
 import { elapsedText } from "./executor-display";
@@ -452,7 +453,8 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
       </section>
       <section className="executor-overview-card">
         <h3>{t.report} {data.result?.reportedAt && <span className="note">{t.reported(when(data.result.reportedAt, language))}</span>}</h3>
-        {data.result?.summary ? <p className="executor-overview-report">{data.result.summary}</p> : <p className="empty">{t.noReport}</p>}
+        {/* The result is Markdown, as on the task's own Result (YN-178). */}
+        {data.result?.summary ? <div className="executor-overview-report"><Prose text={data.result.summary} /></div> : <p className="empty">{t.noReport}</p>}
       </section>
     </section>
   );
