@@ -24,7 +24,7 @@ mod after;
 mod analysis;
 mod queued;
 pub(super) use analysis::Decision as AnalysisDecision;
-#[cfg(test)]
+// Also how job_budget's queue head says what it waits for (YN-194).
 pub(super) use queued::waiting_for;
 
 const MAX_STAGES: usize = 16;
