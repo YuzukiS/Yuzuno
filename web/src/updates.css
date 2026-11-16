@@ -549,18 +549,29 @@
   background: color-mix(in srgb, var(--accent-ink) 35%, var(--line));
 }
 .update-steps .is-current {
+  position: relative;
+  overflow-x: clip;
   color: var(--accent-ink);
   font-weight: 550;
 }
 .update-steps .is-current::before {
+  background: color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+}
+/* The current bar's lit segment, as on .step-moving (styles.css): half the
+   bar long, over it, moved by transform on the compositor (YN-199). */
+.update-steps .is-current::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 4px;
   background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent),
-      transparent
-    )
-    0 0 / 50% 100% no-repeat,
-    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent-ink) 55%, transparent),
+    transparent
+  );
   animation: step-moving 1.6s ease-in-out infinite;
 }
 /* The facts behind the answer, for when they matter. */

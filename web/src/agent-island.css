@@ -104,14 +104,18 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 .island-ring .r-idle { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.55; }
 .island-ring .r-track { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.22; }
 .island-ring .r-arc { stroke-width: calc(2.4px + var(--thick, 0px)); }
-.island-ring .r-breathe { stroke-width: calc(2.6px + var(--thick, 0px)); animation: island-breathe 2.4s ease-in-out infinite; }
+.island-ring .r-breathe { stroke-width: calc(2.6px + var(--thick, 0px)); }
+/* Needs you breathes: a thicker ring over the still one fades in and out.
+   Only its opacity moves, which the compositor draws; animating the stroke
+   width repainted every frame on the main thread (YN-199). */
+.island-ring .r-breathe-glow { stroke-width: calc(3.4px + var(--thick, 0px)); opacity: 0; animation: island-breathe 2.4s ease-in-out infinite; }
 .island-ring :is(.r-full, .r-mark) { stroke-width: calc(2.2px + var(--thick, 0px)); }
 .island-ring .r-spin { transform-origin: 12px 12px; animation: island-turn 1.4s linear infinite; }
 @keyframes island-turn {
   to { transform: rotate(360deg); }
 }
 @keyframes island-breathe {
-  50% { stroke-width: 3.4px; }
+  50% { opacity: 1; }
 }
 /* What a ring waits on (YN-51; the user picked the work dock's icons at
    11 px): centred in the ring, inside its arc's inner edge (7.6 px from the
