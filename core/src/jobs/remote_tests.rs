@@ -2840,6 +2840,10 @@ fn the_digest_v4_binds_a_stages_needs_and_keeps_a_git_only_start_as_it_was() {
     assert_eq!(remote::digest(&whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81");
 }
 
+fn over<'a>(program: &'a str) -> remote::Programs<'a> {
+    remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }
+}
+
 /// A run whose stages run on `machine`, prepared as job_run_submit prepares
 /// it (YN-83 S2 PR3): each stage frozen there through `program`, its Git
 /// guard leaving out the artifacts its earlier stages declare.

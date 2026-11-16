@@ -58,6 +58,7 @@ fn prepare(input: &RunSubmit) -> Vec<Prepared> {
                 identity,
                 reuse: None,
                 guard_exclude: vec![],
+                remote_capability: None,
             }
         })
         .collect()

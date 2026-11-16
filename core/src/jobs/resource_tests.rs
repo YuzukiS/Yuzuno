@@ -337,6 +337,7 @@ fn run_resources_keep_failed_retries_separate_and_exclude_reused_producers() {
                     None
                 },
                 guard_exclude: vec![],
+                remote_capability: None,
             }
         })
         .collect();

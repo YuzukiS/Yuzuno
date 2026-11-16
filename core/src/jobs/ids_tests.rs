@@ -123,7 +123,7 @@ async fn job_get_logs_cancel_and_provenance_take_a_prefix() {
         let submit = input.submit(stage);
         let snapshot = json!({"cwd":"/workspace","git":null,"files":[]});
         let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
-        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
     }).collect();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":600,"memoryMiB":192,"swapMiB":0}});
     let run = s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();
@@ -190,7 +190,7 @@ async fn the_run_tools_take_a_prefix_and_keep_the_whole_id() {
         let submit = input.submit(stage);
         let snapshot = json!({"cwd":"/workspace","git":null,"files":[]});
         let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
-        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
     }).collect();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":600,"memoryMiB":192,"swapMiB":0}});
     let run = s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();

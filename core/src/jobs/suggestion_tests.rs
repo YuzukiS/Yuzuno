@@ -338,7 +338,7 @@ fn a_run_keeps_each_stages_suggestion_with_its_request() {
             let submit = input.submit(stage);
             let snapshot = json!({"cwd":"/workspace","git":{"head":"abc"},"files":[]});
             let identity = super::runs::spec_identity(&submit, &snapshot, stage.needs());
-            super::runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+            super::runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
         })
         .collect();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":4000,"memoryMiB":4096,"swapMiB":0}});
