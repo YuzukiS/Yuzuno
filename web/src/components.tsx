@@ -17,7 +17,7 @@ import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useS
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import { Tip, TipText } from "./Tip";
-import { marked } from "marked";
+import { markdownHtml } from "./markdown";
 import DOMPurify from "dompurify";
 import {
   ArrowUpRight,
@@ -330,7 +330,7 @@ export function Prose({
   const html = useMemo(
     () => ({
       __html: DOMPurify.sanitize(
-        marked.parse(text, { async: false, gfm: true }),
+        markdownHtml(text),
         {
           USE_PROFILES: { html: true },
           FORBID_TAGS: ["img", "form", "input", "button", "iframe", "style"],
