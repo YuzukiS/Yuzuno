@@ -88,15 +88,22 @@ const homeScreen: Plugin = {
   },
 };
 
-// What the build was built from (YN-194): the digest of the UI's sources,
-// written beside index.html once the files are out, so a test of a built UI
-// can refuse one built from other sources (tools/source-digest.mjs).
+// What the build was built from (YN-194): the digest of the UI's sources as
+// they were when the build began, written beside index.html once the files
+// are out, so a test of a built UI can refuse one built from other sources
+// (tools/source-digest.mjs). A source edited while it builds is not stamped
+// as built.
+let digestAtStart: Promise<string> | undefined;
 const sourceStamp: Plugin = {
   name: "yuzuno-source-digest",
   apply: "build",
+  buildStart() {
+    digestAtStart = sourceDigest(here);
+  },
   async writeBundle(options) {
     const dir = options.dir ?? join(here, "dist");
-    writeFileSync(join(dir, DIGEST_FILE), `${JSON.stringify({ schema: 1, sha256: await sourceDigest(here) })}\n`);
+    const sha256 = await (digestAtStart ?? sourceDigest(here));
+    writeFileSync(join(dir, DIGEST_FILE), `${JSON.stringify({ schema: 1, sha256 })}\n`);
   },
 };
 
