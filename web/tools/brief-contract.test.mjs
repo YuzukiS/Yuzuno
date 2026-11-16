@@ -423,7 +423,7 @@ test("a body may name its summary and the details that start folded, among the r
   // The size is the author's to name with every summary; one without it is advised, not refused (Lead 2457, 2473).
   assert.match(content, /size is the room the card takes among Home's cards: small \(one column[^)]*\), wide \(two columns[^)]*\) or large \(two columns, two rows[^)]*\)\. Name it with every summary/);
   assert.match(content, /A summary without one is still accepted \(advice summary_size_missing\), and Home guesses its card's size from its figure\./);
-  assert.match(content, /details lists titled Groups of supporting detail .* nothing else folds\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
+  assert.match(content, /details lists titled Groups of supporting detail .* Nothing else folds, but a report's or status's Markdown block over 1200 characters: Home shows its headings and first paragraph, and the rest behind Show all, so its first paragraph should say the point\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
   assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?, size\?="small"\|"wide"\|"large"\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
 });
 

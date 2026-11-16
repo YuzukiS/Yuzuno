@@ -941,6 +941,8 @@ test("YN-195 a report's or status's Markdown block over the advice length shows 
   });
   const summary = () => document.querySelector(".brief-markdown-more > summary")?.textContent ?? null;
   for (const kind of ["report", "status"]) {
+    // Each its own section, drawn afresh: the fold opened for the report above is not this one's.
+    window.unmountSection();
     window.renderSection(md(kind, long), PROJECT);
     const fold = document.querySelector(".brief-markdown-fold");
     assert.ok(fold, `${kind}: folded`);

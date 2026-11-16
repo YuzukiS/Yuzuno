@@ -145,7 +145,9 @@ async function check(run) {
     return {
       folded: !!fold, open: more?.open ?? null, summary: more?.querySelector("summary")?.textContent ?? null,
       lead: fold?.querySelector(":scope > .brief-markdown")?.textContent.trim() ?? null,
-      body: body ? Math.round(body.height) : null, items: items.length, shown: items.filter((li) => li.getClientRects().length > 0).length,
+      body: body ? Math.round(body.height) : null, items: items.length,
+      // A closed <details> keeps its content laid out, so ask whether it is rendered, not whether it has boxes.
+      shown: items.filter((li) => li.checkVisibility()).length,
       page: document.scrollingElement.scrollWidth, window: innerWidth,
     };
   });
