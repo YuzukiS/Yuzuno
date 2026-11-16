@@ -14,6 +14,7 @@ import { SettingsSlider } from "./SettingsSlider";
 import "./remote.css";
 import { FieldLength } from "./FieldLength";
 import { coreLimits, overLimit } from "./core-limits";
+import { JobEnvSettings } from "./JobEnvSettings";
 
 /** Jobs at once when a machine has none of its own (Core's remote::SLOTS). */
 const DEFAULT_JOBS = 2;
@@ -150,6 +151,7 @@ export function MachineSettings({ machine, language, onSaved }: {
       <p className="appearance-help machine-settings-default">{t.isDefault(n)}</p>
     );
   return (
+    <>
     <div className="settings-group appearance-group machine-settings">
       <fieldset className="appearance-field machine-settings-connection">
         <legend>{t.connection}</legend>
@@ -231,5 +233,8 @@ export function MachineSettings({ machine, language, onSaved }: {
         )}
       </fieldset>
     </div>
+    {/* What every Job on this machine gets (YN-194), saved with the page's bar. */}
+    <JobEnvSettings machine={machine.id} />
+    </>
   );
 }

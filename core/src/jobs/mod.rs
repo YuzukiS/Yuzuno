@@ -21,6 +21,9 @@ mod ids;
 #[cfg(test)]
 mod ids_tests;
 mod list;
+mod machine_env;
+#[cfg(test)]
+mod machine_env_tests;
 #[cfg(test)]
 mod list_tests;
 mod limit;
@@ -493,8 +496,8 @@ impl Submit {
         if self.machine_id.as_deref() == Some(remote::WINDOWS) {
             return;
         }
-        self.env.entry("PATH".into()).or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-        self.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
+        self.env.entry("PATH".into()).or_insert_with(|| machine_env::DEFAULT_PATH.into());
+        self.env.entry("LANG".into()).or_insert_with(|| machine_env::DEFAULT_LANG.into());
     }
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -774,6 +777,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/budget", get(budget).post(set_budget))
         .route("/api/jobs/disk", post(set_disk_reserve))
         .route("/api/jobs/windows", post(set_windows_jobs))
+        .route("/api/jobs/machine-env", get(machine_envs).post(set_machine_env))
         .route("/api/jobs/live", get(live))
         .route("/api/jobs/suggestion", get(suggestion_for))
         .route("/api/jobs/gpus", get(gpus))
@@ -1203,6 +1207,27 @@ async fn set_windows_jobs(
     Ok(Json(json!({"maxJobs": max_jobs.map_or(remote::SLOTS, i64::from), "set": max_jobs.is_some(), "defaultMaxJobs": remote::SLOTS})))
 }
 
+/// Each machine's Job environment (YN-194): the user's, from Settings.
+async fn machine_envs(AppState(ws): AppState<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(ws.stored(|s| s.machine_envs()).await?))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MachineEnv {
+    machine: String,
+    env: BTreeMap<String, String>,
+}
+/// Save one machine's Job environment, whole; an empty one clears it. Only
+/// Jobs created from now on take it.
+async fn set_machine_env(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Json(input): Json<MachineEnv>,
+) -> Result<Json<Value>, ApiError> {
+    let saved = ws.stored(move |s| s.set_machine_env(&input.machine, &input.env)).await?;
+    changed(&ws);
+    Ok(Json(saved))
+}
+
 async fn set_disk_reserve(
     AppState(ws): AppState<Arc<Workspace>>,
     Json(input): Json<DiskReserve>,
@@ -1498,8 +1523,8 @@ pub async fn call(
                 stage
                     .env
                     .entry("PATH".into())
-                    .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-                stage.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
+                    .or_insert_with(|| machine_env::DEFAULT_PATH.into());
+                stage.env.entry("LANG".into()).or_insert_with(|| machine_env::DEFAULT_LANG.into());
             }
             input.validate()?;
             // The runs it waits for by whole ID, so a repeat naming them by
@@ -2035,7 +2060,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
-        "env":{"type":"object","additionalProperties":{"type":"string"}},
+        "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Variables for the command, over the Job environment the user set for its machine in Settings → Machines (yours win; a PATH or LANG equal to Core's default /usr/local/bin:/usr/bin:/bin or C.UTF-8 counts as that default and is replaced). The Job's env and envFromMachine show what it got."},
         "resources":{"type":"object","description":RESOURCES,"properties":{"cpuMillis":{"type":"integer","minimum":100,"maximum":256000},
             "cpuMillisMin":{"type":"integer","minimum":100,"maximum":256000},"cpuMillisMax":{"type":"integer","minimum":100,"maximum":256000},
             "cpuPolicy":{"type":"string","enum":["elastic","fixed"],"default":"elastic"},

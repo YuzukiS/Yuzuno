@@ -1512,6 +1512,8 @@ impl Store {
             bail!("远程机器不存在");
         }
         tx.execute("DELETE FROM machine_checks WHERE machine_id=?1", [id])?;
+        // Its Job environment goes with it (YN-194).
+        tx.execute("DELETE FROM job_machine_env WHERE machine=?1", [id])?;
         tx.commit()?;
         Ok(())
     }

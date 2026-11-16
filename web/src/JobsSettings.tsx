@@ -15,6 +15,7 @@ import {
   WindowsJobsSettings,
   type JobsBudgetView,
 } from "./JobBudget";
+import { JobEnvSettings } from "./JobEnvSettings";
 import "./jobs-settings.css";
 
 const text = strings({
@@ -100,6 +101,9 @@ export function JobsBudgetEditor({ active }: { active: boolean }) {
           {view.disk && <DiskReserveSettings disk={view.disk} onSaved={refresh} />}
           {view.windows?.available && <WindowsJobsSettings windows={view.windows} onSaved={refresh} />}
           {view.gpus && <GpuDeviceSettings gpus={view.gpus} onSaved={refresh} />}
+          {/* What every Job here gets (YN-194): this host's, then Windows'. */}
+          <JobEnvSettings machine="local" />
+          {view.windows?.available && <JobEnvSettings machine="windows" windows />}
         </>
       )}
       {error && (

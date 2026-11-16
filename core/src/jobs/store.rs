@@ -24,6 +24,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- row) is the default. Kept apart from local_job_settings for the same
         -- reason. An older Core ignores it and runs its own four.
         CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
+    super::machine_env::migrate(db)?;
     super::runs::migrate(db)?;
     super::history::migrate(db)?;
     super::gpu::migrate(db)?;
@@ -468,6 +469,13 @@ pub(super) fn new_job(
     let id = uuid::Uuid::new_v4().to_string();
     let attempt = uuid::Uuid::new_v4().to_string();
     let mut value = serde_json::to_value(input)?;
+    // Its machine's Job environment under its own (YN-194), as saved now.
+    let key = super::machine_env::key_of(input.machine_id.as_deref());
+    let (env, taken) = super::machine_env::merged(&input.env, key, &super::machine_env::get(tx, key)?)?;
+    value["env"] = json!(env);
+    if !taken.is_empty() {
+        value["envFromMachine"] = json!(taken);
+    }
     value["id"] = json!(id);
     value["attempt"] = json!(attempt);
     value["taskId"] = json!(task);
@@ -1516,6 +1524,18 @@ impl Store {
             [max_jobs],
         )?;
         Ok(max_jobs)
+    }
+    /// Each machine's Job environment, as the user saved it (YN-194).
+    pub(super) fn machine_envs(&self) -> Result<Value> {
+        super::machine_env::all(&*self.db.read()?)
+    }
+    /// Save one machine's Job environment, whole (empty clears it).
+    pub(super) fn set_machine_env(&self, machine: &str, env: &std::collections::BTreeMap<String, String>) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let saved = super::machine_env::set(&tx, machine, env)?;
+        tx.commit()?;
+        Ok(saved)
     }
     /// Whether this host's Jobs budget is saved (`init_job_budget`, or the user's).
     pub(super) fn job_budget_saved(&self) -> Result<bool> {
