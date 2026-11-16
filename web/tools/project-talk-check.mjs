@@ -95,19 +95,6 @@ const PASTE = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行：机器卡
 const TYPED = "把机器卡也搬进项目页，具体要求贴在下面：\n";
 const card = (sectionId, key, title, task, responsible, live = true) => ({ sectionId, key, title, live, task: { id: task.id, status: task.status, archived: false }, responsible });
 const requests = () => [
-  // YN-184: waiting for the user, a card's task ended (a long title beside Confirm done) and an answer. Both said
-  // after R-5, so nothing of theirs is above R-5's words in the conversation (See words → below scrolls to them).
-  { id: "r8", n: 8, text: "现在是哪个版本", textBlocks: null, title: "现在跑的是哪个版本", createdAt: at(35), frontAgentId: "l", messageId: "m8",
-    delivery: "accepted", replies: [], notes: [{ note: "core.36，11-16 装的。", by: desk, at: at(34) }],
-    routes: [{ kind: "answer", index: 0, request: 8, at: at(34), state: "done", why: "一句话能答", by: desk, to: null, task: null, cardKey: null, sectionId: null }],
-    cards: [], state: "answered", progress: { cards: 0, ended: 0 }, lines: [] },
-  { id: "r7", n: 7, text: "导出也给一份 Markdown", textBlocks: null,
-    title: "导出 Markdown：表格、标题层级和代码块都要保留（一个特意写长的标题，看它和确认按钮会不会挤）", createdAt: at(37), frontAgentId: "l",
-    messageId: "m7", delivery: "accepted", replies: [], notes: [{ note: "开一张卡。", by: desk, at: at(36) }],
-    routes: [{ kind: "card", index: 0, request: 7, at: at(36), state: "done", why: "有明确终点", by: desk, to: { agentId: "x", name: agents[2].name }, task: "YN-94", cardKey: "yn-94", sectionId: 395, title: "导出 Markdown" }],
-    cards: [card(395, "yn-94", "导出 Markdown", { id: "YN-94", status: "done" }, null)],
-    state: "ended", progress: { cards: 1, ended: 1 },
-    lines: [{ kind: "done", task: "YN-94", status: "done", at: at(33), cardSectionId: 395, title: "导出 Markdown" }] },
   { id: "r6", n: 6, text: TYPED + PASTE, textBlocks: [{ id: "p1", start: TYPED.length, end: TYPED.length + PASTE.length }], title: null,
     createdAt: at(4), frontAgentId: "l", messageId: "m6", delivery: "accepted", replies: [], notes: [], routes: [], cards: [], state: "waiting", progress: { cards: 0, ended: 0 }, lines: [] },
   { id: "r5", n: 5, text: `设置页重新排版、文案改口语，参考 ${LONG_WORD}`, textBlocks: null,
@@ -135,6 +122,22 @@ const requests = () => [
     cards: [card(390, "yn-90", "旧的导出调研", { id: "YN-90", status: "done" }, null, false)],
     state: "done", progress: { cards: 1, ended: 1 },
     lines: [{ kind: "done", task: "YN-90", status: "done", at: at(150), cardSectionId: 390, title: "旧的导出调研" }] },
+];
+// YN-184: two requests waiting for the user, a card's task ended (a long title beside Confirm done) and an answer.
+// Shown only in each run's last pass (`showWaiting`), after every check above: more of the conversation around R-5
+// moves where a phone's See words → lands (as on main), which is not what these two are here to check.
+const waiting = () => [
+  { id: "r8", n: 8, text: "现在是哪个版本", textBlocks: null, title: "现在跑的是哪个版本", createdAt: at(35), frontAgentId: "l", messageId: "m8",
+    delivery: "accepted", replies: [], notes: [{ note: "core.36，11-16 装的。", by: desk, at: at(34) }],
+    routes: [{ kind: "answer", index: 0, request: 8, at: at(34), state: "done", why: "一句话能答", by: desk, to: null, task: null, cardKey: null, sectionId: null }],
+    cards: [], state: "answered", progress: { cards: 0, ended: 0 }, lines: [] },
+  { id: "r7", n: 7, text: "导出也给一份 Markdown", textBlocks: null,
+    title: "导出 Markdown：表格、标题层级和代码块都要保留（一个特意写长的标题，看它和确认按钮会不会挤）", createdAt: at(37), frontAgentId: "l",
+    messageId: "m7", delivery: "accepted", replies: [], notes: [{ note: "开一张卡。", by: desk, at: at(36) }],
+    routes: [{ kind: "card", index: 0, request: 7, at: at(36), state: "done", why: "有明确终点", by: desk, to: { agentId: "x", name: agents[2].name }, task: "YN-94", cardKey: "yn-94", sectionId: 395, title: "导出 Markdown" }],
+    cards: [card(395, "yn-94", "导出 Markdown", { id: "YN-94", status: "done" }, null)],
+    state: "ended", progress: { cards: 1, ended: 1 },
+    lines: [{ kind: "done", task: "YN-94", status: "done", at: at(33), cardSectionId: 395, title: "导出 Markdown" }] },
 ];
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
@@ -183,6 +186,7 @@ async function check(run) {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   }, run.language);
+  let showWaiting = false;
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
     if (url.host !== HOST) {
@@ -192,7 +196,8 @@ async function check(run) {
     if (path === "/api/workspace") return route.fulfill({ json: { workspace: { id: "ws-talk" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     if (path === "/api/home") return route.fulfill({ json: home() });
     if (path === "/api/projects/p-dev/front-desk") return route.fulfill({ json: { version: 1, agentId: null, effectiveAgentId: "l" } });
-    if (path === "/api/projects/p-dev/requests" && method === "GET") return route.fulfill({ json: { requests: requests(), hasMore: false } });
+    if (path === "/api/projects/p-dev/requests" && method === "GET")
+      return route.fulfill({ json: { requests: [...(showWaiting ? waiting() : []), ...requests()], hasMore: false } });
     // A list read, though sent as POST (home-api.ts readLinkedRepositories): no repositories linked here.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
@@ -436,6 +441,24 @@ async function check(run) {
     assert.ok(back.talk[0] < back.window && back.talk[1] > 0, `the talk brought into view: ${JSON.stringify(back)}`);
     pass("a card's source line stays inside the card, its details carry no words, and See words → shows them", { source: fitSource, back });
     await shot("page", page.locator("body"));
+
+    // YN-184: requests waiting for the user, read again with the page: Confirm done stays inside its card, and
+    // nothing is wider than its column.
+    showWaiting = true;
+    await page.reload();
+    await page.locator('.request-card[data-request="7"] .request-card-confirm').waitFor({ state: "attached", timeout: 15_000 });
+    if (narrow) await tab(w.requests).click();
+    await settled();
+    fit = await fits();
+    fitsOk(fit, "requests waiting for the user");
+    const confirms = await page.evaluate(() => [7, 8].map((n) => {
+      const card = document.querySelector(`.request-card[data-request="${n}"]`).getBoundingClientRect();
+      const button = document.querySelector(`.request-card[data-request="${n}"] .request-card-confirm`).getBoundingClientRect();
+      return { n, inside: button.left >= card.left - 1 && button.right <= card.right + 1, height: Math.round(button.height) };
+    }));
+    assert.ok(confirms.every((c) => c.inside), `Confirm done inside its card: ${JSON.stringify(confirms)}`);
+    await shot("waiting", page.locator(".project-talk-requests"));
+    pass("requests waiting for the user keep Confirm done inside their cards", { confirms });
   } finally {
     await context.close();
   }
