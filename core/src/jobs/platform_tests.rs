@@ -108,7 +108,7 @@ fn failed_run(s: &crate::store::Store) -> String {
         let submit = input.submit(stage);
         let snapshot = json!({"cwd":"/tmp","git":null,"files":[]});
         let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
-        Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+        Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
     }).collect();
     let run = s.create_run(Some("a"), input, prepared, machine(), json!({"bootId":"boot"})).unwrap();
     let started = s.reserve_next_job(None, None, None).unwrap().unwrap();
