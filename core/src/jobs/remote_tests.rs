@@ -2334,9 +2334,9 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     // A retry is the same Job, matched as it was sent: before and after resolving.
     assert_eq!(lab.ws.store.previous_job(Some("r"), &sent).unwrap().unwrap()["id"], job["id"]);
     assert_eq!(create_as(&lab, "r", resolved).unwrap()["id"], job["id"]);
-    // The machine's rules hold for what it resolved to: guardGit reads this host.
-    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "git", "true", json!({"machineId":"agent","guardGit":true})), false).unwrap();
-    assert!(checked.validate().unwrap_err().to_string().contains("guardGit"));
+    // The machine's rules hold for what it resolved to: exclusive is this host's.
+    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "alone", "true", json!({"machineId":"agent","exclusive":true})), false).unwrap();
+    assert!(checked.validate().unwrap_err().to_string().contains("exclusive applies to this host's jobs only"));
     // No calling Agent: nothing is guessed, and nothing runs anywhere.
     let error = lab.ws.store.resolve_machine(None, input(&lab, "nobody", "true", json!({"machineId":"agent"})), false).unwrap_err();
     assert!(error.to_string().contains("this submission has none"), "{error}");
