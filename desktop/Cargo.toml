@@ -54,18 +54,21 @@ objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
 block2 = { version = "0.6.2", default-features = false, features = ["std"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNUserNotificationCenter"] }
 # Where the system's window buttons end and what a title bar double click
-# does (YN-90, title_bar.rs): the AppKit/Foundation bindings Tauri already
-# uses, at its versions, with only the classes read there (and NSError,
+# does (YN-90, title_bar.rs), and a kept file dragged out as a real file
+# (YN-170, file_drag/mac.rs): the AppKit/Foundation bindings Tauri already
+# uses, at its versions, with only the classes used there (and NSError,
 # which macOS's answer to notify.rs's request carries).
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSString", "NSUserDefaults", "NSProcessInfo", "NSPathUtilities"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSUserDefaults", "NSProcessInfo", "NSPathUtilities"] }
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Registry"] }
 # The taskbar badge (YN-43, badge.rs): ITaskbarList3, a COM interface that
-# windows-sys does not bind, from the version Tauri already uses.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# windows-sys does not bind, from the version Tauri already uses; and a kept
+# file dragged out as a real file (YN-170, file_drag/win.rs): the Shell's
+# data object of a file and its drag loop.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Ole", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Decodes the badge's approved PNGs (the version Tauri's tooling already uses).
 png = "0.18"
 
