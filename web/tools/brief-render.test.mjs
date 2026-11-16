@@ -26,7 +26,8 @@ import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
 import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
-import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
+import {BRIEF_EXAMPLES, BRIEF_LIMITS, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
+import {FOLD_CHARS} from ${JSON.stringify(path.join(root, "src/home/brief/Markdown.tsx"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
 import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/brief/density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
@@ -37,6 +38,8 @@ window.sectionMarkdown=sectionMarkdown;
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
+window.foldChars=FOLD_CHARS;
+window.adviceChars=BRIEF_LIMITS.advice.markdownChars;
 window.checkBriefSection=checkBriefSection;
 // With a density, as a Home card's front draws (low, T-9); without one, as anywhere else (high).
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
@@ -919,6 +922,51 @@ test("YN-3 a card whose author named no summary opens as its body does: a first 
   assert.equal(lead(), null);
   assert.ok(!document.querySelector(".home-card-figure-note, .home-card-numbers, .home-card-frame"), "no figure");
   assert.doesNotMatch(card().textContent, /No summary named|Run 101|Merged/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-195 a report's or status's Markdown block over the advice length shows its headings and first paragraph, the rest behind Show all; an Ask's and a short one never fold", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  assert.equal(window.foldChars, window.adviceChars, "Home folds where Core starts to advise");
+  const steps = Array.from({ length: 24 }, (_, i) => `- Step ${i + 1}: what was done, said at the length an Agent writes it.`).join("\n");
+  const long = `## Result\n\nThe nightly backup runs; one choice is left for you.\n\n${steps}\n\nThe last word.`;
+  assert.ok([...long].length > window.foldChars);
+  const md = (kind, text) => readSection(page, {
+    op: "put", key: `fold-${kind}`, kind, title: "Fold",
+    ...(kind === "status" ? { status: { asOf: "2026-10-17T08:00:00Z", validFor: 3600 } } : {}),
+    ...(kind === "ask" ? { ask: { question: "Which way?", reply: { options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] } } } : {}),
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text } } } },
+  });
+  const summary = () => document.querySelector(".brief-markdown-more > summary")?.textContent ?? null;
+  for (const kind of ["report", "status"]) {
+    window.renderSection(md(kind, long), PROJECT);
+    const fold = document.querySelector(".brief-markdown-fold");
+    assert.ok(fold, `${kind}: folded`);
+    assert.deepEqual([...fold.querySelector(":scope > .brief-markdown").children].map((el) => el.tagName), ["H2", "P"], `${kind}: its heading and first paragraph`);
+    const more = fold.querySelector("details.brief-markdown-more");
+    assert.equal(more.open, false);
+    const hidden = more.querySelector(".brief-markdown").textContent.replace(/\s+/g, " ").trim();
+    assert.match(hidden, /^Step 1: .* The last word\.$/);
+    assert.equal(summary(), `Show all · ${[...hidden].length} more characters`);
+    // Opened, the same text, and the control says it closes again.
+    more.open = true;
+    more.dispatchEvent(new window.Event("toggle"));
+    await until(() => summary() === "Show less", "Show less");
+    assert.equal(document.querySelectorAll(".brief-markdown li").length, 24, "nothing cut");
+  }
+  window.chooseLanguage("zh-Hans");
+  window.renderSection(md("report", long), PROJECT);
+  await until(() => summary()?.startsWith("展开全文"), "the Chinese control");
+  assert.match(summary(), /^展开全文 · 还有 \d+ 字$/);
+  window.chooseLanguage("en");
+  // An Ask, a short block and one long paragraph with nothing after it are shown whole.
+  for (const [kind, text] of [["ask", long], ["report", "Short and done."], ["report", "x".repeat(window.foldChars + 1)]]) {
+    window.renderSection(md(kind, text), PROJECT);
+    assert.equal(document.querySelector(".brief-markdown-fold"), null, `${kind} ${text.length}`);
+    assert.ok(document.querySelector(".brief-markdown"));
+  }
   assert.deepEqual(page.errors, []);
 });
 
