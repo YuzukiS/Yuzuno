@@ -376,12 +376,10 @@ impl Workspace {
             return Ok(());
         };
         // The wake-up snapshot may be old by the time this Agent's gate opens.
-        // Re-read pending mail so an already delivered batch can never ring twice.
-        let Some(batch) =
-            self.stored(|store| store.pending_peer_deliveries()).await?.into_iter().find(|b| {
-                b["agentId"] == id && b["priority"].as_str().unwrap_or("normal") == priority
-            })
-        else {
+        // Re-read pending mail so an already delivered batch can never ring
+        // twice: this Agent's mail alone, not every recipient's (YN-197).
+        let (agent, priority_of) = (id.to_owned(), priority.to_owned());
+        let Some(batch) = self.stored(move |store| store.pending_peer_batch(&agent, &priority_of)).await? else {
             return Ok(());
         };
         let through = batch["throughSeq"]
@@ -434,7 +432,10 @@ impl Workspace {
             PeerDeliveryTarget::Steer(id) | PeerDeliveryTarget::Hook(id) => Some(id.as_str()),
             _ => None,
         };
-        let after = batch["afterSeq"].as_i64().unwrap_or(0);
+        // Where its mail starts, read only now that this wake-up goes out
+        // (YN-197). Had the Agent read it all since, its newest mail is.
+        let (agent, priority_of) = (id.to_owned(), priority.to_owned());
+        let after = self.stored(move |store| store.peer_batch_after(&agent, &priority_of)).await?.unwrap_or(through - 1);
         // Quiet notices never ring; the delivery they come with says so (YN-68).
         let quiet = match batch["quietCount"].as_i64().unwrap_or(0) {
             0 => String::new(),
