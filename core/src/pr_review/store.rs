@@ -621,6 +621,7 @@ impl Store {
                 .iter()
                 .find(|l| l["id"] == data["linkId"])
                 .map_or(Value::Null, |link| outdated(&data, &link["snapshot"]));
+            data["countsTowardLimit"] = super::round_limit::counts_toward_limit(&data);
             if compact {
                 // Do not read or attach per-path evidence only to discard it.
                 data = super::mcp::list_row(&data);
@@ -735,18 +736,25 @@ impl Store {
             .iter()
             .find(|l| l["id"] == data["linkId"])
             .map_or(Value::Null, |l| outdated(&data, &l["snapshot"]));
+        data["countsTowardLimit"] = super::round_limit::counts_toward_limit(&data);
         super::evidence::attach(&db, &task, &mut data)?;
         Ok(data)
     }
 }
 
+/// Whether a round no longer reads the PR as its link last saw it: its fixed
+/// base or head differs. A merged or closed PR's base moves on by the merge
+/// itself, or no longer matters, so there only the head says (YN-193): the
+/// round of the head that merged is not outdated.
 pub(super) fn outdated(run: &Value, snapshot: &Value) -> Value {
+    let finished = matches!(snapshot["state"].as_str(), Some("merged" | "closed"));
     match (
         run["baseSha"].as_str(),
         run["headSha"].as_str(),
         snapshot["baseSha"].as_str(),
         snapshot["headSha"].as_str(),
     ) {
+        (_, Some(h), _, Some(nh)) if finished => json!(h != nh),
         (Some(b), Some(h), Some(nb), Some(nh)) => json!(b != nb || h != nh),
         _ => Value::Null,
     }

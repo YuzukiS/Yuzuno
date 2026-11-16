@@ -5,6 +5,23 @@ use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 use tokio::sync::mpsc;
 
+/// What a review whose Claude run ended without a report says. The SDK
+/// reports a usage limit or an API error as subtype "success" with is_error
+/// true, which read "failed (success)" (YN-193); its text is said as text,
+/// not as JSON in quotes.
+fn failure_text(result: &Value) -> String {
+    let text = |v: &Value| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
+    let said = match result.get("errors") {
+        Some(Value::Array(errors)) => errors.iter().map(text).collect::<Vec<_>>().join("; "),
+        Some(errors) => text(errors),
+        None => text(&result["result"]),
+    };
+    match result["subtype"].as_str() {
+        Some("success") => format!("Claude review failed: Claude reported an error before any report: {said}"),
+        subtype => format!("Claude review failed ({}): {said}", subtype.unwrap_or("unknown")),
+    }
+}
+
 pub(super) async fn review(
     ws: &Workspace,
     directory: &Path,
@@ -89,11 +106,7 @@ pub(super) async fn review(
                 if result["subtype"] != "success" || result["is_error"] == true {
                     run["status"] = json!("failed");
                     super::policy::execution_reason(run, "execution_failed");
-                    run["error"] = json!(format!(
-                        "Claude review failed ({}): {}",
-                        result["subtype"].as_str().unwrap_or("unknown"),
-                        result.get("errors").unwrap_or(&result["result"])
-                    ));
+                    run["error"] = json!(failure_text(result));
                     return Ok(());
                 }
                 ensure!(
@@ -112,4 +125,19 @@ pub(super) async fn review(
         }
     }
     bail!("Claude review stream ended without a result")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// YN-193: a usage-limit failure read "Claude review failed (success): \"…\"".
+    #[test]
+    fn a_usage_limit_failure_says_claude_reported_an_error_not_failed_success() {
+        let limit = json!({"type":"result","subtype":"success","is_error":true,"result":"Credit balance is too low"});
+        assert_eq!(failure_text(&limit), "Claude review failed: Claude reported an error before any report: Credit balance is too low");
+        let turns = json!({"type":"result","subtype":"error_max_turns","errors":["Reached the turn limit","No report"]});
+        assert_eq!(failure_text(&turns), "Claude review failed (error_max_turns): Reached the turn limit; No report");
+        assert_eq!(failure_text(&json!({"is_error":true,"result":{"code":7}})), "Claude review failed (unknown): {\"code\":7}");
+    }
 }
