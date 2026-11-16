@@ -14,6 +14,14 @@
 //! it did, it is that same attempt. Whatever cannot be settled for certain
 //! is unknown and keeps its slot.
 //!
+//! While an SSH machine's attempts hold their slots, its remote session
+//! (remote_service, YN-83 S2 PR4) scans their record files and says which
+//! changed. A change, or a cancel, is checked at the next pass; an attempt
+//! the session covers is otherwise checked every 60 s instead of every 10 s.
+//! The session never says what an attempt's state is: only the helper's
+//! status answer does, as before, and without the session (it stopped, or
+//! never started) every attempt is checked every 10 s.
+//!
 //! Each SSH machine has its own admission (maxJobs, and its budget when one
 //! is set). Declared CPU, RAM and swap go with each attempt, with the
 //! machine's mode: the helper holds what the account's systemd user manager
@@ -42,6 +50,7 @@
 //! before roots were recorded is in the legacy root its Core used.
 use super::store::{budget, get, reserved, save};
 use super::{changed, Workspace};
+use crate::remote_service::{Attempt, JobsView, Notice, MAX_JOB_ATTEMPTS};
 use crate::{model::now, remote::RemoteMachine, store::Store};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -72,6 +81,10 @@ const LIMITED: &str = "limited";
 const LEGACY: &str = "legacy";
 /// How often a remote attempt is checked; a cancellation is acted on at once.
 const OBSERVE_EVERY: Duration = Duration::from_secs(10);
+/// How often an attempt its machine's session covers is checked (YN-83 S2
+/// PR4): the longest wait between asks about an unchanged local attempt
+/// (watch.rs RETRY_MAX). A change the session reports is checked at once.
+const COVERED_EVERY: Duration = Duration::from_secs(60);
 const REPLY_LIMIT: u64 = 256 * 1024;
 /// The OpenSSH program; tests substitute a stand-in with its conventions.
 pub(super) const SSH: &str = "ssh";
@@ -1153,10 +1166,12 @@ pub(super) fn start(ws: &Arc<Workspace>) {
     // Read once as Core starts, before it serves anything: a Core without
     // remote jobs to resume starts idle and reads nothing.
     let busy = ws.store.remote_jobs().map_or(true, |jobs| !jobs.is_empty());
+    // A session that says an attempt held there changed wakes the loop.
+    ws.machine_live.wake_jobs_with(wake.clone());
     tokio::spawn(run(weak.clone(), wake, busy, |ws| async move {
         let helper = windows_helper();
         let programs = Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux), mac: MAC_TOOLS };
-        tick_with(&ws, &programs).await
+        pass(&ws, &programs, true).await
     }));
     // Ends the shared connections that are no longer used (ssh_mux).
     tokio::spawn(async move {
@@ -1197,14 +1212,72 @@ where
     }
 }
 
-fn due(ws: &Workspace, job: &Value) -> bool {
+fn due(ws: &Workspace, job: &Value, views: &std::collections::HashMap<String, JobsView>) -> bool {
     let id = job["id"].as_str().unwrap_or_default().to_owned();
+    let now = Instant::now();
+    let notice = session_notice(job, views, now);
     let mut seen = ws.jobs.remote_seen.lock().unwrap();
-    if !job["cancelRequestedAt"].is_string() && seen.get(&id).is_some_and(|at| at.elapsed() < OBSERVE_EVERY) {
+    if !check_now(now, seen.get(&id).copied(), job["cancelRequestedAt"].is_string(), notice) {
         return false;
     }
-    seen.insert(id, Instant::now());
+    seen.insert(id, now);
     true
+}
+
+/// Whether an attempt last checked at `last` is checked now: at once when it
+/// never was, when a cancel waits, or when its session said it changed after
+/// that check began; else after 60 s when its session covers it, 10 s if not.
+pub(super) fn check_now(now: Instant, last: Option<Instant>, cancel: bool, notice: Notice) -> bool {
+    let Some(last) = last else { return true };
+    if cancel || notice.changed.is_some_and(|at| at > last) {
+        return true;
+    }
+    now.saturating_duration_since(last) >= if notice.covered { COVERED_EVERY } else { OBSERVE_EVERY }
+}
+
+/// What this attempt's machine's session says of it. Only a session on the
+/// machine the attempt is pinned to (its hello's host id), watching the data
+/// root the attempt was sent to, speaks for it.
+fn session_notice(job: &Value, views: &std::collections::HashMap<String, JobsView>, now: Instant) -> Notice {
+    if job["executor"]["kind"] != SSH {
+        return Notice::default();
+    }
+    let Some(view) = job["executor"]["machineId"].as_str().and_then(|id| views.get(id)) else { return Notice::default() };
+    let Some(attempt) = Attempt::new(job["id"].as_str().unwrap_or_default(), job["attempt"].as_str().unwrap_or_default()) else {
+        return Notice::default();
+    };
+    let pinned = job["remote"]["hostId"].as_str();
+    if pinned.is_none() || view.host_id.as_deref() != pinned || !same_root(attempt_root(job).as_str().unwrap_or_default(), &view.root) {
+        return Notice::default();
+    }
+    view.notice(&attempt, now)
+}
+
+/// Whether a session watching a machine's data root `watched` (as its record
+/// says it: `~/folder` or absolute) reads the folder of an attempt sent to
+/// `sent` (the absolute root its helper reported, or a legacy `~/` one): the
+/// same text, or `~/rest` and an absolute root that ends in `/rest`.
+pub(super) fn same_root(sent: &str, watched: &str) -> bool {
+    sent == watched || watched.strip_prefix('~').is_some_and(|rest| rest.starts_with('/') && sent.starts_with('/') && sent.ends_with(rest))
+}
+
+/// The attempts each SSH machine's session is asked to scan: those whose
+/// start was sent and that hold their slot, at most 64 a machine.
+fn held_attempts(jobs: &[Value]) -> BTreeMap<String, Vec<Attempt>> {
+    let mut held: BTreeMap<String, Vec<Attempt>> = BTreeMap::new();
+    for job in jobs.iter().filter(|job| job["executor"]["kind"] == SSH && job["reserved"] == true && job["remote"]["startSentAt"].is_string()) {
+        let (Some(machine), Some(attempt)) = (
+            job["executor"]["machineId"].as_str(),
+            Attempt::new(job["id"].as_str().unwrap_or_default(), job["attempt"].as_str().unwrap_or_default()),
+        ) else {
+            continue;
+        };
+        let attempts = held.entry(machine.to_owned()).or_default();
+        if attempts.len() < MAX_JOB_ATTEMPTS && !attempts.contains(&attempt) {
+            attempts.push(attempt);
+        }
+    }
+    held
 }
 
 /// One pass with one stand-in program for every transport (tests).
@@ -1214,11 +1287,22 @@ pub(super) async fn tick(ws: &Arc<Workspace>, program: &str) -> Result<bool> {
     tick_with(ws, &Programs { ssh: program, windows: Some(&helper), mux: None, mac: MAC_TOOLS }).await
 }
 
-/// One pass over the remote jobs; false when there is none, so the loop
-/// can wait to be woken instead.
+/// One pass over the remote jobs without the remote sessions: every
+/// attempt on the ten-second cadence (tests).
 pub(super) async fn tick_with(ws: &Arc<Workspace>, programs: &Programs<'_>) -> Result<bool> {
+    pass(ws, programs, false).await
+}
+
+/// One pass over the remote jobs; false when there is none, so the loop
+/// can wait to be woken instead. With `sessions` (the loop's own), each SSH
+/// machine's attempts are held in its remote session first, and what the
+/// sessions say decides which are checked now (`due`).
+pub(super) async fn pass(ws: &Arc<Workspace>, programs: &Programs<'_>, sessions: bool) -> Result<bool> {
     let _gate = ws.jobs.remote_gate.lock().await;
     let jobs = ws.stored(|s| s.remote_jobs()).await?;
+    if sessions {
+        crate::remote_service::hold_jobs(ws, held_attempts(&jobs)).await;
+    }
     if jobs.is_empty() {
         ws.jobs.remote_seen.lock().unwrap().clear();
         return Ok(false);
@@ -1226,9 +1310,10 @@ pub(super) async fn tick_with(ws: &Arc<Workspace>, programs: &Programs<'_>) -> R
     let Ok(_completion) = ws.admission.enter_completion() else {
         return Ok(true);
     };
+    let views = if sessions { ws.machine_live.jobs_views() } else { Default::default() };
     let checks = jobs
         .iter()
-        .filter(|job| job["reserved"] == true && due(ws, job))
+        .filter(|job| job["reserved"] == true && due(ws, job, &views))
         .map(|job| observe(ws, job.clone(), programs));
     for result in futures_util::future::join_all(checks).await {
         if let Err(error) = result {

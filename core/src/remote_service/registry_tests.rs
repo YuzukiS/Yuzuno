@@ -1,17 +1,19 @@
 //! The Workspace's remote sessions (YN-83 S1 PR4b; design v4 PR4 items 3,
 //! 5, 6, 7, 11 and 12, and the Lead's 8447): who may start one, when each
 //! closes, what a stop and a backoff hold, and what an edit, a removal, a
-//! drain or a shutdown does. Sessions are fake Links this test drives, the
-//! records a list it holds, and time a clock it moves: no process starts.
+//! drain or a shutdown does; and the remote Jobs held on a machine (S2 PR4).
+//! Sessions are fake Links this test drives, the records a list it holds,
+//! and time a clock it moves: no process starts.
 
-use super::link::{Ended, FakeLink, Link, Phase, Stamped, Terminal};
-use super::protocol::{After, Code, CpuSource, Exit, Hello, MemorySource, Platform};
-use super::registry::{answer, CheckTicket, Clock, Closed, Closing, Host, Registry, Timing};
+use super::link::{Ended, FakeLink, JobsScan, Link, Phase, Stamped, Terminal};
+use super::protocol::{After, Attempt, Code, CpuSource, Exit, Hello, MemorySource, Platform};
+use super::registry::{answer, hold_jobs, CheckTicket, Clock, Closed, Closing, Host, Notice, Registry, Timing, JOBS_FRESH};
 use crate::remote::RemoteMachine;
 use crate::updates::admission::Admission;
 use anyhow::Result;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Notify, Semaphore};
@@ -649,4 +651,181 @@ async fn closing_waits_14_s_in_all_however_many_machines_and_takes_nothing_for_e
     assert_eq!(done, Closed { waited: 1, unreaped: 0 });
     get(&host).await;
     assert_eq!(starts(&sessions, "m1"), 2);
+}
+
+fn attempt(n: u32) -> Attempt {
+    Attempt::new(&format!("{n:08x}-0000-4000-8000-000000000000"), "7c9e6679-7425-40de-944b-e07fc1f90ae7").unwrap()
+}
+
+/// What one pass of the Jobs loop holds: these attempts on `id`, none elsewhere.
+fn holding(id: &str, attempts: &[Attempt]) -> BTreeMap<String, Vec<Attempt>> {
+    BTreeMap::from([(id.to_owned(), attempts.to_vec())])
+}
+
+/// What the `n`th session on `id` was last asked to scan.
+fn asked(sessions: &Sessions, id: &str, n: usize) -> Option<(u64, Vec<Attempt>)> {
+    with(sessions, id, n, |fake| fake.wanted.borrow().as_ref().map(|want| (want.set, want.attempts.to_vec())))
+}
+
+/// YN-83 S2 PR4: Jobs held on a machine start a session there with no GET,
+/// keep it open past the interest while they are held, ask it for their set,
+/// and close it 60 s after the last went.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jobs_alone_start_a_session_ask_it_for_their_set_and_close_it_60_s_after_the_last() {
+    let (host, clock, sessions) = lab(vec![machine("m1", "box-a", "/srv/a"), machine("m2", "box-b", "/srv/b")]);
+    // No GET has read the records yet: the hold reads them itself.
+    hold_jobs(&host, holding("m1", &[attempt(1)])).await;
+    assert_eq!((starts(&sessions, "m1"), starts(&sessions, "m2")), (1, 0));
+    assert_eq!(host.registry.interest(), None, "no interest is recorded");
+    let (set, list) = asked(&sessions, "m1", 0).unwrap();
+    assert_eq!(list, vec![attempt(1)]);
+    // Every pass holds the same attempts: the same set, nothing started again.
+    for _ in 0..3 {
+        hold_jobs(&host, holding("m1", &[attempt(1)])).await;
+    }
+    assert_eq!((starts(&sessions, "m1"), asked(&sessions, "m1", 0).unwrap().0), (1, set));
+    hello(&sessions, &clock, "m1", 0);
+    settle().await;
+    // Long past any interest: open while they are held.
+    clock.advance(180 * SECOND);
+    settle().await;
+    hold_jobs(&host, holding("m1", &[attempt(1)])).await;
+    assert!(!closed(&sessions, "m1", 0));
+    // Another attempt is a new set.
+    hold_jobs(&host, holding("m1", &[attempt(1), attempt(2)])).await;
+    let (second, list) = asked(&sessions, "m1", 0).unwrap();
+    assert!(second > set);
+    assert_eq!(list, vec![attempt(1), attempt(2)]);
+    // The last goes: asked for none, open 60 s more, then closed by itself.
+    hold_jobs(&host, BTreeMap::new()).await;
+    let (third, list) = asked(&sessions, "m1", 0).unwrap();
+    assert!(third > second && list.is_empty());
+    clock.advance(59 * SECOND);
+    settle().await;
+    hold_jobs(&host, BTreeMap::new()).await;
+    assert!(!closed(&sessions, "m1", 0));
+    clock.advance(SECOND);
+    eventually("closed 60 s after the last Job", || closed(&sessions, "m1", 0)).await;
+    end(&sessions, "m1", 0, After::Clean, None, true);
+    settle().await;
+    assert_eq!(state(&host.registry.peek()["machines"].as_array().unwrap().clone(), "m1").0, "idle");
+    // Held again: a new session, asked at once for the new set.
+    hold_jobs(&host, holding("m1", &[attempt(3)])).await;
+    assert_eq!(starts(&sessions, "m1"), 2);
+    assert_eq!(asked(&sessions, "m1", 1).unwrap().1, vec![attempt(3)]);
+    // Jobs held on m1 never started anything on m2.
+    assert_eq!(starts(&sessions, "m2"), 0);
+    // A GET's interest that ends while Jobs are held closes nothing; once
+    // both are gone it closes at the later end.
+    get(&host).await;
+    clock.advance(61 * SECOND);
+    settle().await;
+    assert!(!closed(&sessions, "m1", 1));
+    get(&host).await;
+    clock.advance(30 * SECOND);
+    hold_jobs(&host, BTreeMap::new()).await;
+    clock.advance(30 * SECOND);
+    settle().await;
+    assert!(!closed(&sessions, "m1", 1), "60 s after the last Job is the later end");
+    clock.advance(30 * SECOND);
+    eventually("closed at the later end", || closed(&sessions, "m1", 1)).await;
+}
+
+/// Jobs held there change none of S1's rules: a stop holds until a manual
+/// check, a backoff waits its time (and is retried while they are held), a
+/// drain closes and starts nothing, Core's shutdown starts nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jobs_held_there_keep_every_stop_backoff_drain_and_shutdown_rule() {
+    let m1 = machine("m1", "box-a", "/srv/a");
+    let (host, clock, sessions) = lab(vec![m1.clone()]);
+    let held = || holding("m1", &[attempt(1)]);
+    hold_jobs(&host, held()).await;
+    end(&sessions, "m1", 0, After::Stop, Some(Code::UncleanExit), true);
+    settle().await;
+    for _ in 0..3 {
+        hold_jobs(&host, held()).await;
+    }
+    clock.advance(120 * SECOND);
+    settle().await;
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 1, "an unclean end is not restarted for Jobs");
+    assert_eq!(state(&host.registry.peek()["machines"].as_array().unwrap().clone(), "m1"), ("unavailable".into(), "unclean_exit".into()));
+    // A check that started after the stop and reached the machine as it is.
+    let ticket = host.registry.check_started(&m1);
+    host.registry.check_reached(&host.registry.hold().await, &ticket);
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 2);
+    assert_eq!(asked(&sessions, "m1", 1).unwrap().1, vec![attempt(1)]);
+    // A backoff: nothing starts before its time, then it is retried with no GET.
+    end(&sessions, "m1", 1, After::Backoff, Some(Code::SshUnreachable), true);
+    settle().await;
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 2);
+    clock.advance(SECOND);
+    eventually("the retry", || starts(&sessions, "m1") == 3).await;
+    // A drain closes it; nothing starts until it reopens.
+    host.admission.begin_drain("update").unwrap();
+    eventually("closed by the drain", || closed(&sessions, "m1", 2)).await;
+    end(&sessions, "m1", 2, After::Clean, None, true);
+    settle().await;
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 3);
+    host.admission.reopen("update").unwrap();
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 4);
+    // Core shuts down: closed, and nothing starts again.
+    let (shutdown, watched) = watch::channel(false);
+    host.registry.follow_shutdown(watched);
+    shutdown.send_replace(true);
+    eventually("asked to close", || closed(&sessions, "m1", 3)).await;
+    end(&sessions, "m1", 3, After::Clean, None, true);
+    settle().await;
+    hold_jobs(&host, held()).await;
+    assert_eq!(starts(&sessions, "m1"), 4);
+}
+
+/// What the Jobs side reads: the set it holds and the current session's
+/// newest scan, never an older generation's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_views_hold_the_current_sessions_scan_only() {
+    let (host, clock, sessions) = lab(vec![machine("m1", "box-a", "/srv/a")]);
+    assert!(host.registry.jobs_views().is_empty());
+    hold_jobs(&host, holding("m1", &[attempt(1), attempt(2)])).await;
+    let (set, _) = asked(&sessions, "m1", 0).unwrap();
+    let view = host.registry.jobs_views().remove("m1").unwrap();
+    assert_eq!((view.set, view.attempts.to_vec(), view.root.as_str(), view.scan.is_none()), (set, vec![attempt(1), attempt(2)], "/srv/a", true));
+    assert_eq!(view.notice(&attempt(1), clock.now()), Notice::default());
+    hello(&sessions, &clock, "m1", 0);
+    let now = clock.now();
+    let scan = |set: u64, why| {
+        Arc::new(Stamped { value: JobsScan { set, age: Duration::from_millis(500), why, changed: BTreeMap::from([(attempt(2), now)]) }, received: now })
+    };
+    with(&sessions, "m1", 0, |fake| fake.state.send_modify(|state| state.jobs = Some(scan(set, None))));
+    let view = host.registry.jobs_views().remove("m1").unwrap();
+    // Fresh, answered and of the set held: covered; its change kept.
+    assert_eq!(view.notice(&attempt(1), now), Notice { covered: true, changed: None });
+    assert_eq!(view.notice(&attempt(2), now), Notice { covered: true, changed: Some(now) });
+    assert_eq!(view.notice(&attempt(3), now).covered, false, "not in the set");
+    // Its age counts: JOBS_FRESH from when it was scanned, not received.
+    assert!(view.notice(&attempt(1), now + JOBS_FRESH - Duration::from_millis(500)).covered);
+    assert!(!view.notice(&attempt(1), now + JOBS_FRESH - Duration::from_millis(499)).covered);
+    // Another set, or unanswered: not covered, the change still known.
+    with(&sessions, "m1", 0, |fake| fake.state.send_modify(|state| state.jobs = Some(scan(set + 1, None))));
+    assert_eq!(host.registry.jobs_views()["m1"].notice(&attempt(2), now), Notice { covered: false, changed: Some(now) });
+    with(&sessions, "m1", 0, |fake| fake.state.send_modify(|state| state.jobs = Some(scan(set, Some(super::protocol::JobsWhy::Unanswered)))));
+    assert!(!host.registry.jobs_views()["m1"].notice(&attempt(1), now).covered);
+    // Ended: not covered, and once settled no view at all; a new session's
+    // view starts empty.
+    with(&sessions, "m1", 0, |fake| fake.state.send_modify(|state| state.jobs = Some(scan(set, None))));
+    end(&sessions, "m1", 0, After::Clean, None, true);
+    let ended = host.registry.jobs_views();
+    assert!(ended.get("m1").is_none_or(|view| !view.notice(&attempt(1), now).covered));
+    settle().await;
+    hold_jobs(&host, holding("m1", &[attempt(1), attempt(2)])).await;
+    assert_eq!(starts(&sessions, "m1"), 2);
+    let view = host.registry.jobs_views().remove("m1").unwrap();
+    assert!(view.scan.is_none());
+    // The last Job went: its view holds an empty set for the 60 s after.
+    hold_jobs(&host, BTreeMap::new()).await;
+    assert_eq!(host.registry.jobs_views()["m1"].attempts.len(), 0);
 }

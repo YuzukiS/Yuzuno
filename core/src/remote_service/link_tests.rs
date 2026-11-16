@@ -7,9 +7,9 @@
 //! on 127.0.0.1 with its own keys and configuration (jobs::ssh_mux_tests).
 //! No registered machine and none of the user's SSH files are used.
 
-use super::link::{drain_stderr, write_frames, Ended, LineReader, Limits, Link, Options, Phase, Read, Snapshot, Terminal, WriteEnd, FRAME_LIMIT};
+use super::link::{drain_stderr, write_frames, Ended, LineReader, Limits, Link, Options, Phase, Read, Snapshot, Terminal, WriteEnd, FRAME_LIMIT, JOBS_ASK_LOST};
 use super::package;
-use super::protocol::{After, Code, Exit, Platform, Space, Stderr};
+use super::protocol::{After, Attempt, Code, Exit, Platform, Space, Stderr};
 use crate::jobs::ssh_mux_tests::Sshd;
 use crate::remote::{shell_quote, RemoteMachine};
 use serde_json::{json, Value};
@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 const WAIT: Duration = Duration::from_secs(30);
 const FAKE: &str = include_str!("link_fake.py");
@@ -456,7 +456,7 @@ async fn stdout_closed_while_the_child_lives_is_killed_and_reaped_within_4_s() {
 async fn a_child_that_cannot_be_reaped_keeps_its_gate_closed_until_a_real_wait() {
     let lab = Lab::new();
     let (release, hold) = watch::channel(false);
-    let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold) };
+    let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold), ..Default::default() };
     let mut link = Link::start(&lab.machine(), 1, options).unwrap();
     let gate = link.reap_gate();
     let end = ended(&mut link).await;
@@ -486,7 +486,7 @@ fn a_dropped_reaper_never_opens_the_gate() {
     let (_release, hold) = watch::channel(false);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let gate = runtime.block_on(async {
-        let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold) };
+        let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold), ..Default::default() };
         let mut link = Link::start(&lab.machine(), 1, options).unwrap();
         let end = ended(&mut link).await;
         assert_eq!(end.exit, Exit::Unknown);
@@ -655,4 +655,120 @@ async fn stderr_keeps_its_first_8_kib_and_whether_it_ended() {
     let kept = head.lock().unwrap().clone();
     assert_eq!((kept.truncated, kept.complete), (false, false));
     assert!(kept.head.starts_with(b"ssh: connect"));
+}
+
+const JOB: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const ATTEMPT: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+const OTHER: &str = "16fd2706-8baf-433b-82eb-8c7fada847da";
+
+/// The jobs requests the fake session received, as (set, attempts).
+fn jobs_asks(lab: &Lab) -> Vec<(u64, Value)> {
+    lab.frames().iter().filter(|frame| frame["op"] == "jobs").map(|frame| (frame["args"]["set"].as_u64().unwrap(), frame["args"]["attempts"].clone())).collect()
+}
+
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    let until = Instant::now() + WAIT;
+    while !done() {
+        assert!(Instant::now() < until, "never: {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// YN-83 S2 PR4: a jobs set is asked for once online, again only when it is
+/// a new set or the ask looks lost; an event's changes are kept for the
+/// attempts asked about only, and one that names a change wakes the Jobs loop.
+#[tokio::test]
+async fn a_jobs_set_is_asked_once_online_again_when_new_or_lost_and_only_its_attempts_count() {
+    let lab = Lab::new();
+    let wake = Arc::new(Notify::new());
+    let mut link = Link::start(&lab.machine(), 1, Options { ssh: lab.fake("jobs-stale"), limits: quick(), jobs_wake: Some(wake.clone()), ..Default::default() }).unwrap();
+    let asked = Attempt::new(JOB, ATTEMPT).unwrap();
+    let first = Arc::new(vec![asked.clone()]);
+    // Asked while it boots: sent once it is online, after the watch.
+    link.watch_jobs(5, &first);
+    online(&link).await;
+    eventually("the first ask", || jobs_asks(&lab).len() == 1).await;
+    assert_eq!(jobs_asks(&lab), vec![(5, json!([{"job": JOB, "attempt": ATTEMPT}]))]);
+    let ops: Vec<Value> = lab.frames().iter().filter_map(|frame| frame.get("op").cloned()).collect();
+    assert_eq!(ops.iter().position(|op| op == "watch").unwrap() + 1, ops.iter().position(|op| op == "jobs").unwrap(), "{ops:?}");
+    // The event answering it names the attempt and one never asked about.
+    let now = until(&link, |now| now.jobs.as_ref().is_some_and(|scan| !scan.value.changed.is_empty())).await;
+    let scan = &now.jobs.as_ref().unwrap().value;
+    assert_eq!((scan.set, scan.why), (1, None));
+    assert_eq!(scan.changed.keys().cloned().collect::<Vec<_>>(), vec![asked.clone()]);
+    tokio::time::timeout(Duration::from_secs(5), wake.notified()).await.expect("the Jobs loop is woken");
+    // The same set again, at once: not asked again.
+    link.watch_jobs(5, &first);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(jobs_asks(&lab).len(), 1);
+    // A new set: asked at once. Its events (of set 1) never match it.
+    let second = Arc::new(vec![asked.clone(), Attempt::new(OTHER, ATTEMPT).unwrap()]);
+    link.watch_jobs(6, &second);
+    eventually("the new set", || jobs_asks(&lab).len() == 2).await;
+    assert_eq!(jobs_asks(&lab)[1].0, 6);
+    // The events go on naming set 1: once the ask is JOBS_ASK_LOST old, the
+    // next round asks again, and not before.
+    tokio::time::sleep(JOBS_ASK_LOST - Duration::from_secs(2)).await;
+    link.watch_jobs(6, &second);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(jobs_asks(&lab).len(), 2, "too soon to be lost");
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    link.watch_jobs(6, &second);
+    eventually("asked again", || jobs_asks(&lab).len() == 3).await;
+    assert_eq!(jobs_asks(&lab)[2], (6, json!([{"job": JOB, "attempt": ATTEMPT}, {"job": OTHER, "attempt": ATTEMPT}])));
+    // Asked about fewer attempts: what was said of the others is dropped.
+    link.watch_jobs(7, &Arc::new(vec![Attempt::new(OTHER, ATTEMPT).unwrap()]));
+    let now = until(&link, |now| now.jobs.as_ref().is_some_and(|scan| !scan.value.changed.contains_key(&asked))).await;
+    assert!(now.jobs.as_ref().unwrap().value.changed.keys().all(|attempt| attempt.job == OTHER));
+    link.close();
+    let end = ended(&mut link).await;
+    assert_eq!(outcome(&end), (After::Clean, None));
+}
+
+/// The real program scans the records of the attempts it is asked about:
+/// every attempt counts as changed at first, then only a record that changes.
+async fn a_scan_sees_a_record_change_within_two_periods(lab: &Lab, machine: &RemoteMachine, ssh: String, limits: Limits) {
+    let folder = lab.path("root").join("jobs").join(JOB).join(ATTEMPT);
+    std::fs::create_dir_all(&folder).unwrap();
+    let wake = Arc::new(Notify::new());
+    let mut link = Link::start(machine, 1, Options { ssh, limits, jobs_wake: Some(wake.clone()), ..Default::default() }).unwrap();
+    let attempt = Attempt::new(JOB, ATTEMPT).unwrap();
+    link.watch_jobs(1, &Arc::new(vec![attempt.clone()]));
+    let first = until(&link, |now| now.jobs.as_ref().is_some_and(|scan| scan.value.changed.contains_key(&attempt))).await;
+    let scan = first.jobs.as_ref().unwrap();
+    assert_eq!((scan.value.set, scan.value.why), (1, None), "{:?}", first.terminal);
+    let seen = scan.value.changed[&attempt];
+    tokio::time::timeout(Duration::from_secs(5), wake.notified()).await.expect("the Jobs loop is woken");
+    // A later event, with no change since.
+    let quiet = until(&link, |now| now.jobs.as_ref().is_some_and(|scan| scan.received > seen)).await;
+    assert_eq!(quiet.jobs.as_ref().unwrap().value.changed.get(&attempt), Some(&seen));
+    std::fs::write(folder.join("result.json"), "{}").unwrap();
+    let written = Instant::now();
+    let told = until(&link, |now| now.jobs.as_ref().is_some_and(|scan| scan.value.changed.get(&attempt).is_some_and(|at| *at > seen))).await;
+    let at = told.jobs.as_ref().unwrap().value.changed[&attempt];
+    // Two 2 s scan periods, and the 2 s an event waits for the writer.
+    assert!(at.saturating_duration_since(written) <= Duration::from_secs(6), "{:?}", at.saturating_duration_since(written));
+    link.close();
+    let end = ended(&mut link).await;
+    assert_eq!(outcome(&end), (After::Clean, None), "{end:?}");
+    // It only looked: nothing was written in the attempt's folder.
+    let mut names: Vec<String> = std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, vec!["result.json".to_owned()]);
+}
+
+#[tokio::test]
+async fn the_real_program_says_which_attempt_asked_about_changed() {
+    let lab = Lab::new();
+    let machine = lab.machine();
+    a_scan_sees_a_record_change_within_two_periods(&lab, &machine, lab.real(), quick()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_a_real_sshd_a_scan_sees_a_record_change_within_two_periods() {
+    let sshd = Sshd::start();
+    let lab = Lab::new();
+    let mut machine = lab.machine();
+    machine.target = "box-b".into();
+    a_scan_sees_a_record_change_within_two_periods(&lab, &machine, sshd.wrapper.clone(), Limits::PRODUCTION).await;
 }

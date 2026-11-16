@@ -30,6 +30,9 @@ const MAX_DISKS: usize = 4;
 const MAX_TOKENS: usize = 32;
 const MAX_TOKEN: usize = 64;
 const MAX_BOOT_ID: usize = 64;
+/// Attempts one jobs set or event may name: maxJobs' ceiling, 64
+/// (jobs::remote MAX_JOBS_RANGE; S2 design v3 §3.5).
+pub(crate) const MAX_JOB_ATTEMPTS: usize = 64;
 
 /// Why a session cannot go on, as a stable code. Only `ssh_unreachable`
 /// lets a caller back off and start again by itself (see `After`).
@@ -282,10 +285,43 @@ pub(crate) struct Bye {
     pub why: Vec<String>,
 }
 
+/// One remote Job attempt, by its job and attempt ids: lowercase UUIDs, as
+/// remote_job.py's ID names them, so neither can be a path.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct Attempt {
+    pub job: String,
+    pub attempt: String,
+}
+
+impl Attempt {
+    pub(crate) fn new(job: &str, attempt: &str) -> Option<Attempt> {
+        (uuid(job) && uuid(attempt)).then(|| Attempt { job: job.to_owned(), attempt: attempt.to_owned() })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JobsWhy {
+    /// The scan did not answer within its 5 s (a hung filesystem).
+    Unanswered,
+}
+
+/// A jobs event (YN-83 S2 PR4): which of the attempts Core named changed
+/// since the last event. It says only that; an attempt's state is what the
+/// Jobs helper answers.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Jobs {
+    /// The set the newest scan was for, as Core numbered it.
+    pub set: u64,
+    pub age: Duration,
+    pub changed: Vec<Attempt>,
+    pub why: Option<JobsWhy>,
+}
+
 /// A frame after the hello.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Frame {
     Load(Load),
+    Jobs(Jobs),
     Bye(Bye),
     /// An answer to one of Core's requests: it only shows the session lives.
     Reply,
@@ -298,6 +334,7 @@ pub(crate) fn frame(line: &[u8]) -> Result<Frame, Code> {
     if let Some(event) = frame.get("ev") {
         return match event.as_str() {
             Some("load") => Ok(Frame::Load(load(map(frame.get("data"))?)?)),
+            Some("jobs") => Ok(Frame::Jobs(jobs(map(frame.get("data"))?)?)),
             Some("bye") => Ok(Frame::Bye(bye(map(frame.get("data"))?)?)),
             Some("hello") | None => Err(Code::Protocol),
             Some(_) => Ok(Frame::Other),
@@ -380,6 +417,30 @@ fn disk(row: &Value) -> Result<Disk, Code> {
     Ok(Disk { roles, space })
 }
 
+fn jobs(data: &Map<String, Value>) -> Result<Jobs, Code> {
+    let set = data.get("set").and_then(Value::as_u64).ok_or(Code::Protocol)?;
+    let Some(Value::Array(items)) = data.get("changed") else {
+        return Err(Code::Protocol);
+    };
+    if items.len() > MAX_JOB_ATTEMPTS {
+        return Err(Code::Protocol);
+    }
+    let changed = items
+        .iter()
+        .map(|item| {
+            let item = map(Some(item))?;
+            let id = |key: &str| item.get(key).and_then(Value::as_str).ok_or(Code::Protocol);
+            Attempt::new(id("job")?, id("attempt")?).ok_or(Code::Protocol)
+        })
+        .collect::<Result<_, _>>()?;
+    let why = match data.get("why") {
+        None | Some(Value::Null) => None,
+        Some(value) if value.as_str() == Some("unanswered") => Some(JobsWhy::Unanswered),
+        Some(_) => return Err(Code::Protocol),
+    };
+    Ok(Jobs { set, age: age(data)?, changed, why })
+}
+
 fn bye(data: &Map<String, Value>) -> Result<Bye, Code> {
     let code = data.get("code").and_then(Value::as_u64).filter(|code| *code <= 255).ok_or(Code::Protocol)?;
     let clean = data.get("clean").and_then(Value::as_bool).ok_or(Code::Protocol)?;
@@ -428,6 +489,15 @@ fn hex(value: Option<&Value>, length: usize) -> Result<String, Code> {
         Some(text) if text.len() == length && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) => Ok(text.to_owned()),
         _ => Err(Code::Protocol),
     }
+}
+
+/// A lowercase UUID, 8-4-4-4-12 (remote_job.py's ID).
+fn uuid(text: &str) -> bool {
+    text.len() == 36
+        && text.bytes().enumerate().all(|(at, b)| match at {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => matches!(b, b'0'..=b'9' | b'a'..=b'f'),
+        })
 }
 
 /// 1–64 printable ASCII characters.

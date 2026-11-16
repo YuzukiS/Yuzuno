@@ -331,3 +331,80 @@ fn codes_are_stable_strings() {
 bad_request,unsupported_platform,root_unsafe,upload_short,upload_mismatch,boot_timeout,boot_internal,boot_error,version,\
 protocol,unclean_exit");
 }
+
+const JOB: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const ATTEMPT: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+fn jobs_frame(change: impl FnOnce(&mut Value)) -> Result<Frame, Code> {
+    let mut value = json!({"ev": "jobs", "data": {"set": 7, "ageMs": 120,
+        "changed": [{"job": JOB, "attempt": ATTEMPT}], "why": null}});
+    change(&mut value);
+    frame(&bytes(&value))
+}
+
+/// YN-83 S2 PR4: a jobs event names at most 64 attempts by their UUIDs, the
+/// set it was scanned for and why it failed; unknown fields are ignored.
+#[test]
+fn jobs_events_are_checked_as_load_is() {
+    let attempt = Attempt::new(JOB, ATTEMPT).unwrap();
+    assert_eq!(
+        jobs_frame(|_| {}),
+        Ok(Frame::Jobs(Jobs { set: 7, age: Duration::from_millis(120), changed: vec![attempt.clone()], why: None }))
+    );
+    assert_eq!(
+        jobs_frame(|value| {
+            value["data"]["changed"] = json!([]);
+            value["data"]["why"] = json!("unanswered");
+            value["data"]["later"] = json!({"x": 1});
+            value["data"].as_object_mut().unwrap().remove("ageMs");
+            value["data"]["ageMs"] = json!(99_999_999_999u64);
+        }),
+        Ok(Frame::Jobs(Jobs { set: 7, age: Duration::from_secs(3600), changed: vec![], why: Some(JobsWhy::Unanswered) }))
+    );
+    // The why left out is none.
+    let Ok(Frame::Jobs(jobs)) = jobs_frame(|value| {
+        value["data"].as_object_mut().unwrap().remove("why");
+    }) else {
+        panic!("no why")
+    };
+    assert_eq!(jobs.why, None);
+    // 64 attempts pass; 65 are protocol.
+    let many = |count: usize| -> Value {
+        (0..count).map(|n| json!({"job": JOB, "attempt": format!("{n:08x}-0000-4000-8000-000000000000")})).collect()
+    };
+    let Ok(Frame::Jobs(jobs)) = jobs_frame(|value| value["data"]["changed"] = many(64)) else { panic!("64") };
+    assert_eq!(jobs.changed.len(), MAX_JOB_ATTEMPTS);
+    assert_eq!(jobs_frame(|value| value["data"]["changed"] = many(65)), Err(Code::Protocol));
+    let wrong: Vec<Change> = vec![
+        change(|value| value["data"]["set"] = json!(-1)),
+        change(|value| value["data"]["set"] = json!("7")),
+        change(|value| value["data"]["set"] = json!(7.5)),
+        change(|value| {
+            value["data"].as_object_mut().unwrap().remove("set");
+        }),
+        change(|value| {
+            value["data"].as_object_mut().unwrap().remove("ageMs");
+        }),
+        change(|value| {
+            value["data"].as_object_mut().unwrap().remove("changed");
+        }),
+        change(|value| value["data"]["changed"] = json!({})),
+        change(|value| value["data"]["changed"] = json!([JOB])),
+        change(|value| value["data"]["changed"] = json!([{"job": JOB}])),
+        change(|value| value["data"]["changed"] = json!([{"job": JOB.to_uppercase(), "attempt": ATTEMPT}])),
+        change(|value| value["data"]["changed"] = json!([{"job": format!("../{}", &JOB[3..]), "attempt": ATTEMPT}])),
+        change(|value| value["data"]["changed"] = json!([{"job": JOB, "attempt": format!("{ATTEMPT}0")}])),
+        change(|value| value["data"]["changed"] = json!([{"job": JOB, "attempt": ATTEMPT.replace('-', "x")}])),
+        change(|value| value["data"]["why"] = json!("hung")),
+        change(|value| value["data"]["why"] = json!(1)),
+        change(|value| value["data"] = json!([])),
+    ];
+    for (index, wrong) in wrong.iter().enumerate() {
+        assert_eq!(jobs_frame(|value| wrong(value)), Err(Code::Protocol), "change {index}");
+    }
+    // What Core builds itself is checked the same way.
+    assert_eq!(Attempt::new(JOB, ATTEMPT), Some(attempt));
+    for (job, attempt) in [(JOB, ""), ("", ATTEMPT), (&JOB.to_uppercase()[..], ATTEMPT), (JOB, "7c9e6679/7425-40de-944b-e07fc1f90ae7")] {
+        assert_eq!(Attempt::new(job, attempt), None, "{job} {attempt}");
+    }
+}

@@ -79,8 +79,22 @@ def online():
     hello()
 
 
-def serve(bye=None, code=0, loads=1, after=b""):
-    """Answer until close (bye, then `after`, then exit `code`) or stdin's end (exit 0)."""
+# An attempt no set of Core's names (jobs-stale).
+UNASKED = {"job": "16fd2706-8baf-433b-82eb-8c7fada847da", "attempt": "16fd2706-8baf-433b-82eb-8c7fada847da"}
+
+
+def stale_jobs(changed):
+    """A jobs event of set 1, whatever Core asked for (jobs-stale)."""
+    frame({"ev": "jobs", "data": {"set": 1, "ageMs": 10, "changed": changed, "why": None}})
+
+
+def serve(bye=None, code=0, loads=1, after=b"", jobs=False):
+    """Answer until close (bye, then `after`, then exit `code`) or stdin's end (exit 0).
+
+    With `jobs`, a jobs request is answered, then followed by an event of set
+    1 naming what it asked for and an attempt it did not; each ping is
+    followed by one of set 1 naming nothing.
+    """
     while True:
         line = readline()
         if line is None:
@@ -90,6 +104,11 @@ def serve(bye=None, code=0, loads=1, after=b""):
         op = request.get("op")
         if op == "ping":
             frame({"re": request["id"], "ok": {}})
+            if jobs:
+                stale_jobs([])
+        elif op == "jobs" and jobs:
+            frame({"re": request["id"], "ok": {}})
+            stale_jobs(request["args"]["attempts"] + [UNASKED])
         elif op == "watch":
             frame({"re": request["id"], "ok": {}})
             for window in range(loads):
@@ -106,6 +125,9 @@ CLEAN = {"code": 0, "clean": True, "why": []}
 if MODE == "online":
     online()
     serve(CLEAN)
+elif MODE == "jobs-stale":
+    online()
+    serve(CLEAN, jobs=True)
 elif MODE == "bye-read-pending":
     online()
     serve({"code": 0, "clean": False, "why": ["read_pending"]})
