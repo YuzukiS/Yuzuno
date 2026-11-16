@@ -406,6 +406,15 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n'+link+'\r\n'+json.dumps(data))
     force(&ws);
     tick(&ws).await.unwrap();
     assert_eq!(mail(&ws.store, "a").len(), 3);
+    // Each failed attempt's jobs were read once (YN-196). This fixture answers
+    // them with no jobs, so nothing is compared and nothing is read again.
+    let requests = std::fs::read_to_string(dir.path().join("requests")).unwrap();
+    for failed in ["42", "43"] {
+        let jobs = format!("repos/o/r/actions/runs/{failed}/attempts/1/jobs?per_page=100&page=1");
+        assert_eq!(requests.lines().filter(|ep| *ep == jobs).count(), 1, "{jobs}");
+        assert!(ws.store.ci_failures_known(&format!("github:123:{failed}:1")).unwrap());
+    }
+    assert!(!requests.lines().any(|ep| ep == "repos/o/r/actions/runs/42/attempts/2/jobs?per_page=100&page=1"), "a passed attempt is not read");
     ws.store
         .db
         .write()
@@ -414,6 +423,76 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n'+link+'\r\n'+json.dumps(data))
         .unwrap();
     force(&ws);
     assert!(ws.store.ci_due().unwrap().is_none());
+}
+
+#[test]
+fn failed_steps_name_each_failed_job_and_its_first_step_that_did_not_succeed() {
+    let jobs = json!({"jobs":[
+        {"name":"Web UI (typecheck, build, test 1/2)","conclusion":"failure","steps":[
+            {"name":"Checkout","conclusion":"success"},{"name":"Test files","conclusion":"failure"},{"name":"Post","conclusion":"skipped"}]},
+        {"name":"Lint (report-only)","conclusion":"success","steps":[{"name":"Clippy","conclusion":"success"}]},
+        {"name":"Core (build and test)","conclusion":"failure","steps":[
+            {"name":"Build","conclusion":"success"},{"name":"Test (one test at a time per process)","conclusion":"cancelled"}]},
+        {"name":"Docs","conclusion":"cancelled","steps":[{"name":"Links","conclusion":"failure"}]},
+        {"name":"Runner lost","conclusion":"timed_out","steps":[]}
+    ]});
+    assert_eq!(
+        failed_steps(&jobs),
+        vec![
+            json!({"job":"Web UI (typecheck, build, test 1/2)","key":"Web UI","step":"Test files"}),
+            json!({"job":"Core (build and test)","key":"Core","step":"Test (one test at a time per process)"}),
+            json!({"job":"Runner lost","key":"Runner lost","step":""}),
+        ]
+    );
+    assert!(failed_steps(&json!({"jobs":[]})).is_empty());
+}
+
+#[test]
+fn a_failure_mail_names_other_runs_of_its_workflow_that_failed_at_the_same_job_and_step() {
+    let (_dir, s) = setup();
+    let sub = subscribe(&s, "a", "one");
+    let w = sub["watchId"].as_str().unwrap();
+    let attempt = |id: u64, workflow: u64, conclusion: &str| {
+        let mut raw = raw(1, "completed", json!(conclusion));
+        raw["id"] = json!(id);
+        raw["workflow_id"] = json!(workflow);
+        raw["updated_at"] = json!(format!("2026-11-16T10:{id}:00Z"));
+        client::run(&raw, 123, "o/r").unwrap()
+    };
+    let at = |job: &str, step: &str| json!({"job":job,"key":"Web UI","step":step});
+    let mut runs = Vec::new();
+    let mut record = |s: &Store, run: Value, failed: Vec<Value>| {
+        s.ci_record_failures(&run, &failed).unwrap();
+        runs.push(run);
+        observe(s, w, runs.clone());
+    };
+    record(&s, attempt(40, 9, "failure"), vec![at("Web UI (typecheck, build, test 1/2)", "Test files")]);
+    record(&s, attempt(41, 9, "failure"), vec![at("Web UI (typecheck, build, test 1/2)", "Typecheck")]);
+    record(&s, attempt(44, 10, "failure"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    record(&s, attempt(42, 9, "failure"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    record(&s, attempt(43, 9, "success"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    let mails = mail(&s, "a");
+    let by_run = |id: &str| mails.iter().find(|m| m["metadata"]["runId"] == id).unwrap().clone();
+    for id in ["40", "41", "44", "43"] {
+        let m = by_run(id);
+        assert!(!m["body"].as_str().unwrap().contains("also failed"), "{id}: {}", m["body"]);
+        assert_eq!(m["metadata"]["sameFailure"], json!([]), "{id}");
+    }
+    // Run 42 lists run 40 only: run 41 failed at another step, run 44 is another workflow.
+    let m = by_run("42");
+    let body = m["body"].as_str().unwrap();
+    assert!(body.contains("The same job and step also failed in 1 other recent run(s) Core observed: run 40 attempt 1"), "{body}");
+    assert!(body.contains("Web UI (typecheck, build, test 1/2) > Test files"), "{body}");
+    assert!(body.ends_with("This result does not mean PR merge, review approval, or task completion."), "{body}");
+    assert_eq!(m["metadata"]["sameFailure"].as_array().unwrap().len(), 1);
+    assert_eq!(m["metadata"]["sameFailure"][0]["runKey"], "github:123:40:1");
+    assert_eq!(m["metadata"]["sameFailure"][0]["at"], "2026-11-16T10:40:00Z");
+    // Recorded once: the same attempt is known and a second record changes nothing.
+    assert!(s.ci_failures_known("github:123:42:1").unwrap());
+    assert!(!s.ci_failures_known("github:123:45:1").unwrap());
+    s.ci_record_failures(&attempt(42, 9, "failure"), &[]).unwrap();
+    let kept: String = s.db.read().unwrap().query_row("SELECT data FROM ci_run_failures WHERE run_id='github:123:42:1'", [], |r| r.get(0)).unwrap();
+    assert!(kept.contains("Test files"));
 }
 
 #[test]

@@ -424,6 +424,59 @@ fn stamp(epoch: i64) -> String {
         .unwrap_or_default()
         .to_rfc3339()
 }
+/// The jobs a failed attempt failed in, from its first jobs page, each with
+/// its first step that did not succeed (YN-196). `key` is the job's name
+/// without a trailing parenthesis, so the shards of one matrix job, such as
+/// "Web UI (… 1/2)" and "(… 2/2)", compare as one; `job` keeps the full name.
+fn failed_steps(jobs: &Value) -> Vec<Value> {
+    let mut found = Vec::new();
+    for job in jobs["jobs"].as_array().into_iter().flatten() {
+        if !matches!(job["conclusion"].as_str(), Some("failure" | "timed_out")) {
+            continue;
+        }
+        let name = job["name"].as_str().unwrap_or("");
+        let key = match name.rfind(" (") {
+            Some(at) if name.ends_with(')') => &name[..at],
+            _ => name,
+        };
+        let step = job["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| matches!(s["conclusion"].as_str(), Some("failure" | "timed_out" | "cancelled")))
+            .and_then(|s| s["name"].as_str())
+            .unwrap_or("");
+        found.push(json!({"job":name,"key":key,"step":step}));
+        if found.len() == 20 {
+            break;
+        }
+    }
+    found
+}
+/// Reads, once per failed attempt, where it failed, so that its mail can name
+/// other recent attempts that failed at the same job and step (YN-196). At
+/// most FAILURE_READS jobs reads per observation. A failed read records no
+/// failed step for that attempt, so it is not read again and its mail has no
+/// note; it never fails the observation.
+async fn record_failures(ws: &Arc<Workspace>, runs: &[Value], ttl: i64) {
+    let mut reads = 0;
+    for run in runs {
+        if run["status"] != "failed" || run["rawStatus"] != "completed" || reads == FAILURE_READS {
+            continue;
+        }
+        let key = run["id"].as_str().unwrap_or_default().to_owned();
+        if !matches!(ws.stored(move |s| s.ci_failures_known(&key)).await, Ok(false)) {
+            continue;
+        }
+        reads += 1;
+        let failed = details(ws, run, 1, ttl).await.map(|(jobs, _)| failed_steps(&jobs)).unwrap_or_default();
+        let run = run.clone();
+        let _ = ws.stored(move |s| s.ci_record_failures(&run, &failed)).await;
+    }
+}
+/// Jobs reads for newly failed attempts in one observation: a head runs a few
+/// workflows, and each read goes through the shared cache and its cooldowns.
+const FAILURE_READS: usize = 5;
 /// One bounded jobs/steps page of a run, and the cached read behind it.
 async fn details(ws: &Arc<Workspace>, run: &Value, page: u64, ttl: i64) -> Result<(Value, Value)> {
     let endpoint = format!(
@@ -941,6 +994,7 @@ async fn observe(ws: &Arc<Workspace>, w: &Value, ttl: i64) -> Result<Observed> {
         );
         result.push(run);
     }
+    record_failures(ws, &result, ttl).await;
     Ok(Observed {
         runs: result,
         head,

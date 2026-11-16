@@ -10,6 +10,12 @@ use serde_json::{Value, json};
 // Match any subscriber: another Agent can still be keeping this run fresh.
 const RUN_WATCHED: &str = "EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_watches cw ON cw.id=wr.watch_id JOIN ci_subscriptions cs ON cs.watch_id=cw.id WHERE wr.run_id=r.id AND cw.failures<8 AND cs.active=1 AND cs.expires>strftime('%s','now'))";
 
+/// How many other attempts a failure mail lists, and how many of the newest
+/// recorded failures of the same workflow it looks through (YN-196): a short
+/// mail, and a bounded read inside the mail's transaction.
+const SAME_LISTED: usize = 5;
+const SAME_SCANNED: i64 = 200;
+
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS ci_watches(id TEXT PRIMARY KEY, next_poll INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ci_subscriptions(id TEXT PRIMARY KEY,watch_id TEXT NOT NULL REFERENCES ci_watches(id),agent_id TEXT NOT NULL,task_id TEXT NOT NULL REFERENCES collaboration_tasks(id),active INTEGER NOT NULL,expires INTEGER NOT NULL,data TEXT NOT NULL,UNIQUE(watch_id,agent_id,task_id));
@@ -21,7 +27,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS ci_watch_runs(watch_id TEXT NOT NULL REFERENCES ci_watches(id),run_id TEXT NOT NULL REFERENCES ci_runs(id),PRIMARY KEY(watch_id,run_id));
         CREATE TABLE IF NOT EXISTS ci_notifications(subscription_id TEXT NOT NULL REFERENCES ci_subscriptions(id),run_id TEXT NOT NULL REFERENCES ci_runs(id),message_id TEXT NOT NULL,PRIMARY KEY(subscription_id,run_id));
         CREATE TABLE IF NOT EXISTS ci_cache(endpoint TEXT PRIMARY KEY,data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS ci_control(id INTEGER PRIMARY KEY CHECK(id=1),cooldown INTEGER NOT NULL);")?;
+        CREATE TABLE IF NOT EXISTS ci_control(id INTEGER PRIMARY KEY CHECK(id=1),cooldown INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS ci_run_failures(run_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,workflow_id TEXT NOT NULL,data TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS ci_run_failures_workflow ON ci_run_failures(repository_id,workflow_id);")?;
     super::lifecycle::migrate(db)?;
     Ok(())
 }
@@ -143,8 +151,9 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
         } else {
             run["name"].as_str().unwrap_or("Workflow").to_owned()
         };
+        let same = if run["status"] == "failed" { same_failures(db, &rid)? } else { Vec::new() };
         let body = format!(
-            "GitHub Actions {label}: {} ({}). Run {}, attempt {}, commit {}. Watched commit {} for {}. {} Read ci_get(runKey={rid}) for jobs/steps and native logs/artifacts links. This result does not mean PR merge, review approval, or task completion.",
+            "GitHub Actions {label}: {} ({}). Run {}, attempt {}, commit {}. Watched commit {} for {}. {} Read ci_get(runKey={rid}) for jobs/steps and native logs/artifacts links.{} This result does not mean PR merge, review approval, or task completion.",
             run["status"].as_str().unwrap_or("unknown"),
             run["conclusion"].as_str().unwrap_or("unknown conclusion"),
             run["runId"].as_str().unwrap(),
@@ -152,11 +161,12 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
             run["headSha"].as_str().unwrap(),
             w["expectedSha"].as_str().unwrap(),
             sub["taskRef"].as_str().unwrap(),
-            run["url"].as_str().unwrap()
+            run["url"].as_str().unwrap(),
+            same_text(&same)
         );
         collaboration::insert_message(
             db,
-            json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":sub["agent"],"body":body,"taskId":sub["taskId"],"replyTo":null,"threadId":id,"createdAt":now(),"source":{"ciRunKey":rid,"subscriptionId":sid},"priority":"normal","metadata":{"kind":"ci","name":label,"status":run["status"],"repositoryId":run["repositoryId"],"runId":run["runId"],"attempt":run["attempt"],"headSha":run["headSha"],"expectedSha":w["expectedSha"],"prNumber":if w["kind"]=="pull"{w["number"].clone()}else{Value::Null},"branch":w["branch"],"event":w["event"],"taskId":sub["taskId"],"conclusion":run["conclusion"],"url":run["url"]}}),
+            json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":sub["agent"],"body":body,"taskId":sub["taskId"],"replyTo":null,"threadId":id,"createdAt":now(),"source":{"ciRunKey":rid,"subscriptionId":sid},"priority":"normal","metadata":{"kind":"ci","name":label,"status":run["status"],"repositoryId":run["repositoryId"],"runId":run["runId"],"attempt":run["attempt"],"headSha":run["headSha"],"expectedSha":w["expectedSha"],"prNumber":if w["kind"]=="pull"{w["number"].clone()}else{Value::Null},"branch":w["branch"],"event":w["event"],"taskId":sub["taskId"],"conclusion":run["conclusion"],"url":run["url"],"sameFailure":same}}),
         )?;
         db.execute(
             "INSERT INTO ci_notifications(subscription_id,run_id,message_id) VALUES(?1,?2,?3)",
@@ -166,7 +176,99 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
     Ok(sent)
 }
 
+/// Other attempts of this run's workflow, newest first, that failed at one of
+/// the same jobs and steps (YN-196): at most SAME_LISTED, from the newest
+/// SAME_SCANNED failed attempts Core recorded. Only runs Core observed count.
+fn same_failures(db: &Connection, rid: &str) -> Result<Vec<Value>> {
+    let mine: Option<(String, String, String)> = db
+        .query_row(
+            "SELECT repository_id,workflow_id,data FROM ci_run_failures WHERE run_id=?1",
+            [rid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((repository, workflow, mine)) = mine else {
+        return Ok(Vec::new());
+    };
+    let mine: Vec<Value> = serde_json::from_str(&mine)?;
+    let mut q = db.prepare("SELECT f.run_id,f.data,r.data FROM ci_run_failures f JOIN ci_runs r ON r.id=f.run_id WHERE f.repository_id=?1 AND f.workflow_id=?2 AND f.run_id<>?3 ORDER BY f.rowid DESC LIMIT ?4")?;
+    let rows = q
+        .query_map(params![repository, workflow, rid, SAME_SCANNED], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut same = Vec::new();
+    for (key, failed, run) in rows {
+        let failed: Vec<Value> = serde_json::from_str(&failed)?;
+        let Some(hit) = failed.iter().find(|f| {
+            mine.iter().any(|m| m["key"] == f["key"] && m["step"] == f["step"])
+        }) else {
+            continue;
+        };
+        let run: Value = serde_json::from_str(&run)?;
+        same.push(json!({"runKey":key,"runId":run["runId"],"attempt":run["attempt"],"branch":run["branch"],"event":run["event"],"at":run["updatedAt"],"job":hit["job"],"step":hit["step"]}));
+        if same.len() == SAME_LISTED {
+            break;
+        }
+    }
+    Ok(same)
+}
+
+/// The mail's sentence about `same_failures`, empty when there are none.
+fn same_text(same: &[Value]) -> String {
+    if same.is_empty() {
+        return String::new();
+    }
+    let runs: Vec<String> = same
+        .iter()
+        .map(|s| {
+            format!(
+                "run {} attempt {} ({} {}, {}) {} > {}",
+                s["runId"].as_str().unwrap_or("?"),
+                s["attempt"].as_str().unwrap_or("?"),
+                s["branch"].as_str().unwrap_or("?"),
+                s["event"].as_str().unwrap_or("?"),
+                s["at"].as_str().unwrap_or("?"),
+                s["job"].as_str().unwrap_or(""),
+                s["step"].as_str().filter(|v| !v.is_empty()).unwrap_or("no failed step")
+            )
+        })
+        .collect();
+    format!(
+        " The same job and step also failed in {} other recent run(s) Core observed: {}. Read them before a rerun: this may be a flaky test or a red main.",
+        same.len(),
+        runs.join("; ")
+    )
+}
+
 impl Store {
+    /// Whether Core already recorded where this failed attempt failed (YN-196).
+    pub(super) fn ci_failures_known(&self, run_key: &str) -> Result<bool> {
+        let db = self.db.read()?;
+        Ok(db
+            .query_row("SELECT 1 FROM ci_run_failures WHERE run_id=?1", [run_key], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+    /// Records where a failed attempt failed: its failed jobs and steps, maybe
+    /// none. Bounded like ci_runs; once full, nothing more is recorded.
+    pub(super) fn ci_record_failures(&self, run: &Value, failed: &[Value]) -> Result<()> {
+        let db = self.db.write()?;
+        let count: i64 = db.query_row("SELECT COUNT(*) FROM ci_run_failures", [], |r| r.get(0))?;
+        if count >= 10000 {
+            return Ok(());
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO ci_run_failures(run_id,repository_id,workflow_id,data) VALUES(?1,?2,?3,?4)",
+            params![
+                run["id"].as_str().context("Missing run key")?,
+                run["repositoryId"].to_string(),
+                run["workflowId"].to_string(),
+                Value::from(failed.to_vec()).to_string()
+            ],
+        )?;
+        Ok(())
+    }
     /// Bounded recovery of committed terminal facts lacking notification receipts.
     /// This also drains large first-subscription batches without holding one huge
     /// mailbox transaction. It runs independently of the next remote poll time.
