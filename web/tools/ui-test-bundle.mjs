@@ -3,8 +3,13 @@
 // Chromium. Rolldown is already part of this project's Vite toolchain.
 import { rolldown } from "rolldown";
 import { fileURLToPath } from "node:url";
+import { checkDist } from "./source-digest.mjs";
 
 export async function uiTestBundle(entry) {
+  // Only a build of these sources (YN-194): its root holds index.html, and
+  // the entry is in its assets/ or at that root.
+  const root = new URL(/\/assets\/[^/]+$/.test(entry.pathname) ? "../" : "./", entry);
+  await checkDist(fileURLToPath(root));
   const build = await rolldown({
     input: fileURLToPath(entry),
     transform: {
