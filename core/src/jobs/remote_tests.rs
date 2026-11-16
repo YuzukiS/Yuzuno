@@ -2956,6 +2956,41 @@ fn guard_git_on_a_machine_answers_as_on_this_host() {
     assert!(ran >= Some(10), "remote_git_parity_tests.py ran {ran:?} tests:\n{stderr}");
 }
 
+/// YN-83 S2 PR5: an SSH machine's session reads its GPUs while a Job there
+/// asks for one, queued or holding its slot; its attempts are scanned only
+/// once their start was sent.
+#[test]
+fn a_machines_hold_names_its_sent_attempts_and_whether_a_job_there_asks_for_a_gpu() {
+    let id = |n: u32| format!("{n:08x}-0000-4000-8000-000000000000");
+    let job = |n: u32, machine: &str, status: &str, reserved: bool, sent: bool, gpu: bool| {
+        let mut job = json!({"id": id(n), "attempt": id(100 + n), "status": status, "reserved": reserved,
+            "executor": {"kind": "ssh", "machineId": machine}, "remote": {}});
+        if sent {
+            job["remote"]["startSentAt"] = json!("2026-11-16T07:00:00Z");
+        }
+        if gpu {
+            job["gpu"] = json!({"memoryMiB": 1024});
+        }
+        job
+    };
+    let attempt = |n: u32| crate::remote_service::Attempt::new(&id(n), &id(100 + n)).unwrap();
+    let mut windows = job(9, "windows", "running", true, true, true);
+    windows["executor"]["kind"] = json!("windows");
+    let holds = remote::holds(&[
+        job(1, "m1", "running", true, true, false),
+        job(2, "m1", "queued", false, false, true),
+        job(3, "m1", "starting", true, false, false),
+        job(4, "m2", "running", true, true, false),
+        job(5, "m3", "unknown", true, true, true),
+        job(6, "m4", "queued", false, false, false),
+        windows,
+    ]);
+    assert_eq!(holds.keys().cloned().collect::<Vec<_>>(), vec!["m1", "m2", "m3"]);
+    assert_eq!((holds["m1"].attempts.clone(), holds["m1"].gpu), (vec![attempt(1)], true));
+    assert_eq!((holds["m2"].attempts.clone(), holds["m2"].gpu), (vec![attempt(4)], false));
+    assert_eq!((holds["m3"].attempts.clone(), holds["m3"].gpu), (vec![attempt(5)], true));
+}
+
 /// v4 binds a stage's needs (YN-83 S2 PR3), its upstream records not: they
 /// are what its upstream succeeded with, checked again there. A git-only v4
 /// start keeps its digest. The same vectors as helper_test.py.

@@ -30,11 +30,13 @@
 //! online and again when the set changes. Each jobs event is kept with every
 //! change it said of those attempts, and one that names a change wakes the
 //! Jobs loop. A change only tells Jobs to ask the attempt's helper sooner.
+//! [`Link::watch_gpu`] (PR5) turns the session's GPU readings on or off; the
+//! newest gpu event is kept as the load is.
 // What only its tests read, built where they are (mod.rs).
 #![cfg_attr(not(all(test, target_os = "linux", target_env = "gnu")), allow(dead_code))]
 
 use super::package;
-use super::protocol::{self, After, Attempt, BootLine, Bye, Code, Exit, Facts, Frame, Hello, Jobs, JobsWhy, Load, Stderr};
+use super::protocol::{self, After, Attempt, BootLine, Bye, Code, Exit, Facts, Frame, Gpu, Hello, Jobs, JobsWhy, Load, Stderr};
 use crate::remote::{validate_machine, RemoteMachine};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -64,6 +66,12 @@ const READ_QUEUE: usize = 16;
 /// out (or after the hello, if later) was lost: three of the session's 2 s
 /// scan periods (program.py LOAD_PERIOD), as the coverage's freshness.
 pub(crate) const JOBS_ASK_LOST: Duration = Duration::from_secs(6);
+/// The session's GPU readings come every 5 s (program.py GPU_PERIOD, T-58's
+/// interval), and say why while there is none.
+const GPU_PERIOD: Duration = Duration::from_secs(5);
+/// Readings asked on with no gpu event since: lost after three periods and a
+/// second, the time after which the program itself ends a silent child.
+pub(crate) const GPU_ON_LOST: Duration = Duration::from_secs(16);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
@@ -152,6 +160,8 @@ pub(crate) struct Snapshot {
     pub load: Option<Arc<Stamped<Load>>>,
     /// The newest jobs event, with every change said so far.
     pub jobs: Option<Arc<Stamped<JobsScan>>>,
+    /// The newest gpu event.
+    pub gpu: Option<Arc<Stamped<Gpu>>>,
     /// The last complete frame; part of a line never counts.
     pub last_frame: Option<Instant>,
     pub terminal: Option<Arc<Terminal>>,
@@ -267,6 +277,9 @@ pub(crate) struct Link {
     jobs: watch::Sender<Option<Arc<JobsWant>>>,
     /// When the jobs set was last asked for.
     asked: Option<Instant>,
+    /// Whether the GPU readings are asked on (None: never asked), and when.
+    gpu: watch::Sender<Option<bool>>,
+    gpu_asked: Option<Instant>,
 }
 
 impl Link {
@@ -290,12 +303,14 @@ impl Link {
             hello: None,
             load: None,
             jobs: None,
+            gpu: None,
             last_frame: None,
             terminal: None,
         });
         let (close, closing) = oneshot::channel();
         let (jobs, wanted) = watch::channel(None);
-        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None };
+        let (gpu, gpu_wanted) = watch::channel(None);
+        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None, gpu, gpu_asked: None };
         let spawned = package::boot_command_with(&options.ssh, machine)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -393,6 +408,8 @@ impl Link {
             wanted,
             wanting: true,
             jobs_wake: options.jobs_wake,
+            gpu_wanted,
+            gpu_wanting: true,
         };
         tokio::spawn(driver.run(first));
         Ok(link)
@@ -416,9 +433,8 @@ impl Link {
 
     /// Asks the session to scan these attempts' records (YN-83 S2 PR4), at
     /// most 64 (MAX_JOB_ATTEMPTS). A new `set` is asked for at once, or once
-    /// online. The same set is asked for again only when the ask looks lost:
-    /// online, and no event of this set came within JOBS_ASK_LOST of the
-    /// ask or the hello (a full write queue drops a frame whole). Called on
+    /// online. The same set is asked for again only when the ask looks lost
+    /// (`jobs_ask_lost`; a full write queue drops a frame whole). Called on
     /// each of the registry's rounds, so a lost ask heals by itself.
     pub(crate) fn watch_jobs(&mut self, set: u64, attempts: &Arc<Vec<Attempt>>) {
         let now = Instant::now();
@@ -430,15 +446,36 @@ impl Link {
         }
         let lost = {
             let state = self.state.borrow();
-            let since = match (&state.hello, self.asked) {
-                (Some(hello), Some(asked)) if state.phase == Phase::Online => asked.max(hello.received),
-                _ => return,
-            };
-            state.jobs.as_ref().is_none_or(|scan| scan.value.set != set) && now.saturating_duration_since(since) >= JOBS_ASK_LOST
+            let hello = state.hello.as_ref().filter(|_| state.phase == Phase::Online).map(|hello| hello.received);
+            jobs_ask_lost(set, attempts.is_empty(), hello, self.asked, state.jobs.as_ref().map(|scan| scan.value.set), now)
         };
         if lost {
             self.jobs.send_modify(|_| {});
             self.asked = Some(now);
+        }
+    }
+
+    /// Turns the session's GPU readings on or off (YN-83 S2 PR5): asked at
+    /// once when it changes, or once online; never asked, they are off. The
+    /// same state is asked again only when the ask looks lost
+    /// (`gpu_ask_lost`): online, on with no gpu event since GPU_ON_LOST, or
+    /// off with one more than a period after the ask.
+    pub(crate) fn watch_gpu(&mut self, on: bool) {
+        let now = Instant::now();
+        let current = *self.gpu.borrow();
+        if current.unwrap_or(false) != on {
+            self.gpu.send_replace(Some(on));
+            self.gpu_asked = Some(now);
+            return;
+        }
+        let lost = {
+            let state = self.state.borrow();
+            let hello = state.hello.as_ref().filter(|_| state.phase == Phase::Online).map(|hello| hello.received);
+            current.is_some() && gpu_ask_lost(on, hello, self.gpu_asked, state.gpu.as_ref().map(|gpu| gpu.received), now)
+        };
+        if lost {
+            self.gpu.send_modify(|_| {});
+            self.gpu_asked = Some(now);
         }
     }
 
@@ -461,14 +498,16 @@ impl Link {
             hello: None,
             load: None,
             jobs: None,
+            gpu: None,
             last_frame: None,
             terminal: None,
         });
         let (close, closing) = oneshot::channel();
         let reap = ReapGate(gate);
         let (jobs, wanted) = watch::channel(None);
-        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None };
-        (link, FakeLink { state, closing, reaped, reap, wanted })
+        let (gpu, gpu_wanted) = watch::channel(None);
+        let link = Link { generation, state: receiver, close: Some(close), reap: reap.clone(), jobs, asked: None, gpu, gpu_asked: None };
+        (link, FakeLink { state, closing, reaped, reap, wanted, gpu_wanted })
     }
 
     pub(crate) async fn ended(&mut self) -> Arc<Terminal> {
@@ -491,6 +530,34 @@ pub(crate) struct FakeLink {
     pub reap: ReapGate,
     /// What it was asked to scan.
     pub wanted: watch::Receiver<Option<Arc<JobsWant>>>,
+    /// Whether its GPU readings were asked on.
+    pub gpu_wanted: watch::Receiver<Option<bool>>,
+}
+
+/// Whether an ask for the jobs set `set` looks lost at `now`: the session
+/// is online (its hello received at `hello`), the ask went out at `asked`,
+/// and no event of that set (the newest is of `newest`) came within
+/// JOBS_ASK_LOST of the later of the two. An empty set is never asked again:
+/// the program sends no event for one, so none would ever answer it (R1 P3,
+/// YN-188 PR4 review 60424846).
+pub(crate) fn jobs_ask_lost(set: u64, empty: bool, hello: Option<Instant>, asked: Option<Instant>, newest: Option<u64>, now: Instant) -> bool {
+    let (Some(hello), Some(asked)) = (hello, asked) else { return false };
+    !empty && newest != Some(set) && now.saturating_duration_since(asked.max(hello)) >= JOBS_ASK_LOST
+}
+
+/// Whether an ask for the GPU readings `on` looks lost at `now`: the session
+/// is online (its hello received at `hello`) and the ask went out at
+/// `asked`; counted from the later of the two, on with no gpu event since
+/// for GPU_ON_LOST, or off with an event received more than one period
+/// after it.
+pub(crate) fn gpu_ask_lost(on: bool, hello: Option<Instant>, asked: Option<Instant>, last_event: Option<Instant>, now: Instant) -> bool {
+    let (Some(hello), Some(asked)) = (hello, asked) else { return false };
+    let since = asked.max(hello);
+    if on {
+        last_event.is_none_or(|at| at <= since) && now.saturating_duration_since(since) >= GPU_ON_LOST
+    } else {
+        last_event.is_some_and(|at| at > since + GPU_PERIOD)
+    }
 }
 
 /// After the session's output is done with: wait for the exit (stdout
@@ -535,6 +602,9 @@ struct Driver {
     wanted: watch::Receiver<Option<Arc<JobsWant>>>,
     wanting: bool,
     jobs_wake: Option<Arc<Notify>>,
+    /// The GPU readings asked for, and whether the Link still asks.
+    gpu_wanted: watch::Receiver<Option<bool>>,
+    gpu_wanting: bool,
 }
 
 impl Driver {
@@ -642,6 +712,7 @@ impl Driver {
         self.send(line(&watch));
         if self.drain_by.is_none() {
             self.ask_jobs();
+            self.ask_gpu();
         }
         let start = Instant::now() + self.limits.ping;
         let mut ping = tokio::time::interval_at(start.into(), self.limits.ping);
@@ -668,6 +739,13 @@ impl Driver {
                                 });
                             }
                             Ok(Frame::Jobs(jobs)) => self.jobs_event(jobs, at),
+                            Ok(Frame::Gpu(gpu)) => {
+                                let gpu = Arc::new(Stamped { value: gpu, received: at });
+                                self.state.send_modify(|now| {
+                                    now.gpu = Some(gpu);
+                                    now.last_frame = Some(at);
+                                });
+                            }
                             Ok(Frame::Bye(bye)) => {
                                 self.bye = Some(bye);
                                 self.state.send_modify(|now| now.last_frame = Some(at));
@@ -686,6 +764,10 @@ impl Driver {
                     Ok(()) => self.ask_jobs(),
                     // The Link is gone: its close comes next.
                     Err(_) => self.wanting = false,
+                },
+                asked = self.gpu_wanted.changed(), if close_by.is_none() && self.gpu_wanting => match asked {
+                    Ok(()) => self.ask_gpu(),
+                    Err(_) => self.gpu_wanting = false,
                 },
                 _ = sleep_until(silent_at.into()) => return self.end(Ended::Silent, Then::Kill),
                 end = &mut self.written, if !self.write_ended => {
@@ -766,6 +848,13 @@ impl Driver {
         let attempts: Vec<Value> = want.attempts.iter().map(|one| json!({"job": one.job, "attempt": one.attempt})).collect();
         let id = self.id();
         self.send(line(&json!({"id": id, "op": "jobs", "args": {"set": want.set, "attempts": attempts}})));
+    }
+
+    /// The GPU readings' state asked for now, if ever asked: one gpu request.
+    fn ask_gpu(&mut self) {
+        let Some(on) = *self.gpu_wanted.borrow_and_update() else { return };
+        let id = self.id();
+        self.send(line(&json!({"id": id, "op": "gpu", "args": {"on": on}})));
     }
 
     /// A jobs event: kept with the changes said before it, of the attempts

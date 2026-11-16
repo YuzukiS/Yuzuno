@@ -7,7 +7,7 @@
 
 use super::link::{Ended, FakeLink, JobsScan, Link, Phase, Stamped, Terminal};
 use super::protocol::{After, Attempt, Code, CpuSource, Exit, Hello, MemorySource, Platform};
-use super::registry::{answer, hold_jobs, CheckTicket, Clock, Closed, Closing, Host, Notice, Registry, Timing, JOBS_FRESH};
+use super::registry::{answer, hold_jobs, CheckTicket, Clock, Closed, Closing, Hold, Host, Notice, Registry, Timing, JOBS_FRESH};
 use crate::remote::RemoteMachine;
 use crate::updates::admission::Admission;
 use anyhow::Result;
@@ -658,8 +658,13 @@ fn attempt(n: u32) -> Attempt {
 }
 
 /// What one pass of the Jobs loop holds: these attempts on `id`, none elsewhere.
-fn holding(id: &str, attempts: &[Attempt]) -> BTreeMap<String, Vec<Attempt>> {
-    BTreeMap::from([(id.to_owned(), attempts.to_vec())])
+fn holding(id: &str, attempts: &[Attempt]) -> BTreeMap<String, Hold> {
+    BTreeMap::from([(id.to_owned(), Hold { attempts: attempts.to_vec(), gpu: false })])
+}
+
+/// Whether the `n`th session on `id` was last asked to read the GPUs.
+fn gpu_asked(sessions: &Sessions, id: &str, n: usize) -> Option<bool> {
+    with(sessions, id, n, |fake| *fake.gpu_wanted.borrow())
 }
 
 /// What the `n`th session on `id` was last asked to scan.
@@ -828,4 +833,45 @@ async fn the_views_hold_the_current_sessions_scan_only() {
     // The last Job went: its view holds an empty set for the 60 s after.
     hold_jobs(&host, BTreeMap::new()).await;
     assert_eq!(host.registry.jobs_views()["m1"].attempts.len(), 0);
+}
+
+/// YN-83 S2 PR5: a Job asking for a GPU there, even one only queued, keeps
+/// a session open and has it read the GPUs; with none, the readings are
+/// asked off, and the session closes 60 s after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_asking_for_a_gpu_keeps_a_session_reading_and_none_turns_it_off() {
+    let (host, clock, sessions) = lab(vec![machine("m1", "box-a", "/srv/a"), machine("m2", "box-b", "/srv/b")]);
+    let gpu = |attempts: &[Attempt], gpu: bool| BTreeMap::from([("m1".to_owned(), Hold { attempts: attempts.to_vec(), gpu })]);
+    // Attempts alone: the readings are never asked for.
+    hold_jobs(&host, gpu(&[attempt(1)], false)).await;
+    assert_eq!(gpu_asked(&sessions, "m1", 0), None);
+    hello(&sessions, &clock, "m1", 0);
+    settle().await;
+    // A queued GPU Job, no attempt sent yet: on.
+    hold_jobs(&host, gpu(&[], true)).await;
+    assert_eq!(gpu_asked(&sessions, "m1", 0), Some(true));
+    clock.advance(180 * SECOND);
+    settle().await;
+    hold_jobs(&host, gpu(&[], true)).await;
+    assert!(!closed(&sessions, "m1", 0), "open while a GPU Job waits");
+    // Its view shows the newest reading only while one asks for a GPU.
+    let now = clock.now();
+    with(&sessions, "m1", 0, |fake| fake.state.send_modify(|state| {
+        state.gpu = Some(Arc::new(Stamped { value: super::protocol::Gpu { devices: Some(vec![]), age: Duration::ZERO, why: None }, received: now }))
+    }));
+    assert!(host.registry.jobs_views()["m1"].gpu.is_some());
+    // None asks any more: off, and closed 60 s after.
+    hold_jobs(&host, BTreeMap::new()).await;
+    assert_eq!(gpu_asked(&sessions, "m1", 0), Some(false));
+    assert!(host.registry.jobs_views()["m1"].gpu.is_none());
+    clock.advance(59 * SECOND);
+    settle().await;
+    assert!(!closed(&sessions, "m1", 0));
+    clock.advance(SECOND);
+    eventually("closed 60 s after the last", || closed(&sessions, "m1", 0)).await;
+    end(&sessions, "m1", 0, After::Clean, None, true);
+    settle().await;
+    // A GPU Job alone starts a session, asked on at once; m2 has none.
+    hold_jobs(&host, gpu(&[], true)).await;
+    assert_eq!((starts(&sessions, "m1"), gpu_asked(&sessions, "m1", 1), starts(&sessions, "m2")), (2, Some(true), 0));
 }

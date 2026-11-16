@@ -38,6 +38,17 @@ that names it is written whole) and, when the scan did not answer,
 `unanswered`. It says only that a record changed: Core then asks the Jobs
 helper, whose answer alone is the attempt's state.
 
+GPUs (YN-83 S2 PR5; T-58's one exception the user allowed). Only while Core
+says `gpu` on (that machine has a Job asking for a GPU), one child reads the
+NVIDIA GPUs as Core's own sampler does (gpu_sampler.rs): `gpu_child()` is the
+only place this program names the tool, and it runs it once, looping every
+5 s, as a registered child. Each complete reading (one row per device, as
+many as each row's count says) is one gpu event; a child that gives none for
+three periods and a second is ended (TERM, KILL after 3 s); one that never
+gave a reading is not started again for 60 s, after one that did 1 s doubling
+to 60 s. Turned off, or at the exit, the child is ended and reaped. On Darwin
+nothing is looked for: the event says `unavailable`.
+
 One gate. STOPPING, the busy marks, reads in flight and the child registry
 change only under GATE, and each start (a sample, a read, a child) is checked
 and registered in the same critical section, so nothing new starts once the
@@ -51,6 +62,7 @@ import os
 import re
 import select
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -106,11 +118,28 @@ SCAN_TIMEOUT = 5.0
 RECORDS = ("intent", "launching", "started", "limits", "stopping", "cancel", "paused", "resumed",
            "artifacts", "result", "fenced", "supervisor")
 
+# S2 design v3 §3.6, as gpu_sampler.rs (T-58): readings every 5 s; a child
+# with no complete reading for 3 periods and GPU_EXTRA is ended, TERM then
+# KILL after GPU_TERM_WAIT; GPU_RETRY before a child that gave none is tried
+# again; after one that did, GPU_BACKOFF doubling to GPU_RETRY. At most 64
+# devices (protocol.rs), names and UUIDs of NVML's 96 bytes at most.
+GPU_PERIOD = 5.0
+GPU_EXTRA = 1.0
+GPU_TERM_WAIT = 3.0
+GPU_RETRY = 60.0
+GPU_BACKOFF = 1.0
+GPU_DEVICES = 64
+GPU_TEXT = 96
+# WSL's driver folder, searched after PATH (gpu_sampler.rs Config::from_env).
+GPU_DRIVER_DIR = "/usr/lib/wsl/lib"
+
 QUEUE_LOCK = threading.Lock()
 CONTROL = []
 LOAD = [None]
 # The newest jobs event and the changes it carries, waiting for the writer.
 JOBS_OUT = [None]
+# The newest GPU state, (devices or None, monotonic time, why), for the writer.
+GPU_OUT = [None]
 PUBLISH = [True]
 WAKE = threading.Event()
 FINISHING = False
@@ -124,6 +153,11 @@ JOBS_LOCK = threading.Lock()
 JOBS = {"set": None, "attempts": [], "seen": {}, "changed": {}, "count": 0, "scan": None,
         "started": False}
 JOBS_WAKE = threading.Event()
+
+# Whether Core wants the GPUs read, and whether the GPU thread started.
+GPU_LOCK = threading.Lock()
+GPU_STATE = {"on": False, "started": False}
+GPU_WAKE = threading.Event()
 
 GATE = threading.Condition(threading.Lock())
 STOPPING = False
@@ -807,6 +841,237 @@ def jobs_on():
         return bool(JOBS["attempts"])
 
 
+# GPUs.
+
+def gpu_wanted():
+    with GPU_LOCK:
+        return GPU_STATE["on"] and not STOP.is_set()
+
+
+def set_gpu(on):
+    """Turn the readings on or off; start the GPU thread once. False once the exit began."""
+    with GATE:
+        if STOPPING:
+            return False
+        with GPU_LOCK:
+            GPU_STATE["on"] = on
+            start = on and not GPU_STATE["started"]
+            if start:
+                GPU_STATE["started"] = True
+        if start:
+            thread = threading.Thread(target=gpu_loop)
+            thread.daemon = True
+            thread.start()
+    GPU_WAKE.set()
+    return True
+
+
+def gpu_child():
+    """The one place this program names NVIDIA's tool (T-58's exception).
+
+    Its argv, or None when there is none: YUZUNO_NVIDIA_SMI alone when set (a
+    stand-in, as for Core's own sampler), else the first on PATH, else WSL's
+    driver folder (gpu_sampler.rs Config::from_env). Nothing is run to find
+    it; the caller starts it as the registered child `gpu`.
+    """
+    tool = "nvidia-smi"
+    override = os.environ.get("YUZUNO_NVIDIA_SMI")
+    if override:
+        found = override if os.path.isfile(override) and os.access(override, os.X_OK) else None
+    else:
+        found = shutil.which(tool)
+        if found is None:
+            fallback = os.path.join(GPU_DRIVER_DIR, tool)
+            found = fallback if os.path.isfile(fallback) and os.access(fallback, os.X_OK) else None
+    if found is None:
+        return None
+    if GPU_PERIOD >= 1 and GPU_PERIOD == int(GPU_PERIOD):
+        every = ["-l", str(int(GPU_PERIOD))]
+    else:
+        every = ["-lms", str(max(1, int(GPU_PERIOD * 1000)))]
+    return [found, "--query-gpu=count,index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu",
+            "--format=csv,noheader,nounits"] + every
+
+
+def gpu_text(value):
+    """A UUID or name as Core takes it: 1 to GPU_TEXT printable ASCII characters."""
+    if not value or len(value) > GPU_TEXT or any(not " " <= char <= "~" for char in value):
+        return None
+    return value
+
+
+def gpu_row(line):
+    """One `count, index, uuid, name, memory.total, memory.free, memory.used,
+    utilization.gpu` row: (count, device), or None. A name may hold a comma, so
+    the fields are taken from both ends; `[N/A]` is None (gpu_sampler.rs
+    parse_row)."""
+    left = [part.strip() for part in line.split(",", 3)]
+    if len(left) != 4:
+        return None
+    right = [part.strip() for part in left[3].rsplit(",", 4)]
+    if len(right) != 5:
+        return None
+    try:
+        count, index = int(left[0]), int(left[1])
+    except ValueError:
+        return None
+
+    def number(text):
+        try:
+            value = int(text)
+        except ValueError:
+            return None
+        return value if value >= 0 else None
+    uuid, name = gpu_text(left[2]), gpu_text(right[0])
+    if not 1 <= count <= GPU_DEVICES or not 0 <= index < 2 ** 31 or uuid is None or name is None:
+        return None
+    return count, {"index": index, "uuid": uuid, "name": name, "memoryTotalMiB": number(right[1]),
+                   "memoryFreeMiB": number(right[2]), "memoryUsedMiB": number(right[3]),
+                   "utilizationPercent": number(right[4])}
+
+
+class Burst(object):
+    """Rows into readings: one row per device in index order, as many as the
+    rows' count; a row whose index does not follow starts a new burst, so one
+    missing a row is dropped, never completed with the next one's."""
+
+    def __init__(self):
+        self.rows = {}
+
+    def feed(self, line):
+        parsed = gpu_row(line)
+        if parsed is None:
+            return None
+        count, device = parsed
+        if self.rows and device["index"] <= max(self.rows):
+            self.rows = {}
+        self.rows[device["index"]] = device
+        if len(self.rows) >= count:
+            reading = [self.rows[index] for index in sorted(self.rows)]
+            self.rows = {}
+            return reading
+        return None
+
+
+def publish_gpu(devices, why):
+    """The GPU state now, for the writer: the newest replaces what it has not sent."""
+    with QUEUE_LOCK:
+        if PUBLISH[0]:
+            GPU_OUT[0] = (devices, time.monotonic(), why)
+    WAKE.set()
+
+
+def gpu_frame(state, now):
+    devices, at, why = state
+    return {"ev": "gpu", "data": {"devices": devices, "ageMs": age(now, at), "why": why}}
+
+
+def end_gpu(process):
+    """TERM, then KILL after GPU_TERM_WAIT; reaped, or left registered as stuck."""
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    reaped = CHILDREN.reap(process, GPU_TERM_WAIT)
+    if not reaped:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        reaped = CHILDREN.reap(process, CHILD_WAIT)
+    CHILDREN.settle("gpu", process, reaped)
+    try:
+        process.stdout.close()
+    except Exception:
+        pass
+
+
+def run_gpu():
+    """One child, read as it prints until Core turns it off, the exit begins,
+    it exits, or it gives no reading for 3 periods and GPU_EXTRA. Returns
+    `stopped`, `no_tool`, or, for a child that ended, `failed` when it gave a
+    reading and `unavailable` when it gave none."""
+    argv = gpu_child()
+    if argv is None:
+        return "no_tool"
+    process, why = CHILDREN.spawn("gpu", argv)
+    if process is None:
+        return "stopped" if why == "stopping" else "unavailable"
+    publish_gpu(None, "starting")
+    burst = Burst()
+    pending = b""
+    sampled = False
+    last = time.monotonic()
+    stuck = 3 * GPU_PERIOD + GPU_EXTRA
+    outcome = None
+    try:
+        while outcome is None:
+            if not gpu_wanted():
+                outcome = "stopped"
+                break
+            left = last + stuck - time.monotonic()
+            if left <= 0:
+                break
+            ready, _, _ = select.select([process.stdout], [], [], min(left, 0.25))
+            if not ready:
+                continue
+            data = os.read(process.stdout.fileno(), 65536)
+            if not data:
+                break
+            pending += data
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                reading = burst.feed(line.decode("utf-8", "replace"))
+                if reading is not None:
+                    sampled = True
+                    last = time.monotonic()
+                    publish_gpu(reading, None)
+            if len(pending) > CHILD_OUTPUT:
+                break
+    except (OSError, ValueError):
+        pass
+    end_gpu(process)
+    if outcome is None:
+        outcome = "failed" if sampled else "unavailable"
+    return outcome
+
+
+def gpu_loop():
+    """While Core wants the GPUs read: one child at a time, as T-58 retries them."""
+    not_before = 0.0
+    backoff = GPU_BACKOFF
+    last_why = None
+    while not STOP.is_set():
+        if not gpu_wanted():
+            backoff = GPU_BACKOFF
+            GPU_WAKE.wait(1.0)
+            GPU_WAKE.clear()
+            continue
+        if SYSTEM != "Linux":
+            # A Mac has no NVIDIA GPU: nothing is looked for.
+            publish_gpu(None, "unavailable")
+            GPU_WAKE.wait(GPU_PERIOD)
+            GPU_WAKE.clear()
+            continue
+        now = time.monotonic()
+        if now < not_before:
+            # Say why, every period, so Core sees the readings are on.
+            publish_gpu(None, last_why)
+            GPU_WAKE.wait(min(GPU_PERIOD, not_before - now))
+            GPU_WAKE.clear()
+            continue
+        outcome = run_gpu()
+        if outcome == "stopped":
+            continue
+        if outcome == "failed":
+            not_before = time.monotonic() + backoff
+            backoff = min(backoff * 2, GPU_RETRY)
+        else:
+            not_before = time.monotonic() + GPU_RETRY
+        last_why = outcome
+        publish_gpu(None, outcome)
+
+
 # Sampling threads and the load frame.
 
 def sample_loop(kind, period, step):
@@ -980,6 +1245,10 @@ def writer():
                 data, pending_jobs = JOBS_OUT[0]
                 JOBS_OUT[0] = None
                 pending = data
+            elif GPU_OUT[0] is not None:
+                data = json_line(gpu_frame(GPU_OUT[0], time.monotonic()))
+                GPU_OUT[0] = None
+                pending = data
             else:
                 data = None
             finishing = FINISHING
@@ -1039,10 +1308,12 @@ def stop_work():
         GATE.notify_all()
     STOP.set()
     JOBS_WAKE.set()
+    GPU_WAKE.set()
     with QUEUE_LOCK:
         PUBLISH[0] = False
         LOAD[0] = None
         JOBS_OUT[0] = None
+        GPU_OUT[0] = None
     return owner
 
 
@@ -1150,6 +1421,15 @@ def handle(line):
         if given is None:
             enqueue({"re": ident, "err": {"code": "bad_args"}})
         elif set_jobs(given[0], given[1]):
+            enqueue({"re": ident, "ok": {}})
+        else:
+            enqueue({"re": ident, "err": {"code": "stopping"}})
+    elif op == "gpu":
+        args = frame.get("args")
+        on = args.get("on") if isinstance(args, dict) else None
+        if not isinstance(on, bool):
+            enqueue({"re": ident, "err": {"code": "bad_args"}})
+        elif set_gpu(on):
             enqueue({"re": ident, "ok": {}})
         else:
             enqueue({"re": ident, "err": {"code": "stopping"}})

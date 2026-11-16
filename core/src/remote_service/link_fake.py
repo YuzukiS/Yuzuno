@@ -88,7 +88,17 @@ def stale_jobs(changed):
     frame({"ev": "jobs", "data": {"set": 1, "ageMs": 10, "changed": changed, "why": None}})
 
 
-def serve(bye=None, code=0, loads=1, after=b"", jobs=False):
+GPU_ON = [False]
+
+
+def gpu_event():
+    """One reading of one device, while the readings are on (gpu)."""
+    frame({"ev": "gpu", "data": {"devices": [{"index": 0, "uuid": "GPU-0", "name": "Stub", "memoryTotalMiB": 100,
+                                             "memoryFreeMiB": 50, "memoryUsedMiB": 50, "utilizationPercent": 1}],
+                                "ageMs": 10, "why": None}})
+
+
+def serve(bye=None, code=0, loads=1, after=b"", jobs=False, gpu=False):
     """Answer until close (bye, then `after`, then exit `code`) or stdin's end (exit 0).
 
     With `jobs`, a jobs request is answered, then followed by an event of set
@@ -106,6 +116,13 @@ def serve(bye=None, code=0, loads=1, after=b"", jobs=False):
             frame({"re": request["id"], "ok": {}})
             if jobs:
                 stale_jobs([])
+            if gpu and GPU_ON[0]:
+                gpu_event()
+        elif op == "gpu" and gpu:
+            frame({"re": request["id"], "ok": {}})
+            GPU_ON[0] = request["args"]["on"]
+            if GPU_ON[0]:
+                gpu_event()
         elif op == "jobs" and jobs:
             frame({"re": request["id"], "ok": {}})
             stale_jobs(request["args"]["attempts"] + [UNASKED])
@@ -128,6 +145,9 @@ if MODE == "online":
 elif MODE == "jobs-stale":
     online()
     serve(CLEAN, jobs=True)
+elif MODE == "gpu":
+    online()
+    serve(CLEAN, gpu=True)
 elif MODE == "bye-read-pending":
     online()
     serve({"code": 0, "clean": False, "why": ["read_pending"]})

@@ -9,7 +9,8 @@ This is S1 of the remote-machines design: a read-only status row. It is not
 how Jobs, Claude, Codex or MCP reach a machine, and it starts no work there.
 Since S2 the same session also helps remote Jobs: while a Job holds its slot
 on the machine, it tells Core when that attempt's record files change, so
-Core checks the attempt sooner (see [Remote Jobs](#remote-jobs)).
+Core checks the attempt sooner (see [Remote Jobs](#remote-jobs)), and while a
+Job there asks for a GPU it reads that machine's GPUs (see [GPUs](#gpus)).
 
 ## When it connects
 
@@ -41,7 +42,7 @@ Limits.
   place; every connection verifies it before starting the program.
 - `<digest>` is the SHA-256 of the file exactly as installed. The file is the
   fixed header `# yuzuno-remote protocol 1` plus the session source; on this
-  Core it is 39,746 bytes (measured from the current source, not an estimate).
+  Core it is 49,748 bytes (measured from the current source, not an estimate).
 - The `remote/bin` directory is created `0700`, the file is written `0600`, and
   it is replaced atomically.
 - Every connection hashes the file that is already there and reuses it only if
@@ -55,9 +56,9 @@ Limits.
 The program runs as the machine's account, and writes nothing but that file.
 It reports only public facts: the platform, its Python version, a hash of the
 machine id, a hash of the account and data root, the readings shown on the
-card, and which of the Job attempts Core named changed. It never reports the
-hostname, user, paths or credentials, and the GPU is not read: the card says
-"not enabled".
+card, which of the Job attempts Core named changed, and, while a Job there
+asks for a GPU, that machine's GPU readings. It never reports the hostname,
+user, paths or credentials. The card still says the GPU is "not enabled".
 
 ## When a session ends
 
@@ -105,6 +106,8 @@ not restart the other.
   "estimated".
 - This was tested on Linux and against a local OpenSSH server; it has not been
   run on a real macOS or Windows machine. The S1 Core side was tested on Linux.
+- The GPU readings were tested only with a stand-in for `nvidia-smi`, never
+  on a real remote NVIDIA machine.
 
 ## Remote Jobs
 
@@ -123,6 +126,32 @@ says what an attempt's state is, and an attempt not named by Core is ignored
 whatever a report says. A scan that does not return within 5 seconds is
 reported as unanswered, and no second one starts while it hangs; a hung scan
 makes the session's exit unclean, as a hung disk read does.
+
+## GPUs
+
+While a Job on the machine asks for a GPU, queued or holding its slot, Core
+keeps the session open and asks it to read the machine's NVIDIA GPUs, the
+same way Core reads its own host (one `nvidia-smi … -l 5` child, read as it
+prints). The program then runs exactly one such child; it never starts
+another while one runs, and it ends and reaps it when Core turns the
+readings off (no GPU Job there any more), when the session closes, and on
+any exit. Each complete reading (every device's UUID, name, memory and
+utilization) goes to Core.
+
+- The tool is the one on the account's PATH, else WSL's
+  `/usr/lib/wsl/lib/nvidia-smi`; nothing is run to look for it. Without it
+  the program says so. On a Mac nothing is looked for: a Mac has no NVIDIA
+  GPU.
+- A child that gives no complete reading for 16 seconds (three periods and a
+  second) is ended: TERM, then KILL 3 seconds later. One that never gave a
+  reading is not started again for 60 seconds; after one that did, it waits
+  1 second, doubling up to 60.
+- This is the one exception to Core's rule that only its own GPU sampler runs
+  `nvidia-smi`, chosen by the user for remote GPU Jobs. Another Core or
+  Workspace on the same account starts its own child; nothing prevents that.
+  Under WSL, each new child leaks a little Windows driver memory until a
+  reboot, as on Core's own host, which is why only one runs and only while
+  needed.
 
 ## What it does not change
 

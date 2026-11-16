@@ -313,11 +313,13 @@ async fn the_load_and_jobs_report_one_sample_and_its_observed_at() {
     assert_eq!(starts(dir.path()).len(), 1, "from one child");
 }
 
-/// Nothing in Core but this module talks to nvidia-smi or NVML (T-58, the
-/// user's rule): no other runtime source names them, and no Core code asks
-/// the host helper for GPUs.
-#[test]
-fn only_the_sampler_talks_to_nvidia_smi_or_nvml() {
+/// What the T-58 guard finds under a source root: files that talk to
+/// nvidia-smi or NVML where they may not, and Core code that asks the host
+/// helper for GPUs. Allowed: gpu_sampler.rs, and the remote program
+/// (remote_service/program.py, the user's one exception, YN-83 S2 PR5),
+/// which may name nvidia-smi exactly once, inside its `def gpu_child`, and
+/// never NVML. Tests are not runtime sources and are not read.
+fn gpu_talkers(root: &Path) -> (Vec<String>, Vec<String>, usize) {
     fn files(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -328,28 +330,94 @@ fn only_the_sampler_talks_to_nvidia_smi_or_nvml() {
             }
         }
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut all = Vec::new();
-    files(&root, &mut all);
+    files(root, &mut all);
     let test = |path: &Path| {
         let name = path.file_name().unwrap().to_string_lossy();
         name.ends_with("_tests.rs") || name == "tests.rs" || name.ends_with("_tests.py") || name.ends_with("_test.py")
             || path.components().any(|c| matches!(c.as_os_str().to_str(), Some("tests" | "run_tests")))
     };
+    let program = root.join("remote_service").join("program.py");
     let mut offenders = Vec::new();
     let mut helper_asked = Vec::new();
     for path in all.iter().filter(|p| !test(p) && p.file_name().is_some_and(|n| n != "gpu_sampler.rs")) {
         let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let shown = path.strip_prefix(root).unwrap().display().to_string();
+        let lines: Vec<&str> = text.lines().collect();
         for needle in ["nvidia-smi", "nvmlInit", "libnvidia-ml"] {
-            if text.contains(needle) {
-                offenders.push(format!("{} names {needle}", path.strip_prefix(&root).unwrap().display()));
+            let at: Vec<usize> = lines.iter().enumerate().filter(|(_, line)| line.contains(needle)).map(|(n, _)| n).collect();
+            if at.is_empty() {
+                continue;
             }
+            if *path == program && needle == "nvidia-smi" {
+                // One line, inside the body of `def gpu_child`: from its def
+                // to the next line that is not indented (or blank).
+                let def = lines.iter().position(|line| line.starts_with("def gpu_child("));
+                let body = def.map(|def| {
+                    let end = lines[def + 1..].iter().position(|line| !line.is_empty() && !line.starts_with(char::is_whitespace)).map_or(lines.len(), |n| def + 1 + n);
+                    def + 1..end
+                });
+                let once = at.len() == 1 && lines[at[0]].matches(needle).count() == 1;
+                if once && body.is_some_and(|body| body.contains(&at[0])) {
+                    continue;
+                }
+                offenders.push(format!("{shown} names {needle} outside one line of def gpu_child (lines {at:?})"));
+                continue;
+            }
+            offenders.push(format!("{shown} names {needle}"));
         }
         if text.lines().any(|line| line.contains("invoke(") && line.contains("\"gpus\"")) || text.contains("mode == 'gpus'") {
-            helper_asked.push(path.strip_prefix(&root).unwrap().display().to_string());
+            helper_asked.push(shown);
         }
     }
-    assert!(all.len() > 50, "the source tree was read: {} files", all.len());
-    assert_eq!(offenders, Vec::<String>::new(), "only gpu_sampler.rs talks to nvidia-smi or NVML");
+    (offenders, helper_asked, all.len())
+}
+
+/// Nothing in Core but this module talks to nvidia-smi or NVML (T-58, the
+/// user's rule), except the remote program's one `gpu_child` (the user's
+/// exception, YN-83 S2 PR5): no other runtime source names them, and no Core
+/// code asks the host helper for GPUs.
+#[test]
+fn only_the_sampler_talks_to_nvidia_smi_or_nvml() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let (offenders, helper_asked, files) = gpu_talkers(&root);
+    assert!(files > 50, "the source tree was read: {files} files");
+    assert!(root.join("remote_service/program.py").exists());
+    assert_eq!(offenders, Vec::<String>::new(), "only gpu_sampler.rs and program.py's gpu_child talk to nvidia-smi or NVML");
     assert_eq!(helper_asked, Vec::<String>::new(), "no Core code asks the host helper for gpus");
+}
+
+/// The guard itself, over a small tree: it lets the exception through as it
+/// is and fails on a second mention in program.py, one outside gpu_child,
+/// NVML there, or any other file.
+#[test]
+fn the_gpu_guard_allows_only_one_line_of_gpu_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("remote_service")).unwrap();
+    std::fs::write(root.join("gpu_sampler.rs"), "// nvidia-smi nvmlInit libnvidia-ml\n").unwrap();
+    std::fs::write(root.join("remote_service/program_tests.py"), "nvidia-smi\n").unwrap();
+    let allowed = "import os\n\n\ndef gpu_child():\n    \"\"\"The one place.\"\"\"\n\n    tool = \"nvidia-smi\"\n    return [tool]\n\n\ndef other():\n    return None\n";
+    let check = |program: &str, other: Option<&str>| {
+        std::fs::write(root.join("remote_service/program.py"), program).unwrap();
+        match other {
+            Some(text) => std::fs::write(root.join("remote_service/link.rs"), text).unwrap(),
+            None => {
+                let _ = std::fs::remove_file(root.join("remote_service/link.rs"));
+            }
+        }
+        gpu_talkers(root).0
+    };
+    assert_eq!(check(allowed, None), Vec::<String>::new());
+    for (name, program) in [
+        ("twice in gpu_child", allowed.replace("return [tool]", "return [tool, \"nvidia-smi\"]")),
+        ("twice on its line", allowed.replace("tool = \"nvidia-smi\"", "tool = \"nvidia-smi\" or \"nvidia-smi\"")),
+        ("outside gpu_child", allowed.replace("return None", "return \"nvidia-smi\"")),
+        ("at the top", format!("# nvidia-smi\n{}", allowed.replace("tool = \"nvidia-smi\"", "tool = None"))),
+        ("NVML", allowed.replace("return None", "return \"libnvidia-ml.so.1\"")),
+        ("no gpu_child", allowed.replace("def gpu_child", "def reader")),
+    ] {
+        assert_eq!(check(&program, None).len(), 1, "{name}");
+    }
+    assert_eq!(check(allowed, Some("// nvidia-smi\n")), vec!["remote_service/link.rs names nvidia-smi".to_owned()]);
 }

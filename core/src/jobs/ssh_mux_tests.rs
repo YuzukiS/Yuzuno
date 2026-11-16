@@ -41,6 +41,12 @@ fn run(program: &str, args: &[&str]) {
 
 impl Sshd {
     pub(crate) fn start() -> Self {
+        Self::start_with("")
+    }
+
+    /// With `extra` added to sshd_config, such as `SetEnv` lines for the
+    /// sessions it starts (remote_service::link_tests).
+    pub(crate) fn start_with(extra: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
         run("ssh-keygen", &["-q", "-t", "ed25519", "-N", "", "-f", &path("host")]);
@@ -50,7 +56,7 @@ impl Sshd {
         std::fs::write(path("sshd_config"), format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\n\
              UsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nLogLevel INFO\n\
-             MaxSessions 1\nPermitUserRC no\n",
+             MaxSessions 1\nPermitUserRC no\n{extra}",
             path("host"), path("sshd.pid"), path("authorized_keys"))).unwrap();
         let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd"].into_iter().find(|p| Path::new(p).exists())
             .expect("these tests need OpenSSH's sshd");

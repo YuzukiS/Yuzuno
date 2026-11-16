@@ -408,3 +408,75 @@ fn jobs_events_are_checked_as_load_is() {
         assert_eq!(Attempt::new(job, attempt), None, "{job} {attempt}");
     }
 }
+
+fn gpu_frame(change: impl FnOnce(&mut Value)) -> Result<Frame, Code> {
+    let mut value = json!({"ev": "gpu", "data": {"devices": [
+        {"index": 0, "uuid": "GPU-0f8fad5b-d9cb-469f-a165-70867728950e", "name": "Stub GPU", "memoryTotalMiB": 24576,
+            "memoryFreeMiB": 20000, "memoryUsedMiB": 4576, "utilizationPercent": 7},
+        {"index": 1, "uuid": "GPU-7c9e6679-7425-40de-944b-e07fc1f90ae7", "name": "Stub, GPU 2", "memoryTotalMiB": 24576,
+            "memoryFreeMiB": null, "memoryUsedMiB": null, "utilizationPercent": null}], "ageMs": 400, "why": null}});
+    change(&mut value);
+    frame(&bytes(&value))
+}
+
+/// YN-83 S2 PR5: a gpu event names at most 64 devices, each with bounded
+/// printable text and counts that stay unknown when not reported.
+#[test]
+fn gpu_events_are_checked_and_unknown_values_stay_unknown() {
+    let Ok(Frame::Gpu(gpu)) = gpu_frame(|_| {}) else { panic!("a gpu event") };
+    assert_eq!((gpu.age, gpu.why, gpu.devices.as_ref().map(Vec::len)), (Duration::from_millis(400), None, Some(2)));
+    let devices = gpu.devices.unwrap();
+    assert_eq!(devices[0], GpuDevice { index: 0, uuid: "GPU-0f8fad5b-d9cb-469f-a165-70867728950e".into(), name: "Stub GPU".into(),
+        memory_total_mib: Some(24576), memory_free_mib: Some(20000), memory_used_mib: Some(4576), utilization_percent: Some(7) });
+    assert_eq!((devices[1].name.as_str(), devices[1].memory_free_mib, devices[1].utilization_percent), ("Stub, GPU 2", None, None));
+    for (why, expected) in [("no_tool", GpuWhy::NoTool), ("unavailable", GpuWhy::Unavailable), ("failed", GpuWhy::Failed), ("starting", GpuWhy::Starting)] {
+        let Ok(Frame::Gpu(gpu)) = gpu_frame(|value| {
+            value["data"]["devices"] = Value::Null;
+            value["data"]["why"] = json!(why);
+        }) else {
+            panic!("{why}")
+        };
+        assert_eq!((gpu.devices, gpu.why), (None, Some(expected)));
+    }
+    // Left out is unknown; a percentage past 100 is 100; unknown fields are ignored.
+    let Ok(Frame::Gpu(gpu)) = gpu_frame(|value| {
+        let device = value["data"]["devices"][0].as_object_mut().unwrap();
+        device.remove("memoryUsedMiB");
+        device.insert("utilizationPercent".into(), json!(250));
+        device.insert("later".into(), json!(true));
+        value["data"].as_object_mut().unwrap().remove("why");
+    }) else {
+        panic!("changed")
+    };
+    let device = &gpu.devices.unwrap()[0];
+    assert_eq!((device.memory_used_mib, device.utilization_percent, gpu.why), (None, Some(100), None));
+    let many = |count: usize| -> Value {
+        (0..count).map(|n| json!({"index": n, "uuid": format!("GPU-{n}"), "name": "Stub"})).collect()
+    };
+    let Ok(Frame::Gpu(gpu)) = gpu_frame(|value| value["data"]["devices"] = many(64)) else { panic!("64") };
+    assert_eq!(gpu.devices.unwrap().len(), MAX_GPU_DEVICES);
+    let wrong: Vec<Change> = vec![
+        change(move |value| value["data"]["devices"] = many(65)),
+        change(|value| value["data"]["devices"] = json!({})),
+        change(|value| value["data"]["devices"] = json!(["GPU-0"])),
+        change(|value| value["data"]["devices"][0]["uuid"] = json!("")),
+        change(|value| value["data"]["devices"][0]["uuid"] = json!("G".repeat(97))),
+        change(|value| value["data"]["devices"][0]["name"] = json!("Stub\u{1}GPU")),
+        change(|value| value["data"]["devices"][0]["name"] = json!("Stüb")),
+        change(|value| {
+            value["data"]["devices"][0].as_object_mut().unwrap().remove("name");
+        }),
+        change(|value| value["data"]["devices"][0]["index"] = json!(-1)),
+        change(|value| value["data"]["devices"][0]["index"] = json!(4_294_967_296u64)),
+        change(|value| value["data"]["devices"][0]["memoryFreeMiB"] = json!("20000")),
+        change(|value| value["data"]["devices"][0]["memoryFreeMiB"] = json!(-5)),
+        change(|value| value["data"]["devices"][0]["utilizationPercent"] = json!(7.5)),
+        change(|value| value["data"]["why"] = json!("hung")),
+        change(|value| {
+            value["data"].as_object_mut().unwrap().remove("ageMs");
+        }),
+    ];
+    for (index, wrong) in wrong.iter().enumerate() {
+        assert_eq!(gpu_frame(|value| wrong(value)), Err(Code::Protocol), "change {index}");
+    }
+}

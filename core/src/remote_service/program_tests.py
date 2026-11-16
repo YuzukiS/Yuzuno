@@ -81,6 +81,14 @@ if scenario.get("hangJobs"):
             threading.Event().wait()
         return real_lstat(path, *args, **kwargs)
     os.lstat = hang_lstat
+if scenario.get("onlyUnder"):
+    # Any program but one in the test's own folder fails to start (GPU tests).
+    real_popen = program.CHILDREN.popen
+    def guarded(argv, *args, **kwargs):
+        if not argv[0].startswith(scenario["onlyUnder"]):
+            raise OSError("a test may start only its own stand-ins")
+        return real_popen(argv, *args, **kwargs)
+    program.CHILDREN.popen = guarded
 if scenario.get("shortWrites"):
     # Every write to stdout takes at most 7 bytes: frames go out in pieces.
     real_write = os.write
@@ -827,6 +835,266 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(p.unclean(), [])
 
 
+# A stand-in for NVIDIA's tool, written into each test's own folder: it
+# records its pid and argv, then behaves as FAKE_GPU_MODE says. No test runs
+# the real tool: every GPU test points YUZUNO_NVIDIA_SMI at this stand-in,
+# and starting any program outside the test's folder fails the test.
+FAKE_SMI = r'''#!%s -I
+import os, signal, sys, time
+mode = os.environ.get("FAKE_GPU_MODE", "normal")
+with open(os.environ["FAKE_GPU_PIDS"], "a") as out:
+    out.write("%%d %%s\n" %% (os.getpid(), " ".join(sys.argv[1:])))
+rows = ["2, 0, GPU-0f8fad5b-d9cb-469f-a165-70867728950e, Stub GPU, 24576, 20000, 4576, 7",
+        "2, 1, GPU-7c9e6679-7425-40de-944b-e07fc1f90ae7, Stub, GPU 2, 24576, [N/A], [N/A], [N/A]"]
+def emit(lines):
+    sys.stdout.write("".join(line + "\n" for line in lines))
+    sys.stdout.flush()
+if mode == "ignore-term":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if mode in ("normal", "ignore-term"):
+    while True:
+        emit(rows)
+        time.sleep(0.05)
+elif mode == "partial":
+    emit(rows[:1])
+    time.sleep(60)
+elif mode == "hang":
+    time.sleep(60)
+elif mode == "once":
+    emit(rows)
+    sys.exit(1)
+'''
+
+SCALED_GPU = {"GPU_PERIOD": 0.1, "GPU_EXTRA": 0.1, "GPU_TERM_WAIT": 0.3, "GPU_RETRY": 1.0, "GPU_BACKOFF": 0.1,
+              "CHILD_WAIT": 0.5, "SYSTEM": "Linux"}
+
+
+def fake_tool(folder):
+    """The stand-in, named as NVIDIA's tool, in `folder`."""
+    path = os.path.join(folder, "nvidia-smi")
+    with open(path, "w") as out:
+        out.write(FAKE_SMI % sys.executable)
+    os.chmod(path, 0o755)
+    return path
+
+
+def lines_of(path):
+    try:
+        with open(path) as source:
+            return [line.split() for line in source.read().splitlines() if line]
+    except OSError:
+        return []
+
+
+class GpuTests(unittest.TestCase):
+    """The GPU readings (S2 PR5), in process, with the stand-in tool."""
+
+    def setUp(self):
+        self.temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.temp, True)
+        self.bin = os.path.join(self.temp, "bin")
+        os.mkdir(self.bin)
+        self.tool = fake_tool(self.bin)
+        self.pids = os.path.join(self.temp, "pids")
+        self.env("YUZUNO_NVIDIA_SMI", self.tool)
+        self.env("FAKE_GPU_PIDS", self.pids)
+        self.env("FAKE_GPU_MODE", "normal")
+        self.created = []
+        self.p = self.arm(fresh())
+
+    def arm(self, p):
+        """A fresh program with the scaled periods, a guard that refuses any
+        program outside this test's folder, and a recorder of what it
+        publishes; stopped and its children killed at the end."""
+        for name, value in SCALED_GPU.items():
+            setattr(p, name, value)
+        self.spawned = []
+        self.published = []
+        real = p.CHILDREN.popen
+
+        def popen(argv, *args, **kwargs):
+            if not argv[0].startswith(self.bin + os.sep):
+                raise AssertionError("a test started %r" % (argv,))
+            process = real(argv, *args, **kwargs)
+            self.created.append(process)
+            self.spawned.append(time.monotonic())
+            return process
+        p.CHILDREN.popen = popen
+
+        def publish(devices, why):
+            self.published.append((time.monotonic(), devices, why))
+        p.publish_gpu = publish
+        self.addCleanup(self.stop, p)
+        return p
+
+    def env(self, name, value):
+        before = os.environ.get(name)
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+        self.addCleanup(lambda: os.environ.__setitem__(name, before) if before is not None
+                        else os.environ.pop(name, None))
+
+    def stop(self, p):
+        p.stop_work()
+        for process in self.created:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+
+    def readings(self):
+        return [devices for _, devices, _ in self.published if devices is not None]
+
+    def whys(self):
+        return [why for _, devices, why in self.published if devices is None]
+
+    def wait(self, predicate, timeout=5.0):
+        self.assertTrue(wait_until(predicate, timeout), "published %r" % (self.published[-5:],))
+
+    def test_rows_make_readings_by_their_count_and_unknown_values_are_none(self):
+        p = self.p
+        count, device = p.gpu_row("2, 1, GPU-x, Stub, GPU 2, 24576, [N/A], 10, [N/A]")
+        self.assertEqual((count, device), (2, {"index": 1, "uuid": "GPU-x", "name": "Stub, GPU 2",
+                                                "memoryTotalMiB": 24576, "memoryFreeMiB": None,
+                                                "memoryUsedMiB": 10, "utilizationPercent": None}))
+        for bad in ["", "2, 1, GPU-x", "x, 1, GPU-x, Stub, 1, 1, 1, 1", "0, 0, GPU-x, Stub, 1, 1, 1, 1",
+                    "65, 0, GPU-x, Stub, 1, 1, 1, 1", "1, -1, GPU-x, Stub, 1, 1, 1, 1",
+                    "1, 0, , Stub, 1, 1, 1, 1", "1, 0, GPU-x, , 1, 1, 1, 1",
+                    "1, 0, GPU-" + "x" * 96 + ", Stub, 1, 1, 1, 1", "1, 0, GPU-x, St\x01ub, 1, 1, 1, 1"]:
+            self.assertIsNone(p.gpu_row(bad), bad)
+        burst = p.Burst()
+        first = "2, 0, GPU-a, A, 100, 50, 50, 1"
+        second = "2, 1, GPU-b, B, 100, 60, 40, 2"
+        self.assertIsNone(burst.feed(first))
+        self.assertEqual([device["uuid"] for device in burst.feed(second)], ["GPU-a", "GPU-b"])
+        # A burst missing a row is dropped, never completed with the next one's.
+        self.assertIsNone(burst.feed(first))
+        self.assertIsNone(burst.feed(first))
+        self.assertEqual([device["uuid"] for device in burst.feed(second)], ["GPU-a", "GPU-b"])
+        self.assertIsNone(burst.feed("garbage"))
+
+    def test_the_tool_is_the_stand_in_or_found_on_path_or_in_the_driver_folder_and_nothing_runs(self):
+        p = self.p
+        self.assertEqual(p.gpu_child(), [self.tool, "--query-gpu=count,index,uuid,name,memory.total,memory.free,"
+                                         "memory.used,utilization.gpu", "--format=csv,noheader,nounits",
+                                         "-lms", "100"])
+        p.GPU_PERIOD = 5.0
+        self.assertEqual(p.gpu_child()[-2:], ["-l", "5"])
+        # A stand-in that is not there: none, and nothing else is looked for.
+        self.env("YUZUNO_NVIDIA_SMI", os.path.join(self.temp, "missing"))
+        self.assertIsNone(p.gpu_child())
+        # No stand-in: PATH, then the driver folder.
+        self.env("YUZUNO_NVIDIA_SMI", None)
+        empty = os.path.join(self.temp, "empty")
+        os.mkdir(empty)
+        driver = os.path.join(self.temp, "driver")
+        os.mkdir(driver)
+        self.env("PATH", empty)
+        p.GPU_DRIVER_DIR = empty
+        self.assertIsNone(p.gpu_child())
+        p.GPU_DRIVER_DIR = driver
+        in_driver = fake_tool(driver)
+        self.assertEqual(p.gpu_child()[0], in_driver)
+        self.env("PATH", self.bin)
+        self.assertEqual(p.gpu_child()[0], self.tool)
+        self.assertEqual(self.created, [], "finding it runs nothing")
+
+    def test_a_reading_per_burst_and_off_ends_the_one_child(self):
+        p = self.p
+        self.assertTrue(p.set_gpu(True))
+        self.wait(lambda: len(self.readings()) >= 3)
+        reading = self.readings()[0]
+        self.assertEqual([(d["index"], d["name"], d["memoryFreeMiB"], d["utilizationPercent"]) for d in reading],
+                         [(0, "Stub GPU", 20000, 7), (1, "Stub, GPU 2", None, None)])
+        self.assertEqual(self.whys()[0], "starting")
+        started = lines_of(self.pids)
+        self.assertEqual(len(started), 1, started)
+        self.assertEqual(started[0][1:], ["--query-gpu=count,index,uuid,name,memory.total,memory.free,memory.used,"
+                                          "utilization.gpu", "--format=csv,noheader,nounits", "-lms", "100"])
+        pid = int(started[0][0])
+        self.assertTrue(p.set_gpu(False))
+        self.assertTrue(wait_until(lambda: gone(pid), 2), "off ends the child")
+        self.wait(lambda: p.CHILDREN.live == {} and p.CHILDREN.stuck == {})
+        time.sleep(0.3)
+        self.assertEqual(len(lines_of(self.pids)), 1, "no second child")
+        # On again: one child again.
+        p.set_gpu(True)
+        self.wait(lambda: len(lines_of(self.pids)) == 2)
+        self.wait(lambda: sum(1 for process in self.created if process.poll() is None) == 1)
+
+    def test_a_child_that_never_reads_is_ended_and_not_started_again_before_the_retry(self):
+        for mode in ("partial", "hang"):
+            self.env("FAKE_GPU_MODE", mode)
+            p = self.arm(fresh())
+            before = len(lines_of(self.pids))
+            p.set_gpu(True)
+            self.wait(lambda: "unavailable" in self.whys())
+            # When the program said so: the retry counts from there, not from
+            # when this test saw it (a loaded macOS runner saw it 0.1 s late).
+            ended = min(at for at, devices, why in self.published if why == "unavailable")
+            self.assertEqual(self.readings(), [], mode)
+            pid = int(lines_of(self.pids)[-1][0])
+            self.assertTrue(wait_until(lambda: gone(pid), 1), mode)
+            # Three periods and GPU_EXTRA without a reading.
+            self.assertGreaterEqual(ended - self.spawned[0], 0.4 - 0.05, mode)
+            time.sleep(max(0.0, ended + 0.6 - time.monotonic()))
+            self.assertEqual(len(lines_of(self.pids)), before + 1, "%s: not again within the retry" % mode)
+            self.wait(lambda: len(lines_of(self.pids)) == before + 2)
+            self.assertGreaterEqual(self.spawned[1] - ended, 1.0 - 0.05, mode)
+            self.stop(p)
+
+    def test_a_child_that_read_then_failed_is_started_again_after_a_doubling_backoff(self):
+        p = self.p
+        self.env("FAKE_GPU_MODE", "once")
+        p.set_gpu(True)
+        self.wait(lambda: len(self.spawned) >= 5, 10)
+        p.set_gpu(False)
+        self.assertGreaterEqual(len(self.readings()), 4)
+        # While it waits it says `failed` every period; each failure is the
+        # first of them after its child started.
+        failed = [min(at for at, devices, why in self.published if why == "failed" and at > started)
+                  for started in self.spawned[:4]]
+        # From each failure to the next start: 0.1, 0.2, 0.4, 0.8 (GPU_RETRY caps it at 1.0).
+        for index, backoff in enumerate([0.1, 0.2, 0.4, 0.8]):
+            waited = self.spawned[index + 1] - failed[index]
+            self.assertGreaterEqual(waited, backoff - 0.02, (index, waited))
+            # Bounded above loosely: a loaded runner starts a child late.
+            self.assertLess(waited, backoff + 0.5, (index, waited))
+
+    def test_off_sends_term_then_kill_after_its_wait(self):
+        p = self.p
+        self.env("FAKE_GPU_MODE", "ignore-term")
+        p.set_gpu(True)
+        self.wait(lambda: len(self.readings()) >= 1)
+        pid = int(lines_of(self.pids)[0][0])
+        off = time.monotonic()
+        p.set_gpu(False)
+        self.assertTrue(wait_until(lambda: gone(pid), 3), "killed after TERM was ignored")
+        self.assertGreaterEqual(time.monotonic() - off, 0.3 - 0.05)
+        self.wait(lambda: p.CHILDREN.live == {} and p.CHILDREN.stuck == {})
+
+    def test_a_mac_reads_nothing_and_a_missing_tool_is_no_tool(self):
+        p = self.p
+        p.SYSTEM = "Darwin"
+        p.set_gpu(True)
+        self.wait(lambda: self.whys().count("unavailable") >= 2)
+        self.assertEqual((self.created, lines_of(self.pids)), ([], []))
+        self.stop(p)
+        p = self.arm(fresh())
+        self.env("YUZUNO_NVIDIA_SMI", os.path.join(self.temp, "missing"))
+        p.set_gpu(True)
+        self.wait(lambda: "no_tool" in self.whys())
+        time.sleep(0.3)
+        self.assertEqual((self.created, lines_of(self.pids)), ([], []))
+        self.assertEqual(set(self.whys()), {"no_tool"})
+
+
 class Session(object):
     """program.main() in a child Python, through WRAPPER, on a synthetic root."""
 
@@ -864,6 +1132,7 @@ class Session(object):
         self.raw = []
         self.loads = []
         self.jobs = []
+        self.gpus = []
         self.errors = []
         self.readers = [threading.Thread(target=self.pump, daemon=True),
                         threading.Thread(target=self.drain, daemon=True)]
@@ -901,6 +1170,8 @@ class Session(object):
             self.loads.append(frame)
         elif frame.get("ev") == "jobs":
             self.jobs.append(frame)
+        elif frame.get("ev") == "gpu":
+            self.gpus.append(frame)
         return frame
 
     def next(self, timeout):
@@ -1153,6 +1424,39 @@ class SessionTests(unittest.TestCase):
         bye = frames[-1]["data"]
         self.assertEqual((bye["clean"], code), (False, 0))
         self.assertIn("read_pending", bye["why"])
+
+    def test_gpu_readings_go_out_and_the_exit_ends_and_reaps_their_child(self):
+        temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp, True)
+        folder = os.path.join(temp, "bin")
+        os.mkdir(folder)
+        tool = fake_tool(folder)
+        pids = os.path.join(temp, "pids")
+        settings = dict(FAST)
+        settings.update(SCALED_GPU)
+        session = Session(self, {"set": settings, "onlyUnder": folder + os.sep},
+                          env={"YUZUNO_NVIDIA_SMI": tool, "FAKE_GPU_PIDS": pids, "FAKE_GPU_MODE": "normal"})
+        for ident, args in enumerate([None, {}, {"on": "yes"}, {"on": 1}], start=20):
+            session.send({"id": ident, "op": "gpu", "args": args})
+            self.assertEqual(session.reply(ident, 5), {"re": ident, "err": {"code": "bad_args"}})
+        self.assertEqual(lines_of(pids), [])
+        session.send({"id": 30, "op": "gpu", "args": {"on": True}})
+        self.assertEqual(session.reply(30, 5), {"re": 30, "ok": {}})
+        end = time.monotonic() + 5
+        while not any(frame["data"]["devices"] for frame in session.gpus) and time.monotonic() < end:
+            session.collect(0.1)
+        reading = [frame["data"] for frame in session.gpus if frame["data"]["devices"]][0]
+        self.assertEqual(([device["uuid"] for device in reading["devices"]], reading["why"]),
+                         (["GPU-0f8fad5b-d9cb-469f-a165-70867728950e", "GPU-7c9e6679-7425-40de-944b-e07fc1f90ae7"], None))
+        self.assertLessEqual(reading["ageMs"], 3000)
+        started = lines_of(pids)
+        self.assertEqual(len(started), 1, started)
+        pid = int(started[0][0])
+        frames, code = session.close(self)
+        bye = frames[-1]["data"]
+        self.assertEqual((bye["clean"], bye["why"], code), (True, [], 0))
+        self.assertTrue(gone(pid), "the GPU child outlived its session")
+        self.assertEqual(len(lines_of(pids)), 1)
 
     def test_hello_names_the_load_sources(self):
         session = Session(self, {})
