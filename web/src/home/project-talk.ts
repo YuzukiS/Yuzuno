@@ -46,11 +46,17 @@ export function saveView(workspaceId: string, projectId: string, view: TalkView)
   if (workspaceId) saveDeviceValue(viewKey(workspaceId, projectId), view);
 }
 
-/** A request's state word (§4.3): not confirmed delivered, waiting for the front desk, in progress, done, or answered with no card (YN-136). */
-export type RequestState = "unconfirmed" | "waiting" | "doing" | "done" | "answered";
+/**
+ * A request's state word (§4.3): not confirmed delivered, waiting for the front desk, in progress, its cards ended and
+ * waiting for the user's confirmation (YN-184), answered with no card (YN-136) and waiting for it too, or done.
+ */
+export type RequestState = "unconfirmed" | "waiting" | "doing" | "ended" | "answered" | "done";
 
-/** A request nothing more is coming for: every card's task ended, or answered with no card. */
-export const settled = (request: ProjectRequest) => request.state === "done" || request.state === "answered";
+/** A request the user confirmed (YN-184): only these leave the list for Done. */
+export const settled = (request: ProjectRequest) => request.state === "done";
+
+/** A request waiting for the user's confirmation (YN-184): its cards ended, or the project answered it. */
+export const awaitingConfirm = (request: ProjectRequest) => request.state === "ended" || request.state === "answered";
 
 export const requestState = (request: ProjectRequest): RequestState =>
   !delivered(request.delivery) ? "unconfirmed" : request.state;

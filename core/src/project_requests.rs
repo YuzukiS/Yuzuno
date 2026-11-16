@@ -7,8 +7,9 @@
 //! never reads or judges the words: what is a new request and what is a
 //! follow-up is the user's explicit choice. The front desk routes a request
 //! to cards with project_route (routes.rs, slice S3a-2); its progress is read
-//! from its cards' tasks (progress.rs), and the user reassigns a card
-//! (reassign.rs).
+//! from its cards' tasks (progress.rs), the user reassigns a card
+//! (reassign.rs), and the user alone confirms a request done (`confirm`,
+//! YN-184).
 mod front_desk;
 mod owed;
 mod progress;
@@ -90,6 +91,17 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN files TEXT"))?;
         }
     }
+    // confirmed_at: when the user last confirmed the request done (YN-184),
+    // written by `confirm` only; NULL until then. Older Cores ignore it.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_requests') WHERE name='confirmed_at')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE project_requests ADD COLUMN confirmed_at TEXT")?;
+    }
+    // When this Workspace's Core first asked the user to confirm requests
+    // (YN-184), kept once: a request settled before it is done as the rule
+    // before made it, with no confirmation written in the user's name.
+    db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES(?1,?2)", params![progress::CONFIRM_FROM, crate::model::now()])?;
     routes::migrate(db)
 }
 
@@ -363,9 +375,11 @@ struct Request {
     images: Vec<String>,
     /// The files the user attached (YN-145); none for most.
     files: Vec<crate::input_files::FileRef>,
+    /// When the user last confirmed it done (YN-184), or None.
+    confirmed_at: Option<String>,
 }
 
-const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state,images,files";
+const REQUEST: &str = "id,n,text,text_blocks,title,created_at,front_agent_id,message_id,state,images,files,confirmed_at";
 
 fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
     Ok(Request {
@@ -380,6 +394,7 @@ fn request_row(r: &rusqlite::Row) -> rusqlite::Result<Request> {
         state: r.get(8)?,
         images: stored_images(r.get(9)?),
         files: stored_files(r.get(10)?),
+        confirmed_at: r.get(11)?,
     })
 }
 
@@ -540,6 +555,7 @@ pub(crate) async fn submit(ws: &Arc<Workspace>, project: &str, words: Words) -> 
             state: "open".into(),
             images: said.images,
             files: said.files,
+            confirmed_at: None,
         };
         tx.execute(
             "INSERT INTO project_requests(id,project_id,n,text,text_blocks,created_at,front_agent_id,message_id,state,images,files)
@@ -771,8 +787,54 @@ fn view(db: &Connection, project: &str, request: Request) -> Result<Value> {
         "createdAt":request.created_at,"frontAgentId":request.front_agent_id,"messageId":request.message_id,
         "delivery":delivery(db, &request.id, &request.front_agent_id, &request.message_id, None)?,"replies":replies,
     });
-    progress::show(db, project, &request.id, request.n, &mut shown)?;
+    progress::show(db, project, &request.id, request.n, request.confirmed_at.as_deref(), &mut shown)?;
     Ok(shown)
+}
+
+/// What the user's page sends to confirm a request done (YN-184).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Confirm {
+    /// The Workspace whose page the user confirmed on.
+    pub workspace_id: String,
+}
+
+/// `POST /api/projects/{id}/requests/{n}/confirm` (YN-184): the user
+/// confirms that request R-n is done. Only while it waits for them (its
+/// cards' tasks all ended, or answered with no card): Core keeps the time,
+/// and the request is done until something changes after it (progress.rs).
+/// Again once done, nothing changes. Only the user's page sends it
+/// (`router`); no Agent tool reads or writes a confirmation.
+pub(crate) async fn confirm(ws: &Arc<Workspace>, project: &str, n: i64, input: Confirm) -> Result<Value> {
+    let id = project.to_owned();
+    let (shown, kept) = ws.stored(move |store| {
+        let mut writer = store.db.write()?;
+        let tx = writer.transaction()?;
+        let workspace: String = tx.query_row("SELECT value FROM workspace_meta WHERE key='workspaceId'", [], |r| r.get(0))?;
+        ensure!(input.workspace_id == workspace, "workspace_changed: this page is another Workspace's. Nothing was confirmed.");
+        let (name, archived) = crate::projects::project_labels(&tx)?.remove(&id).context("project_not_found: no Project has this ID")?;
+        ensure!(!archived, "project_archived: {name} is archived; unarchive it to confirm its requests. Nothing was confirmed.");
+        let request = tx
+            .query_row(&format!("SELECT {REQUEST} FROM project_requests WHERE project_id=?1 AND n=?2"), params![id, n], request_row)
+            .optional()?
+            .with_context(|| format!("request_not_found: this Project has no request R-{n}. Nothing was confirmed."))?;
+        let shown = view(&tx, &id, request.clone())?;
+        match shown["state"].as_str().unwrap_or_default() {
+            "done" => return Ok((shown, false)),
+            "ended" | "answered" => {}
+            "doing" => anyhow::bail!("request_not_ready: R-{n} still has a card going on. Nothing was confirmed."),
+            _ => anyhow::bail!("request_not_ready: R-{n} has no card or answer yet. Nothing was confirmed."),
+        }
+        let at = crate::model::now();
+        tx.execute("UPDATE project_requests SET confirmed_at=?2 WHERE id=?1", params![request.id, at])?;
+        let shown = view(&tx, &id, Request { confirmed_at: Some(at), ..request })?;
+        tx.commit()?;
+        Ok((shown, true))
+    }).await?;
+    if kept {
+        announce(ws, project);
+    }
+    Ok(json!({"request":shown}))
 }
 
 /// `GET /api/projects/{id}/requests?before=&limit=`: the Project's requests,
@@ -795,7 +857,8 @@ pub(crate) fn page(db: &Connection, project: &str, before: Option<i64>, limit: O
 /// of Home. No Agent tool reads or writes them (the front desk routes with
 /// project_route, routes.rs), and an Agent's credential (any Authorization
 /// header) is refused: a card's reassignment is the user's alone, and so are
-/// the images written on Home (input_images.rs, YN-134).
+/// a request's confirmation (YN-184) and the images written on Home
+/// (input_images.rs, YN-134).
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/projects/{id}/front-desk", get(get_front_desk).put(put_front_desk))
@@ -805,6 +868,7 @@ pub fn router() -> Router<Arc<Workspace>> {
         .route("/api/projects/{id}/files/{file_id}/{name}", get(crate::input_files::home_read_route))
         .route("/api/projects/{id}/requests", get(list).post(post_request))
         .route("/api/projects/{id}/requests/{n}/replies", post(post_reply))
+        .route("/api/projects/{id}/requests/{n}/confirm", post(post_confirm))
         .route("/api/projects/{id}/cards/{section}/reassign", post(post_reassign))
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
@@ -851,6 +915,10 @@ async fn post_reassign(State(ws): State<Arc<Workspace>>, Path((id, section)): Pa
 
 async fn post_reply(State(ws): State<Arc<Workspace>>, Path((id, n)): Path<(String, i64)>, Json(words): Json<Words>) -> ApiResult<Json<Value>> {
     Ok(Json(follow_up(&ws, &id, n, words).await?))
+}
+
+async fn post_confirm(State(ws): State<Arc<Workspace>>, Path((id, n)): Path<(String, i64)>, Json(input): Json<Confirm>) -> ApiResult<Json<Value>> {
+    Ok(Json(confirm(&ws, &id, n, input).await?))
 }
 
 #[cfg(test)]
