@@ -67,30 +67,31 @@ struct Fixture {
     spend: DaySpend,
     cswap: Value,
     codex: Vec<Value>,
+    machines: Vec<Value>,
 }
 
 impl Fixture {
     fn new() -> Self {
         Self { keys: vec![("deepseek".into(), Provider::Deepseek, "local")], homes: vec!["work".into()],
             spend: DaySpend { day: "2026-11-09".into(), total_usd: 0.0, by_key: Default::default() },
-            cswap: cswap(&[20.0, 40.0]), codex: vec![] }
+            cswap: cswap(&[20.0, 40.0]), codex: vec![], machines: vec![] }
     }
 
     fn run(&self, policy: &Value, now: DateTime<Utc>, machine: Option<&str>, exclude: &[String], assume: &Assume) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine, exclude, harness: None, unavailable: &[], level: None, tier: None, tier_source: None, assume })
+            cswap: &self.cswap, codex: &self.codex, machines: &self.machines, machine, exclude, harness: None, unavailable: &[], level: None, tier: None, tier_source: None, assume })
     }
 
     /// At a waiting executor's start (YN-66): among one harness, or any but those its machine can't run.
     fn run_start(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, unavailable: &[&str]) -> Route {
         evaluate(3, policy, "start", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable, level: None, tier: None, tier_source: None, assume: &Assume::default() })
+            cswap: &self.cswap, codex: &self.codex, machines: &self.machines, machine: Some("local"), exclude: &[], harness, unavailable, level: None, tier: None, tier_source: None, assume: &Assume::default() })
     }
 
     /// At the executor's first start (`harness`) or dispatch, for a permission level (YN-56).
     fn run_level(&self, policy: &Value, now: DateTime<Utc>, harness: Option<&str>, level: Option<&str>) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness, unavailable: &[], level, tier: None, tier_source: None, assume: &Assume::default() })
+            cswap: &self.cswap, codex: &self.codex, machines: &self.machines, machine: Some("local"), exclude: &[], harness, unavailable: &[], level, tier: None, tier_source: None, assume: &Assume::default() })
     }
 }
 
@@ -98,7 +99,7 @@ impl Fixture {
     /// At a dispatch for a tier (YN-70), whose it is beside it.
     fn run_tier(&self, policy: &Value, now: DateTime<Utc>, tier: Option<&str>, source: Option<&str>) -> Route {
         evaluate(3, policy, "dispatch", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
-            cswap: &self.cswap, codex: &self.codex, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None,
+            cswap: &self.cswap, codex: &self.codex, machines: &self.machines, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None,
             tier, tier_source: source, assume: &Assume::default() })
     }
 }
@@ -426,7 +427,7 @@ fn a_tier_passes_over_a_candidate_that_does_not_serve_it() {
     // The pool used up: DeepSeek serves only fast, so Codex, which names no tiers, serves strong.
     let assume = Assume { accounts_used_up: vec!["aaaaaaaaaaaaaaaa".into(), "bbbbbbbbbbbbbbbb".into()], ..Assume::default() };
     let used = evaluate(3, &p, "dispatch", &Inputs { now, keys: &f.keys, codex_homes: &f.homes, spend: &f.spend, cswap: &f.cswap,
-        codex: &f.codex, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None, tier: Some("strong"),
+        codex: &f.codex, machines: &f.machines, machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None, tier: Some("strong"),
         tier_source: Some("template"), assume: &assume });
     assert_eq!(states(&used), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "skipped".into()), ("c-codex".into(), "chosen".into())]);
     assert_eq!(codes(&used, "c-deepseek"), ["tierNotServed"]);
@@ -585,9 +586,152 @@ fn pick_other_uses_the_pool_pick_rule_too() {
         (90.0, Some("2026-11-09T12:00:00+00:00"))]);
     let none = Assume::default();
     let now = utc(9, 9, 0);
-    let inputs = Inputs { now, keys: &f.keys, codex_homes: &f.homes, spend: &f.spend, cswap: &f.cswap, codex: &f.codex,
+    let inputs = Inputs { now, keys: &f.keys, codex_homes: &f.homes, spend: &f.spend, cswap: &f.cswap, codex: &f.codex, machines: &f.machines,
         machine: Some("local"), exclude: &[], harness: None, unavailable: &[], level: None, tier: None, tier_source: None, assume: &none };
     let p = pool_pick(Some("soonestReset"), None);
     // Account 2's week resets first, but it left; account 1 is next, not the fullest (3).
     assert_eq!(pick_other(&p["candidates"][0], &inputs, "bbbbbbbbbbbbbbbb"), Some(("aaaaaaaaaaaaaaaa".into(), 1)));
+}
+
+/// A machine's own logins as the readings keep them (YN-175): the share of the
+/// week its Claude Code login (claude-swap's default account there) and its
+/// Codex login have left; `None` for one not read there.
+fn machine_row(id: &str, claude: Option<f64>, codex: Option<f64>) -> Value {
+    let part = |left: f64, source: &str| json!({"week": {"leftPct": left, "resetsAt": "2026-11-12T09:00:00+00:00"}, "source": source});
+    let mut row = json!({"machine": id, "name": "Mac mini", "observedAt": "2026-11-09T11:58:00+00:00", "stale": false});
+    if let Some(left) = claude {
+        row["claude"] = part(left, "cswap");
+    }
+    if let Some(left) = codex {
+        row["codex"] = part(left, "codex");
+    }
+    row
+}
+
+/// One login of `harness` that wants 20% of its week left, with its `unknown` rule.
+fn login_with_quota(harness: &str, unknown: &str) -> Value {
+    json!({"enabled": true, "whenNone": "wait", "candidates": [{"id": "c-login", "enabled": true, "harness": harness, "model": "",
+        "credential": {"kind": "login"}, "conditions": [{"kind": "quota", "weekLeftPct": 20}], "unknown": unknown}]})
+}
+
+impl Fixture {
+    /// This host's own logins, Claude Code's (claude-swap's active account) and Codex's, with `left` of their week.
+    fn host_left(&mut self, left: f64) {
+        self.cswap = cswap(&[left]);
+        self.codex = vec![codex_login(left)];
+    }
+
+    /// The Settings page's preview: no machine named, this Core host.
+    fn preview(&self, policy: &Value, now: DateTime<Utc>) -> Route {
+        evaluate(3, policy, "preview", &Inputs { now, keys: &self.keys, codex_homes: &self.homes, spend: &self.spend,
+            cswap: &self.cswap, codex: &self.codex, machines: &self.machines, machine: None, exclude: &[], harness: None, unavailable: &[],
+            level: None, tier: None, tier_source: None, assume: &Assume::default() })
+    }
+}
+
+/// YN-175 (the user's decision of 2026-11-16): a login on another machine is
+/// that machine's own, so its quota condition reads that machine's reading and
+/// never this Core host's, Claude Code's and Codex's alike.
+#[test]
+fn a_login_on_another_machine_is_judged_by_that_machines_own_quota_never_this_hosts() {
+    let none = Assume::default();
+    for harness in ["claude", "codex"] {
+        let mut f = Fixture::new();
+        let p = login_with_quota(harness, "skip");
+        // This host has plenty, the Mac mini nothing read yet: unknown there, not this host's 90%.
+        f.host_left(90.0);
+        let route = f.run(&p, utc(9, 12, 0), Some("mac-mini"), &[], &none);
+        assert_eq!((states(&route)[0].1.as_str(), codes(&route, "c-login")), ("unknown", vec!["quotaUnknown".to_owned()]), "{harness}: {}", route.record);
+        let why = &route.record["candidates"][0]["reasons"][0];
+        assert_eq!((why["params"].clone(), why["messageZh"].clone()), (json!({"machine": "mac-mini", "cause": "noReading"}), json!("还没有 mac-mini 的额度读数")));
+        // This host is used up, the Mac mini's own login has 80% left: chosen there, by that reading.
+        f.host_left(0.0);
+        f.machines = vec![machine_row("mac-mini", Some(80.0), Some(80.0))];
+        let route = f.run(&p, utc(9, 12, 0), Some("mac-mini"), &[], &none);
+        assert_eq!(route.record["chosen"], json!("c-login"), "{harness}: {}", route.record);
+        assert_eq!(route.record["candidates"][0]["readings"], json!([{"what": "weekLeft", "value": 80.0, "observedAt": "2026-11-09T11:58:00+00:00",
+            "source": if harness == "claude" { "cswap" } else { "codex" }, "machine": "mac-mini"}]));
+        // Here the same candidate reads this host's own, used up.
+        let route = f.run(&p, utc(9, 12, 0), Some("local"), &[], &none);
+        assert_eq!(codes(&route, "c-login"), ["quotaLow"], "{harness}: {}", route.record);
+        assert_eq!(route.record["candidates"][0]["readings"][0]["value"], json!(0.0));
+        // This host has plenty, the Mac mini 5%: low there, said with the machine's name, until its week resets.
+        f.host_left(90.0);
+        f.machines = vec![machine_row("mac-mini", Some(5.0), Some(5.0))];
+        let route = f.run(&p, utc(9, 12, 0), Some("mac-mini"), &[], &none);
+        let why = &route.record["candidates"][0]["reasons"][0];
+        assert_eq!((why["code"].clone(), why["message"].clone(), why["messageZh"].clone(), why["params"]["machine"].clone()),
+            (json!("quotaLow"), json!("On Mac mini, 5% of the weekly quota is left, below 20%"), json!("Mac mini 上本周额度只剩 5%，低于 20%"),
+                json!("mac-mini")), "{harness}: {}", route.record);
+        assert_eq!(route.record["earliest"], json!({"at": "2026-11-12T09:00:00+00:00", "candidate": "c-login"}));
+        // Another machine's reading is that machine's only.
+        f.machines = vec![machine_row("lab-linux", Some(80.0), Some(80.0))];
+        assert_eq!(codes(&f.run(&p, utc(9, 12, 0), Some("mac-mini"), &[], &none), "c-login"), ["quotaUnknown"]);
+    }
+}
+
+/// YN-175: a machine's reading that is stale, or says why it isn't known, is
+/// unknown; the candidate's own rule decides, `skip` or `pass`, as for this host.
+#[test]
+fn a_machines_quota_not_known_is_unknown_and_the_candidates_rule_decides() {
+    let mut f = Fixture::new();
+    f.host_left(90.0);
+    let none = Assume::default();
+    let mut stale = machine_row("mac-mini", Some(80.0), Some(80.0));
+    stale["stale"] = json!(true);
+    let mut contained = machine_row("mac-mini", None, None);
+    contained["claude"] = json!({"unknown": {"code": "containedLogin", "message": "On Mac mini, Claude keeps its own folders; that login's quota isn't read",
+        "messageZh": "Mac mini 上的 Claude 用自己的会话目录，读不到那份登录的额度"}, "source": "cswap"});
+    let no_week = {
+        let mut row = machine_row("mac-mini", None, None);
+        row["codex"] = json!({"source": "codex"});
+        row
+    };
+    for (row, harness, cause, zh) in [
+        (stale.clone(), "codex", "stale", "Mac mini 的额度读数已超过 10 分钟"),
+        (stale, "claude", "stale", "Mac mini 的额度读数已超过 10 分钟"),
+        (contained.clone(), "claude", "containedLogin", "Mac mini 上的 Claude 用自己的会话目录，读不到那份登录的额度"),
+        // No Codex read there (a contained machine runs none): no reading.
+        (contained, "codex", "noReading", "还没有 Mac mini 的额度读数"),
+        (no_week, "codex", "noWeek", "Mac mini 上的本周额度此刻不清楚"),
+    ] {
+        f.machines = vec![row];
+        let skip = f.run(&login_with_quota(harness, "skip"), utc(9, 12, 0), Some("mac-mini"), &[], &none);
+        assert_eq!((skip.record["chosen"].clone(), states(&skip)[0].1.clone()), (Value::Null, "unknown".to_owned()), "{harness} {cause}: {}", skip.record);
+        let pass = f.run(&login_with_quota(harness, "pass"), utc(9, 12, 0), Some("mac-mini"), &[], &none);
+        let why = &pass.record["candidates"][0]["reasons"][0];
+        assert_eq!((pass.record["chosen"].clone(), why["code"].clone(), why["params"]["cause"].clone(), why["messageZh"].clone()),
+            (json!("c-login"), json!("quotaUnknown"), json!(cause), json!(zh)), "{harness} {cause}: {}", pass.record);
+        assert_eq!(pass.record["candidates"][0]["readings"], json!([]), "nothing known is shown as read");
+    }
+}
+
+/// YN-175: the Settings page's preview judges this Core host, and lists under a
+/// login with a quota condition its quota on each machine it may run on.
+#[test]
+fn a_preview_lists_a_logins_quota_on_each_machine_it_may_run_on() {
+    let mut f = Fixture::new();
+    f.codex = vec![codex_login(40.0)];
+    let mut down = json!({"machine": "lab-linux", "name": "lab-linux", "observedAt": "2026-11-09T11:58:00+00:00", "stale": false,
+        "codex": {"unknown": {"code": "machineUnreachable", "message": "Couldn't reach lab-linux to read its quota",
+            "messageZh": "连不上 lab-linux，读不到它的额度"}, "source": "codex"}});
+    // A machine with only a Claude reading (Codex runs on no contained machine) isn't listed for Codex.
+    f.machines = vec![machine_row("mac-mini", None, Some(12.0)), down.take(), machine_row("boxed", Some(50.0), None)];
+    let route = f.preview(&login_with_quota("codex", "skip"), utc(9, 12, 0));
+    assert_eq!(route.record["chosen"], json!("c-login"), "this host has 40%: {}", route.record);
+    let rows = route.record["candidates"][0]["machines"].as_array().unwrap().clone();
+    let brief: Vec<(Value, Value, Value)> = rows.iter().map(|r| (r["machine"].clone(), r["state"].clone(), r["weekLeftPct"].clone())).collect();
+    assert_eq!(brief, [(json!("local"), json!("ok"), json!(40.0)), (json!("mac-mini"), json!("low"), json!(12.0)), (json!("lab-linux"), json!("unknown"), Value::Null)],
+        "{}", route.record);
+    assert_eq!((rows[0].get("name"), rows[1]["name"].clone(), rows[1]["resetsAt"].clone()), (None, json!("Mac mini"), json!("2026-11-12T09:00:00+00:00")));
+    assert_eq!((rows[1]["reason"]["code"].clone(), rows[2]["reason"]["code"].clone(), rows[2]["reason"]["params"]["cause"].clone()),
+        (json!("quotaLow"), json!("quotaUnknown"), json!("machineUnreachable")));
+    assert!(rows[0].get("reason").is_none());
+    // A machine condition: only the machines it names.
+    let mut p = login_with_quota("codex", "skip");
+    p["candidates"][0]["conditions"].as_array_mut().unwrap().push(json!({"kind": "machine", "machines": ["mac-mini"]}));
+    let rows = f.preview(&p, utc(9, 12, 0)).record["candidates"][0]["machines"].clone();
+    assert_eq!(rows.as_array().unwrap().iter().map(|r| r["machine"].clone()).collect::<Vec<_>>(), [json!("mac-mini")]);
+    // A dispatch's record has no such list.
+    assert!(f.run(&login_with_quota("codex", "skip"), utc(9, 12, 0), Some("local"), &[], &Assume::default()).record["candidates"][0].get("machines").is_none());
 }

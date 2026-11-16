@@ -467,6 +467,16 @@ pub async fn probe(machine: &RemoteMachine) -> Result<RemoteInfo> {
     .context("无法解析远程能力信息")?)
 }
 
+/// Reads the quotas of this machine's own logins (YN-175), as routing reads the
+/// Core host's: claude-swap's default-login account when `cswap`, and the Codex
+/// login of `codex`, that machine's program, when given. The helper answers
+/// usage only (`cswap_quota` and `codex_quota` in remote_helper.py).
+pub async fn quota(machine: &RemoteMachine, cswap: bool, codex: Option<&str>) -> Result<Value> {
+    serde_json::from_slice(&helper(machine, json!({
+        "action":"quota", "root":machine.root(), "contained":machine.contained, "cswap":cswap, "codex":codex
+    }), 64 * 1024).await?).context("无法解析远程额度信息")
+}
+
 pub async fn canonicalize(machine: &RemoteMachine, path: &str) -> Result<String> {
     Ok(serde_json::from_slice(
         &helper(
@@ -1519,5 +1529,96 @@ with tempfile.TemporaryDirectory() as directory:
 
     fn folder_of(root: &std::path::Path, relative: &str) -> String {
         root.join(relative).to_string_lossy().into_owned()
+    }
+
+    /// YN-175: the helper's `quota` reads this account's own logins and answers
+    /// their usage only: claude-swap's default-login account without its email,
+    /// organization or alias, and a Codex login's type and limits without its
+    /// email or account id. A Codex that never answers is ended with its group.
+    #[cfg(unix)]
+    #[test]
+    fn the_quota_helper_answers_usage_only_and_ends_a_codex_that_hangs() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let script = |path: &std::path::Path, body: &str| {
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        // The data root's bin comes first on the helper's PATH (`tool_path`).
+        let bin = temp.path().join(".yuzuno/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        script(&bin.join("cswap"), r#"#!/usr/bin/env python3
+import json
+print(json.dumps({"schemaVersion": 1, "accounts": [
+  {"number": 1, "email": "first@example.com", "organizationUuid": "org-1", "alias": "work", "active": False, "usageStatus": "ok",
+   "usage": {"sevenDay": {"pct": 90, "resetsAt": "2026-11-19T09:00:00+00:00"}}},
+  {"number": 2, "email": "second@example.com", "organizationUuid": "org-2", "alias": "me", "active": True, "usageStatus": "ok",
+   "usage": {"sevenDay": {"pct": 30, "resetsAt": "2026-11-20T09:00:00+00:00"}, "fiveHour": {"pct": 1}}}]}))
+"#);
+        let codex = temp.path().join("fake-codex");
+        script(&codex, r#"#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("method") == "initialize":
+        out = {"id": m["id"], "result": {}}
+    elif m.get("method") == "account/read":
+        out = {"id": m["id"], "result": {"account": {"type": "chatgpt", "email": "second@example.com", "planType": "pro"}}}
+    elif m.get("method") == "account/rateLimits/read":
+        # A request of its own first: the read refuses it and goes on.
+        print(json.dumps({"id": 99, "method": "item/tool/requestUserInput", "params": {}}), flush=True)
+        limit = {"limitId": "codex", "planType": "pro", "credits": {"hasCredits": True, "balance": "12.5"},
+                 "primary": None, "secondary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1794500000}}
+        out = {"id": m["id"], "result": {"accountId": "acct-1", "rateLimits": limit,
+                                         "rateLimitsByLimitId": {"codex": limit, "other": {"primary": {"usedPercent": 1}}}}}
+    else:
+        continue
+    print(json.dumps({"method": "account/rateLimits/updated", "params": {}}), flush=True)
+    print(json.dumps(out), flush=True)
+"#);
+        let hang = temp.path().join("hanging-codex");
+        script(&hang, r#"#!/usr/bin/env python3
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+child = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+with open(os.path.join(os.environ["HOME"], "hang.pids"), "w") as f:
+    f.write("%d %d" % (os.getpid(), child.pid))
+while True:
+    time.sleep(1)
+"#);
+        let ask = |request: Value| -> Value {
+            // A PATH of the system's only, so no claude-swap of this machine's own is run.
+            let mut child = std::process::Command::new("python3").args(["-c", HELPER]).env("HOME", temp.path()).env("PATH", "/usr/bin:/bin")
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(&serde_json::to_vec(&request).unwrap()).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(!text.contains('@') && !text.contains("acct-1") && !text.contains("org-") && !text.contains("work") && !text.contains("planType")
+                && !text.contains("credits") && !text.contains("other"), "usage only: {text}");
+            serde_json::from_str(&text).unwrap()
+        };
+        assert_eq!(ask(json!({"action": "quota", "root": DEFAULT_ROOT, "cswap": true, "codex": codex})), json!({
+            "cswap": {"schemaVersion": 1, "active": {"usageStatus": "ok", "sevenDay": {"pct": 30, "resetsAt": "2026-11-20T09:00:00+00:00"}}},
+            "codex": {"signedIn": true, "accountType": "chatgpt", "limits": {
+                "rateLimits": {"secondary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1794500000}},
+                "rateLimitsByLimitId": {"codex": {"secondary": {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1794500000}}}}}}));
+        // No claude-swap there, and no such Codex.
+        std::fs::remove_file(bin.join("cswap")).unwrap();
+        assert_eq!(ask(json!({"action": "quota", "root": DEFAULT_ROOT, "cswap": true, "codex": temp.path().join("no-codex")})),
+            json!({"cswap": {"error": "cswapMissing"}, "codex": {"error": "codexMissing"}}));
+        // A Codex that never answers and ignores the end of its input: ended, with the child it started.
+        let started = std::time::Instant::now();
+        assert_eq!(ask(json!({"action": "quota", "root": DEFAULT_ROOT, "codex": hang})), json!({"codex": {"error": "codexTimeout", "seconds": 15}}));
+        assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+        let pids = std::fs::read_to_string(temp.path().join("hang.pids")).unwrap();
+        for pid in pids.split_whitespace() {
+            let gone = (0..50).any(|_| {
+                let alive = std::process::Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).status().unwrap().success();
+                if alive { std::thread::sleep(std::time::Duration::from_millis(100)); }
+                !alive
+            });
+            assert!(gone, "process {pid} of the hanging Codex is still running");
+        }
     }
 }

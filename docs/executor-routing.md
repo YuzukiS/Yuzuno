@@ -368,11 +368,18 @@ older Core kept is not shown.
 
 - **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
   - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
-  - a Codex candidate on the host login or a Codex home, with a `quota` condition.
+  - a Codex candidate on the host login or a Codex home, with a `quota` condition;
+  - on another machine (YN-175), its own logins, for a Claude Code or Codex `login` candidate with a `quota` condition that names `weekLeftPct` and may run there: on every registered machine when it has no `machine` condition, else on those its `machine` conditions all name.
 
-  Otherwise nothing is read. `cswap` is `null` and `codex` is empty until the first read.
+  Otherwise nothing is read. `cswap` is `null`, and `codex` and `machines` are empty, until the first read.
 - **claude-swap accounts** come from `cswap list --json`. claude-swap reads each account's usage from Anthropic itself; its `pct` is the share used, and the readings show what is left. An account claude-swap has no usage for (an expired login, say) carries `unknown` with the claude-swap status as its code. When `cswap` cannot be run, `cswap.unavailable` says why.
 - **Codex** quotas are read for the host's own login and for each listed Codex home. Each read starts a `codex app-server` in that home, asks `account/read`, then `account/rateLimits/read`, and ends it. It runs no model. A login that is not a ChatGPT subscription (an API key, say) has no quota and carries `unknown`. A home taken off the list leaves the readings at the next refresh.
+- **Another machine's own logins** (YN-175) are read on that machine, through the same one-shot SSH helper Agents there start with, one request per machine and pass, machines one after another:
+  - **Claude Code:** `cswap list --json` there (`cswap` found by name on the helper's `PATH`, as it finds `claude`). The helper answers the usage of the account claude-swap marks as the default login only: never its email, organization or alias. No claude-swap there, no account marked, or no usage for it is `unknown`, each with its own code (`cswapMissing`, `noActiveAccount`, `usage:<status>`).
+  - **Codex:** a model-less `codex app-server --stdio` there (the machine's own Codex program), asked `account/read` and, for a ChatGPT login, `account/rateLimits/read`, then ended within 15 seconds. The helper answers the login's type and limits only: never its email or account id.
+  - A machine that keeps its Agents contained runs Claude Code with folders of its own, a login claude-swap there doesn't name: its Claude Code login is `unknown` (`containedLogin`) without asking. It runs no Codex, so its Codex login isn't read.
+  - A machine that can't be reached, or doesn't answer, is `unknown` (`machineUnreachable`) until the next pass. Nothing is read again before it: not at a dispatch, an executor's start, a preview or a page's read.
+  - The helper reads no token or credential there; claude-swap and Codex read their own logins.
 - **A reading over 10 minutes old is `stale`**, and routing reads it as unknown.
 - **No label or email is ever shown:** an account is its number and fingerprint.
 
@@ -383,7 +390,10 @@ older Core kept is not shown.
       "observedAt": "…", "source": "cswap",           // "cswap" | "agent" (reported by a running Agent)
       "unknown": { "code": "…", "message": "…", "messageZh": "…" } } ] },
   "codex": [ { "home": "login", "week": { … }, "observedAt": "…", "source": "codex" },
-             { "home": "work", "unknown": { … } } ]
+             { "home": "work", "unknown": { … } } ],
+  "machines": [ { "machine": "mac-mini", "name": "Mac mini", "observedAt": "…", "stale": false,   // YN-175
+                  "claude": { "week": { "leftPct": 30, "resetsAt": "…" }, "source": "cswap" },     // only what was read there
+                  "codex": { "unknown": { "code": "notSignedIn", "message": "Mac mini: …", "messageZh": "Mac mini：…" }, "source": "codex" } } ]
 ```
 
 S3 adds `spend.capUsd` and `spend.byCandidate`.
@@ -464,7 +474,9 @@ an empty list, or another value, is refused (`path: "candidates[0].tiers"`).
 - `{ "kind": "quota", "weekLeftPct": n }`: for `login`, `pool` and `codexHome` credentials. It is the share of the week left.
   - `fiveHourLeftPct`, which a Core before YN-60 took, is retired. A save from an older page is taken without it: it is dropped, and so is a condition that named nothing else. A save that names neither is refused.
   - A policy saved before is read without it. A condition that named only it is read as `{ "kind": "quota" }`: it limits nothing, the page marks it to fix, and its candidate's row says `quotaRetired` until it is given a `weekLeftPct` or removed.
-  - It reads this Core host's readings, even for an executor on another machine: claude-swap's active account for a Claude Code `login`, this host's Codex for a Codex `login`. A candidate only for other machines should not have one.
+  - For an executor on this Core host it reads this host's readings: claude-swap's active account for a Claude Code `login`, this host's Codex for a Codex `login`.
+  - For an executor on another machine (YN-175) a `login` is that machine's own, and it reads that machine's reading (`machines`) only, never this host's. None yet, a stale one, or one that is `unknown` is unknown (`quotaUnknown`, with `params: { machine, cause }`); too little left is `quotaLow`, with `params.machine`, and both name the machine in their words.
+  - With no machine named (the dispatch and its template name none, or `auto`), a `login` with one that names `weekLeftPct` was judged by this Core host's own login, so a dispatch given it runs here: `auto` chooses no other machine after routing, and its row in the record says so (`quotaHere`).
 - `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
 - `{ "kind": "machine", "machines": ["local" | "<machine id>", …] }` (YN-139): the machines the candidate may run on, 1 to 16, each once; `local` is this Core host.
   - With no machine named (the dispatch and its template name none, or `auto`, and a preview), the executor's machine counts as this Core host. A dispatch like that given such a candidate runs here: `auto` chooses no other machine after routing.
@@ -489,7 +501,10 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
       "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
       "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
                      "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
-      "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
+      "readings": [ { "what": "weekLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],  // a login's: the week its quota condition read, with "machine" on another machine (YN-175)
+      "machines": [ { "machine": "local", "state": "ok", "weekLeftPct": 40, "resetsAt": "…", "observedAt": "…" },   // only in a preview, under a login with a quota condition (YN-175):
+                    { "machine": "mac-mini", "name": "Mac mini", "state": "low", "weekLeftPct": 12, "resetsAt": "…",  // this host and each machine it may run on,
+                      "observedAt": "…", "reason": { "code": "quotaLow", … } } ],                                     // ok | low | unknown
       "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low", "weekLeftPct": 12, "resetsAt": "…" } ] } ],   // pick | ok | low | unknown; the last two only when the reading is known
   "changedAtStart": { "from": null, "reason": "…",               // at a waiting executor's start, when one holds:
                                                                   // from its candidate before, when that left (YN-138), else null
@@ -518,7 +533,7 @@ is chosen. The other candidates are marked `notTried`.
 - **A pool picks an account:** among its accounts for which each `quota` condition holds, by its `pick` (YN-150). `mostRemaining` (the default) takes the one with the most of its week left, ties to the lower number. `soonestReset` takes the one whose week resets at the earliest known time still ahead; an account whose reset time is unknown, or has already passed, comes after one still ahead, and those are ordered by the week left and then the lower number. Under `soonestReset`, an account whose reading shows 0% left counts as used up even with no `quota` condition. Either way each account is marked `pick`, `ok`, `low` or `unknown`, and carries the share of its week left (`weekLeftPct`) and when it resets (`resetsAt`) when its reading is known.
 - **Its conditions hold:**
   - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left. Either one's `params.until` is when the condition next holds: the start of the next stretch, inside or outside the schedule as it wants, of at least `minMinutesLeft` minutes;
-  - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above);
+  - `quota`: `quotaLow`, until the week resets. One without `weekLeftPct` holds, with the note `quotaRetired` (above). On another machine a `login`'s is read from that machine's own reading (YN-175);
   - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
 - **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
 
@@ -750,7 +765,8 @@ dispatch is routed:
   - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
   A candidate that runs on this Core host only makes it run here, and so
   does one with a `machine` condition when the dispatch names no machine or
-  `auto` (it held for this Core host). The record
+  `auto` (it held for this Core host), and a `login` with a `quota`
+  condition then (YN-175: it was judged by this host's own login). The record
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the

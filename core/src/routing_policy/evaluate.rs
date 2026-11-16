@@ -15,6 +15,11 @@
 //! 2026-11-09: Claude and Codex have no 5-hour quota now). A `fiveHourLeftPct`
 //! saved before is ignored; a condition that named only it limits nothing, and
 //! its candidate's row says so (`quotaRetired`).
+//!
+//! A login on another machine is that machine's own (YN-175, the user's
+//! decision of 2026-11-16): its quota condition reads that machine's reading
+//! (`Inputs::machines`) and never this Core host's. None, or a stale or
+//! unknown one, is unknown.
 use crate::{routing_keys::Provider, routing_launch::RuntimeProfile, routing_readings::{DaySpend, Schedule}};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -30,6 +35,8 @@ pub struct Inputs<'a> {
     pub cswap: &'a Value,
     /// The readings' `codex` list.
     pub codex: &'a [Value],
+    /// The readings' `machines` list: each machine's own logins (YN-175).
+    pub machines: &'a [Value],
     /// Where the executor would run: "local", a machine id, or None for a preview.
     pub machine: Option<&'a str>,
     /// Candidates this request already failed to start with: each is tried once.
@@ -72,6 +79,143 @@ pub(crate) fn machine_allows(candidate: &Value, machine: Option<&str>) -> bool {
 /// Whether `candidate` has a machine condition (YN-139).
 pub(crate) fn has_machine_condition(candidate: &Value) -> bool {
     candidate["conditions"].as_array().into_iter().flatten().any(|c| c["kind"] == "machine")
+}
+
+/// Whether `candidate` has a quota condition that limits: one naming the week's
+/// share (one that doesn't limits nothing, see `retired`).
+pub(crate) fn has_quota_condition(candidate: &Value) -> bool {
+    candidate["conditions"].as_array().into_iter().flatten().any(|c| c["kind"] == "quota" && c["weekLeftPct"].is_number())
+}
+
+/// The machine `inputs` judges for when it is another than this Core host (YN-175).
+fn other_machine<'a>(inputs: &Inputs<'a>) -> Option<&'a str> {
+    inputs.machine.filter(|m| *m != "local")
+}
+
+/// A login's harness's reading in a machine's row: `claude` or `codex`.
+fn machine_part<'a>(candidate: &Value, row: &'a Value) -> Option<&'a Value> {
+    let part = match candidate["harness"].as_str() {
+        Some("claude") => &row["claude"],
+        Some("codex") => &row["codex"],
+        _ => return None,
+    };
+    part.is_object().then_some(part)
+}
+
+/// A login's quota condition on `machine`, another machine (YN-175): by that
+/// machine's own reading only, never this Core host's. None, a stale one or an
+/// unknown one is unknown, with why in `params.cause`.
+fn machine_quota(condition: &Value, candidate: &Value, inputs: &Inputs, machine: &str) -> Check {
+    let row = inputs.machines.iter().find(|m| m["machine"] == machine);
+    let name = row.and_then(|r| r["name"].as_str()).filter(|n| !n.trim().is_empty()).unwrap_or(machine);
+    let unknown = |cause: &str, message: String, message_zh: String| {
+        Check::Unknown(with(reason("quotaUnknown", message, message_zh), json!({"params": {"machine": machine, "cause": cause}})))
+    };
+    let (Some(row), Some(part)) = (row, row.and_then(|r| machine_part(candidate, r))) else {
+        return unknown("noReading", format!("No quota reading from {name} yet"), format!("还没有 {name} 的额度读数"));
+    };
+    if row["stale"] == true {
+        let minutes = crate::routing_readings::quota::STALE_AFTER_SECONDS / 60;
+        return unknown("stale", format!("{name}'s quota reading is over {minutes} minutes old"), format!("{name} 的额度读数已超过 {minutes} 分钟"));
+    }
+    if let Some(why) = part.get("unknown").filter(|u| u.is_object()) {
+        let text = |key: &str| why[key].as_str().unwrap_or_default().to_owned();
+        return unknown(why["code"].as_str().unwrap_or("unknown"), text("message"), text("messageZh"));
+    }
+    let want = condition["weekLeftPct"].as_f64().unwrap_or_default();
+    match left(&part["week"]) {
+        None => unknown("noWeek", format!("The weekly quota on {name} is not known now"), format!("{name} 上的本周额度此刻不清楚")),
+        Some(have) if have < want => Check::Fails(with(reason("quotaLow", format!("On {name}, {have:.0}% of the weekly quota is left, below {want:.0}%"),
+            format!("{name} 上本周额度只剩 {have:.0}%，低于 {want:.0}%")), json!({"params": {"left": have, "want": want,
+            "until": part["week"]["resetsAt"], "machine": machine}}))),
+        Some(_) => Check::Holds,
+    }
+}
+
+/// The week a login's quota condition reads where `inputs` judges it (YN-175):
+/// on another machine that machine's own reading, else this Core host's. Its
+/// share left, when it resets, when it was read and by what; None when it has
+/// no such condition or the reading isn't known now.
+fn login_week(candidate: &Value, inputs: &Inputs) -> Option<(f64, Value, Value, Value)> {
+    if candidate["credential"]["kind"] != "login" || !has_quota_condition(candidate) {
+        return None;
+    }
+    let (part, at) = match other_machine(inputs) {
+        Some(machine) => {
+            let row = inputs.machines.iter().find(|m| m["machine"] == machine)?;
+            (machine_part(candidate, row).filter(|_| row["stale"] != true)?, row["observedAt"].clone())
+        }
+        None => {
+            let reading = account_reading(candidate, inputs)?;
+            // A Claude login's account is a row of claude-swap's reading, which is stale or not as a whole.
+            if candidate["harness"] == "claude" && inputs.cswap["stale"] == true {
+                return None;
+            }
+            let at = if reading["observedAt"].is_string() { reading["observedAt"].clone() } else { inputs.cswap["observedAt"].clone() };
+            (reading, at)
+        }
+    };
+    if !reading_known(part) {
+        return None;
+    }
+    Some((left(&part["week"])?, part["week"]["resetsAt"].clone(), at, part["source"].clone()))
+}
+
+/// What a login's quota condition read, as its row's `readings` show it (YN-175).
+fn login_readings(candidate: &Value, inputs: &Inputs) -> Option<Value> {
+    let (value, _, at, source) = login_week(candidate, inputs)?;
+    let mut reading = json!({"what": "weekLeft", "value": value, "observedAt": at, "source": source});
+    if let Some(machine) = other_machine(inputs) {
+        reading["machine"] = machine.into();
+    }
+    Some(json!([reading]))
+}
+
+/// In a preview, a login's quota conditions on each machine it may run on
+/// (YN-175): this Core host (`local`), then each machine with a reading of
+/// that harness's login there. Each is `ok`, `low` or `unknown`, with the week
+/// left and when it resets when its reading is known, and why when not `ok`.
+fn machine_rows(candidate: &Value, inputs: &Inputs) -> Option<Value> {
+    if candidate["credential"]["kind"] != "login" || !matches!(candidate["harness"].as_str(), Some("claude" | "codex"))
+        || !has_quota_condition(candidate) {
+        return None;
+    }
+    let row = |machine: Option<&str>| {
+        let here = Inputs { machine: machine.or(Some("local")), ..*inputs };
+        let mut state = "ok";
+        let mut why = Value::Null;
+        for q in candidate["conditions"].as_array().into_iter().flatten().filter(|c| c["kind"] == "quota" && c["weekLeftPct"].is_number()) {
+            match check_condition(candidate, q, &here) {
+                Check::Holds => {}
+                Check::Fails(r) if state != "low" => (state, why) = ("low", r),
+                Check::Unknown(r) if state == "ok" => (state, why) = ("unknown", r),
+                _ => {}
+            }
+        }
+        let mut row = json!({"machine": machine.unwrap_or("local"), "state": state});
+        if let Some((have, resets, at, _)) = login_week(candidate, &here) {
+            row["weekLeftPct"] = json!(have);
+            row["resetsAt"] = resets;
+            row["observedAt"] = at;
+        }
+        if !why.is_null() {
+            row["reason"] = why;
+        }
+        row
+    };
+    let mut rows = Vec::new();
+    if machine_allows(candidate, None) {
+        rows.push(row(None));
+    }
+    for m in inputs.machines {
+        let Some(id) = m["machine"].as_str() else { continue };
+        if machine_part(candidate, m).is_some() && machine_allows(candidate, Some(id)) {
+            let mut r = row(Some(id));
+            r["name"] = m["name"].clone();
+            rows.push(r);
+        }
+    }
+    Some(Value::Array(rows))
 }
 
 /// A tier's name in each language.
@@ -253,6 +397,10 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
             if !condition["weekLeftPct"].is_number() {
                 return Check::Holds;
             }
+            // YN-175: on another machine only a login runs (`decide`), and it is that machine's own.
+            if let Some(machine) = other_machine(inputs) {
+                return machine_quota(condition, candidate, inputs, machine);
+            }
             // A Codex account is named by the candidate itself, so a preview can assume it used
             // up before Core has a reading of it (YN-49, from a lab Core). A Claude login's account
             // is claude-swap's active one, known only from a reading.
@@ -306,6 +454,14 @@ pub fn evaluate(version: i64, policy: &Value, at: &str, inputs: &Inputs) -> Rout
         let mut reasons = reasons;
         if !matches!(state, "off" | "notTried") {
             reasons.extend(retired(candidate));
+            if let Some(readings) = login_readings(candidate, inputs) {
+                row["readings"] = readings;
+            }
+        }
+        if at == "preview" && state != "off" {
+            if let Some(machines) = machine_rows(candidate, inputs) {
+                row["machines"] = machines;
+            }
         }
         for r in &reasons {
             if let Some(until) = r["params"]["until"].as_str() {
@@ -591,13 +747,15 @@ pub(crate) struct Gathered {
     pub spend: DaySpend,
     pub cswap: Value,
     pub codex: Vec<Value>,
+    /// Each machine's own logins (YN-175).
+    pub machines: Vec<Value>,
 }
 
 impl Gathered {
     pub fn inputs<'a>(&'a self, now: DateTime<Utc>, machine: Option<&'a str>, exclude: &'a [String], harness: Option<&'a str>,
         level: Option<&'a str>, assume: &'a Assume) -> Inputs<'a> {
         Inputs { now, keys: &self.keys, codex_homes: &self.codex_homes, spend: &self.spend, cswap: &self.cswap, codex: &self.codex,
-            machine, exclude, harness, unavailable: &[], level, tier: None, tier_source: None, assume }
+            machines: &self.machines, machine, exclude, harness, unavailable: &[], level, tier: None, tier_source: None, assume }
     }
 }
 
@@ -608,9 +766,11 @@ impl crate::workspace::Workspace {
             .into_iter().map(|k| (k.id, k.provider, k.source)).collect();
         let day = crate::routing_readings::today();
         let (homes, spend, kept) = self.stored(move |store| Ok((store.codex_homes()?, store.spend_on(day)?, store.quotas()?))).await?;
-        let (cswap, codex) = crate::routing_readings::quota::view(&kept, Utc::now());
+        let now = Utc::now();
+        let (cswap, codex) = crate::routing_readings::quota::view(&kept, now);
+        let machines = crate::routing_readings::quota::machines_view(&kept, now);
         Ok(Gathered { keys, codex_homes: homes.into_iter().map(|h| h.id).collect(), spend, cswap,
-            codex: codex.as_array().cloned().unwrap_or_default() })
+            codex: codex.as_array().cloned().unwrap_or_default(), machines: machines.as_array().cloned().unwrap_or_default() })
     }
 }
 

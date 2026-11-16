@@ -58,7 +58,7 @@ pub struct Window {
     pub resets_at: Option<String>,
 }
 
-fn window(value: &Value) -> Option<Window> {
+pub(crate) fn window(value: &Value) -> Option<Window> {
     if !value.is_object() {
         return None;
     }

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import select
 import shutil
 import signal
 import socket
@@ -424,6 +425,166 @@ def read_artifact(cwd, requested):
         os.close(directory)
 
 
+# Quota reads (YN-175): this account's own logins, as routing reads the Core
+# host's (routing_readings/quota.rs). Only usage comes back: never an email,
+# organization, alias, account id or token. Both together stay well inside
+# remote.rs's 65 s helper timeout.
+CSWAP_SECONDS = 40
+CODEX_SECONDS = 15
+
+
+def number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def cswap_quota():
+    """claude-swap's account marked as this account's default login, by its
+    usage only. claude-swap reads the usage from Anthropic itself; this runs
+    `cswap list --json` once."""
+    found = shutil.which("cswap")
+    if not found:
+        return {"error": "cswapMissing"}
+    try:
+        listed = subprocess.run([found, "list", "--json"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=CSWAP_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {"error": "cswapTimeout", "seconds": CSWAP_SECONDS}
+    except OSError:
+        return {"error": "cswapFailed"}
+    try:
+        answer = json.loads(listed.stdout.decode("utf-8"))
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        return {"error": "cswapFailed"}
+    refused = answer.get("error")
+    if isinstance(refused, dict) and isinstance(refused.get("type"), str):
+        return {"error": "cswapError", "type": re.sub(r"[^A-Za-z0-9]", "", refused["type"])[:64]}
+    rows = answer.get("accounts")
+    if not isinstance(rows, list):
+        return {"error": "cswapFailed"}
+    out = {"schemaVersion": number(answer.get("schemaVersion"))}
+    active = [row for row in rows if isinstance(row, dict) and row.get("active") is True]
+    if active:
+        status = active[0].get("usageStatus")
+        usage = active[0].get("usage")
+        week = usage.get("sevenDay") if isinstance(usage, dict) else None
+        out["active"] = {
+            "usageStatus": re.sub(r"[^A-Za-z0-9_-]", "", status)[:32] if isinstance(status, str) else None,
+            "sevenDay": {"pct": number(week.get("pct")),
+                         "resetsAt": week.get("resetsAt") if isinstance(week.get("resetsAt"), str) else None}
+            if isinstance(week, dict) else None,
+        }
+    return out
+
+
+def windows(limit):
+    """A Codex limit's windows only: the share used of each, its length and when
+    it resets. Its plan, credits and the like are not passed on."""
+    out = {}
+    for name in ("primary", "secondary"):
+        window = limit.get(name)
+        if isinstance(window, dict):
+            out[name] = {key: window[key] for key in ("usedPercent", "windowDurationMins", "resetsAt")
+                         if number(window.get(key)) is not None}
+    return out
+
+
+def codex_quota(program):
+    """This account's Codex login's limits: a model-less `codex app-server` on
+    stdio is asked `account/read` and, for a ChatGPT login,
+    `account/rateLimits/read`, then ended."""
+    try:
+        codex = executable(program)
+    except ValueError:
+        return {"error": "codexMissing"}
+    try:
+        process = subprocess.Popen([codex, "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, start_new_session=True, cwd=str(Path.home()))
+    except OSError:
+        return {"error": "codexUnreadable"}
+    deadline = time.monotonic() + CODEX_SECONDS
+    pending = [b""]
+
+    def send(message):
+        process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        process.stdin.flush()
+
+    def reply(request):
+        while True:
+            while b"\n" in pending[0]:
+                line, pending[0] = pending[0].split(b"\n", 1)
+                try:
+                    message = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if "method" in message and "id" in message:
+                    # A read asks nothing of anyone: any request is refused.
+                    send({"id": message["id"], "error": {"code": -32601, "message": "quota read only"}})
+                elif message.get("id") == request:
+                    return message
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([process.stdout], [], [], left)[0]:
+                raise TimeoutError()
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk or len(pending[0]) > 4 * 1024 * 1024:
+                raise EOFError()
+            pending[0] += chunk
+
+    try:
+        send({"id": 1, "method": "initialize",
+              "params": {"clientInfo": {"name": "yuzuno_v2", "title": "Yuzuno", "version": "0.1.0"},
+                         "capabilities": {"experimentalApi": True}}})
+        if "error" in reply(1):
+            return {"error": "codexUnreadable"}
+        send({"method": "initialized"})
+        send({"id": 2, "method": "account/read", "params": {"refreshToken": False}})
+        read = reply(2)
+        if "error" in read:
+            return {"error": "codexUnreadable"}
+        result = read.get("result")
+        account = result.get("account") if isinstance(result, dict) else None
+        if not isinstance(account, dict):
+            return {"signedIn": False}
+        kind = account.get("type") if isinstance(account.get("type"), str) else None
+        out = {"signedIn": True, "accountType": kind}
+        if kind == "chatgpt":
+            send({"id": 3, "method": "account/rateLimits/read"})
+            limits = reply(3)
+            given = limits.get("result")
+            if "error" in limits or not isinstance(given, dict):
+                out["error"] = "limitsUnreadable"
+            else:
+                # The `codex` limit's windows, as routing reads them (quota.rs `codex_windows`).
+                out["limits"] = {}
+                if isinstance(given.get("rateLimits"), dict):
+                    out["limits"]["rateLimits"] = windows(given["rateLimits"])
+                by_id = given.get("rateLimitsByLimitId")
+                if isinstance(by_id, dict) and isinstance(by_id.get("codex"), dict):
+                    out["limits"]["rateLimitsByLimitId"] = {"codex": windows(by_id["codex"])}
+        return out
+    except TimeoutError:
+        return {"error": "codexTimeout", "seconds": CODEX_SECONDS}
+    except (OSError, EOFError):
+        return {"error": "codexUnreadable"}
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # Not reaped yet, so its group is still the one started above.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            process.wait()
+
+
 def main():
     request = json.load(sys.stdin)
     action = request["action"]
@@ -446,6 +607,12 @@ def main():
         response = {"installed": root is not None, "node": shutil.which("node"), "path": os.environ["PATH"]}
     elif action == "claude_ensure":
         response = claude_ensure(request)
+    elif action == "quota":
+        response = {}
+        if request.get("cswap") is True:
+            response["cswap"] = cswap_quota()
+        if isinstance(request.get("codex"), str) and request["codex"]:
+            response["codex"] = codex_quota(request["codex"])
     elif action == "probe":
         # Reaching this line means SSH and the helper work. A missing Codex or
         # folder is reported beside that fact instead of failing the probe.

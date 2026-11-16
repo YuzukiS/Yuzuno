@@ -20,7 +20,7 @@
 //!   removed. The same pass then reads routing for it among every candidate,
 //!   as for one that waited from its dispatch; none it could ever be given
 //!   releases it onto the host's own login.
-use super::evaluate::{evaluate, has_machine_condition, machine_allows, serves, Assume, Gathered};
+use super::evaluate::{evaluate, has_machine_condition, has_quota_condition, machine_allows, serves, Assume, Gathered};
 use super::left::{left, Left};
 use crate::{executor_templates::Template, routing_launch::RuntimeProfile};
 use anyhow::Result;
@@ -35,7 +35,8 @@ pub(crate) struct Routed {
     pub route: Value,
     pub profile: Option<RuntimeProfile>,
     /// "local" when the chosen candidate runs on this Core host only, or, with no
-    /// machine named (`auto` or unset), has a machine condition (YN-139).
+    /// machine named (`auto` or unset), has a machine condition (YN-139) or is a
+    /// login with a quota condition (YN-175): `here`.
     pub machine: Option<String>,
 }
 
@@ -79,9 +80,26 @@ fn host_only(candidate: &Value) -> bool {
 /// Whether a dispatch to `machine` that gives its executor `candidate` fixes it on this
 /// Core host: a host-only one; or, with no machine named (`auto` or unset), one with a
 /// machine condition (YN-139), which held for this Core host, so `auto` choosing another
-/// machine after routing can't take it where its condition leaves it out.
+/// machine after routing can't take it where its condition leaves it out; or a login with
+/// a quota condition (YN-175), judged by this Core host's login, which another machine's
+/// own login may not have.
 fn here(candidate: &Value, machine: Option<&str>) -> bool {
-    host_only(candidate) || (machine.is_none() && has_machine_condition(candidate))
+    host_only(candidate) || (machine.is_none() && (has_machine_condition(candidate) || has_quota_condition(candidate)))
+}
+
+/// Why an `auto` dispatch keeps a login with a quota condition on this Core host
+/// (YN-175), said on its candidate's row: the condition was judged by this host's
+/// own login. A host-only candidate runs here anyway and says nothing.
+fn say_quota_here(record: &mut Value, candidate: &Value, auto: bool) {
+    if !auto || host_only(candidate) || !has_quota_condition(candidate) {
+        return;
+    }
+    let row = record["candidates"].as_array_mut().and_then(|rows| rows.iter_mut().find(|r| r["id"] == candidate["id"]));
+    if let Some(reasons) = row.and_then(|r| r["reasons"].as_array_mut()) {
+        reasons.push(json!({"code": "quotaHere",
+            "message": "Stays on this Core host: its quota condition is judged by this host's own login, so auto chooses no other machine",
+            "messageZh": "留在这台 Core 主机上：它的额度条件按这台主机自己的登录判断，所以 auto 不改选别的机器"}));
+    }
 }
 
 /// The tier a dispatch wants and whose it is (YN-70): `template`, `lead` or `user`.
@@ -102,6 +120,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     let exclude = failed_before(tx, request_id)?;
     let level = template.permission_level.as_deref();
     // `auto` or unset chooses its machine after routing: any candidate may run.
+    let auto = machine == Some(super::super::collaboration_store::executor_choice::AUTO);
     let machine = machine.filter(|m| *m != super::super::collaboration_store::executor_choice::AUTO);
     let assume = Assume::default();
     // Harnesses its machine can't run (OpenCode while it is off here, Codex on a contained
@@ -116,6 +135,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
         let machine = here(&candidate, machine).then(|| "local".to_owned());
+        say_quota_here(&mut record, &candidate, auto);
         return Ok(Some(Routed { template: apply(template, &candidate), route: record, profile: route.profile, machine }));
     }
     // None now: the first enabled candidate that could run there, keeps the
@@ -135,6 +155,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
         return Ok(None);
     };
     record["waiting"] = json!(true);
+    say_quota_here(&mut record, first, auto);
     let mut waiting = apply(template, first);
     waiting.model = None;
     waiting.reasoning_effort = None;

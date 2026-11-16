@@ -24,6 +24,8 @@ async fn readings(State(ws): State<Arc<Workspace>>) -> impl IntoResponse {
                 // Null until first read; read while the policy needs them (S2b).
                 "cswap": cswap,
                 "codex": codex,
+                // Each machine's own logins (YN-175), read while a login candidate may run there.
+                "machines": super::quota::machines_view(&kept, at),
                 "spend": {
                     "day": spend.day, "zone": "local", "utcOffset": chrono::Local::now().offset().to_string(),
                     "resetsAt": super::day_ends(day).map(|t| t.to_rfc3339()),
