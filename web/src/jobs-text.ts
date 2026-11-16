@@ -31,6 +31,13 @@ export const jobsText = strings({
   } as Record<string, string>,
   stoppingAtCheckpoint: "Stopping at checkpoint",
   stoppedAtCheckpoint: "Stopped at checkpoint",
+  /** The group of what is not going on when a stalled stage is in it (YN-194). */
+  endedOrStopped: "Finished or stopped",
+  /** A waiting stage that cannot start without a retry or a cancel (YN-194). */
+  stalled: {
+    upstream: "Blocked upstream",
+    costLimit: "Held by the cost limit",
+  } as Record<string, string>,
   resumeFailed: "Resume failed",
   notStarted: "Not started",
   notAvailable: "Not available",
@@ -233,6 +240,11 @@ export const jobsText = strings({
   },
   stoppingAtCheckpoint: "正在于检查点停止",
   stoppedAtCheckpoint: "已于检查点停止",
+  endedOrStopped: "已结束或停住",
+  stalled: {
+    upstream: "被上游挡住",
+    costLimit: "已到费用上限",
+  },
   resumeFailed: "继续失败",
   notStarted: "尚未开始",
   notAvailable: "不可用",

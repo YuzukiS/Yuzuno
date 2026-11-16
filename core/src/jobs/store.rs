@@ -268,8 +268,19 @@ pub(super) fn summary(job: Value) -> Value {
     }
     result["resumeOf"] = job["checkpointFrom"]["jobId"].clone();
     result["machine"] = json!({"id":job["machine"]["id"],"name":job["machine"]["name"]});
+    // A stage still waiting that cannot start as things are (YN-194); the
+    // mark of one cancelled with its run is not shown.
+    if job["stalled"].is_string() && job["status"] == "waiting" {
+        result["stalled"] = job["stalled"].clone();
+    }
     result
 }
+/// What still goes on, as the Jobs lists and the rail count it: holding a
+/// reservation, queued, or a stage waiting for an upstream that can still
+/// let it start. A stage behind one that did not succeed, or held by its
+/// run's cost limit, is marked `stalled` (runs.rs, YN-194) and is not.
+pub(super) const LIVE: &str =
+    "(reserved=1 OR status='queued' OR (status='waiting' AND json_extract(data,'$.stalled') IS NULL))";
 fn previous(
     store: &Store,
     db: &Connection,
@@ -749,7 +760,7 @@ impl Store {
             .collect::<Result<Vec<_>>>()?;
         // The bounded live queue must remain visible even when its sequence is
         // older than the newest history page (long jobs can span many completions).
-        let mut live = db.prepare("SELECT id FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting')) AND (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) ORDER BY reserved DESC,seq LIMIT 204")?;
+        let mut live = db.prepare(&format!("SELECT id FROM local_jobs WHERE {LIVE} AND (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) ORDER BY reserved DESC,seq LIMIT 204"))?;
         let live_ids = live
             .query_map(params![agent, task], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -768,12 +779,13 @@ impl Store {
     /// history and job details are not read.
     pub(super) fn live_job_counts(&self) -> Result<Value> {
         let db = self.db.read()?;
-        let mut q = db.prepare(
+        // Unqualified, LIVE names the innermost table: o in the subquery, j outside it.
+        let mut q = db.prepare(&format!(
             "SELECT agent_id,COUNT(*),SUM(status='unknown'),
                (SELECT o.data ->> '$.name' FROM local_jobs o WHERE o.agent_id=j.agent_id
-                  AND (o.reserved=1 OR o.status IN ('queued','waiting')) AND o.status!='unknown' ORDER BY o.seq LIMIT 1)
-             FROM local_jobs j WHERE reserved=1 OR status IN ('queued','waiting') GROUP BY agent_id",
-        )?;
+                  AND {LIVE} AND o.status!='unknown' ORDER BY o.seq LIMIT 1)
+             FROM local_jobs j WHERE {LIVE} GROUP BY agent_id",
+        ))?;
         let mut agents = serde_json::Map::new();
         for row in q.query_map([], |r| {
             Ok((

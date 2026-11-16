@@ -367,15 +367,17 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
         }
         let Ok(task) = parse_task(&at, object, problems) else { return None };
         let Ok(refresh) = super::refresh_writes::parse(&at, object, problems) else { return None };
-        // An edit of the binding or the refresh alone changes no block.
+        // An edit of the binding, the refresh or a status section's status
+        // alone changes no block (YN-195: a status says it is current).
         let none = serde_json::Map::new();
+        let status = object.get("status").is_some_and(|status| !status.is_null());
         let elements = match object.get("elements") {
-            None if task.is_some() || refresh.is_some() => Some(&none),
+            None if task.is_some() || refresh.is_some() || status => Some(&none),
             sent => sent.and_then(Value::as_object).filter(|blocks| !blocks.is_empty()),
         };
         let Some(elements) = elements.filter(|blocks| blocks.len() <= MAX_EDITED) else {
             problems.push(problem("invalid_change", format!("{at}.elements"),
-                format!("elements maps 1-{MAX_EDITED} block ids to their new {{type, props, children?}}."), "sections"));
+                format!("elements maps 1-{MAX_EDITED} block ids to their new {{type, props, children?}}; leave it out only to send task, refresh or a status section's status alone."), "sections"));
             return None;
         };
         if let Some((id, _)) = elements.iter().find(|(_, block)| !block.is_object()) {
@@ -784,9 +786,12 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                     None => {
                         let top = topic(key);
                         let prefix = format!("{top}/");
-                        if key.contains('/') && planned.keys().filter(|k| k.starts_with(&prefix)).count() >= MAX_SUBTOPICS {
+                        // An Ask takes no sub-topic place (YN-195): only reports
+                        // and statuses count, and a new Ask is never refused for it.
+                        let subs = planned.iter().filter(|(sub, entry)| sub.starts_with(&prefix) && !entry.open_ask).count();
+                        if key.contains('/') && change.kind != "ask" && subs >= MAX_SUBTOPICS {
                             problems.push(problem("topic_limit", format!("{at}.key"),
-                                format!("{top} already has {MAX_SUBTOPICS} sub-topics."), "limits"));
+                                format!("{top} already has {MAX_SUBTOPICS} report or status sub-topics; Asks take none."), "limits"));
                             continue;
                         }
                     }
@@ -1523,6 +1528,15 @@ fn apply(
                 data["body"] = normalized[index]["body"].clone();
                 if !change.edit["status"].is_null() {
                     data["status"] = normalized[index]["status"].clone();
+                } else if row.kind == "status"
+                    && (change.op == Op::Patch || change.edit["elements"].as_object().is_some_and(|blocks| !blocks.is_empty()))
+                {
+                    // A status whose content is edited or patched without one
+                    // is current as of this write (YN-195); its validity is
+                    // kept. One that sends status says when its facts are
+                    // from; an edit of its binding or refresh alone writes no
+                    // content, so its facts are as old as they were.
+                    data["status"]["asOf"] = json!(at);
                 }
                 match kept_repairs(&row.data["repairs"], change, &data["body"]) {
                     repairs if repairs.is_empty() => {

@@ -13,6 +13,7 @@ mod analysis_integration;
 mod queued_tests;
 mod research_tests;
 mod stage_checkpoint_tests;
+mod stopped_tests;
 
 fn setup() -> (tempfile::TempDir, Arc<Store>) {
     let dir = tempfile::tempdir().unwrap();
