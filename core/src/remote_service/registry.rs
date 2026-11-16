@@ -7,13 +7,12 @@
 //! interest a GET recorded lasts 60 s, for every machine; Jobs want one on
 //! their own machine while they are held there and for 60 s after the last
 //! went. Nothing else starts one: no other page, no Core start, no record
-//! change. Each start
-//! takes a short `Admission::enter_work` permit, so none starts once an
-//! update drains, and none once Core's shutdown watch says true
-//! (`follow_shutdown`): every start reads that watch itself. A session Core
-//! started is asked to close when nothing wants it any more, when an update drains,
-//! when its machine's target or data root changes or the machine is
-//! removed, and as soon as Core's shutdown is sent.
+//! change. Each start takes a short `Admission::enter_work` permit, so none
+//! starts once an update drains, and none once Core's shutdown watch says
+//! true (`follow_shutdown`): every start reads that watch itself. A session
+//! Core started is asked to close when nothing wants it any more, when an
+//! update drains, when its machine's target or data root changes or the
+//! machine is removed, and as soon as Core's shutdown is sent.
 //!
 //! Per machine, by its id: the record as stored, the current Link, since
 //! when its state holds, a stop, a backoff, and every child of an earlier
@@ -26,9 +25,9 @@
 //! - `Backoff`: only OpenSSH's own connect or DNS failure. Retried after
 //!   1 s, doubling to 60 s, while something wants a session there; once
 //!   nothing does, the machine is idle and nothing starts until the next
-//!   interest or Jobs held there. The count
-//!   goes back to zero only on a session that said hello, a changed target or
-//!   root, or a qualifying manual check; a new interest keeps it.
+//!   interest or Jobs held there. The count goes back to zero only on a
+//!   session that said hello, a changed target or root, or a qualifying
+//!   manual check; a new interest keeps it.
 //! - `Stop`: nothing starts there until its target or data root changes, a
 //!   manual check that started after the stop reaches the machine as it is
 //!   now, or Core restarts. A GET, an interest, Jobs held there, a backoff

@@ -456,7 +456,7 @@ async fn stdout_closed_while_the_child_lives_is_killed_and_reaped_within_4_s() {
 async fn a_child_that_cannot_be_reaped_keeps_its_gate_closed_until_a_real_wait() {
     let lab = Lab::new();
     let (release, hold) = watch::channel(false);
-    let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold) };
+    let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold), ..Default::default() };
     let mut link = Link::start(&lab.machine(), 1, options).unwrap();
     let gate = link.reap_gate();
     let end = ended(&mut link).await;
@@ -486,7 +486,7 @@ fn a_dropped_reaper_never_opens_the_gate() {
     let (_release, hold) = watch::channel(false);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let gate = runtime.block_on(async {
-        let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold) };
+        let options = Options { ssh: lab.fake("eof-alive"), limits: quick(), hold_wait: Some(hold), ..Default::default() };
         let mut link = Link::start(&lab.machine(), 1, options).unwrap();
         let end = ended(&mut link).await;
         assert_eq!(end.exit, Exit::Unknown);

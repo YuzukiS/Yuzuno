@@ -9,6 +9,7 @@
 use super::*;
 use crate::{model::AgentDetail, remote::RemoteMachine};
 use std::path::PathBuf;
+use std::time::Instant;
 
 struct Lab {
     dir: tempfile::TempDir,
