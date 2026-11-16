@@ -21,6 +21,9 @@ mod notify;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod title_bar;
 mod update;
+// Which app bundle the Mac app runs from, for its in-app update (YN-181).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod update_rules;
 
 use connection::{
     desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
@@ -1111,8 +1114,9 @@ fn main() {
         .plugin(notify::plugin());
     // Updates are verified against plugins > updater > pubkey. No updater
     // command is granted to any page; the app's own commands use it. A build
-    // without that key (such as the Mac app's) cannot start the updater, so it
-    // runs without it; the update commands then say why and never reach it.
+    // without that key (such as a development build) cannot start the
+    // updater, so it runs without it; the update commands then say why and
+    // never reach it.
     let builder = if update::config_public_key(context.config()).is_some() {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     } else {

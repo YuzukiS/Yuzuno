@@ -206,6 +206,13 @@ jobs:
           rustc --edition 2021 --test desktop/src/file_drag_rules.rs -o "$RUNNER_TEMP/desktop-file-drag"
           "$RUNNER_TEMP/desktop-file-drag"
 
+      # Likewise which app bundle the Mac app runs from, the folder its
+      # in-app update replaces (YN-181).
+      - name: Desktop update rules
+        run: |
+          rustc --edition 2021 --test desktop/src/update_rules.rs -o "$RUNNER_TEMP/desktop-update-rules"
+          "$RUNNER_TEMP/desktop-update-rules"
+
       # Likewise how the Windows app reads `wsl.exe --list --verbose`
       # (against the bytes a real WSL printed) and what its read-only check
       # of a distribution means (YN-109).
