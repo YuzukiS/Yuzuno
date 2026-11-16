@@ -343,6 +343,18 @@ async fn the_user_reads_and_saves_the_limits_against_their_version() {
     }
 }
 
+/// Settings' list gives the limits as their own route does, their ranges
+/// included: the page's sliders and its check read them on every draw (YN-182).
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_lists_the_limits_as_their_own_route_gives_them() {
+    let (_dir, ws, _project) = lab();
+    let (status, limits) = route(&ws, "GET", "/api/brief-refreshes/limits", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, listed) = route(&ws, "GET", "/api/brief-refreshes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["limits"], limits, "the list's limits, ranges included");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cards_issues_are_listed_and_read_whole_with_their_attachments_by_version() {
     let (dir, ws, project) = lab();
