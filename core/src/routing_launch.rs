@@ -85,6 +85,14 @@ pub(crate) async fn codex_login(rpc: &crate::rpc::Rpc, key: &Secret) -> Result<(
         .map_err(|_| anyhow::anyhow!("Codex did not accept the routing key's login"))
 }
 
+/// Claude Code's switch for its auto memory, read by CLI 2.1.318: set true,
+/// a session neither loads the memory folder's MEMORY.md nor is told to
+/// write there. Core sets it for an executor's bridge (YN-192): every Claude
+/// Agent of a repository shares one memory folder, its lead's, and an
+/// executor's task facts belong on its task. A model that writes there by
+/// itself is still let through, as for any Agent (measured in YN-192).
+const NO_AUTO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+
 /// What one Claude harness process gets.
 #[derive(Debug, Default)]
 pub(crate) struct ClaudeLaunch {
@@ -152,8 +160,20 @@ impl Workspace {
         Ok(())
     }
 
-    /// What Agent `id`'s Claude bridge starts with: nothing without a profile.
+    /// What Agent `id`'s Claude bridge starts with: its profile's, nothing
+    /// without one, and for an executor no auto memory (YN-192).
     pub(crate) async fn claude_launch(&self, id: &str) -> Result<ClaudeLaunch> {
+        let mut launch = self.profile_launch(id).await?;
+        let agent = id.to_owned();
+        let executor = self.stored(move |store| Ok(crate::agent_roles::kind(&*store.db.read()?, &agent)? == crate::agent_roles::EXECUTOR)).await?;
+        if executor {
+            launch.env.push((NO_AUTO_MEMORY.into(), Secret::new("1".into())));
+        }
+        Ok(launch)
+    }
+
+    /// What Agent `id`'s profile gives its Claude bridge: nothing without one.
+    async fn profile_launch(&self, id: &str) -> Result<ClaudeLaunch> {
         match self.profile_of(id).await? {
             None => Ok(ClaudeLaunch::default()),
             Some(RuntimeProfile::ClaudeAccount { fingerprint }) => {
