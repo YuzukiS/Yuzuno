@@ -320,3 +320,81 @@ fn paused_for_reads_before_the_deadline_and_the_end() {
     op.deadline = at(-30);
     assert!(!paused_for(&op, &json!({"firstReadAt":at(-20)})), "read after the deadline");
 }
+
+/// The way an update really ends (YN-197): the Core that asked `a` to pause
+/// seals and stops; the new release's Core starts on the same records with
+/// the update still in progress, restores the sessions, and Finish completes
+/// it. The worker's next step then decides the pause message.
+#[tokio::test]
+async fn an_update_that_ends_through_finish_continues_the_agent_it_paused() {
+    use super::super::{
+        catalog,
+        control::{self, Command, Request},
+        controller::{Controller, Runtime},
+        lifecycle::WorkspaceRuntime,
+        package,
+        state::{Launch, Layout, ReleaseRef},
+    };
+    let (dir, ws) = fixture().await;
+    working(&ws);
+    let root = dir.path().join("managed");
+    let a = package::fixture(&dir.path().join("source-a"), "a");
+    let mut b = package::fixture(&dir.path().join("source-b"), "b");
+    b.manifest.built_at = "2026-10-14T00:00:00Z".into();
+    package::atomic_json(&b.path.join("manifest.json"), &b.manifest).unwrap();
+    b.manifest_sha256 = package::sha256(&b.path.join("manifest.json")).unwrap();
+    catalog::register(&root, &a.path, &a.manifest_sha256, "review a", true).unwrap();
+    catalog::register(&root, &b.path, &b.manifest_sha256, "review b", false).unwrap();
+    let layout = Layout::open(&root).unwrap();
+    let launch = Launch { port: 4399, data_dir: dir.path().join("data"), cwd: dir.path().into(), codex: "fixture".into() };
+    let runtime = |ws: &Arc<Workspace>| -> Arc<dyn Runtime> { Arc::new(WorkspaceRuntime(ws.clone())) };
+    // The running Core of release a: prepares b, then waits for `a`'s Turn.
+    let old = Controller::new(Some(layout.clone()), Some(layout.release(&ReleaseRef::from(&a)).unwrap()),
+        launch.clone(), runtime(&ws), ws.admission.clone()).unwrap();
+    old.prepare("b").await.unwrap();
+    for _ in 0..500 {
+        if layout.journal().unwrap().prepared.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let prepared = layout.journal().unwrap().operation.unwrap();
+    assert_eq!(prepared.phase, Phase::Prepared);
+    layout.edit_operation(&prepared.id, |op| {
+        op.set_phase(Phase::Waiting, None);
+        Ok(())
+    }).unwrap();
+    ws.admission.begin_drain(&prepared.id).unwrap();
+    let op = layout.journal().unwrap().operation.unwrap();
+    runtime(&ws).request_update_pause(&op).await.unwrap();
+    read_pause(&ws, &op, true).await;
+    finish(&ws, "original-turn");
+    let request = |command| Request { operation_id: op.id.clone(), token: op.token.clone(), command };
+    assert_eq!(control::dispatch(&old, request(Command::Seal)).await.unwrap()["sealed"], true);
+    assert_eq!(control::dispatch(&old, request(Command::Stop)).await.unwrap()["stopping"], true);
+    // The helper starts release b's Core; it opens admission only at Finish.
+    layout.edit_operation(&op.id, |op| {
+        op.set_phase(Phase::Starting, None);
+        Ok(())
+    }).unwrap();
+    ws.admission.reopen(&op.id).unwrap();
+    let new = Controller::new(Some(layout.clone()), Some(layout.release(&op.candidate).unwrap()),
+        launch, runtime(&ws), ws.admission.clone()).unwrap();
+    assert_eq!(ws.admission.snapshot().operation_id.as_deref(), Some(op.id.as_str()));
+    assert_eq!(control::dispatch(&new, request(Command::Restore)).await.unwrap()["restored"], 1);
+    let release = op.candidate.release_id.clone();
+    layout.edit_operation(&op.id, |op| {
+        op.records_proof = Some(json!({"recordsReady":true,"phase":"afterRestore","releaseId":release,
+            "workspaceId":op.workspace_id}));
+        Ok(())
+    }).unwrap();
+    assert_eq!(control::dispatch(&new, request(Command::Finish)).await.unwrap()["complete"], true);
+    assert!(ws.admission.snapshot().operation_id.is_none());
+
+    ws.resume_after_update().await.unwrap();
+    let state = resume(&ws, &op);
+    assert!(!state.is_null(), "the pause message has no outcome after Finish: {:#?}", pause(&ws, &op));
+    assert_eq!(state["state"], "sent", "{state}");
+    assert_eq!(starts(dir.path()).len(), 1);
+    close(&ws).await;
+}
