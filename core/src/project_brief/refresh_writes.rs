@@ -595,7 +595,9 @@ pub(super) fn version(store: &Store, project: &str, identity: i64, version: i64)
     Ok(Ok(section))
 }
 
-fn limits_view(limits: &Limits) -> Value {
+/// The limits as the routes answer with them, their ranges included: their
+/// own route, a refused save's `current` and Settings' list (refresh.rs `list`).
+pub(super) fn limits_view(limits: &Limits) -> Value {
     let mut view = serde_json::to_value(limits).unwrap_or_default();
     view["ranges"] = json!({"minHours":[MIN_HOURS.start(), MIN_HOURS.end()],"maxActive":[MAX_ACTIVE.start(), MAX_ACTIVE.end()],
         "pauseAfterFailures":[PAUSE_AFTER.start(), PAUSE_AFTER.end()]});

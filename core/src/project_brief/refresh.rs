@@ -1030,7 +1030,7 @@ pub(super) fn list(store: &Store) -> Result<Value> {
         }
         items.push(item);
     }
-    Ok(json!({"limits":limits(&db)?,"total":{"cards":rows.len(),"active":active,"weeklyRuns":weekly},"items":items}))
+    Ok(json!({"limits":super::refresh_writes::limits_view(&limits(&db)?),"total":{"cards":rows.len(),"active":active,"weeklyRuns":weekly},"items":items}))
 }
 
 /// What a push notice names of one refresh (web_push, YN-113 R4): the card
