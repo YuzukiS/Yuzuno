@@ -22,7 +22,7 @@ const text = strings(
     defaults: (path: string, lang: string) =>
       `Core's defaults where this sets none: PATH=${path} and LANG=${lang}. A PATH here replaces the default whole; $PATH is not expanded. Names starting with YUZUNO_ are Core's own.`,
     windowsDefaults: "Windows' own environment is kept; a variable here replaces the one of the same name. Names starting with YUZUNO_ are Core's own.",
-    caution: "These values are written into every Job's record, which Agents that read Jobs see: never put a key or token here.",
+    caution: "These values are written into every Job's record, which the Jobs page and that Job's own Agent show: never put a key or token here.",
     reading: "Reading the Job environment…",
     badLine: (n: number) => `Line ${n} is not NAME=value.`,
     twice: (name: string) => `${name} is set twice.`,
@@ -37,7 +37,7 @@ const text = strings(
     defaults: (path, lang) =>
       `这里没写时用 Core 的默认值：PATH=${path}、LANG=${lang}。这里写了 PATH 就整个替换默认值，不展开 $PATH。以 YUZUNO_ 开头的名字由 Core 设置。`,
     windowsDefaults: "保留 Windows 自己的环境；这里的变量会替换同名的那个。以 YUZUNO_ 开头的名字由 Core 设置。",
-    caution: "这些值会写进每个 Job 的记录，能读 Job 的 Agent 都看得到：不要放密钥或令牌。",
+    caution: "这些值会写进每个 Job 的记录，Jobs 页和这个 Job 自己的 Agent 都看得到：不要放密钥或令牌。",
     reading: "正在读取 Job 环境…",
     badLine: (n) => `第 ${n} 行不是 名称=值。`,
     twice: (name) => `${name} 写了两次。`,
