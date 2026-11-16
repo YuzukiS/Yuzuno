@@ -7,7 +7,8 @@
 //! GitHub login, or without one when gh is missing or not signed in
 //! (public_github), and serves exactly two things for a known target: a Tauri
 //! updater manifest whose installer URL points back at this Core, and that
-//! release's installer. No caller chooses a repository, URL or file.
+//! release's update file for the target (the Windows installer, the Mac app
+//! archive). No caller chooses a repository, URL or file.
 use super::{
     controller::Controller,
     public_github::{PublicGithub, Route},
@@ -21,9 +22,13 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-/// Targets with a published desktop installer.
 const REPOSITORY: &str = "YuzukiS/Yuzuno";
-const TARGETS: [&str; 1] = ["windows-x86_64"];
+/// Each target's update file, as its Tauri updater installs it. The file's
+/// signature is always `<file>.sig`.
+const TARGETS: [(&str, &str); 2] = [
+    ("windows-x86_64", "yuzuno-desktop-windows-x86_64-setup.exe"),
+    ("darwin-aarch64", "yuzuno-desktop-darwin-aarch64.app.tar.gz"),
+];
 const MAX_INSTALLER: u64 = 512 * 1024 * 1024;
 const MAX_SIGNATURE: u64 = 4096;
 const MAX_NOTES: usize = 16 * 1024;
@@ -53,14 +58,11 @@ pub fn shared() -> &'static DesktopReleases {
     SHARED.get_or_init(DesktopReleases::default)
 }
 
-fn installer_name(target: &str) -> String {
-    format!("yuzuno-desktop-{target}-setup.exe")
-}
-
-pub fn known_target(target: &str) -> Result<&'static str> {
+/// The known target and its update file.
+pub fn known_target(target: &str) -> Result<(&'static str, &'static str)> {
     TARGETS
         .into_iter()
-        .find(|known| *known == target)
+        .find(|(known, _)| *known == target)
         .context("No desktop app is published for this platform")
 }
 
@@ -125,19 +127,41 @@ fn asset(release: &Value, name: &str, max: u64) -> Result<(u64, u64)> {
     Ok((id, size))
 }
 
-/// The newest stable desktop release (or the one tagged `tag`), with an
-/// installer for `target`. Core releases and drafts are never considered.
-fn select(releases: &Value, target: &str, tag: Option<&str>) -> Result<Release> {
-    let release = releases
+/// The newest stable desktop release that has both of `target`'s files, or
+/// the one tagged `tag`, which must have them. A release may carry only some
+/// targets, so a target whose file the newest release lacks gets an older one.
+/// Core releases and drafts are never considered.
+fn select(
+    releases: &Value,
+    (target, file): (&str, &str),
+    tag: Option<&str>,
+) -> Result<Release> {
+    let files = |release: &Value| -> Result<_> {
+        Ok((
+            asset(release, file, MAX_INSTALLER)?,
+            asset(release, &format!("{file}.sig"), MAX_SIGNATURE)?,
+        ))
+    };
+    let stable = releases
         .as_array()
         .context("Invalid GitHub release list")?
         .iter()
         .filter(|r| r["draft"] == false && r["prerelease"] == false)
-        .filter(|r| r["tag_name"].as_str().and_then(tag_version).is_some())
-        .filter(|r| tag.is_none_or(|tag| r["tag_name"] == tag))
-        .max_by_key(|r| r["published_at"].as_str().unwrap_or(""))
-        .context("No desktop release has been published in this repository")?;
-    let name = installer_name(target);
+        .filter(|r| r["tag_name"].as_str().and_then(tag_version).is_some());
+    let (release, (installer, signature)) = match tag {
+        // Only that release: without its files it is refused, never replaced.
+        Some(tag) => {
+            let release = stable
+                .filter(|r| r["tag_name"] == tag)
+                .max_by_key(|r| r["published_at"].as_str().unwrap_or(""))
+                .context("No desktop release has been published in this repository")?;
+            (release, files(release)?)
+        }
+        None => stable
+            .filter_map(|r| files(r).ok().map(|found| (r, found)))
+            .max_by_key(|(r, _)| r["published_at"].as_str().unwrap_or(""))
+            .with_context(|| format!("No published desktop release has a {target} update"))?,
+    };
     let tag = release["tag_name"].as_str().unwrap_or_default().to_owned();
     let mut notes = release["body"].as_str().unwrap_or_default().to_owned();
     if notes.len() > MAX_NOTES {
@@ -155,8 +179,8 @@ fn select(releases: &Value, target: &str, tag: Option<&str>) -> Result<Release> 
             .as_str()
             .unwrap_or_default()
             .to_owned(),
-        installer: asset(release, &name, MAX_INSTALLER)?,
-        signature: asset(release, &format!("{name}.sig"), MAX_SIGNATURE)?,
+        installer,
+        signature,
     })
 }
 
@@ -187,10 +211,11 @@ impl DesktopReleases {
         target: &str,
         host: &str,
     ) -> Result<Value> {
-        let target = known_target(target)?;
+        let (target, file) = known_target(target)?;
         let origin = loopback_origin(host)?;
         let mut route = self.route();
-        let release = select(&Self::releases(&mut route).await?, target, None)?;
+        let releases = Self::releases(&mut route).await?;
+        let release = select(&releases, (target, file), None)?;
         let scratch = tempfile::Builder::new()
             .prefix("desktop-signature-")
             .tempdir_in(scratch_root(controller)?)?;
@@ -220,14 +245,14 @@ impl DesktopReleases {
         }))
     }
 
-    /// That release's installer for `target`, in a file deleted when dropped.
+    /// That release's update file for `target`, in a file deleted when dropped.
     pub async fn installer(
         &self,
         controller: &Controller,
         target: &str,
         tag: &str,
     ) -> Result<(tempfile::NamedTempFile, u64)> {
-        let target = known_target(target)?;
+        let (target, file) = known_target(target)?;
         if tag_version(tag).is_none() {
             bail!("Not a desktop release tag");
         }
@@ -235,12 +260,13 @@ impl DesktopReleases {
             anyhow::anyhow!("Another desktop installer is being transferred; try again shortly")
         })?;
         let mut route = self.route();
-        let release = select(&Self::releases(&mut route).await?, target, Some(tag))?;
-        let file = tempfile::Builder::new()
+        let releases = Self::releases(&mut route).await?;
+        let release = select(&releases, (target, file), Some(tag))?;
+        let download = tempfile::Builder::new()
             .prefix("desktop-installer-")
             .tempfile_in(scratch_root(controller)?)?;
         // The GitHub client creates the file itself.
-        let path = file.path().to_owned();
+        let path = download.path().to_owned();
         std::fs::remove_file(&path)?;
         Box::pin(route.download(
             &format!("repos/{REPOSITORY}/releases/assets/{}", release.installer.0),
@@ -255,7 +281,7 @@ impl DesktopReleases {
             size == release.installer.1,
             "The installer differs from its release record"
         );
-        Ok((file, size))
+        Ok((download, size))
     }
 }
 
@@ -276,9 +302,12 @@ mod tests {
 
     const INSTALLER: &[u8] = b"MZ fixture installer bytes";
     const SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkK";
+    const MAC_UPDATE: &[u8] = b"\x1f\x8b fixture Mac app archive bytes";
+    const MAC_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IE1hYyBzaWduYXR1cmUgZnJvbSB0YXVyaQo=";
 
     /// Managed or checkout Core with no Core release key; its GitHub fixture has one Core release, a
-    /// draft and two desktop releases.
+    /// draft and three desktop releases: 0.3.0 for Windows only, 0.2.0 for Windows and the Mac,
+    /// 0.1.0 for Windows only.
     fn fixture(managed: bool) -> (tempfile::TempDir, Arc<Controller>, DesktopReleases) {
         let dir = tempfile::tempdir().unwrap();
         let initial = package::fixture(&dir.path().join("initial"), "initial");
@@ -310,6 +339,8 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("asset-21"), INSTALLER).unwrap();
         std::fs::write(dir.path().join("asset-22"), SIGNATURE).unwrap();
+        std::fs::write(dir.path().join("asset-31"), MAC_UPDATE).unwrap();
+        std::fs::write(dir.path().join("asset-32"), MAC_SIGNATURE).unwrap();
         let script = dir.path().join("gh-fixture.py");
         std::fs::write(&script, format!(r#"#!/usr/bin/python3
 import json,sys
@@ -317,18 +348,22 @@ from pathlib import Path
 root=Path(__file__).parent
 assert sys.argv[1:6] == ['api','--hostname','github.com','--method','GET']
 endpoint=sys.argv[-1]
-desktop=[{{'id':21,'name':'yuzuno-desktop-windows-x86_64-setup.exe','state':'uploaded','size':{installer}}},
+windows=[{{'id':21,'name':'yuzuno-desktop-windows-x86_64-setup.exe','state':'uploaded','size':{installer}}},
  {{'id':22,'name':'yuzuno-desktop-windows-x86_64-setup.exe.sig','state':'uploaded','size':{signature}}}]
+mac=[{{'id':31,'name':'yuzuno-desktop-darwin-aarch64.app.tar.gz','state':'uploaded','size':{mac_update}}},
+ {{'id':32,'name':'yuzuno-desktop-darwin-aarch64.app.tar.gz.sig','state':'uploaded','size':{mac_signature}}}]
 if endpoint == 'repos/YuzukiS/Yuzuno/releases?per_page=100':
  print(json.dumps([
-  {{'tag_name':'core-test','draft':False,'prerelease':False,'published_at':'2026-10-16T00:00:00Z','assets':[]}},
-  {{'tag_name':'desktop-9.0.0','draft':True,'prerelease':False,'published_at':'2026-10-17T00:00:00Z','assets':desktop}},
-  {{'tag_name':'desktop-0.2.0','draft':False,'prerelease':False,'published_at':'2026-10-15T00:00:00Z','body':'Faster start','assets':desktop}},
-  {{'tag_name':'desktop-0.1.0','draft':False,'prerelease':False,'published_at':'2026-10-14T00:00:00Z','body':'First','assets':desktop}}]))
+  {{'tag_name':'core-test','draft':False,'prerelease':False,'published_at':'2026-10-18T00:00:00Z','assets':[]}},
+  {{'tag_name':'desktop-9.0.0','draft':True,'prerelease':False,'published_at':'2026-10-17T00:00:00Z','assets':windows+mac}},
+  {{'tag_name':'desktop-0.3.0','draft':False,'prerelease':False,'published_at':'2026-10-16T00:00:00Z','body':'Windows fix','assets':windows}},
+  {{'tag_name':'desktop-0.2.0','draft':False,'prerelease':False,'published_at':'2026-10-15T00:00:00Z','body':'Faster start','assets':windows+mac}},
+  {{'tag_name':'desktop-0.1.0','draft':False,'prerelease':False,'published_at':'2026-10-14T00:00:00Z','body':'First','assets':windows}}]))
 elif endpoint.startswith('repos/YuzukiS/Yuzuno/releases/assets/'):
  sys.stdout.buffer.write((root/('asset-'+endpoint.rsplit('/',1)[1])).read_bytes())
 else: raise AssertionError(endpoint)
-"#, installer = INSTALLER.len(), signature = SIGNATURE.len())).unwrap();
+"#, installer = INSTALLER.len(), signature = SIGNATURE.len(),
+            mac_update = MAC_UPDATE.len(), mac_signature = MAC_SIGNATURE.len())).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let releases = DesktopReleases {
             client: Client {
@@ -351,9 +386,12 @@ else: raise AssertionError(endpoint)
                 .manifest(&controller, "windows-x86_64", "127.0.0.1:4495")
                 .await
                 .unwrap();
-            assert_eq!(manifest["version"], "0.2.0");
-            assert_eq!(manifest["notes"], "Faster start");
-            assert_eq!(manifest["pub_date"], "2026-10-15T00:00:00Z");
+            assert_eq!(
+                manifest["version"], "0.3.0",
+                "the newest release, though it has no Mac update"
+            );
+            assert_eq!(manifest["notes"], "Windows fix");
+            assert_eq!(manifest["pub_date"], "2026-10-16T00:00:00Z");
             let platform = &manifest["platforms"]["windows-x86_64"];
             assert_eq!(
                 platform["signature"], SIGNATURE,
@@ -361,8 +399,9 @@ else: raise AssertionError(endpoint)
             );
             assert_eq!(
             platform["url"],
-            "http://127.0.0.1:4495/api/updates/desktop/windows-x86_64/installer?tag=desktop-0.2.0"
+            "http://127.0.0.1:4495/api/updates/desktop/windows-x86_64/installer?tag=desktop-0.3.0"
         );
+            assert_eq!(manifest["platforms"].as_object().unwrap().len(), 1);
             let (file, size) = releases
                 .installer(&controller, "windows-x86_64", "desktop-0.1.0")
                 .await
@@ -374,7 +413,7 @@ else: raise AssertionError(endpoint)
             for tag in [
                 "desktop-9.0.0",
                 "core-test",
-                "desktop-0.3.0",
+                "desktop-0.4.0",
                 "../../etc/passwd",
             ] {
                 assert!(
@@ -387,6 +426,62 @@ else: raise AssertionError(endpoint)
             }
             assert!(releases
                 .manifest(&controller, "windows-x86_64", "evil.example:4495")
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_mac_gets_the_newest_release_with_its_update_from_this_core() {
+        for managed in [false, true] {
+            let (_dir, controller, releases) = fixture(managed);
+            let manifest = releases
+                .manifest(&controller, "darwin-aarch64", "127.0.0.1:4495")
+                .await
+                .unwrap();
+            assert_eq!(
+                manifest["version"], "0.2.0",
+                "the newest release that has a Mac update; 0.3.0 has none"
+            );
+            assert_eq!(manifest["notes"], "Faster start");
+            assert_eq!(manifest["pub_date"], "2026-10-15T00:00:00Z");
+            let platform = &manifest["platforms"]["darwin-aarch64"];
+            assert_eq!(
+                platform["signature"], MAC_SIGNATURE,
+                "the Mac update's own signature, carried as published"
+            );
+            assert_eq!(
+                platform["url"],
+                "http://127.0.0.1:4495/api/updates/desktop/darwin-aarch64/installer?tag=desktop-0.2.0"
+            );
+            assert_eq!(manifest["platforms"].as_object().unwrap().len(), 1);
+            let (file, size) = releases
+                .installer(&controller, "darwin-aarch64", "desktop-0.2.0")
+                .await
+                .unwrap();
+            assert_eq!(
+                (std::fs::read(file.path()).unwrap(), size),
+                (MAC_UPDATE.to_vec(), MAC_UPDATE.len() as u64)
+            );
+            // A named release without the Mac's files is refused, never replaced by another.
+            for tag in ["desktop-0.3.0", "desktop-0.1.0"] {
+                let refused = releases
+                    .installer(&controller, "darwin-aarch64", tag)
+                    .await
+                    .err()
+                    .unwrap_or_else(|| panic!("{tag}"));
+                assert_eq!(
+                    format!("{refused:#}"),
+                    "The desktop release has no yuzuno-desktop-darwin-aarch64.app.tar.gz",
+                    "{tag}"
+                );
+            }
+            assert!(releases
+                .installer(&controller, "darwin-aarch64", "desktop-9.0.0")
+                .await
+                .is_err());
+            assert!(releases
+                .manifest(&controller, "darwin-aarch64", "evil.example:4495")
                 .await
                 .is_err());
         }
@@ -448,6 +543,25 @@ else: raise AssertionError(endpoint)
             {"id":12,"name":"yuzuno-desktop-windows-x86_64-setup.exe.sig","state":"uploaded","size":300},
         ])
     }
+    fn mac_assets() -> Value {
+        json!([
+            {"id":13,"name":"yuzuno-desktop-darwin-aarch64.app.tar.gz","state":"uploaded","size":8192},
+            {"id":14,"name":"yuzuno-desktop-darwin-aarch64.app.tar.gz.sig","state":"uploaded","size":310},
+        ])
+    }
+    fn both() -> Value {
+        let mut both = assets();
+        both.as_array_mut()
+            .unwrap()
+            .extend(mac_assets().as_array().unwrap().iter().cloned());
+        both
+    }
+    fn windows() -> (&'static str, &'static str) {
+        known_target("windows-x86_64").unwrap()
+    }
+    fn mac() -> (&'static str, &'static str) {
+        known_target("darwin-aarch64").unwrap()
+    }
 
     #[test]
     fn only_stable_desktop_releases_with_this_targets_installer_are_offered() {
@@ -459,7 +573,7 @@ else: raise AssertionError(endpoint)
             {"tag_name":"desktop-8.0.0","draft":false,"prerelease":true,"published_at":"2026-10-16T00:00:00Z","assets":assets()},
             release("desktop-latest", "2026-10-17T00:00:00Z", assets()),
         ]);
-        let newest = select(&list, "windows-x86_64", None).unwrap();
+        let newest = select(&list, windows(), None).unwrap();
         assert_eq!(
             (newest.tag.as_str(), newest.version.as_str()),
             ("desktop-0.3.0", "0.3.0")
@@ -469,7 +583,7 @@ else: raise AssertionError(endpoint)
             ((11, 4096), (12, 300))
         );
         assert_eq!(
-            select(&list, "windows-x86_64", Some("desktop-0.2.0"))
+            select(&list, windows(), Some("desktop-0.2.0"))
                 .unwrap()
                 .version,
             "0.2.0"
@@ -480,14 +594,21 @@ else: raise AssertionError(endpoint)
             "core-2026",
             "desktop-latest",
         ] {
-            assert!(select(&list, "windows-x86_64", Some(tag)).is_err(), "{tag}");
+            assert!(select(&list, windows(), Some(tag)).is_err(), "{tag}");
         }
         let missing = json!([release(
             "desktop-1.0.0",
             "2026-10-14T00:00:00Z",
             json!([assets()[0].clone()])
         )]);
-        assert!(select(&missing, "windows-x86_64", None)
+        assert_eq!(
+            select(&missing, windows(), None)
+                .err()
+                .unwrap()
+                .to_string(),
+            "No published desktop release has a windows-x86_64 update"
+        );
+        assert!(select(&missing, windows(), Some("desktop-1.0.0"))
             .err()
             .unwrap()
             .to_string()
@@ -499,7 +620,7 @@ else: raise AssertionError(endpoint)
             {"id":1,"name":"yuzuno-desktop-windows-x86_64-setup.exe","state":"uploaded","size":MAX_INSTALLER + 1},
             assets()[1].clone()])
         )]);
-        assert!(select(&huge, "windows-x86_64", None).is_err());
+        assert!(select(&huge, windows(), None).is_err());
         let pending = json!([release(
             "desktop-1.0.0",
             "2026-10-14T00:00:00Z",
@@ -507,7 +628,116 @@ else: raise AssertionError(endpoint)
             {"id":1,"name":"yuzuno-desktop-windows-x86_64-setup.exe","state":"starter","size":10},
             assets()[1].clone()])
         )]);
-        assert!(select(&pending, "windows-x86_64", None).is_err());
+        assert!(select(&pending, windows(), None).is_err());
+    }
+
+    #[test]
+    fn each_target_gets_the_newest_release_that_has_both_of_its_files() {
+        let list = json!([
+            release("desktop-0.4.0", "2026-10-15T00:00:00Z", mac_assets()),
+            release("desktop-0.3.0", "2026-10-14T00:00:00Z", assets()),
+            release("desktop-0.2.0", "2026-10-13T00:00:00Z", both()),
+            release("desktop-0.1.0", "2026-10-12T00:00:00Z", both()),
+        ]);
+        // 0.4.0 has only the Mac's files, 0.3.0 only Windows': each target
+        // passes over the newer release that lacks its own.
+        let win = select(&list, windows(), None).unwrap();
+        assert_eq!(
+            (win.tag.as_str(), win.installer, win.signature),
+            ("desktop-0.3.0", (11, 4096), (12, 300))
+        );
+        let newest_mac = select(&list, mac(), None).unwrap();
+        assert_eq!(
+            (newest_mac.tag.as_str(), newest_mac.installer, newest_mac.signature),
+            ("desktop-0.4.0", (13, 8192), (14, 310))
+        );
+        let without_mac_fix = json!([list[1].clone(), list[2].clone(), list[3].clone()]);
+        assert_eq!(
+            select(&without_mac_fix, windows(), None).unwrap().tag,
+            "desktop-0.3.0",
+            "Windows still gets the newest release when it has no Mac files"
+        );
+        let mac_update = select(&without_mac_fix, mac(), None).unwrap();
+        assert_eq!(
+            (mac_update.tag.as_str(), mac_update.version.as_str(), mac_update.installer),
+            ("desktop-0.2.0", "0.2.0", (13, 8192))
+        );
+        // A named release is that one: refused without this target's files,
+        // never replaced by an older one.
+        assert_eq!(
+            select(&list, mac(), Some("desktop-0.1.0")).unwrap().version,
+            "0.1.0"
+        );
+        let refused = select(&list, mac(), Some("desktop-0.3.0"))
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            refused,
+            "The desktop release has no yuzuno-desktop-darwin-aarch64.app.tar.gz"
+        );
+        assert!(select(&list, windows(), Some("desktop-0.4.0")).is_err());
+        // No release for the Mac at all: the error names it (a 404 to the app).
+        let windows_only = json!([list[1].clone()]);
+        assert_eq!(
+            select(&windows_only, mac(), None)
+                .err()
+                .unwrap()
+                .to_string(),
+            "No published desktop release has a darwin-aarch64 update"
+        );
+        assert!(select(&json!([]), mac(), None).is_err());
+    }
+
+    #[test]
+    fn the_size_and_upload_rules_hold_for_the_mac_update_too() {
+        let (archive, signature) = (mac_assets()[0].clone(), mac_assets()[1].clone());
+        let with = |field: &str, value: Value, of: &Value| {
+            let mut asset = of.clone();
+            asset[field] = value;
+            asset
+        };
+        for broken in [
+            json!([with("size", json!(MAX_INSTALLER + 1), &archive), signature.clone()]),
+            json!([with("size", json!(0), &archive), signature.clone()]),
+            json!([with("state", json!("starter"), &archive), signature.clone()]),
+            json!([archive.clone(), with("size", json!(MAX_SIGNATURE + 1), &signature)]),
+            json!([archive.clone(), with("state", json!("starter"), &signature)]),
+            json!([archive.clone()]),
+            json!([signature.clone()]),
+        ] {
+            let list = json!([
+                release("desktop-0.5.0", "2026-10-15T00:00:00Z", broken.clone()),
+                release("desktop-0.2.0", "2026-10-13T00:00:00Z", both()),
+            ]);
+            assert_eq!(
+                select(&list, mac(), None).unwrap().tag,
+                "desktop-0.2.0",
+                "a newer release with a broken Mac update is passed over: {broken}"
+            );
+            assert!(
+                select(&list, mac(), Some("desktop-0.5.0")).is_err(),
+                "{broken}"
+            );
+            assert!(
+                select(&json!([list[0].clone()]), mac(), None).is_err(),
+                "{broken}"
+            );
+        }
+        // At the limits it is offered.
+        let at_limits = json!([release(
+            "desktop-0.5.0",
+            "2026-10-15T00:00:00Z",
+            json!([
+                with("size", json!(MAX_INSTALLER), &archive),
+                with("size", json!(MAX_SIGNATURE), &signature)
+            ])
+        )]);
+        let offered = select(&at_limits, mac(), None).unwrap();
+        assert_eq!(
+            (offered.installer, offered.signature),
+            ((13, MAX_INSTALLER), (14, MAX_SIGNATURE))
+        );
     }
 
     #[test]
@@ -523,9 +753,24 @@ else: raise AssertionError(endpoint)
         ] {
             assert_eq!(tag_version(tag), version, "{tag}");
         }
-        assert!(known_target("windows-x86_64").is_ok());
-        assert!(known_target("linux-x86_64").is_err());
-        assert!(known_target("../../etc").is_err());
+        assert_eq!(
+            known_target("windows-x86_64").unwrap(),
+            ("windows-x86_64", "yuzuno-desktop-windows-x86_64-setup.exe")
+        );
+        assert_eq!(
+            known_target("darwin-aarch64").unwrap(),
+            ("darwin-aarch64", "yuzuno-desktop-darwin-aarch64.app.tar.gz")
+        );
+        for unknown in [
+            "linux-x86_64",
+            "darwin-x86_64",
+            "darwin-universal",
+            "windows-aarch64",
+            "../../etc",
+            "",
+        ] {
+            assert!(known_target(unknown).is_err(), "{unknown}");
+        }
         assert_eq!(
             loopback_origin("127.0.0.1:4317").unwrap(),
             "http://127.0.0.1:4317"

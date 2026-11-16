@@ -1573,13 +1573,13 @@ for (const managed of [false, true]) {
   });
 }
 
-test("a copy not installed by the Yuzuno installer can check but not install", async () => {
+test("a copy not installed from a Yuzuno release can check but not install", async () => {
   const d = desktopShell({ channel: "unknown" });
   const f = await mount({}, d.shell);
   try {
-    await f.openDesktop(/not installed by the Yuzuno installer/);
+    await f.openDesktop(/not installed from a Yuzuno release/);
     const desktop = f.w.document.querySelector('[aria-label="Desktop app"]');
-    assert.match(desktop.textContent, /not installed by the Yuzuno installer/);
+    assert.match(desktop.textContent, /not installed from a Yuzuno release/);
     f.button("Check for desktop update").click();
     await wait();
     assert.equal(f.button("Download and install 0.2.0").disabled, true);
@@ -1657,7 +1657,7 @@ test("Workspace service in Chinese: a running wait, its steps, waits and details
     assert.match(section.textContent, /linux-x86_64 · API 1 · 数据 2 · 记录 1/);
     assert.match(section.textContent, /Reviewed local build/, "the release's own source as written");
     assert.match(section.textContent, /Core 主机上 \d+ MB · 已保留 1 个发行版 · 最多保留 3 个用于恢复/);
-    assert.match(section.querySelector("#settings-desktop").textContent, /^桌面应用Windows 应用单独更新/);
+    assert.match(section.querySelector("#settings-desktop").textContent, /^桌面应用桌面应用单独更新/);
     await polls(f);
     assert.deepEqual(sent(f), [], "nothing is checked, cancelled or sent");
     changeLanguage(f.w, "en");

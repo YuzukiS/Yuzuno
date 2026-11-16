@@ -106,7 +106,7 @@ None of this is a legal assessment.
 ## Where the repository is named
 
 `YuzukiS/Yuzuno` now names the public repository:
-- `REPOSITORY` in `core/src/updates/desktop_releases.rs` already names it. Core relays its signed `desktop-<version>` releases to the Windows app.
+- `REPOSITORY` in `core/src/updates/desktop_releases.rs` already names it. Core relays its signed `desktop-<version>` releases to the desktop app (Windows, Mac).
 - Managed Core updates read the repository configured in `release-source.json`. Existing installations configured for `YuzukiS/Yuzuno` already point to the intended public source; do not redirect them to the historical private repository as part of this handoff.
 - `tools/core-release.py` takes an explicit repository in its release configuration. Any future public package must be prepared from public source, for this public repository, with its matching evidence and signature.
 - CI uses `github.repository`. New work starts in an independent public clone. Historical private checkouts keep their private remotes and are used only to read evidence or extract selected changes.
