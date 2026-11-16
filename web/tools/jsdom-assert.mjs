@@ -101,10 +101,12 @@ function wrap(name, original) {
   const holds = COMPARISONS[name];
   const operator = OPERATOR[name] ?? name;
   const wrapper = {
-    [name](actual, expected, message) {
+    [name](...args) {
+      const [actual, expected, message] = args;
       if (!holdsDom(actual) && !holdsDom(expected)) {
+        // Exactly the arguments given: Node 26 refuses an explicit undefined message.
         try {
-          return original(actual, expected, message);
+          return original(...args);
         } catch (error) {
           // The stack starts where the test called, as it would without this.
           if (error instanceof assert.AssertionError) Error.captureStackTrace(error, wrapper);
@@ -113,8 +115,10 @@ function wrap(name, original) {
       }
       if (holds(actual, expected)) return;
       if (message instanceof Error) throw message;
+      // A message may be a function of the two values, as Node 26 allows.
+      const text = typeof message === "function" ? String(message(actual, expected)) : message;
       throw new assert.AssertionError({
-        message: message ?? `${operator} failed for a DOM object (described, not inspected)`,
+        message: text ?? `${operator} failed for a DOM object (described, not inspected)`,
         actual: describe(actual),
         expected: describe(expected),
         operator,

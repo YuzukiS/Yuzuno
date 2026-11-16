@@ -197,6 +197,7 @@ test("a failing comparison names a DOM object in one short line instead of inspe
   assert.equal(unnamed.expected, "null");
   assert.match(unnamed.message, /^strictEqual failed for a DOM object \(described, not inspected\)/);
   assert.equal(failure(() => assert.deepEqual([node, node], [])).actual, 'Array(2) [<li id="zz" class="row">, <li id="zz" class="row">]');
+  assert.match(failure(() => assert.equal(node, null, (actual) => `still ${actual.localName}`)).message, /^still li/);
 });
 
 test("comparisons without a DOM object are Node's own, and passing ones still pass", () => {
