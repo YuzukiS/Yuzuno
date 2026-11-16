@@ -240,6 +240,31 @@ async fn setting_its_task_done_releases_the_executor_by_the_same_rule() {
     assert!(!closed(s, "e2") && role(s, "e2").1.is_none(), "another Agent's done does not release it");
 }
 
+/// YN-192 (6a): an executor its dispatcher sent on to another task keeps
+/// working when its first task is set done, and is released when the task it
+/// works on now is (YN-123 → YN-141 on 2026-11-14 lost uncommitted work).
+#[tokio::test]
+async fn done_keeps_an_executor_sent_on_to_another_open_task() {
+    let (_dir, ws) = workspace();
+    let s = &ws.store;
+    agent(s, "lead");
+    let (first, t1) = task(s, "First", None);
+    let (second, _) = task(s, "Second", None);
+    executor(s, "e1", &t1, "agent:lead");
+    ws.collaboration_call(Some("lead"), "task_dispatch",
+        json!({"requestId":"send on","taskId":second,"expectedVersion":1,"toAgentId":"e1"})).await.unwrap();
+    ws.collaboration_call(Some("lead"), "task_update",
+        json!({"requestId":"first done","taskId":first,"expectedVersion":1,"patch":{"status":"done"}})).await.unwrap();
+    // What its done set off, awaited here.
+    ws.release_on_done(Some("lead".into()), first.clone()).await;
+    assert!(!closed(s, "e1") && role(s, "e1").1.is_none(), "the first task's done leaves the executor working on the second");
+    ws.collaboration_call(Some("lead"), "task_update",
+        json!({"requestId":"second done","taskId":second,"expectedVersion":2,"patch":{"status":"done"}})).await.unwrap();
+    ws.release_on_done(Some("lead".into()), second.clone()).await;
+    assert!(closed(s, "e1"), "the done of the task it works on now releases it");
+    assert_eq!(role(s, "e1").2.as_deref(), Some("agent:lead"));
+}
+
 /// T-36 S2: the close that archives an executor tells its dispatcher of each
 /// task-status proposal it left undecided; a decided one is not repeated.
 #[tokio::test]
