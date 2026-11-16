@@ -44,6 +44,7 @@ A template step of `kind: gate` is a point where the executor waits for an appro
 ## CI
 
 - `ci_subscribe` with the PR or run URL and the exact head SHA sends one mail per completed run attempt. A newer head needs its own subscription.
+- GitHub starts no `pull_request` workflow for a PR with merge conflicts. When GitHub reports the watched PR head as conflicting and no run exists on it, the watch shows `conflicting`, reads less often (as a commit waiting for its first run does), and each subscription gets one mail saying no CI will come for that head. Merge the current base into the branch, resolve the conflicts, push, and subscribe to the new head (YN-193; Cores with this change).
 - An open SSH Agent subscribes for itself like a local Agent, under the same task, ownership and limit rules; Core reads GitHub and the results arrive in its mailbox, with nothing run on its machine (T-49 source; requires a Core with this change). A Core without it refuses an SSH Agent with "Choose an open local Agent": there a local Agent has to watch the run and pass the result on. Automatic delivery (`delivery_enable`) works the same way for an SSH task owner (Cores with YN-12 S3).
 - After a merge, watch the merge commit itself, with no need to wait for its run to appear.
   - Pass its commit URL (`https://github.com/{owner}/{repo}/commit/{sha}`), `expectedSha` set to that SHA, and the exact `branch` and `event` of the runs to watch. For a merge to main that is usually `main` and `push`; check the repository's workflows rather than guessing.

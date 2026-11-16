@@ -579,6 +579,9 @@ impl Store {
                     "older_commit"
                 } else if w["kind"] == "commit" && linked == 0 {
                     "waiting_for_run"
+                } else if w["kind"] == "pull" && linked == 0 && super::lifecycle::conflicting(&w["currentPr"]) {
+                    // No run will come for this head (YN-193).
+                    "conflicting"
                 } else {
                     "watching"
                 });
@@ -599,7 +602,9 @@ impl Store {
                 w["error"] = Value::Null;
                 w["truncated"] = json!(truncated);
                 failures = 0;
-                if w["state"] == "waiting_for_run" {
+                // A conflicting head waits for the conflict to be resolved
+                // as a commit waits for its first run: read less often.
+                if w["state"] == "waiting_for_run" || w["state"] == "conflicting" {
                     waiting_seconds(&tx, &w)?
                 } else if !runs.is_empty() && runs.iter().all(|r| r["rawStatus"] == "completed") {
                     DONE_SECONDS
@@ -635,6 +640,9 @@ impl Store {
             params![id, due, failures, w.to_string()],
         )?;
         notify(&tx, id)?;
+        if w["state"] == "conflicting" {
+            super::lifecycle::conflict_notice(&tx, &w)?;
+        }
         super::lifecycle::reconcile(&tx, None)?;
         tx.commit()?;
         Ok(())
