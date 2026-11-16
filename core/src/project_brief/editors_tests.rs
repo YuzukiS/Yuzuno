@@ -211,10 +211,17 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
     assert_eq!(empty["projects"][0]["unseen"], 2);
     assert_eq!(empty["projects"][0]["missing"], json!([]));
     assert_eq!(rows(&ws, "SELECT count(*) FROM project_brief_seen"), 0);
-    // The same leads again show the exact original content, unread.
+    // The same leads again: the Asks as they were, unread; the reports and statuses of the leads left out went to
+    // history as lead-left (YN-195), so they do not come back.
     choose_leads(&ws, &project, &["a", "b", "c"]);
     let restored = home::build(&ws.store).unwrap();
-    assert_eq!(restored["projects"][0]["brief"]["sections"], before["projects"][0]["brief"]["sections"]);
+    let asks: Vec<Value> = before["projects"][0]["brief"]["sections"].as_array().unwrap().iter().filter(|s| s["kind"] == "ask").cloned().collect();
+    assert_eq!(restored["projects"][0]["brief"]["sections"], json!(asks));
+    let left: Vec<_> = restored["projects"][0]["brief"]["history"].as_array().unwrap().iter()
+        .map(|s| (s["key"].clone(), s["historyReason"].clone())).collect();
+    for key in ["lead", "worker"] {
+        assert!(left.contains(&(json!(key), json!("lead-left"))), "{key}: {left:?}");
+    }
 }
 
 #[test]

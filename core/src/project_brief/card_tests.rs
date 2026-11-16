@@ -520,8 +520,8 @@ async fn unbinding_a_card_at_the_limit_is_refused() {
 /// Only one card per open task is left out of the count (review of #962):
 /// a second topic bound to the same task, or a topic bound to a task that
 /// has already ended (which never archives it), counts like any other and
-/// is refused at the limit. A card whose task ends while it stays live (a
-/// report not read yet) counts again: the Brief stands above the limit,
+/// is refused at the limit. A card whose task ends while it stays live (an
+/// unresolved Ask; a report leaves with its task since YN-195) counts again: the Brief stands above the limit,
 /// takes no new topic until enough leave, and still takes every change that
 /// adds none.
 #[tokio::test]
@@ -532,7 +532,7 @@ async fn only_one_card_per_open_task_is_left_out_of_the_topic_count() {
     let (ended, _) = task_in(&ws, &project, "Old work");
     task_set(&ws, &ended, json!({"status":"done"}));
     let mut changes: Vec<Value> = (0..MAX_TOPICS).map(|n| put(&format!("t{n}"), "status")).collect();
-    changes.push(bound("yn-1", "report", &task));
+    changes.push(bound("yn-1", "ask", &task));
     accept(&ws, "a", input("a1", 0, changes)).await;
     for (request, key, reference) in [("a2", "yn-1-again", task.as_str()), ("a3", "old", ended.as_str())] {
         let refused = reject(&ws, "a", input(request, 1, vec![bound(key, "status", reference)])).await;
@@ -543,7 +543,7 @@ async fn only_one_card_per_open_task_is_left_out_of_the_topic_count() {
     assert_eq!(codes(&reject(&ws, "a", input("a4", 1, vec![rebind])).await), ["topic_limit"]);
 
     task_set(&ws, &task, json!({"status":"done"}));
-    assert_eq!(row(&ws, &project, "yn-1"), (true, None), "a report not read yet stays live after its task ends");
+    assert_eq!(row(&ws, &project, "yn-1"), (true, None), "an unresolved ask stays live after its task ends");
     assert_eq!(codes(&reject(&ws, "a", input("a5", 1, vec![put("t12", "status")])).await), ["topic_limit"], "13 count now");
     accept(&ws, "a", input("a6", 1, vec![put("t0", "status")])).await;
     assert_eq!(codes(&reject(&ws, "a", input("a7", 2, vec![op("remove", "t1"), put("t12", "status")])).await), ["topic_limit"]);

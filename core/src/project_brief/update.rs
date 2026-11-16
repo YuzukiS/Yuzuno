@@ -989,7 +989,8 @@ fn an_edit_revoked_during_validation_cannot_commit() {
     assert!(changed.is_none());
     let db = ws.store.db.read().unwrap();
     assert_eq!(sections::brief_version(&db, &project).unwrap(), 1);
-    assert_eq!(sections::live_key(&db, &project, "plan").unwrap().unwrap().data["body"], body("First."));
+    // Its lead taken away, the section went to history (YN-195), as it was.
+    assert_eq!(sections::find(&db, &project, "plan", None).unwrap().unwrap().data["body"], body("First."));
     assert!(replay(&db, "a", "edit", &edit).unwrap().is_none());
 }
 
