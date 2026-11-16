@@ -454,11 +454,21 @@ exec {real} "$@"
              "real host; this run killed its own attempt's supervisor", supervisor_death)
 
         def unavailable():
-            no_gpu = mcp.call("job_submit", {"requestId": str(uuid.uuid4()), "taskId": "T-1", "name": "gpu", "cwd": work,
-                                             "argv": ["/bin/true"], "guardGit": False, "machineId": machine["id"],
-                                             "resources": {"cpuMillis": 500, "memoryMiB": 128, "swapMiB": 0},
-                                             "gpu": {"memoryMiB": 1000}}, error=True)
-            assert "GPU admission is not available" in no_gpu, no_gpu
+            # A GPU Job there (YN-83 S2 PR6) starts only on a current reading of
+            # its GPUs, with the reserved UUIDs in CUDA_VISIBLE_DEVICES; on a
+            # machine without an NVIDIA GPU it waits, saying why.
+            gpu = submit("gpu", 'printf "%s" "$CUDA_VISIBLE_DEVICES" > gpu.txt', gpu={"memoryMiB": 1000})
+            seen = labkit.wait_for(lambda: core.job(gpu["id"]),
+                                   lambda j: j["status"] in ("succeeded", "failed", "rejected")
+                                   or (j["reason"] or "").startswith("Waiting for a current GPU sample from"), 120)
+            if seen["status"] == "queued":
+                core.request(f"/jobs/{gpu['id']}/cancel", {})
+                core.status(gpu["id"], "cancelled", seconds=60)
+                no_gpu = {"waited": seen["reason"]}
+            else:
+                assert seen["status"] == "succeeded", seen
+                reserved = [d["uuid"] for d in seen["gpuReservation"]]
+                no_gpu = {"ran": True, "reserved": reserved}
             # Whether a pause is refused is the attempt's, as Core decides it:
             # a scope of its own there (its start's held limits), not what the
             # machine reports it can do. Without one it is refused here; with
@@ -476,7 +486,7 @@ exec {real} "$@"
             core.request(f"/jobs/{paused['id']}/cancel", {})
             core.status(paused["id"], "cancelled", seconds=60)
             return {"gpu": no_gpu, "pause": pause}
-        item("GPU admission is refused for a remote job, and pause for an attempt without a scope of its own there, with the reason",
+        item("A GPU Job there starts only on a current reading of its GPUs (or waits, saying why), and pause is refused for an attempt without a scope of its own there, with the reason",
              "acceptance Core; real host for the paused job; an attempt in a scope of its own is not paused here (pause.py)",
              unavailable)
 

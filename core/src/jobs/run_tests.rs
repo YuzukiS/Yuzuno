@@ -908,7 +908,7 @@ fn only_job_submit_describes_machines_and_keeps_their_limits() {
         assert!(staged.contains(kept), "{kept}");
     }
     let machine = text(&job, "machineId");
-    for kept in ["never on the machine your Agent itself runs on", "Not available with machineId: gpu, exclusive, service",
+    for kept in ["never on the machine your Agent itself runs on", "Not available with machineId: exclusive, service; gpu only on an SSH Linux machine",
         "guardGit reads the Git there and outputs download from there", "never starts it twice", "not processes that leave it", "yuzuno_guide topic jobs"] {
         assert!(machine.contains(kept), "{kept}");
     }

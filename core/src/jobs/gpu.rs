@@ -7,6 +7,13 @@
 //! makes GPU jobs wait. Managed jobs share a device only after the user opens
 //! it for sharing. None of this isolates memory or divides compute: it is
 //! admission among this Core's managed jobs, not control of the card.
+//!
+//! An SSH machine's GPUs (YN-83 S2 PR6) are known the same way, by UUID
+//! (globally unique), with the machine they were seen on (`machineId` in
+//! local_job_gpus). Their latest reading comes from that machine's remote
+//! session (remote_service, PR5) into remote_job_gpu_samples, one row per
+//! machine; this host's single sample row is unchanged. Admission on a
+//! machine sees only that machine's devices, this host's only its own.
 use crate::{model::now, store::Store};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -74,7 +81,8 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS local_job_gpus(uuid TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS local_job_gpu_sample(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS local_job_gpu_settings(uuid TEXT PRIMARY KEY, data TEXT NOT NULL);",
+        CREATE TABLE IF NOT EXISTS local_job_gpu_settings(uuid TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS remote_job_gpu_samples(machine_id TEXT PRIMARY KEY, data TEXT NOT NULL);",
     )?;
     Ok(())
 }
@@ -126,13 +134,29 @@ fn settings(db: &Connection, uuid: &str) -> Result<Value> {
 }
 
 pub(super) fn view(db: &Connection) -> Result<View> {
-    let sample: Option<String> = db
-        .query_row(
-            "SELECT data FROM local_job_gpu_sample WHERE id=1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
+    view_on(db, None)
+}
+
+/// The latest sample of this host (None) or of an SSH machine.
+fn sample_of(db: &Connection, machine: Option<&str>) -> Result<Option<String>> {
+    Ok(match machine {
+        None => db.query_row("SELECT data FROM local_job_gpu_sample WHERE id=1", [], |r| r.get(0)).optional()?,
+        Some(id) => db.query_row("SELECT data FROM remote_job_gpu_samples WHERE machine_id=?1", [id], |r| r.get(0)).optional()?,
+    })
+}
+
+/// The devices known on this host (None) or on one SSH machine, by the
+/// machine each was seen on.
+fn known_on(db: &Connection, machine: Option<&str>) -> Result<Vec<(String, String)>> {
+    let mut q = db.prepare(
+        "SELECT uuid,data FROM local_job_gpus WHERE json_extract(data,'$.machineId') IS ?1 ORDER BY uuid")?;
+    let rows = q.query_map([machine], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// As `view`, for this host (None) or one SSH machine's devices and sample.
+pub(super) fn view_on(db: &Connection, machine: Option<&str>) -> Result<View> {
+    let sample = sample_of(db, machine)?;
     let sample: Value = sample
         .map(|s| serde_json::from_str(&s))
         .transpose()?
@@ -146,6 +170,14 @@ pub(super) fn view(db: &Connection) -> Result<View> {
         });
     let problem = if sample.is_null() {
         Some("no GPU sample has been taken yet".to_owned())
+    } else if let Some(why) = sample["why"].as_str() {
+        // A machine's session said why it has no reading (remote_service Gpu).
+        Some(match why {
+            "no_tool" => "its session there finds no NVIDIA GPU tool".to_owned(),
+            "unavailable" => "its session there reads no GPU (the NVIDIA tool gave none, or it is a Mac)".to_owned(),
+            "failed" => "the NVIDIA tool there stopped giving readings".to_owned(),
+            _ => "its session there has started reading GPUs, with no reading yet".to_owned(),
+        })
     } else if let Some(error) = sample["error"].as_str() {
         Some(format!("GPU sampling failed: {error}"))
     } else if !fresh {
@@ -168,10 +200,7 @@ pub(super) fn view(db: &Connection) -> Result<View> {
             ));
         }
     }
-    let mut known = db.prepare("SELECT uuid,data FROM local_job_gpus ORDER BY uuid")?;
-    let rows = known
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = known_on(db, machine)?;
     let mut devices = Vec::new();
     for (uuid, raw) in rows {
         let identity: Value = serde_json::from_str(&raw)?;
@@ -402,10 +431,12 @@ fn short(uuid: &str) -> &str {
 /// A request no known device can ever hold, or None. Unknown hosts (no
 /// sample yet) accept the request; it waits with its reason.
 pub(super) fn never_fits(db: &Connection, request: &GpuRequest) -> Result<Option<String>> {
-    let mut q = db.prepare("SELECT uuid,data FROM local_job_gpus")?;
-    let known = q
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    never_fits_on(db, request, None)
+}
+
+/// As `never_fits`, by the devices known on this host (None) or one SSH machine.
+pub(super) fn never_fits_on(db: &Connection, request: &GpuRequest, machine: Option<&str>) -> Result<Option<String>> {
+    let known = known_on(db, machine)?;
     if known.is_empty() {
         return Ok(None);
     }
@@ -470,6 +501,37 @@ impl Store {
         tx.execute(
             "INSERT INTO local_job_gpu_sample(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
             [stored.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// An SSH machine's newest GPU reading, from its remote session (YN-83
+    /// S2 PR6): kept as that machine's sample, and each device seen by UUID
+    /// with the machine. A UUID this host or another machine already has is
+    /// left as it is (the same card behind two names is refused at submit).
+    /// The same reading again (same observedAt) writes nothing.
+    pub(super) fn record_remote_gpu_sample(&self, machine: &str, sample: Value) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let earlier = sample_of(&tx, Some(machine))?.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+        if earlier.is_some_and(|earlier| earlier["observedAt"] == sample["observedAt"]) {
+            return Ok(());
+        }
+        for device in sample["devices"].as_array().into_iter().flatten() {
+            let Some(uuid) = device["uuid"].as_str().filter(|u| u.starts_with("GPU-")) else {
+                continue;
+            };
+            let identity = json!({"uuid":uuid,"name":device["name"],"memoryTotalMiB":device["memoryTotalMiB"],
+                "lastIndex":device["index"],"lastSeenAt":sample["observedAt"],"machineId":machine});
+            tx.execute(
+                "INSERT INTO local_job_gpus(uuid,data) VALUES(?1,?2) ON CONFLICT(uuid) DO UPDATE SET data=excluded.data
+                 WHERE json_extract(local_job_gpus.data,'$.machineId') IS ?3",
+                params![uuid, identity.to_string(), machine],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO remote_job_gpu_samples(machine_id,data) VALUES(?1,?2) ON CONFLICT(machine_id) DO UPDATE SET data=excluded.data",
+            params![machine, sample.to_string()],
         )?;
         tx.commit()?;
         Ok(())
@@ -563,16 +625,32 @@ impl Store {
 /// What the Jobs panel, job_budget and the GPU API show.
 pub(super) fn devices_value(db: &Connection) -> Result<Value> {
     let view = view(db)?;
-    let devices: Vec<Value> = view
-        .devices
-        .iter()
-        .map(|d| {
-            json!({"uuid":d.uuid,"index":d.index,"name":d.name,"memoryTotalMiB":d.total,
-                "memoryFreeMiB":d.free,"admission":if d.open { "open" } else { "closed" },
-                "closedReason":d.closed_reason,"closedBy":d.closed_by,"sharing":d.sharing,"headroomMiB":d.headroom,
-                "reservations":d.reservations.iter().map(|r| json!({"jobId":r.0,"name":r.1,"memoryMiB":r.2,"mode":if r.3 { "shared" } else { "exclusive" }})).collect::<Vec<_>>()})
-        })
-        .collect();
+    let row = |d: &Device| {
+        json!({"uuid":d.uuid,"index":d.index,"name":d.name,"memoryTotalMiB":d.total,
+            "memoryFreeMiB":d.free,"admission":if d.open { "open" } else { "closed" },
+            "closedReason":d.closed_reason,"closedBy":d.closed_by,"sharing":d.sharing,"headroomMiB":d.headroom,
+            "reservations":d.reservations.iter().map(|r| json!({"jobId":r.0,"name":r.1,"memoryMiB":r.2,"mode":if r.3 { "shared" } else { "exclusive" }})).collect::<Vec<_>>()})
+    };
+    let mut devices: Vec<Value> = view.devices.iter().map(row).collect();
+    // Each SSH machine's GPUs after this host's (YN-83 S2 PR6), with the
+    // machine they are on and how current that machine's reading is.
+    let mut q = db.prepare(
+        "SELECT DISTINCT json_extract(data,'$.machineId') FROM local_job_gpus WHERE json_extract(data,'$.machineId') IS NOT NULL ORDER BY 1")?;
+    let machines = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in machines {
+        let name: Option<String> = db
+            .query_row("SELECT json_extract(data,'$.name') FROM machines WHERE id=?1", [&id], |r| r.get(0))
+            .optional()?;
+        let remote = view_on(db, Some(&id))?;
+        devices.extend(remote.devices.iter().map(|d| {
+            let mut value = row(d);
+            value["machineId"] = json!(id);
+            value["machineName"] = json!(name.as_deref().unwrap_or(&id));
+            value["problem"] = json!(remote.problem);
+            value["observedAt"] = json!(remote.observed_at);
+            value
+        }));
+    }
     let sample: Option<String> = db
         .query_row(
             "SELECT data FROM local_job_gpu_sample WHERE id=1",

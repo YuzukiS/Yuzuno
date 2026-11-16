@@ -288,7 +288,7 @@ async fn a_remote_job_runs_there_once_and_its_outcome_and_output_come_from_the_m
     assert!(!remote::tick(&lab.ws, &lab.ssh).await.unwrap());
     let first = submit(&lab, "first", "echo begin; echo once >> runs.txt; sleep 1; echo end");
     assert_eq!(first["executor"], json!({"kind":"ssh","machineId":"m1","machineName":"lab box"}));
-    assert_eq!(first["capabilities"]["gpu"], "unavailable");
+    assert!(first["capabilities"]["gpu"].as_str().unwrap().starts_with("By device UUID on that machine"), "{first}");
     tick(&lab, &lab.ssh).await;
     let running = job(&lab, &first);
     assert_eq!(running["status"], "running", "{running}");
@@ -817,7 +817,7 @@ async fn failures_and_refusals_are_outcomes_and_slots_are_per_machine() {
 async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     let lab = lab();
     for (extra, message) in [
-        (json!({"gpu":{"memoryMiB":1000}}), "GPU admission is not available"),
+        (json!({"machineId":"windows","cwd":"C:\\work","gpu":{"memoryMiB":1000}}), "GPU admission is not available on Windows on this PC"),
         (json!({"exclusive":true}), "exclusive applies to this host"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardGit":true}), "guardGit is not available on Windows on this PC"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardPaths":["src"]}), "guardPaths narrows guardGit, which is not available on Windows"),
@@ -862,7 +862,7 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
         (json!([stage("a", json!({"machineId":"windows"}))]), "Stage a: stages do not run on Windows on this PC"),
         (json!([stage("a", json!({"machineId":"m1"})), stage("b", json!({"needs":["a"]}))]),
             "Stage b: its upstream stage a runs on another machine; a stage reads its upstream files where they are"),
-        (json!([stage("a", json!({"machineId":"m1","gpu":{"memoryMiB":1000}}))]), "Stage a: GPU admission is not available on a remote machine"),
+        (json!([stage("a", json!({"machineId":"m1","gpu":{"memoryMiB":1000}}))]), "Stage a: GPU admission on a remote machine is for job_submit"),
         (json!([stage("a", json!({"machineId":"m1","exclusive":true}))]), "Stage a: exclusive applies to this host's jobs only"),
         (json!([stage("a", json!({"machineId":"m1","checkpoint":{"graceSeconds":10,"stoppedExitCode":75}}))]),
             "Stage a: Stop at a checkpoint is available for Jobs on this Core's host only"),
@@ -2535,7 +2535,10 @@ fn a_mac_is_described_as_holding_no_limits_and_no_pause() {
     assert_eq!(mac["platform"], "macOS");
     assert!(mac["limits"].as_str().unwrap().contains("macOS holds none of them: it has no cgroup"));
     assert!(mac["pause"].as_str().unwrap().starts_with("unavailable"));
-    for same in ["executor", "slots", "admission", "gpu", "inputs", "artifacts", "outputs", "processes", "bootId"] {
+    // A Mac has no NVIDIA GPU; an SSH Linux machine's GPUs are admitted there (YN-83 S2 PR6).
+    assert_eq!(mac["gpu"], "unavailable: macOS has no NVIDIA GPU");
+    assert!(linux["gpu"].as_str().unwrap().starts_with("By device UUID on that machine"));
+    for same in ["executor", "slots", "admission", "inputs", "artifacts", "outputs", "processes", "bootId"] {
         assert_eq!(mac[same], linux[same], "{same}");
     }
 }
@@ -3392,4 +3395,136 @@ async fn a_64_mib_artifact_downloads_over_a_real_sshd_as_the_file_it_is() {
     assert_eq!(digest(&body), digest(&std::fs::read(lab.work.join("big.bin")).unwrap()));
     assert_eq!(ended["result"]["artifacts"][0]["sha256"], json!(digest(&body)));
     println!("YN-187 PR2: 64 MiB over a real sshd in {:?}, SHA-256 {}", started.elapsed(), digest(&body));
+}
+
+/// A GPU reading of m1 as its remote session brings it (remote.rs
+/// gpu_sample's shape), `age` seconds old: one 23 GB card.
+const GPU_A: &str = "GPU-0a0a0a0a-1111-2222-3333-444444444444";
+fn gpu_reading(lab: &Lab, free_mib: u64, age: i64) {
+    let observed = (chrono::Utc::now() - chrono::TimeDelta::seconds(age)).to_rfc3339();
+    lab.ws.store.record_remote_gpu_sample("m1", json!({"observedAt": observed, "why": null, "source": "remote session",
+        "devices": [{"index": 0, "uuid": GPU_A, "name": "NVIDIA L4", "memoryTotalMiB": 23034, "memoryFreeMiB": free_mib,
+            "memoryUsedMiB": 23034 - free_mib, "utilizationPercent": 0}]})).unwrap();
+}
+
+/// v4 binds a GPU request and, once reserved, its devices (YN-83 S2 PR6);
+/// every earlier v4 shape keeps its digest. The same vectors as helper_test.py.
+#[test]
+fn the_digest_v4_binds_a_gpu_request_and_its_devices() {
+    let base = json!({"argv":["true"],"cwd":"/w","env":{},"timeoutSeconds":5});
+    let mut gpu = base.clone();
+    gpu["gpu"] = json!({"count":1,"memoryMiB":4096,"mode":"exclusive","devices":[],"reserved":null});
+    assert_eq!(remote::digest(&gpu), "a2921e796f0605909717e2de6b5d807acf273d1f23e41ec7c4e114e6749f2606");
+    gpu["gpu"]["reserved"] = json!(["GPU-11111111-2222-3333-4444-555555555555"]);
+    assert_eq!(remote::digest(&gpu), "7e8303630f048580e0974ccb216b499125a2fa3de37253f7a58f56bd3c4ac632");
+    let mut named = base.clone();
+    named["gpu"] = json!({"count":2,"memoryMiB":4096,"mode":"shared","devices":["GPU-a","GPU-b"],"reserved":["GPU-a","GPU-b"]});
+    assert_eq!(remote::digest(&named), "afb6a0a826f758024cf07407445ee3a043740f9339eb4a93a71f52bfad010175");
+    let mut whole = base.clone();
+    whole["git"] = json!({"frozen":{"root":"/w","head":"c".repeat(40),"statusSha256":"d".repeat(64)},"guardExclude":[]});
+    assert_eq!(remote::digest(&whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81");
+    whole["outputs"] = json!(["out/report.txt"]);
+    assert_eq!(remote::digest(&whole), "e1e454342aa4147a5f9de15f279217d27d9a4cb7ad5cdb14f65e029912897140");
+    assert_eq!(remote::digest(&base), "9fd6c28e5279171ad00e05426404968e28d63227503f7d147a3a41a5c78ad84b");
+}
+
+/// A GPU Job on an SSH machine (YN-83 S2 PR6) is admitted on a reading of
+/// that machine's GPUs at most 60 s old, fitted as this host's are: it gets
+/// the device reserved, by UUID, in its digest and in its command's
+/// CUDA_VISIBLE_DEVICES and YUZUNO_JOB_GPUS. Without a current reading, or
+/// while the card is held, it waits with why; one that can never fit is
+/// refused at submit.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_gpu_job_on_a_machine_starts_on_a_current_reading_there_with_its_devices() {
+    let lab = lab();
+    let gpu_job = |id: &str, command: &str, memory: u64| {
+        create(&lab, input(&lab, id, command, json!({"gpu":{"memoryMiB":memory}})))
+    };
+    // No reading yet: it waits, and says from where.
+    let first = gpu_job("first", "printf '%s|%s' \"$CUDA_VISIBLE_DEVICES\" \"$YUZUNO_JOB_GPUS\" > gpus.txt; sleep 3", 4096);
+    assert_eq!(first["remote"]["prebound"]["request"], "v4", "bound at submit with its request: {first}");
+    tick(&lab, &lab.ssh).await;
+    let waiting = job(&lab, &first);
+    assert_eq!(waiting["status"], "queued", "{waiting}");
+    assert_eq!(waiting["reason"], "Waiting for a current GPU sample from lab box: no GPU sample has been taken yet. GPU Jobs start there only on a reading at most 60 s old");
+    // A reading older than 60 s is not used.
+    gpu_reading(&lab, 20000, 120);
+    tick(&lab, &lab.ssh).await;
+    assert!(job(&lab, &first)["reason"].as_str().unwrap().contains("the last GPU sample is older than 60 s"), "{}", job(&lab, &first));
+    // A session that finds no tool says so.
+    lab.ws.store.record_remote_gpu_sample("m1", json!({"observedAt": chrono::Utc::now().to_rfc3339(), "devices": null, "why": "no_tool"})).unwrap();
+    tick(&lab, &lab.ssh).await;
+    assert!(job(&lab, &first)["reason"].as_str().unwrap().contains("its session there finds no NVIDIA GPU tool"), "{}", job(&lab, &first));
+    // A current reading: admitted with that device.
+    gpu_reading(&lab, 20000, 0);
+    let running = until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    assert_eq!(running["gpuReservation"][0]["uuid"], GPU_A, "{running}");
+    let spec = remote::spec(&running);
+    assert_eq!(spec["gpu"]["reserved"], json!([GPU_A]));
+    assert_eq!(running["remote"]["digest"], json!(remote::digest(&spec)), "bound with its devices before the start");
+    // The card is held by it (exclusive): the next GPU Job there waits.
+    let second = gpu_job("second", "true", 4096);
+    tick(&lab, &lab.ssh).await;
+    let held = job(&lab, &second);
+    assert!(held["reason"].as_str().unwrap().contains("is in use by managed job"), "{held}");
+    assert!(held["reason"].as_str().unwrap().ends_with("(GPUs of lab box)"), "{held}");
+    let done = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false && j["status"] != "running").await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(std::fs::read_to_string(lab.work.join("gpus.txt")).unwrap(), format!("{GPU_A}|{GPU_A}"));
+    // More than the card can ever give one job is refused at submit.
+    let too_big = input(&lab, "too-big", "true", json!({"gpu":{"memoryMiB":30000}}));
+    let machine = lab.ws.store.machine("m1").unwrap();
+    let error = lab.ws.store.create_job(Some("a"), too_big, json!({"cwd":lab.work,"remote":true}), remote::machine_snapshot(&machine),
+        remote::capabilities()).unwrap_err().to_string();
+    assert!(error.starts_with("This job can never fit: it needs 30000 MiB on 1 GPU(s)"), "{error}");
+    // This host's GPU view is not another machine's.
+    assert!(lab.ws.store.gpu_devices().unwrap()["devices"].as_array().unwrap().iter()
+        .all(|d| d["machineId"] == "m1" && d["machineName"] == "lab box"), "remote devices are named with their machine");
+}
+
+/// No GPU Job for a machine whose cards this Core would admit twice or that
+/// has none (YN-83 S2 PR6): Windows, This Mac and a macOS machine are
+/// refused, as is one machine-live names the same as this host or as
+/// another record; a machine that turns out to be this Core's own host
+/// (its machine-id) is never started there.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_gpu_job_is_refused_where_its_cards_would_be_admitted_twice_or_are_none() {
+    let lab = lab();
+    for (extra, refusal) in [
+        (json!({"machineId":"windows","cwd":"C:\\work","gpu":{"memoryMiB":1000}}), "GPU admission is not available on Windows on this PC"),
+        (json!({"machineId":"mac","gpu":{"memoryMiB":1000}}), "GPU admission is not available on This Mac"),
+    ] {
+        let error = input(&lab, "refused", "true", extra).validate().unwrap_err().to_string();
+        assert!(error.starts_with(refusal), "{error}");
+    }
+    // A machine last seen as a Mac.
+    let earlier = submit(&lab, "earlier", "true");
+    lab.ws.store.db.write().unwrap().execute(
+        "UPDATE local_jobs SET data=json_set(data,'$.remote.platform','Darwin') WHERE id=?1", [earlier["id"].as_str().unwrap()]).unwrap();
+    let error = super::gpu_machine_refusal(&lab.ws, "m1").await.unwrap_err().to_string();
+    assert_eq!(error, "GPU admission is not available on lab box: it runs macOS, which has no NVIDIA GPU; omit gpu");
+    // machine-live's sameAs, while that session is online.
+    assert_eq!(super::same_machine_refusal("lab box", Some("local"), None).unwrap(),
+        "lab box is this Core's own host (machine-live: sameAs local), whose GPUs this Core admits itself: submit the GPU Job without machineId");
+    assert_eq!(super::same_machine_refusal("lab box", Some("m2"), Some("spare box")).unwrap(),
+        "lab box is the same machine as spare box (machine-live: sameAs m2): submit the GPU Job with machineId m2");
+    assert!(super::same_machine_refusal("lab box", None, None).is_none());
+    // The machine behind the name is this host (its own machine-id): not started.
+    let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else { return };
+    if crate::remote_service::local_host_id(&lab.ws).is_none() {
+        return;
+    }
+    let here = self::lab();
+    std::fs::write(here.dir.path().join("machine-local"), machine_id).unwrap();
+    let ssh = script(here.dir.path().join("ssh-here"), format!("#!/bin/sh\n{ARGS}{} exec /bin/sh -c \"$1\"\n",
+        account(&here, "machine-local")));
+    let gpu = create(&here, input(&here, "here", "touch ran", json!({"gpu":{"memoryMiB":1000}})));
+    here.ws.store.record_remote_gpu_sample("m1", json!({"observedAt": chrono::Utc::now().to_rfc3339(), "why": null,
+        "devices": [{"index": 0, "uuid": GPU_A, "name": "NVIDIA L4", "memoryTotalMiB": 23034, "memoryFreeMiB": 20000}]})).unwrap();
+    let ended = until(&here, &ssh, &gpu, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "rejected", "{ended}");
+    assert!(ended["reason"].as_str().unwrap().contains("it is this Core's own host"), "{ended}");
+    assert!(!here.work.join("ran").exists());
 }

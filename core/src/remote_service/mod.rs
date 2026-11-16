@@ -34,5 +34,19 @@ mod tests;
 
 pub(crate) use live::router;
 pub(crate) use package::boot_command;
-pub(crate) use protocol::{Attempt, MAX_JOB_ATTEMPTS};
+pub(crate) use protocol::{Attempt, Gpu as GpuReading, MAX_JOB_ATTEMPTS};
 pub(crate) use registry::{hold_jobs, Closing, Hold, JobsView, Notice, Registry};
+
+/// What machine-live says the SSH machine `id` is the same as, while its
+/// session is online: `local` (this Core's own host) or another machine's id.
+pub(crate) fn same_as(ws: &crate::workspace::Workspace, id: &str) -> Option<String> {
+    use registry::Host;
+    ws.machine_live.same_as(id, ws.local_host().as_deref())
+}
+
+/// This Core's own host id, as remote_job.py names a machine (Linux; none
+/// elsewhere).
+pub(crate) fn local_host_id(ws: &crate::workspace::Workspace) -> Option<String> {
+    use registry::Host;
+    ws.local_host()
+}

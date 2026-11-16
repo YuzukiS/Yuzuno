@@ -108,7 +108,7 @@ Each attempt carries its declared CPU, RAM and swap and the machine's mode, boun
 |---|---|---|---|
 | CPU and RAM | Reserved in this host's budget and enforced by systemd (cgroup limits) | Held in the attempt's own systemd scope where the account's user manager has the controllers and lingers, read back before the command runs; `strict` (new machines) starts nothing it cannot hold, `limited` records what is only declared and holds nothing on a non-lingering account; a machine registered before limits only records them (see Limits) | Held by the attempt's Job Object: a hard CPU cap and a job-wide committed-memory limit, read back before the command runs (see Limits) |
 | Admission | This host's budget, its slots (`maxActive` of its own jobs at once: 4 unless set, 1–16, in Settings → Machines → Core host → Jobs; an older Core ignores a saved one and runs four, the CPU/RAM budget still bounding them), disk reserve and GPUs | Per machine: `maxJobs` attempts at once (2 unless set), within the machine's own `budget` when set; this host's budget is not used | This host's budget, which Windows and this WSL share (one PC: never counted twice nor added), and at most Windows' `maxJobs` attempts at once (2 unless set, 1–64, in Settings → Machines → Core host → Jobs: `POST /api/jobs/windows`); only a ceiling, never extra budget |
-| GPU admission | By device UUID (T-106) | Not available. A request with `gpu` is refused | Not available. A request with `gpu` is refused |
+| GPU admission | By device UUID (T-106) | On an SSH Linux machine, by device UUID as on this host, from a reading of that machine's GPUs by its remote session at most 60 s old (see GPUs on a machine). Refused for a Mac and for a machine machine-live names the same as this host or another machine | Not available. A request with `gpu` is refused |
 | Exclusive | Alone among this host's jobs | Not available. Refused | Not available. Refused |
 | Pause and resume | Freezes the job's cgroup (T-107) | Only for an attempt that runs in a scope of its own there (its limits are held: strict, or limited on an account that lingers): the scope is frozen through the account's systemd and read back from its cgroup. Otherwise refused with the reason (see Pause and resume) | Not available. A pause is refused with the reason |
 | Git guard | Checked on this host | Checked on that machine by its helper, with the Git on that account's `PATH`, by this host's rules (see Inputs and artifacts) | Not available. Set `guardGit` to `false` |
@@ -191,7 +191,7 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   - each artifact's path, format and `minBytes`;
   - whether limits are carried.
 
-  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte. One with `guardGit` or `outputs`, or a run's stage, is pinned at submit with digest v4: v3's fields, the Git state frozen there and the guard's exclusions, the declared outputs, and a stage's needs. A Core from before v4 would send that start without them, and the machine refuses it before writing anything.
+  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte. One with `guardGit`, `outputs` or `gpu`, or a run's stage, is pinned at submit with digest v4: v3's fields, the Git state frozen there and the guard's exclusions, the declared outputs, a stage's needs, and the GPU request (bound again, with the devices reserved for it, when it is admitted). A Core from before v4 would send that start without them, and the machine refuses it before writing anything.
 - **Older Cores.** While a remote job is queued, Core builds from before data roots cannot open the Workspace (older_cores.rs). They also cannot open it while a machine has a setting they would ignore (a mode, which every machine added now has; a budget; or `maxJobs`), or while an attempt runs outside the legacy root. Otherwise such a Core may open it with a started v3 attempt:
   - it sends each request with the digest pinned with the attempt and does not compute it again after the start (core.11: `bound` in remote.rs);
   - its helper checks the digest only at a start (core.11: `start` in remote_job.py);
@@ -200,6 +200,17 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   That Core reports the outcome and its reason, without the per-file artifact details.
 - **Bound at submit.** A job with inputs or artifacts is bound when it is submitted, not when it starts: its digest (the v3 request, with the limits mode the machine has then) is recorded with the job and marked `prebound`. This is what a Core that knows data roots but not inputs and artifacts (a build from T-137 slice A up to the one before them; no release was cut in between) does with such a job if it opens the Workspace while the job is still queued, as after a rollback: it pins the machine as usual but keeps the recorded digest (it records a digest only where none is), sends its own shorter request with it, and the machine refuses that start before writing anything. The job ends as not started, with that reason, and its command never runs without its checks. This is a **safe fail**, not support for running such a job on that Core. Core builds from before data roots (core.11 and earlier) cannot open the Workspace while it is queued (above).
 - **Its mode is the one it was bound with.** If the machine's limits mode changes while the job waits, it is not started (the reason says to submit it again): it is neither run in the mode it was bound with nor bound again. Its slot and budget are admitted when it starts, as for every job.
+
+## GPUs on a machine
+
+A Job with `gpu` and the `machineId` of an SSH Linux machine (YN-83 S2) is admitted to that machine's NVIDIA GPUs by the same rules as this host's (T-106): by device UUID, exclusive unless shared on a device the user opened for sharing, with the memory kept free, and against the managed reservations already on each device.
+
+- **The reading.** While a GPU Job on the machine waits or runs, Core keeps that machine's remote session open and has it read the GPUs (see [Remote program: GPUs](remote-program.md#gpus)). Each reading is kept as that machine's sample (`remote_job_gpu_samples`), and each device it names is known by UUID with the machine.
+- **Only a current one.** A GPU Job there starts only on a reading at most 60 s old, the same limit this host's sampler has. Without one it waits, naming the machine and why: no reading yet, one older than 60 s, or what the session said (no `nvidia-smi` there, none readable, or readings stopped). CPU Jobs there are not held.
+- **Reserved, then bound.** The devices are reserved in this Core's database when the Job takes its slot there; the attempt's digest is computed again with them, and its start carries them. The helper starts the command with `CUDA_VISIBLE_DEVICES` and `YUZUNO_JOB_GPUS` set to the reserved UUIDs, and only those.
+- **Never two admissions of one card.** A GPU Job is refused at submit on `windows`, This Mac and a machine last seen running macOS (none has an NVIDIA GPU), and on a machine machine-live names, while its session is online, the same as this Core's host (`sameAs: local`: submit without `machineId`) or as another registered machine (submit with that one's `machineId`). A machine whose helper answers with this Core's own host id at its first contact is never started (`Not started on …: it is this Core's own host …`). A UUID this host or another machine already has is not taken over by a later machine's reading.
+- **The Jobs panel** lists each machine's GPUs after this host's, named with the machine, with when that machine read them and any problem.
+- **Known limits.** A GPU Job waiting for a device on a machine holds nothing for itself there, so a later, smaller GPU Job on the same machine may start first. Stages of a run with `gpu` on a machine are refused in this version (`job_submit` only). The same card reached under two names is caught only while machine-live's session for one of them is online, or at the first contact when it is this host.
 
 ## Pause and resume
 
@@ -334,7 +345,8 @@ A Mac registered on the Machines page runs jobs as any SSH machine does: the sam
   - a supervisor that dies, then a cancel of a command that ignores TERM: `unknown` and held after the first check, cancelled and released by the next;
   - a restarted machine (`interrupted`) and an unreadable record (held, even after a cancel);
   - cancel of the process tree, and a cancel before anything was sent;
-  - failures, refusals, per-machine slots, and GPU and stages refused;
+  - failures, refusals and per-machine slots;
+  - a GPU Job there: waiting with the machine and why without a reading, with one older than 60 s and with no `nvidia-smi` there; started on a current reading with the device reserved by UUID, bound in its digest and set in `CUDA_VISIBLE_DEVICES` and `YUZUNO_JOB_GPUS`; a second one waiting while the card is held; one that can never fit refused at submit; `windows`, This Mac, a machine last seen as a Mac and machine-live's `sameAs` refused; a machine that is this Core's own host never started;
   - pause refused for an attempt without a scope of its own there; for one in its own scope, the job as the machine answered, a reply that does not come back settled by the next status, and a status read around a resume settling it once;
   - a machine without `python3`, or with one too old for the helper: not started, with the shell's message, nothing sent; a helper killed at the first contact: the job waits and runs once the machine answers; a helper that breaks after the start was sent: `unknown`, held;
   - a login script that prints to stdout before every command: replies and output are read as usual;
@@ -347,7 +359,7 @@ A Mac registered on the Machines page runs jobs as any SSH machine does: the sam
   - cancel;
   - the machine's alias re-pointed mid-run at a second `sshd` that has its own host key and machine identity, then pointed back;
   - a supervisor killed mid-run, then its command exiting with a child left;
-  - GPU refused, and pause for an attempt without a scope of its own.
+  - a GPU Job for this Core's own host behind a machine name, which never runs there, and pause refused for an attempt without a scope of its own.
 
   This is the same physical host over loopback, not a separate remote Linux machine. For a real one, see the next section.
 
@@ -382,7 +394,7 @@ These tools in `acceptance/remote-jobs/` check the executor on a real Linux mach
   | The control connection lost mid-run | the real machine keeps running; only the acceptance Core's `ssh` calls fail |
   | Same `requestId`, and a Core restart mid-run | the real machine; the acceptance Core is restarted |
   | Cancel of the process tree; a supervisor killed, with a child left | the real machine; the run kills only its own attempt's supervisor |
-  | GPU refused, and pause for an attempt without a scope of its own | the acceptance Core, and the real machine for the paused job. An attempt in a scope of its own is not paused here: `pause.py` checks that |
+  | A GPU Job there: started on a current reading of its GPUs, or waiting with why on a machine without one; pause refused for an attempt without a scope of its own | the real machine (its GPUs, if any, and the paused job); not yet run with this check. An attempt in a scope of its own is not paused here: `pause.py` checks that |
   | A real reboot | not covered: never done in acceptance; simulated in the fixtures |
   | The SSH name pointed at another machine | not covered there (needs a second machine); covered by `check.py` over loopback |
   | The account's last session ending while a job runs | not covered: no session is logged out and the user manager is never stopped. Whether a process outlives it depends on the host's logind settings, which the run neither reads nor changes |

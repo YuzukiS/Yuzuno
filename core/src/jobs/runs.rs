@@ -271,6 +271,12 @@ impl RunSubmit {
                     "Stage {key}: reuse names the job ID of an earlier attempt"
                 );
             }
+            // A remote GPU Job is a job_submit's (YN-83 S2 PR6): its machine is
+            // checked against the others and this host before it is queued.
+            ensure!(
+                stage.gpu.is_none() || stage.machine_id.as_deref().is_none_or(|m| matches!(m, super::CORE_HOST | super::AGENT_MACHINE)),
+                "Stage {key}: GPU admission on a remote machine is for job_submit in this version; omit gpu or machineId"
+            );
             // The stage named with the reason: tool errors show one message.
             // A stage on a machine has a remote Job's rules too.
             let submit = self.submit(stage);
