@@ -134,7 +134,7 @@ fn merge_summary(entry: &Value) -> Value {
 /// and why, and its merge.
 fn merge_row(entry: &Value) -> Value {
     let mut row = pick(entry, &["id", "entryId", "taskId", "taskReference", "repository", "number", "url", "headSha", "state",
-        "reason", "detail", "waitingSince", "createdAt", "updatedAt"]);
+        "reason", "detail", "blocker", "waitingSince", "createdAt", "updatedAt"]);
     if entry["merge"].is_object() {
         row["merge"] = pick(&entry["merge"], &["sha", "mergedAt", "mainCi"]);
     }

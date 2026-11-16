@@ -252,6 +252,11 @@ fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
     is_part_of(row, &listed, "row");
     assert!(rows["more"].as_str().unwrap().contains("merge_get"));
     assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
+    // A row keeps what holds its entry now (YN-193).
+    let mut held = listed.clone();
+    held["blocker"] = json!({"code":"queue_paused","reason":"main_red","since":"t4"});
+    let rows = answer("merge_list", json!({"entries":[held],"nextBefore":null,"hasMore":false}), Some("summary"));
+    assert_eq!(rows["entries"][0]["blocker"], json!({"code":"queue_paused","reason":"main_red","since":"t4"}));
 }
 
 #[test]
