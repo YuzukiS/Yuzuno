@@ -80,6 +80,29 @@ fn mail(s: &Store, agent: &str) -> Vec<Value> {
         .clone()
 }
 
+/// An observation says whether it changed what a reader sees, and only then
+/// is it announced (YN-198): when it was tried, answered and is due again
+/// change every time and do not count.
+#[test]
+fn an_observation_that_sees_nothing_new_changes_nothing_a_reader_sees() {
+    let (_dir, s) = setup();
+    let w = subscribe(&s, "a", "watch")["watchId"].as_str().unwrap().to_owned();
+    let observed = |runs: Vec<Value>| s.ci_observe(&w, Ok(seen(runs, Some("a".repeat(40))))).unwrap();
+    let failed = || s.ci_observe(&w, Err("HTTP 503".into())).unwrap();
+    assert!(observed(vec![run(1, "in_progress", Value::Null)]), "a new run");
+    assert!(!observed(vec![run(1, "in_progress", Value::Null)]), "the same run again");
+    assert!(observed(vec![run(1, "completed", json!("success"))]), "it finished");
+    assert_eq!(mail(&s, "a").len(), 1);
+    assert!(!observed(vec![run(1, "completed", json!("success"))]), "finished, and mailed once");
+    assert!(failed(), "a failed read");
+    assert!(!failed(), "the same failure again");
+    assert!(observed(vec![run(1, "completed", json!("success"))]), "read again");
+    // GitHub says nothing new, but the interest expired: its close is news.
+    s.db.write().unwrap().execute("UPDATE ci_interests SET expires=0", []).unwrap();
+    assert!(observed(vec![run(1, "completed", json!("success"))]), "its interest closed");
+    assert!(!observed(vec![run(1, "completed", json!("success"))]), "closed already");
+}
+
 #[test]
 fn subscription_retry_shared_facts_and_per_subscriber_restart_notifications() {
     let (dir, s) = setup();
