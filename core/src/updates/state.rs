@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 pub const KEEP_RELEASES: usize = 3;
@@ -282,35 +281,6 @@ pub struct Journal {
 #[derive(Clone)]
 pub struct Layout {
     pub root: PathBuf,
-    /// The journal as last read and the file it came from, shared by this
-    /// layout's clones (YN-197): the collaboration worker reads it twice a
-    /// round, the update monitor every 2 s, and an unchanged file is not
-    /// parsed again.
-    read: Arc<Mutex<Option<(Stamp, Journal)>>>,
-}
-
-/// Which `state.json` a read saw. Every writer replaces the file by rename
-/// (`atomic_json`), so each write is a new inode as well as, usually, a new
-/// length or mtime; where the platform has no mtime nothing is kept.
-#[derive(PartialEq)]
-struct Stamp {
-    len: u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    inode: (u64, u64),
-}
-impl Stamp {
-    fn of(meta: &fs::Metadata) -> Option<Self> {
-        Some(Self {
-            len: meta.len(),
-            modified: meta.modified().ok()?,
-            #[cfg(unix)]
-            inode: {
-                use std::os::unix::fs::MetadataExt;
-                (meta.dev(), meta.ino())
-            },
-        })
-    }
 }
 impl Layout {
     pub fn open(root: &Path) -> Result<Self> {
@@ -345,7 +315,7 @@ impl Layout {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
             }
         }
-        Ok(Self { root, read: Default::default() })
+        Ok(Self { root })
     }
     pub fn updates(&self) -> PathBuf {
         self.root.join("updates")
@@ -365,12 +335,7 @@ impl Layout {
         );
         Ok(bundle)
     }
-    /// The journal as the file holds it now; one this layout read before
-    /// and that has not changed since is not read again (`Stamp`).
     pub fn journal(&self) -> Result<Journal> {
-        self.load(true)
-    }
-    fn load(&self, reuse: bool) -> Result<Journal> {
         let path = self.updates().join("state.json");
         if !path.exists() {
             return Ok(Journal::default());
@@ -380,26 +345,17 @@ impl Layout {
             meta.file_type().is_file() && meta.len() < 4 * 1024 * 1024,
             "Invalid update state file"
         );
-        let stamp = Stamp::of(&meta).filter(|_| reuse);
-        let mut read = self.read.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let (Some(stamp), Some((seen, journal))) = (&stamp, read.as_ref()) {
-            if stamp == seen {
-                return Ok(journal.clone());
-            }
-        }
-        // Whole, then parsed: a reader of the file itself reads a byte a call.
-        let journal: Journal = serde_json::from_slice(&fs::read(&path)?)?;
-        if let Some(stamp) = stamp {
-            *read = Some((stamp, journal.clone()));
-        }
-        Ok(journal)
+        // Whole, then parsed (YN-197): parsing from the file itself read it a
+        // byte per call, twice a collaboration round. Read every time: the
+        // journal also checks control requests and decides phases.
+        Ok(serde_json::from_slice(&fs::read(&path)?)?)
     }
     /// Every writer reloads under an OS lock. HTTP cancel and helper transitions
     /// cannot overwrite each other's decisions or lose an idempotency receipt.
     pub fn edit<T>(&self, action: impl FnOnce(&mut Journal) -> Result<T>) -> Result<T> {
         let lock = private_file(&self.updates().join("state.lock"))?;
         lock.lock()?;
-        let mut state = self.load(false)?;
+        let mut state = self.journal()?;
         let result = action(&mut state)?;
         atomic_json(&self.updates().join("state.json"), &state)?;
         Ok(result)
@@ -455,7 +411,7 @@ mod tests {
         assert_eq!(layout.journal().unwrap().requests.len(), 8);
     }
     #[test]
-    fn an_unchanged_journal_is_not_read_again_and_a_replaced_one_is() {
+    fn every_read_sees_the_file_as_it_is_now() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::open(dir.path()).unwrap();
@@ -466,8 +422,8 @@ mod tests {
         }).unwrap();
         let path = layout.updates().join("state.json");
         assert_eq!(layout.journal().unwrap().requests[0].1, "first");
-        // Rewritten in place with the same length and mtime: what this layout
-        // read before is what it answers, without reading the file.
+        // Rewritten in place with the same length and mtime: still read anew
+        // (YN-197: no read is reused, whatever the file's metadata says).
         let before = fs::metadata(&path).unwrap();
         let text = fs::read_to_string(&path).unwrap().replace("first", "fifth");
         let mut file = OpenOptions::new().write(true).open(&path).unwrap();
@@ -475,7 +431,7 @@ mod tests {
         file.set_modified(before.modified().unwrap()).unwrap();
         drop(file);
         assert_eq!(fs::metadata(&path).unwrap().len(), before.len());
-        assert_eq!(layout.journal().unwrap().requests[0].1, "first");
+        assert_eq!(layout.journal().unwrap().requests[0].1, "fifth");
         // A write reads the file itself, and replaces it: every read after sees it.
         layout.edit(|s| {
             assert_eq!(s.requests[0].1, "fifth");
