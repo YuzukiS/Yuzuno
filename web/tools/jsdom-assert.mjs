@@ -35,12 +35,12 @@ function data(object, key) {
 }
 
 /** The class names (WebIDL's @@toStringTag) on an object's prototype chain,
- *  or none for a primitive or where a Proxy is met. */
+ *  up to the first Proxy on it, which is not touched (jsdom's window has one,
+ *  WindowProperties, behind Window.prototype); none for a primitive or a Proxy. */
 function classes(value) {
   const found = [];
   if (typeof value !== "object" || value === null || types.isProxy(value)) return found;
-  for (let proto = Object.getPrototypeOf(value); proto !== null; proto = Object.getPrototypeOf(proto)) {
-    if (types.isProxy(proto)) return [];
+  for (let proto = Object.getPrototypeOf(value); proto !== null && !types.isProxy(proto); proto = Object.getPrototypeOf(proto)) {
     const tag = data(proto, Symbol.toStringTag);
     if (typeof tag === "string") found.push(tag);
   }

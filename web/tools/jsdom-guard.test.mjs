@@ -247,6 +247,11 @@ test("finding a DOM object runs no getter and no Proxy trap", () => {
   const sneaky = { get nodeType() { return count(); }, get window() { return count(); }, get child() { count(); return node; } };
   const trapped = new Proxy(node, { get: count, getPrototypeOf: () => (count(), NODE), ownKeys: () => (count(), []), getOwnPropertyDescriptor: count });
   for (const value of [sneaky, trapped, [trapped], new Proxy([node], { ownKeys: () => (count(), []) })]) assert.equal(holdsDom(value), false);
+  // A Proxy further up the chain, as behind jsdom's Window.prototype, is not touched either.
+  const traps = { get: count, getPrototypeOf: () => (count(), null), getOwnPropertyDescriptor: () => (count(), undefined), ownKeys: () => (count(), []) };
+  const windowLike = Object.create(Object.create(new Proxy(classed("EventTarget"), traps), { [Symbol.toStringTag]: { value: "Window" } }));
+  assert.equal(holdsDom(windowLike), true);
+  assert.equal(describe(windowLike), "Window");
   assert.equal(reads, 0);
 });
 
