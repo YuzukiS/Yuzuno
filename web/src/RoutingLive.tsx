@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, CircleCheck, CircleDashed, CircleHelp, CircleMi
 import { errorText, HttpError } from "./api";
 import type { Candidate, Policy } from "./executor-routing";
 import { strings, useLanguage, type Language } from "./i18n";
-import { evaluate, oldestReading, readChoices, readReadings, type CandidateState, type Choice, type Reading, type Reason, type Readings, type RouteCandidate, type RouteRecord } from "./routing-live";
+import { evaluate, oldestReading, readChoices, readReadings, type CandidateState, type Choice, type Reading, type Reason, type Readings, type RouteCandidate, type RouteMachine, type RouteRecord } from "./routing-live";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
 
 const text = strings({
@@ -23,6 +23,8 @@ const text = strings({
   liveRefused: "Core can't judge this draft yet:",
   states: { chosen: "Would choose", skipped: "Skipped", unknown: "Unknown", failed: "Start failed", notTried: "Not reached", off: "Off" } as Record<CandidateState, string>,
   accountStates: { pick: "Would use", ok: "Enough", low: "Not enough", unknown: "No reading" } as Record<string, string>,
+  machinesTitle: "Each machine's own login",
+  thisHost: "This host",
   what: { weekLeft: "Week left", spendToday: "Spent today" } as Record<string, string>,
   resets: (t: string) => `resets ${t}`,
   justNow: "just now",
@@ -57,6 +59,8 @@ const text = strings({
   liveRefused: "Core 还判断不了这份草稿：",
   states: { chosen: "会选这个", skipped: "跳过", unknown: "未知", failed: "启动失败", notTried: "没轮到", off: "已停用" },
   accountStates: { pick: "会用这个", ok: "够用", low: "不够", unknown: "读不到" },
+  machinesTitle: "各台机器上自己的登录",
+  thisHost: "这台主机",
   what: { weekLeft: "本周剩", spendToday: "今日已花" },
   resets: (t) => `${t} 重置`,
   justNow: "刚刚",
@@ -206,6 +210,33 @@ export function CandidateLive({ live }: { live: RouteCandidate | undefined }) {
           ))}
         </ul>
       ) : byAccount.get("")?.length ? <Readings list={byAccount.get("")!} t={t} /> : null}
+      {live.machines?.length ? <Machines list={live.machines} t={t} language={language} /> : null}
+    </div>
+  );
+}
+
+/** A login's quota on each machine it may run on (YN-175): this host's own
+ * login and each other machine's own, as Core read it there. */
+function Machines({ list, t, language }: { list: RouteMachine[]; t: Text; language: Language }) {
+  const time = useTimeDisplay();
+  return (
+    <div className="routing-live-machines">
+      <p className="routing-live-title">{t.machinesTitle}</p>
+      <ul className="routing-live-accounts">
+        {list.map((m) => (
+          <li key={m.machine} data-machine={m.machine}>
+            <span className="routing-live-account">{m.machine === "local" ? t.thisHost : m.name ?? m.machine}</span>
+            {m.weekLeftPct != null ? (
+              <span className="routing-reading">{t.what.weekLeft} <b>{m.weekLeftPct}%</b>
+                <span className="routing-meter" aria-hidden="true"><i className={m.state === "low" ? "is-low" : undefined}
+                  style={{ width: `${Math.max(0, Math.min(100, m.weekLeftPct))}%` }} /></span></span>
+            ) : m.reason ? <span className="routing-reading">{reasonWords(m.reason, language)}</span> : null}
+            {m.state === "low" && m.resetsAt && <span className="routing-reading">{t.resets(clock(time).format(Date.parse(m.resetsAt)))}</span>}
+            {m.observedAt && <span className="routing-reading-at">{ago(Date.parse(m.observedAt), t)}</span>}
+            <span className={`settings-tag${m.state === "low" ? " is-error" : ""}`}>{t.accountStates[m.state]}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
