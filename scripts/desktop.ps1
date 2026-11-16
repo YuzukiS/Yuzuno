@@ -270,9 +270,11 @@ function Get-TauriCli {
         $npm = Get-Command npm.cmd -CommandType Application -ErrorAction Stop
         New-Item -ItemType Directory -Force -Path $cli | Out-Null
         # npm.cmd runs in cmd.exe, which cannot start in a \\wsl$ folder.
+        # Its output goes to the console: in a function it would otherwise
+        # become part of what the function returns.
         Push-Location -LiteralPath $cli
         try {
-            & $npm.Source install --prefix $cli --no-save --no-audit --no-fund --ignore-scripts "@tauri-apps/cli@$tauriCliVersion"
+            & $npm.Source install --prefix $cli --no-save --no-audit --no-fund --ignore-scripts "@tauri-apps/cli@$tauriCliVersion" | Out-Host
         } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw "Could not install @tauri-apps/cli $tauriCliVersion" }
     }
@@ -334,12 +336,14 @@ try {
         if ((@($build.app.architectures) -join ',') -cne 'arm64') { $problems += "build.json's app.architectures is $(@($build.app.architectures) -join ','), not arm64" }
         if ($build.sourceCommit -cne $SourceCommit) { $problems += "build.json's sourceCommit is $($build.sourceCommit), not $SourceCommit" }
         if ($build.app.updatePublicKeyId -cne $keyId) { $problems += "build.json's app.updatePublicKeyId is $($build.app.updatePublicKeyId), not $keyId (desktop\desktop-update.pub)" }
-        # Only this script's own checkout counts, never a repository it lies in.
-        $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
-        $top = if ($git) { & { $ErrorActionPreference = 'Continue'; (& $git.Source -C $repoRoot rev-parse --show-toplevel 2>$null | Out-String).Trim() } } else { '' }
-        if ($top -and (Test-Path -LiteralPath $top) -and (Resolve-Path -LiteralPath $top).Path -eq (Resolve-Path -LiteralPath $repoRoot).Path) {
-            $head = (& $git.Source -C $repoRoot rev-parse HEAD | Out-String).Trim()
-            if ($head -cne $SourceCommit) { $problems += "this checkout is at $head, not $SourceCommit" }
+        # This script's own checkout (a .git at its root, never a repository
+        # it lies in) must be at the release's commit. A checkout whose commit
+        # git cannot read is refused, not taken for a `git archive` copy.
+        if (Test-Path -LiteralPath (Join-Path $repoRoot '.git')) {
+            $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue
+            $head = if ($git) { & { $ErrorActionPreference = 'Continue'; (& $git.Source -C $repoRoot rev-parse --verify HEAD 2>$null | Out-String).Trim() } } else { '' }
+            if ($head -cnotmatch '\A[0-9a-f]{40}\z') { $problems += "this script runs from a git checkout whose commit git cannot read$(if (-not $git) { ' (no git on PATH)' })" }
+            elseif ($head -cne $SourceCommit) { $problems += "this checkout is at $head, not $SourceCommit" }
         }
         if ($problems) { throw ("The Mac candidate in $candidate is not this release's:`n- " + ($problems -join "`n- ")) }
 

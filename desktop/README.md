@@ -398,7 +398,7 @@ The project's key is the one whose public key is committed as [`desktop/desktop-
 - **What `-StageMac` refuses.** It checks that folder against this release first and refuses unless:
   - `SHA256SUMS` matches the disk image, the update package and `build.json`;
   - `build.json` names `-Version`, `arm64`, `-SourceCommit` and the key ID of `desktop/desktop-update.pub`;
-  - this script's git checkout, if it runs from one, is at `-SourceCommit` (a source copy made with `git archive` has no checkout).
+  - this script's git checkout (a `.git` at its root), if it runs from one, is at `-SourceCommit`; a checkout whose commit git cannot read is refused (a source copy made with `git archive` has no checkout).
 - **What it stages.** It copies `Yuzuno.app.tar.gz` and the disk image into the release folder as `yuzuno-desktop-darwin-aarch64.app.tar.gz` and `yuzuno-desktop-darwin-aarch64.dmg`. Then it signs the update package with `tauri signer sign -f <key> --app-version <version>`, which writes `yuzuno-desktop-darwin-aarch64.app.tar.gz.sig`.
 - **The key.** It never reads the key, and clears `TAURI_SIGNING_PRIVATE_KEY` for the call. At the end it lists the release folder's files with their SHA-256 and the key ID that signed the update package.
 
