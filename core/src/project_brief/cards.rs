@@ -259,32 +259,39 @@ pub(super) fn archive(db: &Connection, row: &Row, at: &str) -> Result<()> {
 /// In the transaction that ends the task `task` (internal ID): done,
 /// cancelled or archived (collaboration_store.rs `save_task`). Every live
 /// section bound to it by its own `task` or its topic's leaves the live
-/// Brief as archived, except a report the user has not read in its current
-/// version, which stays until they open it (`mark_opened`) or mark it seen,
-/// and an unresolved ask, which leaves only when its owner resolves it.
-/// Implicit bindings archive nothing. No section, version, Seen or opened
-/// mark changes, nor the Brief's version, as with a Seen mark; a release
-/// later hands what stays to the executor's dispatcher (`hand_over`).
+/// Brief as archived, a report the user has not read yet too (YN-195: Home
+/// shows it in Done for its 30 days, no longer counted as new), but an
+/// unresolved ask, which leaves only when its owner resolves it. A report
+/// an older Core kept live unread still leaves when it is opened
+/// (`mark_opened`). Implicit bindings archive nothing. No section, version,
+/// Seen or opened mark changes, nor the Brief's version, as with a Seen
+/// mark; a release later hands what stays to the executor's dispatcher
+/// (`hand_over`).
 pub(crate) fn task_closed(db: &Connection, task: &str) -> Result<()> {
     let rows = sections::bound_to(db, task)?;
     let at = now();
-    let mut marks: HashMap<String, (HashMap<String, (i64, String)>, HashMap<i64, (i64, String)>)> = HashMap::new();
-    for row in &rows {
-        let keep = match row.kind.as_str() {
-            "ask" => row.unresolved_ask(),
-            "report" => {
-                if !marks.contains_key(&row.project_id) {
-                    let read = (sections::seen(db, &row.project_id)?, sections::opened(db, &row.project_id)?);
-                    marks.insert(row.project_id.clone(), read);
-                }
-                let (seen, opened) = &marks[&row.project_id];
-                sections::read_version(row, seen, opened).is_none_or(|version| version < row.version)
-            }
-            _ => false,
-        };
-        if !keep {
-            archive(db, row, &at)?;
-        }
+    for row in rows.iter().filter(|row| !row.unresolved_ask()) {
+        archive(db, row, &at)?;
+    }
+    Ok(())
+}
+
+/// In the transaction that saves the user's choice of `project`'s leads
+/// without `agent` (agent_roles.rs `save`): its live reports and statuses
+/// there leave the live Brief with reason lead-left (YN-195), into the 30
+/// days of history. Still a member, it could neither keep them up to date
+/// nor be claimed from, and no lead could remove them. Its Asks stay until
+/// it resolves them or they are answered. An Agent that moves to another
+/// Project leaves its sections to be claimed, as before. No version
+/// changes, nor the Brief's, as with a card archived with its task.
+pub(crate) fn lead_left(db: &Connection, agent: &str, project: &str) -> Result<()> {
+    let at = now();
+    for row in sections::live(db, project)?.iter().filter(|row| row.owner_id == agent && row.kind != "ask") {
+        db.execute(
+            "UPDATE project_brief_sections SET live=0,history_reason='lead-left',history_at=?2 WHERE seq=?1 AND live=1",
+            params![row.seq, at],
+        )?;
+        sections::record_ending(db, row, row.version, "lead-left", &at)?;
     }
     Ok(())
 }

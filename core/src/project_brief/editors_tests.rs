@@ -7,6 +7,14 @@ fn choose_leads(ws: &Workspace, project: &str, ids: &[&str]) {
     crate::agent_roles::save(&ws.store, project, version, ids.iter().map(|id| id.to_string()).collect()).unwrap();
 }
 
+/// `agent` moved to another Project and back, not by the user: it is a
+/// member that leads no more, its sections still live and its own.
+fn away_and_back(ws: &Workspace, agent: &str, project: &str) {
+    let away = ws.store.create_project(&format!("Away {agent}"), std::collections::BTreeMap::new()).unwrap().id;
+    ws.store.set_agent_project(agent, Some(&away)).unwrap();
+    ws.store.set_agent_project(agent, Some(project)).unwrap();
+}
+
 fn edits(ws: &Workspace, actor: &str) -> Value {
     brief(ws, actor)["you"]["capabilities"]["editContent"].clone()
 }
@@ -103,7 +111,10 @@ async fn an_ask_only_owner_removes_its_own_old_status() {
     choose_leads(&ws, &project, &["a", "b"]);
     accept(&ws, "b", input("old", 0, vec![put("plan", "status"), put("notes", "report")])).await;
     accept(&ws, "a", input("other", 1, vec![put("summary", "report")])).await;
-    choose_leads(&ws, &project, &["a"]);
+    // Out of the Project and back, it leads no more and its old sections are still live and its own (a lead the
+    // user no longer lists leaves them to history instead, YN-195).
+    away_and_back(&ws, "b", &project);
+    assert_eq!(crate::agent_roles::get(&ws.store, &project).unwrap().lead_agent_ids, ["a"]);
     ws.store.db.write().unwrap().execute(
         "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'[\"a\"]')", [&project]).unwrap();
     assert_eq!(edits(&ws, "b"), false);
@@ -125,7 +136,8 @@ async fn policy_limits_every_operation_without_bypassing_section_ownership() {
     accept(&ws, "b", input("old", 0, vec![put("old", "status")])).await;
     accept(&ws, "c", input("orphan", 1, vec![put("orphan", "report")])).await;
     close(&ws, "c", true);
-    choose_leads(&ws, &project, &["a"]);
+    // b leads no more with its old status still live (see away_and_back); c, closed, keeps its lead and its orphan.
+    away_and_back(&ws, "b", &project);
     let capabilities = brief(&ws, "b")["you"]["capabilities"].clone();
     assert_eq!(capabilities, json!({"editContent":false,"requiresTurnUpdate":false,"writeOwnAsk":true}));
     assert_eq!(brief(&ws, "a")["you"]["capabilities"]["editContent"], true);
@@ -183,8 +195,10 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
     let panel = &view["projects"][0];
     let keys: Vec<_> = panel["brief"]["sections"].as_array().unwrap().iter().map(|s| s["key"].clone()).collect();
     assert_eq!(keys, vec![json!("lead"), json!("worker/question"), json!("reply")]);
-    assert_eq!(panel["brief"]["teamSections"][0]["key"], "worker");
-    assert!(panel["brief"]["teamSections"][0]["seen"].is_null());
+    // A lead no longer listed leaves its report to history (YN-195), not to the team's cards; still not seen.
+    assert_eq!(panel["brief"]["teamSections"], json!([]));
+    let worker = panel["brief"]["history"].as_array().unwrap().iter().find(|s| s["key"] == "worker").unwrap();
+    assert_eq!((worker["historyReason"].clone(), worker["seen"].clone()), (json!("lead-left"), Value::Null));
     assert_eq!(panel["unseen"], 3);
     assert_eq!(panel["missing"].as_array().unwrap().len(), 1);
     assert_eq!(panel["missing"][0]["agentId"], "a");
@@ -255,7 +269,8 @@ async fn a_task_executor_is_never_a_home_editor_with_no_list_or_one() {
         let keys = |list: &Value| list.as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
         (keys(&view["projects"][0]["brief"]["sections"]), keys(&view["projects"][0]["brief"]["teamSections"]))
     };
-    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec!["written".to_owned()]), "its Ask is the Project's, its report the team's");
+    // Its report left with its lead (YN-195); its Ask is the Project's.
+    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec![]));
     let version = crate::agent_roles::get(&ws.store, &project).unwrap().version;
     let refused = crate::agent_roles::save(&ws.store, &project, version, vec!["b".into(), "c".into()]).unwrap_err().to_string();
     assert!(refused.starts_with("invalid_lead: an executor cannot lead a Project"), "{refused}");
@@ -263,5 +278,5 @@ async fn a_task_executor_is_never_a_home_editor_with_no_list_or_one() {
         "INSERT INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'[\"b\",\"c\"]')", [&project]).unwrap();
     assert_eq!(brief(&ws, "c")["you"]["capabilities"], ask_only, "a list that names it does not make it an editor");
     assert_eq!(brief(&ws, "b")["you"]["capabilities"]["editContent"], true);
-    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec!["written".to_owned()]));
+    assert_eq!(shown(&ws), (vec!["question".to_owned()], vec![]));
 }

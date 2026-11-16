@@ -204,11 +204,12 @@ async fn a_cards_executor_never_changes_a_leads_sub_topic_under_its_card() {
 }
 
 /// When its task is done, a card and the sub-topics under it leave the live
-/// Brief as archived: a status, and a report read in its current version.
-/// A report the user has not read stays until they open it; an unresolved
-/// ask until its owner resolves it. Implicit bindings and other cards stay.
+/// Brief as archived: a status, a report read in its current version and,
+/// since YN-195, one the user has not read yet too, no longer counted as
+/// new. An unresolved ask stays until its owner resolves it. Implicit
+/// bindings and other cards stay.
 #[tokio::test]
-async fn a_done_task_archives_what_was_read_and_keeps_an_unread_report_until_it_is_opened() {
+async fn a_done_task_archives_its_cards_and_a_report_not_read_yet_too() {
     let (_dir, ws, project) = lab();
     set_leads(&ws, &project, &["a"]);
     let (task, internal) = task_in(&ws, &project, "Design the page");
@@ -221,10 +222,11 @@ async fn a_done_task_archives_what_was_read_and_keeps_an_unread_report_until_it_
     assert_eq!(done["task"]["status"], "done");
     assert_eq!(row(&ws, &project, "page"), (false, Some("archived".into())), "a report read in its current version");
     assert_eq!(row(&ws, &project, "page/result"), (false, Some("archived".into())), "a status");
-    assert_eq!(row(&ws, &project, "page/unread"), (true, None), "a report not read yet stays");
+    assert_eq!(row(&ws, &project, "page/unread"), (false, Some("archived".into())), "a report not read yet goes too");
     assert_eq!(row(&ws, &project, "page/ask"), (true, None), "an unresolved ask stays");
     assert_eq!((row(&ws, &project, "other"), row(&ws, &project, "gate")), ((true, None), (true, None)), "other cards and implicit bindings stay");
     assert_eq!(version(&ws, &project), 2, "the Brief's version, as with a Seen mark");
+    assert_eq!(panel(&ws)["unseen"], 3, "new: the ask under the card, the other card and the gate, not the unread report");
     let history = panel(&ws)["brief"]["history"].clone();
     let archived = history.as_array().unwrap().iter().find(|s| s["key"] == "page").unwrap();
     assert_eq!((archived["historyReason"].clone(), archived["card"]["task"]["status"].clone()), (json!("archived"), json!("done")));
@@ -232,15 +234,43 @@ async fn a_done_task_archives_what_was_read_and_keeps_an_unread_report_until_it_
     let refused = reject(&ws, "a", input("a2", 2, vec![json!({"op":"edit","key":"page","elements":{"note":{"type":"Markdown","props":{"text":"x"}}}})])).await;
     assert!(refused["problems"][0]["reason"].as_str().unwrap().contains("ended"), "{refused}");
 
-    // Opened now, the unread report goes too.
-    let opened = open(&ws, &project, "page/unread");
+    // A report bound to the task after it ended stays live, as one an older Core kept live unread, and leaves once opened.
+    accept(&ws, "a", input("a3", 2, vec![bound("late", "report", &task)])).await;
+    assert_eq!(row(&ws, &project, "late"), (true, None));
+    let opened = open(&ws, &project, "late");
     assert_eq!((opened["recorded"].clone(), opened["archived"].clone()), (json!(true), json!(true)));
-    assert_eq!(row(&ws, &project, "page/unread"), (false, Some("archived".into())));
+    assert_eq!(row(&ws, &project, "late"), (false, Some("archived".into())));
 
     // Reopened, the task gets none of its cards back; done again, nothing more leaves.
     task_set(&ws, &task, json!({"status":"doing"}));
     task_set(&ws, &task, json!({"status":"cancelled"}));
     assert_eq!(row(&ws, &project, "page/ask"), (true, None));
+}
+
+/// YN-195: a lead the user no longer lists leaves its reports and statuses
+/// there to history as lead-left, and reads why; its Asks stay, and another
+/// lead's sections are untouched. One that moves to another Project leaves
+/// them live for a lead to claim, as before.
+#[tokio::test]
+async fn a_lead_that_stops_leading_leaves_its_reports_and_statuses_to_history() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a", "b"]);
+    accept(&ws, "a", input("a1", 0, vec![put("audit", "report"), put("state", "status"), put("pick", "ask")])).await;
+    accept(&ws, "b", input("b1", 1, vec![put("plan", "report")])).await;
+    set_leads(&ws, &project, &["b"]);
+    for key in ["audit", "state"] {
+        assert_eq!(row(&ws, &project, key), (false, Some("lead-left".into())), "{key}");
+    }
+    assert_eq!((row(&ws, &project, "pick"), row(&ws, &project, "plan")), ((true, None), (true, None)));
+    assert_eq!(version(&ws, &project), 2, "the Brief's version, as with a card archived with its task");
+    let history = keys(&panel(&ws), "history");
+    assert!(history.contains(&"audit".to_owned()) && history.contains(&"state".to_owned()), "{history:?}");
+    let left = brief(&ws, "a")["you"]["recentlyLeft"].clone();
+    assert!(left.as_array().unwrap().iter().any(|entry| entry["key"] == "audit" && entry["reason"] == "lead-left"), "{left}");
+    // A lead that moves to another Project leaves them live, to be claimed.
+    let other = ws.store.create_project("Elsewhere", std::collections::BTreeMap::new()).unwrap().id;
+    ws.store.set_agent_project("b", Some(&other)).unwrap();
+    assert_eq!(row(&ws, &project, "plan"), (true, None));
 }
 
 #[tokio::test]
