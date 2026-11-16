@@ -1,6 +1,9 @@
 // T-108: a remote job's artifacts are checked on its machine and stay there.
 // The panel names the machine and each file's path there and offers no
 // download; a job on this host keeps its download of verified files.
+// YN-83 S2: a job whose machine streams its files on demand
+// (capabilities.downloads) offers its verified artifacts and outputs for
+// download, still naming where they are; Windows' files are not offered.
 import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,8 +44,14 @@ const queued = { ...remote, id: 'job-q', cursor: 3, name: 'queued on lab box', s
 const local = { ...base, id: 'job-l', cursor: 1, name: 'eval here', cwd: '/home/u/work', machine: { name: 'WSL' },
   result: { reason: 'success', artifacts: [{ path: 'out.json', ok: true, bytes: 9, sha256: sha, absolutePath: '/home/u/work/out.json' },
     { path: 'cache.bin', ok: true, bytes: 4, sha256: sha, absolutePath: '/home/u/work/cache.bin' }] } };
-const byId = { 'job-r': remote, 'job-q': queued, 'job-l': local };
-const page = { jobs: [queued, remote, local], liveJobs: [queued], hasMore: false, nextBefore: null };
+const streamed = { ...remote, id: 'job-s', cursor: 4, name: 'streamed from lab box', outputs: ['report.txt'],
+  executor: { kind: 'ssh', machineId: 'm1', machineName: 'lab box' }, capabilities: { downloads: 'One at a time per machine' },
+  result: { ...remote.result, artifacts: [remote.result.artifacts[0], { path: 'cache.bin', ok: false, problem: 'missing', format: 'bytes' }] } };
+const windows = { ...remote, id: 'job-w', cursor: 5, name: 'kept on windows', machine: { name: 'Windows on this PC' },
+  executor: { kind: 'windows', machineId: 'windows', machineName: 'Windows on this PC' },
+  result: { ...remote.result, artifactsOn: { machineId: 'windows', name: 'Windows on this PC' } } };
+const byId = { 'job-r': remote, 'job-q': queued, 'job-l': local, 'job-s': streamed, 'job-w': windows };
+const page = { jobs: [windows, streamed, queued, remote, local], liveJobs: [queued], hasMore: false, nextBefore: null };
 
 function mount() {
   const vc = new VirtualConsole(), errors = [];
@@ -95,6 +104,25 @@ test("a remote job's artifacts name their machine and path there, with no downlo
     assert.equal(card.querySelectorAll('.job-artifact-where').length, 0);
     const downloads = [...card.querySelectorAll('a[download]')].map(a => a.getAttribute('href'));
     assert.deepEqual(downloads, ['/api/jobs/job-l/artifacts/0', '/api/jobs/job-l/artifacts/1']);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test("a job whose machine streams its files offers its verified artifacts and outputs, naming where they are; Windows' none", async () => {
+  const p = mount();
+  try {
+    await open(p);
+    let card = await show(p, 'streamed from lab box', c => c.querySelector('a[download]'));
+    assert.match(card.textContent, /Checked on lab box and kept there; a download streams it from there and stops if it is no longer the file checked\./);
+    assert.deepEqual([...card.querySelectorAll('a[download]')].map(a => a.getAttribute('href')), ['/api/jobs/job-s/artifacts/0']);
+    assert.deepEqual([...card.querySelectorAll('.job-artifact-where')].map(s => s.textContent), ['On lab box: /home/u/work/out.json']);
+    const outputs = p.doc.querySelector('.job-outputs');
+    assert.match(outputs.textContent, /On lab box: a download streams the file from there as it is now\./);
+    assert.deepEqual([...outputs.querySelectorAll('a[download]')].map(a => a.getAttribute('href')), ['/api/jobs/job-s/outputs/0']);
+
+    card = await show(p, 'kept on windows', c => c.textContent.includes('Windows on this PC'));
+    assert.match(card.textContent, /Checked on Windows on this PC and kept there; not copied to this host\./);
+    assert.equal(card.querySelectorAll('a[download]').length, 0, "Windows' files are not offered");
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

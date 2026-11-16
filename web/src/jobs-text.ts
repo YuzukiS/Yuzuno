@@ -171,6 +171,7 @@ export const jobsText = strings({
   rotated: "Older output was rotated out; at most 2 MiB is retained.",
   noOutput: "No output yet.",
   declared: "Declared output files",
+  outputsOn: (machine: string) => `On ${machine}: a download streams the file from there as it is now.`,
   evidence: "Execution evidence",
   // The new-job form.
   whatRuns: "What runs",
@@ -358,6 +359,7 @@ export const jobsText = strings({
   rotated: "较早的输出已轮换掉；最多保留 2 MiB。",
   noOutput: "还没有输出。",
   declared: "声明的输出文件",
+  outputsOn: (machine) => `位于 ${machine}：下载时从那里传来当时的文件。`,
   evidence: "执行证据",
   whatRuns: "运行什么",
   requesting: "发出请求的 Agent",

@@ -222,6 +222,24 @@ fn a_remote_attempts_git_state_is_restated_as_that_machines_report() {
     assert!(m["attempts"][0]["code"].get("reportedBy").is_none());
 }
 
+/// A remote job whose machine streams its files when one is downloaded
+/// (capabilities.downloads, YN-83 S2) says its verified artifacts can be
+/// downloaded from Core; without it they stay there, as before.
+#[test]
+fn a_streamed_remote_artifact_is_downloadable_from_core() {
+    let mut done = remote_job("66666666-6666-4666-8666-666666666666", "succeeded");
+    done["capabilities"]["downloads"] = json!("One at a time per machine");
+    done["result"] = json!({"jobId":done["id"],"attempt":"r1","status":"succeeded","evidence":{"result":{"exitCode":0,"signal":null}},
+        "artifacts":[{"path":"metrics.json","format":"json","ok":true,"bytes":20,"sha256":SHA_B,"absolutePath":"/data/someone/work/metrics.json"}],
+        "artifactsOn":{"machineId":"m1","name":"lab box","hostId":"f00dfeed00112233"}});
+    let (m, report) = export(std::slice::from_ref(&done), vec![Ok(Value::Null)]);
+    let fetch = &m["attempts"][0]["artifacts"]["files"][0]["fetch"];
+    assert_eq!(fetch["available"], true, "{fetch}");
+    assert!(fetch["how"].as_str().unwrap().contains("streams it from lab box"), "{fetch}");
+    assert!(report.contains("downloadable from Core"), "{report}");
+    assert_absent(&m, &report, &["/data/someone"]);
+}
+
 fn setup() -> (tempfile::TempDir, Arc<Workspace>) {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/workspace".into(), "unused".into()).unwrap();

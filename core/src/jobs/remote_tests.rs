@@ -821,7 +821,7 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
         (json!({"exclusive":true}), "exclusive applies to this host"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardGit":true}), "guardGit is not available on Windows on this PC"),
         (json!({"machineId":"windows","cwd":"C:\\work","guardPaths":["src"]}), "guardPaths narrows guardGit, which is not available on Windows"),
-        (json!({"outputs":["a.txt"]}), "on a remote machine they stay there, so declare them as artifacts instead"),
+        (json!({"machineId":"windows","cwd":"C:\\work","outputs":["a.txt"]}), "outputs are not available on Windows on this PC"),
         // On Windows, paths of that PC with its separators (T-108).
         (json!({"machineId":"windows","cwd":"C:\\work","inputs":["..\\a.txt"]}), "inputs on Windows are drive paths"),
         (json!({"machineId":"windows","cwd":"C:\\work","inputs":["\\a.txt"]}), "inputs on Windows are drive paths"),
@@ -837,6 +837,7 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     // its helper reads Git there (YN-83 S2).
     input(&lab, "ok", "true", json!({"inputs":["a.txt"],"artifacts":[{"path":"a.json","format":"json"}]})).validate().unwrap();
     input(&lab, "ok", "true", json!({"guardGit":true,"guardPaths":["src"]})).validate().unwrap();
+    input(&lab, "ok", "true", json!({"outputs":["out/report.txt"]})).validate().unwrap();
     // And on Windows, files of that PC.
     input(&lab, "ok", "true", json!({"machineId":"windows","cwd":"C:\\work","inputs":["a.txt","data\\b.bin","D:\\shared\\c.txt"],
         "artifacts":[{"path":"out\\result.json","format":"json"},{"path":"out/lines.jsonl","format":"jsonl"}]})).validate().unwrap();
@@ -1512,9 +1513,10 @@ async fn inputs_and_artifacts_go_with_the_start_and_are_checked_on_the_machine()
     let kept = read(folder(&lab, &ended).join("spec.json"));
     assert_eq!((kept["inputs"].clone(), kept["artifacts"].clone()), (spec["inputs"].clone(), spec["artifacts"].clone()));
     assert_eq!(kept["inputs"][0]["sha256"], json!(sha("frozen\n")));
-    // Its artifacts are on that machine: none is served from this host.
-    assert_eq!(super::remote_artifact_refusal(&ended).unwrap(),
-        "This artifact is on lab box; Core checks it there and does not copy it, so it cannot be downloaded here");
+    // Its artifacts are on that machine: a download streams one from there
+    // (YN-83 S2), copied nowhere.
+    let (status, _, _, body) = download(&lab, &lab.ssh, &ended, true, 0).await;
+    assert_eq!((status, body.unwrap()), (200, b"frozen\n".to_vec()));
     // What the job records of the executor says so, and claims no more: a
     // file already at the path is noted, not refused (R1 P3).
     let said = ended["capabilities"]["artifacts"].as_str().unwrap();
@@ -2964,4 +2966,212 @@ fn a_machines_hold_names_its_sent_attempts_and_whether_a_job_there_asks_for_a_gp
     assert_eq!((holds["m1"].attempts.clone(), holds["m1"].gpu), (vec![attempt(1)], true));
     assert_eq!((holds["m2"].attempts.clone(), holds["m2"].gpu), (vec![attempt(4)], false));
     assert_eq!((holds["m3"].attempts.clone(), holds["m3"].gpu), (vec![attempt(5)], true));
+}
+
+/// v4 binds declared outputs too (YN-83 S2 PR2); a v4 start of PR1's shape
+/// (git, no outputs) keeps its digest. The same vectors as helper_test.py.
+#[test]
+fn the_digest_v4_binds_outputs_and_keeps_a_git_only_start_as_it_was() {
+    let base = json!({"argv":["true"],"cwd":"/w","env":{},"timeoutSeconds":5});
+    let mut outputs = base.clone();
+    outputs["outputs"] = json!(["out/report.txt", "log.txt"]);
+    assert_eq!(remote::digest(&outputs), "b747ee11539f0f6dd4118a903ae3078c0f828be7770839838abd209c4e7bf62c");
+    let mut whole = base.clone();
+    whole["git"] = json!({"frozen":{"root":"/w","head":"c".repeat(40),"statusSha256":"d".repeat(64)},"guardExclude":[]});
+    assert_eq!(remote::digest(&whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81");
+    whole["outputs"] = json!(["out/report.txt"]);
+    assert_eq!(remote::digest(&whole), "e1e454342aa4147a5f9de15f279217d27d9a4cb7ad5cdb14f65e029912897140");
+}
+
+/// The environment the lab's stand-ins give the machine `machine` there.
+fn account(lab: &Lab, machine: &str) -> String {
+    let path = |name: &str| lab.dir.path().join(name).display().to_string();
+    format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={} GIT_CEILING_DIRECTORIES={}",
+        path("home"), path(machine), path("capabilities.json"), lab.dir.path().display())
+}
+
+fn over<'a>(program: &'a str) -> remote::Programs<'a> {
+    remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }
+}
+
+/// A download as the job panel's link gets it: status, Content-Length and
+/// Content-Disposition, and the body, or why it was cut off.
+async fn download(lab: &Lab, program: &str, job: &Value, artifact: bool, index: usize)
+    -> (u16, Option<String>, Option<String>, std::result::Result<Vec<u8>, String>) {
+    let response = super::download_response(remote::fetch(&lab.ws, job, artifact, index, &over(program)).await);
+    let header = |name: &str| response.headers().get(name).map(|v| v.to_str().unwrap().to_owned());
+    let (status, length, disposition) = (response.status().as_u16(), header("content-length"), header("content-disposition"));
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.map(|b| b.to_vec()).map_err(|e| e.to_string());
+    (status, length, disposition, body)
+}
+
+/// The error a refused download answers with.
+fn said(body: &std::result::Result<Vec<u8>, String>) -> String {
+    serde_json::from_slice::<Value>(body.as_ref().unwrap()).unwrap()["error"].as_str().unwrap().to_owned()
+}
+
+/// A job on m1 that left two artifacts and one of its two outputs there.
+async fn with_files(lab: &Lab) -> Value {
+    let job = create(lab, input(lab, "files", "printf 'artifact bytes' > a.bin; printf '{\"n\":1}' > m.json; printf output > o.txt",
+        json!({"artifacts":[{"path":"a.bin"},{"path":"m.json","format":"json"}],"outputs":["o.txt","none.txt"]})));
+    assert_eq!(job["remote"]["prebound"]["request"], "v4", "outputs are bound at submit: {job}");
+    let ended = until(lab, &lab.ssh, &job, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    ended
+}
+
+/// Artifacts and outputs of a remote job download from its machine as they
+/// are there, streamed by its helper from the path the attempt's own records
+/// name (YN-83 S2). A file that is gone answers 404, one that is no longer
+/// the file checked, resolves outside cwd, or is another attempt's record is
+/// refused before any byte (409), and one rewritten with the same size after
+/// its check is cut off before its last byte.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn remote_artifacts_and_outputs_download_from_the_machine_and_only_as_checked() {
+    let lab = lab();
+    let job = with_files(&lab).await;
+    let (status, length, disposition, body) = download(&lab, &lab.ssh, &job, true, 0).await;
+    assert_eq!((status, length.as_deref(), disposition.as_deref()), (200, Some("14"), Some("attachment")));
+    assert_eq!(body.unwrap(), b"artifact bytes");
+    assert_eq!(download(&lab, &lab.ssh, &job, true, 1).await.3.unwrap(), b"{\"n\":1}");
+    let (status, length, _, body) = download(&lab, &lab.ssh, &job, false, 0).await;
+    assert_eq!((status, length.as_deref(), body.unwrap()), (200, Some("6"), b"output".to_vec()));
+    // No such file of this attempt.
+    let (status, _, _, body) = download(&lab, &lab.ssh, &job, false, 1).await;
+    assert_eq!((status, said(&body)), (404, "none.txt is not there".to_owned()));
+    assert_eq!(download(&lab, &lab.ssh, &job, true, 2).await.0, 404);
+    assert_eq!(download(&lab, &lab.ssh, &job, false, 2).await.0, 404);
+    // Rewritten with the same size after its check: every byte but the
+    // last comes, and then the response is cut off.
+    std::fs::write(lab.work.join("a.bin"), "ARTIFACT BYTES").unwrap();
+    let (status, length, _, body) = download(&lab, &lab.ssh, &job, true, 0).await;
+    assert_eq!((status, length.as_deref()), (200, Some("14")));
+    assert!(body.is_err(), "a changed file is never served whole: {body:?}");
+    // Another size: refused before any byte.
+    std::fs::write(lab.work.join("a.bin"), "longer artifact bytes").unwrap();
+    let (status, _, _, body) = download(&lab, &lab.ssh, &job, true, 0).await;
+    assert_eq!(status, 409);
+    assert!(said(&body).starts_with("a.bin is no longer the file this attempt produced"), "{}", said(&body));
+    // An output that now leads outside cwd is refused, however it got there.
+    std::fs::write(lab.dir.path().join("secret.txt"), "not the job's").unwrap();
+    std::fs::remove_file(lab.work.join("o.txt")).unwrap();
+    std::os::unix::fs::symlink(lab.dir.path().join("secret.txt"), lab.work.join("o.txt")).unwrap();
+    let (status, _, _, body) = download(&lab, &lab.ssh, &job, false, 0).await;
+    assert_eq!((status, said(&body)), (409, "o.txt resolves outside the working directory".to_owned()));
+    // The path comes from this attempt's own record there, which must be its own.
+    let record = folder(&lab, &job).join("artifacts.json");
+    let mut forged = read(record.clone());
+    forged["attempt"] = json!(uuid::Uuid::new_v4().to_string());
+    std::fs::write(&record, forged.to_string()).unwrap();
+    let (status, _, _, body) = download(&lab, &lab.ssh, &job, true, 1).await;
+    assert_eq!((status, said(&body)), (409, "This attempt has no verified artifact at that position".to_owned()));
+    // An artifact that failed its check is not served.
+    let failed = create(&lab, input(&lab, "failed", "printf x > made.txt", json!({"artifacts":[{"path":"made.txt"},{"path":"never.txt"}]})));
+    let failed = until(&lab, &lab.ssh, &failed, |j| j["reserved"] == false && j["status"] != "queued").await;
+    let (status, _, _, body) = download(&lab, &lab.ssh, &failed, true, 1).await;
+    assert_eq!((status, said(&body)), (409, "never.txt did not pass its check (missing), so it is not served".to_owned()));
+    assert_eq!(download(&lab, &lab.ssh, &failed, true, 0).await.3.unwrap(), b"x");
+    // On Windows nothing is served; a queued job has nothing yet.
+    let queued = submit(&lab, "queued", "true");
+    assert_eq!(download(&lab, &lab.ssh, &queued, false, 0).await.0, 404);
+    let error = super::remote_download(&lab.ws, &json!({"executor":{"kind":"windows"}}), true, 0).await.err().unwrap();
+    use axum::response::IntoResponse;
+    let body = axum::body::to_bytes(error.into_response().into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("This file is on Windows on this PC"), "{}", String::from_utf8_lossy(&body));
+}
+
+/// What the account's login scripts print before the helper is skipped, a
+/// line with another call's mark never passes for its answer, and more than
+/// 256 KiB before its first line is no answer.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_download_skips_what_login_scripts_print_and_takes_no_forged_line() {
+    let lab = lab();
+    let job = with_files(&lab).await;
+    let (status, _, _, body) = download(&lab, &lab.banner, &job, true, 0).await;
+    assert_eq!((status, body.unwrap()), (200, b"artifact bytes".to_vec()));
+    let (status, _, _, body) = download(&lab, &lab.forged, &job, true, 0).await;
+    assert_eq!(status, 409, "{body:?}");
+    let noisy = script(lab.dir.path().join("ssh-noisy"),
+        format!("#!/bin/sh\n{ARGS}head -c 300000 /dev/zero | tr '\\0' x\necho\n{} exec /bin/sh -c \"$1\"\n", account(&lab, "machine-a")));
+    let (status, _, _, body) = download(&lab, &noisy, &job, true, 0).await;
+    assert_eq!(status, 409);
+    assert!(said(&body).ends_with("more than 256 KiB came before its first line"), "{}", said(&body));
+}
+
+/// A download that stops sending is cut off once no byte came for the
+/// limit, and its process is ended. Meanwhile another download from that
+/// machine waits for it and then answers 503, while one from another
+/// machine goes on.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_stalled_download_is_cut_off_and_a_machine_serves_one_at_a_time() {
+    let lab = lab();
+    let job = with_files(&lab).await;
+    lab.ws.store.add_machine(&RemoteMachine { id: "m2".into(), name: "spare box".into(), target: "spare-box".into(),
+        codex: "codex".into(), default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()),
+        ..Default::default() }).unwrap();
+    let elsewhere = create_as(&lab, "a", input(&lab, "elsewhere", "printf there > e.txt", json!({"machineId":"m2","outputs":["e.txt"]}))).unwrap();
+    let elsewhere = until(&lab, &lab.ssh, &elsewhere, |j| j["reserved"] == false && j["status"] != "queued").await;
+    // Sends its first line and three of ten bytes, then nothing.
+    let pid = lab.dir.path().join("stalled.pid");
+    let source = lab.dir.path().join("stalled.py");
+    std::fs::write(&source, format!(r#"
+import json, os, sys, time
+request = json.load(sys.stdin)
+open({pid:?}, "w").write(str(os.getpid()))
+out = sys.stdout.buffer
+out.write(("YUZUNO-JOBS-REPLY %s " % request["replyNonce"] + json.dumps({{"status": "fetch", "bytes": 10, "sha256": None,
+    "hostId": {host:?}}}) + "\n").encode())
+out.write(b"abc")
+out.flush()
+time.sleep(60)
+"#, pid = pid.display().to_string(), host = host_a())).unwrap();
+    let stalled = script(lab.dir.path().join("ssh-stalled"), format!("#!/bin/sh\nexec /usr/bin/python3 {}\n", source.display()));
+    let first = remote::fetch(&lab.ws, &job, false, 0, &over(&stalled)).await.unwrap();
+    assert_eq!(first.bytes, 10);
+    let waited = std::time::Instant::now();
+    let (status, _, _, body) = download(&lab, &lab.ssh, &job, true, 0).await;
+    assert_eq!(status, 503);
+    assert!(said(&body).starts_with("Another download from lab box is still running"), "{}", said(&body));
+    assert!(waited.elapsed() >= remote::FETCH_WAIT, "it waited its turn first");
+    assert_eq!(download(&lab, &lab.ssh, &elsewhere, false, 0).await.3.unwrap(), b"there", "another machine's goes on");
+    let started = std::time::Instant::now();
+    let body = axum::body::to_bytes(first.body, usize::MAX).await;
+    assert!(body.is_err(), "cut off, never served whole");
+    assert!(started.elapsed() >= remote::FETCH_WAIT && started.elapsed() < remote::FETCH_WAIT * 4, "{:?}", started.elapsed());
+    let pid: i32 = std::fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+    assert!(!crate::test_platform::running(pid as i64), "its process was ended");
+    // Its turn freed, the machine serves the next.
+    assert_eq!(download(&lab, &lab.ssh, &job, true, 0).await.3.unwrap(), b"artifact bytes");
+}
+
+/// A 64 MiB artifact over a real sshd on 127.0.0.1 (ssh_mux_tests' Sshd,
+/// with its own keys and configuration): the download is the file, by
+/// SHA-256, and the one recorded (YN-83 S2 §5 PR2 8). The account is this
+/// one, with its attempts in a data root of the test's own. Opt-in: a
+/// managed Job runs it.
+#[cfg(target_os = "linux")]
+#[ignore = "a managed Job's: a real sshd and a 64 MiB file"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_64_mib_artifact_downloads_over_a_real_sshd_as_the_file_it_is() {
+    let sshd = super::ssh_mux_tests::Sshd::start();
+    let lab = lab();
+    let root = lab.dir.path().join("real-root");
+    lab.ws.store.add_machine(&RemoteMachine { id: "real".into(), name: "real sshd".into(), target: "box-b".into(),
+        codex: "codex".into(), default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()),
+        data_root: Some(root.to_string_lossy().into_owned()), ..Default::default() }).unwrap();
+    let big = create_as(&lab, "a", input(&lab, "big", "head -c 67108864 /dev/urandom > big.bin",
+        json!({"machineId":"real","artifacts":[{"path":"big.bin"}]}))).unwrap();
+    let ended = until(&lab, &sshd.wrapper, &big, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    let started = std::time::Instant::now();
+    let (status, length, _, body) = download(&lab, &sshd.wrapper, &ended, true, 0).await;
+    let body = body.unwrap();
+    assert_eq!((status, length.as_deref(), body.len()), (200, Some("67108864"), 64 << 20));
+    let digest = |bytes: &[u8]| format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes));
+    assert_eq!(digest(&body), digest(&std::fs::read(lab.work.join("big.bin")).unwrap()));
+    assert_eq!(ended["result"]["artifacts"][0]["sha256"], json!(digest(&body)));
+    println!("YN-187 PR2: 64 MiB over a real sshd in {:?}, SHA-256 {}", started.elapsed(), digest(&body));
 }

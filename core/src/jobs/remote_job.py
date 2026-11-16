@@ -1388,8 +1388,13 @@ def digest(spec):
             put(str(len(git["guardExclude"])))
             for path in git["guardExclude"]:
                 put(path)
+        outputs = spec.get("outputs")
+        put("outputs")
+        put("none" if outputs is None else str(len(outputs)))
+        for path in outputs or []:
+            put(path)
         # Filled by the slices that bring them; until then never sent.
-        for key in ("outputs", "needs", "gpu"):
+        for key in ("needs", "gpu"):
             put(key)
             put("none")
     return hasher.hexdigest()
@@ -1717,6 +1722,12 @@ def start(request, host):
             raise Refused("inputs must be the files Core froze: path, absolutePath and sha256 of each")
         if inputs:
             spec["inputs"] = inputs
+    if "outputs" in request:
+        outputs = request["outputs"]
+        if not (isinstance(outputs, list) and 1 <= len(outputs) <= 20 and all(
+                isinstance(p, str) and p and not os.path.isabs(p) and ".." not in p.split("/") for p in outputs)):
+            raise Refused("outputs must be 1-20 paths relative to cwd")
+        spec["outputs"] = outputs
     if "git" in request:
         git = request["git"]
         frozen = git.get("frozen", 0) if isinstance(git, dict) else 0
@@ -2070,8 +2081,79 @@ def logs(request, host):
             "text": out.decode("utf-8", "replace"), "retainedBytesLimit": 2 * SEGMENT}
 
 
+def fetch(request, host):
+    """One artifact or output of this attempt as raw bytes on stdout (YN-83
+    S2): a reply line with its size, then exactly those bytes from the file
+    opened, then a reply line with their SHA-256. Its path comes only from
+    this attempt's own records (artifacts.json, spec.json), never from the
+    request, and must stay inside the job's cwd. Nothing is sent but a reply
+    when it is refused; fewer bytes than said end it with no last line."""
+    kind, index, nonce = request.get("kind"), request.get("index"), request.get("replyNonce")
+    if kind not in ("artifact", "output") or type(index) is not int or index < 0 or not NONCE.fullmatch(str(nonce)):
+        raise Refused("fetch needs kind artifact or output, an index and a reply nonce")
+    root, bound, reply = find(request, host, False)
+    if reply:
+        return reply
+    intent, reply = checked(root, bound, False)
+    if reply:
+        return reply
+    spec, entry = read_json(root / "spec.json"), None
+    if kind == "artifact":
+        record = read_json(root / "artifacts.json")
+        if isinstance(record, dict) and record.get("attempt") == intent["attempt"]:
+            found = record.get("artifacts")
+            entry = found[index] if isinstance(found, list) and index < len(found) else None
+        if not (isinstance(entry, dict) and entry.get("ok") is True and isinstance(entry.get("path"), str)):
+            raise Refused("This attempt has no verified artifact at that position")
+        given = entry["path"]
+    else:
+        outputs = spec.get("outputs") or []
+        if index >= len(outputs):
+            raise Refused("This attempt declared no output at that position")
+        given = outputs[index]
+    base = os.path.realpath(spec["cwd"])
+    path = os.path.realpath(os.path.join(base, given))
+    if os.path.commonpath([base, path]) != base:
+        raise Refused("%s resolves outside the working directory" % given)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {"status": "missing", "reason": "%s is not there" % given}
+    except OSError as error:
+        raise Refused("%s cannot be opened here: %s" % (given, error.strerror or error))
+    with os.fdopen(fd, "rb", buffering=0) as stream:
+        first = os.fstat(fd)
+        if not stat.S_ISREG(first.st_mode):
+            raise Refused("%s is not a regular file" % given)
+        if entry and (first.st_size != entry.get("bytes") or not entry.get("sha256") and first.st_mtime_ns != entry.get("mtimeNs")):
+            raise Refused("%s is no longer the file this attempt produced (its size or modification time changed); it was "
+                          "overwritten or removed after the attempt" % given)
+        out, mark = sys.stdout.buffer, "%s%s " % (MARK, nonce)
+        head = {"status": "fetch", "bytes": first.st_size, "sha256": entry.get("sha256") if entry else None,
+                "name": os.path.basename(given), "hostId": host}
+        out.write((mark + json.dumps(head) + "\n").encode())
+        hasher, left = hashlib.sha256(), first.st_size
+        while left:
+            chunk = stream.read(min(SEGMENT, left))
+            if not chunk:
+                out.flush()
+                sys.exit(4)
+            hasher.update(chunk)
+            out.write(chunk)
+            left -= len(chunk)
+        last = os.fstat(fd)
+        # Identified by size and modification time only (over 1 GiB): the
+        # same before and after the read, or no last line.
+        if entry and not entry.get("sha256") and (last.st_size, last.st_mtime_ns) != (first.st_size, first.st_mtime_ns):
+            out.flush()
+            sys.exit(4)
+        out.write((mark + json.dumps({"status": "fetched", "sha256": hasher.hexdigest()}) + "\n").encode())
+        out.flush()
+    return None
+
+
 ACTIONS = {"hello": hello, "inspect": inspect, "start": start, "status": status, "cancel": cancel, "logs": logs,
-           "pause": pause, "resume": resume}
+           "pause": pause, "resume": resume, "fetch": fetch}
 
 # Core reads at most 256 KiB of a call's output (remote.rs REPLY_LIMIT), what
 # the account's login scripts print before the reply included; more is no
@@ -2151,6 +2233,8 @@ def main():
     except Refused as error:
         print(mark + json.dumps({"error": str(error)}))
         sys.exit(3)
+    if reply is None:
+        return
     reply["hostId"] = host
     reply["bootId"] = boot_id()
     try:
