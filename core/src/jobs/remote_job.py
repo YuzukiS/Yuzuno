@@ -624,8 +624,29 @@ def guard_reason(spec, now, tracked, changed):
     frozen = {i["path"] for i in spec.get("inputs") or []}
     items += changed + [p for p in tracked if p not in frozen]
     shown = ", ".join(items[:5]) + (" and %d more" % (len(items) - 5) if len(items) > 5 else "")
-    return "Guarded inputs changed while queued (%s); command was not started." % (
-        shown or "the list of changed tracked files")
+    hint = " If an earlier stage writes a tracked file, declare it as that stage's artifact." if "needs" in spec else ""
+    return "Guarded inputs changed while queued (%s); command was not started.%s" % (
+        shown or "the list of changed tracked files", hint)
+
+
+def upstream_problem(spec):
+    """host.py's: why the artifacts this stage depends on are no longer what
+    their stages produced (every earlier stage it depends on when its run
+    recorded them, else its direct upstream). A stage the digest binds as
+    needed with no upstream record is never taken as checked."""
+    named = {u["stage"] for u in spec["upstream"]}
+    missing = [need for need in spec["needs"] if need not in named]
+    if missing:
+        return "Not started on this machine: no upstream record came for stage %s" % ", ".join(missing)
+    for upstream in spec["guardChecks"] or spec["upstream"]:
+        for recorded in upstream.get("artifacts") or []:
+            now = check_artifact(upstream["cwd"], dict({"format": "bytes", "minBytes": 1}, **recorded))
+            same = now.get("ok") and now.get("bytes") == recorded.get("bytes") and (
+                now.get("sha256") == recorded["sha256"] if recorded.get("sha256") else now.get("mtimeNs") == recorded.get("mtimeNs"))
+            if not same:
+                return ("Upstream stage %s artifact %s is no longer the one it succeeded with (%s); command was not started"
+                        % (upstream["stage"], recorded["path"], now.get("problem") or "its content changed"))
+    return None
 
 
 def identity(found):
@@ -1098,6 +1119,12 @@ if child and guard is not None:
 elif changed:
     refused = "Inputs changed on this machine while queued (%s); command was not started" % (
         ", ".join(changed[:5]) + (" and %d more" % (len(changed) - 5) if len(changed) > 5 else ""))
+if child and not refused and "needs" in spec:
+    # A run's stage: its upstream artifacts as they succeeded, as local jobs check them.
+    try:
+        refused = upstream_problem(spec)
+    except Exception as error:
+        refused = "Not started on this machine: its upstream artifacts could not be checked (%s)" % error
 if refused:
     os.kill(pid, signal.SIGKILL)
     os.waitpid(pid, 0)
@@ -1388,10 +1415,13 @@ def digest(spec):
             put(str(len(git["guardExclude"])))
             for path in git["guardExclude"]:
                 put(path)
-        # Filled by the slices that bring them; until then never sent.
+        # A list of names by count, or "none"; gpu is filled by its slice.
         for key in ("outputs", "needs", "gpu"):
+            items = spec.get(key) if key == "needs" else None
             put(key)
-            put("none")
+            put("none" if items is None else str(len(items)))
+            for item in items or []:
+                put(item)
     return hasher.hexdigest()
 
 
@@ -1738,6 +1768,18 @@ def start(request, host):
             raise Refused("artifacts must be declared as path, format (bytes, json or jsonl) and minBytes")
         if artifacts:
             spec["artifacts"] = artifacts
+    if "needs" in request:
+        # A run's stage (YN-83 S2): the stages it needs, bound by the digest,
+        # and the artifacts their attempts succeeded with, checked again by
+        # the supervisor before the command may run.
+        needs, checks = request["needs"], [request.get(k) or [] for k in ("upstream", "guardChecks")]
+        if not (isinstance(needs, list) and len(needs) <= 64 and all(isinstance(n, str) for n in needs) and all(
+                isinstance(c, list) and all(isinstance(u, dict) and isinstance(u.get("stage"), str) and isinstance(u.get("cwd"), str)
+                                            and isinstance(u.get("artifacts", []), list) and all(
+                    isinstance(a, dict) and isinstance(a.get("path"), str) for a in u.get("artifacts", [])) for u in c)
+                for c in checks)):
+            raise Refused("needs must name stages, with upstream and guardChecks as the artifacts their attempts succeeded with")
+        spec.update(needs=needs, upstream=checks[0], guardChecks=checks[1])
     if digest(spec) != bound["digest"]:
         raise Refused("The digest does not match the command sent with it; nothing was started")
     if host != bound["expectHost"]:
@@ -2070,8 +2112,19 @@ def logs(request, host):
             "text": out.decode("utf-8", "replace"), "retainedBytesLimit": 2 * SEGMENT}
 
 
+def verify(request, host):
+    """Declared artifacts as they are now, checked as after a clean exit, for
+    Core to reuse an earlier attempt's (a run's stage). Reads only."""
+    cwd, artifacts = request.get("cwd"), request.get("artifacts")
+    if not (isinstance(cwd, str) and os.path.isabs(cwd) and isinstance(artifacts, list) and len(artifacts) <= 20
+            and all(isinstance(a, dict) and isinstance(a.get("path"), str) for a in artifacts)):
+        raise Refused("verify needs an absolute cwd and at most 20 artifacts")
+    return {"status": "verified", "artifacts": [check_artifact(cwd, dict({"format": "bytes", "minBytes": 1}, **a))
+                                                for a in artifacts]}
+
+
 ACTIONS = {"hello": hello, "inspect": inspect, "start": start, "status": status, "cancel": cancel, "logs": logs,
-           "pause": pause, "resume": resume}
+           "pause": pause, "resume": resume, "verify": verify}
 
 # Core reads at most 256 KiB of a call's output (remote.rs REPLY_LIMIT), what
 # the account's login scripts print before the reply included; more is no

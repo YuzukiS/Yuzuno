@@ -532,7 +532,22 @@ pub(super) fn spec(job: &Value) -> Value {
         }
         spec["git"] = json!({"frozen": frozen, "guardExclude": job["guardExclude"].as_array().cloned().unwrap_or_default()});
     }
+    // A run's stage on an SSH machine or This Mac (v4): the stages it needs,
+    // bound at submit, and what their attempts succeeded with, set when the
+    // stage was released (runs.rs advance) and checked again by its
+    // supervisor before the command runs.
+    if remote_stage(job) {
+        let list = |key: &str| json!(job[key].as_array().cloned().unwrap_or_default());
+        spec["needs"] = json!(job["run"]["needs"].as_array().cloned().unwrap_or_default());
+        spec["upstream"] = list("upstream");
+        spec["guardChecks"] = list("guardChecks");
+    }
     spec
+}
+
+/// A run's stage on an SSH machine or This Mac (YN-83 S2).
+fn remote_stage(job: &Value) -> bool {
+    matches!(job["executor"]["kind"].as_str(), Some(SSH | MAC)) && job["run"].is_object()
 }
 
 /// Whether the attempt's start carries the Git guard: guardGit on an SSH
@@ -555,7 +570,7 @@ fn git_guarded(job: &Value) -> bool {
 pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     let nonempty = |value: &Value| value.as_array().is_some_and(|items| !items.is_empty());
     let kind = job["executor"]["kind"].as_str();
-    let v4 = git_guarded(job);
+    let v4 = git_guarded(job) || remote_stage(job);
     if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(v4 || nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
         return;
     }
@@ -686,11 +701,20 @@ pub(super) fn digest(spec: &Value) -> String {
                 put(&mut hash, path.as_str().unwrap_or_default());
             }
         }
-        // Filled by the slices that bring them (outputs, needs, gpu); until
-        // then a start never carries them.
+        // A list of names by count, or "none" (a run's stage needs, YN-83 S2
+        // PR3); gpu is filled by its slice.
         for key in &V4_FIELDS[1..] {
+            let items = if *key == "needs" { spec.get(*key).and_then(Value::as_array) } else { None };
             put(&mut hash, key);
-            put(&mut hash, "none");
+            match items {
+                None => put(&mut hash, "none"),
+                Some(items) => {
+                    put(&mut hash, &items.len().to_string());
+                    for item in items {
+                        put(&mut hash, item.as_str().unwrap_or_default());
+                    }
+                }
+            }
         }
     }
     format!("{:x}", hash.finalize())
@@ -1621,6 +1645,27 @@ pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u
             reply["reason"].as_str().unwrap_or_default()),
         Reply::Refused(message) | Reply::NoAnswer(message) | Reply::Broken(message) | Reply::Unusable(message) => {
             anyhow::bail!("The output on {} could not be read: {message}", machine.name())
+        }
+    }
+}
+
+/// An earlier attempt's declared artifacts as they are now on its machine,
+/// checked there by its helper (verify, which writes nothing) as after a
+/// clean exit: for a run's stage that reuses it (YN-83 S2). Only the machine
+/// that attempt ran on answers for them.
+pub(super) async fn verify(ws: &Arc<Workspace>, programs: &Programs<'_>, job: &Value, artifacts: &[Value]) -> Result<Value> {
+    let machine = machine_of(ws, job).await?;
+    let name = machine.name().to_owned();
+    match call(programs, &machine, json!({"action": "verify", "cwd": job["cwd"], "artifacts": artifacts})).await {
+        Reply::Answer(reply) if reply["status"] == "verified" && reply["hostId"] == job["remote"]["hostId"] => {
+            Ok(reply["artifacts"].clone())
+        }
+        Reply::Answer(reply) if reply["status"] == "verified" => {
+            anyhow::bail!("{name} now reaches a different machine than the one job {} ran on", job["id"].as_str().unwrap_or(""))
+        }
+        Reply::Answer(reply) => anyhow::bail!("{name} did not check its artifacts: {}", reply["status"].as_str().unwrap_or("no status")),
+        Reply::Refused(message) | Reply::NoAnswer(message) | Reply::Broken(message) | Reply::Unusable(message) => {
+            anyhow::bail!("{name} did not check its artifacts: {message}")
         }
     }
 }

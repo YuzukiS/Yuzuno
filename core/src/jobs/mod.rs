@@ -502,6 +502,35 @@ impl Submit {
             "requestId must contain 1–128 bytes"
         );
         self.validate_checkpoint()?;
+        self.validate_machine()?;
+        if let Some(service) = &self.service {
+            ensure!(
+                self.machine_id.as_deref() != Some(remote::MAC),
+                "service is not available on a macOS Core in this version: a service Job needs Linux with a systemd user manager, and This Mac runs its Jobs in the limited mode; nothing was queued"
+            );
+            // An alias is checked again once resolved (job_submit).
+            ensure!(
+                self.machine_id.is_none() || self.alias(),
+                "service applies to Jobs on this Core's host only in this version; omit machineId"
+            );
+            ensure!(
+                !self.exclusive,
+                "a service Job cannot be exclusive: it serves until it is stopped, and an exclusive Job holds every other Job back"
+            );
+            // A resume is a new Job of the stopped one's submission, which
+            // has no service link: a served service is restarted instead.
+            ensure!(
+                self.checkpoint.is_none(),
+                "a service Job has no stop at a checkpoint: to restart it, cancel it and serve its serviceId again"
+            );
+            service.validate()?;
+        }
+        self.validate_command()
+    }
+    /// What a Job on another machine cannot have, which Core enforces or
+    /// sees only on this host; a run's stage on a machine too (YN-83 S2).
+    /// An alias is checked again once resolved.
+    pub(super) fn validate_machine(&self) -> Result<()> {
         if self.machine_id.as_deref() == Some(remote::MAC) {
             self.validate_mac()?;
         } else if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
@@ -539,29 +568,7 @@ impl Submit {
                 "artifacts on Windows are paths relative to cwd, such as out\\result.json, never through .. and without a drive or :"
             );
         }
-        if let Some(service) = &self.service {
-            ensure!(
-                self.machine_id.as_deref() != Some(remote::MAC),
-                "service is not available on a macOS Core in this version: a service Job needs Linux with a systemd user manager, and This Mac runs its Jobs in the limited mode; nothing was queued"
-            );
-            // An alias is checked again once resolved (job_submit).
-            ensure!(
-                self.machine_id.is_none() || self.alias(),
-                "service applies to Jobs on this Core's host only in this version; omit machineId"
-            );
-            ensure!(
-                !self.exclusive,
-                "a service Job cannot be exclusive: it serves until it is stopped, and an exclusive Job holds every other Job back"
-            );
-            // A resume is a new Job of the stopped one's submission, which
-            // has no service link: a served service is restarted instead.
-            ensure!(
-                self.checkpoint.is_none(),
-                "a service Job has no stop at a checkpoint: to restart it, cancel it and serve its serviceId again"
-            );
-            service.validate()?;
-        }
-        self.validate_command()
+        Ok(())
     }
     /// What This Mac does not have (YN-108 M2c): a macOS Core's Jobs run
     /// there as on a Mac reached over SSH, so what Core can enforce or see
@@ -1441,6 +1448,16 @@ pub async fn call(
             {
                 return Ok(suggestion::beside_run(&ws, run, queries).await);
             }
+            // A stage's machine as named, resolved now from the submitting
+            // Agent's record as a Job's is (T-162), then checked again; a
+            // retry above was matched as sent (YN-83 S2).
+            let input = {
+                let author = actor.clone();
+                ws.stored(move |s| s.resolve_stage_machines(author.as_deref(), input)).await?
+            };
+            input.validate()?;
+            let remote_stages = input.stages.iter().any(|stage| input.submit(stage).machine_id.is_some());
+            let programs = remote::Programs { ssh: remote::SSH, windows: None, mux: Some(&ws.jobs.ssh_mux), mac: remote::MAC_TOOLS };
             let helper = host::helper(&ws.data_dir).await?;
             let capability = host::invoke(&helper, "capabilities", None, None).await?;
             let machine = host::machine_info().await?;
@@ -1468,14 +1485,30 @@ pub async fn call(
                     exclude.extend(after_paths.iter().cloned());
                 }
                 // Each stage freezes its own inputs now, as a submitted job does,
-                // except the artifacts its earlier stages will write.
-                let mut request = serde_json::to_value(&submit)?;
-                if !exclude.is_empty() {
-                    request["guardExclude"] = json!(exclude);
-                }
-                let snapshot = host::invoke(&helper, "snapshot", None, Some(request))
-                    .await
-                    .map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?;
+                // except the artifacts its earlier stages will write. A stage on
+                // a machine freezes them there, through its helper (YN-83 S2).
+                let (snapshot, remote_capability) = match submit.machine_id.as_deref() {
+                    Some(machine_id) => {
+                        let excluded: Vec<String> = exclude.iter().cloned().collect();
+                        let git = submit.guard_git.then_some((submit.guard_paths.as_slice(), excluded.as_slice()));
+                        let snapshot = remote::remote_snapshot_with(&ws, &programs, machine_id, &submit.cwd, &submit.inputs, git)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?;
+                        let id = machine_id.to_owned();
+                        let platform = ws.stored(move |s| s.machine_platform(&id)).await?;
+                        (snapshot, Some(remote::capabilities_for(platform.as_deref())))
+                    }
+                    None => {
+                        let mut request = serde_json::to_value(&submit)?;
+                        if !exclude.is_empty() {
+                            request["guardExclude"] = json!(exclude);
+                        }
+                        let snapshot = host::invoke(&helper, "snapshot", None, Some(request))
+                            .await
+                            .map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?;
+                        (snapshot, None)
+                    }
+                };
                 let mut own = exclude.clone();
                 own.extend(submit.artifacts.iter().map(|a| {
                     format!("{}/{}", submit.cwd.trim_end_matches('/'), a.path)
@@ -1483,7 +1516,7 @@ pub async fn call(
                 produced.insert(key.clone(), own);
                 let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
                 let reuse = if stage.reuses() {
-                    let checked = runs::check_reuse(&ws, &helper, &machine, stage, &identity, &reused).await?;
+                    let checked = runs::check_reuse(&ws, &helper, &machine, &programs, stage, &submit, &identity, &reused).await?;
                     reused.insert(key, checked.clone());
                     Some(checked)
                 } else {
@@ -1495,14 +1528,21 @@ pub async fn call(
                     identity,
                     reuse,
                     guard_exclude: exclude.into_iter().collect(),
+                    remote_capability,
                 });
             }
             let author = actor.clone();
             let run = ws
-                .stored(move |s| s.create_run(author.as_deref(), input, prepared, machine, capability))
+                .stored(move |s| {
+                    // Until its remote stages end, a Core before data roots
+                    // would start them without this Core's rules (older_cores.rs).
+                    let _kept_out = remote_stages.then(|| s.keep_older_cores_out("a Job is queued for a remote machine")).transpose()?;
+                    s.create_run(author.as_deref(), input, prepared, machine, capability)
+                })
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
+            ws.jobs.remote_wake.notify_one();
             Ok(suggestion::beside_run(&ws, run, queries).await)
         }
         "job_run_get" => {
@@ -1868,7 +1908,7 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
     mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
-    (declare artifacts), service and runs of stages; guardGit reads the Git there (on windows set it to false); pause only where the job's \
+    (declare artifacts) and service (a run's stages may name one: job_run_submit); guardGit reads the Git there (on windows set it to false); pause only where the job's \
     capabilities.pause allows it, never on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. On a macOS Core this host is \"mac\", This Mac: without machineId, with local, or agent for an Agent here, a job runs \
@@ -1902,6 +1942,12 @@ const AFTER_RUNS: &str = "Earlier runs of your own (whole ID or unique prefix) t
     only; it must end, succeeded or cancelled. While one has failed, is unknown or held, or (succeeded) was cancelled, this run is \
     blocked_by_run with the reason and you get one mail; it starts by itself if that run is retried and settles as waited for. A cancelled \
     run cannot be named with when succeeded. Dependencies are fixed at submission, so they cannot form a cycle.";
+/// A stage's machineId (YN-83 S2): job_submit's, with the one-machine rule.
+const STAGE_MACHINE: &str = "A registered SSH machine to run this stage on, or \"agent\" or \"local\" as for job_submit; never \
+    windows. A stage reads the files of the stages it needs where they ran, so stages that depend on each other, and a first stage \
+    and the runs it waits for, run on one machine. There job_submit's machineId rules hold: cwd, inputs, guardGit and artifacts are \
+    that machine's, its supervisor checks the upstream artifacts again before the command runs, and gpu, exclusive, a CPU range and \
+    checkpoint are refused. A macOS Core runs no runs of stages.";
 /// What a stage's checkpoint adds: the resume is the stage's next attempt.
 const STAGE_CHECKPOINT: &str = "For a stage, the stop and resume are of its running attempt; the resume is the stage's next \
     attempt (same frozen inputs, counted in its attempts), and stages that need it wait until it succeeds. An Agent's job_run_retry \
@@ -1943,9 +1989,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     if let Some(map) = stage.as_object_mut() {
         map.remove("requestId");
         map.remove("taskId");
-        // A run's stages run on this host in this version.
-        map.remove("machineId");
     }
+    // A stage may run on a registered SSH machine (YN-83 S2).
+    stage["machineId"] = json!({"type":"string","description":STAGE_MACHINE});
     // Only job_submit takes machineId; a run's stages keep the host-only text.
     properties["inputs"]["description"] = format!("{INPUTS} {REMOTE_INPUTS}").into();
     properties["artifacts"]["description"] = format!("{ARTIFACTS} {REMOTE_ARTIFACTS}").into();

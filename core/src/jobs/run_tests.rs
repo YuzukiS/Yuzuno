@@ -895,11 +895,16 @@ fn only_job_submit_describes_machines_and_keeps_their_limits() {
     let job = find("job_submit")["inputSchema"]["properties"].clone();
     let stage = find("job_run_submit")["inputSchema"]["properties"]["stages"]["items"]["properties"].clone();
     let text = |schema: &Value, field: &str| schema[field]["description"].as_str().unwrap().to_owned();
-    // A run's stages run on this host: none of their text is about other machines.
+    // A stage's own text is about this host; its machineId says what holds
+    // on a machine and points at job_submit's rules (YN-83 S2).
     for field in ["inputs", "artifacts"] {
         assert!(!text(&stage, field).contains("machineId"), "{field}");
         assert!(text(&job, field).starts_with(&text(&stage, field)), "{field}");
         assert!(text(&job, field).contains("With machineId"), "{field}");
+    }
+    let staged = text(&stage, "machineId");
+    for kept in ["never windows", "run on one machine", "job_submit's machineId rules hold", "A macOS Core runs no runs of stages"] {
+        assert!(staged.contains(kept), "{kept}");
     }
     let machine = text(&job, "machineId");
     for kept in ["never on the machine your Agent itself runs on", "Not available with machineId: gpu, exclusive, outputs",

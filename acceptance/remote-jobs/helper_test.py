@@ -1361,6 +1361,32 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(remote_job.digest(dict(base, git={"frozen": None, "guardExclude": []})),
                          "a4824b22996bd6066dff00a43359796b584755cf040b4d41ee511e26810e0a99")
         self.assertEqual(remote_job.digest(dict(base, git=None)), remote_job.digest(base))
+        # A run's stage (PR3): its needs are bound, its upstream records are not.
+        root = dict(base, needs=[], upstream=[{"stage": "x", "cwd": "/w"}], guardChecks=[])
+        self.assertEqual(remote_job.digest(root), "be30acc1923cb324a6a179750534a352a447cd7be499761853053cccd1c9e75e")
+        self.assertEqual(remote_job.digest(dict(root, upstream=[])), remote_job.digest(root))
+        self.assertEqual(remote_job.digest(dict(base, needs=["prep", "train"])),
+                         "0a051faf789cd2f61f28a3bbd83510c5bcadaf7fb9ce8f1a11ad05121bc91e1c")
+
+    def test_a_stages_start_without_its_needs_is_refused_and_one_without_its_upstream_never_runs(self):
+        # Bound with needs at submit; a Core from before them sends no needs.
+        attempt = self.attempt("touch ran")
+        spec = {key: attempt[key] for key in ("argv", "cwd", "env", "timeoutSeconds")}
+        attempt["digest"] = remote_job.digest(dict(spec, needs=["prep"]))
+        self.assertIn("digest does not match", self.call(dict(attempt, action="start"), expect=3)["error"])
+        self.assertFalse(self.folder(attempt).exists(), "nothing written")
+        bad = dict(attempt, needs=["prep"], upstream=[{"stage": "prep"}])
+        self.assertIn("needs must name stages", self.call(dict(bad, action="start"), expect=3)["error"])
+        # Its needs with no record of what they succeeded with: rejected, not run.
+        started = self.call(dict(attempt, action="start", needs=["prep"], upstream=[], guardChecks=[]))
+        deadline = time.monotonic() + 20
+        while started.get("status") != "terminal" and time.monotonic() < deadline:
+            time.sleep(0.1)
+            started = self.call(dict({k: attempt[k] for k in ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")},
+                                     action="status"))
+        self.assertEqual(started["result"]["status"], "rejected", started)
+        self.assertEqual(started["result"]["reason"], "Not started on this machine: no upstream record came for stage prep")
+        self.assertFalse((self.work / "ran").exists())
 
     def test_a_v4_start_without_its_git_state_is_refused_before_anything_is_written(self):
         # A guardGit attempt is bound with v4 at submit; a Core from before it

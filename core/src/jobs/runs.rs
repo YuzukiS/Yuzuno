@@ -131,7 +131,8 @@ pub(super) struct Stage {
     /// checkpoint, as a Job's (YN-30). Not part of its identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<super::Checkpoint>,
-    /// Not available for stages; accepted only to be refused with the reason.
+    /// A registered SSH machine, or an alias Core resolves at submit (YN-83
+    /// S2). Not part of the run's request record: a repeat is matched as sent.
     #[serde(default, skip_serializing)]
     machine_id: Option<String>,
 }
@@ -248,10 +249,22 @@ impl RunSubmit {
                     "Stage {key}: name the retryable outcomes with retry.exitCodes or retry.interrupted"
                 );
             }
+            // On a registered SSH machine (YN-83 S2), or an alias Core
+            // resolves before anything is frozen; never Windows. A stage reads
+            // its upstream files where they are: stages that depend on each
+            // other run on one machine.
             ensure!(
-                stage.machine_id.is_none(),
-                "Stage {key}: stages run on this Core's host; machineId (a remote machine) is not available for runs of stages in this version"
+                stage.machine_id.as_deref() != Some(super::remote::WINDOWS),
+                "Stage {key}: stages do not run on Windows on this PC; omit machineId or name an SSH machine"
             );
+            for need in &stage.needs {
+                let upstream = self.stages.iter().find(|s| &s.key == need).and_then(|s| s.machine_id.as_deref());
+                let alias = |m: Option<&str>| matches!(m, Some(super::CORE_HOST | super::AGENT_MACHINE));
+                ensure!(
+                    upstream == stage.machine_id.as_deref() || alias(upstream) || alias(stage.machine_id.as_deref()),
+                    "Stage {key}: its upstream stage {need} runs on another machine; a stage reads its upstream files where they are, so stages that depend on each other run on one machine"
+                );
+            }
             if let Some(reuse) = &stage.reuse {
                 ensure!(
                     uuid::Uuid::parse_str(reuse).is_ok(),
@@ -259,10 +272,12 @@ impl RunSubmit {
                 );
             }
             // The stage named with the reason: tool errors show one message.
+            // A stage on a machine has a remote Job's rules too.
             let submit = self.submit(stage);
             submit
                 .validate_command()
                 .and_then(|()| submit.validate_checkpoint())
+                .and_then(|()| submit.validate_machine())
                 .map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?;
         }
         Ok(())
@@ -289,7 +304,7 @@ impl RunSubmit {
             outputs: stage.outputs.clone(),
             artifacts: stage.artifacts.clone(),
             gpu: stage.gpu.clone(),
-            machine_id: None,
+            machine_id: stage.machine_id.clone(),
             requested_machine: None,
             checkpoint: stage.checkpoint.clone(),
             checkpoint_from: None,
@@ -383,17 +398,23 @@ pub(super) struct Prepared {
     pub reuse: Option<Value>,
     /// Artifacts of earlier stages, left out of this stage's Git guard.
     pub guard_exclude: Vec<String>,
+    /// A stage on a machine (YN-83 S2): what it is told it gets there, as a
+    /// remote Job is at submit; None for this host's.
+    pub remote_capability: Option<Value>,
 }
 
 /// An explicit reuse is accepted only for a succeeded attempt with a complete
 /// artifact contract and known code, whose identity equals this stage's, and
 /// whose artifacts verify unchanged now. Anything else is refused, never
 /// silently run fresh or treated as a cache hit.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn check_reuse(
     ws: &Arc<Workspace>,
     helper: &Path,
     machine: &Value,
+    programs: &super::remote::Programs<'_>,
     stage: &Stage,
+    submit: &Submit,
     identity: &Value,
     reused: &HashMap<String, Value>,
 ) -> Result<Value> {
@@ -409,10 +430,12 @@ pub(super) async fn check_reuse(
         "Stage {key}: job {job_id} is {}; only a succeeded attempt can be reused",
         old["status"].as_str().unwrap_or("unknown")
     );
-    ensure!(
-        old["machine"]["id"] == machine["id"],
-        "Stage {key}: job {job_id} ran on a different machine"
-    );
+    // This host's, or the registered machine the stage names (YN-83 S2).
+    let same = match submit.machine_id.as_deref() {
+        Some(id) => old["executor"]["machineId"] == id,
+        None => old["executor"].is_null() && old["machine"]["id"] == machine["id"],
+    };
+    ensure!(same, "Stage {key}: job {job_id} ran on a different machine");
     let declared = old["artifacts"].as_array().filter(|a| !a.is_empty()).with_context(|| {
         format!("Stage {key}: job {job_id} declared no artifacts, so nothing it produced was verified")
     })?;
@@ -449,13 +472,12 @@ pub(super) async fn check_reuse(
         previous["sha256"] == full.as_str(),
         "Stage {key}: job {job_id} read different upstream artifacts than this run provides"
     );
-    let now_value = host::invoke(
-        helper,
-        "verify",
-        None,
-        Some(json!({"cwd":old["cwd"],"artifacts":verified})),
-    )
-    .await?;
+    // Checked where they are: on its machine by that machine's helper.
+    let now_value = if submit.machine_id.is_some() {
+        super::remote::verify(ws, programs, &old, verified).await.map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?
+    } else {
+        host::invoke(helper, "verify", None, Some(json!({"cwd":old["cwd"],"artifacts":verified}))).await?
+    };
     let now_list = now_value
         .as_array()
         .context("Artifact verification returned no list")?;
@@ -1086,6 +1108,13 @@ pub(super) fn new_attempt(db: &Connection, previous: &Value, number: i64) -> Res
     job["result"] = Value::Null;
     job["unit"] = json!(format!("yuzuno-job-{id}.service"));
     job["supervisorUnit"] = json!(format!("yuzuno-job-{id}-collector.service"));
+    // A stage on a machine (YN-83 S2): a new attempt there, pinned and sent
+    // afresh, with the request it was bound with at submit.
+    if job["executor"].is_object() {
+        job["unit"] = Value::Null;
+        job["supervisorUnit"] = Value::Null;
+        job["remote"] = json!({"digest": previous["remote"]["digest"], "prebound": previous["remote"]["prebound"]});
+    }
     let job = insert_job(db, job)?;
     db.execute(
         "INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES(?1,?2,?3,?4)",
@@ -1469,6 +1498,19 @@ impl Store {
     ) -> Result<Option<Value>> {
         previous_run(self, &*self.db.read()?, actor, input)
     }
+    /// Each stage's machine as an alias resolves for a Job (T-162): `local`
+    /// is this host, `agent` the submitting Agent's machine (YN-83 S2). A
+    /// stage's machineId is not part of its run's request record, so a
+    /// repeated submission is matched as it was sent.
+    pub(super) fn resolve_stage_machines(&self, actor: Option<&str>, mut input: RunSubmit) -> Result<RunSubmit> {
+        for index in 0..input.stages.len() {
+            if matches!(input.stages[index].machine_id.as_deref(), Some(super::CORE_HOST | super::AGENT_MACHINE)) {
+                let resolved = self.resolve_machine(actor, input.submit(&input.stages[index]), false)?;
+                input.stages[index].machine_id = resolved.machine_id;
+            }
+        }
+        Ok(input)
+    }
     pub(super) fn create_run(
         &self,
         actor: Option<&str>,
@@ -1510,6 +1552,34 @@ impl Store {
         let mut owner = Value::Null;
         let mut list = Vec::new();
         for (stage, prepared) in input.stages.iter().zip(stages) {
+            // A stage on a machine (YN-83 S2) takes it as registered now, in
+            // this transaction, as a remote Job does (create_job): frozen there
+            // only while it is still reached as it was then.
+            let remote = prepared.submit.machine_id.clone();
+            let (job_machine, job_capability) = match (&remote, &prepared.remote_capability) {
+                (Some(id), Some(told)) => {
+                    let registered = super::remote::registered_machine(&tx, id)?;
+                    if let Some(frozen) = prepared.snapshot.get("frozenOn") {
+                        ensure!(["id", "kind", "target"].iter().all(|key| frozen[key] == registered[key]),
+                            "Stage {}: {} was changed while its inputs were being read there, so nothing was submitted; submit it again",
+                            stage.key, registered["name"].as_str().unwrap_or("The machine"));
+                    }
+                    (registered, told.clone())
+                }
+                _ => (machine.clone(), capability.clone()),
+            };
+            // A root stage reads what the runs it waits for produced, where they ran.
+            if stage.needs.is_empty() && !after_runs.is_empty() {
+                for after in &after_runs {
+                    let run_id = after["runId"].as_str().unwrap_or("");
+                    let mut q = tx.prepare(
+                        "SELECT DISTINCT json_extract(data,'$.executor.machineId') FROM local_jobs WHERE json_extract(data,'$.run.id')=?1")?;
+                    let machines = q.query_map([run_id], |r| r.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    ensure!(machines.iter().all(|m| *m == remote),
+                        "Stage {}: run {run_id} it waits for ran on another machine; a stage reads the files of the runs it waits for where they are, so they run on one machine",
+                        stage.key);
+                }
+            }
             // Every stage passes a job submission's checks, reused ones too.
             let mut job = new_job(
                 self,
@@ -1517,8 +1587,8 @@ impl Store {
                 actor,
                 &prepared.submit,
                 prepared.snapshot,
-                machine.clone(),
-                capability.clone(),
+                job_machine,
+                job_capability,
             )?;
             owner = json!({"agentId":job["agentId"],"agent":job["agent"]});
             // Every stage it runs also needs each run this one waits for
@@ -1556,6 +1626,12 @@ impl Store {
             }
             job["upstream"] = Value::Null;
             job["retryOf"] = Value::Null;
+            // Bound now with its needs and exclusions (v4), with the mode its
+            // machine has in this transaction: its start must be this request.
+            if let Some(id) = &remote {
+                let mode = super::remote::machine_settings(&tx, id)?.and_then(|m| m.limit_mode);
+                super::remote::prebind(&mut job, mode);
+            }
             let job = insert_job(&tx, job)?;
             tx.execute(
                 "INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES(?1,?2,1,?3)",
