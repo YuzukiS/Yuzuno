@@ -102,7 +102,9 @@ export function useFileDrag(target: DragTarget | null): FileDrag {
   const t = useStrings(text);
   const [ready, setReady] = useState(false);
   const [preparing, setPreparing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Why the last drag failed, as the app said it; told in the page's
+  // language as it is shown, so a change of language follows.
+  const [failure, setFailure] = useState<string | null>(null);
   const latest = useRef(target);
   latest.current = target;
   // The press under way, if any: what stops following it.
@@ -121,10 +123,10 @@ export function useFileDrag(target: DragTarget | null): FileDrag {
     };
   }, []);
   useEffect(() => {
-    if (!error) return;
-    const timer = setTimeout(() => setError(null), ERROR_MS);
+    if (failure === null) return;
+    const timer = setTimeout(() => setFailure(null), ERROR_MS);
     return () => clearTimeout(timer);
-  }, [error]);
+  }, [failure]);
 
   const onPointerDown = useCallback(
     (event: PointerEvent<HTMLElement>) => {
@@ -141,12 +143,12 @@ export function useFileDrag(target: DragTarget | null): FileDrag {
         const invoke = desktopInvoke();
         if (!file || !invoke) return;
         swallow.current = true;
-        setError(null);
+        setFailure(null);
         setPreparing(true);
         invoke("desktop_file_drag", { file })
           .then(
             () => undefined,
-            (reason) => setError(t.failed(reasonOf(reason))),
+            (reason) => setFailure(reasonOf(reason)),
           )
           .finally(() => setPreparing(false));
       };
@@ -163,7 +165,7 @@ export function useFileDrag(target: DragTarget | null): FileDrag {
       view.addEventListener("blur", stop);
       press.current = stop;
     },
-    [t],
+    [],
   );
   const onClickCapture = useCallback((event: MouseEvent<HTMLElement>) => {
     if (!swallow.current) return;
@@ -184,7 +186,7 @@ export function useFileDrag(target: DragTarget | null): FileDrag {
         onClickCapture,
         "data-file-drag": preparing ? "preparing" : "ready",
       },
-      error,
+      error: failure === null ? null : t.failed(failure),
     };
   if (dragsOutAsFile())
     return {

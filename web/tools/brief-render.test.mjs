@@ -575,7 +575,7 @@ test("YN-170 in the desktop app a kept file and its Open link drag out through t
   assert.deepEqual(page.errors, []);
 });
 
-test("YN-170 a drag the desktop app could not make says why, in both languages, for a while", async (t) => {
+test("YN-170 a drag the desktop app could not make says why, in the page's language as it changes, for a while", async (t) => {
   const page = mount(respond);
   t.after(page.close);
   const { document, window } = page;
@@ -589,11 +589,15 @@ test("YN-170 a drag the desktop app could not make says why, in both languages, 
   const note = () => row().querySelector('.brief-attachment-note[role="status"]');
   await until(() => note(), "the reason shows");
   assert.equal(note().textContent, "Couldn’t drag this file out: Core answered HTTP 404.");
+  // The reason is the app's; the words around it follow the page's language.
   window.chooseLanguage("zh-Hans");
-  press(window, chip(), "pointerdown", 0, 0);
-  press(window, chip(), "pointermove", 0, 6);
   await until(() => note()?.textContent === "无法拖出这个文件：Core answered HTTP 404.", "in Chinese");
   window.chooseLanguage("en");
+  await until(() => note()?.textContent === "Couldn’t drag this file out: Core answered HTTP 404.", "in English again");
+  // A new drag clears it while it is under way.
+  press(window, chip(), "pointerdown", 0, 0);
+  press(window, chip(), "pointermove", 0, 6);
+  await until(() => note()?.textContent === "Couldn’t drag this file out: Core answered HTTP 404.", "the same reason again");
   assert.deepEqual(page.errors, []);
 });
 
