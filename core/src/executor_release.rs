@@ -287,9 +287,13 @@ impl Workspace {
         let found = self.stored(move |store| {
             let db = store.db.read()?;
             let (internal, _) = crate::collaboration_store::task_key(&db, &task)?;
-            executors_of(&db, &internal)
+            Ok((executors_of(&db, &internal)?, internal))
         }).await;
-        for agent in found.unwrap_or_default() {
+        let Ok((found, _internal)) = found else { return };
+        // A test's dispatch lands here, after the read and before the release (YN-192).
+        #[cfg(test)]
+        crate::executor_archiving::tests::after_candidates(&_internal);
+        for agent in found {
             if let Err(error) = self.release_executor(actor.as_deref(), &agent).await {
                 eprintln!("[executor] not released with its task done: {agent}: {error:#}");
             }
