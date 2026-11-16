@@ -358,6 +358,51 @@ fn no_run_notice(db: &Connection, sid: &str, w: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+/// Whether GitHub reports this open PR as unable to merge into its base: the
+/// merge queue's own verdict (merge_queue/checks.rs `conflicting`). While
+/// GitHub is still computing (`mergeable` null) nothing is decided.
+pub(super) fn conflicting(pr: &Value) -> bool {
+    pr["state"] == "open" && pr["merged"] != true && (pr["mergeable"] == false || pr["mergeableState"] == "dirty")
+}
+/// A PR watch whose head GitHub reports as conflicting, with no run on it,
+/// says so once to each subscription (YN-193). GitHub starts no pull_request
+/// workflow for a PR with merge conflicts ("Events that trigger workflows",
+/// pull_request; T-37 lab finding F2), so an Agent waiting for that CI mail
+/// would wait for nothing. It reports what GitHub said, never a CI result.
+pub(super) fn conflict_notice(db: &Connection, w: &Value) -> Result<()> {
+    let mut q = db.prepare("SELECT id,data FROM ci_subscriptions WHERE watch_id=?1 AND active=1 AND expires>?2 AND json_type(data,'$.conflictNoticeId') IS NULL")?;
+    let rows = q
+        .query_map(params![w["id"].as_str(), chrono::Utc::now().timestamp()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let pr = &w["currentPr"];
+    let base = pr["baseBranch"].as_str().unwrap_or("its base branch");
+    let label = format!("PR #{} · conflict", w["number"]);
+    for (sid, raw) in rows {
+        let sub: Value = serde_json::from_str(&raw)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let body = format!(
+            "GitHub Actions: PR #{} in {} conflicts with its base {base} at the watched head {}, for {}. GitHub reported mergeable {}, merge state {}, at {}. GitHub starts no pull_request workflow for a PR with merge conflicts, so no pull_request CI run of this head is expected and no CI mail for it will follow. Merge the current {base} into the PR branch, resolve the conflicts and push, then subscribe to the new head. This is what GitHub reported, not a CI result.",
+            w["number"],
+            w["repository"].as_str().unwrap_or(""),
+            w["expectedSha"].as_str().unwrap_or(""),
+            sub["taskRef"].as_str().unwrap_or(""),
+            pr["mergeable"],
+            pr["mergeableState"].as_str().unwrap_or("unknown"),
+            w["observedAt"].as_str().unwrap_or("")
+        );
+        crate::collaboration_store::insert_message(
+            db,
+            json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":sub["agent"],"body":body,"taskId":sub["taskId"],"replyTo":null,"threadId":id,"createdAt":crate::model::now(),"source":{"subscriptionId":sid,"ciConflict":true},"priority":"normal","metadata":{"kind":"ci","name":label,"status":"conflicting","repositoryId":w["repositoryId"],"expectedSha":w["expectedSha"],"prNumber":w["number"],"taskId":sub["taskId"],"url":w["url"]}}),
+        )?;
+        db.execute(
+            "UPDATE ci_subscriptions SET data=json_set(data,'$.conflictNoticeId',?2) WHERE id=?1",
+            params![sid, id],
+        )?;
+    }
+    Ok(())
+}
 /// A specific run may be the post-merge main verification. Closing its task
 /// must not cut off an active/unknown run or its completion notification. A new
 /// request needs an observation made since that request, not an old cached green.
