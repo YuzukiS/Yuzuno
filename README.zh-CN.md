@@ -5,7 +5,7 @@
 <h1 align="center">Yuzuno</h1>
 
 <p align="center"><strong>给你的 coding agent 一个家。</strong><br />
-Claude Code、Codex 和 OpenCode，你的项目，以及在对话之间继续进行的工作。</p>
+Claude Code、Codex、OpenCode 和 DeepSeek Harness，你的项目，以及在对话之间继续进行的工作。</p>
 
 <p align="center">
   <a href="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml"><img src="https://github.com/YuzukiS/Yuzuno/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
@@ -23,11 +23,11 @@ Claude Code、Codex 和 OpenCode，你的项目，以及在对话之间继续进
   <a href="README.md">English</a>
 </p>
 
-Yuzuno 是一个个人工作空间，给那些要跨多个 Agent、跨很多轮对话才能做完的工作用。一个 **Core** 保管你的 Agent、项目、任务、后台 Job 和审查，以及等你拿主意的事。你可以在浏览器、桌面应用或手机上打开它；关掉窗口，工作照常继续。模型的活仍由你已经在用的 Claude Code、Codex 和 OpenCode 来做，用它们各自的登录。
+Yuzuno 是一个个人工作空间，给那些要跨多个 Agent、跨很多轮对话才能做完的工作用。一个 **Core** 保管你的 Agent、项目、任务、后台 Job 和审查，以及等你拿主意的事。你可以在浏览器、桌面应用或手机上打开它；关掉窗口，工作照常继续。模型的活仍由你已经在用的 Claude Code、Codex、OpenCode 和 DeepSeek Harness 来做，用它们各自的登录或密钥。
 
 > 本文是 [README.md](README.md) 的中文版。两者不一致时，以英文版为准。
 
-![Yuzuno 的 Home：等你回答的提问和权限请求，以及每个项目的概况](docs/images/home.png)
+![Yuzuno 的 Home：一个提问正在回复、附了一张标注过的草图，一个等你批准的权限请求，以及每个项目的概况](docs/images/home.png)
 
 <p align="center"><em>本页截图里都是虚构的示例数据。</em></p>
 
@@ -35,20 +35,28 @@ Yuzuno 是一个个人工作空间，给那些要跨多个 Agent、跨很多轮�
 
 | | |
 | --- | --- |
-| **Agent 并排在一处** | 和 Claude Code、Codex、OpenCode（实验性）的对话：工具调用、审批、追问、图片和原生子 Agent。Agent 可以跑在 Core 所在的电脑上，也可以经 SSH 跑在 Linux 或 macOS 机器上。 |
-| **Home 告诉你什么事需要你** | 等你回答的提问；每个项目一页，上面的卡片由它的 Agent 持续更新（报告、状态、表格、指标）；还有每台机器的负载。对项目说你要什么，它的负责人会把它拆成卡片，交给合适的 Agent。 |
-| **任务比一轮对话活得长** | 项目有负责人（lead）。每个任务有自己的执行者 Agent，按你保存的模板创建，带着固定的工作材料。Agent 之间通过持久的邮箱通信，结果回到派发它的人手里。路由为每个执行者选好工具、模型和账号或 API key。 |
+| **Agent 并排在一处** | 和 Claude Code、Codex、OpenCode（实验性）、[DeepSeek Harness](docs/dsh.md) 的对话：工具调用、审批、追问和原生子 Agent。可以发图片（先标注再发也行），也可以发任意类型的文件。Agent 可以跑在 Core 所在的电脑上；Claude Code 和 Codex 的 Agent 也可以经 SSH 跑在 Linux 或 macOS 机器上。 |
+| **Home 告诉你什么事需要你** | 等你回答的提问；每个项目一页，上面的卡片由它的 Agent 持续更新（报告、状态、表格、指标），最多排成四列，有的按定时自己刷新。对项目说你要什么，或者回复一张卡片，都可以附图片和文件；负责人把需求拆成卡片，交给合适的 Agent。 |
+| **任务比一轮对话活得长** | 项目有负责人（lead）。每个任务有自己的执行者 Agent，按你保存的模板创建，带着固定的工作材料。Agent 之间通过持久的邮箱通信，结果回到派发它的人手里。路由为每个执行者选好工具、模型和账号或 API key，也可以让执行者们共用一个 Claude 账号池。 |
 | **有预算的后台工作** | 构建、测试和研究命令在 CPU 和内存预算内排队，带日志和经过核对的输出文件。可以把几个阶段串起来、声明需要的 NVIDIA GPU，也可以在你要用电脑时暂停本机的工作。Job 可以跑在 Core 所在的电脑上、SSH 机器上，或者 WSL Core 旁边的 Windows 上。 |
 | **交付可以核对** | 关联到任务的 pull request、GitHub CI 监视、针对固定版本的独立审查轮次，以及一个合并队列：只有 CI 测过的正好是要合入的内容时，才合入审查过的 pull request。完成、验收和合入是三件分开记录的事。 |
 | **预览你做的东西** | 登记项目的网页服务，例如 Vite 开发服务器、Jupyter 或 TensorBoard，从项目对话框里打开。服务可以由 Job 来跑，对话框会显示它有没有应答。 |
-| **签名的更新** | 托管安装从签过名的发布更新，等 Agent 都空闲了才切换，切换后检查 Core 的健康；有没有 GitHub 登录都行。备份、核对和恢复一个 Workspace 各只要一条命令。 |
-| **你在哪都能用** | 浏览器；Windows 和 Mac 桌面应用，任务栏或 Dock 图标上会显示需要你处理的数量；手机则通过私有的 Tailscale 地址访问，加到主屏幕后能收推送通知。 |
+| **签名的更新** | 托管安装从签过名的发布更新，等 Agent 都空闲了才切换，切换后检查 Core 的健康；有没有 GitHub 登录都行。为这次更新停下来的 Agent，更新结束后会收到一条消息，接着做。备份、核对和恢复一个 Workspace 各只要一条命令。 |
+| **你在哪都能用** | 浏览器；Windows 桌面应用，它能替你在 WSL2 里安装并启动 Core；Mac 应用；手机则通过私有的 Tailscale 地址访问，加到主屏幕后能收推送通知。桌面应用的任务栏或 Dock 图标上会显示需要你处理的数量。 |
+
+### 每个项目一页
+
+项目页把它的 Agent 的卡片并排摆开，按窗口宽度排成两列、三列或四列；负责人可以给卡片设定时，让它自己刷新。卡片上方是对项目说话的输入框，可以附图片和文件。负责人直接回答，或者把需求拆成卡片，交给一个 Agent。
+
+![Yuzuno 的项目页：卡片排成三列，一条需求附了一张草图和一个日志文件](docs/images/project.png)
 
 ### 跟上进度，然后回去做你自己的事
 
 不用另开终端，就能看 Agent 在做什么、查看一次工具调用、回答审批或者追加一句。原生子 Agent 挂在它的父对话下面；运行时报告账号用量时，这里也会显示。Codex 或 OpenCode 的对话可以[回退](docs/rewind.md)到某一轮之前。
 
 ![Yuzuno 里的一段 Agent 对话，带工具活动和工作上下文](docs/images/conversation.png)
+
+文件可以从 **+** 菜单添加，也可以拖进来或粘贴。本机的 Codex、Claude Code 或 OpenCode Agent 会收到一份只给它读的副本；一条消息最多带 8 个文件、共 40 MiB。*下一版：* SSH 机器上的 Codex 和 Claude Code Agent 也能收文件。
 
 ### 给长时间的工作一个自己的地方
 
@@ -58,17 +66,30 @@ Job 把命令、资源申请、状态、日志和输出放在一起。后面的�
 
 在 Linux Core 上，本机 Job 的 CPU 和内存上限由 cgroup 强制执行。GPU 准入只预留声明的容量，**不**限制显存。各类机器各强制执行什么，见[研究流水线与 GPU Job](docs/research-jobs-gpu.md) 和[远程机器上的 Job](docs/research-jobs-remote.md)。
 
+### 执行者共用账号
+
+路由候选可以用一个 [claude-swap](docs/executor-routing.md#claude-swap-accounts) 账号池，而不只是一个登录。账号池让每个执行者从本周剩得最多的账号开始，或者从本周最早重置的账号开始。你把某个账号移出账号池后，还在排队的执行者会在启动前改选；已经在跑的 Claude 执行者等到空闲时换到池里的另一个账号，接着原来的会话。
+
 ## 开始使用
 
 先选 Core 跑在哪里：一台 Linux x86_64 电脑，或者 Windows 上的 WSL2。先在那里装好并登录 Claude Code、Codex 或两者；Yuzuno 用这些登录，从不复制它们。
+
+### Windows：桌面应用把 Core 装进 WSL2
+
+1. 准备好 WSL2 和一个 Linux 发行版（x86_64，glibc 2.35 或更新），它的默认账号不是 root。应用不会安装 WSL；用 `wsl --install` 装。
+2. 从 [Releases 页](https://github.com/YuzukiS/Yuzuno/releases)安装桌面应用（`desktop-…`）。
+3. 在它的连接页上选 **安装本机 Core**，再选一个发行版。应用先检查这个发行版，不改动任何东西，缺什么就告诉你怎么补。然后下载最新的签名 Core 发布，核对签名和校验和，用你自己的账号装进这个发行版，启动它，打开你的 Workspace。
+4. 之后每次打开应用，都会再启动这个 Core。在同一页上可以关掉这一项。
+
+不需要管理员权限，也不添加服务或计划任务。细节见[从应用安装 Core](desktop/README.md#install-core-from-the-app-windows-wsl)。
 
 ### Linux：安装签名的发布
 
 Linux x86_64 的签名 Core 发布在 [Releases 页](https://github.com/YuzukiS/Yuzuno/releases)上。[安装指南](docs/independent-core.md)带你下载一个发布、用 `minisign` 验证、作为托管安装装好并启动，不需要源码。然后在浏览器里打开 **http://127.0.0.1:4317**。同一份指南也讲了怎么从另一台电脑上的浏览器或桌面应用连过来。
 
-### 桌面应用
+### macOS
 
-Windows 桌面应用在 Releases 页上（`desktop-…`）。它连接 WSL 里的 Core，也能启动一个它连接过的 Core；见[桌面应用说明](desktop/README.md)。Mac 目前通过 SSH 隧道连接 Linux 上的 Core；[macOS 上的 Core](docs/macos-core.md) 正在做。
+目前 Mac 通过 SSH 隧道连接 Linux 上的 Core；Mac 应用要从源码构建，见[桌面应用说明](desktop/README.md#macos-desktop-core-on-another-computer)。*下一版：* 给 Apple 芯片 Mac 的 Core 包，以及能把它装在你的 Mac 上并启动的 Mac 应用（[在这台 Mac 上安装并启动 Core](desktop/README.md#install-and-start-core-on-this-mac-macos)）。
 
 ### 从源码运行
 
@@ -93,11 +114,11 @@ python3 scripts/launch.py core
 
 | 部分 | 支持 |
 | --- | --- |
-| **Core** | Linux x86_64，glibc 2.35 或更新，包括 Windows 上的 WSL2。 |
+| **Core** | Linux x86_64，glibc 2.35 或更新，包括 Windows 上的 WSL2。*下一版：* Apple 芯片上的 macOS 11 或更新。 |
 | **客户端** | Chromium 系浏览器；Windows 桌面应用；Mac 应用（从源码构建）；通过[手机入口](docs/independent-core.md#connect-from-a-phone-tailscale-serve)用手机浏览器。iPhone 应用可以从源码构建；没有 Linux 桌面应用。 |
-| **Agent 运行时** | Claude Code（需要 Node.js 20 或更新）、Codex 或 [OpenCode](docs/opencode.md)（实验性），装在 Agent 运行的机器上并已登录。 |
+| **Agent 运行时** | Claude Code（需要 Node.js 20 或更新）、Codex 或 [OpenCode](docs/opencode.md)（实验性），装在 Agent 运行的机器上并已登录。[DeepSeek Harness](docs/dsh.md)（`dsh`，需要 Node.js 24.9 或更新）只在 Core 所在的电脑上运行，要先在设置里加一个 DeepSeek 密钥。 |
 | **Agent 所在机器** | Core 所在的电脑，或经 SSH 访问、装有 Python 3 的 Linux 和 macOS 机器。 |
-| **Job** | Linux：systemd 用户管理器，cgroup v2 带 `cpu`、`memory` 和 `pids`，由它们强制执行每个 Job 的上限。经 SSH 的 Mac按 limited 模式运行 Job：上限只记录，不强制。 |
+| **Job** | Linux：systemd 用户管理器，cgroup v2 带 `cpu`、`memory` 和 `pids`，由它们强制执行每个 Job 的上限。经 SSH 的 Mac 按 limited 模式运行 Job：上限只记录，不强制。 |
 
 [支持矩阵](docs/independent-core.md#supported-platforms)分开写了哪些测过、哪些还是计划。
 
@@ -114,17 +135,17 @@ python3 scripts/launch.py core
 
 一个 Workspace 就是一个文件夹：Core 启动时指定的那个（`--data-dir`），否则是系统数据目录下的 `yuzuno/workspace`（Linux 上是 `~/.local/share`，macOS 上是 `~/Library/Application Support`）。用 `yuzuno-workspace --backup-to <文件夹>` 备份，`--verify-backup` 核对备份，`--restore-backup` 恢复到一个新文件夹。备份不包括原生 CLI 的登录和会话记录，也不包括你的项目文件夹。备份、迁移旧的 Workspace、用旧版 Core 打开它，见 [Workspace 数据](docs/workspace-data.md)。
 
-托管安装在 **设置 → 更新** 里从签名的发布自我更新：等 Agent 都空闲了才切换，切换后检查 Core 的健康（[Workspace 更新](docs/workspace-updates.md)）。Core 的发布包含 Core、网页界面和 Claude 桥接；桌面应用单独更新，原生 CLI 各自更新（[更新与平台支持](docs/updates-and-platforms.md)）。
+托管安装在 **设置 → 更新** 里从签名的发布自我更新：等 Agent 都空闲了才切换，切换后检查 Core 的健康（[Workspace 更新](docs/workspace-updates.md)）。为这次更新让出 Turn 的 Agent，更新结束后会收到一条消息，接着做。Core 的发布包含 Core、网页界面和 Claude 桥接；桌面应用单独更新，原生 CLI 各自更新（[更新与平台支持](docs/updates-and-platforms.md)）。
 
 ## 现状与限制
 
-Yuzuno 是一个仍在积极开发的早期 alpha，以源码和签名的 Core 发布两种形式公开。本 README 描述的是当前源码，可能比最新的发布要新。
+Yuzuno 是一个仍在积极开发的早期 alpha，以源码和签名的 Core 发布两种形式公开。本 README 描述的是 Core 发布 core.35 和 Windows 桌面应用 0.5.0；标了 *下一版* 的已经在 `main` 上，还没有发布。
 
 - **没有用户账号。** 能访问 Core 端口的人都能使用这个 Workspace，所以只让它留在本机回环地址上。
 - **Job 是资源控制，不是沙箱。** 它们以 Core 的用户身份运行，在 Agent 的沙箱之外。
-- **Windows 上 Core 只能跑在 WSL2 里。** **[macOS 上的 Core](docs/macos-core.md) 正在做**；目前 Mac 连接 Linux 上的 Core。 还没有 Linux aarch64 的包。
+- **Windows 上 Core 只能跑在 WSL2 里。** **[macOS 上的 Core](docs/macos-core.md)（只支持 Apple 芯片）正在做**；目前 Mac 连接 Linux 上的 Core。还没有 Linux aarch64 的包。
 - **应用都没有公认发布者的签名。** Windows 可能会对安装程序发出警告；Mac 应用是 ad hoc 签名、没有公证；iPhone 应用要从源码构建，大约一周后失效。
-- **OpenCode Agent 还是实验性的**，有些功能因运行时而异（例如[回退](docs/rewind.md)）。
+- **OpenCode Agent 还是实验性的，DeepSeek Harness 是开发者预览版。** 有些功能因运行时而异：例如[回退](docs/rewind.md)、文件（DeepSeek Harness 和 SSH 机器上的 Agent 还不能收）和流式输出（DeepSeek Harness 每一步结束时才显示；见[它的已知限制](docs/dsh.md#known-limits)）。
 
 [安装指南](docs/independent-core.md#what-was-tested)记录了测过什么、还差什么。较早的文档里引用的提交、pull request 和发布（例如 `f5626f7`、`#164` 或 core.12）来自以前的私有仓库 `YuzukiS/Yuzuno-dev`，不在本仓库的历史里。
 
