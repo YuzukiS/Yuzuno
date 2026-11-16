@@ -7,7 +7,9 @@
 // took a shared host down. So a jsdom test runs only where its memory is
 // bounded: under a confirmed cgroup v2 limit of at most 4096 MiB with no
 // swap, or on a GitHub-hosted runner, a disposable VM. Nothing here turns
-// the check off.
+// the check off. Since YN-196 the guard also describes a DOM object in a
+// failing comparison instead of inspecting it (jsdom-assert.mjs); the limit
+// stays for what that does not cover.
 import { readFileSync } from "node:fs";
 
 /** The most a local jsdom test may have: 4096 MiB, no swap. */

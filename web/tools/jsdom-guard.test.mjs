@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_MEMORY_BYTES, cgroupLimits, verdict } from "./jsdom-limits.mjs";
+import { describe, holdsDom, install } from "./jsdom-assert.mjs";
 
 const tools = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(tools, "../..");
@@ -111,10 +112,10 @@ test("every test that loads jsdom, directly or through what it imports, asks the
     return !first || resolve(dirname(file), first) !== join(tools, "jsdom-guard.mjs");
   });
   assert.deepEqual(missing.map((file) => file.slice(repo.length + 1)), [], "the guard must be the first import");
-  // The guard and its decisions load nothing that could bring jsdom in.
-  for (const module of ["jsdom-guard.mjs", "jsdom-limits.mjs"])
+  // The guard, its decisions and its assertions load nothing that could bring jsdom in.
+  for (const module of ["jsdom-guard.mjs", "jsdom-limits.mjs", "jsdom-assert.mjs"])
     for (const spec of specifiers(readFileSync(join(tools, module), "utf8")))
-      assert.ok(spec.startsWith("node:") || spec === "./jsdom-limits.mjs", `${module} imports ${spec}`);
+      assert.ok(spec.startsWith("node:") || ["./jsdom-limits.mjs", "./jsdom-assert.mjs"].includes(spec), `${module} imports ${spec}`);
 });
 
 test("a first import that ends the process runs before any later module, CommonJS or ESM, is evaluated", () => {
@@ -151,4 +152,85 @@ test("a failing boolean assertion carries only the boolean, never the node it wa
   assert.equal(thrown.message, "the dialog does not reopen");
   assert.equal(thrown.actual, false);
   assert.ok(thrown.message.length < 100);
+});
+
+// The guard's assertions (YN-196), on stand-ins: no jsdom is needed here.
+// A rendered DOM node: React's fiber chain makes it large and cyclic.
+function renderedNode(tag = "li", attributes = { id: "zz", class: "row" }) {
+  const node = { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null };
+  let fiber = { stateNode: node };
+  node.__reactFiber$x = fiber;
+  for (let i = 0; i < 2000; i++) fiber = fiber.return = { stateNode: node, child: fiber, memoizedProps: { i } };
+  return node;
+}
+function failure(call) {
+  try {
+    call();
+  } catch (error) {
+    return error;
+  }
+  assert.fail("the assertion passed");
+}
+const firstFrame = (error) => error.stack.split("\n").find((line) => line.trimStart().startsWith("at ")) ?? "";
+
+install();
+
+test("a failing comparison names a DOM object in one short line instead of inspecting it", () => {
+  const node = renderedNode();
+  for (const [call, operator] of [
+    [() => assert.equal(node, null, "row zz is gone"), "strictEqual"],
+    [() => assert.strictEqual(node, undefined, "row zz is gone"), "strictEqual"],
+    [() => assert.notEqual(node, node, "row zz is gone"), "notStrictEqual"],
+    [() => assert.deepEqual([node], [], "row zz is gone"), "deepStrictEqual"],
+    [() => assert.notDeepEqual({ row: node }, { row: node }, "row zz is gone"), "notDeepStrictEqual"],
+  ]) {
+    const error = failure(call);
+    assert.ok(error instanceof assert.AssertionError, String(error).slice(0, 200));
+    assert.ok(error.message.length < 500, `message length ${error.message.length}`);
+    assert.match(error.message, /^row zz is gone/);
+    assert.equal(error.operator, operator);
+    assert.equal(typeof error.actual, "string");
+    assert.ok(firstFrame(error).includes(import.meta.url), `the stack starts in the test: ${firstFrame(error)}`);
+  }
+  const unnamed = failure(() => assert.equal(node, null));
+  assert.equal(unnamed.actual, '<li id="zz" class="row">');
+  assert.equal(unnamed.expected, "null");
+  assert.match(unnamed.message, /^strictEqual failed for a DOM object \(described, not inspected\)/);
+  assert.equal(failure(() => assert.deepEqual([node, node], [])).actual, 'Array(2) [<li id="zz" class="row">, <li id="zz" class="row">]');
+});
+
+test("comparisons without a DOM object are Node's own, and passing ones still pass", () => {
+  const node = renderedNode();
+  assert.equal(node, node);
+  assert.notEqual(node, null);
+  assert.deepEqual([node], [node]);
+  assert.deepEqual({ a: [1, 2] }, { a: [1, 2] });
+  const error = failure(() => assert.equal(1, 2));
+  assert.equal(error.generatedMessage, true);
+  assert.match(error.message, /^Expected values to be strictly equal:[\s\S]*1 !== 2/);
+  assert.ok(firstFrame(error).includes(import.meta.url), `the stack starts in the test: ${firstFrame(error)}`);
+  const deep = failure(() => assert.deepEqual({ a: 1 }, { a: 2 }));
+  assert.equal(deep.generatedMessage, true);
+  assert.equal(deep.operator, "deepStrictEqual");
+  // A message that is an Error is thrown as it is, as Node's own assertions do.
+  const own = new TypeError("own");
+  assert.equal(failure(() => assert.equal(node, null, own)), own);
+  assert.equal(failure(() => assert.equal(1, 2, own)), own);
+});
+
+test("what counts as a DOM object, and how one is described", () => {
+  const text = { nodeType: 3, nodeName: "#text", data: "x".repeat(100) };
+  const window = {};
+  window.window = window;
+  assert.equal(holdsDom(text), true);
+  assert.equal(holdsDom(window), true);
+  assert.equal(holdsDom([1, renderedNode()]), true);
+  assert.equal(holdsDom({ list: [renderedNode()] }), false, "only one level down");
+  assert.equal(holdsDom({ nodeType: "1", nodeName: "LI" }), false);
+  assert.equal(holdsDom(new Proxy({}, { get() { throw new Error("trap"); } })), false);
+  assert.equal(describe(window), "Window");
+  assert.equal(describe(text), `#text "${"x".repeat(39)}…"`);
+  assert.equal(describe({ nodeType: 9, nodeName: "#document" }), "#document");
+  assert.equal(describe(renderedNode("div", {})), "<div>");
+  assert.equal(describe(null), "null");
 });
