@@ -54,12 +54,14 @@ objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
 block2 = { version = "0.6.2", default-features = false, features = ["std"] }
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "bitflags", "block2", "UNUserNotificationCenter"] }
 # Where the system's window buttons end and what a title bar double click
-# does (YN-90, title_bar.rs), and a kept file dragged out as a real file
-# (YN-170, file_drag/mac.rs): the AppKit/Foundation bindings Tauri already
+# does (YN-90, title_bar.rs), a kept file dragged out as a real file
+# (YN-170, file_drag/mac.rs), and whether the app runs from a read-only
+# volume (YN-181, update.rs: NSURL's NSURLVolumeIsReadOnlyKey, whose value
+# is an NSNumber from NSValue): the AppKit/Foundation bindings Tauri already
 # uses, at its versions, with only the classes used there (and NSError,
 # which macOS's answer to notify.rs's request carries).
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSGraphicsContext", "NSImage", "NSPasteboard", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSUserDefaults", "NSProcessInfo", "NSPathUtilities"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSURL", "NSUserDefaults", "NSProcessInfo", "NSPathUtilities", "NSValue"] }
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.
