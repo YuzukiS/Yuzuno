@@ -218,7 +218,7 @@ fn a_retried_stage_that_passed_a_head_starts_its_next_attempt_unmarked_in_its_ow
         let submit = input.submit(stage);
         let snapshot = json!({"cwd":"/workspace","git":{"head":"abc"},"files":[]});
         let identity = super::runs::spec_identity(&submit, &snapshot, stage.needs());
-        super::runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+        super::runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
     }).collect();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":16000,"memoryMiB":40960,"swapMiB":0}});
     s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();

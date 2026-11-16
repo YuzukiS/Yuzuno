@@ -270,7 +270,7 @@ fn a_failed_attempt_and_its_retry_export_separately_and_neither_is_overwritten()
         let submit = input.submit(stage);
         let snapshot = json!({"cwd":"/workspace","git":{"root":"/workspace","head":"abc","statusSha256":SHA_A},"files":[]});
         let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
-        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![], remote_capability: None }
     }).collect();
     let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":600,"memoryMiB":192,"swapMiB":0}});
     let run = s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();

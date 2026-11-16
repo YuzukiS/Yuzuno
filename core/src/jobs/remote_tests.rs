@@ -841,12 +841,35 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     // And on Windows, files of that PC.
     input(&lab, "ok", "true", json!({"machineId":"windows","cwd":"C:\\work","inputs":["a.txt","data\\b.bin","D:\\shared\\c.txt"],
         "artifacts":[{"path":"out\\result.json","format":"json"},{"path":"out/lines.jsonl","format":"jsonl"}]})).validate().unwrap();
-    let run: runs::RunSubmit = serde_json::from_value(json!({"requestId":"run","taskId":"T-1","name":"Remote run",
-        "stages":[{"key":"a","cwd":"/workspace","argv":["/usr/bin/true"],"machineId":"m1",
-            "resources":{"cpuMillis":200,"memoryMiB":64,"swapMiB":0}}]}))
-    .unwrap();
-    let error = run.validate().unwrap_err().to_string();
-    assert!(error.contains("machineId (a remote machine) is not available for runs of stages"), "{error}");
+    // A run's stages may run on an SSH machine (YN-83 S2), by a remote Job's
+    // rules, never on Windows, and a stage with the stages it needs on one machine.
+    let run = |stages: Value| -> anyhow::Result<()> {
+        let run: runs::RunSubmit = serde_json::from_value(json!({"requestId":"run","taskId":"T-1","name":"Remote run","stages":stages}))?;
+        run.validate()
+    };
+    let stage = |key: &str, extra: Value| {
+        let mut stage = json!({"key":key,"cwd":"/workspace","argv":["/usr/bin/true"],"guardGit":false,
+            "resources":{"cpuMillis":200,"memoryMiB":64,"swapMiB":0}});
+        for (name, value) in extra.as_object().unwrap() {
+            stage[name] = value.clone();
+        }
+        stage
+    };
+    run(json!([stage("a", json!({"machineId":"m1"})), stage("b", json!({"machineId":"m1","needs":["a"]}))])).unwrap();
+    // An alias is resolved before the one-machine rule is applied for good.
+    run(json!([stage("a", json!({"machineId":"agent"})), stage("b", json!({"machineId":"m1","needs":["a"]}))])).unwrap();
+    for (stages, message) in [
+        (json!([stage("a", json!({"machineId":"windows"}))]), "Stage a: stages do not run on Windows on this PC"),
+        (json!([stage("a", json!({"machineId":"m1"})), stage("b", json!({"needs":["a"]}))]),
+            "Stage b: its upstream stage a runs on another machine; a stage reads its upstream files where they are"),
+        (json!([stage("a", json!({"machineId":"m1","gpu":{"memoryMiB":1000}}))]), "Stage a: GPU admission is not available on a remote machine"),
+        (json!([stage("a", json!({"machineId":"m1","exclusive":true}))]), "Stage a: exclusive applies to this host's jobs only"),
+        (json!([stage("a", json!({"machineId":"m1","checkpoint":{"graceSeconds":10,"stoppedExitCode":75}}))]),
+            "Stage a: Stop at a checkpoint is available for Jobs on this Core's host only"),
+    ] {
+        let error = run(stages).unwrap_err().to_string();
+        assert!(error.starts_with(message), "{error}");
+    }
     let first = submit(&lab, "pausable", "sleep 5");
     until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
     // No scope of its own on this machine (the lab's account holds nothing).
@@ -2933,6 +2956,27 @@ fn guard_git_on_a_machine_answers_as_on_this_host() {
     assert!(ran >= Some(10), "remote_git_parity_tests.py ran {ran:?} tests:\n{stderr}");
 }
 
+/// v4 binds a stage's needs (YN-83 S2 PR3), its upstream records not: they
+/// are what its upstream succeeded with, checked again there. A git-only v4
+/// start keeps its digest. The same vectors as helper_test.py.
+#[test]
+fn the_digest_v4_binds_a_stages_needs_and_keeps_a_git_only_start_as_it_was() {
+    let base = json!({"argv":["true"],"cwd":"/w","env":{},"timeoutSeconds":5});
+    let mut root = base.clone();
+    root["needs"] = json!([]);
+    root["upstream"] = json!([{"stage":"x","cwd":"/w"}]);
+    root["guardChecks"] = json!([]);
+    assert_eq!(remote::digest(&root), "be30acc1923cb324a6a179750534a352a447cd7be499761853053cccd1c9e75e");
+    root["upstream"] = json!([]);
+    assert_eq!(remote::digest(&root), "be30acc1923cb324a6a179750534a352a447cd7be499761853053cccd1c9e75e", "upstream is not bound");
+    let mut needs = base.clone();
+    needs["needs"] = json!(["prep", "train"]);
+    assert_eq!(remote::digest(&needs), "0a051faf789cd2f61f28a3bbd83510c5bcadaf7fb9ce8f1a11ad05121bc91e1c");
+    let mut whole = base;
+    whole["git"] = json!({"frozen":{"root":"/w","head":"c".repeat(40),"statusSha256":"d".repeat(64)},"guardExclude":[]});
+    assert_eq!(remote::digest(&whole), "75a0d895d5548a9b1efd3e39fbca89118b0ebe5e81483a0f53c6938af8b1bd81");
+}
+
 /// v4 binds declared outputs too (YN-83 S2 PR2); a v4 start of PR1's shape
 /// (git, no outputs) keeps its digest. The same vectors as helper_test.py.
 #[test]
@@ -2957,6 +3001,180 @@ fn account(lab: &Lab, machine: &str) -> String {
 
 fn over<'a>(program: &'a str) -> remote::Programs<'a> {
     remote::Programs { ssh: program, windows: None, mux: None, mac: remote::MAC_TOOLS }
+}
+
+/// A run whose stages run on `machine`, prepared as job_run_submit prepares
+/// it (YN-83 S2 PR3): each stage frozen there through `program`, its Git
+/// guard leaving out the artifacts its earlier stages declare.
+async fn remote_run(lab: &Lab, program: &str, machine: &str, request: &str, stages: Value) -> anyhow::Result<Value> {
+    let mut stages = stages;
+    for stage in stages.as_array_mut().unwrap() {
+        stage["machineId"] = json!(machine);
+        stage["resources"] = json!({"cpuMillis":200,"memoryMiB":64,"swapMiB":0});
+        stage["env"] = json!({"PATH":"/usr/bin:/bin"});
+        stage["cwd"] = json!(lab.work);
+        if stage.get("guardGit").is_none() {
+            stage["guardGit"] = json!(false);
+        }
+    }
+    let input: runs::RunSubmit = serde_json::from_value(json!({"requestId":request,"taskId":"T-1","name":request,"stages":stages}))?;
+    input.validate()?;
+    let mut produced: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut prepared = Vec::new();
+    for stage in &input.stages {
+        let submit = input.submit(stage);
+        let mut exclude: Vec<String> = stage.needs().iter().flat_map(|need| produced[need].clone()).collect();
+        exclude.sort();
+        exclude.dedup();
+        let git = submit.guard_git.then_some((submit.guard_paths.as_slice(), exclude.as_slice()));
+        let snapshot = remote::remote_snapshot_with(&lab.ws, &over(program), machine, &submit.cwd, &submit.inputs, git).await?;
+        let mut own = exclude.clone();
+        own.extend(submit.artifacts.iter().map(|a| format!("{}/{}", submit.cwd.trim_end_matches('/'), a.path)));
+        produced.insert(stage.key().to_owned(), own);
+        let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
+        let reuse = if stage.reuses() {
+            Some(runs::check_reuse(&lab.ws, std::path::Path::new("/nonexistent"), &Value::Null, &over(program), stage, &submit,
+                &identity, &Default::default()).await?)
+        } else {
+            None
+        };
+        prepared.push(runs::Prepared { submit, snapshot, identity, reuse, guard_exclude: exclude, remote_capability: Some(remote::capabilities()) });
+    }
+    lab.ws.store.create_run(Some("a"), input, prepared, json!({"id":"local-test","name":"test"}), json!({"bootId":"boot"}))
+}
+
+/// The latest attempt of a run's stage.
+fn stage_job(lab: &Lab, run: &Value, key: &str) -> Value {
+    let id: String = lab.ws.store.db.read().unwrap().query_row(
+        "SELECT job_id FROM local_job_run_attempts WHERE run_id=?1 AND stage=?2 ORDER BY attempt DESC LIMIT 1",
+        rusqlite::params![run["id"].as_str().unwrap(), key], |r| r.get(0)).unwrap();
+    lab.ws.store.job(&id).unwrap()
+}
+
+/// Ticks the machine and releases waiting stages, as Core's own passes do,
+/// until the stage `key` has ended.
+async fn until_stage(lab: &Lab, program: &str, run: &Value, key: &str) -> Value {
+    for _ in 0..150 {
+        lab.ws.store.advance_runs().unwrap();
+        tick(lab, program).await;
+        let now = stage_job(lab, run, key);
+        if now["reserved"] == false && !matches!(now["status"].as_str(), Some("queued" | "waiting")) {
+            return now;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("stage {key} did not end: {}", stage_job(lab, run, key));
+}
+
+/// Stages of a run on one SSH machine (YN-83 S2 PR3): each is bound at
+/// submit (v4) with the stages it needs, the next is released with what its
+/// upstream succeeded with, and its supervisor checks those artifacts there
+/// again before the command runs. Unchanged, it reads them in place; changed
+/// in between, it is rejected in this host's words and never runs.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn stages_on_one_machine_hand_their_artifacts_on_and_a_changed_one_stops_the_next() {
+    let lab = lab();
+    let stages = json!([
+        {"key":"a","argv":["/bin/sh","-c","printf A > a.out"],"artifacts":[{"path":"a.out"}]},
+        {"key":"b","needs":["a"],"argv":["/bin/sh","-c","cat a.out > b.out"],"artifacts":[{"path":"b.out"}]}]);
+    let run = remote_run(&lab, &lab.ssh, "m1", "chained", stages.clone()).await.unwrap();
+    let (a, b) = (stage_job(&lab, &run, "a"), stage_job(&lab, &run, "b"));
+    assert_eq!((a["status"].as_str(), b["status"].as_str()), (Some("queued"), Some("waiting")));
+    for (job, needs) in [(&a, json!([])), (&b, json!(["a"]))] {
+        assert_eq!(job["executor"]["machineId"], "m1", "{job}");
+        assert_eq!(job["remote"]["prebound"]["request"], "v4", "{job}");
+        let spec = remote::spec(job);
+        assert_eq!(spec["needs"], needs);
+        assert_eq!(job["remote"]["digest"], json!(remote::digest(&spec)), "bound with its needs");
+    }
+    let done = until_stage(&lab, &lab.ssh, &run, "b").await;
+    assert_eq!((done["status"].as_str(), done["reason"].as_str()), (Some("succeeded"), Some("success")), "{done}");
+    assert_eq!(std::fs::read_to_string(lab.work.join("b.out")).unwrap(), "A");
+    let upstream = &done["upstream"][0];
+    assert_eq!((upstream["stage"].as_str(), upstream["artifacts"][0]["sha256"].as_str()), (Some("a"), Some(sha("A").as_str())), "{done}");
+    let kept = read(folder(&lab, &done).join("spec.json"));
+    assert_eq!((kept["needs"].clone(), kept["upstream"][0]["stage"].clone()), (json!(["a"]), json!("a")));
+    assert_eq!(lab.ws.store.run(run["id"].as_str().unwrap()).unwrap()["status"], "succeeded");
+    // a's artifact rewritten after it succeeded, before b starts: b never runs.
+    let run = remote_run(&lab, &lab.ssh, "m1", "changed", stages).await.unwrap();
+    let a = until_stage(&lab, &lab.ssh, &run, "a").await;
+    assert_eq!(a["status"], "succeeded", "{a}");
+    std::fs::remove_file(lab.work.join("b.out")).unwrap();
+    std::fs::write(lab.work.join("a.out"), "B").unwrap();
+    let b = until_stage(&lab, &lab.ssh, &run, "b").await;
+    assert_eq!(b["status"], "rejected", "{b}");
+    assert_eq!(b["reason"], "Upstream stage a artifact a.out is no longer the one it succeeded with (its content changed); command was not started");
+    assert!(!lab.work.join("b.out").exists(), "b never ran");
+}
+
+/// A later stage's Git guard leaves out what its earlier stages declare: a
+/// tracked file an earlier stage writes as its artifact does not reject the
+/// later one, which still checks it by SHA-256; a stage that writes a
+/// tracked file it did not declare does, with this host's hint.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_later_stages_git_guard_leaves_out_its_upstream_artifacts_on_the_machine() {
+    let lab = lab();
+    repo(&lab);
+    let stages = json!([
+        {"key":"a","guardGit":true,"argv":["/bin/sh","-c","printf written > a.txt"],"artifacts":[{"path":"a.txt"}]},
+        {"key":"b","needs":["a"],"guardGit":true,"argv":["/bin/sh","-c","cat a.txt > out.log"]}]);
+    let run = remote_run(&lab, &lab.ssh, "m1", "declared", stages).await.unwrap();
+    let a_path = lab.work.join("a.txt").to_string_lossy().into_owned();
+    assert_eq!(stage_job(&lab, &run, "b")["guardExclude"], json!([a_path]));
+    let b = until_stage(&lab, &lab.ssh, &run, "b").await;
+    assert_eq!(b["status"], "succeeded", "{b}");
+    git(&lab, &["checkout", "--", "a.txt"]);
+    // Undeclared, the same write rejects b, naming the file.
+    let stages = json!([
+        {"key":"a","guardGit":true,"argv":["/bin/sh","-c","printf written > a.txt; printf x > made.txt"],"artifacts":[{"path":"made.txt"}]},
+        {"key":"b","needs":["a"],"guardGit":true,"argv":["/bin/sh","-c","touch ran"]}]);
+    let run = remote_run(&lab, &lab.ssh, "m1", "undeclared", stages).await.unwrap();
+    let b = until_stage(&lab, &lab.ssh, &run, "b").await;
+    assert_eq!(b["status"], "rejected", "{b}");
+    let root = lab.work.canonicalize().unwrap();
+    assert_eq!(b["reason"], format!("Guarded inputs changed while queued ({}); command was not started. If an earlier stage writes a tracked file, declare it as that stage's artifact.",
+        root.join("a.txt").display()));
+    assert!(!lab.work.join("ran").exists());
+}
+
+/// A stage that reuses an earlier attempt names one of the same machine,
+/// whose artifacts that machine's helper checks again; one of another
+/// machine is refused. A stage retried by its exit code is a new attempt
+/// there, bound as the first was.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_stage_reuses_an_attempt_of_its_machine_and_is_retried_there() {
+    let lab = lab();
+    std::fs::write(lab.work.join("in.txt"), "config\n").unwrap();
+    let make = json!({"key":"a","inputs":["in.txt"],"argv":["/bin/sh","-c","cat in.txt > a.out"],"artifacts":[{"path":"a.out"}]});
+    let first = remote_run(&lab, &lab.ssh, "m1", "first", json!([make])).await.unwrap();
+    let earlier = until_stage(&lab, &lab.ssh, &first, "a").await;
+    assert_eq!(earlier["status"], "succeeded", "{earlier}");
+    let mut reused = make.clone();
+    reused["reuse"] = earlier["id"].clone();
+    let again = remote_run(&lab, &lab.ssh, "m1", "reused", json!([reused.clone()])).await.unwrap();
+    assert_eq!(again["stages"][0]["reusedFrom"]["jobId"], earlier["id"], "{again}");
+    lab.ws.store.add_machine(&RemoteMachine { id: "m2".into(), name: "spare box".into(), target: "spare-box".into(),
+        codex: "codex".into(), default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()),
+        ..Default::default() }).unwrap();
+    let error = remote_run(&lab, &lab.ssh, "m2", "elsewhere", json!([reused.clone()])).await.unwrap_err().to_string();
+    assert_eq!(error, format!("Stage a: job {} ran on a different machine", earlier["id"].as_str().unwrap()));
+    // Changed there since: not the verified artifact any more.
+    std::fs::write(lab.work.join("a.out"), "other\n").unwrap();
+    let error = remote_run(&lab, &lab.ssh, "m1", "stale", json!([reused])).await.unwrap_err().to_string();
+    assert!(error.starts_with("Stage a: artifact a.out of job"), "{error}");
+    // Retried by its exit code on the machine: attempt 2 is pinned and sent afresh.
+    let flaky = json!([{"key":"f","argv":["/bin/sh","-c","test -e once || { touch once; exit 75; }"],"retry":{"attempts":2,"exitCodes":[75]}}]);
+    let run = remote_run(&lab, &lab.ssh, "m1", "flaky", flaky).await.unwrap();
+    let first_try = stage_job(&lab, &run, "f");
+    let retried = until_stage(&lab, &lab.ssh, &run, "f").await;
+    let done = if retried["run"]["attempt"] == 2 { retried } else { until_stage(&lab, &lab.ssh, &run, "f").await };
+    assert_eq!((done["run"]["attempt"].as_i64(), done["status"].as_str()), (Some(2), Some("succeeded")), "{done}");
+    assert_eq!(done["remote"]["digest"], first_try["remote"]["digest"], "the same request as bound at submit");
+    assert_ne!(done["attempt"], first_try["attempt"]);
+    assert_eq!(lab.ws.store.run(run["id"].as_str().unwrap()).unwrap()["status"], "succeeded");
 }
 
 /// A download as the job panel's link gets it: status, Content-Length and

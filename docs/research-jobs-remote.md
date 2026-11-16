@@ -118,7 +118,7 @@ Each attempt carries its declared CPU, RAM and swap and the machine's mode, boun
 | Output | `job_logs` | `job_logs`, read from the pinned machine over SSH | `job_logs`, read through the helper |
 | Cancel and timeout | The job's control group | The attempt's process group, each process checked before every signal. A process that leaves the group is not stopped | The attempt's own Windows Job Object, which every child joins |
 | Lost connection | Not applicable | `unknown` with the slot held, then the same attempt is checked | A failed interop call, a helper that cannot be run once the start was sent, or a Core restart: `unknown` with the slot held, then the same attempt is checked |
-| Runs of stages (T-105) | Yes | Not available. A stage with `machineId` is refused | Not available. A stage with `machineId` is refused |
+| Runs of stages (T-105) | Yes | Yes, on one machine: a stage and the stages it needs (and a first stage and the runs it waits for) run on the same SSH machine, and its supervisor checks their artifacts there before the command runs (see Runs of stages on a machine). Not on a macOS Core | Not available. A stage with `machineId` `windows` is refused |
 
 ## Submitting
 
@@ -180,12 +180,18 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   - **Limits.** One download at a time per machine: another waits up to 30 seconds, then gets 503. The first line must come within 30 seconds and each later byte within 30 seconds of the last; there is no limit on the whole. Always the whole file: no ranges.
   - **Outputs** are bound with the attempt (digest v4) and served as the file is when downloaded, as on this host.
 - **Files from before.** Each artifact records whether its path held a file before the command ran (`preExisting`) and, if so, whether that file is unchanged (`unchangedSinceStart`). This is an observation, not a verdict: a file left by an earlier run passes when it meets the rules, as on this host. For an output that only this attempt can have written, give it a path of its own (for example, one that names the run). The receipt is always this attempt's own: another attempt's `artifacts.json` is never read.
+- **Runs of stages on a machine.** A stage of `job_run_submit` may name `machineId` (an SSH machine, or `agent` or `local`, resolved as for a Job). It is a remote Job of its run, with a remote Job's rules:
+  - **One machine.** A stage reads its upstream files where they are and nothing is moved between machines, so a stage and every stage it needs run on the same machine, and a first stage of a run with `afterRuns` on the machine those runs ran on. A stage of another machine is refused at submit, with the reason. `reuse` names an attempt of the same machine, whose artifacts that machine's helper checks again (`verify`).
+  - **Frozen there.** Each stage's inputs and Git state are frozen on its machine at submit; its Git guard leaves out the artifacts its earlier stages declare, as on this host.
+  - **Checked before it runs.** Its start carries the stages it needs (bound with the attempt, digest v4) and the artifacts their attempts succeeded with. Its supervisor checks each of them again there, by SHA-256, before the command may run. A change rejects it as on this host: `Upstream stage … artifact … is no longer the one it succeeded with (…); command was not started`.
+  - **Everything else is Core's,** as for this host's stages: retries, `waitForAnalysis`, mail and cost.
+  - A macOS Core refuses runs of stages, so a stage on This Mac does not exist yet.
 - **The digest binds them.** An attempt with inputs or artifacts is pinned with digest v3, which binds:
   - each input's path, resolved path and SHA-256;
   - each artifact's path, format and `minBytes`;
   - whether limits are carried.
 
-  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte. One with `guardGit` or `outputs` is pinned at submit with digest v4: v3's fields, the Git state frozen there and the guard's exclusions, and the declared outputs. A Core from before v4 would send that start without them, and the machine refuses it before writing anything.
+  An attempt without inputs or artifacts (empty lists included) keeps v1 or v2, byte for byte. One with `guardGit` or `outputs`, or a run's stage, is pinned at submit with digest v4: v3's fields, the Git state frozen there and the guard's exclusions, the declared outputs, and a stage's needs. A Core from before v4 would send that start without them, and the machine refuses it before writing anything.
 - **Older Cores.** While a remote job is queued, Core builds from before data roots cannot open the Workspace (older_cores.rs). They also cannot open it while a machine has a setting they would ignore (a mode, which every machine added now has; a budget; or `maxJobs`), or while an attempt runs outside the legacy root. Otherwise such a Core may open it with a started v3 attempt:
   - it sends each request with the digest pinned with the attempt and does not compute it again after the start (core.11: `bound` in remote.rs);
   - its helper checks the digest only at a start (core.11: `start` in remote_job.py);
