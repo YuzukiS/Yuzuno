@@ -617,6 +617,19 @@ test('a commit watch names its exact target, says it waits for a run, and its fo
   }finally{p.close();}
 });
 
+// YN-193: GitHub runs no pull_request CI for a PR with merge conflicts.
+test('a PR watch GitHub reports as conflicting says no CI comes until the conflict is resolved',async()=>{
+  const conflictSub = { ...ciSub, id:'conflict-sub', watch:{ ...ciSub.watch, currentHeadSha:'a'.repeat(40), state:'conflicting' } };
+  const p=mount(url=>url.startsWith('/api/ci?')?{runs:[],subscriptions:[conflictSub],hasMore:false,nextBefore:null}:page([]));
+  try{
+    await open(p);button(p,'GitHub Actions').click();
+    await until(()=>p.doc.querySelector('.ci-subscription'));
+    const row=p.doc.querySelector('.ci-subscription');
+    assert.match(row.textContent,/Conflicts with its base: GitHub runs no CI for this commit/);
+    assert.doesNotMatch(row.textContent,/Older commit/);
+  }finally{p.close();}
+});
+
 test('CI detail read failure retains the last observed run and does not invent a terminal failure',async()=>{
   const p=mount(url=>url.startsWith('/api/ci/')?{run:ciRun,error:'rate_limited: retry later',details:null}:url.startsWith('/api/ci?')?ciPage:page([]));
   try{
