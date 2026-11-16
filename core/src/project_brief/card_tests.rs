@@ -373,7 +373,7 @@ async fn a_cards_executor_writes_within_the_limits_every_section_has() {
     accept(&ws, "c", input("c1", 1, vec![put("page/four", "report")])).await;
     let full = reject(&ws, "c", input("c2", 2, vec![put("page/five", "report")])).await;
     assert_eq!(codes(&full), ["topic_limit"], "{full}");
-    assert!(full["problems"][0]["reason"].as_str().unwrap().contains(&format!("{MAX_SUBTOPICS} sub-topics")));
+    assert!(full["problems"][0]["reason"].as_str().unwrap().contains(&format!("{MAX_SUBTOPICS} report or status sub-topics")));
 
     let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
     let mut large = put("page/four", "report");
