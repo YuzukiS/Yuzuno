@@ -1,8 +1,10 @@
 #!/bin/sh
-# Builds the macOS desktop app (Yuzuno.app) and a disk image on a Mac, and
-# writes what was built and with what to build.json.
+# Builds the macOS desktop app (Yuzuno.app), a disk image and the app's update
+# package (Yuzuno.app.tar.gz) on a Mac, and writes what was built and with
+# what to build.json.
 #
-#   scripts/desktop-macos.sh --tools DIR --out DIR [--version X.Y.Z] [--toolchain NAME] [--test]
+#   scripts/desktop-macos.sh --tools DIR --out DIR [--version X.Y.Z] [--update-public-key FILE]
+#                            [--toolchain NAME] [--test]
 #
 # Run from a checkout's root (or an export of desktop/ and this script). Needs
 # Xcode's command line tools and a rustup toolchain for this Mac's
@@ -14,15 +16,21 @@
 # The app is signed ad hoc ("-"): it has no Developer ID signature and is not
 # notarized. build.json records codesign's description and Gatekeeper's
 # assessment as this Mac gives them.
+#
+# --update-public-key embeds an updater public key (a .pub as `tauri signer
+# generate` writes it: one base64 line) as plugins > updater > pubkey, the key
+# the app verifies its updates with. The update package is not signed here:
+# no private key is used, and the package is signed where the release is made.
 set -eu
 
 TAURI_CLI_VERSION=2.12.3 # matches desktop/Cargo.lock; bump both together
-tools= out= version= test= channel=stable
+tools= out= version= test= channel=stable key_file=
 while [ $# -gt 0 ]; do
   case "$1" in
     --tools) tools=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --version) version=$2; shift 2 ;;
+    --update-public-key) key_file=$2; shift 2 ;;
     --toolchain) channel=$2; shift 2 ;;
     --test) test=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
@@ -33,6 +41,30 @@ done
 [ -f desktop/Cargo.lock ] || { echo "Run from the repository root." >&2; exit 66; }
 grep -A1 '^name = "tauri"$' desktop/Cargo.lock | grep -q "^version = \"$TAURI_CLI_VERSION\"$" ||
   { echo "desktop/Cargo.lock's tauri is not $TAURI_CLI_VERSION; update TAURI_CLI_VERSION with it." >&2; exit 65; }
+# The update public key: one base64 line holding a minisign public key, read
+# now, before the build. Its key ID (what minisign prints for it) goes to
+# build.json. (Python's text is in single quotes: macOS's /bin/sh, bash 3.2,
+# misreads a here-document inside $(...).)
+key= key_id=
+if [ -n "$key_file" ]; then
+  [ -f "$key_file" ] || { echo "No update public key at $key_file." >&2; exit 66; }
+  key_id=$(/usr/bin/python3 -I -c '
+import base64, re, struct, sys
+text = open(sys.argv[1], encoding="ascii").read()
+if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}\n?", text):
+    sys.exit("it is not one line of base64")
+pub = base64.b64decode(text.strip(), validate=True).decode("ascii")
+found = re.fullmatch(r"untrusted comment: minisign public key: ([0-9A-F]{16})\n(RW[A-Za-z0-9+/]{54})\n?", pub)
+if not found:
+    sys.exit("it does not hold a minisign public key")
+raw = base64.b64decode(found.group(2), validate=True)
+# "Ed", then the key ID as a little-endian 64-bit number, then the key.
+if len(raw) != 42 or raw[:2] != b"Ed":
+    sys.exit("its key is not an Ed25519 minisign key")
+print("%016X" % struct.unpack("<Q", raw[2:10])[0])
+' "$key_file") || { echo "$key_file is not an updater public key." >&2; exit 65; }
+  key=$(cat "$key_file")
+fi
 
 arch=$(uname -m)
 # The oldest macOS each build is for: Tauri writes it to the bundle's
@@ -68,6 +100,7 @@ fi
 rm -rf "$CARGO_TARGET_DIR/release/bundle"
 set -- build --ci --bundles app,dmg --config "{\"bundle\":{\"macOS\":{\"minimumSystemVersion\":\"$minimum\"}}}"
 [ -z "$version" ] || set -- "$@" --config "{\"version\":\"$version\"}"
+[ -z "$key" ] || set -- "$@" --config "{\"plugins\":{\"updater\":{\"pubkey\":\"$key\"}}}"
 "$cli" "$@"
 
 bundle="$CARGO_TARGET_DIR/release/bundle"
@@ -77,6 +110,16 @@ rm -rf "$out/Yuzuno.app"
 ditto "$app" "$out/Yuzuno.app"
 cp "$dmg" "$out/"
 ditto -c -k --keepParent "$app" "$out/Yuzuno.app.zip"
+# The update package, as Tauri's bundler packs one (the .app with its own
+# folder as the root, symbolic links kept as links; the updater skips that
+# first level when it unpacks): written here because the bundler signs the
+# packages it makes and needs the private key for that. GNU format, without
+# the ._ files and extended attributes macOS's own tar would add.
+/usr/bin/python3 -I - "$app" "$out/Yuzuno.app.tar.gz" <<'EOF'
+import sys, tarfile
+with tarfile.open(sys.argv[2], "w:gz", format=tarfile.GNU_FORMAT) as tar:
+    tar.add(sys.argv[1], arcname="Yuzuno.app")  # does not follow symbolic links
+EOF
 plist="$app/Contents/Info.plist"
 /usr/bin/python3 - "$out/build.json" <<EOF
 import hashlib, json, os, plistlib, subprocess, sys
@@ -128,9 +171,11 @@ record = {
         "executableMinimumSystemVersion": macho_minimum(executable),
         "executableSha256": sha256(executable),
         "architectures": run("/usr/bin/lipo", "-archs", executable)["output"].split(),
+        # The minisign key ID of the embedded update public key, or None.
+        "updatePublicKeyId": "$key_id" or None,
     },
     "files": {name: {"sha256": sha256(os.path.join("$out", name)), "bytes": os.path.getsize(os.path.join("$out", name))}
-              for name in sorted(os.listdir("$out")) if name.endswith((".dmg", ".zip"))},
+              for name in sorted(os.listdir("$out")) if name.endswith((".dmg", ".zip", ".tar.gz"))},
     "signature": run("/usr/bin/codesign", "-dv", "--verbose=2", "$app"),
     "signatureCheck": run("/usr/bin/codesign", "--verify", "--deep", "--strict", "$app"),
     "gatekeeper": run("/usr/sbin/spctl", "--assess", "--type", "execute", "-vv", "$app"),

@@ -903,7 +903,7 @@ fn only_job_submit_describes_machines_and_keeps_their_limits() {
     }
     let machine = text(&job, "machineId");
     for kept in ["never on the machine your Agent itself runs on", "Not available with machineId: gpu, exclusive, outputs",
-        "guardGit (set it to false)", "never starts it twice", "not processes that leave it", "yuzuno_guide topic jobs"] {
+        "guardGit reads the Git there (on windows set it to false)", "never starts it twice", "not processes that leave it", "yuzuno_guide topic jobs"] {
         assert!(machine.contains(kept), "{kept}");
     }
     assert!(text(&job, "artifacts").contains("minBytes (default 1)"));

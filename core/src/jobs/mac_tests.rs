@@ -236,7 +236,6 @@ async fn on_a_macos_core_this_host_is_this_mac_and_what_needs_linux_is_refused_b
     }
     let before = lab.saved_jobs();
     for (extra, refusal) in [
-        (json!({"guardGit": true}), "guardGit is not available yet on This Mac, where a macOS Core runs its Jobs in the limited mode; set guardGit to false"),
         (json!({"gpu": {"memoryMiB": 1024}}), "GPU admission is not available on This Mac"),
         (json!({"resources": {"cpuMillis": 500, "cpuMillisMax": 2000, "memoryMiB": 128, "swapMiB": 0}}), "A CPU range up to cpuMillisMax needs a Linux host's cgroup"),
         (json!({"exclusive": true}), "exclusive is not available on This Mac"),
@@ -347,4 +346,48 @@ async fn this_macs_budget_comes_from_the_mac_itself() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     assert_eq!(local_budget_default(&ws).await.unwrap(), Some(info["suggestedBudget"].clone()));
+}
+
+/// guardGit on This Mac (YN-83 S2): the same helper as over SSH freezes cwd's
+/// work tree at submit, with the system's git, binds it (v4) and checks it
+/// again before the command runs: a tracked file changed meanwhile rejects
+/// the start, and unchanged the command runs.
+#[tokio::test]
+async fn guard_git_on_this_mac_is_frozen_there_and_checked_before_the_start() {
+    let lab = lab();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(&lab.work).args(args)
+            .env("HOME", lab.dir.path()).env("GIT_CONFIG_NOSYSTEM", "1")
+            .envs([("GIT_AUTHOR_NAME", "Lab"), ("GIT_COMMITTER_NAME", "Lab")])
+            .envs([("GIT_AUTHOR_EMAIL", "lab@example.invalid"), ("GIT_COMMITTER_EMAIL", "lab@example.invalid")])
+            .output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::write(lab.work.join("a.txt"), "v1\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    let none: &[String] = &[];
+    let (programs, cwd) = (lab.programs(), lab.work.to_string_lossy().into_owned());
+    let freeze = || remote::remote_snapshot_with(&lab.ws, &programs, "mac", &cwd, &[], Some((none, none)));
+    let submit = |id: &str, command: &str, snapshot: Value| {
+        let mut input: Submit = serde_json::from_value(job(&lab, id, command, json!({"guardGit":true,"machineId":"mac"}))).unwrap();
+        input.validate().unwrap();
+        input.default_env();
+        lab.ws.store.create_job(Some("a"), input, snapshot, Value::Null, remote::mac_capabilities()).unwrap()
+    };
+    let snapshot = freeze().await.unwrap();
+    assert!(snapshot["git"]["head"].is_string() && snapshot["git"]["hostId"].is_string(), "{snapshot}");
+    let changed = submit("changed", "touch ran", snapshot);
+    assert_eq!(changed["remote"]["prebound"]["request"], "v4", "{changed}");
+    std::fs::write(lab.work.join("a.txt"), "v2\n").unwrap();
+    let ended = lab.until(&changed, |j| j["reserved"] == false && j["status"] != "queued").await;
+    assert_eq!(ended["status"], "rejected", "{ended}");
+    let reason = ended["reason"].as_str().unwrap();
+    assert!(reason.starts_with("Guarded inputs changed while queued (") && reason.ends_with("a.txt); command was not started."), "{reason}");
+    assert!(!lab.work.join("ran").exists(), "the command never ran");
+    let runs = submit("runs", "cat a.txt", freeze().await.unwrap());
+    let done = lab.until(&runs, |j| j["reserved"] == false).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(remote::logs_with(&lab.ws, &done, None, &lab.programs()).await.unwrap()["text"], "v2\n");
 }

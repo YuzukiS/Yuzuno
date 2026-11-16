@@ -1,6 +1,7 @@
 // YN-108 M2c: on a macOS Core this host's Jobs run on This Mac in the limited
 // mode (as on a Mac over SSH, YN-104). The new-Job form says so beside what
-// runs and sends guardGit false, which Core refuses there; Settings → Jobs
+// runs, and guardGit is offered and sent as set (its helper reads Git there,
+// YN-83 S2); Settings → Jobs
 // says its budget only queues and records them. A Linux Core's view (no
 // `mac`) shows neither. Against fixture answers in this file only: no Core.
 import './jsdom-guard.mjs';
@@ -74,20 +75,20 @@ async function openForm(p) {
 const macNote = 'This Mac · macOS · limits declared only: CPU and RAM queue and record the job; nothing holds them while it runs.';
 const budgetNote = 'Used only to queue and record Jobs: macOS can’t enforce CPU or RAM, so nothing is held while a Job runs. Each job still declares its own CPU and RAM.';
 
-test('on a macOS Core the new-Job form says the job runs on This Mac with its limits declared only, and sends guardGit false', async () => {
+test('on a macOS Core the new-Job form says the job runs on This Mac with its limits declared only, and sends guardGit as set', async () => {
   const p = mount(true);
   try {
     await openForm(p);
     assert.equal(p.doc.querySelector('.job-mac-host')?.textContent, macNote);
     const guard = field(p, 'Check Git HEAD');
-    assert.equal(guard.disabled, true);
-    assert.equal(guard.checked, false);
-    assert.ok([...p.doc.querySelectorAll('.job-footnote')].some(n => n.textContent === 'Not available on macOS: list the files to freeze as inputs.'));
+    assert.equal(guard.disabled, false);
+    assert.equal(guard.checked, true);
+    assert.ok(![...p.doc.querySelectorAll('.job-footnote')].some(n => n.textContent.includes('freeze as inputs')));
     await fill(p, 'Name', 'mac job'); await fill(p, 'Existing task', 'T-1'); await fill(p, 'Command', 'echo ok');
     button(p, 'Submit job').click();
     await until(() => p.calls.some(c => c.url === '/api/jobs' && c.body), 'the job is submitted');
     const sent = p.calls.find(c => c.url === '/api/jobs' && c.body).body;
-    assert.equal(sent.guardGit, false);
+    assert.equal(sent.guardGit, true);
     assert.equal('machineId' in sent, false, 'no machine named: Core resolves this host to This Mac');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }

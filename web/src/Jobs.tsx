@@ -828,8 +828,8 @@ export function Jobs({
           .split("\n")
           .map((s) => s.trim())
           .filter(Boolean),
-        // Not on This Mac: Core refuses it there (YN-108 M2c).
-        guardGit: mac ? false : draft.guardGit,
+        // This Mac's helper reads Git too (YN-83 S2).
+        guardGit: draft.guardGit,
         // Keep an old unconfirmed ordinary draft's request key unchanged.
         ...(draft.exclusive ? { exclusive: true } : {}),
         ...(draft.gpuMemory?.trim()
@@ -2127,13 +2127,11 @@ function JobForm({
           <label className="job-checkbox">
             <input
               type="checkbox"
-              checked={mac ? false : draft.guardGit}
-              disabled={mac}
+              checked={draft.guardGit}
               onChange={(e) => setDraft({ ...draft, guardGit: e.target.checked })}
             />
             {t.guardGit}
           </label>
-          {mac && <p className="job-footnote">{t.macGuardGit}</p>}
           <label>
             {t.inputs}
             <textarea

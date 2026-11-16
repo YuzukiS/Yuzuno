@@ -211,7 +211,18 @@ fn exit(job: &Value) -> Value {
     json!({"state": if job["status"] == "unknown" { "unknown" } else { "notRecorded" }})
 }
 
+/// The code a Job ran: on a machine, as that machine's own helper read its
+/// Git work tree there (guardGit, YN-83 S2), which the record says.
 fn code(job: &Value) -> Value {
+    let mut code = code_frozen(job);
+    if job["snapshot"]["remote"] == true && code["git"].is_object() {
+        code["reportedBy"] = json!(format!("{}: its own helper read the Git work tree there",
+            job["executor"]["machineName"].as_str().unwrap_or("the remote machine")));
+    }
+    code
+}
+
+fn code_frozen(job: &Value) -> Value {
     let snapshot = &job["snapshot"];
     let git = &snapshot["git"];
     if let (Some(head), Some(paths)) = (git["head"].as_str(), git["guardPaths"].as_array()) {
@@ -237,7 +248,7 @@ fn code(job: &Value) -> Value {
             "state": "verified", "when": "At submission, and checked again before the command started"});
     }
     let note = if snapshot["remote"] == true {
-        "Core does not see files on that machine: no Git state was recorded"
+        "No Git state was recorded on that machine: guardGit was off, or the working directory there is not in a Git work tree"
     } else {
         "No Git state was recorded: guardGit was off, or the working directory is not in a Git work tree"
     };

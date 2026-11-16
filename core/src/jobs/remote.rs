@@ -535,7 +535,24 @@ pub(super) fn spec(job: &Value) -> Value {
                 .collect();
         }
     }
+    // guardGit on an SSH machine or This Mac (v4): the work tree's state as
+    // that machine's helper froze it at submit (null: cwd is in none), which
+    // its supervisor reads again before the command runs.
+    if git_guarded(job) {
+        let mut frozen = job["snapshot"]["git"].clone();
+        if let Some(fields) = frozen.as_object_mut() {
+            fields.remove("hostId");
+        }
+        spec["git"] = json!({"frozen": frozen, "guardExclude": job["guardExclude"].as_array().cloned().unwrap_or_default()});
+    }
     spec
+}
+
+/// Whether the attempt's start carries the Git guard: guardGit on an SSH
+/// machine or This Mac, which only a Core with it accepts (Windows refuses
+/// it at submit).
+fn git_guarded(job: &Value) -> bool {
+    matches!(job["executor"]["kind"].as_str(), Some(SSH | MAC)) && job["guardGit"] == true
 }
 
 /// A job with inputs or artifacts (a v3 request) is bound when it is
@@ -545,17 +562,20 @@ pub(super) fn spec(job: &Value) -> Value {
 /// rollback while it is queued: it records a digest only where none is
 /// (remote_note never replaces one), and the machine refuses a start whose
 /// request does not match the digest it carries, before writing anything.
-/// Jobs without inputs or artifacts are pinned at their start as before.
+/// Jobs without inputs or artifacts are pinned at their start as before. A
+/// guardGit job (v4) is bound the same way: a Core from before it would
+/// send no Git state, and the helper refuses that start.
 pub(super) fn prebind(job: &mut Value, mode: Option<String>) {
     let nonempty = |value: &Value| value.as_array().is_some_and(|items| !items.is_empty());
     let kind = job["executor"]["kind"].as_str();
-    if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
+    let v4 = git_guarded(job);
+    if !matches!(kind, Some(SSH | WINDOWS | MAC)) || !(v4 || nonempty(&job["snapshot"]["files"]) || nonempty(&job["artifacts"])) {
         return;
     }
     if kind == Some(SSH) {
         job["executor"]["limitMode"] = json!(mode.unwrap_or_else(|| LEGACY.to_owned()));
     }
-    job["remote"] = json!({"digest": digest(&spec(job)), "prebound": {"at": now(), "request": "v3"}});
+    job["remote"] = json!({"digest": digest(&spec(job)), "prebound": {"at": now(), "request": if v4 { "v4" } else { "v3" }}});
 }
 
 /// An SSH attempt whose machine named macOS at its hello runs in the limited
@@ -580,8 +600,10 @@ fn run_limited_on_a_mac(job: &mut Value) {
 /// The request digest, encoded without ambiguity exactly as the helper
 /// does; the helper refuses a start whose command does not match it. A spec
 /// with limits is v2 and binds them too; one with frozen inputs or declared
-/// artifacts is v3 and binds those as well. An attempt recorded with an
-/// earlier version keeps the digest it was recorded with.
+/// artifacts is v3 and binds those as well; one with git, outputs, needs or
+/// gpu (YN-83 S2) is v4: v3's fields and those four, each named and "none"
+/// when absent. An attempt recorded with an earlier version keeps the digest
+/// it was recorded with: v1 to v3 are unchanged.
 pub(super) fn digest(spec: &Value) -> String {
     fn put(hash: &mut Sha256, text: &str) {
         hash.update(format!("{}:", text.len()).as_bytes());
@@ -589,14 +611,17 @@ pub(super) fn digest(spec: &Value) -> String {
         hash.update(b",");
     }
     let limits = spec.get("limits").filter(|limits| !limits.is_null());
+    let present = |key: &str| spec.get(key).is_some_and(|value| !value.is_null());
+    let v4 = V4_FIELDS.iter().any(|key| present(key));
     // None or empty: no inputs or artifacts, so v1 or v2 exactly as before.
     let nonempty = |key: &str| spec[key].as_array().is_some_and(|items| !items.is_empty());
-    let v3 = nonempty("inputs") || nonempty("artifacts");
+    let v3 = v4 || nonempty("inputs") || nonempty("artifacts");
     let mut hash = Sha256::new();
-    put(&mut hash, match (v3, limits.is_some()) {
-        (true, _) => "yuzuno-remote-job-v3",
-        (false, true) => "yuzuno-remote-job-v2",
-        (false, false) => "yuzuno-remote-job-v1",
+    put(&mut hash, match (v4, v3, limits.is_some()) {
+        (true, _, _) => "yuzuno-remote-job-v4",
+        (false, true, _) => "yuzuno-remote-job-v3",
+        (false, false, true) => "yuzuno-remote-job-v2",
+        (false, false, false) => "yuzuno-remote-job-v1",
     });
     let argv = spec["argv"].as_array().map(Vec::as_slice).unwrap_or_default();
     put(&mut hash, &argv.len().to_string());
@@ -642,8 +667,50 @@ pub(super) fn digest(spec: &Value) -> String {
             put(&mut hash, &item["minBytes"].as_u64().unwrap_or_default().to_string());
         }
     }
+    if v4 {
+        let git = spec.get("git").filter(|git| !git.is_null());
+        let frozen = git.map(|git| &git["frozen"]).filter(|frozen| !frozen.is_null());
+        put(&mut hash, "git");
+        put(&mut hash, match (git, frozen) {
+            (None, _) => "none",
+            (Some(_), None) => "no work tree",
+            (Some(_), Some(_)) => "work tree",
+        });
+        if let Some(frozen) = frozen {
+            for key in ["root", "head", "statusSha256"] {
+                put(&mut hash, frozen[key].as_str().unwrap_or_default());
+            }
+            match frozen["guardPaths"].as_array() {
+                None => put(&mut hash, "whole work tree"),
+                Some(objects) => {
+                    put(&mut hash, &objects.len().to_string());
+                    for item in objects {
+                        for key in ["path", "object", "type"] {
+                            put(&mut hash, item[key].as_str().unwrap_or_default());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(git) = git {
+            let exclude = git["guardExclude"].as_array().map(Vec::as_slice).unwrap_or_default();
+            put(&mut hash, &exclude.len().to_string());
+            for path in exclude {
+                put(&mut hash, path.as_str().unwrap_or_default());
+            }
+        }
+        // Filled by the slices that bring them (outputs, needs, gpu); until
+        // then a start never carries them.
+        for key in &V4_FIELDS[1..] {
+            put(&mut hash, key);
+            put(&mut hash, "none");
+        }
+    }
     format!("{:x}", hash.finalize())
 }
+
+/// What makes a start v4 (YN-83 S2), in the order its digest binds them.
+const V4_FIELDS: [&str; 4] = ["git", "outputs", "needs", "gpu"];
 
 /// A request about this attempt, bound to everything that names it.
 fn bound(job: &Value, workspace: &str, action: &str) -> Value {
@@ -797,6 +864,11 @@ pub(super) fn evidence(job: &Value, reply: &Value) -> Option<Value> {
             let mut value = base(result["status"].as_str().unwrap_or("unknown"),
                 result["reason"].as_str().unwrap_or_default().to_owned());
             value["finishedAtUnix"] = result["finishedAtUnix"].clone();
+            // With guardPaths, what the start's check found there, as local
+            // jobs record it (provenance reads result.guard).
+            if let Some(guard) = result.get("guard").filter(|guard| guard.is_object()) {
+                value["guard"] = guard.clone();
+            }
             // Checked on that machine after a clean exit, as for local jobs;
             // absent when they were not checked (a failure, a cancel).
             if let Some(artifacts) = result.get("artifacts") {
@@ -1647,10 +1719,21 @@ pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u
 /// does a machine that does not answer.
 pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>, machine_id: &str, cwd: &str,
     inputs: &[String]) -> Result<Value> {
-    if inputs.is_empty() {
+    remote_snapshot_with(ws, programs, machine_id, cwd, inputs, None).await
+}
+
+/// The same with guardGit (`git`: its guardPaths and guardExclude) on an SSH
+/// machine or This Mac: that machine's helper also freezes the Git state of
+/// cwd's work tree there, by host.py's rules (remote_job.py git_snapshot),
+/// and its changed tracked files join the inputs. The job's snapshot.git has
+/// local jobs' shape and the machine that answered (hostId).
+pub(super) async fn remote_snapshot_with(ws: &Arc<Workspace>, programs: &Programs<'_>, machine_id: &str, cwd: &str,
+    inputs: &[String], git: Option<(&[String], &[String])>) -> Result<Value> {
+    if inputs.is_empty() && git.is_none() {
         return Ok(json!({"cwd": cwd, "remote": true,
             "scope": "Nothing is frozen on the remote machine: Core does not see its files"}));
     }
+    anyhow::ensure!(git.is_none() || machine_id != WINDOWS, "guardGit is not available on Windows on this PC");
     let (machine, frozen_on) = if machine_id == WINDOWS {
         (Machine::Windows, windows_snapshot())
     } else if machine_id == MAC {
@@ -1667,7 +1750,11 @@ pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>
     // seconds, and the SSH process is ended with the call); the Job is
     // inserted after, only with the machine still registered as it was here
     // (store.rs create_job).
-    let reply = match call(programs, &machine, json!({"action": "inspect", "cwd": cwd, "inputs": inputs})).await {
+    let mut request = json!({"action": "inspect", "cwd": cwd, "inputs": inputs});
+    if let Some((paths, exclude)) = git {
+        request["git"] = json!({"guardPaths": paths, "guardExclude": exclude});
+    }
+    let reply = match call(programs, &machine, request).await {
         Reply::Answer(reply) if reply["status"] == "inspected" && reply["hostId"].is_string() => reply,
         Reply::Answer(reply) => anyhow::bail!("The inputs could not be read on {name}, so nothing was submitted: {}",
             reply["status"].as_str().unwrap_or("no status")),
@@ -1686,13 +1773,34 @@ pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>
     // that machine's own kind of absolute path (on Windows, the final path
     // Windows gave: a drive path, or a network one a mapped drive leads to).
     let absolute = |path: &str| if windows { windows_final_path(path) } else { path.starts_with('/') };
-    let frozen = files.len() == inputs.len() && files.iter().zip(inputs).all(|(file, given)| {
+    let hex = |sha: &str| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+    // The explicit inputs first, in order; then, with guardGit, each changed
+    // tracked file there, by absolute path (sha256 null: Git lists it as
+    // deleted, frozen as missing as on this host).
+    let (given, tracked) = files.split_at(inputs.len().min(files.len()));
+    let frozen = given.len() == inputs.len() && given.iter().zip(inputs).all(|(file, given)| {
         file["path"] == given.as_str() && file["absolutePath"].as_str().is_some_and(absolute)
-            && file["sha256"].as_str().is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            && file["sha256"].as_str().is_some_and(hex)
+    }) && (git.is_some() || tracked.is_empty()) && tracked.iter().all(|file| {
+        file["tracked"] == true && file["path"].as_str().is_some_and(absolute) && file["absolutePath"].as_str().is_some_and(absolute)
+            && (file["sha256"].is_null() || file["sha256"].as_str().is_some_and(hex))
     });
     anyhow::ensure!(frozen, "The inputs could not be read on {name}, so nothing was submitted: its reply does not name each input with its digest");
-    Ok(json!({"cwd": cwd, "remote": true, "hostId": reply["hostId"], "frozenOn": frozen_on, "files": files, "totalBytes": reply["totalBytes"],
-        "scope": format!("Inputs are files on {name}, frozen there by SHA-256 at submit with the machine that answered, and checked again there before the command runs. Nothing on this host is read for them")}))
+    let mut snapshot = json!({"cwd": cwd, "remote": true, "hostId": reply["hostId"], "frozenOn": frozen_on, "files": files, "totalBytes": reply["totalBytes"],
+        "scope": format!("Inputs are files on {name}, frozen there by SHA-256 at submit with the machine that answered, and checked again there before the command runs. Nothing on this host is read for them")});
+    if git.is_some() {
+        let state = &reply["git"];
+        let named = state.is_null() || ["root", "head", "statusSha256"].iter().all(|key| state[*key].is_string());
+        anyhow::ensure!(reply.get("git").is_some() && named,
+            "The Git state could not be read on {name}, so nothing was submitted: its reply does not name it");
+        let mut state = state.clone();
+        if state.is_object() {
+            state["hostId"] = reply["hostId"].clone();
+        }
+        snapshot["git"] = state;
+        snapshot["scope"] = json!(format!("Frozen on {name} at submit by its own helper, with the machine that answered, and checked again there before the command runs: the Git HEAD of cwd's work tree there (with guardPaths, only the tracked content under those paths), its changed tracked files and the explicit small inputs, by SHA-256. Untracked or ignored data, submodule contents and changes after launch are not frozen, and nothing on this host is read for them"));
+    }
+    Ok(snapshot)
 }
 
 /// A final path as Windows names a file: C:\... or \\server\share\...
@@ -1714,6 +1822,7 @@ pub(super) fn capabilities() -> Value {
         "gpu": "unavailable",
         "pause": "Only for an attempt that runs in a scope of its own on that machine (its limits are held there: strict, or limited on an account that lingers): its scope is frozen through the account's systemd and read back from its cgroup, as for local jobs; its memory and the machine's reservation stay, and its timeout keeps counting. Otherwise unavailable, with the reason: nothing is stopped with signals instead",
         "inputs": "Files on that machine, frozen there by SHA-256 at submit and checked again there before the command runs; one that changed stops the start",
+        "guardGit": "On the machine: its helper freezes cwd's Git work tree there at submit, with the Git on that account's PATH, by the rules, bounds and words of local jobs (HEAD, or with guardPaths only the content under those paths, and the changed tracked files, which count with the inputs), and checks it again there before the command runs; a change rejects the start",
         "artifacts": "Checked on that machine after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran (noted, not judged: a file left there earlier passes if it meets the rules); never copied here",
         "outputs": "unavailable",
         "processes": "Cancel and timeouts stop the attempt's own process group, checking each process (boot, PID, start time) before signalling it. A process group is not a cgroup: a process that starts its own session or group leaves it and is not stopped",
@@ -1742,10 +1851,11 @@ pub(super) fn mac_capabilities() -> Value {
         // Its slots are this Core's maxActive, not a machine's own.
         fields.remove("slots");
     }
-    value["inputs"] = json!("Files on this Mac, frozen by SHA-256 at submit by the Jobs helper and checked again before the command runs; one that changed stops the start. guardGit is not available: list the files to freeze as inputs");
+    value["inputs"] = json!("Files on this Mac, frozen by SHA-256 at submit by the Jobs helper and checked again before the command runs; one that changed stops the start");
+    value["guardGit"] = json!("On this Mac, as on a machine over SSH: the Jobs helper freezes cwd's Git work tree at submit with the Command Line Tools' git, by the rules of local jobs, and checks it again before the command runs");
     value["artifacts"] = json!("Checked on this Mac after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran");
     value["outputs"] = json!("unavailable: declare the files as artifacts");
-    value["unavailable"] = json!("GPU admission, pause, a CPU range, exclusive, guardGit, outputs, runs of stages, services and checkpoints need Linux with a systemd user manager: they are refused, with the reason, before anything is queued");
+    value["unavailable"] = json!("GPU admission, pause, a CPU range, exclusive, outputs, runs of stages, services and checkpoints need Linux with a systemd user manager: they are refused, with the reason, before anything is queued");
     value
 }
 
@@ -1779,6 +1889,7 @@ pub(super) fn windows_capabilities() -> Value {
         "slots": SLOTS,
         "gpu": "unavailable",
         "pause": "unavailable",
+        "guardGit": "unavailable: list the files to freeze as inputs",
         "inputs": "Files on this PC's Windows, read by the native helper there (never through /mnt): frozen by SHA-256 and their final path at submit, and checked again while the command is still suspended, before it runs; one that changed stops the start. A check before the start, not a read-only snapshot while it runs",
         "artifacts": "Checked by the native helper on Windows after a clean exit, by the same rules as local jobs (json and jsonl by a syntax check of its own that follows Python's json reading, with stated bounds: nesting deeper than 1000 levels or an integer of more than 4300 digits leaves the check not completed); recorded with the final path, size and SHA-256, and whether a file was already at the path; never copied here",
         "outputs": "unavailable",

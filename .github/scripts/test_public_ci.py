@@ -224,7 +224,7 @@ def release_inputs_problems(text):
     return found
 
 
-MACOS_UPLOAD_NAME = 'name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}'
+MACOS_UPLOAD_NAME = "name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version || 'source' }}-${{ github.sha }}-${{ github.run_attempt }}"
 # Apple silicon on its standard runner, and nothing else (YN-161).
 MACOS_RUNNERS = [('arm64', 'macos-26')]
 ON_REQUEST = "if: github.event_name == 'workflow_dispatch'"
@@ -523,7 +523,7 @@ class PublicCi(unittest.TestCase):
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
             'an upload from PRs': (good.replace(f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        {ON_REQUEST}\n',
                                                 f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n', 1), 'from a pull request'),
-            'another artifact name': (good.replace('name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}', 'name: macos-${{ github.sha }}', 1), 'one macOS artifact'),
+            'another artifact name': (good.replace("name: yuzuno-macos-${{ matrix.arch }}-${{ inputs.version || 'source' }}-${{ github.sha }}", 'name: macos-${{ github.sha }}', 1), 'one macOS artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one macOS artifact'),
         }
         for label, (text, message) in cases.items():

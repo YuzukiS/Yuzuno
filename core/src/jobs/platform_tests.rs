@@ -160,16 +160,16 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
         };
         assert_eq!(error, refusal, "{operation}");
     }
-    // A Job for this host runs on This Mac, which has no guardGit (on by
-    // default): refused there with why, however this host was named.
+    // A Job for this host runs on This Mac, which has no exclusive: refused
+    // there with why, however this host was named.
     for (actor, input) in [
-        (None, job("here", json!({}))),
-        (None, job("named-local", json!({"machineId":"local"}))),
+        (None, job("here", json!({"exclusive":true}))),
+        (None, job("named-local", json!({"machineId":"local","exclusive":true}))),
         // `a` runs on this host: the alias resolves to This Mac.
-        (Some("a"), job("on-agent", json!({"machineId":"agent"}))),
+        (Some("a"), job("on-agent", json!({"machineId":"agent","exclusive":true}))),
     ] {
         let error = lab.call(actor, "job_submit", input).await.unwrap_err().to_string();
-        assert!(error.starts_with("guardGit is not available yet on This Mac"), "{error}");
+        assert!(error.starts_with("exclusive is not available on This Mac"), "{error}");
     }
     // Nothing written or run for them, and nothing saved.
     assert_eq!(lab.helpers(), Vec::<String>::new());

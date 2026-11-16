@@ -6,6 +6,11 @@
 //! Core. Every update is signed, the official updater verifies the download
 //! against the public key built into this app (and that the signed version is
 //! the one announced), and exactly those verified bytes are installed.
+//!
+//! Windows runs the signed installer, which closes this app and opens the
+//! new version. macOS replaces this app's bundle in place with the signed
+//! `.app` archive (the updater's own swap, which puts the old app back if it
+//! fails), then this app reopens itself as the new version (YN-181).
 use crate::{connection, ConnectionState};
 use serde::Serialize;
 use std::{
@@ -20,7 +25,11 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use url::Url;
 
-/// The one platform this updater serves, as Core names its assets.
+/// This platform, as Core names its update routes and the updater looks it
+/// up in Core's manifest: the updater's own `{os}-{arch}` name.
+#[cfg(target_os = "macos")]
+const TARGET: &str = "darwin-aarch64";
+#[cfg(not(target_os = "macos"))]
 const TARGET: &str = "windows-x86_64";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -73,9 +82,11 @@ pub struct Available {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     version: String,
-    /// "installer": installed by this app's own installer, which can update
-    /// it. "unknown": anything else (a portable copy, a build, another
-    /// installer); it is updated by hand.
+    /// "installer": this copy can replace itself in place with an update (on
+    /// Windows, installed by this app's own installer; on macOS, an app
+    /// bundle). "unknown": anything else (a portable copy, a build, another
+    /// installer); it is updated by hand. The name is kept: pages from
+    /// core.36 and older offer the install only for "installer".
     channel: &'static str,
     /// Why this copy cannot update itself here, if it cannot.
     unavailable: Option<String>,
@@ -121,13 +132,13 @@ pub fn config_public_key(config: &tauri::Config) -> Option<String> {
 
 /// Why updates cannot run here at all (as opposed to a failed attempt).
 fn unavailable(app: &AppHandle, core: &Url) -> Option<String> {
-    if cfg!(target_os = "macos") {
+    if !cfg!(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )) {
         return Some(
-            "The Mac app does not update itself yet. Install a newer Mac build by hand.".into(),
+            "Desktop updates are published for Windows x64 and Apple silicon Macs.".into(),
         );
-    }
-    if !cfg!(all(windows, target_arch = "x86_64")) {
-        return Some("Desktop updates are published for Windows x64.".into());
     }
     if public_key(app).is_none() {
         return Some(
@@ -137,6 +148,14 @@ fn unavailable(app: &AppHandle, core: &Url) -> Option<String> {
     if !connection::is_loopback(core) {
         return Some(
             "Desktop updates come through a Core on this computer. Connect to it, or update by hand."
+                .into(),
+        );
+    }
+    #[cfg(target_os = "macos")]
+    if mac::runs_read_only() {
+        return Some(
+            "Yuzuno is running from its disk image or from a place macOS keeps read-only. \
+            Drag it to Applications, open it from there, then update."
                 .into(),
         );
     }
@@ -157,7 +176,7 @@ impl DesktopUpdates {
             });
         Status {
             version: app.package_info().version.to_string(),
-            channel: if installed_by_our_installer(&app.package_info().name) {
+            channel: if self_updating_copy(&app.package_info().name) {
                 "installer"
             } else {
                 "unknown"
@@ -212,13 +231,16 @@ fn validate_download(core: &Url, url: &Url) -> Result<(), String> {
 fn readable(error: tauri_plugin_updater::Error) -> String {
     use tauri_plugin_updater::Error;
     match error {
+        // An older Core answers this platform's manifest route with 404,
+        // which the updater reads as no release.
         Error::ReleaseNotFound => {
-            "This Core offered no desktop release. It may have no release source or no \
-            published desktop release yet, or be older than desktop updates."
+            "This Core offered no desktop release for this computer. It may have no release \
+            source or no published release for it yet, or be older than desktop updates for \
+            this computer."
                 .into()
         }
         Error::TargetNotFound(_) | Error::TargetsNotFound(_) => {
-            "The desktop release has no Windows x64 installer.".into()
+            "The desktop release has no update for this computer.".into()
         }
         Error::SignedVersionMismatch { .. } | Error::MissingSignedVersion => {
             "The update's signature does not match the version it claims; it was not installed."
@@ -232,6 +254,42 @@ fn readable(error: tauri_plugin_updater::Error) -> String {
                 .into()
         }
         other => format!("The update failed: {other}"),
+    }
+}
+
+/// Why installing the verified update did not happen.
+fn install_failure(error: tauri_plugin_updater::Error) -> String {
+    if cfg!(target_os = "macos") {
+        mac_install_failure(error)
+    } else {
+        format!("The installer could not start: {error}")
+    }
+}
+
+/// The macOS updater's failures, said so that the user can act on them. It
+/// moves the new app into place with renames on the app's own disk; a
+/// permission error is the administrator prompt cancelled, or macOS (App
+/// Management) refusing the change.
+fn mac_install_failure(error: tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error;
+    match error {
+        Error::PreviousAppNotRestored(kept) => format!(
+            "The update failed and the previous app could not be put back; it was kept at {}. \
+            Move it back to Applications.",
+            kept.display()
+        ),
+        Error::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            "macOS did not let Yuzuno replace itself. Install the new version by hand, or allow \
+            Yuzuno under System Settings → Privacy & Security → App Management and \
+            try again."
+                .into()
+        }
+        Error::TempDirNotOnSameMountPoint => {
+            "Yuzuno can update itself only on the disk that holds the system's temporary \
+            folder. Move it to Applications."
+                .into()
+        }
+        other => format!("The update could not be installed: {other}"),
     }
 }
 
@@ -267,6 +325,7 @@ pub async fn desktop_update_check(
         // the installer both come from it or from nowhere.
         let updater = app
             .updater_builder()
+            .target(TARGET)
             .endpoints(vec![manifest_url(&core)?])
             .map_err(readable)?
             .timeout(CHECK_TIMEOUT)
@@ -303,9 +362,10 @@ pub async fn desktop_update_check(
     Ok(updates.status(&app, &core))
 }
 
-/// Downloads the update checked from the selected Core, verifies it and runs
-/// its installer, which closes this app and opens the new version. Returns
-/// only if that failed.
+/// Downloads the update checked from the selected Core, verifies it and
+/// installs it: on Windows its installer closes this app and opens the new
+/// version; on macOS the new bundle replaces this one and the app reopens.
+/// Returns only if that failed.
 #[tauri::command]
 pub async fn desktop_update_install(
     app: AppHandle,
@@ -318,10 +378,10 @@ pub async fn desktop_update_install(
     if let Some(reason) = unavailable(&app, &core) {
         return Err(reason);
     }
-    if !installed_by_our_installer(&app.package_info().name) {
+    if !self_updating_copy(&app.package_info().name) {
         return Err(
-            "This copy was not installed by the Yuzuno installer, so it cannot update itself. \
-            Download the new installer and run it by hand."
+            "This copy was not installed from a Yuzuno release, so it cannot update itself. \
+            Install the new release by hand."
                 .into(),
         );
     }
@@ -375,12 +435,19 @@ pub async fn desktop_update_install(
     };
     updates.set("installing", None);
     remember_core(&app, &core);
-    // On Windows this starts the installer and exits; it returns only on error.
+    // On Windows this starts the installer and exits; it returns only on
+    // error. On macOS it returns once the new bundle is in place.
     if let Err(error) = update.install(bytes) {
         forget_core(&app);
-        let error = format!("The installer could not start: {error}");
+        let error = install_failure(error);
         updates.set("failed", Some(error.clone()));
         return Err(error);
+    }
+    // macOS: reopen as the new version. Tauri ends this process and opens
+    // the bundle again through Launch Services, with the original arguments;
+    // the marker above reopens the Core selected now. It does not return.
+    if cfg!(target_os = "macos") {
+        app.restart();
     }
     Ok(updates.status(&app, &core))
 }
@@ -399,8 +466,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The installer reopens this app with its original arguments; a Core chosen
-/// in the window is not among them, so it is kept here for that restart.
+/// The installer (Windows) or the restart (macOS) reopens this app with its
+/// original arguments; a Core chosen in the window is not among them, so it
+/// is kept here for that restart.
 fn remember_core(app: &AppHandle, core: &Url) {
     if let Some(path) = resume_file(app) {
         let record = serde_json::json!({"coreUrl": core.as_str(), "at": now_secs()});
@@ -417,9 +485,10 @@ fn forget_core(app: &AppHandle) {
     }
 }
 
-/// The installer replays the original arguments and environment. A valid,
-/// one-time update marker takes priority because the user may have selected
-/// another Core since launch. Without one, normal startup selection is kept.
+/// The installer replays the original arguments and environment (macOS's
+/// restart replays the arguments only). A valid, one-time update marker
+/// takes priority because the user may have selected another Core since
+/// launch. Without one, normal startup selection is kept.
 pub fn restore_startup_core(app: &AppHandle, startup: Result<Url, String>) -> Result<Url, String> {
     match resume_file(app) {
         Some(path) => restore_startup_from_file(&path, startup, now_secs()),
@@ -454,10 +523,11 @@ fn resume_record(bytes: &[u8], now: u64) -> Option<Url> {
     connection::parse_core_url(record["coreUrl"].as_str()?).ok()
 }
 
-/// Installed by this app's own NSIS installer: its uninstall record names this
-/// executable. Anything else cannot be updated in place by this updater.
+/// Whether this copy can replace itself in place with an update. On Windows:
+/// installed by this app's own NSIS installer, whose uninstall record names
+/// this executable. Anything else cannot be updated in place by this updater.
 #[cfg(windows)]
-fn installed_by_our_installer(product: &str) -> bool {
+fn self_updating_copy(product: &str) -> bool {
     let key = format!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{product}");
     let (Some(location), Some(binary)) = (
         registry::current_user_string(&key, "InstallLocation"),
@@ -477,9 +547,70 @@ fn installed_by_our_installer(product: &str) -> bool {
         .eq_ignore_ascii_case(current.as_os_str())
 }
 
-#[cfg(not(windows))]
-fn installed_by_our_installer(_product: &str) -> bool {
+/// On macOS: an app bundle, the folder the updater replaces (`update_rules`).
+/// A `cargo run` build in `target/` is not one. Whether its volume can be
+/// written is `unavailable`'s check.
+#[cfg(target_os = "macos")]
+fn self_updating_copy(_product: &str) -> bool {
+    mac::current_bundle().is_some()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn self_updating_copy(_product: &str) -> bool {
     false
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use crate::update_rules;
+    use objc2::rc::autoreleasepool;
+    use objc2_foundation::{NSNumber, NSString, NSURLVolumeIsReadOnlyKey, NSURL};
+    use std::path::{Path, PathBuf};
+
+    /// The bundle this executable runs from, as the updater finds it (the
+    /// same starting executable).
+    pub fn current_bundle() -> Option<PathBuf> {
+        let exe = tauri::utils::platform::current_exe().ok()?;
+        update_rules::app_bundle(&exe)
+    }
+
+    /// The app runs from a volume that cannot be written: its disk image,
+    /// or the random read-only place macOS runs a quarantined app from when
+    /// it was opened where it was downloaded (App Translocation). One
+    /// Foundation property covers both, whatever the path. An answer macOS
+    /// cannot give counts as writable: the updater then refuses before it
+    /// moves anything.
+    pub fn runs_read_only() -> bool {
+        let Ok(exe) = tauri::utils::platform::current_exe() else {
+            return false;
+        };
+        let place = update_rules::app_bundle(&exe).unwrap_or(exe);
+        on_read_only_volume(&place)
+    }
+
+    fn on_read_only_volume(path: &Path) -> bool {
+        let Some(text) = path.to_str() else {
+            return false;
+        };
+        autoreleasepool(|_| {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(text));
+            let mut value = None;
+            // SAFETY: the key is Foundation's own constant, and an NSNumber
+            // (a boolean) is the value it gives; it is checked before use.
+            let read =
+                unsafe { url.getResourceValue_forKey_error(&mut value, NSURLVolumeIsReadOnlyKey) };
+            match read {
+                Ok(()) => value
+                    .as_deref()
+                    .and_then(|value| value.downcast_ref::<NSNumber>())
+                    .is_some_and(|number| number.boolValue()),
+                Err(error) => {
+                    eprintln!("Unable to read whether the app's volume is read-only: {error:?}");
+                    false
+                }
+            }
+        })
+    }
 }
 
 #[cfg(windows)]
@@ -529,26 +660,78 @@ mod tests {
     }
 
     #[test]
+    fn each_platform_asks_core_for_its_own_update() {
+        let expected = if cfg!(target_os = "macos") {
+            "darwin-aarch64"
+        } else {
+            "windows-x86_64"
+        };
+        assert_eq!(TARGET, expected);
+        assert_eq!(
+            manifest_url(&core()).unwrap().as_str(),
+            format!("http://127.0.0.1:4317/api/updates/desktop/{expected}/manifest")
+        );
+        assert_eq!(
+            installer_path(),
+            format!("/api/updates/desktop/{expected}/installer")
+        );
+    }
+
+    #[test]
     fn an_update_is_used_only_from_the_selected_cores_installer_route() {
-        let ok = Url::parse(
-            "http://127.0.0.1:4317/api/updates/desktop/windows-x86_64/installer?tag=desktop-0.2.0",
-        )
-        .unwrap();
+        let path = installer_path();
+        let ok = Url::parse(&format!("http://127.0.0.1:4317{path}?tag=desktop-0.2.0")).unwrap();
         assert!(validate_download(&core(), &ok).is_ok());
+        let other = if TARGET == "windows-x86_64" {
+            "darwin-aarch64"
+        } else {
+            "windows-x86_64"
+        };
         for bad in [
-            "http://127.0.0.1:4318/api/updates/desktop/windows-x86_64/installer",
-            "http://localhost:4317/api/updates/desktop/windows-x86_64/installer",
-            "https://github.com/YuzukiS/Yuzuno/releases/download/x/setup.exe",
-            "http://127.0.0.1:4317/api/updates/desktop/windows-x86_64/installer/../../agents",
-            "http://127.0.0.1:4317/api/artifact?path=/etc/passwd",
-            "http://user:pass@127.0.0.1:4317/api/updates/desktop/windows-x86_64/installer",
-            "http://127.0.0.1:4317/api/updates/desktop/windows-x86_64/installer#x",
+            format!("http://127.0.0.1:4318{path}"),
+            format!("http://localhost:4317{path}"),
+            "https://github.com/YuzukiS/Yuzuno/releases/download/x/setup.exe".into(),
+            format!("http://127.0.0.1:4317{path}/../../agents"),
+            "http://127.0.0.1:4317/api/artifact?path=/etc/passwd".into(),
+            format!("http://user:pass@127.0.0.1:4317{path}"),
+            format!("http://127.0.0.1:4317{path}#x"),
+            // Another platform's update is not this one's.
+            format!(
+                "http://127.0.0.1:4317/api/updates/desktop/{other}/installer?tag=desktop-0.2.0"
+            ),
         ] {
             assert!(
-                validate_download(&core(), &Url::parse(bad).unwrap()).is_err(),
+                validate_download(&core(), &Url::parse(&bad).unwrap()).is_err(),
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_mac_install_says_what_to_do() {
+        use tauri_plugin_updater::Error;
+        let kept = mac_install_failure(Error::PreviousAppNotRestored(PathBuf::from(
+            "/Users/example/Yuzuno.app",
+        )));
+        assert!(
+            kept.contains("kept at /Users/example/Yuzuno.app.")
+                && kept.ends_with("Move it back to Applications."),
+            "{kept}"
+        );
+        // The administrator prompt cancelled, or App Management refusing.
+        let denied = mac_install_failure(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Failed to move the new app into place",
+        )));
+        assert!(
+            denied.starts_with("macOS did not let Yuzuno replace itself.")
+                && denied.contains("Privacy & Security → App Management"),
+            "{denied}"
+        );
+        assert!(mac_install_failure(Error::TempDirNotOnSameMountPoint)
+            .ends_with("Move it to Applications."));
+        let other = mac_install_failure(Error::Io(std::io::Error::other("disk full")));
+        assert_eq!(other, "The update could not be installed: disk full");
     }
 
     #[test]

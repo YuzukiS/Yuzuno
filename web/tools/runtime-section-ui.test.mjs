@@ -385,13 +385,13 @@ test("in the desktop app its version is read from the app's own status, never an
   const page = mount(core(), { desktop: { version: "0.3.0", channel: "installer", unavailable: null, phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null } });
   page.window.show();
   await tick();
-  assert.equal(page.facts(page.group("This device"))["Desktop app"], "Yes · 0.3.0 · Installed by the Yuzuno installer; it updates from the Desktop app card.");
+  assert.equal(page.facts(page.group("This device"))["Desktop app"], "Yes · 0.3.0 · Installed from a Yuzuno release; it updates from the Desktop app card.");
   assert.deepEqual(page.invoked, ["desktop_update_status"]);
   page.close();
   // A copy the installer didn't install, and one whose updates are blocked,
   // say so as the Desktop app card does.
   for (const [status, said] of [
-    [{ channel: "unknown", unavailable: null }, "Yes · 0.3.0 · Not installed by the Yuzuno installer, so it can't update itself."],
+    [{ channel: "unknown", unavailable: null }, "Yes · 0.3.0 · Not installed from a Yuzuno release, so it can't update itself."],
     [{ channel: "installer", unavailable: "Updates are off for this copy." }, "Yes · 0.3.0 · Updates are off for this copy."],
   ]) {
     const other = mount(core(), { desktop: { version: "0.3.0", phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null, ...status } });
