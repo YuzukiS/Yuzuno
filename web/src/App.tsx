@@ -184,6 +184,7 @@ import { useBrowserOffline, watchBrowserNetwork } from "./browser-offline";
 import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { useRefreshTrigger } from "./refresh-trigger";
+import { useProgressBatch } from "./progress-batch";
 import { coreConnection } from "./connection-status";
 import { langTag, useLanguage } from "./i18n";
 import { shellText, type ShellWords } from "./shell-text";
@@ -1021,6 +1022,38 @@ export function App() {
     // Read together with the workspace list, which also reads on render.
     if (fullRevision) live.sync.refetch({ now: true });
   }, [fullRevision, live.sync]);
+  // Streamed progress reaches the Agent list in batches, on drawn frames
+  // (YN-199): one render for every streaming Agent's entries at most every
+  // 250 ms, none while the page is hidden. An entry kept from another
+  // Workspace, or sent before the list it would replace was read, is dropped.
+  const applyProgress = useCallback(
+    (entries: { id: string; workspace: string; listed: Agent }[]) => {
+      const here = entries.filter((entry) => entry.workspace === currentWorkspace.current);
+      if (!here.length) return;
+      setWorkspace((w) => {
+        if (!w) return w;
+        let agents: Agent[] | null = null;
+        for (const { listed } of here) {
+          const index = w.agents.findIndex((a) => a.id === listed.id);
+          if (index < 0) continue;
+          const old = w.agents[index];
+          // An entry sent before the last list was read never replaces it.
+          const newer =
+            listed.rev != null && old.rev != null
+              ? listed.rev > old.rev
+              : listed.lastSeq > old.lastSeq;
+          if (!newer) continue;
+          agents ??= w.agents.slice();
+          agents[index] = { ...listed, projectId: old.projectId, kind: old.kind, executor: old.executor };
+        }
+        return agents ? { ...w, agents } : w;
+      });
+      // Home's Agent counts can wait for progress lines.
+      homeRefresh.atMostEvery(15_000);
+    },
+    [homeRefresh],
+  );
+  const pushProgress = useProgressBatch(applyProgress);
   const onWorkspaceEvent = useCallback(
     (event: WorkspaceEvent) => {
       switch (event.type) {
@@ -1046,31 +1079,16 @@ export function App() {
           if (event.agentId === overviewAgent.current) setTempUsageRevision((n) => n + 1);
           return;
         case "agent.progress": {
-          // Its Items went out already; only its rail entry changes.
+          // Its Items went out already; only its rail entry changes, with
+          // the others' in the next batch (applyProgress).
           const listed = event.agent;
           if (
             !listed ||
             !workspaceRef.current?.agents.some((a) => a.id === listed.id)
           ) {
             workspaceRefresh.soon(500);
-          } else {
-            setWorkspace((w) => {
-              const index = w?.agents.findIndex((a) => a.id === listed.id) ?? -1;
-              if (!w || index < 0) return w;
-              const old = w.agents[index];
-              // An entry sent before the last list was read never replaces it.
-              const newer =
-                listed.rev != null && old.rev != null
-                  ? listed.rev > old.rev
-                  : listed.lastSeq > old.lastSeq;
-              if (!newer) return w;
-              const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind, executor: old.executor };
-              return { ...w, agents };
-            });
-          }
-          // Home's Agent counts can wait for progress lines.
-          homeRefresh.atMostEvery(15_000);
+            homeRefresh.atMostEvery(15_000);
+          } else pushProgress({ id: listed.id, workspace: currentWorkspace.current, listed });
           return;
         }
         case "workspace.changed":
@@ -1121,7 +1139,7 @@ export function App() {
           return;
       }
     },
-    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, mergeQueueRefresh, presetRefresh, live.sync, refresh],
+    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, mergeQueueRefresh, presetRefresh, live.sync, refresh, pushProgress],
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
   // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
