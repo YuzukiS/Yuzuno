@@ -8,9 +8,24 @@ import type { ProjectPanel, Section } from "../home/types";
  */
 export function homeReplyOf(item: NativeItem): HomeReplyOrigin | null {
   if (item.type !== "userMessage" || item._yuzunoInput !== "home") return null;
+  return homeOrigin(item);
+}
+
+const homeOrigin = (item: NativeItem): HomeReplyOrigin | null => {
   const home = item._yuzunoHome;
   return home && typeof home === "object" && typeof home.projectId === "string" ? home : null;
-}
+};
+
+/** Core's preview of a user message too large for the conversation's window
+ * (conversation_window.rs `bounded_item`): its text is only a start, and the
+ * whole message is read from its original. */
+export const messagePreview = (item: NativeItem) =>
+  item.type === "historyPreview" && item._yuzunoWindowPreview?.type === "userMessage";
+
+/** Core's preview of a reply from Home, which keeps the reply's `_yuzunoHome`
+ * (YN-201): as Core marked it, never from its text. */
+export const homeReplyPreview = (item: NativeItem) =>
+  messagePreview(item) && item._yuzunoInput === "home" && !!homeOrigin(item);
 
 /** An answer a form field left empty. */
 export const unanswered = (answer: string | string[]) =>

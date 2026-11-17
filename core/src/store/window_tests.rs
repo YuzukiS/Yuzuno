@@ -533,6 +533,42 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
     pages(&store);
 }
 
+/// YN-201: a Home reply too large for the window is sent as its preview,
+/// which keeps who sent it and its snapshot from Core's receipt, read from
+/// the light index as from the whole record; a large message the person
+/// typed keeps who sent it, never a snapshot.
+#[test]
+fn a_large_home_reply_keeps_its_snapshot_in_the_window() {
+    let (dir, store) = lab();
+    let words = format!("{}end", "长句 ".repeat(12_000));
+    let snapshot = json!({"format":1,"projectName":"Code","sectionKind":"ask","title":"About decide","question":"Which way?",
+        "options":[],"choice":null,"text":words,"form":null});
+    let origin = json!({"kind":"home","projectId":"p","key":"decide","version":1,"workspaceId":"w","home":snapshot});
+    let message = format!("Reply from the user on Home, to version 1 of the Project Brief section `decide`\n\n{words}");
+    let user = |id: &str, client: &str| json!({"id":id,"type":"userMessage","clientId":client,"content":[{"type":"text","text":message}]});
+    let mut d = detail("a");
+    d.turns = vec![json!({"id":"work","status":"completed","items":[user("i-home", "home"), user("i-you", "you")]})];
+    d.message_receipts = [("home", origin), ("you", json!({"kind":"client"}))].iter()
+        .map(|(client, origin)| serde_json::from_value(json!({"input":{"clientMessageId":client,"text":"t"},
+            "status":"accepted","turnId":"work","error":null,"origin":origin})).unwrap()).collect();
+    store.insert(&d).unwrap();
+    let check = |store: &Store| {
+        let window = assert_equivalent(store, &Query::default());
+        let item = |id: &str| window.detail.turns[0]["items"].as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
+        let home = item("i-home");
+        assert_eq!((home["type"].clone(), home["_yuzunoInput"].clone()), (json!("historyPreview"), json!("home")));
+        assert_eq!(home["_yuzunoHome"]["snapshot"], snapshot);
+        let bytes = serde_json::to_vec(&home).unwrap().len();
+        assert!(bytes > conversation_window::MAX_ITEM_BYTES && bytes <= conversation_window::MAX_HOME_PREVIEW_BYTES, "{bytes}");
+        let yours = item("i-you");
+        assert_eq!((yours["type"].clone(), yours["_yuzunoInput"].clone()), (json!("historyPreview"), json!("you")));
+        assert!(yours.get("_yuzunoHome").is_none());
+    };
+    check(&store);
+    drop(store);
+    check(&Store::open(&dir.path().join("workspace.sqlite")).unwrap());
+}
+
 /// T-9: a Home reply's `_yuzunoHome` comes from Core's receipt only: where
 /// it came from always, its snapshot only in the format and shape Core
 /// writes, and whole however long, in the window as in the whole record.

@@ -28,6 +28,20 @@ fn terminal(turn: &Value) -> bool {
     matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
 }
 
+/// Where a message's time is recorded from (`stamp_message`): the Harness's
+/// own item time ("codex"), Claude's saved history ("claude"), or when Core
+/// received it ("core").
+pub const TIME_SOURCES: [&str; 3] = ["codex", "core", "claude"];
+
+/// A message's `_yuzunoTime` in the form `stamp_message` writes it, rebuilt
+/// from that form, so of a bounded size; None for any other value.
+pub fn item_time(item: &Value) -> Option<Value> {
+    let time = item.get(ITEM_TIME)?;
+    let at = time["at"].as_i64().filter(|at| *at > 0)?;
+    let source = time["source"].as_str().filter(|source| TIME_SOURCES.contains(source))?;
+    Some(json!({"at": at, "source": source}))
+}
+
 /// Records when a conversation message first appeared. `source` is "codex"
 /// for the Harness's own item timestamp, "core" for the time Core received it.
 pub fn stamp_message(item: &mut Value, at: Option<i64>, source: &str) {

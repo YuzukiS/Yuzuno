@@ -2,7 +2,8 @@
 // stream are reconciled by journal position. Pure modules, no DOM.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { patchDetail, PREVIEW, TRIM_ABOVE } from "../src/detail-patch.ts";
+import { readFileSync } from "node:fs";
+import { patchDetail, PREVIEW, TRIM_ABOVE, WINDOW_BODY, WINDOW_HOME_PREVIEW, WINDOW_ITEM } from "../src/detail-patch.ts";
 import { DetailSync } from "../src/detail-sync.ts";
 import { parseWorkspaceEvent } from "../src/workspace-events.ts";
 
@@ -52,6 +53,51 @@ test("saved body windows keep middle reading separate from live arrivals and bou
   assert.equal(patchDetail(base,item(11,{id:"overflow",type:"agentMessage",text:"new"})),null,"refetch a bounded tail instead of retaining another row");
   base.turns[1].items = [{id:"m",type:"agentMessage",text:"x".repeat(32*1024-100)}];
   assert.equal(patchDetail(base,delta(11,"m","text","x".repeat(200))),null,"huge item returns to explicit original preview");
+});
+
+test("a window holding a large reply from Home's preview takes streamed changes, within the bounds Core sends it by (YN-201)", () => {
+  // Core's own answer (core/src/conversation_window.rs): its bounds, and the
+  // preview it sends of a large reply from Home.
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/home-reply-window.json", import.meta.url), "utf8"));
+  assert.deepEqual({ item: WINDOW_ITEM, homePreview: WINDOW_HOME_PREVIEW, body: WINDOW_BODY }, fixture.limits);
+  // Measured here as Core measures it: UTF-8 bytes of its JSON, escapes and all.
+  const size = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
+  const bytes = size(fixture.preview);
+  assert.equal(bytes, fixture.previewBytes);
+  assert.ok(bytes > WINDOW_ITEM && bytes <= WINDOW_HOME_PREVIEW, `${bytes}`);
+  const windowed = (...first) => {
+    const base = detail(10, [...first, { id: "m", type: "agentMessage", text: "Hel" }]);
+    base.conversation = { index: [], hasAfter: false, hasBefore: true, start: '["t0","old"]', end: '["t1","m"]', totalItems: 3 };
+    return base;
+  };
+  const stream = (base) => patchDetail(base, delta(11, "m", "text", "lo"));
+  // Streamed words patch the window in place, the preview as it came.
+  const patched = stream(windowed(fixture.preview));
+  assert.ok(patched, "a Home preview within its bound is not read again");
+  assert.equal(text(patched, "m").text, "Hello");
+  assert.equal(patched.turns[1].items[0], fixture.preview);
+  // As large, but not a Home reply's preview as Core marks one: read again.
+  const { _yuzunoHome: home, ...unmarked } = fixture.preview;
+  for (const [what, other] of [
+    ["another person's message", { ...fixture.preview, _yuzunoInput: "you" }],
+    ["no _yuzunoHome", { ...unmarked, _yuzunoOther: home }],
+    ["not a message's preview", { ...fixture.preview, _yuzunoWindowPreview: { type: "agentMessage" } }],
+    ["a whole message", { ...fixture.preview, type: "userMessage" }],
+  ]) {
+    assert.ok(size(other) > WINDOW_ITEM, what);
+    assert.equal(stream(windowed(other)), null, what);
+  }
+  // A Home preview past its own bound: read again.
+  const over = structuredClone(fixture.preview);
+  over._yuzunoHome.snapshot.title += "x".repeat(WINDOW_HOME_PREVIEW - bytes + 1);
+  assert.equal(size(over), WINDOW_HOME_PREVIEW + 1);
+  assert.equal(stream(windowed(over)), null, "past its bound");
+  // As many as fit the body's bound together, and then one more.
+  // The window's other Items once patched, each as patchDetail counts it.
+  const others = [detail().turns[0].items[0], { id: "m", type: "agentMessage", text: "Hello" }].reduce((n, item) => n + size(item), 0);
+  const fit = Math.floor((WINDOW_BODY - others) / bytes);
+  assert.ok(fit >= 1 && stream(windowed(...Array(fit).fill(fixture.preview))), `${fit} fit`);
+  assert.equal(stream(windowed(...Array(fit + 1).fill(fixture.preview))), null, "past the body's bound together");
 });
 
 test("a running sub-agent Core listed from outside the window is read again when it changes, never placed among the loaded Items", () => {
