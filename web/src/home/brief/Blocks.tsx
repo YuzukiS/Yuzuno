@@ -19,6 +19,7 @@ import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import { useBriefDensity } from "./density";
+import { MORE_METRICS } from "../card-preview.ts";
 import { Tip, TipText } from "../../Tip";
 import {
   metricDelta,
@@ -237,8 +238,6 @@ export function BriefFindings({ title, items }: FindingsProps) {
 }
 
 const shown = (value: number | string) => String(value);
-/** Values a short metrics block shows beside its first (low density). */
-export const MORE_METRICS = 3;
 function Metric({ item, lead }: { item: MetricsProps["items"][number]; lead?: boolean }) {
   const t = useStrings(briefText);
   const delta = item.previous === undefined ? null : metricDelta(item.value, item.previous);

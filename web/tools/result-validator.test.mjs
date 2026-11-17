@@ -14,6 +14,8 @@ import { COMMITTED, generate, outputDir, validatorHeader } from "./result-valida
 import { parseContract } from "./contract-json.mjs";
 import { describeContract, SCHEMA_VERSION } from "../src/intelligent-ui/contract.ts";
 import { comparisonExample } from "../src/intelligent-ui/examples.ts";
+import { cardFace, FACE_NOTE } from "../src/home/card-face.ts";
+import { CARD_FACE_FIXTURES } from "./card-face-fixtures.mjs";
 
 const committed = (name) => readFile(new URL(name, outputDir), "utf8");
 let cache;
@@ -105,6 +107,30 @@ test("the bundle accepts a Brief section it can repair, says how, and refuses on
   const refused = await ask({ id: 3, op: "briefSection", section: section({ f: { type: "Findings", props: { items: [{ id: "f1", severity: "low", text: "X." }] } } }) });
   assert.equal(refused.ok, false);
   assert.deepEqual(refused.problems.map((problem) => problem.code), ["missing_field"]);
+  child.stdin.end();
+  assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0);
+});
+
+test("the bundle tells a card's face as the renderer's rules do, and nothing for an Ask (YN-209)", async () => {
+  const child = spawn(process.execPath, [await bundle()], { env: {}, stdio: ["pipe", "pipe", "inherit"] });
+  const answers = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const ask = async (request) => {
+    child.stdin.write(`${JSON.stringify(request)}\n`);
+    return JSON.parse((await answers.next()).value);
+  };
+  let id = 0;
+  for (const fixture of CARD_FACE_FIXTURES) {
+    const answer = await ask({ id: ++id, op: "briefCard", section: fixture.section, refreshes: fixture.refreshes, requested: fixture.requested });
+    assert.equal(answer.ok, true, JSON.stringify(answer));
+    assert.equal(answer.note, FACE_NOTE);
+    assert.deepEqual(answer.card, JSON.parse(JSON.stringify(cardFace(fixture.section, { refreshes: fixture.refreshes, requested: fixture.requested }))), fixture.id);
+  }
+  const ask_ = await ask({ id: ++id, op: "briefCard", section: { key: "q", kind: "ask", title: "Q", body: {}, attachments: [] } });
+  assert.deepEqual([ask_.ok, ask_.card], [true, null]);
+  // An unreadable body has no lead and no picture; never a validator fault.
+  const odd = await ask({ id: ++id, op: "briefCard", section: { key: "odd", kind: "report", title: "Odd", body: { root: 3 }, attachments: null } });
+  assert.equal(odd.ok, true, JSON.stringify(odd));
+  assert.deepEqual([odd.card.lead, odd.card.visual], [null, { from: "none" }]);
   child.stdin.end();
   assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0);
 });

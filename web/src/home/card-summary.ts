@@ -18,27 +18,31 @@ type Node = { type?: string; props?: Record<string, unknown>; children?: string[
  * attachments or limits shows no summary rather than the wrong one.
  */
 export function sectionSummary(section: Section): string | null {
+  const id = summaryBlock(section);
+  const text = id === null ? undefined : (section.body as { elements?: Record<string, Node> }).elements?.[id]?.props?.text;
+  return typeof text === "string" ? firstParagraph(text) : null;
+}
+
+/** The Markdown block sectionSummary reads, by its id, or null (card-face.ts names it to the author, YN-209). */
+export function summaryBlock(section: Section): string | null {
   const body = section.body as { root?: unknown; elements?: Record<string, Node> } | null | undefined;
   const elements = body?.elements;
   if (!elements || typeof body?.root !== "string") return null;
   const named = summaryOf(section);
-  if (named) {
-    const text = elements[named.lead]?.props?.text;
-    return typeof text === "string" ? firstParagraph(text) : null;
-  }
+  if (named) return named.lead;
   const top = elements[body.root]?.children ?? [];
   const markdown = (id: string | undefined) => {
     const node = id === undefined ? undefined : elements[id];
-    return node?.type === "Markdown" && typeof node.props?.text === "string" ? (node.props.text as string) : null;
+    return node?.type === "Markdown" && typeof node.props?.text === "string" ? id! : null;
   };
   const first = elements[top[0] ?? ""];
-  let text: string | null = null;
+  let found: string | null = null;
   if (first?.type === "Group" && first.props?.tone === "accent")
-    text = (first.children ?? []).map(markdown).find((value) => value !== null) ?? null;
-  if (text === null && top.includes("summary"))
-    text = markdown("summary") ?? (elements.summary?.type === "Group" ? markdown(elements.summary.children?.[0]) : null);
-  if (text === null) text = markdown(top[0]);
-  return text === null ? null : firstParagraph(text);
+    found = (first.children ?? []).map(markdown).find((value) => value !== null) ?? null;
+  if (found === null && top.includes("summary"))
+    found = markdown("summary") ?? (elements.summary?.type === "Group" ? markdown(elements.summary.children?.[0]) : null);
+  if (found === null) found = markdown(top[0]);
+  return found;
 }
 
 /** The block a body names as what its conclusion holds under (T-18), or null. */
