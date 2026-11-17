@@ -501,9 +501,14 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n\r\n'+json.dumps(data))
     let running = client::run(&json!({"id":42,"run_attempt":1,"head_sha":"a".repeat(40),"name":"CI","workflow_id":9,"repository":{"id":123},"status":"in_progress","conclusion":null}), 123, "o/r").unwrap();
     let (cached, _) = details(&ws, &running, 1, 60).await.unwrap();
     assert_eq!(cached["jobs"][0]["rawStatus"], "in_progress");
-    // It fails. Only the watch is due again: the cached jobs page is still valid.
+    // It fails. The watch is due and its run list read again (that read is
+    // older), while the jobs page, read later, is still valid in the cache.
     std::fs::write(&phase, "failed").unwrap();
-    ws.store.db.write().unwrap().execute("UPDATE ci_watches SET next_poll=0", []).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("UPDATE ci_watches SET next_poll=0", []).unwrap();
+        db.execute("UPDATE ci_cache SET data=json_set(data,'$.fetchedAt',0) WHERE endpoint NOT LIKE '%/jobs?%'", []).unwrap();
+    }
     tick(&ws).await.unwrap();
     let kept: String = ws.store.db.read().unwrap()
         .query_row("SELECT data FROM ci_run_failures WHERE run_id='github:123:42:1'", [], |r| r.get(0))
