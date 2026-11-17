@@ -364,8 +364,11 @@ test("answers sent show a long text as one block that opens to the whole text", 
   });
   await tick();
   const answer = reply.document.querySelector(".home-reply-answer");
-  assert.equal(answer.querySelectorAll(".pasted-text-chip").length, 1, "the review is one block");
-  assert.ok(!answer.textContent.includes(DEEP));
+  // YN-201: a long answer is Markdown folded to its start behind Show all,
+  // the rest not drawn until then (the user's choice, not a block).
+  assert.equal(answer.querySelectorAll(".pasted-text-chip").length, 0, "Markdown, not a block");
+  assert.equal(answer.querySelectorAll(".home-reply-words.folded").length, 1, "the review folds");
+  assert.ok(!answer.textContent.includes(DEEP), "folded, only its start is drawn");
   assert.match(answer.textContent, /Short note/);
   for (const p of [page, sent, reply]) assert.deepEqual(p.errors, []);
 });

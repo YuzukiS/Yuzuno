@@ -901,7 +901,8 @@ export function Turn({
   const [planOpen, setPlanOpen] = useConversationDisclosure(`plan:${turn.id}`, false);
   const revealingPlan = reveal?.itemId === planSourceId;
   useLayoutEffect(() => { if (revealingPlan) setPlanOpen(true); }, [revealingPlan]);
-  const firstUser = turn.items.find((item) => item.type === "userMessage");
+  // A Home reply too large to send whole opens its Turn as any message does (YN-201).
+  const firstUser = turn.items.find((item) => item.type === "userMessage" || !!homeReplyOf(item));
   const ordered = conversationBlocks(turn.items);
   const firstAgent = ordered.findIndex((block) => block.kind !== "user");
   const userPrefix = firstAgent < 0 ? ordered : ordered.slice(0, firstAgent);
@@ -1028,7 +1029,8 @@ export function Turn({
             {agent.harness === "claude" && item.nativeUuid && !item._yuzunoDelivery && (
               <ClaudeCheckpointButton agent={agent} nativeUuid={item.nativeUuid} turnRunning={running} />
             )}
-            <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
+            {/* A preview's text is only its start: nothing to send on. */}
+            {item.type === "userMessage" && <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />}
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
           {userBody(item)}

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { FOLD_CHARS, FOLD_LINES, foldSource } from "../src/home-reply/home-reply-model.ts";
 
 // T-9: a reply the user sent from Home shows in the conversation as its
 // answer (Dev 7's hr5), drawn only from `_yuzunoHome`, the snapshot Core
@@ -29,6 +30,8 @@ import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {Home} from ${JSON.stringify(path.join(root, "src/home/Home.tsx"))};
 import {HandoffContext} from ${JSON.stringify(path.join(root, "src/SendToAgent.tsx"))};
 import {HomeReplyLinks} from ${JSON.stringify(path.join(root, "src/home-reply/HomeReply.tsx"))};
+import {scopeRequests} from ${JSON.stringify(path.join(root, "src/api.ts"))};
+window.scopeRequests=scopeRequests;
 const root=createRoot(document.getElementById('root'));
 const handoff={agents:()=>window.fixtureAgents,send:(source,agentId)=>{window.actions.push(['handoff',source,agentId]);return true;}};
 const links={open:(origin,from)=>window.actions.push(['open',origin,from])};
@@ -160,13 +163,14 @@ test("a reply from Home shows its answer first, where it came from on one line, 
   const both = page.card("i-both");
   assert.equal(both.querySelector(".home-reply-source").textContent, "From Home·导出页分页方案·atlas-notes");
   assert.equal(both.querySelector(".home-reply-choice").textContent, "每页 50 行（推荐）");
-  assert.equal(both.querySelector(".home-reply-words").textContent, bothOrigin.snapshot.text);
+  // The user's words, as Markdown: a paragraph (YN-201).
+  assert.equal(both.querySelector(".home-reply-words").textContent.trim(), bothOrigin.snapshot.text);
   assert.deepEqual(page.actions("i-both"), ["Copy answer", "Question", "Original message", "Open on Home"]);
   // A form: each field with its answer, several as pills, an empty one said so.
   const form = page.card("i-form");
   assert.equal(form.querySelector(".home-reply-form-title").textContent, "Answers to “周报内容”");
   assert.deepEqual([...form.querySelectorAll("dt")].map((d) => d.textContent), ["包含的部分", "截止时间", "补充说明", "附件"]);
-  assert.deepEqual([...form.querySelectorAll("dd")].map((d) => [d.textContent, d.hasAttribute("data-empty")]),
+  assert.deepEqual([...form.querySelectorAll("dd")].map((d) => [d.textContent.trim(), d.hasAttribute("data-empty")]),
     [["进展风险", false], ["周五 18:00", false], ["风险部分请列出负责人。", false], ["Not answered", true]]);
   assert.deepEqual([...form.querySelectorAll("dd li")].map((li) => li.textContent), ["进展", "风险", "周五 18:00"]);
   // A card's version, and a reply to the whole Brief; neither has a Question.
@@ -286,6 +290,139 @@ test("a long reply is read whole: its original message is read in full before it
   await page.press("i-long", "Copy original");
   await until(() => page.copied.length === 1, "original copied");
   assert.equal(page.copied[0], full);
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-201: a reply from Home too large for the conversation's window, as
+// Core sends it (conversation_window.rs bounded_item): its preview, which
+// keeps who sent it, when, and the reply as the user saw it; its text only a
+// start. The whole message is read from its original.
+const bigText = ["按下面的表处理：", "", "| 字段 | 规则 |", "| --- | --- |",
+  ...Array.from({ length: 400 }, (_, n) => `| field_${n} | 第 ${n} 条规则 |`), "", "最后一行：超过 5% 先停下来。"].join("\n");
+const bigOrigin = { ...identity("cleaning/ask", 3), snapshot: snapshot({ sectionKind: "ask", title: "旧数据清洗规则", question: "怎么清洗？", options: [],
+  form: { id: "rules", title: "清洗规则", fields: [{ id: "rules", label: "字段规则", type: "text", answer: bigText }] } }) };
+const bigRaw = `Reply from the user on Home, to version 3 of the Project Brief section \`cleaning/ask\` …\n\nAnswers to “清洗规则”:\n- 字段规则: ${bigText}`;
+const bigTurn = () => ({ id: "t3", status: "completed", items: [
+  { id: "i-big", type: "historyPreview", status: "completed", _yuzunoWindowPreview: { type: "userMessage", bytes: 51_234 },
+    text: bigRaw.slice(0, 300), _yuzunoInput: "home", _yuzunoTime: { at: 1_794_800_000_000, source: "core" }, _yuzunoHome: bigOrigin },
+  { id: "r3", type: "agentMessage", text: "Noted." },
+] });
+const originalOf = (text) => ({ body: { id: "i-big", type: "userMessage", content: [{ type: "text", text }] } });
+const originalUrl = "/api/agents/a/items/i-big/original?turnId=t3";
+
+test("a reply from Home too large for the window is its card all the same, drawn from what Core kept of it (YN-201)", async (t) => {
+  const page = mount({ respond: (url) => (url === originalUrl ? originalOf(bigRaw) : undefined) });
+  t.after(page.close);
+  page.window.scopeRequests("ws-1");
+  page.window.renderTurn(bigTurn(), agent);
+  const card = page.card("i-big");
+  assert.ok(card, "the card, not Large item · preview");
+  assert.equal(page.document.querySelector(".history-item-preview"), null);
+  assert.equal(card.querySelector(".home-reply-source").textContent, "From Home·旧数据清洗规则·atlas-notes");
+  // It opens its Turn as your message does; nothing to send on, its text being only a start.
+  const label = page.message("i-big").querySelector(".message-label").textContent;
+  assert.match(label, /You/);
+  assert.doesNotMatch(label, /Send to Agent/);
+  assert.equal(page.document.querySelectorAll(".input-divider").length, 0, "not a message mid-Turn");
+  assert.match(page.document.querySelector(".turn-divider").textContent, /YOUR INPUT/);
+  // Its words are Markdown: the table's head and first rows folded, the whole once shown all.
+  const words = () => card.querySelector(".home-reply-words");
+  assert.ok(words().classList.contains("folded"));
+  assert.ok(words().querySelector("table th"), "a table");
+  assert.ok(!words().textContent.includes("最后一行"), "folded, only its start is drawn");
+  await page.press("i-big", "Show all");
+  assert.equal(words().querySelectorAll("tbody tr").length, 400);
+  assert.match(words().textContent, /最后一行：超过 5% 先停下来。/);
+  // Original message: read whole from its original, for this Turn, and copied whole.
+  await page.press("i-big", "Original message");
+  await until(() => card.querySelector(".home-reply-original pre")?.textContent === bigRaw, "the whole message");
+  assert.ok(page.requests.some((r) => r.url === originalUrl));
+  await page.press("i-big", "Copy original");
+  await until(() => page.copied.length === 1, "original copied");
+  assert.equal(page.copied[0], bigRaw);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a large reply's original is read and kept for the Workspace the window is in; another's late answer is dropped (YN-201)", async (t) => {
+  // T-195: one address can answer as another Workspace, where the same ids name another reply.
+  const answers = [];
+  const page = mount({ respond: (url) => (url === originalUrl ? new Promise((resolve) => answers.push(resolve)) : undefined) });
+  t.after(page.close);
+  const pre = () => page.card("i-big").querySelector(".home-reply-original pre").textContent;
+  // Until the Workspace is known, nothing of it is read.
+  page.window.scopeRequests("");
+  page.window.renderTurn(bigTurn(), agent);
+  await page.press("i-big", "Original message");
+  await tick(60);
+  assert.equal(answers.length, 0, "no Workspace yet: nothing read");
+  page.window.scopeRequests("ws-1");
+  page.window.renderTurn(bigTurn(), agent);
+  await until(() => answers.length === 1, "ws-1 asked");
+  // The window goes to another Workspace at this address before ws-1 answers.
+  page.window.scopeRequests("ws-2");
+  page.window.renderTurn(bigTurn(), agent);
+  await until(() => answers.length === 2, "ws-2 asked anew");
+  answers[0](originalOf("ws-1's message"));
+  await tick(60);
+  assert.equal(pre(), "", "ws-1's late answer is no one's");
+  answers[1](originalOf("ws-2's message"));
+  await until(() => pre() === "ws-2's message", "ws-2's own");
+  // Back in ws-1: what ws-2 read is not ws-1's.
+  page.window.scopeRequests("ws-1");
+  page.window.renderTurn(bigTurn(), agent);
+  await tick();
+  assert.notEqual(pre(), "ws-2's message");
+  await until(() => answers.length === 3, "ws-1 asked again");
+  answers[2](originalOf("ws-1's message"));
+  await until(() => pre() === "ws-1's message", "ws-1's own");
+  // Copied for the Workspace it is pressed in: never another's text, never the preview's start.
+  page.window.scopeRequests("ws-2");
+  await page.press("i-big", "Copy original");
+  await until(() => [...page.card("i-big").querySelectorAll("button")].some((b) => b.textContent.trim() === "Couldn't copy"), "the copy refused");
+  assert.deepEqual(page.copied, []);
+  // Drawn again in ws-2, the open message is read for ws-2, and only its own answer shows.
+  await until(() => answers.length === 4, "read for ws-2");
+  assert.notEqual(pre(), "ws-1's message");
+  answers[3](originalOf("ws-2's message"));
+  await until(() => pre() === "ws-2's message", "ws-2's own");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a reply's words are Markdown cleaned as the conversation's are, folded to a bounded start wherever it cuts (YN-201)", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const hostile = "Look: <img src=x onerror=\"window.hit=1\"> ![pic](https://example.com/a.png) <iframe src=\"https://example.com\"></iframe> [the plan](https://example.com/plan)\n\n| a | b |\n| --- | --- |\n| 1 | 2 |";
+  // Folds that cut inside a table, a link and a fenced code block.
+  const table = ["| k | v |", "| --- | --- |", ...Array.from({ length: 60 }, (_, n) => `| k${n} | v${n} |`)].join("\n");
+  const link = `${"字".repeat(2990)}[a link cut short](https://example.com/${"x".repeat(40)})`;
+  const code = ["```js", ...Array.from({ length: 60 }, (_, n) => `const line${n} = "<b>${n}</b>";`), "```", "after the code"].join("\n");
+  const reply = (id, text) => home(id, "raw", { ...identity(id, 1), snapshot: snapshot({ sectionKind: "ask", title: id, question: "?", options: [], text }) });
+  page.window.renderTurn({ id: "t4", status: "completed",
+    items: [reply("i-hostile", hostile), reply("i-table", table), reply("i-link", link), reply("i-code", code)] }, agent);
+  await tick();
+  const hostileCard = page.card("i-hostile");
+  assert.equal(hostileCard.querySelectorAll("img, iframe, script").length, 0);
+  assert.ok(!hostileCard.innerHTML.includes("onerror"));
+  assert.equal(page.window.hit, undefined);
+  assert.ok(hostileCard.querySelector(".home-reply-words table"));
+  assert.equal(hostileCard.querySelector(".home-reply-words a")?.textContent, "the plan");
+  for (const [id, last] of [["i-table", "k59"], ["i-link", "a link cut short"], ["i-code", "after the code"]]) {
+    const words = () => page.card(id).querySelector(".home-reply-words");
+    assert.ok(words().classList.contains("folded"), `${id} folds`);
+    assert.ok(words().textContent.trim().length <= FOLD_CHARS, `${id}: ${words().textContent.trim().length} characters drawn`);
+    assert.ok(!words().textContent.includes(last), `${id}: its end is not drawn folded`);
+    assert.equal(words().querySelectorAll("img, iframe, script, b").length, 0, `${id}: Markdown only`);
+    await page.press(id, "Show all");
+    assert.ok(words().textContent.includes(last), `${id}: whole once shown all`);
+  }
+  // Where each cuts: whole lines; a first line too long, at FOLD_CHARS, never inside a character.
+  assert.equal(foldSource(table), `${table.split("\n").slice(0, FOLD_LINES).join("\n")}\n`);
+  assert.equal(foldSource(link), link.slice(0, FOLD_CHARS));
+  assert.equal(foldSource(code).split("\n").length - 1, FOLD_LINES);
+  const cats = foldSource(`a${"🐈".repeat(2000)}`);
+  assert.ok(cats.length < FOLD_CHARS && !/[\uD800-\uDBFF]$/.test(cats));
+  assert.equal(foldSource("short"), "short");
+  assert.equal(foldSource(""), "");
   assert.deepEqual(page.errors, []);
 });
 

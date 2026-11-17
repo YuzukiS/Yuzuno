@@ -65,16 +65,28 @@
 .home-reply-words {
   margin: 0;
   line-height: 1.75;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* Folded, never cut: the whole text is there behind "Show all". */
+/* The user's words as Markdown (YN-201), at the answer's own size, colour
+   and line height: only its structure (tables, lists, code) is the
+   conversation's prose. */
+.home-reply-words .prose {
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+  /* The message's pre-wrap (.user-text) is for plain text: Markdown's own
+     blocks break the lines here. */
+  white-space: normal;
+}
+/* Folded, never cut: the whole text is there behind "Show all". Six lines
+   of the answer's height, since Markdown is blocks a line clamp can't fold. */
 .home-reply-words.clamped {
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  line-clamp: 6;
-  -webkit-box-orient: vertical;
+  max-height: calc(1.75em * 6);
   overflow: hidden;
+}
+/* Where it folds, its last line fades: there is more behind Show all. */
+.home-reply-words.folded {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.75em), transparent);
 }
 /* The form's title, its field labels and "Not answered" are part of the
    answer: the app's secondary text colour, which reads at 4.5:1 or more on
@@ -104,11 +116,8 @@
 .home-reply dd[data-empty] {
   color: var(--text-secondary);
 }
-.home-reply dd p {
-  margin: 0;
-  white-space: pre-wrap;
-}
-.home-reply dd ul {
+/* A choice's options as chips; a text answer's own lists are Markdown's. */
+.home-reply dd > ul {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
@@ -116,7 +125,7 @@
   padding: 0;
   list-style: none;
 }
-.home-reply dd li {
+.home-reply dd > ul > li {
   padding: 0 0.6em;
   border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
   border-radius: 999px;

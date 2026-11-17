@@ -34,6 +34,14 @@ const long = [
   "5. 最后再做一次总数核对，和原始文件的行数差异要在报告里解释。",
   "如果某一步丢弃的行超过 5%，先停下来告诉我，不要继续下一步。",
 ].join("\n");
+// YN-201: the longest reply Home sends (MAX_REPLY, 92,000 bytes): a table
+// of rows the user pasted as their words, nearly all of it.
+const maxRows = ["| 字段 | 规则 |", "| --- | --- |"];
+for (let n = 0, bytes = 0; bytes < 90_000; n++) {
+  maxRows.push(`| field_${n} | 第 ${n} 条规则：保持原样，计数写进附录 |`);
+  bytes += Buffer.byteLength(maxRows.at(-1)) + 1;
+}
+const maxText = maxRows.join("\n");
 const raw = "Reply from the user on Home, to version 3 of the Project Brief section `export-paging` (\"导出页分页方案\") of atlas-notes (Workspace ws-1, Project p1):\n> 导出页表格改为分页后，每页显示多少行？\n\nChose: 每页 50 行（推荐） (fifty)\n\n先用 50 行。\n\nThe ask is now replied … brief_update {op:\"resolve\", key:\"export-paging\"}.";
 const cases = [
   { name: "choice", origin: { projectId: "p1", key: "release-check", version: 2, workspaceId: "ws-1",
@@ -54,6 +62,8 @@ const cases = [
   { name: "card", origin: { projectId: "p1", key: "progress", version: 4, workspaceId: "ws-1",
     snapshot: snapshot({ sectionKind: "report", title: "本周进展", options: null, text: "第三项的数字和附件里的不一致，请核对后更新这张卡片。" }) } },
   { name: "earlier", origin: { projectId: "p1", key: "weekly-plan", version: 2, workspaceId: "ws-1" } },
+  { name: "max", origin: { projectId: "p1", key: "max", version: 1, workspaceId: "ws-1",
+    snapshot: snapshot({ title: "最长的回复", question: "把规则全贴上来。", text: maxText }) } },
 ];
 
 let server, browser;
@@ -147,14 +157,16 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     assert.deepEqual(low, [], JSON.stringify(contrast));
     check("desktop: a form's title, labels, answers and Not answered read at 4.5:1 or more on the card, every palette and theme", contrast);
     // Six lines, then Show all; the whole text is there all along.
-    const fold = await page.evaluate(() => {
+    // The words are Markdown (YN-201): a numbered list's markers are its own.
+    const fold = await page.evaluate((long) => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');
       const line = parseFloat(getComputedStyle(words).lineHeight);
-      return { lines: Math.round(words.clientHeight / line), clipped: words.scrollHeight > words.clientHeight + 1, text: words.textContent.length };
-    });
+      const missing = long.split("\n").map((l) => l.replace(/^\d+\.\s*/, "")).filter((l) => !words.textContent.includes(l));
+      return { lines: Math.round(words.clientHeight / line), clipped: words.scrollHeight > words.clientHeight + 1, missing };
+    }, long);
     assert.equal(fold.lines, 6);
     assert.ok(fold.clipped);
-    assert.equal(fold.text, long.length);
+    assert.deepEqual(fold.missing, []);
     await page.locator(card("long")).getByRole("button", { name: "Show all" }).click();
     const unfolded = await page.evaluate(() => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');
@@ -162,6 +174,23 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     });
     assert.deepEqual(unfolded, { clipped: false, more: "Show less" });
     check("desktop: long words fold after six lines behind Show all, never cut", { ...fold, unfolded });
+    // YN-201: the longest reply Home sends, as Markdown. Folded, only its start
+    // is drawn, whatever its length; shown all, the whole, at a cost measured here.
+    const cost = await page.evaluate(async (maxText) => {
+      const words = () => document.querySelector('[data-case="max"] .home-reply-words');
+      const count = () => words().querySelectorAll("*").length;
+      const folded = { nodes: count(), text: words().textContent.length, rows: words().querySelectorAll("tr").length };
+      const started = performance.now();
+      document.querySelector('[data-case="max"] .more').click();
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      const shownMs = Math.round(performance.now() - started);
+      return { bytes: new TextEncoder().encode(maxText).length, folded, shown: { nodes: count(), rows: words().querySelectorAll("tr").length, ms: shownMs } };
+    }, maxText);
+    assert.ok(cost.bytes > 85_000 && cost.bytes <= 92_000, `${cost.bytes} bytes`);
+    assert.ok(cost.folded.text <= 3000 && cost.folded.rows <= 24, JSON.stringify(cost.folded));
+    assert.equal(cost.shown.rows, maxRows.length - 1);
+    check("desktop: the longest reply (92,000 bytes at most) draws only its start folded; shown all, the whole table, with its cost", cost);
+    await page.locator(card("max")).getByRole("button", { name: "Show less" }).click();
     // A card without a long answer has no Show all.
     assert.equal(await page.locator(`${card("both")} .more`).count(), 0);
     // Keyboard: the header, then the card in reading order, each with a ring.

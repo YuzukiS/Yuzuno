@@ -1,4 +1,5 @@
 import { isSubAgentCall, subAgentCalls } from "./claude-subagents.ts";
+import { homeReplyOf } from "./home-reply/home-reply-model.ts";
 import type { NativeItem, NativeTurn } from "./types";
 import type { Language } from "./i18n.ts";
 
@@ -59,7 +60,9 @@ export function conversationBlocks(
       calls?.push(item);
       if (calls && isSubAgentCall(item)) blockOf.set(item.id, calls);
     } else if (item.type === "historyPreview") {
-      blocks.push({ kind: "preview", item });
+      // A Home reply too large to send whole is still yours, drawn from
+      // what Core kept of it (YN-201); any other preview stays one.
+      blocks.push({ kind: homeReplyOf(item) ? "user" : "preview", item });
     } else if (item.type === "subAgentActivity") {
       if (subagents) subagents.push(item);
       else blocks.push({ kind: "subagents", items: (subagents = [item]) });
