@@ -22,8 +22,10 @@ try {
 import {createRoot} from 'react-dom/client';
 import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {payloadLimits} from ${JSON.stringify(path.join(root, "src/item-payload.ts"))};
+import {scopeRequests} from ${JSON.stringify(path.join(root, "src/api.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.payloadLimits=payloadLimits;
+window.scopeRequests=scopeRequests;
 window.renderTurns=(list)=>root.render(<>{list.map((props)=><Turn key={props.turn.id} {...props}/>)}</>);`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
@@ -281,6 +283,89 @@ test("Copy turn copies every trimmed field in full, or fails visibly", async () 
     } finally {
       failing.close();
     }
+  } finally {
+    page.close();
+  }
+});
+
+// YN-201 (T-195): one address can answer as another Workspace, where the
+// same Agent, Turn and Item ids name another Item of the same size. Full
+// values are kept and read for the Workspace the window is in.
+const otherOutput = fullOutput.replaceAll("build line", "other line");
+assert.equal(otherOutput.length, fullOutput.length);
+
+test("a full value read in one Workspace is never another's with the same ids and size (YN-201)", async () => {
+  let serving = fullOutput;
+  const page = mount(() => ({ body: { fields: { aggregatedOutput: serving } } }));
+  try {
+    page.window.scopeRequests("ws-1");
+    await page.render(turnWith([command(fullOutput)]));
+    button(row(page, "cmd").querySelector(".truncation-notice"), /^Show full output/).click();
+    await tick();
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, fullOutput);
+    // The same address, now another Workspace: its own Item, its own preview, not read yet.
+    page.window.scopeRequests("ws-2");
+    serving = otherOutput;
+    await page.render(turnWith([command(otherOutput)]));
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, otherOutput.slice(-4000));
+    assert.ok(row(page, "cmd").querySelector(".truncation-notice"), "not shown as read");
+    button(row(page, "cmd").querySelector(".truncation-notice"), /^Show full output/).click();
+    await tick();
+    assert.equal(page.calls.length, 2, "read anew for this Workspace");
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, otherOutput);
+    // Back in the first: its own, as it kept it.
+    page.window.scopeRequests("ws-1");
+    await page.render(turnWith([command(fullOutput)]));
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, fullOutput);
+    assert.equal(page.calls.length, 2);
+  } finally {
+    page.close();
+  }
+});
+
+test("a read that settles once the window is in another Workspace is neither shown nor kept (YN-201)", async () => {
+  const answers = [];
+  const page = mount((url) => new Promise((resolve) => answers.push({ url, resolve })));
+  const answer = (n, output) => answers[n].resolve({ body: { fields: { aggregatedOutput: output } } });
+  try {
+    page.window.scopeRequests("ws-1");
+    await page.render(turnWith([command(fullOutput)]));
+    button(row(page, "cmd").querySelector(".truncation-notice"), /^Show full output/).click();
+    await tick();
+    assert.equal(answers.length, 1);
+    page.window.scopeRequests("ws-2");
+    await page.render(turnWith([command(otherOutput)]));
+    answer(0, fullOutput);
+    await tick();
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, otherOutput.slice(-4000), "ws-1's late answer is not shown");
+    // Nor kept: back in ws-1 the row is read again.
+    page.window.scopeRequests("ws-1");
+    await page.render(turnWith([command(fullOutput)]));
+    await tick();
+    assert.equal(answers.length, 2, "read again: the late answer was kept for no one");
+    answer(1, fullOutput);
+    await tick();
+    assert.equal(row(page, "cmd").querySelector("pre").textContent, fullOutput);
+  } finally {
+    page.close();
+  }
+});
+
+test("Copy turn fails visibly when the window goes to another Workspace before its full values are read (YN-201)", async () => {
+  const answers = [];
+  const page = mount((url) => new Promise((resolve) => answers.push({ url, resolve })));
+  try {
+    page.window.scopeRequests("ws-1");
+    await page.render(turnWith([command(fullOutput)]));
+    const copy = button(page.document, /^Copy turn$/);
+    copy.click();
+    await tick();
+    assert.deepEqual(answers.map((a) => a.url), ["/api/agents/agent-1/turns/turn-1/payload"]);
+    page.window.scopeRequests("ws-2");
+    answers[0].resolve({ body: { items: { cmd: { fields: { aggregatedOutput: fullOutput } } } } });
+    await tick();
+    assert.deepEqual(page.copied, [], "another Workspace's text is never copied");
+    assert.equal(copy.textContent, "Copy failed");
   } finally {
     page.close();
   }

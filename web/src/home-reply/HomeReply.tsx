@@ -1,13 +1,14 @@
-import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronRight, ClipboardCopy, Copy, House, LoaderCircle, SquareArrowOutUpRight } from "lucide-react";
+import { api, errorText, requestScope } from "../api";
 import { copyText } from "../clipboard";
+import { Prose } from "../components";
 import { strings, useStrings } from "../i18n";
 import { loadFullItem, useFullItem } from "../item-payload";
 import { userText } from "../message-content";
-import { MessageContent } from "../MessageContent";
 import { usePhone } from "../phone-layout";
 import type { HomeReplyOrigin, NativeItem } from "../types";
-import { answerText, unanswered } from "./home-reply-model";
+import { answerText, foldSource, messagePreview, unanswered } from "./home-reply-model";
 import "./home-reply.css";
 
 export { homeReplyOf } from "./home-reply-model";
@@ -96,11 +97,7 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
   const [answerCopy, copyAnswer] = useCopy();
   const [originalCopy, copyOriginal] = useCopy();
   // The message as sent: whole once read, when the conversation has only its start.
-  const full = useFullItem(agentId, turnId, item);
-  const { expand, truncated, expanded } = full;
-  useEffect(() => {
-    if (originalOpen && truncated && !expanded) expand();
-  }, [originalOpen, truncated, expanded, expand]);
+  const sent = useSentText(agentId, turnId, item, originalOpen);
   // The answer as the user gave it, when Core kept one to show.
   const snapshot = origin.snapshot && (origin.snapshot.choice || origin.snapshot.text || origin.snapshot.form) ? origin.snapshot : null;
   const asked = snapshot?.sectionKind === "ask" && snapshot.question !== null;
@@ -188,10 +185,7 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
                           {[field.answer].flat().map((label, n) => <li key={n}>{label}</li>)}
                         </ul>
                       ) : (
-                        // A long answer is one block, as a long message is (YN-103).
-                        <p>
-                          <MessageContent text={String(field.answer)} />
-                        </p>
+                        <Words text={String(field.answer)} />
                       )}
                     </dd>
                   </div>
@@ -224,19 +218,19 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
       )}
       {originalOpen && (
         <div className="home-reply-original" id={`${id}-original`} role="region" aria-label={t.original}>
-          {full.loading && <p role="status"><LoaderCircle size={12} className="spin" aria-hidden="true" /> {t.loadingOriginal}</p>}
-          {full.error && (
+          {sent.loading && <p role="status"><LoaderCircle size={12} className="spin" aria-hidden="true" /> {t.loadingOriginal}</p>}
+          {sent.error && (
             <p role="alert">
-              {t.originalFailed(full.error)}{" "}
-              <button type="button" className="inline-link" onClick={expand}>{t.tryAgain}</button>
+              {t.originalFailed(sent.error)}{" "}
+              <button type="button" className="inline-link" onClick={sent.retry}>{t.tryAgain}</button>
             </p>
           )}
           {/* The message as it came, in no language of the page's. */}
-          <pre tabIndex={0} lang="">{userText(full.item)}</pre>
+          <pre tabIndex={0} lang="">{sent.text}</pre>
           <button
             type="button"
             className={`home-reply-action${originalCopy === "copied" ? " done" : ""}`}
-            onClick={() => copyOriginal(loadFullItem(agentId, turnId, item).then(userText))}
+            onClick={() => copyOriginal(sent.whole())}
           >
             {originalCopy === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
             {originalCopy === "copied" ? t.copied : originalCopy === "error" ? t.copyFailed : t.copyOriginal}
@@ -247,25 +241,91 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
   );
 }
 
-/** The user's words, whole: folded after six lines behind "Show all", never cut. */
+/**
+ * The message as sent, for Original message: as the conversation has it, the
+ * rest read when it is opened. Core's preview of a message too large for the
+ * window (YN-201) has only its start: the whole is read from its original,
+ * as "View full original" reads any other preview, and kept for this
+ * Workspace's Agent, Turn and Item only (`originalKey`). What it says is
+ * never where the reply came from: that is Core's marking on the preview.
+ */
+function useSentText(agentId: string, turnId: string, item: NativeItem, open: boolean) {
+  const preview = messagePreview(item);
+  const full = useFullItem(agentId, turnId, item);
+  const { expand, truncated, expanded } = full;
+  useEffect(() => {
+    if (open && !preview && truncated && !expanded) expand();
+  }, [open, preview, truncated, expanded, expand]);
+  const key = originalKey(agentId, turnId, item.id);
+  // Until /api/workspace answers, nothing of a Workspace's is read (T-195).
+  const scoped = !!requestScope();
+  const [read, setRead] = useState<{ key: string; text: string | null; error: string; attempt: number }>(
+    { key, text: null, error: "", attempt: 0 });
+  // What was read for another Workspace, Agent, Turn or Item is not this one's.
+  const mine = read.key === key ? read : { key, text: null, error: "", attempt: 0 };
+  const path = `/agents/${encodeURIComponent(agentId)}/items/${encodeURIComponent(item.id)}/original?${new URLSearchParams({ turnId })}`;
+  // Read for `key`; settled once the window is in another Workspace, it is no one's.
+  const fetchText = (signal?: AbortSignal) =>
+    api<NativeItem>(path, { signal }).then((original) => (originalKey(agentId, turnId, item.id) === key ? userText(original) : null));
+  useEffect(() => {
+    if (!open || !preview || !scoped || mine.text !== null || mine.error) return;
+    const controller = new AbortController();
+    fetchText(controller.signal).then(
+      (text) => { if (!controller.signal.aborted && text !== null) setRead({ key, text, error: "", attempt: mine.attempt }); },
+      (e) => { if (!controller.signal.aborted) setRead({ key, text: null, error: errorText(e), attempt: mine.attempt }); },
+    );
+    return () => controller.abort();
+    // `key` names what is read; the rest only says when to read it again.
+  }, [open, preview, scoped, key, mine.text, mine.error, mine.attempt]);
+  if (!preview)
+    return { text: userText(full.item), loading: full.loading, error: full.error, retry: expand,
+      whole: () => loadFullItem(agentId, turnId, item).then(userText) };
+  return {
+    text: mine.text ?? "",
+    loading: open && scoped && mine.text === null && !mine.error,
+    error: mine.error,
+    retry: () => setRead({ key, text: null, error: "", attempt: mine.attempt + 1 }),
+    // Copied whole or not at all: never the preview's start in its place.
+    whole: async () => {
+      const text = mine.text ?? (scoped ? await fetchText() : null);
+      if (text === null || originalKey(agentId, turnId, item.id) !== key) throw new Error("The whole message isn't this Workspace's to copy.");
+      return text;
+    },
+  };
+}
+
+/** Where a preview's original is kept and read for (YN-201): the Workspace
+ * this window is in, as Core answered it (api.ts `requestScope`), then the
+ * Agent, Turn and Item. One address can answer as another Workspace, where
+ * the same ids name other things (T-195). */
+const originalKey = (agentId: string, turnId: string, itemId: string) => [requestScope(), agentId, turnId, itemId].join("\n");
+
+/** The user's words as Markdown (YN-201: a table is a table), folded after
+ * six lines behind "Show all", never cut: folded, only their start is drawn
+ * (`foldSource`), and shown all, the whole. */
 function Words({ text }: { text: string }) {
   const t = useStrings(homeReplyText);
-  const words = useRef<HTMLParagraphElement>(null);
-  const [long, setLong] = useState(false);
+  const words = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState(false);
   const [all, setAll] = useState(false);
+  const start = useMemo(() => foldSource(text), [text]);
+  const long = start.length < text.length || overflow;
   useLayoutEffect(() => {
     const element = words.current;
     if (!element || all) return;
-    const measure = () => setLong(element.scrollHeight > element.clientHeight + 1);
+    const measure = () => setOverflow(element.scrollHeight > element.clientHeight + 1);
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [text, all]);
+  }, [start, all]);
   return (
     <>
-      <p ref={words} className={`home-reply-words${all ? "" : " clamped"}`}>{text}</p>
+      <div ref={words} className={`home-reply-words${all ? "" : " clamped"}${long && !all ? " folded" : ""}`}>
+        {/* Drawn anew when shown all: the rest is not words streaming in (stream-reveal). */}
+        <Prose key={all ? "all" : "start"} text={all ? text : start} />
+      </div>
       {long && (
         <button type="button" className="home-reply-action more" aria-expanded={all} onClick={() => setAll(!all)}>
           {all ? t.showLess : t.showAll}

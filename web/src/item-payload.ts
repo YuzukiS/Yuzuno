@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from "react";
-import { api, errorText } from "./api";
+import { api, errorText, requestScope } from "./api";
 import type { NativeItem, NativeTurn, TruncatedField } from "./types";
 
 // Core sends large tool fields as previews (see core/src/client_view.rs) and
@@ -39,7 +39,18 @@ const expanded = new Set<string>();
 const onScreen = new Map<string, number>();
 const inflight = new Map<string, Promise<Entry>>();
 
-const keyOf = (agentId: string, turnId: string, itemId: string) => [agentId, turnId, itemId].join("\u0000");
+/** Where a full value is kept and read for: the Workspace this window is in,
+ * as Core answered it (api.ts `requestScope`), then the Agent, Turn and Item.
+ * One address can answer as another Workspace, where the same ids name other
+ * Items of the same size (T-195, YN-201). */
+const keyOf = (agentId: string, turnId: string, itemId: string) => [requestScope(), agentId, turnId, itemId].join("\u0000");
+/** A read that settled once the window was in another Workspace: no one's,
+ * so it is neither kept, shown nor copied. */
+class OtherWorkspace extends Error {
+  constructor() {
+    super("The window is in another Workspace now; nothing read before was kept.");
+  }
+}
 const path = (part: string) => encodeURIComponent(part);
 const encoder = new TextEncoder();
 
@@ -164,16 +175,22 @@ function fetchEntry(agentId: string, turnId: string, item: NativeItem): Promise<
   let request = inflight.get(key);
   if (!request) {
     const fields = Object.keys(item._yuzunoTruncated || {}).join(",");
-    request = api<{ fields: Fields }>(
+    const started: Promise<Entry> = api<{ fields: Fields }>(
       `/agents/${path(agentId)}/items/${path(item.id)}/payload?${new URLSearchParams({ turnId, field: fields })}`,
     )
       .then(({ fields }) => {
+        if (keyOf(agentId, turnId, item.id) !== key) throw new OtherWorkspace();
         const entry = entryOf(fields, item);
         remember(key, entry);
         return entry;
       })
-      .finally(() => inflight.delete(key));
-    inflight.set(key, request);
+      // Only this request clears itself: another Workspace and back can have
+      // started a newer one under the same key meanwhile.
+      .finally(() => {
+        if (inflight.get(key) === started) inflight.delete(key);
+      });
+    inflight.set(key, started);
+    request = started;
   }
   return request;
 }
@@ -197,8 +214,14 @@ export async function loadFullItem(agentId: string, turnId: string, item: Native
  * not cover are read one by one; if any still cannot be read, this fails
  * rather than copy a preview as if it were the whole text. */
 export async function fullTurn(agentId: string, turn: NativeTurn): Promise<NativeTurn> {
+  // Read for the Workspace the window is in now, and only given while it still is.
+  const scope = requestScope();
+  const still = <T,>(value: T): T => {
+    if (requestScope() !== scope) throw new OtherWorkspace();
+    return value;
+  };
   if (turn._yuzunoSlice || turn.items.some(item => item.type === "historyPreview"))
-    return api<NativeTurn>(`/agents/${path(agentId)}/turns/${path(turn.id)}/original`);
+    return still(await api<NativeTurn>(`/agents/${path(agentId)}/turns/${path(turn.id)}/original`));
   const trimmed = turn.items.filter(isTruncated);
   if (!trimmed.length) return turn;
   const full = new Map<string, Fields>();
@@ -215,6 +238,7 @@ export async function fullTurn(agentId: string, turn: NativeTurn): Promise<Nativ
     } catch {
       /* Each Item is tried on its own below. */
     }
+    still(null);
     const failed: string[] = [];
     for (const item of missing) {
       const names = Object.keys(item._yuzunoTruncated || {});
@@ -228,7 +252,7 @@ export async function fullTurn(agentId: string, turn: NativeTurn): Promise<Nativ
     if (failed.length)
       throw new Error(`couldn't get the full output of ${failed.length} ${failed.length === 1 ? "item" : "items"}, so nothing was copied`);
   }
-  return { ...turn, items: turn.items.map((item) => withFullFields(item, full.get(item.id))) };
+  return still({ ...turn, items: turn.items.map((item) => withFullFields(item, full.get(item.id))) });
 }
 
 export interface FullItemView {

@@ -34,6 +34,14 @@ const long = [
   "5. 最后再做一次总数核对，和原始文件的行数差异要在报告里解释。",
   "如果某一步丢弃的行超过 5%，先停下来告诉我，不要继续下一步。",
 ].join("\n");
+// YN-201: the longest reply Home sends (MAX_REPLY, 92,000 bytes): a table
+// of rows the user pasted as their words, nearly all of it.
+const maxRows = ["| 字段 | 规则 |", "| --- | --- |"];
+for (let n = 0, bytes = 0; bytes < 90_000; n++) {
+  maxRows.push(`| field_${n} | 第 ${n} 条规则：保持原样，计数写进附录 |`);
+  bytes += Buffer.byteLength(maxRows.at(-1)) + 1;
+}
+const maxText = maxRows.join("\n");
 const raw = "Reply from the user on Home, to version 3 of the Project Brief section `export-paging` (\"导出页分页方案\") of atlas-notes (Workspace ws-1, Project p1):\n> 导出页表格改为分页后，每页显示多少行？\n\nChose: 每页 50 行（推荐） (fifty)\n\n先用 50 行。\n\nThe ask is now replied … brief_update {op:\"resolve\", key:\"export-paging\"}.";
 const cases = [
   { name: "choice", origin: { projectId: "p1", key: "release-check", version: 2, workspaceId: "ws-1",
@@ -54,6 +62,8 @@ const cases = [
   { name: "card", origin: { projectId: "p1", key: "progress", version: 4, workspaceId: "ws-1",
     snapshot: snapshot({ sectionKind: "report", title: "本周进展", options: null, text: "第三项的数字和附件里的不一致，请核对后更新这张卡片。" }) } },
   { name: "earlier", origin: { projectId: "p1", key: "weekly-plan", version: 2, workspaceId: "ws-1" } },
+  { name: "max", origin: { projectId: "p1", key: "max", version: 1, workspaceId: "ws-1",
+    snapshot: snapshot({ title: "最长的回复", question: "把规则全贴上来。", text: maxText }) } },
 ];
 
 let server, browser;
@@ -68,7 +78,14 @@ const links={open:(origin,from)=>window.opened.push([origin.key,from.itemId])};
 window.opened=[];
 const root=createRoot(document.getElementById('root'));
 window.renderCases=(cases,raw)=>root.render(<HomeReplyLinks.Provider value={links}><main className="conversation-body"><button id="before">Before</button>{cases.map(c=><div key={c.name} className="user-message" data-case={c.name}><div className="message-label"><span className="you-avatar">Y</span>You</div><div className="user-text user-home-reply"><HomeReply origin={c.origin} agentId="a" turnId="t1" item={{id:'i-'+c.name,type:'userMessage',content:[{type:'text',text:raw}]}}/></div></div>)}<section className="home-section" data-case="arrival"><ReplyArrival arrival={{kind:'changed',current:4}} version={3} ask onBack={()=>window.opened.push(['back'])}/><h3>导出页分页方案</h3></section><section className="home-panel-content" data-case="removed"><ReplyArrival arrival={{kind:'removed'}} version={3} ask={false}/></section></main></HomeReplyLinks.Provider>);
-window.renderHome=(arrival)=>root.render(<Home workspaceId="ws-1" revision={0} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} arrival={arrival} onBackToReply={(link)=>window.opened.push(['back',link.itemId])}/>);`);
+// A Project's page opens as the app opens it (YN-86): its id, and a jump to the card named.
+function Shell({arrival}){
+  const [project,setProject]=React.useState(null);
+  const [jump,setJump]=React.useState(null);
+  return <Home workspaceId="ws-1" revision={0} jobsRevision={0} agents={[]} projects={[]} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} arrival={arrival} onBackToReply={(link)=>window.opened.push(['back',link.itemId])}
+    project={project} jumpTo={jump} onOpenProject={(id,key)=>{window.opened.push(['project',id,key]);setProject(id);setJump((j)=>({projectId:id,sectionKey:key,n:(j?.n??0)+1}));}} onCloseProject={()=>setProject(null)}/>;
+}
+window.renderHome=(arrival)=>root.render(<Shell arrival={arrival}/>);`);
   const built = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": '"production"' },
@@ -147,14 +164,16 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     assert.deepEqual(low, [], JSON.stringify(contrast));
     check("desktop: a form's title, labels, answers and Not answered read at 4.5:1 or more on the card, every palette and theme", contrast);
     // Six lines, then Show all; the whole text is there all along.
-    const fold = await page.evaluate(() => {
+    // The words are Markdown (YN-201): a numbered list's markers are its own.
+    const fold = await page.evaluate((long) => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');
       const line = parseFloat(getComputedStyle(words).lineHeight);
-      return { lines: Math.round(words.clientHeight / line), clipped: words.scrollHeight > words.clientHeight + 1, text: words.textContent.length };
-    });
+      const missing = long.split("\n").map((l) => l.replace(/^\d+\.\s*/, "")).filter((l) => !words.textContent.includes(l));
+      return { lines: Math.round(words.clientHeight / line), clipped: words.scrollHeight > words.clientHeight + 1, missing };
+    }, long);
     assert.equal(fold.lines, 6);
     assert.ok(fold.clipped);
-    assert.equal(fold.text, long.length);
+    assert.deepEqual(fold.missing, []);
     await page.locator(card("long")).getByRole("button", { name: "Show all" }).click();
     const unfolded = await page.evaluate(() => {
       const words = document.querySelector('[data-case="long"] .home-reply-words');
@@ -162,6 +181,23 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     });
     assert.deepEqual(unfolded, { clipped: false, more: "Show less" });
     check("desktop: long words fold after six lines behind Show all, never cut", { ...fold, unfolded });
+    // YN-201: the longest reply Home sends, as Markdown. Folded, only its start
+    // is drawn, whatever its length; shown all, the whole, at a cost measured here.
+    const cost = await page.evaluate(async (maxText) => {
+      const words = () => document.querySelector('[data-case="max"] .home-reply-words');
+      const count = () => words().querySelectorAll("*").length;
+      const folded = { nodes: count(), text: words().textContent.length, rows: words().querySelectorAll("tr").length };
+      const started = performance.now();
+      document.querySelector('[data-case="max"] .more').click();
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      const shownMs = Math.round(performance.now() - started);
+      return { bytes: new TextEncoder().encode(maxText).length, folded, shown: { nodes: count(), rows: words().querySelectorAll("tr").length, ms: shownMs } };
+    }, maxText);
+    assert.ok(cost.bytes > 85_000 && cost.bytes <= 92_000, `${cost.bytes} bytes`);
+    assert.ok(cost.folded.text <= 3000 && cost.folded.rows <= 24, JSON.stringify(cost.folded));
+    assert.equal(cost.shown.rows, maxRows.length - 1);
+    check("desktop: the longest reply (92,000 bytes at most) draws only its start folded; shown all, the whole table, with its cost", cost);
+    await page.locator(card("max")).getByRole("button", { name: "Show less" }).click();
     // A card without a long answer has no Show all.
     assert.equal(await page.locator(`${card("both")} .more`).count(), 0);
     // Keyboard: the header, then the card in reading order, each with a ring.
@@ -252,8 +288,11 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
   }
 
   // Home (R1 839f91d1): Open on Home to a section kept out of view, in its
-  // project's closed team details. The real Home; its reads answered in the
-  // page, every request kept to show nothing is written (no seen, no reply).
+  // project's closed team details. The real Home, opening its project's page
+  // as the app does (YN-86, ProjectHome); its reads answered in the page with
+  // what Core would answer for an empty project, any other request kept
+  // unanswered and named, every request kept to show nothing is written (no
+  // seen, no reply). p2 is another project: its page is never opened.
   {
     const owner = { agentId: "a", name: "Mori", state: "active" };
     const body = { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text: "手机上翻页按钮会挡住最后一行。" } } } };
@@ -281,31 +320,52 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
       await page.goto(url);
       await page.evaluate(([data, machine, arrival]) => {
         window.requests = [];
+        window.unanswered = [];
+        // Core's answers for these reads (home-api.ts, project-talk-api.ts, RepoActivity.tsx).
+        const answers = {
+          "GET /api/home": data,
+          "GET /api/machine-load": machine,
+          "GET /api/machine-live": { machines: [] },
+          "POST /api/collaboration/github_repositories": { repositories: [], links: [] },
+          "GET /api/projects/p1/repo-activity": { observedAt: data.generatedAt, repositories: [] },
+          "GET /api/projects/p1/front-desk": { version: 1, agentId: null, effectiveAgentId: null },
+          "GET /api/projects/p1/requests": { requests: [], hasMore: false },
+        };
         window.fetch = async (input, init = {}) => {
-          const at = String(input);
-          window.requests.push(`${init.method || "GET"} ${at}`);
-          const body = at.endsWith("/api/home") ? data : at.endsWith("/api/machine-load") ? machine : { repositories: [], links: [] };
-          return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+          const request = `${init.method || "GET"} ${String(input)}`;
+          window.requests.push(request);
+          if (!(request in answers)) {
+            window.unanswered.push(request);
+            return new Response(JSON.stringify({ error: "not in this check's fixture" }), { status: 404, headers: { "content-type": "application/json" } });
+          }
+          return new Response(JSON.stringify(answers[request]), { status: 200, headers: { "content-type": "application/json" } });
         };
         window.renderHome(arrival);
       }, [data(team), machine, arrival]);
-      await page.waitForSelector('[data-home-project="p1"] .home-reply-arrival', { state: "attached" });
+      await page.waitForSelector('[data-project-home="p1"] .home-reply-arrival', { state: "attached" });
       await page.waitForTimeout(400);
       return { context, page };
     };
     const state = (page, key) => page.evaluate((key) => {
-      const p1 = document.querySelector('[data-home-project="p1"]');
+      const p1 = document.querySelector('[data-project-home="p1"]');
       const card = p1.querySelector(`[data-section-key="${key}"]`);
       const rect = card.getBoundingClientRect();
       const note = document.querySelector(".home-reply-arrival");
+      // The sections the team wrote, kept out of view, and at this width the team's area around them, both <details>.
+      const written = p1.querySelector("details.project-team-written");
+      const area = p1.querySelector("details.project-team");
       return {
-        teamOpen: p1.querySelector(".home-team-details").open,
-        historyOpen: p1.querySelector(".home-history").open,
-        otherTeamOpen: document.querySelector('[data-home-project="p2"] .home-team-details').open,
+        teamOpen: written.open,
+        areaOpen: area?.open ?? null,
+        otherOpen: [...p1.querySelectorAll("details[open]")].filter((d) => d !== written && d !== area).map((d) => d.className),
+        projectsOpened: window.opened.filter((o) => o[0] === "project").map((o) => o[1]),
+        p2Shown: !!document.querySelector('[data-project-home="p2"]'),
         cardVisible: card.checkVisibility(), cardSize: [Math.round(rect.width), Math.round(rect.height)],
         inView: rect.top < innerHeight && rect.bottom > 0,
         noteVisible: note.checkVisibility(), noteInCard: card.contains(note),
+        noteAbove: note.parentElement.classList.contains("project-home-main"),
         focused: document.activeElement === card,
+        unanswered: window.unanswered,
         // The Repositories block's list read is a POST (home-api.ts, readLinkedRepositories:
         // "a list read; it starts no GitHub sync"); anything else not a GET would be a write.
         writes: window.requests.filter((r) => !r.startsWith("GET ") && r !== "POST /api/collaboration/github_repositories"),
@@ -316,7 +376,9 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     {
       const { context, page } = await arrive([ask("export-paging", 10, 4)], reply("export-paging", 3, 10));
       const shown = await state(page, "export-paging");
-      assert.deepEqual({ teamOpen: shown.teamOpen, historyOpen: shown.historyOpen, otherTeamOpen: shown.otherTeamOpen }, { teamOpen: true, historyOpen: false, otherTeamOpen: false });
+      assert.deepEqual({ teamOpen: shown.teamOpen, areaOpen: shown.areaOpen, otherOpen: shown.otherOpen }, { teamOpen: true, areaOpen: true, otherOpen: [] });
+      assert.ok(shown.projectsOpened.length > 0 && shown.projectsOpened.every((id) => id === "p1") && !shown.p2Shown, JSON.stringify(shown));
+      assert.deepEqual(shown.unanswered, []);
       assert.ok(shown.cardVisible && shown.cardSize[0] > 0 && shown.cardSize[1] > 0 && shown.inView, JSON.stringify(shown));
       assert.ok(shown.noteVisible && shown.noteInCard, JSON.stringify(shown));
       assert.equal(shown.focused, true);
@@ -330,9 +392,12 @@ body{margin:0;padding:24px;background:var(--paper);color:var(--ink)}main{max-wid
     {
       const { context, page } = await arrive([ask("plan", 31, 2)], reply("plan", 1, 30));
       const other = await state(page, "plan");
-      assert.deepEqual({ teamOpen: other.teamOpen, focused: other.focused, cardVisible: other.cardVisible, noteVisible: other.noteVisible, noteInCard: other.noteInCard },
-        { teamOpen: false, focused: false, cardVisible: false, noteVisible: true, noteInCard: false });
+      assert.deepEqual({ teamOpen: other.teamOpen, areaOpen: other.areaOpen, focused: other.focused, cardVisible: other.cardVisible,
+        noteVisible: other.noteVisible, noteInCard: other.noteInCard, noteAbove: other.noteAbove },
+        { teamOpen: false, areaOpen: false, focused: false, cardVisible: false, noteVisible: true, noteInCard: false, noteAbove: true });
+      assert.ok(other.projectsOpened.every((id) => id === "p1") && !other.p2Shown, JSON.stringify(other));
       assert.deepEqual(other.writes, []);
+      assert.deepEqual(other.unanswered, []);
       check("Home: another section under the key in the team details stays closed and unfocused; the neutral note shows", other);
       await context.close();
     }

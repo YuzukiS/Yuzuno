@@ -4,10 +4,11 @@ import type { ProjectPanel, Section } from "../home/types";
 /**
  * A reply from Home (T-9), as Core's receipt names it: a user message Core
  * marked `home`, with the identity Core attached to it on reading the
- * conversation. Never from its text, which anyone could have typed.
+ * conversation, or Core's preview of one too large for the window, which
+ * keeps both (YN-201). Never from its text, which anyone could have typed.
  */
 export function homeReplyOf(item: NativeItem): HomeReplyOrigin | null {
-  if (item.type !== "userMessage" || item._yuzunoInput !== "home") return null;
+  if (item.type === "userMessage" ? item._yuzunoInput !== "home" : !homeReplyPreview(item)) return null;
   return homeOrigin(item);
 }
 
@@ -26,6 +27,32 @@ export const messagePreview = (item: NativeItem) =>
  * (YN-201): as Core marked it, never from its text. */
 export const homeReplyPreview = (item: NativeItem) =>
   messagePreview(item) && item._yuzunoInput === "home" && !!homeOrigin(item);
+
+/**
+ * How much of the user's words is drawn while they are folded (YN-201):
+ * about five times what the six lines shown of the widest card hold (44rem
+ * at a line height of 1.75, home-reply.css: some 240 CJK or 540 Latin
+ * characters), and enough source lines for a table's header and rule to
+ * still fill six. Shown all, the whole text is drawn.
+ */
+export const FOLD_LINES = 24;
+export const FOLD_CHARS = 3000;
+
+/** The start of `text` drawn while folded: whole lines, at most FOLD_LINES
+ * of them and FOLD_CHARS in all; a first line longer than that is cut at
+ * FOLD_CHARS, never inside a character. */
+export function foldSource(text: string): string {
+  let end = 0;
+  for (let line = 0; line < FOLD_LINES && end < text.length; line++) {
+    const next = text.indexOf("\n", end);
+    const stop = next < 0 ? text.length : next + 1;
+    if (stop > FOLD_CHARS) break;
+    end = stop;
+  }
+  if (end > 0 || text.length <= FOLD_CHARS) return text.slice(0, end || text.length);
+  const high = text.charCodeAt(FOLD_CHARS - 1);
+  return text.slice(0, high >= 0xd800 && high < 0xdc00 ? FOLD_CHARS - 1 : FOLD_CHARS);
+}
 
 /** An answer a form field left empty. */
 export const unanswered = (answer: string | string[]) =>

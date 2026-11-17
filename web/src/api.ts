@@ -100,6 +100,10 @@ let requestWorkspace = "";
 export function scopeRequests(workspaceId: string) {
   requestWorkspace = workspaceId;
 }
+/** The Workspace requests are scoped to now: its id, as Core answered
+ * /api/workspace; empty until it has. What one Workspace read is kept for
+ * it alone (item-payload, a Home reply's original: YN-201). */
+export const requestScope = () => requestWorkspace;
 const inFlight = new Map<string, Promise<unknown>>();
 function shared(action: string, request: () => Promise<unknown>): Promise<unknown> {
   const key = `${requestWorkspace}\n${action}`;
