@@ -193,8 +193,10 @@ async function check(run) {
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${run.name}: ${error.message}`));
-  const card = (key) => page.locator(`#home-section-p-orch-${key}`);
-  const deck = page.locator('[data-home-project="p-orch"] .home-brief').first();
+  // The project's page, where its cards stand on its deck (YN-86); its first group holds the open Asks.
+  const project = page.locator('[data-project-home="p-orch"]');
+  const card = (key) => project.locator(`#home-section-p-orch-${key}`);
+  const deck = project.locator(".home-brief").first();
   const press = (locator) => (run.phone ? locator.tap() : locator.click());
   // What the user sees: the window, with the Ask's card at its top.
   const shot = async (name) => {
@@ -239,13 +241,11 @@ async function check(run) {
   // YN-203: every resize over --motion-card (this check's own value, styles.css), the last to `to`.
   const CARD_MS = 500;
   const resized = (played, to) => played.length > 0 && played.every((a) => a.duration === CARD_MS) && Math.abs(height(JSON.parse(played.at(-1).frames).at(-1)) - to) < 1;
+  // The project's page, as a link to it opens it (YN-86: Home's cards stand on their project's page), a fresh visit each time.
   const openHome = async () => {
-    await page.goto(`http://${HOST}/`);
-    if (run.phone) {
-      const back = page.locator(".phone-back, [aria-label='All agents'], [aria-label='Back to agents']").first();
-      if (await back.isVisible().catch(() => false)) await back.click();
-    }
-    await page.locator(".catchup-nav:not(.collab-nav)").first().click();
+    // From a blank page: the same address again would only move to its fragment, not load Home anew.
+    await page.goto("about:blank");
+    await page.goto(`http://${HOST}/#/home?w=ws-own&p=p-orch`);
     await card("overnight").waitFor({ timeout: 15_000 });
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(300);
