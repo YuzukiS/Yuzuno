@@ -68,6 +68,36 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.close_agent("oc").await.unwrap();
 }
 
+/// YN-211: an OpenCode Agent's reconnect keeps the contract every runtime's
+/// does (`workspace::reconnect_contract`). Its server ends by itself when
+/// told `die`; the user's Disconnect is refused for it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_opencode_reconnect_keeps_the_contract() {
+    use crate::workspace::reconnect_contract::{check, until, Runtime};
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    let asked = |session: String| json!({"id":"evt_late","type":"permission.asked","data":{"id":"per_late",
+        "sessionID":session,"permission":"bash","patterns":["ls"],"metadata":{},"always":[]}});
+    let (w, data) = (&ws, data.as_path());
+    let runtime = Runtime {
+        disconnects: false,
+        end: Box::new(move |()| Box::pin(async move {
+            control(data, "die", json!({})).await;
+            until(w, "oc", "the server's end", |a| a.connection_state == "disconnected").await;
+        })),
+        event: Box::new(move |generation| Box::pin(async move {
+            let session = w.listed("oc").await.unwrap().opencode_session_id.unwrap();
+            w.dispatch_opencode_event("oc", generation, asked(session)).await;
+        })),
+        applied: Box::new(move || w.store.detail("oc").unwrap().pending.iter().any(|p| !p.stale)),
+    };
+    check(&ws, "oc", runtime).await;
+}
+
 /// YN-48: an event whose application panics ends neither the reading of the
 /// Agent's events nor its Turn. The panic is read as the stream breaking: the
 /// stream is opened again and the session read whole, so the Turn ends as
