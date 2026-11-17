@@ -844,4 +844,46 @@ mod tests {
         same(&ws.listed(id).await.unwrap());
         ws.close_agent(id).await.unwrap();
     }
+
+    /// YN-211: a Claude Agent's reconnect keeps the contract every runtime's
+    /// does (`workspace::reconnect_contract`). Its bridge ends by itself once
+    /// it has answered a `close`.
+    #[tokio::test]
+    async fn a_claude_reconnect_keeps_the_contract() {
+        use crate::workspace::reconnect_contract::{check, kinds, Runtime};
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(value) = &self.0 {
+                    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", value);
+                } else {
+                    std::env::remove_var("YUZUNO_CLAUDE_BRIDGE");
+                }
+            }
+        }
+        let _env = crate::claude::BRIDGE_ENV.lock().await;
+        let _restore = Restore(std::env::var_os("YUZUNO_CLAUDE_BRIDGE"));
+        std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude_mcp_bridge.mjs"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        mode(path, json!({"servers":[{"name":"fresh", "status":"connected"}]}));
+        let ws = Workspace::new(path.join("data"), path.to_string_lossy().into(), "unused".into()).unwrap();
+        let created = ws.claude_create("Contract".into(), String::new(), path.to_string_lossy().into(), "fixture".into(), None)
+            .await.unwrap();
+        let id = created.id.as_str();
+        until(|| ws.store.agent(id).unwrap().connection_state == "connected").await;
+        let w = &ws;
+        let runtime = Runtime {
+            disconnects: true,
+            end: Box::new(move |()| Box::pin(async move {
+                let live = w.claudes.lock().unwrap().get(id).cloned().unwrap();
+                let _ = live.bridge.request(json!({"op": "close"})).await;
+                crate::workspace::reconnect_contract::until(w, id, "the bridge's end", |a| a.connection_state == "disconnected").await;
+            })),
+            event: Box::new(move |generation| Box::pin(w.dispatch_claude_event(id, generation,
+                json!({"type": "effort", "level": "max", "turnId": "turn-late"})))),
+            applied: Box::new(move || kinds(w, id).iter().any(|kind| kind == "claude/effortApplied")),
+        };
+        check(&ws, id, runtime).await;
+    }
 }

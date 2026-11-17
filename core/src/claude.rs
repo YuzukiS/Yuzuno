@@ -1084,28 +1084,23 @@ impl Workspace {
         outcome
     }
 
+    /// `reconnect_accepted` with a new work permit: a Claude Agent's
+    /// reconnect that, unlike the user's, keeps a Disconnect.
     pub async fn claude_reconnect(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
         let _permit = self.admission.enter_work()?;
-        self.claude_reconnect_accepted(id, &_permit).await
+        self.reconnect_accepted(id, &_permit).await
     }
 
-    pub(crate) async fn claude_reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
-        self.claude_reconnect_gated(id, permit, true).await?.context("record")
-    }
-
-    /// Reconnects a Claude Agent under its gate; with `read`, returns the
-    /// record as the reconnect left it, read under the same gate. Whether it
-    /// is open is checked on the Agent as listed, not its history (T-140).
-    pub(crate) async fn claude_reconnect_gated(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit, read: bool) -> Result<Option<AgentDetail>> {
-        permit.validate(&self.admission)?;
-        let gate = self.gate(id).await;
-        let _held = gate.lock().await;
+    /// Called under the Agent gate (`reconnect_gated`): a Claude Agent's
+    /// reconnect steps. Whether it is open is checked on the Agent as listed,
+    /// not its history (T-140); a failed start is recorded as its failure.
+    pub(crate) async fn claude_reattach(self: &Arc<Self>, id: &str) -> Result<()> {
         ensure_agent_open(&self.listed(id).await?)?;
         if let Err(error) = self.claude_ensure(id).await {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
+        Ok(())
     }
 
     pub async fn claude_send(self: &Arc<Self>, id: &str, text: String) -> Result<Value> {
@@ -1616,7 +1611,7 @@ impl Workspace {
     /// One bridge event, handled like a Codex event (see
     /// `Workspace::dispatch_event`): off the async workers, under this
     /// Agent's ownership lock only.
-    async fn dispatch_claude_event(self: &Arc<Self>, id: &str, generation: u64, message: Value) {
+    pub(crate) async fn dispatch_claude_event(self: &Arc<Self>, id: &str, generation: u64, message: Value) {
         let owned = self.owner(id).await;
         let (ws, id) = (self.clone(), id.to_owned());
         let permit = self.admission.enter_event();

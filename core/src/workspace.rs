@@ -21,6 +21,15 @@ use tokio::sync::{mpsc, Mutex, Notify, OwnedMutexGuard};
 #[path = "codex_context_native.rs"]
 mod context_native_tests;
 
+/// What a reconnect answers with, once its runtime's steps are done: the
+/// record as the client window shows it (`Workspace::answer`), or nothing,
+/// for a caller that reads the Agent as listed afterwards (T-140).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    Record,
+    Listed,
+}
+
 #[derive(Clone)]
 pub(crate) struct Connection {
     pub(crate) generation: u64,
@@ -1300,14 +1309,7 @@ impl Workspace {
     }
 
     pub(crate) async fn reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
-        permit.validate(&self.admission)?;
-        match self.listed(id).await?.harness.as_str() {
-            "claude" => return self.claude_reconnect_accepted(id, permit).await,
-            "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
-            "dsh" => return self.dsh_reconnect_accepted(id, permit).await,
-            _ => {}
-        }
-        self.reconnect_codex(id, true).await?.context("record")
+        self.reconnect_gated(id, permit, Answer::Record).await?.context("record")
     }
 
     /// `reconnect`, answered with the Agent as listed: for a caller that reads
@@ -1328,21 +1330,34 @@ impl Workspace {
     /// `reconnect_accepted` for a caller that does not use the record, which
     /// for a long history saves reading it whole (T-140).
     pub(crate) async fn reconnect_settled(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<()> {
-        permit.validate(&self.admission)?;
-        match self.listed(id).await?.harness.as_str() {
-            "claude" => return self.claude_reconnect_gated(id, permit, false).await.map(drop),
-            "opencode" => return self.opencode_reconnect_gated(id, permit, false).await.map(drop),
-            "dsh" => return self.dsh_reconnect_gated(id, permit, false).await.map(drop),
-            _ => {}
-        }
-        self.reconnect_codex(id, false).await.map(drop)
+        self.reconnect_gated(id, permit, Answer::Listed).await.map(drop)
     }
 
-    /// Reconnects a Codex Agent under its gate; with `read`, returns the
-    /// record as the reconnect left it, read under the same gate.
-    async fn reconnect_codex(self: &Arc<Self>, id: &str, read: bool) -> Result<Option<AgentDetail>> {
+    /// Every reconnect, whichever way it answers: the one place its runtime
+    /// is chosen. Under the Agent's gate, that runtime's own steps
+    /// (`*_reattach`, each as it was), then the answer `answer` asks for,
+    /// read under the same gate. The harness is read on the Agent as listed,
+    /// never its history (T-140).
+    async fn reconnect_gated(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit, answer: Answer) -> Result<Option<AgentDetail>> {
+        permit.validate(&self.admission)?;
+        let harness = self.listed(id).await?.harness;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
+        match harness.as_str() {
+            "claude" => self.claude_reattach(id).await?,
+            "opencode" => self.opencode_reattach(id).await?,
+            "dsh" => self.dsh_reattach(id).await?,
+            _ => self.codex_reattach(id).await?,
+        }
+        match answer {
+            Answer::Record => Ok(Some(self.answer(id).await?)),
+            Answer::Listed => Ok(None),
+        }
+    }
+
+    /// Called under the Agent gate: a Codex Agent's reconnect steps. A
+    /// failed reconcile is recorded as its failure.
+    async fn codex_reattach(self: &Arc<Self>, id: &str) -> Result<()> {
         let agent = id.to_owned();
         self.stored(move |store| store.activate_codex_import(&agent)).await?;
         // Explicit reconnect only: a remote detach releases the subscription,
@@ -1373,7 +1388,7 @@ impl Workspace {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
+        Ok(())
     }
 
     /// What an API call that answers with the record gets: the Agent with
@@ -3488,6 +3503,10 @@ mod reconnect_reads_tests;
 #[cfg(all(test, unix))]
 #[path = "reconnect_exit_tests.rs"]
 mod reconnect_exit_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_contract_tests.rs"]
+pub(crate) mod reconnect_contract;
 
 #[cfg(test)]
 mod tests {

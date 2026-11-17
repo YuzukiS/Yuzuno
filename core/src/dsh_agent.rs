@@ -708,22 +708,16 @@ impl Workspace {
         Ok(agent)
     }
 
-    pub(crate) async fn dsh_reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
-        self.dsh_reconnect_gated(id, permit, true).await?.context("record")
-    }
-
-    /// Reconnects a dsh Agent under its gate: its live dsh, or a new one
-    /// resuming its session; with `read`, the record as that left it.
-    pub(crate) async fn dsh_reconnect_gated(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit, read: bool) -> Result<Option<AgentDetail>> {
-        permit.validate(&self.admission)?;
-        let gate = self.gate(id).await;
-        let _held = gate.lock().await;
+    /// Called under the Agent gate (`reconnect_gated`): a dsh Agent's
+    /// reconnect steps, its live dsh or a new one resuming its session; a
+    /// failed start is recorded as its failure.
+    pub(crate) async fn dsh_reattach(self: &Arc<Self>, id: &str) -> Result<()> {
         ensure_agent_open(&self.listed(id).await?)?;
         if let Err(error) = self.dsh_ensure(id).await {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
+        Ok(())
     }
 
     /// Under the Agent gate: the live connection, or a new dsh for the

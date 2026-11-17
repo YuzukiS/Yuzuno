@@ -771,6 +771,30 @@ async fn an_idle_dsh_agent_can_be_disconnected_and_reconnected() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// YN-211: a dsh Agent's reconnect keeps the contract every runtime's does
+/// (`workspace::reconnect_contract`). Its dsh ends by itself when told
+/// `EXIT`; a late update of an earlier dsh is not read into a Turn.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dsh_reconnect_keeps_the_contract() {
+    use crate::workspace::reconnect_contract::{check, until, Runtime};
+    let lab = Lab::new();
+    lab.agent(ID, Some("ask"), Some("deepseek"), json!({}), json!({}));
+    let (w, lab) = (&lab.ws, &lab);
+    let late = |session: &str| json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session,
+        "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "late-yn211"}}}});
+    let runtime = Runtime {
+        disconnects: true,
+        end: Box::new(move |()| Box::pin(async move {
+            lab.send("contract-end", "EXIT").await.unwrap();
+            until(w, ID, "dsh's end", |a| a.connection_state == "disconnected").await;
+        })),
+        event: Box::new(move |generation| Box::pin(w.dsh_event(ID, generation, late("ses-1")))),
+        applied: Box::new(move || serde_json::to_string(&w.store.detail(ID).unwrap().turns).unwrap().contains("late-yn211")),
+    };
+    check(w, ID, runtime).await;
+}
+
 #[cfg(unix)]
 fn sha256_bytes(bytes: &[u8]) -> String {
     use sha2::Digest;
