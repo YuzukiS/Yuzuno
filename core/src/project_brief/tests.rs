@@ -2158,6 +2158,68 @@ fn markdown(text: &str) -> Value {
     json!({"type":"Markdown","props":{"text":text}})
 }
 
+/// YN-195: a status edited or patched without status is current as of that
+/// write, its validity kept; one that sends status says when its facts are
+/// from; and an edit may send a status section's status alone.
+#[tokio::test]
+async fn a_status_edited_without_status_is_current_as_of_the_write() {
+    let (_dir, ws, project) = lab();
+    let mut old = put("state", "status");
+    old["status"] = json!({"asOf":"2026-01-01T00:00:00Z","validFor":60});
+    accept(&ws, "a", input("a1", 0, vec![old, put("notes", "report")])).await;
+    assert_eq!(section(&brief(&ws, "a"), "state")["status"]["stale"], true);
+    let fresh = |read: &Value| {
+        let status = &section(read, "state")["status"];
+        let at = chrono::DateTime::parse_from_rfc3339(status["asOf"].as_str().unwrap()).unwrap();
+        assert!((chrono::Utc::now() - at.with_timezone(&chrono::Utc)).num_seconds() < 60, "{status}");
+        assert_eq!((status["validFor"].clone(), status["stale"].clone()), (json!(60), json!(false)), "{status}");
+    };
+    accept(&ws, "a", input("a2", 1, vec![edit("state", json!({"note":markdown("Steady.")}))])).await;
+    fresh(&brief(&ws, "a"));
+    let mut stale = put("state", "status");
+    stale["status"] = json!({"asOf":"2026-01-01T00:00:00Z","validFor":60});
+    accept(&ws, "a", input("a3", 2, vec![stale])).await;
+    let patched = json!({"op":"patch","key":"state","patch":[{"op":"replace","path":"/elements/note/props/text","value":"Still steady."}]});
+    accept(&ws, "a", input("a4", 3, vec![patched])).await;
+    fresh(&brief(&ws, "a"));
+    // Sent with the edit, the status is the author's: when its facts are from.
+    let mut dated = edit("state", json!({"note":markdown("As of the morning run.")}));
+    dated["status"] = json!({"asOf":"2026-10-18T06:00:00Z","validFor":600});
+    accept(&ws, "a", input("a5", 4, vec![dated])).await;
+    assert_eq!(section(&brief(&ws, "a"), "state")["status"]["asOf"], "2026-10-18T06:00:00Z");
+    // The status alone, no block: the body stays as it was.
+    let body = section(&brief(&ws, "a"), "state")["body"].clone();
+    let alone = json!({"op":"edit","key":"state","status":{"asOf":"2026-10-18T07:00:00Z","validFor":900}});
+    let changed = accept(&ws, "a", input("a6", 5, vec![alone])).await;
+    assert_eq!(changed["sections"], json!([{"key":"state","version":6}]));
+    let read = brief(&ws, "a");
+    assert_eq!((section(&read, "state")["body"].clone(), section(&read, "state")["status"]["asOf"].clone(), section(&read, "state")["status"]["validFor"].clone()),
+        (body, json!("2026-10-18T07:00:00Z"), json!(900)));
+    // A report has no status to refresh; an edit with neither blocks nor status nor task changes nothing and is refused.
+    accept(&ws, "a", input("a7", 6, vec![edit("notes", json!({"note":markdown("Done.")}))])).await;
+    assert!(section(&brief(&ws, "a"), "notes").get("status").is_none());
+    let empty = reject(&ws, "a", input("a8", 7, vec![json!({"op":"edit","key":"state"})])).await;
+    assert_eq!(codes(&empty), ["invalid_change"], "{empty}");
+    assert_eq!(version(&ws, &project), 7);
+}
+
+/// YN-195: Asks take no sub-topic place. Reports and statuses fill a topic's
+/// four, and a new Ask under a full topic is still taken.
+#[tokio::test]
+async fn asks_take_no_sub_topic_place() {
+    let (_dir, ws, _project) = lab();
+    let mut changes: Vec<Value> = (1..=3).map(|n| put(&format!("t0/s{n}"), "report")).collect();
+    changes.extend([put("t0/q1", "ask"), put("t0/q2", "ask")]);
+    accept(&ws, "a", input("a1", 0, changes)).await;
+    accept(&ws, "a", input("a2", 1, vec![put("t0/s4", "status")])).await;
+    let full = reject(&ws, "a", input("a3", 2, vec![put("t0/s5", "report")])).await;
+    assert_eq!(codes(&full), ["topic_limit"], "{full}");
+    assert!(full["problems"][0]["reason"].as_str().unwrap().contains("Asks take none"), "{full}");
+    accept(&ws, "a", input("a4", 2, vec![put("t0/q3", "ask")])).await;
+    let keys: Vec<String> = brief(&ws, "a")["sections"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(keys.iter().filter(|key| key.starts_with("t0/")).count(), 7, "{keys:?}");
+}
+
 #[tokio::test]
 async fn an_edit_replaces_only_the_named_blocks_and_keeps_layout_attachments_and_status() {
     let (_dir, ws, project) = lab();
@@ -2167,13 +2229,16 @@ async fn an_edit_replaces_only_the_named_blocks_and_keeps_layout_attachments_and
     assert_eq!(changed["sections"], json!([{"key":"overview","version":2}]));
     let after = section(&brief(&ws, "a"), "overview").clone();
     assert_eq!(after["body"]["elements"]["progress"]["props"]["text"], "Step 2 of 3.");
-    // Every other block, the order, the title, the attachment snapshot and the status are as they were.
+    // Every other block, the order, the title, the attachment snapshot and the status's validity are as they were;
+    // the status, edited without one, is current as of this edit (YN-195).
     let mut expected = before["body"].clone();
     expected["elements"]["progress"] = markdown("Step 2 of 3.");
     assert_eq!(after["body"], expected);
-    for field in ["title", "attachments", "status", "kind", "owner"] {
+    for field in ["title", "attachments", "kind", "owner"] {
         assert_eq!(after[field], before[field], "{field}");
     }
+    assert_eq!(after["status"]["validFor"], before["status"]["validFor"]);
+    assert!(after["status"]["asOf"].as_str().unwrap() > before["status"]["asOf"].as_str().unwrap(), "{after}");
     // A second edit, with the status refreshed, changes just that block and the status.
     let at = "2026-10-18T06:00:00Z";
     let mut second = edit("overview", json!({"findings":markdown("Loss falls 6% after warm-up.")}));

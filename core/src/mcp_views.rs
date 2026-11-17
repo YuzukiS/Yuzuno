@@ -114,6 +114,7 @@ pub(crate) fn answer(tool: &str, value: Value, view: Option<&str>) -> Value {
 /// lastEvidence, the last check as Core read it, is view "full"'s.
 fn merge_summary(entry: &Value) -> Value {
     let mut out = entry.clone();
+    iso_times(&mut out);
     let Some(map) = out.as_object_mut() else { return out };
     map.remove("lastEvidence");
     if let Some(evidence) = map.get_mut("evidence").and_then(Value::as_object_mut) {
@@ -134,11 +135,26 @@ fn merge_summary(entry: &Value) -> Value {
 /// and why, and its merge.
 fn merge_row(entry: &Value) -> Value {
     let mut row = pick(entry, &["id", "entryId", "taskId", "taskReference", "repository", "number", "url", "headSha", "state",
-        "reason", "detail", "waitingSince", "createdAt", "updatedAt"]);
+        "reason", "detail", "blocker", "waitingSince", "createdAt", "updatedAt"]);
     if entry["merge"].is_object() {
         row["merge"] = pick(&entry["merge"], &["sha", "mergedAt", "mainCi"]);
     }
+    iso_times(&mut row);
     row
+}
+
+/// The queue keeps its own clock in epoch seconds; an Agent reads every time
+/// of an entry as ISO, as its other times are (YN-193). nextCheck 0 (due at
+/// once) and the queue's "until switched on" are no time: null.
+fn iso_times(entry: &mut Value) {
+    let iso = |v: &Value| {
+        v.as_i64().filter(|t| *t > 0).and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map_or(Value::Null, |t| json!(t.to_rfc3339()))
+    };
+    for key in ["waitingSince", "nextCheck"] {
+        if entry.get(key).is_some_and(Value::is_i64) {
+            entry[key] = iso(&entry[key]);
+        }
+    }
 }
 
 /// A mailbox page as an Agent reads it (YN-69): each message whole, but its
@@ -443,7 +459,7 @@ fn review_summary(value: &Value) -> Value {
         "mergeBaseSha", "comparison", "commitCount", "createdAt", "finishedAt", "actualModel", "actualHarness",
         "contextIncomplete", "acknowledgedUnreviewable", "explanation", "findings", "evidence",
         "kind", "parentReviewId", "previousReviewId", "settledFindings", "cursor", "policyVersion", "coveragePolicyVersion",
-        "roundLimit"]);
+        "roundLimit", "countsTowardLimit"]);
     // Unknown freshness must stay explicit, rather than disappear through pick.
     out["outdated"] = value["outdated"].clone();
     // The earlier round's identity and verdict; its findings are carried in

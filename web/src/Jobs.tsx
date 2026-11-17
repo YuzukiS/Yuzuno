@@ -28,6 +28,7 @@ import {
   validBudget,
   WindowsJobs,
   type JobsBudgetView,
+  type QueueHeadView,
 } from "./JobBudget";
 import type { SettingsEditor } from "./settings-catalog";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
@@ -55,6 +56,7 @@ import { Tip, TipText } from "./Tip";
 import { jobsText, type JobsText } from "./jobs-text";
 import { TASK_KEY } from "./intelligent-ui/task-key";
 import {
+  clock,
   JobCard,
   JobDetailHeading,
   JobRow,
@@ -123,6 +125,9 @@ type Job = {
   };
   /** One attempt of a run's stage (T-105). */
   run?: { id: string; stage: string; attempt: number } | null;
+  /** A waiting stage that cannot start without a retry or a cancel, and
+   * why (YN-194): not counted as still going. */
+  stalled?: "upstream" | "costLimit" | null;
   artifacts?: { path: string }[];
   /** What a live attempt has reported so far. */
   reports?: { cost?: Cost | null; progress?: Progress | null } | null;
@@ -200,9 +205,10 @@ const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "re
  * the running nor the queued count; undefined from a Core that does not
  * count them. */
 const waitingOf = (budget: JobsBudgetView) => (Number.isFinite(budget.waitingCount) ? budget.waitingCount : undefined);
-/** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
+/** Still to finish: holding capacity, queued, or a stage waiting for an
+ * upstream that can still let it start (one marked stalled cannot, YN-194). */
 const active = (job: Job) =>
-  job.reserved || job.status === "queued" || job.status === "waiting";
+  job.reserved || job.status === "queued" || (job.status === "waiting" && !job.stalled);
 const memory = (miB: number) =>
   miB >= 1024
     ? `${(miB / 1024).toFixed(1)} GiB`
@@ -277,6 +283,7 @@ const checkpointed = (job: Job) =>
 function stateOf(job: Job, t: JobsText = en) {
   if (stoppingAtCheckpoint(job)) return { name: t.stoppingAtCheckpoint, mark: job.status };
   if (checkpointed(job)) return { name: t.stoppedAtCheckpoint, mark: job.status };
+  if (job.status === "waiting" && job.stalled) return { name: t.stalled[job.stalled] || job.stalled, mark: job.status };
   const pause = job.status === "running" ? pauseOf(job) : null;
   if (!pause) return { name: t.status[job.status] || job.status, mark: job.status };
   const name =
@@ -303,6 +310,47 @@ function elapsed(job: Job, now = Date.now(), t: JobsText = en) {
     : seconds < 3600
       ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
       : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+/** A span of seconds as the list shows times: 45s, 12m, 1h 12m. */
+const span = (seconds: number) =>
+  seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+/** The first Job in the queue, what it waits for and how much it lacks, and
+ * the running Jobs that hold most of that (YN-194): one line and its holders.
+ * How long they usually take is earlier runs' median, not a forecast. */
+function QueueHead({ head, t }: { head: QueueHeadView; t: JobsText }) {
+  const cores = (millis: number) => `${Number((millis / 1000).toFixed(1))} CPU`;
+  const amount = (r: Resources) =>
+    head.waits === "cpu" ? cores(r.cpuMillis) : head.waits === "swap" ? memory(r.swapMiB) : memory(r.memoryMiB);
+  const lacking =
+    (head.waits === "cpu" && head.short.cpuMillis > 0) ||
+    (head.waits === "memory" && head.short.memoryMiB > 0) ||
+    (head.waits === "swap" && head.short.swapMiB > 0);
+  const since = head.waitingSince ? Math.max(0, Math.floor((Date.now() - Date.parse(head.waitingSince)) / 1000)) : null;
+  return (
+    <div className="jobs-queue-head" role="group" aria-label={t.headTitle}>
+      <Tip content={head.reason ? <TipText body={head.reason} /> : null} size="wide">
+        <p className="jobs-queue-head-line">
+          <strong>{t.headTitle}</strong>{t.headWaits(head.name, t.waitsFor[head.waits] ?? head.waits, lacking ? amount(head.short) : "")}
+          {since !== null && Number.isFinite(since) ? ` · ${t.waited(span(since))}` : ""}
+        </p>
+      </Tip>
+      {head.holders.length > 0 && (
+        <p className="jobs-queue-head-holders">
+          {t.holdersLabel}
+          {head.holders
+            .map((h) =>
+              t.holder(
+                h.name,
+                head.waits === "gpu" ? "" : amount(h.reservation),
+                h.typicalSeconds != null ? span(Math.round(h.typicalSeconds)) : null,
+                h.endsBy ? clock(h.endsBy) : null,
+              ),
+            )
+            .join(t.listSeparator)}
+        </p>
+      )}
+    </div>
+  );
 }
 /** Still running, so its time so far grows. An unknown outcome does not. */
 const live = (job: Job) =>
@@ -1263,6 +1311,9 @@ export function Jobs({
                         label={t.queue}
                         items={page.jobs}
                         place={placeJob}
+                        // A stage stalled behind its run waits on, out of the
+                        // active group: the group's title must not say it ended (YN-194).
+                        historyLabel={page.jobs.some((job) => job.status === "waiting" && job.stalled) ? t.endedOrStopped : undefined}
                         selected={selected}
                         empty={
                           listed ? (
@@ -1463,6 +1514,7 @@ function JobsBudget({
           <GpuDevices gpus={budget.gpus} paused={pausedGpus} busyNow={load?.gpus} onSaved={onSaved} />
         )}
       </div>
+      {budget.queueHead && <QueueHead head={budget.queueHead} t={t} />}
     </div>
   );
 }

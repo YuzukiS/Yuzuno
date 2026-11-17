@@ -309,5 +309,29 @@ class OutputDirTests(unittest.TestCase):
         self.assertEqual(source_build.output_dir(["build", "--profile=ci"]), ("ci", ["--profile", "ci"]))
 
 
+class DigestTests(unittest.TestCase):
+    def setUp(self):
+        base = HERE.parent / "target"
+        base.mkdir(exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix="source-build-digest-", dir=base))
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_python_bytecode_caches_are_not_source(self):
+        # Python writes __pycache__ beside a module it imports, as Core's tests
+        # do in core/src/remote_service/. A run that does is not a source change
+        # (YN-196), and two trees with the same source get the same digest.
+        member = self.root / "member"
+        (member / "src").mkdir(parents=True)
+        (member / "src/helper.py").write_text("VALUE = 1\n")
+        before = source_build.digest(self.root, [member])
+        (member / "src/__pycache__").mkdir()
+        (member / "src/__pycache__/helper.cpython-312.pyc").write_bytes(b"\x00bytecode")
+        self.assertEqual(source_build.digest(self.root, [member]), before)
+        (member / "src/helper.py").write_text("VALUE = 2\n")
+        self.assertNotEqual(source_build.digest(self.root, [member]), before)
+
+
 if __name__ == "__main__":
     unittest.main()

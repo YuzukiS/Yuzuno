@@ -229,6 +229,25 @@ async fn an_executor_the_user_disconnected_on_another_machine_or_with_routing_of
     assert_eq!(lab.starts().last().unwrap(), &json!({"resume": SESSION, "account": "3"}));
 }
 
+/// An archived executor is closed for good, so the listing leaves it out
+/// before reading its record (YN-198). Here its record is left connected, as
+/// no archive leaves one, to show that the query itself skips it.
+#[tokio::test]
+async fn an_archived_executor_is_not_listed_for_a_move() {
+    let Some(lab) = Lab::new().await else { return eprintln!("skipped: no python3 on PATH") };
+    let role = |archived: Option<&str>| {
+        lab.ws.store.db.write().unwrap().execute(
+            "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,archived_at,created_at,updated_at)
+             VALUES(?1,'executor','writer','T-1','user','started',?2,'now','now')
+             ON CONFLICT(agent_id) DO UPDATE SET archived_at=excluded.archived_at", rusqlite::params![ID, archived]).unwrap();
+    };
+    role(None);
+    assert_eq!(lab.ws.store.routing_on_accounts(None).unwrap().len(), 1, "at work");
+    role(Some("2026-11-16T00:00:00Z"));
+    assert!(lab.ws.store.routing_on_accounts(None).unwrap().is_empty(), "archived");
+    assert!(lab.ws.store.routing_on_accounts(Some(ID)).unwrap().is_empty(), "archived, named");
+}
+
 /// #966 R3 P2: a gate another operation holds is not waited for. This pass
 /// starts no move of the executor, writes nothing to it, and the next pass
 /// moves it once the gate is free. Only the detach and restart are timed.

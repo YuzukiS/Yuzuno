@@ -11,6 +11,7 @@ const arrivalText = strings({
   resolved: (replied: number) => <>You replied to version {replied}. <b>Its author has resolved this ask</b>; it is under History on this project.</>,
   removed: (replied: number) => <>You replied to version {replied}. <b>Its author removed this card</b> from Home.</>,
   archived: (replied: number) => <>You replied to version {replied}. This card was <b>archived</b> when its task ended; it is under History on this project.</>,
+  leadLeft: (replied: number) => <>You replied to version {replied}. Its author <b>no longer leads this project</b>, so the card is under History on this project.</>,
   history: (replied: number) => <>You replied to version {replied}. This card is now under <b>History</b> on this project.</>,
   unknown: (replied: number, current: number | null) => current === null
     ? <>You replied to version {replied}. Home has <b>no record of what became of it</b>.</>
@@ -24,6 +25,7 @@ const arrivalText = strings({
   resolved: (replied: number) => <>你回复的是第 {replied} 版。<b>作者已处理完这个提问</b>，它在这个项目的历史里。</>,
   removed: (replied: number) => <>你回复的是第 {replied} 版。<b>作者已从 Home 移除这张卡片</b>。</>,
   archived: (replied: number) => <>你回复的是第 {replied} 版。这张卡片的任务已结束，卡片<b>已归档</b>，在这个项目的历史里。</>,
+  leadLeft: (replied: number) => <>你回复的是第 {replied} 版。作者<b>已不是这个项目的负责人</b>，卡片在这个项目的历史里。</>,
   history: (replied: number) => <>你回复的是第 {replied} 版。这张卡片现在在这个项目的<b>历史</b>里。</>,
   unknown: (replied: number, current: number | null) => current === null
     ? <>你回复的是第 {replied} 版。Home <b>已没有它后来情况的记录</b>。</>
@@ -53,6 +55,7 @@ export function ReplyArrival({ arrival, version, ask, onBack }: {
       : arrival.kind === "resolved" ? t.resolved(replied)
         : arrival.kind === "removed" ? t.removed(replied)
           : arrival.kind === "archived" ? t.archived(replied)
+          : arrival.kind === "leadLeft" ? t.leadLeft(replied)
           : arrival.kind === "history" ? t.history(replied)
             : arrival.kind === "unknown" ? t.unknown(replied, arrival.current)
               : arrival.kind === "gone" ? t.gone

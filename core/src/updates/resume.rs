@@ -17,14 +17,19 @@
 //! sent again. The outcome for each Agent is kept on its pause message
 //! (`delivery_detail.resume`), not in the journal, whose `Operation` an
 //! earlier release's helper still reads and which refuses unknown fields.
-//! A send that failed or whose delivery is unconfirmed is not tried again.
+//! A send that failed or whose delivery is unconfirmed is not tried again,
+//! nor is a decision that failed: its error is the outcome (YN-197).
+//!
+//! An Agent the listed view rules on (closed, released, disconnected, at
+//! work) is decided without reading its Turns: an Agent that keeps working
+//! after an update is looked at again only once it is idle (YN-197).
 use super::{
     notices::{session, Starter},
     state::{Operation, Phase},
 };
 use crate::{
     collaboration_credentials::MessageNotSubmitted,
-    model::{AgentDetail, MessageInput, MessageReceipt},
+    model::{Agent, AgentDetail, MessageInput, MessageReceipt},
     store::Store,
     workspace::Workspace,
 };
@@ -165,6 +170,25 @@ pub(super) fn decide(message: &Value, seen: &Seen) -> Decision {
     Decision::Send(turns[turns.len() - 1].id.clone())
 }
 
+/// What the listed view decides before any Turn is read (YN-197), in
+/// `decide`'s order: a closed, released or disconnected Agent is skipped, and
+/// one at work or connecting is waited for, however many Turns it has had
+/// since. None: its Turns decide. Waiting first only puts off a skip a later
+/// Turn would decide (`newer_input`), to the next round the Agent is idle.
+fn listed(agent: &Agent, archiving: bool) -> Option<Decision> {
+    if agent.closed_at.is_some() {
+        Some(Decision::Skip("closed"))
+    } else if archiving {
+        Some(Decision::Skip("released"))
+    } else if agent.disconnected_at.is_some() {
+        Some(Decision::Skip("disconnected"))
+    } else if matches!(agent.status.as_str(), "working" | "waiting") || agent.connection_state == "connecting" {
+        Some(Decision::Wait)
+    } else {
+        None
+    }
+}
+
 /// The last check, on the view the send reads with the Agent's gate held:
 /// the same session, and `newest` still its newest Turn, ended. Anything
 /// that began since with a person's input or mail ends this continue; Core's
@@ -240,8 +264,18 @@ impl Workspace {
             .for_each_concurrent(2, |message| {
                 let op = &op;
                 async move {
+                    let key = message["id"].as_str().map(str::to_owned);
                     if let Err(error) = self.resume_one(op, message).await {
                         eprintln!("Continue after update: {error:#}");
+                        // A decision that failed is not made again, as a
+                        // send that failed is not (YN-197): its error is the
+                        // outcome the update card shows. Only while it has none.
+                        if let Some(key) = key {
+                            let failed = outcome("failed", None, None, Some(&format!("{error:#}")));
+                            if let Err(error) = self.set_resume(&key, None, Some(failed)).await {
+                                eprintln!("Continue after update: {error:#}");
+                            }
+                        }
                     }
                 }
             })
@@ -270,6 +304,21 @@ impl Workspace {
         let skip = |reason| self.set_resume(&key, None, Some(outcome("skipped", Some(reason), None, None)));
         if !paused_for(op, &message) {
             return skip("not_paused").await.map(drop);
+        }
+        let id = agent.clone();
+        let first = self.stored(move |store| {
+            if !crate::record_rows::exists(&*store.db.read()?, &id)? {
+                return Ok(None);
+            }
+            let archiving = crate::executor_archiving::archiving(&*store.db.read()?, &id)?.is_some();
+            Ok(Some(listed(&store.agent(&id)?, archiving)))
+        }).await?;
+        match first {
+            None => return skip("deleted").await.map(drop),
+            Some(Some(Decision::Skip(reason))) => return skip(reason).await.map(drop),
+            // Waited for: decided again in a later round.
+            Some(Some(_)) => return Ok(()),
+            Some(None) => {}
         }
         let (id, turn) = (agent.clone(), message["metadata"]["turnId"].as_str().unwrap_or_default().to_owned());
         let Some(seen) = self.stored(move |store| seen(store, &id, &turn)).await? else {

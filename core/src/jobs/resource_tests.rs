@@ -163,6 +163,48 @@ fn only_matching_final_local_invocations_can_be_measured() {
     assert!(resources::mail(&remote).contains("Remote execution is not metered"));
 }
 
+/// YN-194: a Windows attempt's summary carries the peak its helper recorded,
+/// and says it has no CPU or wall time; SSH and Mac stay unmeasured.
+#[test]
+fn a_windows_attempt_shows_its_job_objects_peak_and_nothing_it_did_not_measure() {
+    let windows = |status: &str, limits: Value| {
+        json!({"id":"j","attempt":"a1","status":status,"executor":{"kind":"windows","machineId":"windows"},
+            "resources":{"cpuMillis":1000,"memoryMiB":256},
+            "result":{"jobId":"j","attempt":"a1","status":status,"evidence":{"result":{"exitCode":0,"limits":limits}}}})
+    };
+    let done = windows("succeeded", json!({"memoryMiB":256,"held":{"jobMemoryLimitBytes":268435456},"peakJobMemoryBytes":81076224}));
+    let value = resources::attempt(&done);
+    assert_eq!(value["measurement"], "partial");
+    assert_eq!(value["actual"]["memoryPeakMiB"], 81076224.0 / 1_048_576.0);
+    for absent in ["cpuSeconds", "workerWallSeconds", "averageCpuCores"] {
+        assert!(value["actual"][absent].is_null(), "{absent}");
+    }
+    assert_eq!(value["declared"]["memoryMiB"], 256);
+    assert!(value["reason"].as_str().unwrap().contains("no CPU time") || value["reason"].as_str().unwrap().contains("not measured"));
+    assert!(value["scope"].as_str().unwrap().contains("PeakJobMemoryUsed"));
+    let mail = resources::mail(&done);
+    assert!(mail.contains("peak memory 77.32/256.00 MiB") && mail.contains("PeakJobMemoryUsed"), "{mail}");
+    assert!(!mail.contains("local worker cgroup"), "not the local scope: {mail}");
+    // A failed attempt is measured too.
+    assert_eq!(resources::attempt(&windows("failed", json!({"peakJobMemoryBytes":1048576})))["actual"]["memoryPeakMiB"], 1.0);
+    // Started without limits (a v1 pin): no peak, and why.
+    let bare = resources::attempt(&windows("succeeded", Value::Null));
+    assert_eq!(bare["measurement"], "unavailable");
+    assert!(bare["reason"].as_str().unwrap().contains("without limits"), "{bare}");
+    // Not ended yet, or another attempt's result: nothing.
+    assert_eq!(resources::attempt(&windows("running", json!({"peakJobMemoryBytes":1})))["measurement"], "unavailable");
+    let mut other = done.clone();
+    other["result"]["attempt"] = json!("a0");
+    assert_eq!(resources::attempt(&other)["measurement"], "unavailable");
+    // SSH machines and This Mac stay as they were (YN-83 meters SSH).
+    for kind in ["ssh", "mac"] {
+        let mut remote = done.clone();
+        remote["executor"]["kind"] = json!(kind);
+        assert_eq!(resources::attempt(&remote)["measurement"], "unavailable", "{kind}");
+        assert!(resources::mail(&remote).contains("Remote execution is not metered"));
+    }
+}
+
 fn budget(cpu: u64, memory: u64) -> Resources {
     Resources {
         cpu_millis: cpu,
@@ -426,4 +468,55 @@ fn captured_worker_evidence_has_usable_resource_summary() {
         assert!(summary["actual"]["workerWallSeconds"].as_f64().unwrap() > 0.0);
         println!("{} {} {summary}", job["id"], job["status"]);
     }
+}
+
+/// YN-194 (memo item 15): job_budget says what the first Job in the queue
+/// waits for, how much it lacks, and which running Jobs hold that, with when
+/// their timeout ends them and how long earlier runs of them took.
+#[test]
+fn the_budget_names_the_queue_head_what_it_lacks_and_who_holds_it() {
+    let (_dir, ws) = lab();
+    let s = &ws.store;
+    let submit = |request: &str, name: &str, memory: u64| -> Value {
+        let input: Submit = serde_json::from_value(json!({"requestId":request,"taskId":"T-1","name":name,"cwd":"/workspace",
+            "argv":["python3","train.py"],"timeoutSeconds":3600,"resources":{"cpuMillis":1000,"memoryMiB":memory,"swapMiB":0}})).unwrap();
+        s.create_job(Some("a"), input, json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap()
+    };
+    assert!(s.job_budget_view(machine()).unwrap()["queueHead"].is_null(), "nothing queued");
+    // An earlier run of the same Job, measured whole: 3 s of worker wall time.
+    let earlier = submit("earlier", "Train", 4096);
+    s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert!(s.update_job_evidence(earlier["id"].as_str().unwrap(), result(&earlier, "succeeded", 64)).unwrap());
+    // It runs again and holds 4096 MiB of the 8192 MiB budget.
+    let running = submit("running", "Train", 4096);
+    let mut held = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    held["status"] = json!("running");
+    held["startedAt"] = json!("2026-11-16T10:00:00+00:00");
+    super::store::save(&s.db.write().unwrap(), &held).unwrap();
+    // A Windows Job of this PC holds 2112 MiB of the same budget.
+    let windows = submit("windows", "Win", 2048);
+    let mut win = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    win["status"] = json!("running");
+    win["executor"] = json!({"kind": "windows", "machineId": "windows", "machineName": "Windows on this PC"});
+    super::store::save(&s.db.write().unwrap(), &win).unwrap();
+    // The next one needs more than is free: it waits, at the head.
+    let big = submit("big", "Big", 6000);
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none());
+    let head = s.job_budget_view(machine()).unwrap()["queueHead"].clone();
+    assert_eq!((head["jobId"].clone(), head["waits"].as_str()), (big["id"].clone(), Some("memory")), "{head}");
+    assert_eq!(head["need"]["memoryMiB"], 6064);
+    assert_eq!(head["free"]["memoryMiB"], 8192 - 4160 - 2112);
+    assert_eq!(head["short"]["memoryMiB"], 6064 - (8192 - 4160 - 2112));
+    assert!(head["reason"].as_str().unwrap().contains("Waiting for shared RAM reservation"));
+    assert!(head["waitingSince"].is_string());
+    let holder = &head["holders"][0];
+    assert_eq!(holder["jobId"], running["id"]);
+    assert_eq!(holder["typicalSeconds"], 3.0, "the median of earlier measured runs of the same Job");
+    assert_eq!(holder["endsBy"], "2026-11-16T11:00:00+00:00");
+    // The Windows Job holds part of what it lacks: it is named too (review 258e1012).
+    assert_eq!(head["holders"][1]["jobId"], windows["id"], "{head}");
+    assert_eq!(head["holders"].as_array().unwrap().len(), 2);
+    assert!(head["scope"].as_str().unwrap().contains("not a forecast"));
+    // The reason's tail ("… 0 MiB swap may start ahead of it") does not make it a swap wait.
+    assert!(head["reason"].as_str().unwrap().contains("swap may start ahead"), "{head}");
 }

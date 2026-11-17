@@ -39,6 +39,25 @@ fn turns_read() -> u64 {
     record_rows::TURNS_READ.with(|n| n.get())
 }
 
+/// What remote recovery reads every 2 s (YN-198): the same Agents as
+/// `agents`, each as listed, without what `agents` adds to it.
+#[test]
+fn listed_agents_are_the_agents_without_their_lifecycle() {
+    let (_dir, store) = lab();
+    for id in ["a", "b"] {
+        store.insert(&detail(id)).unwrap();
+    }
+    // b an executor, whose lifecycle only `agents` reads.
+    store.db.write().unwrap().execute("INSERT INTO agent_roles(agent_id,kind,created_at,updated_at) VALUES('b','executor','now','now')", []).unwrap();
+    let (all, listed) = (store.agents().unwrap(), store.listed_agents().unwrap());
+    assert!(all[1].executor.is_some() && all[1].kind.as_deref() == Some("executor"));
+    let undecorated: Vec<Value> = all.into_iter().map(|mut a| {
+        (a.project_id, a.kind, a.released_at, a.released_by, a.executor) = (None, None, None, None, None);
+        serde_json::to_value(a).unwrap()
+    }).collect();
+    assert_eq!(undecorated, listed.iter().map(|a| serde_json::to_value(a).unwrap()).collect::<Vec<_>>());
+}
+
 fn planned_items() -> u64 {
     record_rows::PLANNED_ITEMS.with(|n| n.get())
 }
@@ -518,4 +537,37 @@ fn a_change_beside_a_gap_leaves_the_gap_where_its_rows_are() {
     }
     assert_eq!(items[5]["aggregatedOutput"], "edited");
     assert_eq!(items[4000]["id"], "reply");
+}
+
+/// SQLite's plan for `sql` as Core runs it (never ANALYZEd), step by step.
+fn plan(store: &Store, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
+    store.db.read().unwrap().prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap()
+        .query_map(params, |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect()
+}
+
+/// Every event recounts its Agent's unread rows while holding the writer:
+/// through their own index, never every journal row since the review (YN-198).
+#[test]
+fn unread_rows_are_counted_through_their_own_index() {
+    let (_dir, store) = lab();
+    let plan = plan(&store, UNREAD, params!["a", 0]);
+    assert!(plan.iter().any(|step| step.contains("INDEX journal_unread")), "{plan:?}");
+}
+
+/// A Workspace an earlier Core wrote has neither index of YN-198: the first
+/// open builds both, and the next finds them.
+#[test]
+fn a_workspace_from_before_its_indexes_gets_them_when_opened() {
+    let (dir, store) = lab();
+    drop(store);
+    let path = dir.path().join("workspace.sqlite");
+    Connection::open(&path).unwrap().execute_batch("DROP INDEX journal_unread; DROP INDEX local_jobs_reserved").unwrap();
+    let indexes = |store: &Store| -> i64 {
+        store.db.read().unwrap().query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='index'
+            AND name IN ('journal_unread','local_jobs_reserved')", [], |r| r.get(0)).unwrap()
+    };
+    let store = Store::open(&path).unwrap();
+    assert_eq!(indexes(&store), 2);
+    drop(store);
+    assert_eq!(indexes(&Store::open(&path).unwrap()), 2);
 }

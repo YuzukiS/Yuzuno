@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
 import { ImageAttachments } from "../ImageAttachments";
@@ -305,6 +305,9 @@ export function ProjectTalk({
   const [showEarlier, setShowEarlier] = useState(false);
   /** Where to scroll once drawn; `instant` while the page itself scrolls smoothly (a browser runs one smooth scroll at a time). */
   const pending = useRef<{ side: Side; n: number; moved: boolean; instant?: boolean }[]>([]);
+  // Asked for with the changes that draw them, so the scroll below is measured once they are drawn: a card's "See
+  // words" asks from inside an effect, where a scroll read at once would measure the side before it opens (YN-195).
+  const [scrolls, askScroll] = useReducer((n: number) => n + 1, 0);
   const items = useMemo(() => conversation(requests), [requests]);
   const cut = useMemo(() => earlierBefore(requests), [requests]);
   const earlier = items.filter((item) => item.at < cut);
@@ -317,6 +320,7 @@ export function ProjectTalk({
     const moved = !sideOpen(shown, "requests");
     if (moved) changeView("requests");
     pending.current = [{ side: "requests", n, moved }];
+    askScroll();
   }
   /** Shows the user's own words of a request in the conversation, from its title. */
   function showWords(n: number) {
@@ -326,6 +330,7 @@ export function ProjectTalk({
     const moved = !sideOpen(shown, "chat");
     if (moved) changeView("chat");
     pending.current = [{ side: "chat", n, moved }];
+    askScroll();
   }
   /** A card's "See words": the talk brought into view, the request selected with its handoffs open, its words shown. */
   function revealRequest(n: number) {
@@ -369,7 +374,7 @@ export function ProjectTalk({
         settleWhenLanded(target, "data-home-highlight", smooth, "animation");
       }
     });
-  });
+  }, [scrolls]);
   // The conversation opens at its newest, and goes there again after the user's own message.
   const toBottom = useRef(true);
   useLayoutEffect(() => {
@@ -796,6 +801,7 @@ export function ProjectTalk({
                 label={quote ? t.followUpLabel(quote.title) : t.field(projectName)}
                 placeholder={quote ? t.followUpPlaceholder : t.placeholder(projectName)}
                 words={words}
+                oneLine
                 onWords={(next) => write({ text: next.text, blocks: next.blocks, images: next.images, files: next.files })}
                 onSubmit={() => void send()}
                 readOnly={readOnly || blocked}

@@ -29,10 +29,10 @@ pub fn checked<'a>(title: &'a str, body: &'a str) -> Result<(&'a str, &'a str), 
 
 /// Whether a notification goes to the system now. One meant for while the
 /// user looks elsewhere (`when_away`) goes only when the window is not in
-/// front: not focused, or minimized. The page cannot tell this in the
-/// Windows app (a minimized window's page still says it is visible and
-/// focused), so the app decides from its window. One meant also while
-/// looking (a test, a failed backup) always goes.
+/// front: not focused, or minimized. The app decides from its own window.
+/// (In the Windows app a minimized window's page used to say it was visible
+/// and focused; it reads as hidden since YN-199, webview_visibility.rs.)
+/// One meant also while looking (a test, a failed backup) always goes.
 pub fn shown_now(when_away: bool, focused: bool, minimized: bool) -> bool {
     !when_away || !focused || minimized
 }

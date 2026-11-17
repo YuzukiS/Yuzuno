@@ -1,0 +1,39 @@
+/* A machine's Job environment (YN-194), on the Core host's page and an SSH
+   machine's: a label, the field, what Core does with it and a caution.
+   Groups and help text are Settings' own (updates.css). */
+.job-env-settings {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.job-env-label {
+  color: var(--ink);
+  font-weight: 600;
+}
+.job-env-field {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  resize: vertical;
+}
+.job-env-caution {
+  margin: 0;
+  color: var(--warning-ink, var(--ink));
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.job-env-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.job-env-actions:empty {
+  display: none;
+}

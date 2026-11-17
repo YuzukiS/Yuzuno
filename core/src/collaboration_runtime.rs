@@ -316,6 +316,7 @@ impl Workspace {
         }
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
+            let mut last: Option<tokio::time::Instant> = None;
             loop {
                 let Some(ws) = weak.upgrade() else {
                     break;
@@ -326,7 +327,12 @@ impl Workspace {
                     _ = ws.collaboration_wakeup.notified() => {},
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {},
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                // At most one round a second, however many changes wake it
+                // (YN-197, approved with batch A's design): a wake-up meanwhile
+                // is kept by the Notify and starts the next round.
+                let coalesced = tokio::time::Instant::now() + Duration::from_millis(200);
+                tokio::time::sleep_until(last.map_or(coalesced, |at| coalesced.max(at + Duration::from_secs(1)))).await;
+                last = Some(tokio::time::Instant::now());
                 if let Err(error) = ws.deliver_update_notices().await {
                     eprintln!("Update pause delivery: {error:#}");
                 }
@@ -376,12 +382,10 @@ impl Workspace {
             return Ok(());
         };
         // The wake-up snapshot may be old by the time this Agent's gate opens.
-        // Re-read pending mail so an already delivered batch can never ring twice.
-        let Some(batch) =
-            self.stored(|store| store.pending_peer_deliveries()).await?.into_iter().find(|b| {
-                b["agentId"] == id && b["priority"].as_str().unwrap_or("normal") == priority
-            })
-        else {
+        // Re-read pending mail so an already delivered batch can never ring
+        // twice: this Agent's mail alone, not every recipient's (YN-197).
+        let (agent, priority_of) = (id.to_owned(), priority.to_owned());
+        let Some(batch) = self.stored(move |store| store.pending_peer_batch(&agent, &priority_of)).await? else {
             return Ok(());
         };
         let through = batch["throughSeq"]
@@ -434,7 +438,10 @@ impl Workspace {
             PeerDeliveryTarget::Steer(id) | PeerDeliveryTarget::Hook(id) => Some(id.as_str()),
             _ => None,
         };
-        let after = batch["afterSeq"].as_i64().unwrap_or(0);
+        // Where its mail starts, read only now that this wake-up goes out
+        // (YN-197). Had the Agent read it all since, its newest mail is.
+        let (agent, priority_of) = (id.to_owned(), priority.to_owned());
+        let after = self.stored(move |store| store.peer_batch_after(&agent, &priority_of)).await?.unwrap_or(through - 1);
         // Quiet notices never ring; the delivery they come with says so (YN-68).
         let quiet = match batch["quietCount"].as_i64().unwrap_or(0) {
             0 => String::new(),

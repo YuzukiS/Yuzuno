@@ -6,9 +6,22 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
+/// The most live CI targets still waiting for something (YN-193: no run
+/// yet on a current commit, or a run not finished), as before for all of
+/// them, and the most live targets in all. Finished ones are read every
+/// DONE_SECONDS, so 50 waiting at ACTIVE_SECONDS and 50 finished ask the
+/// monitor about 10% more often than 50 waiting did.
+const WAITING_TARGETS: i64 = 50;
+const LIVE_TARGETS: i64 = 100;
 // Monitoring is current local state, separate from GitHub's last run fact.
 // Match any subscriber: another Agent can still be keeping this run fresh.
 const RUN_WATCHED: &str = "EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_watches cw ON cw.id=wr.watch_id JOIN ci_subscriptions cs ON cs.watch_id=cw.id WHERE wr.run_id=r.id AND cw.failures<8 AND cs.active=1 AND cs.expires>strftime('%s','now'))";
+
+/// How many other attempts a failure mail lists, and how many of the newest
+/// recorded failures of the same workflow it looks through (YN-196): a short
+/// mail, and a bounded read inside the mail's transaction.
+const SAME_LISTED: usize = 5;
+const SAME_SCANNED: i64 = 200;
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS ci_watches(id TEXT PRIMARY KEY, next_poll INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL);
@@ -21,7 +34,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS ci_watch_runs(watch_id TEXT NOT NULL REFERENCES ci_watches(id),run_id TEXT NOT NULL REFERENCES ci_runs(id),PRIMARY KEY(watch_id,run_id));
         CREATE TABLE IF NOT EXISTS ci_notifications(subscription_id TEXT NOT NULL REFERENCES ci_subscriptions(id),run_id TEXT NOT NULL REFERENCES ci_runs(id),message_id TEXT NOT NULL,PRIMARY KEY(subscription_id,run_id));
         CREATE TABLE IF NOT EXISTS ci_cache(endpoint TEXT PRIMARY KEY,data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS ci_control(id INTEGER PRIMARY KEY CHECK(id=1),cooldown INTEGER NOT NULL);")?;
+        CREATE TABLE IF NOT EXISTS ci_control(id INTEGER PRIMARY KEY CHECK(id=1),cooldown INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS ci_run_failures(run_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,workflow_id TEXT NOT NULL,data TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS ci_run_failures_workflow ON ci_run_failures(repository_id,workflow_id);")?;
     super::lifecycle::migrate(db)?;
     Ok(())
 }
@@ -37,6 +52,17 @@ fn actor_key(actor: Option<&str>) -> String {
     actor
         .map(|s| format!("agent:{s}"))
         .unwrap_or_else(|| "user".into())
+}
+/// A watch as a reader sees it, but for when it was last tried, when GitHub
+/// last answered and when it is due again: every observation moves those.
+fn untimed(w: &Value) -> Value {
+    let mut w = w.clone();
+    if let Some(fields) = w.as_object_mut() {
+        for key in ["lastAttemptAt", "observedAt", "nextPollAt"] {
+            fields.remove(key);
+        }
+    }
+    w
 }
 fn watch(db: &Connection, id: &str) -> Result<Value> {
     let raw: String = db
@@ -143,8 +169,9 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
         } else {
             run["name"].as_str().unwrap_or("Workflow").to_owned()
         };
+        let same = if run["status"] == "failed" { same_failures(db, &rid)? } else { Vec::new() };
         let body = format!(
-            "GitHub Actions {label}: {} ({}). Run {}, attempt {}, commit {}. Watched commit {} for {}. {} Read ci_get(runKey={rid}) for jobs/steps and native logs/artifacts links. This result does not mean PR merge, review approval, or task completion.",
+            "GitHub Actions {label}: {} ({}). Run {}, attempt {}, commit {}. Watched commit {} for {}. {} Read ci_get(runKey={rid}) for jobs/steps and native logs/artifacts links.{} This result does not mean PR merge, review approval, or task completion.",
             run["status"].as_str().unwrap_or("unknown"),
             run["conclusion"].as_str().unwrap_or("unknown conclusion"),
             run["runId"].as_str().unwrap(),
@@ -152,11 +179,12 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
             run["headSha"].as_str().unwrap(),
             w["expectedSha"].as_str().unwrap(),
             sub["taskRef"].as_str().unwrap(),
-            run["url"].as_str().unwrap()
+            run["url"].as_str().unwrap(),
+            same_text(&same)
         );
         collaboration::insert_message(
             db,
-            json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":sub["agent"],"body":body,"taskId":sub["taskId"],"replyTo":null,"threadId":id,"createdAt":now(),"source":{"ciRunKey":rid,"subscriptionId":sid},"priority":"normal","metadata":{"kind":"ci","name":label,"status":run["status"],"repositoryId":run["repositoryId"],"runId":run["runId"],"attempt":run["attempt"],"headSha":run["headSha"],"expectedSha":w["expectedSha"],"prNumber":if w["kind"]=="pull"{w["number"].clone()}else{Value::Null},"branch":w["branch"],"event":w["event"],"taskId":sub["taskId"],"conclusion":run["conclusion"],"url":run["url"]}}),
+            json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":sub["agent"],"body":body,"taskId":sub["taskId"],"replyTo":null,"threadId":id,"createdAt":now(),"source":{"ciRunKey":rid,"subscriptionId":sid},"priority":"normal","metadata":{"kind":"ci","name":label,"status":run["status"],"repositoryId":run["repositoryId"],"runId":run["runId"],"attempt":run["attempt"],"headSha":run["headSha"],"expectedSha":w["expectedSha"],"prNumber":if w["kind"]=="pull"{w["number"].clone()}else{Value::Null},"branch":w["branch"],"event":w["event"],"taskId":sub["taskId"],"conclusion":run["conclusion"],"url":run["url"],"sameFailure":same}}),
         )?;
         db.execute(
             "INSERT INTO ci_notifications(subscription_id,run_id,message_id) VALUES(?1,?2,?3)",
@@ -166,7 +194,102 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
     Ok(sent)
 }
 
+/// Other attempts of this run's workflow (same repository and workflow), the
+/// most recently recorded first, that failed at a job and step of the same
+/// names (YN-196): at most SAME_LISTED, from the SAME_SCANNED most recently
+/// recorded failed attempts. Only runs Core observed count, and the same names
+/// do not prove the same bug.
+fn same_failures(db: &Connection, rid: &str) -> Result<Vec<Value>> {
+    let mine: Option<(String, String, String)> = db
+        .query_row(
+            "SELECT repository_id,workflow_id,data FROM ci_run_failures WHERE run_id=?1",
+            [rid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((repository, workflow, mine)) = mine else {
+        return Ok(Vec::new());
+    };
+    let mine: Vec<Value> = serde_json::from_str(&mine)?;
+    let mut q = db.prepare("SELECT f.run_id,f.data,r.data FROM ci_run_failures f JOIN ci_runs r ON r.id=f.run_id WHERE f.repository_id=?1 AND f.workflow_id=?2 AND f.run_id<>?3 ORDER BY f.rowid DESC LIMIT ?4")?;
+    let rows = q
+        .query_map(params![repository, workflow, rid, SAME_SCANNED], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut same = Vec::new();
+    for (key, failed, run) in rows {
+        let failed: Vec<Value> = serde_json::from_str(&failed)?;
+        let Some(hit) = failed.iter().find(|f| {
+            mine.iter().any(|m| m["key"] == f["key"] && m["step"] == f["step"])
+        }) else {
+            continue;
+        };
+        let run: Value = serde_json::from_str(&run)?;
+        same.push(json!({"runKey":key,"runId":run["runId"],"attempt":run["attempt"],"branch":run["branch"],"event":run["event"],"at":run["updatedAt"],"job":hit["job"],"step":hit["step"]}));
+        if same.len() == SAME_LISTED {
+            break;
+        }
+    }
+    Ok(same)
+}
+
+/// The mail's sentence about `same_failures`, empty when there are none.
+fn same_text(same: &[Value]) -> String {
+    if same.is_empty() {
+        return String::new();
+    }
+    let runs: Vec<String> = same
+        .iter()
+        .map(|s| {
+            format!(
+                "run {} attempt {} ({} {}, {}) {} > {}",
+                s["runId"].as_str().unwrap_or("?"),
+                s["attempt"].as_str().unwrap_or("?"),
+                s["branch"].as_str().unwrap_or("?"),
+                s["event"].as_str().unwrap_or("?"),
+                s["at"].as_str().unwrap_or("?"),
+                s["job"].as_str().unwrap_or(""),
+                s["step"].as_str().filter(|v| !v.is_empty()).unwrap_or("no failed step")
+            )
+        })
+        .collect();
+    format!(
+        " The same job and step also failed in {} other recent run(s) Core observed: {}. Read them before a rerun: this may be a flaky test or a red main.",
+        same.len(),
+        runs.join("; ")
+    )
+}
+
 impl Store {
+    /// Whether Core already recorded where this failed attempt failed (YN-196).
+    pub(super) fn ci_failures_known(&self, run_key: &str) -> Result<bool> {
+        let db = self.db.read()?;
+        Ok(db
+            .query_row("SELECT 1 FROM ci_run_failures WHERE run_id=?1", [run_key], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+    /// Records where a failed attempt failed: its failed jobs and steps (at most
+    /// 20), maybe none. Once the table holds 10000 attempts nothing more is
+    /// recorded; older rows are not replaced.
+    pub(super) fn ci_record_failures(&self, run: &Value, failed: &[Value]) -> Result<()> {
+        let db = self.db.write()?;
+        let count: i64 = db.query_row("SELECT COUNT(*) FROM ci_run_failures", [], |r| r.get(0))?;
+        if count >= 10000 {
+            return Ok(());
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO ci_run_failures(run_id,repository_id,workflow_id,data) VALUES(?1,?2,?3,?4)",
+            params![
+                run["id"].as_str().context("Missing run key")?,
+                run["repositoryId"].to_string(),
+                run["workflowId"].to_string(),
+                Value::from(failed.to_vec()).to_string()
+            ],
+        )?;
+        Ok(())
+    }
     /// Bounded recovery of committed terminal facts lacking notification receipts.
     /// This also drains large first-subscription batches without holding one huge
     /// mailbox transaction. It runs independently of the next remote poll time.
@@ -243,10 +366,18 @@ impl Store {
             !closed || kind != "pull",
             "Reopen the task to watch a PR candidate; a specific run or commit may still be subscribed for post-merge verification"
         );
-        let active: i64 = tx.query_row(
-            "SELECT COUNT(DISTINCT watch_id) FROM ci_subscriptions WHERE active=1 AND expires>?1",
+        // The live watches, and those of them still waiting for something:
+        // a run not finished, or no run yet on a commit that is still
+        // current (YN-193). A watch whose runs all finished, or an older PR
+        // head with nothing of it still running, is read every five minutes.
+        let (waiting, live): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM ci_watch_runs wr JOIN ci_runs r ON r.id=wr.run_id WHERE wr.watch_id=w.id
+                   AND (json_extract(r.data,'$.rawStatus') IS NOT 'completed' OR json_type(r.data,'$.conclusion') IS NOT 'text'))
+                 OR (NOT EXISTS(SELECT 1 FROM ci_watch_runs wr WHERE wr.watch_id=w.id) AND COALESCE(json_extract(w.data,'$.state'),'')<>'older_commit')),
+               COUNT(*)
+             FROM ci_watches w WHERE EXISTS(SELECT 1 FROM ci_subscriptions s WHERE s.watch_id=w.id AND s.active=1 AND s.expires>?1)",
             [chrono::Utc::now().timestamp()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         // A commit watch is its exact target: commit, branch and event.
         let wid = if kind == "commit" {
@@ -262,8 +393,10 @@ impl Store {
         };
         let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ci_subscriptions WHERE watch_id=?1 AND active=1 AND expires>?2)",params![wid,chrono::Utc::now().timestamp()],|r|r.get(0))?;
         ensure!(
-            existing || active < 50,
-            "At most 50 distinct CI targets can be monitored at once"
+            existing || (waiting < WAITING_TARGETS && live < LIVE_TARGETS),
+            "At most {WAITING_TARGETS} distinct CI targets still waiting for a run to finish (now {waiting}), and {LIVE_TARGETS} in all \
+             (now {live}), can be monitored at once. A target whose runs all finished, or an older PR head with nothing of it \
+             still running, does not count toward the {WAITING_TARGETS}. ci_unsubscribe a subscription you no longer need."
         );
         let mut w = json!({"id":wid,"repositoryId":repo.id,"repository":repo.full_name,"kind":kind,"number":number,"url":input.url,"expectedSha":input.expected_sha,"currentHeadSha":input.expected_sha,"state":"watching","error":null,"observedAt":null,"lastAttemptAt":null,"createdAt":now()});
         if kind == "commit" {
@@ -318,20 +451,38 @@ impl Store {
         tx.commit()?;
         Ok(sub)
     }
+    /// Every subscription in scope, ended ones too, on the first page.
     pub(crate) fn ci_list(
         &self,
         agent: Option<&str>,
         task: Option<&str>,
         before: Option<i64>,
     ) -> Result<Value> {
+        self.ci_list_scoped(agent, task, before, true)
+    }
+    /// Subscriptions do not page with runs, so they come on the first page
+    /// only (no `before`): the active ones, or `all` the newest 200 with
+    /// ended ones (YN-193: every page repeated 200 of them).
+    pub(crate) fn ci_list_scoped(
+        &self,
+        agent: Option<&str>,
+        task: Option<&str>,
+        before: Option<i64>,
+        all: bool,
+    ) -> Result<Value> {
         let db = self.db.read()?;
         let task = task
             .map(|t| collaboration::task_key(&db, t).map(|v| v.0))
             .transpose()?;
-        let mut q=db.prepare("SELECT id FROM ci_subscriptions WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) ORDER BY rowid DESC LIMIT 201")?;
-        let ids = q
-            .query_map(params![agent, task], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let ids = if before.is_some() {
+            Vec::new()
+        } else {
+            let mut q=db.prepare("SELECT id FROM ci_subscriptions WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR task_id=?2) AND (?3 OR (active=1 AND expires>?4)) ORDER BY rowid DESC LIMIT 201")?;
+            let ids = q
+                .query_map(params![agent, task, all, chrono::Utc::now().timestamp()], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            ids
+        };
         let more = ids.len() > 200;
         let subscriptions = ids
             .iter()
@@ -496,10 +647,16 @@ impl Store {
         )?;
         Ok(Some(watch(&db, &id)?))
     }
-    pub(crate) fn ci_observe(&self, id: &str, result: Result<Observed, String>) -> Result<()> {
+    /// Records an observation of watch `id`. Answers whether it changed what
+    /// a reader sees (YN-198): a run new or changed, the watch in anything
+    /// but when it was tried, answered and is due again, or a row its notices
+    /// and lifecycle wrote. Most observations see what the last one saw.
+    pub(crate) fn ci_observe(&self, id: &str, result: Result<Observed, String>) -> Result<bool> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut w = watch(&tx, id)?;
+        let before = untimed(&w);
+        let mut runs_changed = false;
         let mut failures: i64 =
             tx.query_row("SELECT failures FROM ci_watches WHERE id=?1", [id], |r| {
                 r.get(0)
@@ -579,6 +736,9 @@ impl Store {
                     "older_commit"
                 } else if w["kind"] == "commit" && linked == 0 {
                     "waiting_for_run"
+                } else if w["kind"] == "pull" && linked == 0 && super::lifecycle::conflicting(&w["currentPr"]) {
+                    // No run will come for this head (YN-193).
+                    "conflicting"
                 } else {
                     "watching"
                 });
@@ -599,9 +759,16 @@ impl Store {
                 w["error"] = Value::Null;
                 w["truncated"] = json!(truncated);
                 failures = 0;
-                if w["state"] == "waiting_for_run" {
+                runs_changed = changed;
+                // A conflicting head waits for the conflict to be resolved
+                // as a commit waits for its first run: read less often.
+                if w["state"] == "waiting_for_run" || w["state"] == "conflicting" {
                     waiting_seconds(&tx, &w)?
                 } else if !runs.is_empty() && runs.iter().all(|r| r["rawStatus"] == "completed") {
+                    DONE_SECONDS
+                } else if w["state"] == "older_commit" && runs.iter().all(|r| r["rawStatus"] == "completed") {
+                    // The PR moved on to a newer head and nothing of this
+                    // one runs: no new CI comes for it (YN-193).
                     DONE_SECONDS
                 } else {
                     ACTIVE_SECONDS
@@ -634,10 +801,15 @@ impl Store {
             "UPDATE ci_watches SET next_poll=?2,failures=?3,data=?4 WHERE id=?1",
             params![id, due, failures, w.to_string()],
         )?;
+        let written = tx.total_changes();
         notify(&tx, id)?;
+        if w["state"] == "conflicting" {
+            super::lifecycle::conflict_notice(&tx, &w)?;
+        }
         super::lifecycle::reconcile(&tx, None)?;
+        let followed = tx.total_changes() != written;
         tx.commit()?;
-        Ok(())
+        Ok(runs_changed || followed || untimed(&w) != before)
     }
     pub(super) fn ci_unfinished(&self, id: &str) -> Result<Vec<Value>> {
         let db = self.db.read()?;

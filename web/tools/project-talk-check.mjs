@@ -140,6 +140,8 @@ const waiting = () => [
     lines: [{ kind: "done", task: "YN-94", status: "done", at: at(33), cardSectionId: 395, title: "导出 Markdown" }] },
 ];
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
+// An 8×8 sage square, the thumbnail of the image a draft below has attached (YN-202).
+const THUMB = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4cX0HVsQwtCQAhy6Vwe97qKgAAAAASUVORK5CYII=", "base64");
 const words = {
   en: { requests: "Requests", both: "Both", chat: "Conversation", request: "Request →" },
   "zh-Hans": { requests: "需求单", both: "两者", chat: "对话", request: "需求单 →" },
@@ -215,6 +217,8 @@ async function check(run) {
       "/api/machine-live": { machines: [] },
     }[path];
     if (json) return route.fulfill({ json });
+    // The thumbnails of the image a draft below keeps (YN-202): a read, with nothing saved.
+    if (/^\/api\/projects\/p-dev\/images\/[a-f0-9]{64}\.png$/.test(path)) return route.fulfill({ body: THUMB, contentType: "image/png" });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     assert.ok(file.startsWith(dist + "/"));
@@ -315,6 +319,95 @@ async function check(run) {
     if (run.viewport.width === 1440) assert.ok(fit.rows.every((r) => !r.twoLines), "a wide requests side keeps card rows on one line");
     await shot("talk");
     pass("the first view, its tabs, and nothing wider than its column", { view, tabs, widths: fit });
+
+    // YN-202: the field to the project is one line while it is empty, as the
+    // conversation's composer, with "+" on that line; a word keeps it a line,
+    // text that wraps puts it above its tools, and so does an image attached.
+    {
+      if (narrow) await tab(w.chat).click();
+      await settled();
+      const fieldBox = ".project-talk-field .home-composer";
+      const measureField = (sel) => {
+        const box = document.querySelector(sel);
+        const at = box.getBoundingClientRect();
+        const tool = box.querySelector(".home-composer-tools")?.getBoundingClientRect();
+        const text = box.querySelector(".cm-content").getBoundingClientRect();
+        const send = document.querySelector(".project-talk-send").getBoundingClientRect();
+        const images = box.querySelector(".input-images")?.getBoundingClientRect();
+        const line = Number.parseFloat(getComputedStyle(box.querySelector(".cm-line") ?? box).lineHeight) || 20;
+        return { shape: box.dataset.shape, height: Math.round(at.height * 10) / 10, line,
+          tool: tool && { right: Math.round(tool.right), top: Math.round(tool.top), bottom: Math.round(tool.bottom) },
+          text: { left: Math.round(text.left), top: Math.round(text.top), bottom: Math.round(text.bottom) },
+          sendUnder: Math.round(at.bottom - send.bottom), images: images ? Math.round(images.height) : 0 };
+      };
+      const composer = (target = page) => target.evaluate(measureField, fieldBox);
+      const shaped = (shape) => page.waitForFunction(([sel, shape]) => document.querySelector(sel)?.dataset.shape === shape, [fieldBox, shape], { timeout: 5000 });
+      const compose = page.locator(".project-talk-compose");
+      await shaped("line");
+      let field = await composer();
+      // One row of text beside "+", however tall a touch screen's "+" is; a block stacks them.
+      const oneRow = (f) => f.tool && f.height < f.line + (f.tool.bottom - f.tool.top) && f.text.bottom > f.tool.top + 1;
+      assert.ok(oneRow(field), `the empty field is one row high: ${JSON.stringify(field)}`);
+      assert.ok(field.tool.right <= field.text.left && field.tool.bottom <= field.text.bottom + 1, `"+" is on the field's line: ${JSON.stringify(field)}`);
+      assert.ok(field.sendUnder <= 1, `Send meets the field's bottom edge: ${JSON.stringify(field)}`);
+      await shot("composer-empty", compose);
+      pass("the field to the project is one line, \"+\" on it, while empty", field);
+
+      await page.locator(".project-talk-field .cm-content").click();
+      await page.keyboard.insertText("Export CSV");
+      await page.waitForFunction(() => document.querySelector(".project-talk-field .cm-content").textContent.includes("Export CSV"), null, { timeout: 5000 });
+      await shaped("line");
+      field = await composer();
+      assert.ok(oneRow(field), `a word keeps the field one row high: ${JSON.stringify(field)}`);
+      await shot("composer-line", compose);
+
+      await page.keyboard.insertText(" and keep the headings, the table and every code block as they are, please".repeat(3));
+      await shaped("block");
+      field = await composer();
+      assert.ok(field.height > 2 * field.line && field.tool.top >= field.text.bottom - 1, `text that wraps goes above the tools: ${JSON.stringify(field)}`);
+      await shot("composer-wrapped", compose);
+      pass("a word keeps the field a line; text that wraps puts it above its tools", field);
+
+      // Cleared, it goes back to one line (its placeholder is part of the line, so not its text).
+      await page.keyboard.press("Control+A");
+      await page.keyboard.press("Backspace");
+      await page.waitForFunction(() => {
+        const content = document.querySelector(".project-talk-field .cm-content");
+        return !content.textContent.replace(content.querySelector(".cm-placeholder")?.textContent ?? "", "").trim();
+      }, null, { timeout: 5000 });
+      await shaped("line");
+      assert.ok(oneRow(await composer()), "cleared, the field is one row again");
+
+      // An image attached: a page of its own, which keeps that draft from its
+      // first paint (nothing is saved), so the text sits above its thumbnail
+      // and its tools. A phone's own reload would come back on its list.
+      const attachedPage = await context.newPage();
+      attachedPage.on("pageerror", (error) => report.errors.push(`${run.name}: ${error.message}`));
+      await attachedPage.addInitScript(([id, name]) => {
+        localStorage.setItem("yuzuno.project-talk-drafts.v1", JSON.stringify({
+          [JSON.stringify(["ws-talk", "p-dev", "request"])]: { text: "", at: new Date().toISOString(), images: [{ id, agentId: "", name, bytes: 1024, width: 8, height: 8 }] },
+        }));
+      }, [`${"a".repeat(64)}.png`, "plan.png"]);
+      try {
+        await attachedPage.goto(`http://${HOST}/#/home?w=ws-talk&p=p-dev`);
+        await attachedPage.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
+        await attachedPage.locator('.request-card[data-request="5"]').waitFor({ state: "attached", timeout: 15_000 });
+        await attachedPage.locator(".project-talk").scrollIntoViewIfNeeded();
+        if (narrow) await attachedPage.locator('.project-talk-tabs [data-tab="chat"]').click();
+        await attachedPage.waitForFunction((sel) => document.querySelector(sel)?.dataset.shape === "block", fieldBox, { timeout: 5000 });
+        const attached = await composer(attachedPage);
+        assert.ok(attached.images > 0 && attached.tool.top >= attached.text.bottom - 1, `an image puts the text above its tools: ${JSON.stringify(attached)}`);
+        const file = `${run.name}-composer-attached.png`;
+        await attachedPage.locator(".project-talk-compose").screenshot({ path: join(output, file) });
+        result.shots.push(file);
+        pass("an image attached puts the text above its tools", attached);
+      } finally {
+        await attachedPage.evaluate(() => localStorage.removeItem("yuzuno.project-talk-drafts.v1")).catch(() => {});
+        await attachedPage.close();
+        if (narrow) await tab(w.requests).click();
+        await settled();
+      }
+    }
 
     if (!narrow) {
       // A side chosen fills the width, the other inert; its columns move over --motion-medium, or not with reduced motion.

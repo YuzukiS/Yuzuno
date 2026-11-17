@@ -467,13 +467,13 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         def(
             "merge_get",
-            "Read one merge entry, by entryId or a task's newest: its state (queued, waiting, ready, merging, merged, done, stopped, cancelled), reason, release, batch, merge and its follow-up, history and evidence record. Your default view \"summary\" leaves out lastEvidence (the last check as Core read it) and the evidence fields that repeat the entry, and keeps the newest 10 history steps (historyCount says how many there are); view \"full\" is the whole record. The merge writes answer with the same summary.",
+            "Read one merge entry, by entryId or a task's newest: its state (queued, waiting, ready, merging, merged, done, stopped, cancelled), reason, blocker, release, batch, merge and its follow-up, history and evidence record. blocker says what holds it now: code queue_paused (with the pause's reason and since), queue_off, waiting (with detail and since) or the reason it stopped; absent once it merges, ends or is cancelled. Your default view \"summary\" leaves out lastEvidence (the last check as Core read it) and the evidence fields that repeat the entry, and keeps the newest 10 history steps (historyCount says how many there are); view \"full\" is the whole record. The merge writes answer with the same summary.",
             json!({"entryId":text,"taskId":task,"view":{"type":"string","enum":["summary","full"]}}),
             &[],
         ),
         def(
             "merge_list",
-            "List merge entries newest first, optionally for one repository, state or task: 20 a page unless you give limit (up to 50); pass nextBefore as before while hasMore. Each row is the entry, PR, head, state, reason and detail, times and its merge (sha, mergedAt, mainCi); merge_get reads one entry, and view \"full\" lists each as stored without its history and lastEvidence.",
+            "List merge entries newest first, optionally for one repository, state or task: 20 a page unless you give limit (up to 50); pass nextBefore as before while hasMore. Each row is the entry, PR, head, state, reason and detail, blocker (as merge_get), times and its merge (sha, mergedAt, mainCi); merge_get reads one entry, and view \"full\" lists each as stored without its history and lastEvidence.",
             json!({"taskId":task,"repositoryId":{"type":"integer","minimum":1},"state":{"type":"string","enum":["queued","waiting","ready","merging","merged","done","stopped","cancelled"]},
                 "limit":{"type":"integer","minimum":1,"maximum":50},"before":{"type":"integer","description":"The previous page's nextBefore."},
                 "view":{"type":"string","enum":["summary","full"]}}),

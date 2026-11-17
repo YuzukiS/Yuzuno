@@ -189,16 +189,52 @@ fn archive_closed(store: &Store, agent: &str, by: &str) -> Result<bool> {
     Ok(archived)
 }
 
-/// The executors of `task` (its internal ID) not yet released.
+/// The executors `task` (its internal ID) releases when it is set done, not
+/// yet released: the ones made for it and the executor it is assigned to now,
+/// except one that is still the assignee of another task that has not ended,
+/// where its dispatcher sent it on (YN-192: its role keeps the task it was
+/// made for, and a dispatch to it changes only the task's assignee).
 fn executors_of(db: &Connection, task: &str) -> Result<Vec<String>> {
-    let mut query = db.prepare("SELECT agent_id FROM agent_roles WHERE kind='executor' AND task_id=?1 AND archived_at IS NULL")?;
-    let rows = query.query_map([task], |r| r.get(0))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut query = db.prepare(
+        "SELECT agent_id FROM agent_roles WHERE kind='executor' AND archived_at IS NULL AND (task_id=?1
+         OR agent_id=(SELECT json_extract(data,'$.assigneeAgentId') FROM collaboration_tasks WHERE id=?1))",
+    )?;
+    let rows = query.query_map([task], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for agent in rows {
+        match working_elsewhere(db, &agent, task)? {
+            Some(other) => eprintln!("[executor] kept with its task done: {agent} still works on {other}"),
+            None => out.push(agent),
+        }
+    }
+    Ok(out)
+}
+
+/// Another task than `task`, not done, cancelled or archived, whose assignee
+/// `agent` is: as its receipts name it.
+pub(crate) fn working_elsewhere(db: &Connection, agent: &str, task: &str) -> Result<Option<String>> {
+    let other: Option<String> = db
+        .query_row(
+            "SELECT id FROM collaboration_tasks WHERE id<>?2 AND json_extract(data,'$.assigneeAgentId')=?1
+             AND json_extract(data,'$.status') NOT IN ('done','cancelled') AND json_extract(data,'$.archivedAt') IS NULL
+             ORDER BY seq LIMIT 1",
+            params![agent, task],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(other.map(|id| crate::collaboration_store::task_shown(db, &id)))
 }
 
 impl Workspace {
     /// `executor_release` by the Agent `actor`, or by the user (None).
     pub(crate) async fn release_executor(self: &Arc<Self>, actor: Option<&str>, id: &str) -> Result<Value> {
+        self.release_for(actor, id, None).await
+    }
+
+    /// `executor_release`, or with `done` (that task's internal ID) the
+    /// release its done sets off, by the same rule, begun only in the write
+    /// that finds the executor working on no other task (YN-192).
+    async fn release_for(self: &Arc<Self>, actor: Option<&str>, id: &str, done: Option<&str>) -> Result<Value> {
         // Refused while an update drains, as Close is.
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
@@ -208,9 +244,15 @@ impl Workspace {
         if released.is_none() {
             // Archiving first (T-36): its CI watches stop and it starts
             // nothing new; it is closed once nothing of its is still going.
-            let (agent, releaser) = (id.to_owned(), by.clone());
-            if self.stored(move |store| crate::executor_archiving::begin(store, &agent, &releaser)).await? {
-                self.executor_changed(id);
+            let (agent, releaser, done) = (id.to_owned(), by.clone(), done.map(str::to_owned));
+            let begun = self.stored(move |store| match done.as_deref() {
+                None => crate::executor_archiving::begin(store, &agent, &releaser).map(Ok),
+                Some(task) => crate::executor_archiving::begin_on_done(store, &agent, &releaser, task),
+            }).await?;
+            match begun {
+                Err(other) => bail!("it still works on {other}, a task that has not ended"),
+                Ok(true) => self.executor_changed(id),
+                Ok(false) => {}
             }
             // Whoever asks again, the release is the first releaser's.
             let agent = id.to_owned();
@@ -251,16 +293,21 @@ impl Workspace {
     }
 
     /// The task `task` (as its receipt names it) was set done by `actor`:
-    /// each of its executors not yet released is released, by the same rule
-    /// as `executor_release` (T-36). One `actor` may not release keeps on.
+    /// each of its executors (`executors_of`: not one sent on to another open
+    /// task) is released, by the same rule as `executor_release` (T-36). One
+    /// `actor` may not release keeps on.
     pub(crate) async fn release_on_done(self: &Arc<Self>, actor: Option<String>, task: String) {
         let found = self.stored(move |store| {
             let db = store.db.read()?;
             let (internal, _) = crate::collaboration_store::task_key(&db, &task)?;
-            executors_of(&db, &internal)
+            Ok((executors_of(&db, &internal)?, internal))
         }).await;
-        for agent in found.unwrap_or_default() {
-            if let Err(error) = self.release_executor(actor.as_deref(), &agent).await {
+        let Ok((found, internal)) = found else { return };
+        // A test's dispatch lands here, after the read and before the release (YN-192).
+        #[cfg(test)]
+        crate::executor_archiving::tests::after_candidates(&internal);
+        for agent in found {
+            if let Err(error) = self.release_for(actor.as_deref(), &agent, Some(&internal)).await {
                 eprintln!("[executor] not released with its task done: {agent}: {error:#}");
             }
         }

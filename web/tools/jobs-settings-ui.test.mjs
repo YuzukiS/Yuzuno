@@ -69,6 +69,7 @@ const GIB = 1073741824;
  * the next refusal queued, if any. */
 function fixtureCore({ old = false, activeCount = 1, cpuMaxMillis = 4096000 } = {}) {
   const state = {
+    env: {},
     budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 },
     maxActive: null,
     reserveGiB: null,
@@ -121,6 +122,16 @@ function fixtureCore({ old = false, activeCount = 1, cpuMaxMillis = 4096000 } = 
     if (url === "/api/jobs/disk") {
       state.reserveGiB = body.reserveGiB;
       return [200, { reserveGiB: body.reserveGiB }];
+    }
+    // Each machine's Job environment (YN-194): saved whole, an empty one clears.
+    if (url === "/api/jobs/machine-env") {
+      if (method === "GET") {
+        const machines = Object.fromEntries(Object.entries(state.env).map(([m, env]) => [m, { env: Object.fromEntries(Object.entries(env).sort()), updatedAt: "2026-11-16T20:00:00Z" }]));
+        return [200, { machines, defaults: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" } }];
+      }
+      if (Object.keys(body.env).length) state.env[body.machine] = body.env;
+      else delete state.env[body.machine];
+      return [200, { machine: body.machine, env: body.env }];
     }
     if (url === "/api/jobs/windows") {
       state.windows = body.maxJobs;
@@ -516,6 +527,49 @@ test("a budget slider ends at Core's bound where that is below the host, and a d
   } finally { p.close(); }
 });
 
+// YN-194: each machine's Job environment, as the user writes it; Core
+// guesses nothing. This host's and Windows' blocks are on the Core host page.
+test("this host's and Windows' Job environment are read, refused for a bad line before Core, and saved whole", async () => {
+  const core = fixtureCore();
+  core.state.env = { windows: { CARGO_HOME: "C:\\Users\\example\\.cargo" } };
+  const p = mount(core);
+  const field = (group) => group.querySelector("textarea");
+  const write = async (el, value) => {
+    Object.getOwnPropertyDescriptor(p.window.HTMLTextAreaElement.prototype, "value").set.call(el, value);
+    el.dispatchEvent(new p.window.Event("input", { bubbles: true }));
+    await pause();
+  };
+  try {
+    p.window.renderHost();
+    await until(() => p.group("Job environment")?.querySelector("textarea"), "this host's Job environment is read");
+    const host = p.group("Job environment");
+    const windows = p.group("Windows Job environment");
+    await until(() => field(windows)?.value, "Windows' is read");
+    assert.equal(field(host).value, "", "nothing saved: empty, Jobs as they are");
+    assert.equal(field(windows).value, "CARGO_HOME=C:\\Users\\example\\.cargo");
+    assert.match(text(host), /PATH=\/usr\/local\/bin:\/usr\/bin:\/bin and LANG=C\.UTF-8/, "Core's defaults are said as Core gave them");
+    assert.match(text(host), /never put a key or token here/);
+    assert.match(text(windows), /Windows' own environment is kept/);
+    await write(field(host), "HOME=/home/example\nnot a variable");
+    button(host, "Save").click();
+    await until(() => alert(host), "a bad line is refused here");
+    assert.match(alert(host), /Line 2 is not NAME=value/);
+    assert.equal(p.posts("/api/jobs/machine-env").length, 0, "nothing is sent");
+    await write(field(host), "HOME=/home/example\n\nPATH=/home/example/.cargo/bin:/usr/bin:/bin\nOPTS=a=b");
+    button(host, "Save").click();
+    await until(() => p.posts("/api/jobs/machine-env").length === 1, "the setting is saved");
+    assert.deepEqual(p.posts("/api/jobs/machine-env")[0].body, { machine: "local",
+      env: { HOME: "/home/example", PATH: "/home/example/.cargo/bin:/usr/bin:/bin", OPTS: "a=b" } }, "saved whole, the value after the first =");
+    await until(() => /Jobs created from now on get it/.test(text(host)), "it says only new Jobs get it");
+    assert.equal(field(host).value, "HOME=/home/example\nOPTS=a=b\nPATH=/home/example/.cargo/bin:/usr/bin:/bin", "read back as Core keeps it");
+    await write(field(windows), "");
+    button(windows, "Save").click();
+    await until(() => p.posts("/api/jobs/machine-env").length === 2, "Windows' is cleared");
+    assert.deepEqual(p.posts("/api/jobs/machine-env")[1].body, { machine: "windows", env: {} });
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test("in Chinese the Core host editor reads in Chinese, with names and Core words as they came", async () => {
   const p = mount(fixtureCore(), { language: "zh-Hans" });
   try {
@@ -529,5 +583,7 @@ test("in Chinese the Core host editor reads in Chinese, with names and Core word
     assert.equal(now(form), "当前生效：同时最多 4 个（默认）。", "what is in effect is said in Chinese");
     assert.match(text(section), /WSL/, "the machine name stays as it came");
     assert.match(text(p.group("磁盘保留")), /10 GiB, or a tenth of a filesystem smaller than 100 GiB/, "Core rule stays as it came");
+    await until(() => p.group("Job 环境")?.querySelector("textarea"), "the Job environment reads in Chinese");
+    assert.match(text(p.group("Job 环境")), /不要放密钥或令牌/);
   } finally { p.close(); }
 });
