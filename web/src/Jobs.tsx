@@ -725,6 +725,22 @@ export function Jobs({
           throw new Error(en.updatedCore);
         row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
         setPage((old) => {
+          if (paged) {
+            // An Earlier page only adds the history it alone has: rows
+            // already on screen, active or finished, stay as the live reads
+            // show them, and a page row never overwrites one of them. Its own
+            // page carries the cursor.
+            const shownIds = new Set(old.jobs.map((j) => j.id));
+            const older = [...next.jobs, ...(next.liveJobs || [])].filter(
+              (j) => !active(j) && !shownIds.has(j.id),
+            );
+            const jobs = [...old.jobs, ...older];
+            jobs.sort(
+              (a, b) =>
+                Number(active(b)) - Number(active(a)) || b.cursor - a.cursor,
+            );
+            return { ...next, jobs, liveJobs: old.liveJobs, hasMore: next.hasMore, nextBefore: next.nextBefore };
+          }
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
             ...retained,

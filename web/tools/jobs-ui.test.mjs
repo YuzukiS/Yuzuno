@@ -237,6 +237,47 @@ test('an Earlier page still appears when a poll read that started after it answe
   } finally { p.close(); }
 });
 
+// R-18 #4 / YN-210 (Lead, review 2 P2): an "Earlier" page is a snapshot from
+// before the live reads. It may only add history the list does not show;
+// a row already shown (finished or active) stays as the live reads show it,
+// and a live active row is not dropped.
+test('an Earlier page adds only older history and never overwrites or drops what is live', async () => {
+  const at = new Date().toISOString();
+  const runningA = { ...job, id: 'job-a', name: 'job A', cursor: 10, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  const doneA = { ...runningA, status: 'succeeded', reserved: false, finishedAt: at };
+  const activeB = { ...job, id: 'job-b', name: 'job B', cursor: 9, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  const oldC = { ...job, id: 'job-c', name: 'older job C', cursor: 2, status: 'succeeded', reserved: false, finishedAt: at };
+  const rowText = name => [...p.doc.querySelectorAll('.job-row')].find(row => row.textContent.includes(name))?.textContent || '';
+  let live = 'initial';
+  const frozen = new Promise(() => {});
+  const p = mount(async url => {
+    if (url.includes('before=5')) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      // The snapshot this page was read from: A was still running.
+      return { jobs: [oldC, runningA], hasMore: false, nextBefore: null };
+    }
+    // One live read after the click, then none: what the older page writes
+    // last stays on screen for the assertion.
+    if (live === 'initial') return { jobs: [runningA], hasMore: true, nextBefore: 5 };
+    if (live === 'fresh') {
+      live = 'frozen';
+      return { jobs: [doneA], liveJobs: [activeB], hasMore: true, nextBefore: 5 };
+    }
+    return frozen;
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => rowText('job A').includes('Running'));
+    button(p, 'Earlier jobs').click();
+    live = 'fresh';
+    await until(() => rowText('job A').includes('Completed'));
+    await until(() => rowText('older job C'));
+    assert.match(rowText('job A'), /Completed/, 'the older page does not put A back to running');
+    assert.ok(rowText('job B'), 'the live active job stays');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // T-60: a finished job's details and output no longer change. Read once it
 // is seen finished; again only once the list shows it changed (a new
 // attempt), or on Refresh. The list goes on being read.
