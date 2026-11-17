@@ -223,6 +223,13 @@ pub async fn call(
     if let Some(job) = ws.pr_reviews.jobs.lock().unwrap().get(&id) {
         requested = job.send(true).is_ok();
     }
+    // A queued round nothing waits for any more is ended here (YN-192).
+    if !requested && run["status"] == "queued" {
+        let key = id.clone();
+        ws.stored(move |s| s.cancel_queued_pr_review(&key)).await?;
+        announce(&ws);
+        requested = true;
+    }
     Ok(json!({"id":id,"reviewId":id,"status":run["status"],"cancellationRequested":requested}))
 }
 
@@ -282,46 +289,74 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> 
 /// A round both review slots were taken for (YN-192) waits for one, then
 /// starts as `launch` starts one, with the base and head it was asked for.
 /// Cancelled meanwhile, it ends without starting and counts toward no round
-/// limit. An update that drains Core leaves it queued, for the next start
-/// (`start_review_queue`).
+/// limit. While an update drains Core it gives its slot back and waits,
+/// still cancellable, until admission reopens (an update cancelled) or the
+/// next start resumes it (`start_review_queue`).
 fn wait_for_slot(ws: Arc<Workspace>, id: String) {
     let (tx, mut cancellation) = watch::channel(false);
     ws.pr_reviews.jobs.lock().unwrap().insert(id.clone(), tx);
+    let gate = ws.admission.clone();
     tokio::spawn(async move {
-        let slot = tokio::select! {
-            biased;
-            _ = cancellation.changed() => None,
-            slot = ws.pr_reviews.slots.clone().acquire_owned() => slot.ok(),
-        };
-        if *cancellation.borrow() {
-            let key = id.clone();
-            if let Err(error) = ws.stored(move |s| s.cancel_queued_pr_review(&key)).await {
-                eprintln!("Review {id} could not be cancelled in its queue: {error:#}");
-            }
-            announce(&ws);
-            ws.pr_reviews.jobs.lock().unwrap().remove(&id);
-            return;
-        }
-        let (Some(slot), Ok(admission)) = (slot, ws.admission.enter_work()) else {
-            ws.pr_reviews.jobs.lock().unwrap().remove(&id);
-            return;
-        };
-        let key = id.clone();
-        match ws.stored(move |s| s.dequeue_pr_review(&key)).await {
-            Ok(Some(run)) => {
-                announce(&ws);
-                let base = run["requestedBaseSha"].as_str().map(str::to_owned);
-                let head = run["requestedHeadSha"].as_str().map(str::to_owned);
-                spawn(ws, admission, slot, id, run, base, head, None, Some(cancellation));
-            }
-            ended => {
-                if let Err(error) = ended {
-                    eprintln!("Review {id} could not leave its queue: {error:#}");
+        loop {
+            // A change of admission, armed before it is read: a drain's end.
+            let reopened = gate.changed.notified();
+            tokio::pin!(reopened);
+            reopened.as_mut().enable();
+            let slot = if *cancellation.borrow() {
+                None
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.changed() => None,
+                    slot = ws.pr_reviews.slots.clone().acquire_owned() => slot.ok(),
                 }
-                ws.pr_reviews.jobs.lock().unwrap().remove(&id);
+            };
+            if *cancellation.borrow() {
+                end_queued(&ws, &id).await;
+                return;
+            }
+            let Some(slot) = slot else { break };
+            let Ok(admission) = gate.enter_work() else {
+                drop(slot);
+                tokio::select! {
+                    biased;
+                    _ = cancellation.changed() => {}
+                    _ = &mut reopened => {}
+                }
+                continue;
+            };
+            let key = id.clone();
+            match ws.stored(move |s| s.dequeue_pr_review(&key)).await {
+                Ok(Some(run)) => {
+                    announce(&ws);
+                    let base = run["requestedBaseSha"].as_str().map(str::to_owned);
+                    let head = run["requestedHeadSha"].as_str().map(str::to_owned);
+                    spawn(ws, admission, slot, id, run, base, head, None, Some(cancellation));
+                    return;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    // It stays queued and cancellable; the next start tries again.
+                    eprintln!("Review {id} could not leave its queue: {error:#}");
+                    drop((slot, admission));
+                    let _ = cancellation.changed().await;
+                    end_queued(&ws, &id).await;
+                    return;
+                }
             }
         }
+        ws.pr_reviews.jobs.lock().unwrap().remove(&id);
     });
+}
+
+/// A queued round cancelled before it started ends so, and its waiter with it.
+async fn end_queued(ws: &Arc<Workspace>, id: &str) {
+    let key = id.to_owned();
+    if let Err(error) = ws.stored(move |s| s.cancel_queued_pr_review(&key)).await {
+        eprintln!("Review {id} could not be cancelled in its queue: {error:#}");
+    }
+    announce(ws);
+    ws.pr_reviews.jobs.lock().unwrap().remove(id);
 }
 
 impl Workspace {

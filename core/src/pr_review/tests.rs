@@ -1495,3 +1495,39 @@ fn a_queued_round_survives_a_restart_to_wait_again() {
     assert_eq!(started["status"], "preparing");
     assert!(s.dequeue_pr_review("queued").unwrap().is_none(), "it leaves the queue once");
 }
+
+/// YN-192 (20), R1 7c713564: a round whose slot frees while an update drains
+/// Core gives the slot back and waits on, still cancellable, and starts once
+/// the update is cancelled and admission reopens.
+#[tokio::test]
+async fn a_queued_round_waits_through_an_update_drain_and_starts_when_it_reopens() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let queued = ws.collaboration_call(None, "review_start", json!({"requestId":"r1","taskId":task,"linkId":"7:pull:1"})).await.unwrap();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    ws.admission.begin_drain("update-1").unwrap();
+    drop(held);
+    // Its waiter gets a slot, can't enter while Core drains, and gives it back.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(ws.store.pr_review_report(&task, &id).unwrap()["status"], "queued");
+    assert!(ws.pr_reviews.jobs.lock().unwrap().contains_key(&id), "still waiting, so a cancel reaches it");
+    assert_eq!(ws.pr_reviews.slots.available_permits(), 2, "the slot went back");
+    ws.admission.reopen("update-1").unwrap();
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert!(run["queue"]["startedAt"].is_string(), "it started once admission reopened: {run}");
+}
+
+/// YN-192 (20), R1 7c713564: review_cancel ends a queued round nothing waits
+/// for any more, as one cancelled in its queue.
+#[tokio::test]
+async fn review_cancel_ends_a_queued_round_whose_waiter_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "orphan"), "orphan").unwrap();
+    ws.store.queue_pr_review("orphan").unwrap();
+    let cancel = ws.collaboration_call(None, "review_cancel", json!({"taskId":task,"reviewId":"orphan"})).await.unwrap();
+    assert_eq!(cancel["cancellationRequested"], true, "{cancel}");
+    let run = ws.store.pr_review_report(&task, "orphan").unwrap();
+    assert_eq!((run["status"].as_str(), run["roundLimit"]["counts"].as_bool()), (Some("cancelled"), Some(false)), "{run}");
+}
