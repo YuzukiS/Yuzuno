@@ -51,6 +51,10 @@ pub const TOOL: &str = "result_publish";
 const DEADLINE: Duration = Duration::from_secs(10);
 /// Calls queued for the one validator before more are turned away.
 const MAX_WAITING: usize = 8;
+/// What the card faces of one brief_update wait for, all together (YN-209):
+/// the validator's lock and every face. A face only tells the Agent how its
+/// card shows; it never holds up an update for more than this.
+const CARD_BUDGET: Duration = Duration::from_secs(2);
 /// One request line. MCP bodies are at most 128 KiB, so a submission that
 /// arrived always fits; the contract's own limit is far below.
 const MAX_REQUEST: usize = 192 * 1024;
@@ -248,6 +252,17 @@ pub(crate) enum Checked {
     Accepted { spec: Value, defaults: Value, schema_version: u64 },
     Rejected { problems: Value },
     Answers { text: String },
+}
+
+/// The card faces of one brief_update (YN-209), as many as came within
+/// CARD_BUDGET, in the order asked: each a face, or null for an Ask.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BriefCards {
+    pub cards: Vec<Value>,
+    /// What the validator tells with them (card-face.ts FACE_NOTE).
+    pub note: Option<String>,
+    /// Why the rest were not told, when some were not.
+    pub missing: Option<String>,
 }
 
 /// One stateless Node process per Core, started on first use. A failure,
@@ -461,6 +476,55 @@ impl Validator {
         drop(process);
         self.stop_when_idle();
         answer
+    }
+}
+
+impl Validator {
+    /// The card faces of sections Core accepted (YN-209), read by Home's own
+    /// rules: one wait for the whole batch. A validator others are queued
+    /// for is not waited for (checks come first), nor one busier or slower
+    /// than CARD_BUDGET: what has not come is left out, with why, and never
+    /// fails the update. Nothing is asked for an empty batch.
+    pub(crate) async fn brief_cards(self: &Arc<Self>, requests: Vec<Value>) -> BriefCards {
+        let mut told = BriefCards::default();
+        if requests.is_empty() {
+            return told;
+        }
+        if self.waiting.load(Ordering::SeqCst) > 0 {
+            told.missing = Some("the validator was busy with other checks".into());
+            return told;
+        }
+        let deadline = Instant::now() + CARD_BUDGET;
+        let Ok(mut process) = tokio::time::timeout_at(deadline, self.process.lock()).await else {
+            told.missing = Some(format!("the validator was busy for {} s", CARD_BUDGET.as_secs()));
+            return told;
+        };
+        for mut request in requests {
+            request["op"] = json!("briefCard");
+            let answer = match tokio::time::timeout_at(deadline, exchange_value(&mut process, self, request)).await {
+                Ok(Ok(answer)) if answer["ok"] == true && answer["schemaVersion"].as_u64() == crate::project_brief::brief_schema_version() => Ok(answer),
+                Ok(Ok(_)) => Err("unreadable validator answer".to_owned()),
+                Ok(Err(error)) => Err(format!("{error:#}")),
+                Err(_) => Err(format!("no answer within {} s", CARD_BUDGET.as_secs())),
+            };
+            match answer {
+                Ok(mut answer) => {
+                    if told.note.is_none() {
+                        told.note = answer["note"].as_str().map(str::to_owned);
+                    }
+                    told.cards.push(answer["card"].take());
+                }
+                Err(reason) => {
+                    // Its state is unknown: stop it rather than reuse it, as check_request does.
+                    *process = None;
+                    told.missing = Some(reason);
+                    break;
+                }
+            }
+        }
+        drop(process);
+        self.stop_when_idle();
+        told
     }
 }
 
@@ -896,6 +960,20 @@ pub(crate) fn get(db: &Connection, agent: &str, id: &str) -> Result<Option<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// YN-209: card faces wait for no queue and never fail an update: an empty batch asks for nothing, a
+    /// validator others are queued for is not waited for, and one that cannot start says why.
+    #[tokio::test]
+    async fn card_faces_wait_for_no_queue_and_say_why_none_came() {
+        let validator = Arc::new(Validator::new(None, "node".into()));
+        assert_eq!(validator.brief_cards(vec![]).await, BriefCards::default());
+        validator.waiting.store(1, Ordering::SeqCst);
+        let busy = validator.brief_cards(vec![json!({"section":{}})]).await;
+        assert_eq!((busy.cards.len(), busy.missing.as_deref()), (0, Some("the validator was busy with other checks")));
+        validator.waiting.store(0, Ordering::SeqCst);
+        let none = validator.brief_cards(vec![json!({"section":{}})]).await;
+        assert!(none.cards.is_empty() && none.missing.as_deref().is_some_and(|why| why.contains("no result validator")), "{none:?}");
+    }
     use crate::model::AgentDetail;
     use std::os::unix::fs::PermissionsExt;
 

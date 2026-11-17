@@ -136,9 +136,14 @@ pub(super) fn stage(cache: &Path, data_dir: &Path, remote: bool, sections: &[Val
 }
 
 /// The problems `stage` would find, judged the same way, with nothing
-/// copied or held (brief_update validateOnly, T-176).
-pub(super) fn inspect(cache: &Path, data_dir: &Path, remote: bool, sections: &[Value]) -> Result<Vec<Value>> {
-    Ok(judge(cache, data_dir, remote, sections, None)?.1)
+/// copied or held (brief_update validateOnly, T-176); and each put's
+/// attachments as staging would take them (YN-209: a card's face reads
+/// which are kept, and what kind): a readable local file up to the size a
+/// snapshot keeps is marked kept, its kind from its name, as no content is
+/// read into memory here.
+pub(super) fn inspect(cache: &Path, data_dir: &Path, remote: bool, sections: &[Value]) -> Result<(Vec<Value>, Vec<Vec<Value>>)> {
+    let (staged, problems) = judge(cache, data_dir, remote, sections, None)?;
+    Ok((problems, staged.into_iter().map(|section| section.into_iter().map(|one| one.entry).collect()).collect()))
 }
 
 /// Each put's attachments; a snapshot is copied only with a `hold`.
@@ -208,7 +213,15 @@ fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: O
         // Only judged: read as a copy reads it, kept nowhere.
         let file = std::fs::File::open(&real);
         return match file.and_then(|file| std::io::copy(&mut file.take(SNAPSHOT_FILE_BYTES + 1), &mut std::io::sink())) {
-            Ok(size) => reference(entry, size),
+            Ok(size) if size > SNAPSHOT_FILE_BYTES => reference(entry, size),
+            // What a copy would keep, as the write's own entry says it.
+            Ok(size) => {
+                for (field, value) in [("kind", json!(kind)), ("mime", json!(mime)), ("size", json!(size)),
+                    ("snapshot", json!(true)), ("mayChange", json!(false))] {
+                    entry[field] = value;
+                }
+                Ok(Ok(Staged { entry, sha: None, size }))
+            }
             Err(error) => Ok(Err(format!("{} cannot be read: {error}", path.display()))),
         };
     };
