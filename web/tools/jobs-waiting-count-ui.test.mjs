@@ -103,3 +103,45 @@ test('a Core that sends no waitingCount keeps its two numbers', async () => {
     assert.equal(p.doc.querySelector('.jobs-budget-counts').textContent, '2 of 4 active · 0 queued');
   } finally { p.close(); }
 });
+
+// YN-194: the budget card names the first Job in the queue, what it waits for
+// and how much it lacks, and the running Jobs that hold most of that.
+const queueHead = {
+  jobId: 'big', name: 'train-24g', taskRef: 'TT-3', waitingSince: new Date(Date.now() - 72 * 60 * 1000).toISOString(), waits: 'memory',
+  reason: 'Waiting for shared RAM reservation: needs 24640 MiB including collector, 18496 MiB available; short 6144 MiB',
+  need: { cpuMillis: 6100, memoryMiB: 24640, swapMiB: 0 }, free: { cpuMillis: 23700, memoryMiB: 18496, swapMiB: 0 },
+  short: { cpuMillis: 0, memoryMiB: 6144, swapMiB: 0 },
+  holders: [
+    { jobId: 'h1', name: 'eval-big', reservation: { cpuMillis: 4100, memoryMiB: 18496, swapMiB: 0 }, startedAt: '2026-11-16T13:20:00Z',
+      endsBy: '2026-11-16T14:20:00Z', typicalSeconds: 2400 },
+    { jobId: 'h2', name: 'prep-shards', reservation: { cpuMillis: 2100, memoryMiB: 8192, swapMiB: 0 }, startedAt: null, endsBy: null, typicalSeconds: null },
+  ],
+};
+
+test('the budget names the queue head, what it lacks and who holds it, in English and Chinese', async () => {
+  for (const [language, line, holders] of [
+    [undefined, /^Head of the queue: train-24g waits for memory, 6.0 GiB short · waiting 1h 1[12]m$/,
+      /^Holding most of it: eval-big 18.1 GiB · usually about 40m · timeout at .+; prep-shards 8.0 GiB$/],
+    ['zh-Hans', /^队首：train-24g 等内存，还差 6.0 GiB · 已等 1h 1[12]m$/, /^占用最多：eval-big 18.1 GiB · 通常约 40m · 最晚 .+ 超时；prep-shards 8.0 GiB$/],
+  ]) {
+    const p = mount({ activeCount: 2, queuedCount: 12, waitingCount: 0, queueHead }, language);
+    try {
+      await open(p);
+      await until(() => p.doc.querySelector('.jobs-queue-head'));
+      assert.match(p.doc.querySelector('.jobs-queue-head-line').textContent.replace(/\s+/g, ' ').trim(), line);
+      assert.match(p.doc.querySelector('.jobs-queue-head-holders').textContent.replace(/\s+/g, ' ').trim(), holders);
+      assert.deepEqual(await tipOf(p.doc.querySelector('.jobs-queue-head-line')), [queueHead.reason], "admission's reason as it came");
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+});
+
+test('nothing queued, or a Core that sends no queueHead, shows no line', async () => {
+  for (const counts of [{ activeCount: 1, queuedCount: 0, queueHead: null }, { activeCount: 1, queuedCount: 0 }]) {
+    const p = mount(counts);
+    try {
+      await open(p);
+      assert.equal(p.doc.querySelector('.jobs-queue-head'), null);
+    } finally { p.close(); }
+  }
+});

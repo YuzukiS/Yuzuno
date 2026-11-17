@@ -124,6 +124,31 @@ pub(super) fn read(db: &Connection, query: &Query, actor: Option<&str>, except: 
     Ok(suggest_in(runs, "project"))
 }
 
+/// How long earlier runs of the same Job took (YN-194): the median worker
+/// wall time of this task's newest succeeded runs of the same name or argv,
+/// up to RUNS, each measured whole; None without any. Not a forecast.
+pub(super) fn typical_seconds(db: &Connection, job: &Value) -> Result<Option<f64>> {
+    let mut q = db.prepare_cached(
+        "SELECT data FROM local_jobs WHERE task_id=?1 AND id<>?2 AND status='succeeded' ORDER BY seq DESC LIMIT ?3",
+    )?;
+    let mut walls = Vec::new();
+    for row in q.query_map(rusqlite::params![job["taskId"].as_str(), job["id"].as_str(), SCAN], |r| r.get::<_, String>(0))? {
+        let other: Value = serde_json::from_str(&row?)?;
+        if other["name"] != job["name"] && other["argv"] != job["argv"] {
+            continue;
+        }
+        let summary = resource_summary::attempt(&other);
+        if let Some(wall) = summary["actual"]["workerWallSeconds"].as_f64().filter(|_| summary["measurement"] == "complete") {
+            walls.push(wall);
+            if walls.len() == RUNS {
+                break;
+            }
+        }
+    }
+    walls.sort_by(f64::total_cmp);
+    Ok(walls.get(walls.len() / 2).copied())
+}
+
 /// A Job's run as a suggestion counts it, if its worker was measured whole:
 /// its ID, task, ending and numbers, and its name only for `actor`'s own Job
 /// (or for the user).

@@ -260,8 +260,9 @@ fn compact_job(job: &Value) -> Value {
     if !job["run"]["id"].is_null() {
         out["run"] = json!({"id":job["run"]["id"],"stage":job["run"]["stage"],"attempt":job["run"]["attempt"]});
     }
-    // A waiting stage that cannot start without a retry or a cancel (YN-194).
-    if job["stalled"].is_string() {
+    // A stage still waiting that cannot start as things are (YN-194); the
+    // mark of one cancelled with its run is not shown.
+    if job["stalled"].is_string() && job["status"] == "waiting" {
         out["stalled"] = job["stalled"].clone();
     }
     // What it used and what it retried (YN-194), from its record alone.
@@ -271,6 +272,10 @@ fn compact_job(job: &Value) -> Value {
     }
     if job["retryOf"].is_string() {
         out["retryOf"] = job["retryOf"].clone();
+    }
+    // Its Git guard checked again at exit found a change (YN-194).
+    if job["result"]["guardAtExit"]["unchanged"] == false {
+        out["guardChangedDuringRun"] = json!(true);
     }
     out
 }
@@ -283,7 +288,7 @@ pub(super) fn last_line(text: &str) -> Option<String> {
     Some(if end < line.len() { format!("{}…", &line[..end]) } else { line.to_owned() })
 }
 
-pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. A waiting run stage marked stalled (upstream: behind a stage that did not succeed; costLimit: its run's cost limit) cannot start without job_run_retry or job_run_cancel and is not live. History filters (live page unfiltered): status (Job statuses), since (createdAt at or after, RFC 3339), reasonContains (case-insensitive). Compact rows add memoryPeakMiB when measured, retryOf, and for a failed Job on this host lastLine, its last output line. job_get has full details. GUI global history/live behavior is unchanged.";
+pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. A waiting run stage marked stalled cannot start as things are and is not live: upstream (behind a stage that did not succeed) until job_run_retry of that stage; costLimit (its run's cost limit) until job_run_cancel ends it. History filters (live page unfiltered): status (Job statuses), since (createdAt at or after, RFC 3339), reasonContains (case-insensitive). Compact rows add memoryPeakMiB when measured, retryOf, and for a failed Job on this host lastLine, its last output line. job_get has full details. GUI global history/live behavior is unchanged.";
 
 pub(super) fn schema() -> Value {
     json!({

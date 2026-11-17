@@ -147,10 +147,7 @@ fn saved_max_active(db: &Connection) -> Result<Option<u32>> {
 /// an SSH machine's jobs hold that machine's own. This Mac's are a macOS
 /// Core's own Jobs: they hold its budget and its maxActive slots.
 pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
-    let mut q = db.prepare(
-        "SELECT data FROM local_jobs WHERE reserved=1 AND (json_extract(data,'$.executor') IS NULL
-         OR json_extract(data,'$.executor.kind') IN ('windows','mac'))",
-    )?;
+    let mut q = db.prepare(&format!("SELECT data FROM local_jobs WHERE reserved=1 AND {BUDGET_JOBS}"))?;
     let mut total = Resources::default();
     let mut count = 0;
     for row in q.query_map([], |r| r.get::<_, String>(0))? {
@@ -219,6 +216,82 @@ fn budget_shortage(need: &Resources, free: &Resources) -> Option<(&'static str, 
 fn triple(r: &Resources) -> String {
     format!("{} mCPU / {} MiB RAM / {} MiB swap", r.cpu_millis, r.memory_mi_b, r.swap_mi_b)
 }
+/// This host's own Jobs (This Mac's on a macOS Core), as a SQL condition.
+const HOST_JOBS: &str = "(json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind')='mac')";
+/// The Jobs holding this host's budget, as a SQL condition: its own and the
+/// Windows ones of the same PC (`reserved`).
+const BUDGET_JOBS: &str =
+    "(json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind') IN ('windows','mac'))";
+/// The running Jobs a queue head is shown beside, at most.
+const HOLDERS: usize = 3;
+
+/// What the first Job in this host's queue waits for (YN-194, memo item 15):
+/// the head admission marked as short of the budget, else the oldest queued
+/// Job here; what it needs against what is free and how much is short; and
+/// the running Jobs holding most of what it lacks, each with when its
+/// timeout would end it and how long earlier runs of it took. Null with
+/// nothing queued. Read only: nothing in it changes admission.
+fn queue_head(db: &Connection, free: &Resources) -> Result<Value> {
+    let id: Option<String> = db
+        .query_row(
+            &format!("SELECT id FROM local_jobs WHERE status='queued' AND {HOST_JOBS}
+              ORDER BY (json_type(data,'$.admission.head') IS 'object') DESC, seq LIMIT 1"),
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(id) = id else { return Ok(Value::Null) };
+    let job = get(db, &id)?;
+    let need: Resources = serde_json::from_value(job["reservation"].clone())?;
+    let short = Resources {
+        cpu_millis: need.cpu_millis.saturating_sub(free.cpu_millis),
+        memory_mi_b: need.memory_mi_b.saturating_sub(free.memory_mi_b),
+        swap_mi_b: need.swap_mi_b.saturating_sub(free.swap_mi_b),
+    };
+    let reason = job["reason"].as_str().unwrap_or_default();
+    // What it waits for, by how admission's reason starts (runs::waiting_for,
+    // as a queued run says it): GPU, CPU, swap or RAM; anything else (a slot,
+    // disk, an exclusive Job) is said by the reason alone.
+    let waits = match super::runs::waiting_for(reason) {
+        "gpu" => "gpu",
+        "cpu" => "cpu",
+        "memory" if reason.starts_with("Waiting for shared swap") => "swap",
+        "memory" => "memory",
+        _ => "other",
+    };
+    // Whatever holds the budget the head is short of, Windows Jobs of this PC
+    // included, as `reserved` counts it.
+    let mut q = db.prepare(&format!("SELECT data FROM local_jobs WHERE reserved=1 AND {BUDGET_JOBS}"))?;
+    let mut holders = q
+        .query_map([], |r| r.get::<_, String>(0))?
+        .map(|raw| Ok(serde_json::from_str::<Value>(&raw?)?))
+        .collect::<Result<Vec<Value>>>()?;
+    let held = |job: &Value, key: &str| job["reservation"][key].as_u64().unwrap_or(0);
+    match waits {
+        "gpu" => holders.retain(|j| j["gpuReservation"].as_array().is_some_and(|a| !a.is_empty())),
+        "cpu" => holders.sort_by_key(|j| std::cmp::Reverse(held(j, "cpuMillis"))),
+        "swap" => holders.sort_by_key(|j| std::cmp::Reverse(held(j, "swapMiB"))),
+        _ => holders.sort_by_key(|j| std::cmp::Reverse(held(j, "memoryMiB"))),
+    }
+    holders.truncate(HOLDERS);
+    let holders = holders
+        .iter()
+        .map(|j| {
+            let ends = j["startedAt"]
+                .as_str()
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .zip(j["timeoutSeconds"].as_i64())
+                .map(|(at, secs)| (at + chrono::Duration::seconds(secs)).with_timezone(&chrono::Utc).to_rfc3339());
+            Ok(json!({"jobId": j["id"], "name": j["name"], "taskRef": j["taskRef"], "reservation": j["reservation"],
+                "gpuReservation": j["gpuReservation"], "startedAt": j["startedAt"], "endsBy": ends,
+                "typicalSeconds": super::suggestion::typical_seconds(db, j)?}))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({"jobId": job["id"], "name": job["name"], "taskRef": job["taskRef"],
+        "waitingSince": if job["admission"]["head"]["since"].is_string() { job["admission"]["head"]["since"].clone() } else { job["createdAt"].clone() },
+        "waits": waits, "reason": reason, "need": need, "free": free, "short": short, "holders": holders,
+        "scope": "Read now from this host's queue and reservations. typicalSeconds is the median worker wall time of the newest five measured runs of the same Job (its task's, of the same name or argv) that succeeded, not a forecast; endsBy is when its timeout would stop it."}))
+}
 /// What job_budget's CPU hints are, and are not (T-64).
 const CPU_HINT: &str = "cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength (local Jobs queued), cpuWaiting (how many of them only CPU, or nothing, kept from starting at the last admission pass, and since when) and running (local Jobs running) are read now, to choose a CPU range with: they are not an entitlement. A Job's grant is decided when it starts: its minimum while another queued Job waits for CPU, never because of Jobs waiting for RAM, a GPU, disk, a slot or an exclusive Job; and running Jobs are raised only while none waits for CPU.";
 pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
@@ -274,8 +347,9 @@ pub(super) fn summary(job: Value) -> Value {
     }
     result["resumeOf"] = job["checkpointFrom"]["jobId"].clone();
     result["machine"] = json!({"id":job["machine"]["id"],"name":job["machine"]["name"]});
-    // A waiting stage that cannot start without a retry or a cancel (YN-194).
-    if job["stalled"].is_string() {
+    // A stage still waiting that cannot start as things are (YN-194); the
+    // mark of one cancelled with its run is not shown.
+    if job["stalled"].is_string() && job["status"] == "waiting" {
         result["stalled"] = job["stalled"].clone();
     }
     result
@@ -356,7 +430,12 @@ fn notify(db: &Connection, job: &mut Value) -> Result<()> {
         None => "Local job".to_owned(),
     };
     let resources = super::resource_summary::mail(job);
-    let body = format!("{place} {} ({}) is {status}. Task {public_task}. {}{context}{resources} Read job_get(jobId={}) for retained machine evidence and job_logs for bounded output. This job result does not complete the business task or authorize an automatic rerun.",job["name"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""),job["reason"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""));
+    // Its Git guard checked again at exit found a change (YN-194).
+    let guard = match &job["result"]["guardAtExit"] {
+        exit if exit["unchanged"] == false => format!(" {}", exit["reason"].as_str().unwrap_or("The guarded work tree changed while the command ran.")),
+        _ => String::new(),
+    };
+    let body = format!("{place} {} ({}) is {status}. Task {public_task}. {}{guard}{context}{resources} Read job_get(jobId={}) for retained machine evidence and job_logs for bounded output. This job result does not complete the business task or authorize an automatic rerun.",job["name"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""),job["reason"].as_str().unwrap_or(""),job["id"].as_str().unwrap_or(""));
     let name = job["name"].as_str().unwrap_or("").to_owned();
     let run = job["run"]["id"].as_str().unwrap_or("").to_owned();
     let recipient = job["agent"].clone();
@@ -1497,7 +1576,8 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"waitingCount":waiting,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"cpuWaiting":cpu_waiting,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"waitingCount":waiting,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"cpuWaiting":cpu_waiting,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?,
+                "queueHead":queue_head(&db, &available)?}),
         )
     }
     /// A budget save that leaves maxActive as it is (tests; the route takes both).

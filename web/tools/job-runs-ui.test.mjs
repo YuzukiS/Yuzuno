@@ -100,6 +100,8 @@ test('a stalled stage says it is blocked upstream and is not among the active jo
     assert.match(text, /Blocked upstream/);
     assert.doesNotMatch(text, /Waiting for upstream/);
     assert.equal(row(p, '· judge').closest('.job-group-active'), null);
+    // Its group does not say it finished: it is stopped, still waiting.
+    assert.equal(row(p, '· judge').closest('.job-group').querySelector('.job-group-title').firstChild.textContent, 'Finished or stopped');
     row(p, '· judge').click();
     await until(() => p.doc.querySelector('.job-run'));
     const stage = [...p.doc.querySelectorAll('.job-run-stage')].find(li => li.textContent.includes('judge'));

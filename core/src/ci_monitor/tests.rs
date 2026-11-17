@@ -431,6 +431,16 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n'+link+'\r\n'+json.dumps(data))
     force(&ws);
     tick(&ws).await.unwrap();
     assert_eq!(mail(&ws.store, "a").len(), 3);
+    // Each failed attempt's jobs were read (YN-196). This fixture answers them
+    // with a run, not jobs: the read fails, so nothing is recorded and a later
+    // observation may read them again; the mails above went out regardless.
+    let requests = std::fs::read_to_string(dir.path().join("requests")).unwrap();
+    for failed in ["42", "43"] {
+        let jobs = format!("repos/o/r/actions/runs/{failed}/attempts/1/jobs?per_page=100&page=1");
+        assert!(requests.lines().any(|ep| ep == jobs), "{jobs}");
+        assert!(!ws.store.ci_failures_known(&format!("github:123:{failed}:1")).unwrap());
+    }
+    assert!(!requests.lines().any(|ep| ep == "repos/o/r/actions/runs/42/attempts/2/jobs?per_page=100&page=1"), "a passed attempt is not read");
     ws.store
         .db
         .write()
@@ -439,6 +449,145 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n'+link+'\r\n'+json.dumps(data))
         .unwrap();
     force(&ws);
     assert!(ws.store.ci_due().unwrap().is_none());
+}
+
+#[test]
+fn failed_steps_name_each_failed_job_and_its_first_step_that_did_not_succeed() {
+    let jobs = json!({"jobs":[
+        {"name":"Web UI (typecheck, build, test 1/2)","conclusion":"failure","steps":[
+            {"name":"Checkout","conclusion":"success"},{"name":"Test files","conclusion":"failure"},{"name":"Post","conclusion":"skipped"}]},
+        {"name":"Lint (report-only)","conclusion":"success","steps":[{"name":"Clippy","conclusion":"success"}]},
+        {"name":"Core (build and test)","conclusion":"failure","steps":[
+            {"name":"Build","conclusion":"success"},{"name":"Test (one test at a time per process)","conclusion":"cancelled"}]},
+        {"name":"Docs","conclusion":"cancelled","steps":[{"name":"Links","conclusion":"failure"}]},
+        {"name":"Runner lost","conclusion":"timed_out","steps":[]}
+    ]});
+    assert_eq!(
+        failed_steps(&jobs),
+        vec![
+            json!({"job":"Web UI (typecheck, build, test 1/2)","key":"Web UI","step":"Test files"}),
+            json!({"job":"Core (build and test)","key":"Core","step":"Test (one test at a time per process)"}),
+            json!({"job":"Runner lost","key":"Runner lost","step":""}),
+        ]
+    );
+    assert!(failed_steps(&json!({"jobs":[]})).is_empty());
+}
+
+#[test]
+fn only_a_page_whose_jobs_all_finished_says_where_an_attempt_failed() {
+    let job = |status: &str, conclusion: Value| json!({"name":"Web UI (typecheck, build, test 1/2)","rawStatus":status,"conclusion":conclusion,"steps":[{"name":"Test files","conclusion":conclusion}]});
+    assert_eq!(terminal_failures(&json!({"jobs":[job("in_progress", Value::Null)]})), None);
+    assert_eq!(terminal_failures(&json!({"jobs":[job("completed", json!("failure")), job("queued", Value::Null)]})), None);
+    assert_eq!(
+        terminal_failures(&json!({"jobs":[job("completed", json!("failure"))]})),
+        Some(vec![json!({"job":"Web UI (typecheck, build, test 1/2)","key":"Web UI","step":"Test files"})])
+    );
+    assert_eq!(terminal_failures(&json!({"jobs":[]})), Some(vec![]), "a failed attempt without jobs");
+    assert_eq!(terminal_failures(&json!({})), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_jobs_page_cached_while_the_attempt_ran_is_not_taken_as_where_it_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, s) = setup();
+    subscribe(&s, "a", "one");
+    drop(s);
+    let phase = dir.path().join("phase");
+    std::fs::write(&phase, "running").unwrap();
+    let program = dir.path().join("gh-fixture");
+    let fixture = r##"#!/usr/bin/python3
+import json,sys,pathlib
+root=pathlib.Path(__file__).parent
+phase=(root/'phase').read_text()
+ep=next(v for v in sys.argv if v.startswith(('repos/','repositories/')))
+etag='"'+phase+'-'+ep+'"'
+if 'If-None-Match: '+etag in sys.argv:
+ print('HTTP/2.0 304 Not Modified\r\nEtag: '+etag+'\r\n\r\n')
+ sys.exit(0)
+done=phase=='failed'
+run={'id':42,'run_attempt':1,'head_sha':'a'*40,'name':'CI','workflow_id':9,'repository':{'id':123},'status':'completed' if done else 'in_progress','conclusion':'failure' if done else None}
+step={'number':2,'name':'Test files','status':'completed' if done else 'in_progress','conclusion':'failure' if done else None}
+job={'id':7,'run_id':42,'run_attempt':1,'head_sha':'a'*40,'name':'Web UI (typecheck, build, test 1/2)','status':run['status'],'conclusion':run['conclusion'],'steps':[step]}
+if ep=='repositories/123':data={'id':123,'full_name':'o/r'}
+elif '/pulls/7' in ep:data={'number':7,'base':{'repo':{'id':123}},'head':{'sha':'a'*40}}
+elif '/jobs' in ep:data={'total_count':1,'jobs':[job]}
+elif '/attempts/1' in ep:data=run
+else:data={'total_count':1,'workflow_runs':[run]}
+print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n\r\n'+json.dumps(data))
+"##;
+    std::fs::write(&program, fixture).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut ws = Workspace::new(dir.path().into(), "/workspace".into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = program.to_string_lossy().into();
+    tick(&ws).await.unwrap();
+    // While it runs, its jobs are read, as ci_get does: a page with no failure
+    // yet, which the shared cache keeps for a while.
+    let running = client::run(&json!({"id":42,"run_attempt":1,"head_sha":"a".repeat(40),"name":"CI","workflow_id":9,"repository":{"id":123},"status":"in_progress","conclusion":null}), 123, "o/r").unwrap();
+    let (cached, _) = details(&ws, &running, 1, 60).await.unwrap();
+    assert_eq!(cached["jobs"][0]["rawStatus"], "in_progress");
+    // It fails. The watch is due and its run list read again (that read is
+    // older), while the jobs page, read later, is still valid in the cache.
+    std::fs::write(&phase, "failed").unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("UPDATE ci_watches SET next_poll=0", []).unwrap();
+        db.execute("UPDATE ci_cache SET data=json_set(data,'$.fetchedAt',0) WHERE endpoint NOT LIKE '%/jobs?%'", []).unwrap();
+    }
+    tick(&ws).await.unwrap();
+    let kept: String = ws.store.db.read().unwrap()
+        .query_row("SELECT data FROM ci_run_failures WHERE run_id='github:123:42:1'", [], |r| r.get(0))
+        .unwrap();
+    assert!(kept.contains("\"step\":\"Test files\""), "where it failed, as GitHub has it now: {kept}");
+    assert_eq!(mail(&ws.store, "a").len(), 1, "one mail, sent once");
+}
+
+#[test]
+fn a_failure_mail_names_other_runs_of_its_workflow_that_failed_at_the_same_job_and_step() {
+    let (_dir, s) = setup();
+    let sub = subscribe(&s, "a", "one");
+    let w = sub["watchId"].as_str().unwrap();
+    let attempt = |id: u64, workflow: u64, conclusion: &str| {
+        let mut raw = raw(1, "completed", json!(conclusion));
+        raw["id"] = json!(id);
+        raw["workflow_id"] = json!(workflow);
+        raw["updated_at"] = json!(format!("2026-11-16T10:{id}:00Z"));
+        client::run(&raw, 123, "o/r").unwrap()
+    };
+    let at = |job: &str, step: &str| json!({"job":job,"key":"Web UI","step":step});
+    let mut runs = Vec::new();
+    let mut record = |s: &Store, run: Value, failed: Vec<Value>| {
+        s.ci_record_failures(&run, &failed).unwrap();
+        runs.push(run);
+        observe(s, w, runs.clone());
+    };
+    record(&s, attempt(40, 9, "failure"), vec![at("Web UI (typecheck, build, test 1/2)", "Test files")]);
+    record(&s, attempt(41, 9, "failure"), vec![at("Web UI (typecheck, build, test 1/2)", "Typecheck")]);
+    record(&s, attempt(44, 10, "failure"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    record(&s, attempt(42, 9, "failure"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    record(&s, attempt(43, 9, "success"), vec![at("Web UI (typecheck, build, test 2/2)", "Test files")]);
+    let mails = mail(&s, "a");
+    let by_run = |id: &str| mails.iter().find(|m| m["metadata"]["runId"] == id).unwrap().clone();
+    for id in ["40", "41", "44", "43"] {
+        let m = by_run(id);
+        assert!(!m["body"].as_str().unwrap().contains("also failed"), "{id}: {}", m["body"]);
+        assert_eq!(m["metadata"]["sameFailure"], json!([]), "{id}");
+    }
+    // Run 42 lists run 40 only: run 41 failed at another step, run 44 is another workflow.
+    let m = by_run("42");
+    let body = m["body"].as_str().unwrap();
+    assert!(body.contains("The same job and step also failed in 1 other recent run(s) Core observed: run 40 attempt 1"), "{body}");
+    assert!(body.contains("Web UI (typecheck, build, test 1/2) > Test files"), "{body}");
+    assert!(body.ends_with("This result does not mean PR merge, review approval, or task completion."), "{body}");
+    assert_eq!(m["metadata"]["sameFailure"].as_array().unwrap().len(), 1);
+    assert_eq!(m["metadata"]["sameFailure"][0]["runKey"], "github:123:40:1");
+    assert_eq!(m["metadata"]["sameFailure"][0]["at"], "2026-11-16T10:40:00Z");
+    // Recorded once: the same attempt is known and a second record changes nothing.
+    assert!(s.ci_failures_known("github:123:42:1").unwrap());
+    assert!(!s.ci_failures_known("github:123:45:1").unwrap());
+    s.ci_record_failures(&attempt(42, 9, "failure"), &[]).unwrap();
+    let kept: String = s.db.read().unwrap().query_row("SELECT data FROM ci_run_failures WHERE run_id='github:123:42:1'", [], |r| r.get(0)).unwrap();
+    assert!(kept.contains("Test files"));
 }
 
 #[test]
