@@ -982,3 +982,5 @@ mod route_file_tests;
 mod route_owed_tests;
 #[path = "route_confirm_tests.rs"]
 mod route_confirm_tests;
+#[path = "route_deliverable_tests.rs"]
+mod route_deliverable_tests;

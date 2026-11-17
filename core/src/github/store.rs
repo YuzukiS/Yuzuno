@@ -92,6 +92,49 @@ pub(crate) fn task_links(db: &Connection, task: &str) -> Result<Vec<Value>> {
     .collect()
 }
 
+/// The pull request `owner/repo#number` this task links (YN-208, a result's
+/// deliverable): its repository's ID and name as Core keeps them, and its
+/// title as Core last read it. None when the task does not link it. GitHub
+/// names compare without case, as GitHub does.
+pub(crate) fn task_pull(db: &Connection, task: &str, full_name: &str, number: u64) -> Result<Option<(i64, String, Option<String>)>> {
+    Ok(db
+        .query_row(
+            "SELECT o.repo_id,json_extract(r.data,'$.fullName'),json_extract(o.data,'$.snapshot.title') FROM github_task_links l
+             JOIN github_objects o ON o.id=l.object_id JOIN github_repositories r ON r.id=o.repo_id
+             WHERE l.task_id=?1 AND o.kind='pull' AND o.number=?2 AND lower(json_extract(r.data,'$.fullName'))=lower(?3)",
+            params![task, number as i64, full_name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?)
+}
+
+/// A pull request's state and when Core read it from GitHub (YN-208): the
+/// snapshot Core keeps, never a new read. None when Core keeps none.
+pub(crate) fn pull_state(db: &Connection, repo: i64, number: u64) -> Result<Option<(String, Option<String>)>> {
+    Ok(db
+        .query_row(
+            "SELECT json_extract(data,'$.snapshot.state'),json_extract(data,'$.snapshot.observedAt') FROM github_objects
+             WHERE repo_id=?1 AND kind='pull' AND number=?2",
+            params![repo, number as i64],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?
+        .and_then(|(state, at)| state.map(|state| (state, at))))
+}
+
+/// The repository `owner/repo` linked to this Project (YN-208): its ID and
+/// name as Core keeps them; None when the Project does not link it.
+pub(crate) fn project_repository(db: &Connection, project: &str, full_name: &str) -> Result<Option<(i64, String)>> {
+    Ok(db
+        .query_row(
+            "SELECT r.id,json_extract(r.data,'$.fullName') FROM github_project_repos p JOIN github_repositories r ON r.id=p.repo_id
+             WHERE p.project_id=?1 AND lower(json_extract(r.data,'$.fullName'))=lower(?2)",
+            params![project, full_name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// One bounded query for the task-list page; omit individual check runs.
 pub(crate) fn task_summaries(
     db: &Connection,

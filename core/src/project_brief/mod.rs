@@ -21,6 +21,10 @@ pub(crate) use cards::{lead_left, task_closed};
 /// project_requests): a card by its key or identity, who answers for a
 /// task's card, its Asks, and the card project_route puts.
 pub(crate) use cards::{asks_of, card_by_identity, live_card, put_card, responsible_agent, responsible_json, task_ended};
+/// A report a task's result names as delivered (YN-208): found by its key
+/// when the result is submitted, read by its identity and version since.
+mod delivered;
+pub(crate) use delivered::{named_report, report_now};
 /// A Workspace backup's hold on Brief attachment files (T-192), and an
 /// interactive preview's on one (YN-10).
 pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachments, Hold as AttachmentHold};
