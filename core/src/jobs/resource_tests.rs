@@ -163,6 +163,48 @@ fn only_matching_final_local_invocations_can_be_measured() {
     assert!(resources::mail(&remote).contains("Remote execution is not metered"));
 }
 
+/// YN-194: a Windows attempt's summary carries the peak its helper recorded,
+/// and says it has no CPU or wall time; SSH and Mac stay unmeasured.
+#[test]
+fn a_windows_attempt_shows_its_job_objects_peak_and_nothing_it_did_not_measure() {
+    let windows = |status: &str, limits: Value| {
+        json!({"id":"j","attempt":"a1","status":status,"executor":{"kind":"windows","machineId":"windows"},
+            "resources":{"cpuMillis":1000,"memoryMiB":256},
+            "result":{"jobId":"j","attempt":"a1","status":status,"evidence":{"result":{"exitCode":0,"limits":limits}}}})
+    };
+    let done = windows("succeeded", json!({"memoryMiB":256,"held":{"jobMemoryLimitBytes":268435456},"peakJobMemoryBytes":81076224}));
+    let value = resources::attempt(&done);
+    assert_eq!(value["measurement"], "partial");
+    assert_eq!(value["actual"]["memoryPeakMiB"], 81076224.0 / 1_048_576.0);
+    for absent in ["cpuSeconds", "workerWallSeconds", "averageCpuCores"] {
+        assert!(value["actual"][absent].is_null(), "{absent}");
+    }
+    assert_eq!(value["declared"]["memoryMiB"], 256);
+    assert!(value["reason"].as_str().unwrap().contains("no CPU time") || value["reason"].as_str().unwrap().contains("not measured"));
+    assert!(value["scope"].as_str().unwrap().contains("PeakJobMemoryUsed"));
+    let mail = resources::mail(&done);
+    assert!(mail.contains("peak memory 77.32/256.00 MiB") && mail.contains("PeakJobMemoryUsed"), "{mail}");
+    assert!(!mail.contains("local worker cgroup"), "not the local scope: {mail}");
+    // A failed attempt is measured too.
+    assert_eq!(resources::attempt(&windows("failed", json!({"peakJobMemoryBytes":1048576})))["actual"]["memoryPeakMiB"], 1.0);
+    // Started without limits (a v1 pin): no peak, and why.
+    let bare = resources::attempt(&windows("succeeded", Value::Null));
+    assert_eq!(bare["measurement"], "unavailable");
+    assert!(bare["reason"].as_str().unwrap().contains("without limits"), "{bare}");
+    // Not ended yet, or another attempt's result: nothing.
+    assert_eq!(resources::attempt(&windows("running", json!({"peakJobMemoryBytes":1})))["measurement"], "unavailable");
+    let mut other = done.clone();
+    other["result"]["attempt"] = json!("a0");
+    assert_eq!(resources::attempt(&other)["measurement"], "unavailable");
+    // SSH machines and This Mac stay as they were (YN-83 meters SSH).
+    for kind in ["ssh", "mac"] {
+        let mut remote = done.clone();
+        remote["executor"]["kind"] = json!(kind);
+        assert_eq!(resources::attempt(&remote)["measurement"], "unavailable", "{kind}");
+        assert!(resources::mail(&remote).contains("Remote execution is not metered"));
+    }
+}
+
 fn budget(cpu: u64, memory: u64) -> Resources {
     Resources {
         cpu_millis: cpu,

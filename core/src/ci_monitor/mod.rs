@@ -778,11 +778,19 @@ async fn tick(ws: &Arc<Workspace>) -> Result<bool> {
     .map_err(|e| e.to_string());
     let id = w["id"].as_str().unwrap().to_owned();
     let update_id = id.clone();
-    if let Err(e) = ws.stored(move |s| s.ci_observe(&update_id, result)).await {
-        ws.stored(move |s| s.ci_observe(&id, Err(e.to_string())))
-            .await?;
+    let seen = match ws.stored(move |s| s.ci_observe(&update_id, result)).await {
+        Ok(seen) => seen,
+        Err(e) => {
+            ws.stored(move |s| s.ci_observe(&id, Err(e.to_string())))
+                .await?;
+            true
+        }
+    };
+    // Only an observation that changed something is announced (YN-198):
+    // each announcement has every client read Jobs, reviews and CI again.
+    if seen {
+        changed(ws);
     }
-    changed(ws);
     Ok(true)
 }
 /// Notes each run read: the oldest GitHub answer and GitHub's poll interval.

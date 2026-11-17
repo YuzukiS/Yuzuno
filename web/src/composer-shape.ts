@@ -39,19 +39,26 @@ export function nextShape(current: ComposerShape, forced: boolean, line: LineExt
 
 const px = (style: CSSStyleDeclaration, name: string) => parseFloat(style.getPropertyValue(name)) || 0;
 
+/** Where a box in the line shape keeps its "+" and its controls (lineRoom). `send` null: none inside the box. */
+export type LineParts = { tools?: string; send?: string | null };
+const LINE_PARTS = { tools: ".composer-tools", send: ".composer-send-actions" } as const;
+
 /**
  * The text's width in the line shape, worked out in either shape: the box
  * less "+" and the controls (the same size in both shapes), their insets and
- * the text's own padding, as styles.css lays the line out.
+ * the text's own padding, as styles.css lays the line out. Home's reply field
+ * keeps the selectors of its own "+" and has Send beside the box (YN-202).
  */
-export function lineRoom(box: HTMLElement): number {
-  const tools = box.querySelector(".composer-tools");
-  const send = box.querySelector(".composer-send-actions");
-  if (!tools || !send || !box.clientWidth) return 0;
+export function lineRoom(box: HTMLElement, parts: LineParts = {}): number {
+  const toolsAt = parts.tools ?? LINE_PARTS.tools;
+  const sendAt = parts.send === undefined ? LINE_PARTS.send : parts.send;
+  const tools = box.querySelector(toolsAt);
+  const send = sendAt ? box.querySelector(sendAt) : null;
+  if ((sendAt && !send) || !box.clientWidth) return 0;
   const style = getComputedStyle(box);
   return box.clientWidth
-    - tools.getBoundingClientRect().width
-    - send.getBoundingClientRect().width
+    - (tools?.getBoundingClientRect().width ?? 0)
+    - (send?.getBoundingClientRect().width ?? 0)
     - px(style, "--composer-inset-start")
     - px(style, "--composer-inset-end")
     - 2 * px(style, "--composer-line-text-x");
@@ -76,6 +83,8 @@ function textWidth(box: HTMLElement, text: string): number | null {
  * whether the long one is too wide for the line's room (a phone's, or with
  * Interrupt), so the short form shows instead. `rows` counts the draft's
  * rows of text, for `tall`: whether it is long enough to offer to expand.
+ * `parts` says where this box keeps its "+" and controls (lineRoom), for a
+ * field that is not the conversation's composer.
  */
 export function useComposerShape(
   box: HTMLElement | null,
@@ -84,6 +93,7 @@ export function useComposerShape(
   deps: readonly unknown[],
   placeholder?: string,
   rows?: () => number,
+  parts?: LineParts,
 ): { shape: ComposerShape; short: boolean; tall: boolean } {
   const [shape, setShape] = useState<ComposerShape>("block");
   const [short, setShort] = useState(false);
@@ -96,7 +106,7 @@ export function useComposerShape(
   const evaluate = useRef(() => {});
   evaluate.current = () => {
     if (!box) return;
-    const room = lineRoom(box);
+    const room = lineRoom(box, parts);
     // Only a laid-out box is measured (not jsdom's, which has no room).
     const long = placeholder && room > 0 ? textWidth(box, placeholder) : null;
     const tooWide = long !== null && room > 0 && !(long < room - LINE_RETURN_MARGIN);

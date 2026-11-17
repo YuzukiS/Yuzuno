@@ -121,8 +121,8 @@ export type Section = {
   /** What Core changed to accept this version (YN-14), in Core's words;
    * absent when it was accepted as sent, and from older Cores. */
   repairs?: { code: string; path: string; reason: string }[];
-  /** History entries on Home: why it is history. */
-  historyReason?: "seen" | "removed" | "resolved" | "archived";
+  /** History entries on Home: why it is history; lead-left: the user no longer lists its owner as a lead (YN-195). */
+  historyReason?: "seen" | "removed" | "resolved" | "archived" | "lead-left";
   /** History entries on Home: whether Home shows its source now (its owner may still edit Home). */
   currentSource?: boolean;
   /** The task this section is the card of and who answers for it (YN-86 S2a), as Core reads them now; absent for

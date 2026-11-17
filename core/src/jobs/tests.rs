@@ -1850,3 +1850,24 @@ fn a_command_that_cannot_be_found_is_noticed_at_submit_and_queued_all_the_same()
     assert!(receipt["notice"].is_string());
     assert!(with_notice(json!({"id":"j"}), None).get("notice").is_none());
 }
+
+/// Admission, the Jobs tick and the live lists read the few reserved Jobs
+/// every time: through `local_jobs_reserved`, in both forms they take, never
+/// every Job (YN-198). Verbatim from `active_jobs` and `QueueState::read`.
+#[test]
+fn reserved_jobs_are_read_through_their_own_index() {
+    let (_dir, s) = setup();
+    let db = s.db.read().unwrap();
+    for sql in [
+        "SELECT id FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.executor') IS NULL ORDER BY seq",
+        "SELECT COALESCE(SUM(reserved),0),
+                COALESCE(MAX(reserved=1 AND json_extract(data,'$.exclusive')=1),0),
+                MIN(CASE WHEN status='queued' AND json_extract(data,'$.exclusive')=1 THEN seq END)
+             FROM local_jobs WHERE (reserved=1 OR status='queued') AND json_extract(data,'$.executor') IS NULL",
+    ] {
+        let plan: Vec<String> = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap()
+            .query_map([], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+        assert!(plan.iter().any(|step| step.contains("INDEX local_jobs_reserved"))
+            && !plan.iter().any(|step| step.starts_with("SCAN local_jobs")), "{sql}: {plan:?}");
+    }
+}
