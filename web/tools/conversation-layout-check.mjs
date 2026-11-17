@@ -79,10 +79,10 @@ function fixture({ name = "Paddle-track", unrecognized = 0 } = {}) {
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 const browser = await launchBrowser();
 
-async function open(view, fx) {
+async function open(view, fx, motion = "reduce") {
   const context = await browser.newContext({
     viewport: { width: view.width, height: view.height }, hasTouch: view.touch, isMobile: view.touch,
-    reducedMotion: "reduce", locale: "zh-CN", timezoneId: "UTC",
+    reducedMotion: motion, locale: "zh-CN", timezoneId: "UTC",
   });
   await context.addInitScript((v) => {
     window.EventSource = class { close() {} };
@@ -228,26 +228,71 @@ try {
     check(below <= 47 && below >= 34, "duo: from the footnote's words to the window's bottom, 34px of inset and its row's own half (58.5 before)", { below });
     await context.close();
   }
-  // 2. Read up, then back to the end: the band comes with Back to latest only.
-  {
-    const { context, page } = await open(DUO, fixture());
-    await page.evaluate(() => {
-      const s = document.querySelector(".conversation-scroll");
-      s.scrollTop = s.scrollHeight - s.clientHeight - 700;
-      s.dispatchEvent(new Event("scroll"));
+  // 2. Reading older messages, then back to the end by the wheel, as a reader
+  // does, with motion and without: the band comes with Back to latest only,
+  // what is being read stays put as it comes, and at the end it closes (over
+  // --motion-small with motion) and leaves the end where opening it did, with
+  // no room held at the column's end (useReadingHold).
+  for (const motion of ["reduce", "no-preference"]) {
+    const tag = `duo, ${motion === "reduce" ? "reduced motion" : "motion"}`;
+    const { context, page } = await open(DUO, fixture(), motion);
+    await page.mouse.move(334, 500);
+    // Up by the wheel to ~700px from the end, then the place being read: the
+    // block a quarter down the pane.
+    for (let i = 0; i < 40; i++) {
+      const gap = await page.evaluate(() => { const s = document.querySelector(".conversation-scroll"); return s.scrollHeight - s.clientHeight - s.scrollTop; });
+      if (gap >= 700) break;
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(40);
+    }
+    await page.waitForTimeout(500);
+    const read = () => page.evaluate(() => {
+      const s = document.querySelector(".conversation-scroll"), box = s.getBoundingClientRect();
+      const y = box.top + box.height / 4;
+      const block = [...document.querySelectorAll(".conversation-inner [data-item-id], .conversation-inner .turn-divider")]
+        .find((el) => { const r = el.getBoundingClientRect(); return r.top <= y && r.bottom > y; });
+      if (block && !block.id) block.id = "yn204-read";
+      return block ? { id: block.id, top: block.getBoundingClientRect().top } : null;
     });
-    await page.waitForTimeout(600);
+    const before = await read();
     const up = await measure(page);
-    report.views.push({ name: "duo-reading-up", m: up });
-    await page.screenshot({ path: `${output}/duo-reading-up.png` });
-    check(!!up.pill && up.scroll.marginBottom === "44px", "duo, read up: Back to latest shows and the pane gives it its 44px band", { pill: up.pill, margin: up.scroll.marginBottom });
-    check(!!up.pill && up.pill.y >= up.scroll.bottom - 0.5 && up.pill.bottom <= up.composer.y, "duo, read up: Back to latest lies between the pane and the input box, over no text", { pill: up.pill, pane: up.scroll.bottom, composer: up.composer.y });
+    report.views.push({ name: `reading-up-${motion}`, m: up });
+    await page.screenshot({ path: `${output}/duo-reading-up-${motion}.png` });
+    check(!!up.pill && up.scroll.marginBottom === "44px", `${tag}, reading older messages: Back to latest shows and the pane gives it its 44px band`, { pill: up.pill, margin: up.scroll.marginBottom });
+    check(!!up.pill && up.pill.y >= up.scroll.bottom - 0.5 && up.pill.bottom <= up.composer.y, `${tag}, reading older messages: Back to latest lies between the pane and the input box, over no text`, { pill: up.pill, pane: up.scroll.bottom, composer: up.composer.y });
+    await page.waitForTimeout(400);
+    const still = await page.evaluate((id) => document.getElementById(id)?.getBoundingClientRect().top, before?.id);
+    check(!!before && near(still, before.top, 1), `${tag}, reading older messages: what is being read does not move as the band comes`, { before: before?.top, after: still });
+    // Back down by the wheel, frame times recorded while the band closes.
+    await page.evaluate(() => {
+      window.__frames = [];
+      let last = performance.now();
+      const tick = (now) => { window.__frames.push(now - last); last = now; if (window.__frames.length < 120) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+    for (let i = 0; i < 60; i++) {
+      const gap = await page.evaluate(() => { const s = document.querySelector(".conversation-scroll"); return s.scrollHeight - s.clientHeight - s.scrollTop; });
+      if (gap < 1) break;
+      await page.mouse.wheel(0, 120);
+      await page.waitForTimeout(40);
+    }
+    await page.waitForTimeout(600);
+    const back = await measure(page);
+    const frames = await page.evaluate(() => window.__frames.slice(1));
+    report.views.push({ name: `back-by-wheel-${motion}`, m: back, longestFrameMs: Math.round(Math.max(...frames)) });
+    const bottom = Math.max(...back.lastActions.kids.map((k) => k.bottom));
+    const room = await page.evaluate(() => document.querySelector(".conversation-inner").style.paddingBottom);
+    check(!back.pill && back.scroll.marginBottom === "0px" && back.scroll.atEnd, `${tag}, back at the end by the wheel: Back to latest and its band are gone`, { pill: back.pill, margin: back.scroll.marginBottom, atEnd: back.scroll.atEnd });
+    check(near(back.composer.y - bottom, 32.7, 2) && !room, `${tag}, back at the end by the wheel: the end sits as it did when opened, with no room held below it`, { gap: back.composer.y - bottom, room });
+    console.log(`  ${tag}: longest frame while the band closed ${Math.round(Math.max(...frames))}ms (headless Chromium, not a device)`);
+    // And Back to latest itself, from reading older messages again.
+    await page.mouse.wheel(0, -900);
+    await page.waitForTimeout(500);
     await page.locator(".jump-latest").click();
     await page.waitForTimeout(900);
-    const back = await measure(page);
-    const bottom = Math.max(...back.lastActions.kids.map((k) => k.bottom));
-    check(!back.pill && back.scroll.marginBottom === "0px" && back.scroll.atEnd, "duo, back to latest: the button and its band are gone, at the end", { pill: back.pill, margin: back.scroll.marginBottom, atEnd: back.scroll.atEnd });
-    check(near(back.composer.y - bottom, 32.7, 2), "duo, back to latest: the end sits as it did when opened", { gap: back.composer.y - bottom });
+    const pressed = await measure(page);
+    const end = Math.max(...pressed.lastActions.kids.map((k) => k.bottom));
+    check(!pressed.pill && pressed.scroll.atEnd && near(pressed.composer.y - end, 32.7, 2), `${tag}, Back to latest: one press ends at the end, as opened`, { pill: pressed.pill, atEnd: pressed.scroll.atEnd, gap: pressed.composer.y - end });
     await context.close();
   }
   // 3. A long name and an unrecognised job: the entries take a second row, and the tools come down to it.

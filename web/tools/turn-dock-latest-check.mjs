@@ -149,13 +149,25 @@ try {
 
   // Keyboard: focus inside the dock shows the stop too.
   await page.mouse.move(500, 400);
-  // Up as a reader goes, with the wheel: that ends Back to latest's one-press
-  // pin (readerScrollsUp), which keeps the end in view for a few frames and
-  // takes any scroll in that time for its own (YN-19). Since YN-204 the band
-  // closes as the button leaves, so the stop can leave a few frames before
-  // the pin does, and a scroll set from here alone was then the pin's: 2 of 6
-  // runs never left the end (4 of 5 on a rerun; main's build 5 of 5).
-  await page.mouse.wheel(0, -2000);
+  // Back to latest's one press is over: its pin (App.tsx pinLatest) keeps the
+  // end in view each frame until the pane has held still for three, and takes
+  // any scroll in that time for its own (YN-19); only the reader's own input
+  // (wheel, keys, touch, the scrollbar) ends it sooner. The stop leaving is not
+  // that moment: since YN-204 the band closes as Back to latest leaves, the
+  // stop can go a few frames before the pin does, and the scroll below then
+  // landed inside the pin and was put back at the end (2 of 6 runs; main's
+  // build 0 of 6). So the pane must hold still for six frames first.
+  await pane.evaluate((el) => new Promise((done) => {
+    let last = "", still = 0;
+    const look = () => {
+      const now = `${el.scrollTop}|${el.scrollHeight}|${el.clientHeight}`;
+      still = now === last ? still + 1 : 0;
+      last = now;
+      if (still >= 6) done();
+      else requestAnimationFrame(look);
+    };
+    requestAnimationFrame(look);
+  }));
   await pane.evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" }));
   await latestStop.waitFor({ state: "attached" });
   await page.locator(".turn-dock-stop").first().focus();
