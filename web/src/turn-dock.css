@@ -63,16 +63,21 @@
    was gone, so that its going moved nothing either, and at the end that
    left 69px between the last reply and the input area (44 of them empty):
    the end now keeps 16px. The button leaves under 48px from the end; when
-   it does, the band closes and an end already in view settles down by what
-   the band still covered, 44px at most. At once, not over a transition: the
-   pane's own height would be laid out every frame, under the two observers
-   that watch it (followGrowth, useReadingHold; YN-199 moves only what the
-   compositor draws). */
+   it does, the band closes over --motion-small and an end already in view
+   settles down by what the band still covered, 44px at most. */
 .app:not(.phone) .conversation-body > .conversation-scroll > .conversation-inner {
   padding-bottom: 16px;
 }
+.app:not(.phone) .conversation-body > .conversation-scroll {
+  transition: margin-bottom var(--motion-small) var(--ease-standard);
+}
 .app:not(.phone) .conversation-body[data-latest] > .conversation-scroll {
   margin-bottom: var(--latest-band);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app:not(.phone) .conversation-body > .conversation-scroll {
+    transition: none;
+  }
 }
 .app:not(.phone) .conversation-body > :is(.jump-latest, .jump-latest-leaving) {
   bottom: 6px;
