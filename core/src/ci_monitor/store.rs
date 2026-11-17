@@ -45,6 +45,17 @@ fn actor_key(actor: Option<&str>) -> String {
         .map(|s| format!("agent:{s}"))
         .unwrap_or_else(|| "user".into())
 }
+/// A watch as a reader sees it, but for when it was last tried, when GitHub
+/// last answered and when it is due again: every observation moves those.
+fn untimed(w: &Value) -> Value {
+    let mut w = w.clone();
+    if let Some(fields) = w.as_object_mut() {
+        for key in ["lastAttemptAt", "observedAt", "nextPollAt"] {
+            fields.remove(key);
+        }
+    }
+    w
+}
 fn watch(db: &Connection, id: &str) -> Result<Value> {
     let raw: String = db
         .query_row("SELECT data FROM ci_watches WHERE id=?1", [id], |r| {
@@ -531,10 +542,16 @@ impl Store {
         )?;
         Ok(Some(watch(&db, &id)?))
     }
-    pub(crate) fn ci_observe(&self, id: &str, result: Result<Observed, String>) -> Result<()> {
+    /// Records an observation of watch `id`. Answers whether it changed what
+    /// a reader sees (YN-198): a run new or changed, the watch in anything
+    /// but when it was tried, answered and is due again, or a row its notices
+    /// and lifecycle wrote. Most observations see what the last one saw.
+    pub(crate) fn ci_observe(&self, id: &str, result: Result<Observed, String>) -> Result<bool> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut w = watch(&tx, id)?;
+        let before = untimed(&w);
+        let mut runs_changed = false;
         let mut failures: i64 =
             tx.query_row("SELECT failures FROM ci_watches WHERE id=?1", [id], |r| {
                 r.get(0)
@@ -637,6 +654,7 @@ impl Store {
                 w["error"] = Value::Null;
                 w["truncated"] = json!(truncated);
                 failures = 0;
+                runs_changed = changed;
                 // A conflicting head waits for the conflict to be resolved
                 // as a commit waits for its first run: read less often.
                 if w["state"] == "waiting_for_run" || w["state"] == "conflicting" {
@@ -678,13 +696,15 @@ impl Store {
             "UPDATE ci_watches SET next_poll=?2,failures=?3,data=?4 WHERE id=?1",
             params![id, due, failures, w.to_string()],
         )?;
+        let written = tx.total_changes();
         notify(&tx, id)?;
         if w["state"] == "conflicting" {
             super::lifecycle::conflict_notice(&tx, &w)?;
         }
         super::lifecycle::reconcile(&tx, None)?;
+        let followed = tx.total_changes() != written;
         tx.commit()?;
-        Ok(())
+        Ok(runs_changed || followed || untimed(&w) != before)
     }
     pub(super) fn ci_unfinished(&self, id: &str) -> Result<Vec<Value>> {
         let db = self.db.read()?;
