@@ -14,6 +14,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS local_jobs_agent ON local_jobs(agent_id,seq);
         -- A task's Jobs, newest first (job_list by task, job_cost).
         CREATE INDEX IF NOT EXISTS local_jobs_task ON local_jobs(task_id,seq);
+        -- The few reserved Jobs, which admission, the Jobs tick and the live
+        -- lists read every time (YN-198). Keyed by reserved itself, so that a
+        -- query's `reserved=1 OR status IN (...)` reads it and local_jobs_state
+        -- instead of every row. An earlier Core keeps it up to date as it writes.
+        CREATE INDEX IF NOT EXISTS local_jobs_reserved ON local_jobs(reserved) WHERE reserved=1;
         CREATE TABLE IF NOT EXISTS local_job_settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS local_job_disk (id INTEGER PRIMARY KEY CHECK(id=1), reserve_gib INTEGER);
         -- The most Windows attempts at once on the PC this Core's WSL runs on;
