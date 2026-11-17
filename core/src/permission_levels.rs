@@ -89,6 +89,33 @@ pub(crate) fn read_only_allows(tool: &str) -> bool {
     READ_ONLY_TOOLS.contains(&tool)
 }
 
+/// The Yuzuno tools Core always refuses an executor (YN-192), so its
+/// tools/list leaves them out; a call is still refused by the tool's own
+/// check. Each is a lead's or the user's, and an executor makes no
+/// executor and releases no merge (an Agent is a lead or an executor, never
+/// both: agent_roles):
+/// - machines_list: machine_list.rs, not_lead
+/// - handover_update: handover_tools.rs, a lead of the Project
+/// - executor_templates_change: executor_template_changes.rs, NOT_LEAD
+/// - executor_release: executor_release.rs `releaser`, its dispatcher or a lead
+/// - merge_enqueue: merge_queue/store.rs, the task's dispatching lead
+/// - merge_cancel, merge_retry: merge_queue/store.rs `may_change`, whoever released it
+/// - merge_unpause, merge_revert: merge_queue/store.rs, a lead of the repository's Project
+/// - cleanup_restore: cleanup_plans/worktrees.rs, a lead of the plan's task's Project
+/// - project_route: project_requests/routes.rs, the Project's front desk, a lead
+///
+/// A tool added later is listed until named here.
+pub(crate) const LEAD_ONLY_TOOLS: [&str; 11] = [
+    "machines_list", "handover_update", "executor_templates_change", "executor_release",
+    "merge_enqueue", "merge_cancel", "merge_retry", "merge_unpause", "merge_revert",
+    "cleanup_restore", "project_route",
+];
+
+/// Whether an executor's tools/list shows Yuzuno's tool `tool`.
+pub(crate) fn executor_lists(tool: &str) -> bool {
+    !LEAD_ONLY_TOOLS.contains(&tool)
+}
+
 /// Claude Code's own tools a read-only Agent keeps: reading, finding and
 /// searching files, and ToolSearch, which only loads the schemas of tools it
 /// already has (Yuzuno's are deferred).
