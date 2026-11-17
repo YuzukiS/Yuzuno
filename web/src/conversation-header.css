@@ -4,8 +4,13 @@
   container-name: conversation;
 }
 .conversation-header {
+  /* Sizes of what can be pressed in the head (YN-204): a tool, the tools'
+     group's padding, and so the height every control there shares. */
+  --head-control: 32px;
+  --head-inset: 3px;
+  --head-height: calc(var(--head-control) + 2 * var(--head-inset) + 2px);
   gap: 16px;
-  align-items: center;
+  align-items: flex-end;
   padding: 12px 28px;
   border-bottom: 1px solid var(--line);
 }
@@ -159,6 +164,9 @@
 }
 @container conversation (max-width: 440px) {
   .conversation-header {
+    /* 40px in all, as tall as a finger's entry beside the name. */
+    --head-control: 34px;
+    --head-inset: 2px;
     gap: 8px;
     padding: 10px 14px;
   }
@@ -167,11 +175,9 @@
   }
   .conversation-header .conversation-actions {
     gap: 0;
-    padding: 2px;
   }
   .conversation-action {
     min-width: 27px;
-    height: 28px;
   }
   .conversation-actions .agent-settings-button > span,
   .agent-settings-button .settings-chevron,
@@ -209,4 +215,39 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+/* One height for everything that can be pressed in the head (YN-204, R-16):
+   the tools' group and the two entries beside the name are sized from the
+   same numbers, so their edges and centres line up in every input mode. The
+   head's rows end together: where the name leaves the entries no room they
+   take a second row and the tools come down to it, a row of controls under
+   the name, where the tools floated between the two rows before (85px head
+   at 669 with a long name, tools centred at 172 between rows at 150 and
+   190; 93px on a 390px phone, the same). */
+.conversation-header .conversation-actions {
+  padding: var(--head-inset);
+}
+.conversation-action {
+  height: var(--head-control, 32px);
+}
+/* On one row the name and its status are centred on the controls' line. */
+.conversation-heading {
+  min-height: var(--head-height);
+}
+.conversation-header :is(.work-activity-entry, .conversation-index-entry) {
+  align-items: center;
+  height: var(--head-height);
+  min-height: 0;
+}
+.conversation-header :is(.work-activity-entry, .conversation-index-entry) {
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+}
+.conversation-header :is(.work-activity-entry, .conversation-index-entry):is(:hover, :focus-visible) {
+  border-color: var(--line);
+  background: var(--input);
 }

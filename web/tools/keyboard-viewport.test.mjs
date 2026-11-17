@@ -193,7 +193,11 @@ test("a touched shell uses it, and only a touched one, with the short layout whi
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
   const shell = css.match(/\.app\.phone,\s*\.app\.phone\.rail-hidden \{[^}]*\}/)?.[0] ?? "";
   assert.match(shell, /height:\s*min\(100dvh,\s*var\(--visual-height,\s*100dvh\)\)/, shell);
-  assert.match(css, /:root\[data-keyboard\] \.app\.phone \{\s*padding-bottom:\s*0;\s*\}/);
+  // The keyboard covers the home indicator, of a phone and of a wider touch
+  // screen alike: no inset is kept for it (YN-204; .app pads its bottom by
+  // --shell-bottom).
+  assert.match(css, /:root\[data-keyboard\] \.app \{\s*--shell-bottom:\s*0px;\s*\}/);
+  assert.match(css, /padding: var\(--safe-top\) var\(--safe-right\) var\(--shell-bottom\) var\(--safe-left\);/);
   // With the keyboard up, the short layout of a phone held sideways (the max-height: 500px block):
   // Simulator Safari showed the turn dock drawn over the composer and Send at 377 px.
   assert.match(css, /:root\[data-keyboard\] \.app\.phone \{\s*grid-template-rows:\s*57px minmax\(0, 1fr\) 0;\s*\}/);
