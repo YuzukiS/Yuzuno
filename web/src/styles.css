@@ -50,6 +50,16 @@
   --motion-settle: 1200ms; /* the one landing or return highlight */
   /* Text pacing only, for stream-reveal: opacity, never controls or layout. */
   --motion-reveal: 420ms;
+  /* A Home card changing as the user acts on it (YN-203): its edge over
+     --motion-card; where what it shows changes, the old fades out over
+     --motion-card-out and only then the new fades in over --motion-card-in
+     (out + in = card). 500 in all, as the user set it ("再慢一点，一共
+     500ms", yn-203/ask round 4); out before in as the user asked ("渐隐到
+     消失之后再开始渐显", round 3), as Material's fade through, out the
+     shorter, in the 3 : 5 the reviewed preview used. */
+  --motion-card: 500ms;
+  --motion-card-out: 190ms;
+  --motion-card-in: 310ms;
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   /* Small controls and small objects only: never a dialog, and never an

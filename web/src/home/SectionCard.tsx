@@ -1,4 +1,4 @@
-import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -24,7 +24,7 @@ import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
 import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
-import { collapseFrom } from "../surface";
+import { dissolveFrom, fadeInFrom, resizeFrom, resizeTarget, showFocusWhenSettled, snapshotOf, watchAct, type Drawn, type Snapshot } from "../surface";
 import { Tip, TipText } from "../Tip";
 import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
@@ -77,46 +77,99 @@ function useReservedHeight(content: string, collapsed: boolean) {
     if (!element) return;
     // A collapsed card holds no room, but its height is what a new version
     // must not shrink. Expanded again, at the same content, it holds none.
+    // (How it moves to its new height is CardResize's, YN-203.)
     if (collapsed) {
       element.style.minHeight = "";
-      last.current = { content, height: element.getBoundingClientRect().height };
+      last.current = { content, height: resizeTarget(element) };
       return;
     }
     const previous = last.current;
     if (previous && previous.content !== content && previous.height > 0)
       element.style.minHeight = `${previous.height}px`;
-    last.current = { content, height: element.getBoundingClientRect().height };
+    last.current = { content, height: resizeTarget(element) };
   });
+  // Let go by the reader: the card closes up to its content (YN-203).
   const release = () => {
-    if (ref.current?.style.minHeight) ref.current.style.minHeight = "";
+    const element = ref.current;
+    if (!element?.style.minHeight) return;
+    const box = element.getBoundingClientRect();
+    element.style.minHeight = "";
+    resizeFrom(element, { height: box.height, top: box.top });
   };
   return [ref, release] as const;
 }
 
 /**
- * A card the user's own reply turned into its answer card (YN-21) collapses
- * to it from the height it had just before (surface.ts collapseFrom). Drawn
- * inside the card, it reads that height before React changes the card, as
- * each new `collapse` comes; it plays before the frame is painted, once the
- * deck has packed the card: ProjectDeck's layout effect, after the card's, when
- * Core's read changed it, else here (Reply again closes it by its own state).
- * Anything held for the card it was is let go first.
+ * A card changes as the user acts on it (YN-203): their reply turns an Ask
+ * into its answer card (YN-21), Reply again and Question and details open
+ * its body and close it, a card's fold, a report's Reply; and Core sends a
+ * new version of what it holds (`content`). Each time, the card as it was
+ * drawn is read before React changes it: its edge then moves from that
+ * height to its new one (surface.ts resizeFrom), from where a change under
+ * way had it, and what it showed fades out over what it shows now
+ * (dissolveFrom). What changed is kept unseen until the old has faded out,
+ * then fades in (fadeInFrom): the user's round 3, "渐隐到消失之后再开始渐显".
+ * What did not change is the same in both and does not move. Played before
+ * the frame is painted, once the deck has packed the card (ProjectDeck's
+ * layout effect, after the card's, when Core's read changed it). An act of
+ * the user's lets go of anything held for the card it was; a new version
+ * from Core keeps what is held (T-19 HM:A4: it does not shrink while read).
  */
-type CollapseProps = { target: RefObject<HTMLElement | null>; collapse: string | null };
-class CollapseFrom extends Component<CollapseProps, object, number | null> {
-  getSnapshotBeforeUpdate(previous: Readonly<CollapseProps>) {
-    const { target, collapse } = this.props;
-    if (collapse === null || collapse === previous.collapse) return null;
-    return target.current?.getBoundingClientRect().height ?? null;
+type ResizeProps = {
+  target: RefObject<HTMLElement | null>;
+  /** The Ask or its answer card; a report's summary card (SummaryCard), whose Reply alone is followed. */
+  face: "ask" | "answer" | "summary";
+  /** Its body shown. */
+  open: boolean;
+  /** Each own reply sent from it, and each Reply again on an Ask's reply block: what changes is its reply area. */
+  step: string;
+  /** A report's reply being written on it. */
+  reply: boolean;
+  /** Core's version of what it holds. */
+  content: string;
+};
+type Before = { drawn: Drawn; snapshot: Snapshot | null };
+/** Where what changed is, by what changed: kept unseen while the old fades out. */
+const CHANGED = {
+  face: ":scope > :not(.card-ghost)",
+  open: ":scope > .home-card-body",
+  close: ":scope > .home-card-glance",
+  step: ":scope > .home-card-body .home-ask",
+  reply: ":scope > .home-card-reply",
+  content: ":scope > .home-card-body, :scope > .home-answer > .home-answer-update, :scope > .home-answer > .home-answer-next, :scope > .home-card-glance",
+};
+const same = (a: Readonly<ResizeProps>, b: Readonly<ResizeProps>) =>
+  a.face === b.face && a.open === b.open && a.step === b.step && a.reply === b.reply && a.content === b.content;
+export class CardResize extends Component<ResizeProps, object, Before | null> {
+  getSnapshotBeforeUpdate(previous: Readonly<ResizeProps>) {
+    const card = this.props.target.current;
+    if (!card || same(previous, this.props)) return null;
+    const box = card.getBoundingClientRect();
+    return { drawn: { height: box.height, top: box.top }, snapshot: snapshotOf(card) };
   }
-  componentDidUpdate(_previous: Readonly<CollapseProps>, _state: object, from?: number | null) {
-    const element = this.props.target.current;
-    if (from == null || !element) return;
-    element.style.minHeight = "";
+  componentDidUpdate(previous: Readonly<ResizeProps>, _state: object, before?: Before | null) {
+    const card = this.props.target.current;
+    if (!before || !card) return;
+    const now = this.props;
+    const acted = previous.face !== now.face || previous.open !== now.open || previous.step !== now.step || previous.reply !== now.reply;
+    if (acted) card.style.minHeight = "";
+    const changed =
+      previous.face !== now.face ? CHANGED.face
+      : previous.open !== now.open ? (now.open ? CHANGED.open : CHANGED.close)
+      : previous.step !== now.step ? CHANGED.step
+      : previous.reply !== now.reply ? (now.reply ? CHANGED.reply : null)
+      : CHANGED.content;
     queueMicrotask(() => {
-      if (!element.isConnected) return;
-      packDeckOf(element);
-      collapseFrom(element, from);
+      if (!card.isConnected) return;
+      packDeckOf(card);
+      resizeFrom(card, before.drawn);
+      dissolveFrom(card, before.snapshot);
+      if (changed)
+        for (const part of card.querySelectorAll<HTMLElement>(changed))
+          if (!part.hidden && !part.classList.contains("card-ghost")) fadeInFrom(part);
+      // Focus that went into the body it opened (Reply again) is shown, once it is there.
+      const body = card.querySelector<HTMLElement>(":scope > .home-card-body");
+      if (now.open && !previous.open && body) showFocusWhenSettled(card, body);
     });
   }
   render() {
@@ -204,6 +257,9 @@ export const SectionCard = memo(function SectionCard({
   // Until Core's read has that reply (the reply's time is no longer the one Core showed as it was sent), the
   // card stays as it is; Reply again's opened card then closes to its answer card with the new reply on it.
   const [awaiting, setAwaiting] = useState<{ before: string | null } | null>(null);
+  // Each step is a Reply again from the reply on an open Ask's face (AskReply).
+  const [again, setAgain] = useState(0);
+  const againHere = useCallback(() => setAgain((n) => n + 1), []);
   if (awaiting && (section.ask?.repliedAt ?? null) !== awaiting.before) {
     setAwaiting(null);
     setRowOpen(false);
@@ -220,6 +276,13 @@ export const SectionCard = memo(function SectionCard({
   const collapse = short && !awaiting && own?.version === section.version ? String(own.n) : null;
   const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
+  // A press in the card, by pointer or keyboard: what it changes there glides too (YN-203, surface.ts watchAct).
+  const acted = () => {
+    if (ref.current) watchAct(ref.current);
+  };
+  const actedByKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Enter" && !event.nativeEvent.isComposing) acted();
+  };
   // Focus that went with the reply's controls goes to the card, which says what was answered.
   useLayoutEffect(() => {
     const card = ref.current;
@@ -245,6 +308,17 @@ export const SectionCard = memo(function SectionCard({
     setReplyOpened(true);
     setReplying((open) => !open);
   };
+  // What the card shows, as far as its size goes (YN-203): a new one resizes it.
+  const resize = (
+    <CardResize
+      target={ref}
+      face={short ? "answer" : "ask"}
+      open={!collapsed}
+      step={`${own?.n ?? 0}:${again}`}
+      reply={replyable && replying}
+      content={`${section.version}:${section.ask?.state ?? ""}`}
+    />
+  );
   // Bound to a task (YN-86 S2b): who answers for it takes the byline's place at its foot.
   const bound = section.card ?? null;
   // New or Updated since the user last read it (YN-86: marked seen, or a report opened whole); Seen is still offered
@@ -353,9 +427,11 @@ export const SectionCard = memo(function SectionCard({
         tabIndex={-1}
         className={`home-section kind-ask is-replied is-short is-answer${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${rowOpen ? " is-open" : " is-collapsed"}`}
         onPointerDown={release}
+        onClickCapture={acted}
+        onKeyDownCapture={actedByKey}
         aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
       >
-        <CollapseFrom target={ref} collapse={collapse} />
+        {resize}
         {notice}
         <header className="home-section-head">
           {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
@@ -478,9 +554,11 @@ export const SectionCard = memo(function SectionCard({
       tabIndex={-1}
       className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}${collapsed ? " is-collapsed" : ""}`}
       onPointerDown={release}
+      onClickCapture={acted}
+      onKeyDownCapture={actedByKey}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
-      <CollapseFrom target={ref} collapse={collapse} />
+      {resize}
       {notice}
       <header className="home-section-head">
         <FoldButton
@@ -594,6 +672,7 @@ export const SectionCard = memo(function SectionCard({
             readOnly={readOnly}
             onSent={onChanged}
             onReplied={repliedHere}
+            onAgain={againHere}
           />
           {!readOnly && !replied && (
             <div className="home-defer">

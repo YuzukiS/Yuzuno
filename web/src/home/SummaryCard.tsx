@@ -40,7 +40,8 @@ import { useRefreshChanged } from "./refresh-changed";
 import { RefreshPanel } from "./RefreshPanel";
 import { cadenceLabel, refreshClock, refreshDateTime, refreshStatus } from "./refresh-state";
 import { refreshText } from "./refresh-text";
-import { DataAsOf, PinButton } from "./SectionCard";
+import { CardResize, DataAsOf, PinButton } from "./SectionCard";
+import { watchAct } from "../surface";
 import { Tip, TipText } from "../Tip";
 import { SectionBody } from "./SectionBody";
 import type { Section } from "./types";
@@ -136,6 +137,14 @@ export const SummaryCard = memo(function SummaryCard({
     setReplyOpened(true);
     setReplying((value) => !value);
   };
+  // Its Reply opening and closing moves the card's edge, and the reply fades in once the card as it was has faded
+  // out (YN-203, CardResize); what is pressed in the reply (Send, Enter) glides too (surface.ts watchAct). Only the
+  // reply, and only on its project's deck or a team's details: a pinned widget's slot keeps its own size as before.
+  const self = useRef<HTMLElement>(null);
+  const moves = !widget;
+  const actedInReply = (target: EventTarget) => {
+    if (moves && self.current && target instanceof Element && target.closest(".home-card-reply")) watchAct(self.current);
+  };
   // Bound to a task (YN-86 S2b): who answers for it takes the byline's place at its foot, with its Reply.
   const bound = section.card ?? null;
   const ended = taskEnded(bound);
@@ -179,6 +188,11 @@ export const SummaryCard = memo(function SummaryCard({
   );
   const card = (
     <article
+      ref={self}
+      onClickCapture={(event) => actedInReply(event.target)}
+      onKeyDownCapture={(event) => {
+        if (event.key === "Enter" && !event.nativeEvent.isComposing) actedInReply(event.target);
+      }}
       id={domId}
       data-section-key={widget ? undefined : section.key}
       data-pin-widget={widget?.id}
@@ -189,6 +203,7 @@ export const SummaryCard = memo(function SummaryCard({
       className={`home-section home-summary-card kind-${section.kind}${size ? ` size-${size}` : ""}${content.kind === "unnamed" ? " is-unnamed" : ""}${contained ? " is-whole" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
       aria-labelledby={`${domId}-title`}
     >
+      <CardResize target={self} face="summary" open step="" reply={moves && replyable && replying} content="" />
       {notice}
       <header className="home-summary-head">
         {sub && <span className="home-sub-of">{home.inTopic(topic)}</span>}

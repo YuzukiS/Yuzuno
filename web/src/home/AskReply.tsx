@@ -331,8 +331,9 @@ export function AskReply({
   face = false,
   againRequest = 0,
   onReplied,
+  onAgain,
   ...context
-}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number; onReplied?: (version: number, before: string | null) => void }) {
+}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number; onReplied?: (version: number, before: string | null) => void; onAgain?: () => void }) {
   const language = useLanguage();
   const t = homeText(language);
   const ask = section.ask!;
@@ -642,6 +643,8 @@ export function AskReply({
             onClick={() => {
               setReopened((n) => n + 1);
               setAgain(true);
+              // Its card grows back to the reply (YN-203).
+              onAgain?.();
             }}
           >
             {t.replyAgain}
