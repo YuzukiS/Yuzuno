@@ -531,3 +531,38 @@ async fn an_opencode_executor_on_a_routing_key_counts_what_its_answers_cost() {
         ws.close_agent(id).await.unwrap();
     }
 }
+
+/// YN-192 (16): an executor's Claude bridge starts with Claude Code's auto
+/// memory off, whatever its profile; another Agent's starts as before.
+#[tokio::test]
+async fn an_executors_claude_bridge_starts_without_auto_memory() {
+    let _env = crate::claude::BRIDGE_ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    stub_bridge(dir.path());
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    for id in ["exec", "plain"] {
+        ws.store.insert(&agent(id, "claude", "/tmp")).unwrap();
+    }
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at)
+         VALUES('exec','executor','design','task','agent:lead','dispatched','now','now')", []).unwrap();
+    let names = |launch: &ClaudeLaunch| launch.env.iter().map(|(n, v)| (n.clone(), v.expose().to_string())).collect::<Vec<_>>();
+
+    let executor = ws.claude_launch("exec").await.unwrap();
+    assert_eq!(names(&executor), [("CLAUDE_CODE_DISABLE_AUTO_MEMORY".to_owned(), "1".to_owned())]);
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let bridge = crate::claude::Bridge::spawn_with(tx, &executor.env).await.unwrap();
+    assert!(next_seen(dir.path(), 1).await.lines().any(|line| line == "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"), "the executor's bridge has it");
+
+    let plain = ws.claude_launch("plain").await.unwrap();
+    assert!(plain.env.is_empty() && plain.executable.is_none(), "another Agent's bridge starts as before");
+    // With a profile too: the key's variables, then the switch.
+    KeyStore::of(&ws.data_dir).put_local("anthropic", Provider::Anthropic, Secret::new(KEY.into())).unwrap();
+    ws.store.set_runtime_profile("exec", Some(&RuntimeProfile::ApiKey { key_id: "anthropic".into() })).unwrap();
+    let keyed = ws.claude_launch("exec").await.unwrap();
+    assert_eq!(names(&keyed).into_iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        ["ANTHROPIC_API_KEY", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"]);
+    drop(bridge);
+    std::env::remove_var("YUZUNO_NODE");
+    std::env::remove_var("YUZUNO_CLAUDE_BRIDGE");
+}
