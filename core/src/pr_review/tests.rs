@@ -1476,7 +1476,77 @@ async fn a_queued_round_cancelled_before_it_starts_does_not_count() {
     assert_eq!(run["status"], "cancelled", "{run}");
     assert!(run["nativeStartedAt"].is_null(), "it never started");
     assert_eq!(run["roundLimit"]["counts"], false, "{run}");
-    assert_eq!(round_limit::counts(std::slice::from_ref(&run)), [false]);
+    // As the limit reads it: through the PR's stored rounds (R3 58b8b376).
+    let started = store::started_rounds(&ws.store.db.read().unwrap(), &json!({"repositoryId":7,"number":1})).unwrap();
+    assert_eq!(started, (0, 0), "{run}");
+}
+
+/// YN-192 (20), R3 58b8b376 P1: the round limit as Core enforces it, through
+/// the PR's stored rounds (`started_rounds`, `counts_toward_limit`,
+/// `counted_at_head`) and the admission of a new round. A queued round holds
+/// its place; cancelled before it started, it leaves all three and a new
+/// round is admitted. One cancelled after it started still counts and keeps
+/// its start and ledger; an older cancelled round without a stamp counts as
+/// it always did.
+#[test]
+fn a_round_cancelled_in_the_queue_frees_its_place_in_the_prs_round_limit() {
+    let head = "c".repeat(40);
+    let pr = json!({"repositoryId":7,"number":1});
+    let limit = |s: &Store, id: &str| {
+        let db = s.db.read().unwrap();
+        (
+            store::started_rounds(&db, &pr).unwrap().0,
+            store::counts_toward_limit(&db, id).unwrap(),
+            store::counted_at_head(&db, Some(7), Some(1), &head).unwrap().map(|(id, _)| id),
+        )
+    };
+    let refused = |s: &Store, task: &str, key: &str| {
+        let error = s.create_pr_review(Some("dev"), &input(task, key), key).unwrap_err().to_string();
+        assert!(error.starts_with("round_limit:"), "{error}");
+    };
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "first");
+    let mut waits = input(&task, "waits");
+    waits.head_sha = Some(head.clone());
+    s.create_pr_review(None, &waits, "waits").unwrap();
+    s.queue_pr_review("waits").unwrap();
+    // Queued, it holds the PR's second round (open, it also keeps any other
+    // round of the PR from starting meanwhile).
+    assert_eq!(limit(&s, "waits"), (2, true, Some("waits".to_owned())));
+    // Cancelled before it started, it leaves the limit; a new round is admitted.
+    assert_eq!(s.cancel_queued_pr_review("waits").unwrap(), store::QueuedCancel::Cancelled);
+    assert_eq!(limit(&s, "waits"), (1, false, None), "{}", s.pr_review_report(&task, "waits").unwrap());
+    let (mut ran, created) = s.create_pr_review(Some("dev"), &input(&task, "ran"), "ran").unwrap();
+    assert!(created, "{ran}");
+    // That one starts, then is cancelled by its reviewer: it counts.
+    ran["status"] = json!("running");
+    ran["headSha"] = json!(&head);
+    ran["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    ran["ledger"]["calls"] = json!(4);
+    s.save_pr_review(&ran, None).unwrap();
+    ran["status"] = json!("cancelled");
+    s.save_pr_review(&ran, None).unwrap();
+    assert_eq!(limit(&s, "ran"), (2, true, Some("ran".to_owned())));
+    let run = s.pr_review_report(&task, "ran").unwrap();
+    assert_eq!((run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()), (Some("2026-11-17T00:00:00Z"), Some(4)), "{run}");
+    assert!(run["roundLimit"].is_null(), "{run}");
+    refused(&s, &task, "fourth");
+    // Older cancelled rounds without a stamp, with or without a ledger, count.
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    for key in ["old", "older"] {
+        let mut old = input(&task, key);
+        old.head_sha = Some(head.clone());
+        let (mut run, _) = s.create_pr_review(None, &old, key).unwrap();
+        run["status"] = json!("cancelled");
+        if key == "older" {
+            run.as_object_mut().unwrap().remove("ledger");
+        }
+        s.save_pr_review(&run, None).unwrap();
+    }
+    assert_eq!(limit(&s, "older"), (2, true, Some("old".to_owned())));
+    refused(&s, &task, "next");
 }
 
 /// YN-192 (20): a queued round never started, so a restart leaves it queued
