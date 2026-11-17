@@ -107,6 +107,7 @@
         "refs": 12,
         "items": 3
       },
+      "cards": 6,
       "research": {
         "claims": 12,
         "plots": 8,
@@ -199,6 +200,7 @@
         "- summary_may_be_missing: A Table or chart and no non-empty Markdown, Findings or Metrics block.",
         "- duplicate_ref: One LiveRefs or Sources block that names the same target twice.",
         "- many_refs: Over 12 LiveRefs and Sources entries in one section, each target counted once per block.",
+        "Card faces: an accepted brief_update, and a validateOnly check that passes, tell in cards how each report or status card it writes shows on Home, read by Home's own rules from the section as Core keeps it: at most 6 (moreCards counts the rest), and cardsUnavailable says why any are missing, which changes nothing else in the answer. Asks have none. Exact: summary (named, or unnamed: how the body opens), lead {block, text, chars, otherParagraphs}, visual {from: named, file (the first kept image or page the body shows, when no visual is named or the named one is not a picture), opening or none; block, type, file, drawn: what the card's size draws, e.g. a table's rows and columns}, dropped (a summary slot you named that the card does not use, and why), conditions, files, opensReport and notOnCard (the blocks left to the page). wide and phone are references, not the reader's device: Home's project page at the default text size, a 1440 px window and a 390 px touch phone, the card at its own span; their estimate (the lead's lines and where it is cut, what of a table or Metrics fits fully or partly in the frame, heightPx) comes from font metrics and Home's CSS, not a browser. Read them to check that the first look carries your conclusion, and that no limit a number depends on falls past the cut.",
         "",
         "## charts",
         "- LineChart {id, title?≤160, x{label≤160, unit?≤30}, y{label≤160, unit?≤30}, series?[1-12]{name≤160, points[1-500]([2-2]())}, data?{attachment, x≤80, series[1-12]{name≤160, column≤80}}}: A line chart from inline points or a data attachment. Each point is an [x, y] pair. title defaults to \"Chart\".",
@@ -450,7 +452,8 @@
           "- long_markdown: A Markdown block over 1200 characters, which Home shows in a report or status from its headings and first paragraph, the rest behind Show all; or a section whose Markdown is over 3000 characters in all.",
           "- summary_may_be_missing: A Table or chart and no non-empty Markdown, Findings or Metrics block.",
           "- duplicate_ref: One LiveRefs or Sources block that names the same target twice.",
-          "- many_refs: Over 12 LiveRefs and Sources entries in one section, each target counted once per block."
+          "- many_refs: Over 12 LiveRefs and Sources entries in one section, each target counted once per block.",
+          "Card faces: an accepted brief_update, and a validateOnly check that passes, tell in cards how each report or status card it writes shows on Home, read by Home's own rules from the section as Core keeps it: at most 6 (moreCards counts the rest), and cardsUnavailable says why any are missing, which changes nothing else in the answer. Asks have none. Exact: summary (named, or unnamed: how the body opens), lead {block, text, chars, otherParagraphs}, visual {from: named, file (the first kept image or page the body shows, when no visual is named or the named one is not a picture), opening or none; block, type, file, drawn: what the card's size draws, e.g. a table's rows and columns}, dropped (a summary slot you named that the card does not use, and why), conditions, files, opensReport and notOnCard (the blocks left to the page). wide and phone are references, not the reader's device: Home's project page at the default text size, a 1440 px window and a 390 px touch phone, the card at its own span; their estimate (the lead's lines and where it is cut, what of a table or Metrics fits fully or partly in the frame, heightPx) comes from font metrics and Home's CSS, not a browser. Read them to check that the first look carries your conclusion, and that no limit a number depends on falls past the cut."
         ]
       },
       "charts": {

@@ -45,8 +45,12 @@ mod refs;
 mod research;
 mod sections;
 mod update;
+/// How each card brief_update writes shows on Home, in its answer (YN-209).
+mod faces;
 mod patch;
 mod writes;
+#[cfg(test)]
+mod faces_tests;
 #[cfg(test)]
 mod preview_tests;
 #[cfg(test)]
@@ -215,7 +219,7 @@ fn description(tool: &str) -> &'static str {
     let generated = brief_contract().and_then(|brief| contract_text(&brief["toolDescriptions"][tool]));
     generated.unwrap_or(match tool {
         "brief_get" => "Read your Project's Brief: its version and sections (with owners and ask state), what you own and your asks the user replied to; the limits are in brief_guide limits. Call it before brief_update; its version is your expectedVersion.",
-        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with those sections as they are now and an index of the Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide.",
+        "brief_update" => "Change your Project's Brief, once per Turn: put, edit (replace blocks by id), resolve, remove or claim sections, or noChange:true when nothing of yours changed. Needs the expectedVersion from brief_get; it is rejected, with those sections as they are now and an index of the Brief attached, when a section it changes was written since. Rejections list problems to fix; see brief_guide. An accepted update, or a validateOnly check that passes, says in cards how each report or status card shows on Home (brief_guide content).",
         _ => "The Project Brief guide: section kinds, keys and owners, asks, content blocks, charts, attachments, limits and rejection codes, with examples. Pass part to read one part.",
     })
 }

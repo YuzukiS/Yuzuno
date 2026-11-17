@@ -7,11 +7,11 @@
 //! the two, outside any database lock, and attachment files are copied
 //! there too (see attachments::stage).
 use super::{
-    attachments, cards, patch,
+    attachments, cards, faces, patch,
     sections::{self, Owners, Row},
     writes, *,
 };
-use crate::results::{reliable_turn, Pinned, Validator};
+use crate::results::{reliable_turn, BriefCards, Pinned, Validator};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const TOOL: &str = "brief_update";
@@ -66,6 +66,15 @@ impl Checker {
             Checker::Advising(check) => Ok(check(section).map(|(section, advice)| accepted((section, advice, vec![])))),
             #[cfg(test)]
             Checker::Repairing(check) => Ok(check(section).map(|(section, repairs)| accepted((section, vec![], repairs)))),
+        }
+    }
+
+    /// The card faces of sections it accepted (YN-209, faces.rs): never a check.
+    pub(super) async fn cards(&self, requests: Vec<Value>) -> BriefCards {
+        match self {
+            Checker::Node(validator) => validator.brief_cards(requests).await,
+            #[cfg(test)]
+            _ => faces::fake(requests),
         }
     }
 }
@@ -219,6 +228,10 @@ pub(super) struct Change {
     /// Some(Some(value)) sets it from `value` as sent. Never in `section`:
     /// the validator checks the card, refresh_writes the refresh.
     pub refresh: Option<Option<Value>>,
+    /// What the card face of a report or status put, edit or patch is read
+    /// with besides the section (YN-209, faces.rs). Set by start, never
+    /// accepted from the Agent's request; None for anything else.
+    pub card: Option<faces::Input>,
 }
 
 pub(super) struct Request {
@@ -233,6 +246,9 @@ pub(super) struct Request {
     pub advice: Vec<Value>,
     /// Every change's repairs by paths in the change (YN-14), set with advice.
     pub repairs: Vec<Value>,
+    /// The card faces an accepted answer tells (YN-209), set once the
+    /// attachments are staged; commit adds them before the answer is kept.
+    pub cards: Option<faces::Faces>,
 }
 
 /// Whether `input` asks only to be checked (validateOnly: true).
@@ -330,7 +346,7 @@ fn parse(input: &Value) -> Result<Request, Vec<Value>> {
         }
     }
     match expected {
-        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes, validate_only: validate_only(input), advice: vec![], repairs: vec![] }),
+        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes, validate_only: validate_only(input), advice: vec![], repairs: vec![], cards: None }),
         _ => Err(problems),
     }
 }
@@ -385,7 +401,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task, refresh });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task, refresh , card: None });
     }
     if op == Op::Patch {
         return parse_patch(&at, key, object, problems);
@@ -395,7 +411,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             problems.push(problem("invalid_change", format!("{at}.{extra}"), "resolve, remove and claim take only op and key.", "sections"));
             return None;
         }
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None, refresh: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![], task: None, refresh: None , card: None });
     }
     let kind = object.get("kind").and_then(Value::as_str).filter(|kind| matches!(*kind, "ask" | "report" | "status"));
     let Some(kind) = kind else {
@@ -423,7 +439,7 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     section.as_object_mut().unwrap().remove("op");
     // The card's refresh is Core's (refresh_writes.rs), not the section's.
     section.as_object_mut().unwrap().remove("refresh");
-    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task, refresh })
+    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![], task, refresh , card: None })
 }
 
 /// A put's or edit's `task` (YN-86 S2a), as Change keeps it: None when left
@@ -491,7 +507,7 @@ fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, pro
         }
     }
     let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None, refresh: None })
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![], task: None, refresh: None , card: None })
 }
 
 pub(super) struct Caller {
@@ -927,6 +943,14 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
     let mut request = request;
     let mut problems = vec![];
     for (index, change) in request.changes.iter_mut().enumerate() {
+        if change.op == Op::Put {
+            // A report or status card's face (YN-209) is read with its refresh, the one it keeps when the put names none.
+            if faces::shown(&change.kind) {
+                let live = sections::live_key(&db, &ctx.project, &change.key)?;
+                change.card = Some(faces::input(&db, &ctx.project, change, live.as_ref())?);
+            }
+            continue;
+        }
         if !matches!(change.op, Op::Edit | Op::Patch) {
             continue;
         }
@@ -939,6 +963,9 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
             Ok(section) => {
                 change.section = section;
                 change.previous_body = Some(row.data["body"].clone());
+                if faces::shown(&row.kind) {
+                    change.card = Some(faces::input(&db, &ctx.project, change, Some(&row))?);
+                }
             }
             Err(found) => problems.extend(found),
         }
@@ -1180,8 +1207,14 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
             .map(|c| if c.op == Op::Put { c.section.clone() } else { Value::Null })
             .collect();
         let (cache, data_dir) = (attachments::dir(&ws.data_dir), ws.data_dir.clone());
-        let problems = crate::db::blocking(move || attachments::inspect(&cache, &data_dir, remote, &sections)).await?;
-        return Ok(Ok(preview((!problems.is_empty()).then(|| rejection(problems, None)), true, advice, repairs)));
+        let (problems, taken) = crate::db::blocking(move || attachments::inspect(&cache, &data_dir, remote, &sections)).await?;
+        if !problems.is_empty() {
+            return Ok(Ok(preview(Some(rejection(problems, None)), true, vec![], vec![])));
+        }
+        // As a write would answer, with each card's face read from the attachments as staging would take them.
+        let mut answer = preview(None, true, advice, repairs);
+        faces::attach(&mut answer, &faces::read(checker, &request.changes, &normalized, &taken).await);
+        return Ok(Ok(answer));
     }
     request.advice = advice;
     request.repairs = repairs;
@@ -1201,6 +1234,9 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
         collect(ws).await;
         return Ok(Err(rejection(problems, None)));
     }
+    // Each card's face, from the attachments as Core took them; the write's own checks follow, unchanged.
+    let taken: Vec<Vec<Value>> = staged.iter().map(|section| section.iter().map(|one| one.entry.clone()).collect()).collect();
+    request.cards = Some(faces::read(checker, &request.changes, &normalized, &taken).await);
     // A refresh this update changes is looked at once it is written (refresh.rs `Timer`).
     let refreshes = request.changes.iter().any(|change| change.refresh.is_some() || change.op == Op::Remove);
     let (store, who) = (ws.store.clone(), actor.to_owned());
@@ -1314,6 +1350,10 @@ fn commit(
         if more > 0 {
             answer["moreRepairs"] = json!(more);
         }
+    }
+    // Nor do the card faces (YN-209); kept with the answer, so a retry reads the same.
+    if let Some(cards) = &request.cards {
+        faces::attach(&mut answer, cards);
     }
     tx.execute(
         "INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,?2,?3,?4,?5)",
