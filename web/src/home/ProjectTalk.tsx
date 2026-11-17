@@ -1,6 +1,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
+import { useMessageLinks } from "../deep-link";
 import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
 import { useLanguage } from "../i18n";
@@ -49,7 +50,7 @@ import {
   type ProjectRequest,
   type RequestPage,
 } from "./project-talk-api";
-import { RequestCard } from "./RequestCard";
+import { RequestCard, type OpenDeliveredReport } from "./RequestCard";
 import type { ShowCard } from "./RoutingEvents";
 import { talkText } from "./talk-text";
 import "./project-talk.css";
@@ -647,6 +648,9 @@ export function ProjectTalk({
       </Tip>
     );
   }
+  // A report a card's task delivered (YN-208): opened over Home, as a report link is, at the version named.
+  const links = useMessageLinks();
+  const openDelivered: OpenDeliveredReport = (link) => links?.openReport({ workspaceId, projectId, ...link });
   const card = (request: ProjectRequest) => (
     <li key={request.id}>
       <RequestCard
@@ -673,6 +677,7 @@ export function ProjectTalk({
         }
         onResend={() => void resend(`r:${request.n}`, request)}
         onCard={onCard}
+        onReport={openDelivered}
       />
     </li>
   );
@@ -751,6 +756,13 @@ export function ProjectTalk({
                 <summary>{t.done(groups.done.length)}</summary>
                 <ol className="project-talk-list">{groups.done.map(card)}</ol>
               </details>
+            )}
+            {/* Older requests, done ones with what they delivered (YN-208), read from here as from the conversation. */}
+            {hasMore && (
+              <button type="button" className="project-talk-earlier" disabled={readingOlder} onClick={() => void readOlder()}>
+                {readingOlder && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
+                {t.loadEarlier}
+              </button>
             )}
           </div>
         </div>
