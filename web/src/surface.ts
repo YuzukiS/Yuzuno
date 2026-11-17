@@ -396,6 +396,54 @@ function play(element: HTMLElement, from: number, to: number, offset: number, sc
   return played;
 }
 
+/** Each card an act of the user's is under way in (watchAct): until when, and the card as last drawn. */
+const acts = new WeakMap<HTMLElement, { until: number; drawn: Drawn }>();
+/**
+ * The user pressed something in `card` (a click, Enter): for --motion-card
+ * from now, the act's own time as a resize's changes are followed in, a
+ * change React makes in the card that moves its edge without one of
+ * CardResize's (an option's reply being sent, a note it shows) glides there
+ * from where the card was last drawn instead of jumping. A change that is
+ * one of CardResize's resizes it as before, with its copy and fades; a
+ * resize under way follows its own changes. Nothing under reduced motion.
+ */
+export function watchAct(card: HTMLElement) {
+  if (!motion(card) || typeof MutationObserver !== "function") return;
+  const until = performance.now() + tokenMs("--motion-card");
+  const now = acts.get(card);
+  if (now) {
+    now.until = until;
+    return;
+  }
+  const box = card.getBoundingClientRect();
+  const act = { until, drawn: { height: box.height, top: box.top } };
+  acts.set(card, act);
+  let frame = 0;
+  const stop = () => {
+    watch.disconnect();
+    cancelAnimationFrame(frame);
+    if (acts.get(card) === act) acts.delete(card);
+  };
+  // Read after CardResize's own (queued as React commits): one of its changes is its.
+  const watch = new MutationObserver(() => queueMicrotask(() => {
+    if (acts.get(card) !== act || resizes.has(card) || performance.now() > act.until) return;
+    if (Math.abs(card.getBoundingClientRect().height - act.drawn.height) <= 1) return;
+    chains.set(card, { deadline: act.until, glided: false });
+    resize(card, act.drawn);
+  }));
+  watch.observe(card, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "disabled"] });
+  // As drawn each frame, until the act's time is over.
+  const tick = () => {
+    if (performance.now() > act.until || !card.isConnected) return stop();
+    if (!resizes.has(card)) {
+      const r = card.getBoundingClientRect();
+      act.drawn = { height: r.height, top: r.top };
+    }
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+}
+
 /** Once `element` has no resize under way: after the last of a chain moved on by later changes, or none. */
 export function afterResize(element: HTMLElement): Promise<void> {
   if (!resizes.has(element)) return Promise.resolve();

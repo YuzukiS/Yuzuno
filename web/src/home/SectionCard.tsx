@@ -1,4 +1,4 @@
-import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -24,7 +24,7 @@ import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
 import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
-import { dissolveFrom, fadeInFrom, resizeFrom, resizeTarget, showFocusWhenSettled, snapshotOf, type Drawn, type Snapshot } from "../surface";
+import { dissolveFrom, fadeInFrom, resizeFrom, resizeTarget, showFocusWhenSettled, snapshotOf, watchAct, type Drawn, type Snapshot } from "../surface";
 import { Tip, TipText } from "../Tip";
 import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
@@ -276,6 +276,13 @@ export const SectionCard = memo(function SectionCard({
   const collapse = short && !awaiting && own?.version === section.version ? String(own.n) : null;
   const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
+  // A press in the card, by pointer or keyboard: what it changes there glides too (YN-203, surface.ts watchAct).
+  const acted = () => {
+    if (ref.current) watchAct(ref.current);
+  };
+  const actedByKey = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Enter" && !event.nativeEvent.isComposing) acted();
+  };
   // Focus that went with the reply's controls goes to the card, which says what was answered.
   useLayoutEffect(() => {
     const card = ref.current;
@@ -420,6 +427,8 @@ export const SectionCard = memo(function SectionCard({
         tabIndex={-1}
         className={`home-section kind-ask is-replied is-short is-answer${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${rowOpen ? " is-open" : " is-collapsed"}`}
         onPointerDown={release}
+        onClickCapture={acted}
+        onKeyDownCapture={actedByKey}
         aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
       >
         {resize}
@@ -545,6 +554,8 @@ export const SectionCard = memo(function SectionCard({
       tabIndex={-1}
       className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}${collapsed ? " is-collapsed" : ""}`}
       onPointerDown={release}
+      onClickCapture={acted}
+      onKeyDownCapture={actedByKey}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
       {resize}

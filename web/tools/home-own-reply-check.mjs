@@ -242,10 +242,10 @@ async function check(run) {
   const CARD_MS = 500;
   const resized = (played, to) => played.length > 0 && played.every((a) => a.duration === CARD_MS) && Math.abs(height(JSON.parse(played.at(-1).frames).at(-1)) - to) < 1;
   // The project's page, as a link to it opens it (YN-86: Home's cards stand on their project's page), a fresh visit each time.
+  let visits = 0;
   const openHome = async () => {
-    // From a blank page: the same address again would only move to its fragment, not load Home anew.
-    await page.goto("about:blank");
-    await page.goto(`http://${HOST}/#/home?w=ws-own&p=p-orch`);
+    // A query of its own each time: the same address again would only move to its fragment, not load Home anew.
+    await page.goto(`http://${HOST}/?visit=${++visits}#/home?w=ws-own&p=p-orch`);
     await card("overnight").waitFor({ timeout: 15_000 });
     await page.evaluate(() => document.fonts.ready);
     await page.waitForTimeout(300);
@@ -266,6 +266,23 @@ async function check(run) {
 
     // ---- The user answers by an option: the answer card as soon as Core has the reply.
     await page.evaluate(() => (window.__animations.length = 0));
+    // Each frame from the press until the answer card is still: its height, and what of the reply it shows.
+    const sampled = page.evaluate(() => new Promise((done) => {
+      const el = document.getElementById("home-section-p-orch-overnight");
+      const out = [];
+      const t0 = performance.now();
+      let end = null;
+      const step = () => {
+        const t = Math.round(performance.now() - t0);
+        out.push({ t, height: Math.round(el.getBoundingClientRect().height * 10) / 10, answer: el.classList.contains("is-answer"),
+          replied: !!el.querySelector(":scope > :not(.card-ghost) .home-ask-replied"), disabled: el.querySelectorAll(":scope > :not(.card-ghost) .home-ask-options button:disabled").length,
+          ghost: !!el.querySelector(":scope > .card-ghost"), minHeight: el.style.minHeight });
+        if (end === null && el.classList.contains("is-answer")) end = t + 900;
+        if ((end === null && t < 5000) || (end !== null && t < end)) requestAnimationFrame(step);
+        else done(out);
+      };
+      requestAnimationFrame(step);
+    }));
     await press(card("overnight").locator(".home-ask-options").getByRole("button", { name: w.yes, exact: true }));
     await page.waitForFunction(() => document.getElementById("home-section-p-orch-overnight")?.classList.contains("is-answer"), null, { timeout: 5000 });
     const landed = await measure("overnight");
@@ -273,7 +290,8 @@ async function check(run) {
     const after = await measure("overnight");
     const belowAfter = await topOf("plan");
     const played = await collapses();
-    result.measured.first = { before, landed, after, belowBefore, belowAfter, played };
+    const frames = await sampled;
+    result.measured.first = { before, landed, after, belowBefore, belowAfter, played, frames };
     await shot("after-reply");
     assert.ok(after.answer && after.size === "small" && !after.open, `the answer card: ${JSON.stringify(after)}`);
     assert.equal(after.kind, w.replied);
@@ -288,9 +306,14 @@ async function check(run) {
     if (run.reduced) assert.equal(played.length, 0, `no animation under reduced motion: ${JSON.stringify(played)}`);
     else {
       assert.ok(resized(played, after.height), `over ${CARD_MS} ms, to the answer card's own height: ${JSON.stringify(played)} vs ${after.height}`);
-      // The collapse: from the card as it was when Core's read came (its reply shown in place of the controls), no taller than before.
-      const collapse = played.map((a) => JSON.parse(a.frames)).find((f) => height(f[0]) > after.height + 40);
-      assert.ok(!!collapse && height(collapse[0]) <= before.height + 1 && height(collapse[0]) > height(collapse.at(-1)), `from the card it was: ${JSON.stringify(played)} vs ${before.height}`);
+      // Nothing moved its edge at once: the first resize is from the card as it was when pressed (the reply being sent
+      // may make it a little taller first, gliding too: YN-203 watchAct).
+      const all = played.map((a) => JSON.parse(a.frames));
+      assert.ok(Math.abs(height(all[0][0]) - before.height) <= 1, `from the card as pressed: ${JSON.stringify(played)} vs ${before.height}`);
+      // The collapse: from where the card was then, to the answer card.
+      const reached = Math.max(before.height, ...all.map((f) => height(f.at(-1))));
+      const collapse = all.find((f) => height(f[0]) > height(f.at(-1)) && height(f[0]) > after.height + 40);
+      assert.ok(!!collapse && height(collapse[0]) <= reached + 1, `collapsed from the card it was: ${JSON.stringify(played)} vs ${before.height}`);
     }
     assert.equal(after.running, 0, "settled");
     pass(`answered by an option: the small answer card as soon as Core has it, nothing held, no blank; ${run.reduced ? "at once (reduced motion)" : "collapsed to it"}; the card below moved up; place kept; focus on the card`,
@@ -311,7 +334,8 @@ async function check(run) {
     // ---- Reply again: opened, sent, closed back to the answer card with the new reply.
     await page.evaluate(() => (window.__animations.length = 0));
     await press(card("overnight").locator(".home-answer-again"));
-    const field = card("overnight").locator(".home-card-body textarea");
+    // A reply's text field: the conversation's composer since YN-91, a textarea before it.
+    const field = card("overnight").locator(".home-card-body").locator("[data-composer-input], textarea").first();
     await field.waitFor({ timeout: 5000 });
     // Opened (YN-203: it grows to the form); what follows is its close.
     await settle("overnight");

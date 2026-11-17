@@ -84,7 +84,8 @@ function cardHelpers() {
       ghosts: ghosts.length, deep: card.querySelectorAll(".card-ghost .card-ghost .card-ghost").length,
       ghost: g ? { opacity: opacity(g), pointer: getComputedStyle(g).pointerEvents, inert: g.inert, ariaHidden: g.getAttribute("aria-hidden"), key: g.hasAttribute("data-section-key"),
         ids: ids.length, shared: ids.filter((id) => document.querySelectorAll(`[id="${CSS.escape(id)}"]`).length > 1).length,
-        text: g.textContent.replace(/\s+/g, " ").slice(0, 300) } : null,
+        // What it holds, read whole: the Ask's options, its body.
+        options: g.textContent.includes("Hold a day"), body: g.textContent.includes("Part 3."), text: g.textContent.replace(/\s+/g, " ").slice(0, 160) } : null,
       focusInGhost: !!(g && g.contains(document.activeElement)),
       headOpacity: opacity(card.querySelector(":scope > .home-section-head")),
       answerOpacity: opacity(card.querySelector(":scope > .home-answer")),
@@ -261,17 +262,23 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           const lastGhost = ghostRows.at(-1)?.t ?? null;
           const settledRow = step2 >= 0 ? rows.find((r) => r.answer && r.t >= first2.t + OUT_MS + IN_MS + 100) : null;
           const plays = [...new Set(rows.flatMap((r) => r.anims.map((a) => `${a.on}:${a.props}:${a.duration}:${a.delay}`)))];
-          y.through = { step1: first1 && { t: first1.t, ghost: first1.ghost }, step2: first2 && { t: first2.t, ghost: first2.ghost }, rising, both1, both2, headDip,
+          // Every size change from the press on is the card's own resize: none at once (a reply being sent included).
+          const sized = (r) => r.anims.some((a) => a.on === "card" && a.props.includes("height"));
+          const jumps = rows.filter((r, i) => i > 0 && Math.abs(r.height - rows[i - 1].height) > 4 && !sized(r) && !sized(rows[i - 1]))
+            .map((r) => ({ t: r.t, height: r.height }));
+          y.through = { step1: first1 && { t: first1.t, ghost: first1.ghost }, step2: first2 && { t: first2.t, ghost: first2.ghost }, rising, both1, both2, headDip, jumps,
+            heights: rows.map((r) => [r.t, r.height]),
             maxGhosts: Math.max(...rows.map((r) => r.ghosts)), focusInGhost: rows.some((r) => r.focusInGhost), lastGhost, settled: settledRow?.answerOpacity ?? null, plays };
           ok(`${tag}: reply, step 1: the form fades out (a copy) over the reply block`,
-            !!first1?.ghost && first1.ghost.opacity >= 0.85 && first1.ghost.text.includes("Hold a day") && sound(first1.ghost), y.through.step1);
+            !!first1?.ghost && first1.ghost.opacity >= 0.85 && first1.ghost.options && sound(first1.ghost), y.through.step1);
           ok(`${tag}: reply, step 2: the Ask fades out (a copy) over its answer card`,
-            !!first2?.ghost && first2.ghost.opacity >= 0.85 && first2.ghost.text.includes("Part 3.") && sound(first2.ghost), y.through.step2);
+            !!first2?.ghost && first2.ghost.opacity >= 0.85 && first2.ghost.body && sound(first2.ghost), y.through.step2);
           ok(`${tag}: the copies only fade out, one at a time, never focused, gone by out after step 2`,
             rising === 0 && y.through.maxGhosts <= 1 && !y.through.focusInGhost && lastGhost !== null && step2 >= 0 && lastGhost <= first2.t + OUT_MS + 150, y.through);
           ok(`${tag}: while the old is seen (copy > 0.02) the new where it changes is not (≤ 0.02: step 1 ${both1.toFixed(3)}, step 2 ${both2.toFixed(3)})`,
             step1 >= 0 && step2 >= 0 && both1 <= 0.02 && both2 <= 0.02, y.through);
           ok(`${tag}: step 1 changes only the reply area: the card's head never fades (min ${headDip})`, headDip === 1, y.through);
+          ok(`${tag}: from the press on, the card's edge never moves at once (${jumps.length} jumps)`, jumps.length === 0, { jumps, heights: y.through.heights.slice(0, 40) });
           ok(`${tag}: the new has faded in by out + in after the change`, settledRow?.answerOpacity === 1, y.through);
           ok(`${tag}: its pace: the edge over ${CARD_MS} ms, the old out over ${OUT_MS}, the new in over ${IN_MS} after ${OUT_MS}`,
             plays.some((x) => x.startsWith("card:height") && x.endsWith(`:${CARD_MS}:0`)) && plays.includes(`ghost:opacity:${OUT_MS}:0`)
@@ -424,7 +431,11 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
         if (scene === "unseen-press") {
           // In the first frame the answer card is drawn its Reply again is still unseen: a press where it is lands on
           // what a pointer would hit there, which must not be it.
+          // The card's top at the view's top, so the answer card is drawn in the window from its first frame; the
+          // option pressed where it is, with nothing scrolled.
           await fresh();
+          await card().evaluate((c) => c.scrollIntoView({ block: "start", behavior: "instant" }));
+          await page.waitForTimeout(150);
           const hit = card().evaluate((c) => new Promise((done) => {
             const t0 = performance.now();
             const step = () => {
@@ -439,7 +450,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             };
             requestAnimationFrame(step);
           }));
-          await option().click();
+          await option().evaluate((b) => b.click());
           const at = await hit;
           await page.waitForTimeout(900);
           const s = await idle();
@@ -605,10 +616,12 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
             };
             requestAnimationFrame(step);
           }));
+          // From the opening's slow end on (it began 60 ms before these frames; a tall card's opening takes big steps
+          // early): the 160 px it did not make must not come in one step.
           let largest = 0;
-          for (let i = 1; i < rows.length; i++) largest = Math.max(largest, Math.abs(rows[i][1] - rows[i - 1][1]));
+          for (let i = 1; i < rows.length; i++) if (rows[i][0] >= CARD_MS - 120) largest = Math.max(largest, Math.abs(rows[i][1] - rows[i - 1][1]));
           const s = await idle();
-          y.nonDom = { largest, settled: s };
+          y.nonDom = { largest, from: CARD_MS - 120, rows: rows.length, settled: s };
           ok(`${tag}: a 160 px change React did not make (a size of its own) glides on at the end (largest frame step < 100 px)`, largest < 100 && !s.resizing, y.nonDom);
         }
         if (scene === "chase") {
