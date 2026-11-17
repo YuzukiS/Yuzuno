@@ -26,6 +26,8 @@ mod machine_env;
 mod machine_env_tests;
 #[cfg(test)]
 mod list_tests;
+#[cfg(test)]
+mod logs_tests;
 mod limit;
 mod pause;
 mod provenance;
@@ -741,6 +743,68 @@ struct LowerMemory {
 struct Log {
     job_id: String,
     offset: Option<u64>,
+    /// The last lines only (YN-194), 1–1000.
+    tail: Option<usize>,
+    /// Only the lines that contain this text (YN-194), 1–200 characters.
+    grep: Option<String>,
+}
+
+/// At most this many lines, and bytes of them, in one filtered read; each
+/// line at most this many characters.
+const LOG_LINES: usize = 200;
+const LOG_BYTES: usize = 32768;
+const LOG_LINE_CHARS: usize = 500;
+/// How much of a failed Job's newest output job_list reads for its lastLine.
+const LAST_LINE_BYTES: u64 = 8192;
+
+/// The lines of `bytes` (output starting at byte `start`) that contain
+/// `grep`, or all of them, then the last `tail` of those: each with the byte
+/// offset it starts at, bounded in lines and bytes from the newest back. The
+/// first line read is marked mayBeCut when earlier output exists (`start` >
+/// 0): it may be the end of a line that started before.
+fn log_lines(bytes: &[u8], start: u64, grep: Option<&str>, tail: Option<usize>) -> Value {
+    let mut lines = Vec::new();
+    let mut at = 0usize;
+    for line in bytes.split(|b| *b == b'\n') {
+        let offset = start + at as u64;
+        at += line.len() + 1;
+        let text = String::from_utf8_lossy(line);
+        let text = text.trim_end_matches('\r');
+        if grep.is_some_and(|needle| !text.contains(needle)) || (grep.is_none() && text.is_empty() && at > bytes.len()) {
+            continue;
+        }
+        lines.push((offset, text.to_owned(), offset == start && start > 0));
+    }
+    let matched = lines.len();
+    let wanted = tail.unwrap_or(LOG_LINES).min(LOG_LINES);
+    let mut shown = Vec::new();
+    let mut size = 0;
+    for (offset, text, cut) in lines.into_iter().rev().take(wanted) {
+        let end = text.char_indices().nth(LOG_LINE_CHARS).map_or(text.len(), |(i, _)| i);
+        let text = if end < text.len() { format!("{}…", &text[..end]) } else { text };
+        size += text.len() + 1;
+        if size > LOG_BYTES {
+            break;
+        }
+        let mut line = json!({"offset": offset, "text": text});
+        if cut {
+            line["mayBeCut"] = json!(true);
+        }
+        shown.push(line);
+    }
+    shown.reverse();
+    json!({"lines": shown, "linesMatched": matched, "more": matched > shown.len()})
+}
+/// Another machine's newest page, as its helper gave it: where it starts and
+/// ends in the ring, its text as bytes, and whether offsets counted on that
+/// text are the ring's. The helper decoded the page lossily, so a replaced
+/// sequence (invalid UTF-8, or a character cut at the page's start or end)
+/// shifts every offset after it.
+fn remote_page(page: &Value) -> (u64, u64, Vec<u8>, bool) {
+    let text = page["text"].as_str().unwrap_or_default();
+    let from = page["offset"].as_u64().unwrap_or(0);
+    let to = page["nextOffset"].as_u64().unwrap_or(from + text.len() as u64);
+    (from, to, text.as_bytes().to_vec(), !text.contains('\u{FFFD}'))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1429,7 +1493,24 @@ pub async fn call(
             Ok(suggestion::beside(&ws, job, query).await)
         }
         "job_list" => {
-            ws.stored(move |s| s.list_jobs_for(actor.as_deref(), input)).await
+            let agent = actor.clone();
+            let mut page = ws.stored(move |s| s.list_jobs_for(agent.as_deref(), input)).await?;
+            // An Agent's compact rows: a failed Job on this host says the last
+            // line it printed (YN-194); another machine's would need its helper.
+            if actor.is_some() && page["compact"] == true {
+                for key in ["jobs", "liveJobs"] {
+                    for row in page[key].as_array_mut().into_iter().flatten() {
+                        if row["status"] == "failed" && row["machineId"].is_null() {
+                            // Only the end of its output, never the whole ring.
+                            let tail = host::newest(&ws.data_dir, &json!({"id": row["id"]}), LAST_LINE_BYTES).await;
+                            if let Some(line) = tail.ok().and_then(|t| list::last_line(&String::from_utf8_lossy(&t))) {
+                                row["lastLine"] = json!(line);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(page)
         }
         "job_get" => {
             let q: Reference = serde_json::from_value(input)?;
@@ -1486,13 +1567,37 @@ pub async fn call(
         }
         "job_logs" => {
             let q: Log = serde_json::from_value(input)?;
+            let filtered = q.tail.is_some() || q.grep.is_some();
+            ensure!(!filtered || q.offset.is_none(), "tail and grep read the newest output; omit offset with them");
+            ensure!(q.tail.is_none_or(|n| (1..=1000).contains(&n)), "tail must be 1–1000 lines");
+            ensure!(q.grep.as_deref().is_none_or(|g| !g.is_empty() && g.chars().count() <= 200), "grep must contain 1–200 characters");
             let id = q.job_id;
             let job = ws.stored(move |s| s.job(&s.resolve_id(ids::Kind::Job, &id)?)).await?;
             own_task_only(&ws, actor.as_deref(), &job).await?;
-            if job["executor"].is_object() {
-                return remote::logs(&ws, &job, q.offset).await;
+            if !filtered {
+                if job["executor"].is_object() {
+                    return remote::logs(&ws, &job, q.offset).await;
+                }
+                return host::logs(&ws.data_dir, &job, q.offset).await;
             }
-            host::logs(&ws.data_dir, &job, q.offset).await
+            // This host's whole ring; another machine's newest page, as its
+            // helper gives it (YN-194).
+            let (oldest, total, from, to, bytes, exact) = if job["executor"].is_object() {
+                let page = remote::logs(&ws, &job, None).await?;
+                let (from, to, bytes, exact) = remote_page(&page);
+                (page["oldestOffset"].as_u64().unwrap_or(0), page["totalBytes"].as_u64().unwrap_or(0), from, to, bytes, exact)
+            } else {
+                // The raw bytes: offsets are the ring's.
+                let (oldest, total, bytes) = host::retained(&ws.data_dir, &job).await?;
+                (oldest, total, oldest, oldest + bytes.len() as u64, bytes, true)
+            };
+            let mut answer = log_lines(&bytes, from, q.grep.as_deref(), q.tail);
+            answer["jobId"] = job["id"].clone();
+            answer["oldestOffset"] = json!(oldest);
+            answer["totalBytes"] = json!(total);
+            answer["truncated"] = json!(oldest > 0);
+            answer["searched"] = json!({"fromOffset": from, "toOffset": to, "offsetsExact": exact});
+            Ok(answer)
         }
         "job_provenance" => {
             let scope = serde_json::from_value::<provenance::Request>(input)?.scope()?;
@@ -2122,7 +2227,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
         make("job_suggestion", "Before submitting, read what earlier runs of the same Job suggest requesting: this task's Jobs of the same name or argv, else the other tasks of its Project with the same argv (never another Project). Their newest five runs measured whole on this host count, only if one succeeded: memoryMiB = max(1.3 × largest peak, peak + 1 GiB), rounded up to 512 MiB; cpuMillis = 1.5 × largest average cores; hitMemoryLimit marks a run killed at its limit. basedOn lists them, another Agent's by Job ID, task and numbers only. null without such a run. Reserves and changes nothing.", json!({"taskId":task_reference,"name":string,"argv":{"type":"array","items":string,"maxItems":128}}), vec!["taskId","name"]),
         make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero (on windows only peak memory is measured); valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, cpuWaiting, rule, heldBy, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
-        make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
+        make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated. stdout and stderr are one stream. tail (last N lines) and grep (lines containing the text, case-sensitive), without offset, answer lines with their byte offsets instead of a page, at most 200 lines / 32 KiB, newest kept: on this host over the whole ring, on another machine over its newest 32 KiB page (searched says which bytes). The first line read where earlier output exists has mayBeCut. searched.offsetsExact is false when that machine's page decoded with replaced bytes, which shift the offsets after them.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0},
+            "tail":{"type":"integer","minimum":1,"maximum":1000,"description":"Only the last N lines (of the grep matches, with grep)."},
+            "grep":{"type":"string","minLength":1,"maxLength":200,"description":"Only lines containing this text, as written."}}), vec!["jobId"]),
         make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own. suggestions: per stage, what earlier measured runs of the same Job suggest, as job_submit's suggestion, kept with the run; never applied. afterRuns: start only after other runs of yours, each when succeeded (default: it must succeed; its declared artifacts are this run's upstream) or settled (ordering only: it must end, succeeded or cancelled); while one holds it the run is blocked_by_run, with one mail.",
             json!({"requestId":string,"taskId":task_reference,"name":string,
