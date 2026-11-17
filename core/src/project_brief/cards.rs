@@ -281,12 +281,20 @@ pub(crate) fn task_closed(db: &Connection, task: &str) -> Result<()> {
 /// there leave the live Brief with reason lead-left (YN-195), into the 30
 /// days of history. Still a member, it could neither keep them up to date
 /// nor be claimed from, and no lead could remove them. Its Asks stay until
-/// it resolves them or they are answered. An Agent that moves to another
-/// Project leaves its sections to be claimed, as before. No version
-/// changes, nor the Brief's, as with a card archived with its task.
+/// it resolves them or they are answered, and so does a card of a task
+/// still open, by its own `task` or its topic's: the task's executor writes
+/// under it, and it leaves with its task (`task_closed`, review c6e802f3).
+/// An Agent that moves to another Project leaves its sections to be
+/// claimed, as before. No version changes, nor the Brief's, as with a card
+/// archived with its task.
 pub(crate) fn lead_left(db: &Connection, agent: &str, project: &str) -> Result<()> {
     let at = now();
     for row in sections::live(db, project)?.iter().filter(|row| row.owner_id == agent && row.kind != "ask") {
+        if let Some(task) = explicit(db, row)? {
+            if !task_ended(db, &task)? {
+                continue;
+            }
+        }
         db.execute(
             "UPDATE project_brief_sections SET live=0,history_reason='lead-left',history_at=?2 WHERE seq=?1 AND live=1",
             params![row.seq, at],

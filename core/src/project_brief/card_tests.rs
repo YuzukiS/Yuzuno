@@ -273,6 +273,28 @@ async fn a_lead_that_stops_leading_leaves_its_reports_and_statuses_to_history() 
     assert_eq!(row(&ws, &project, "plan"), (true, None));
 }
 
+/// Review c6e802f3: a lead left out keeps the card of a task still open, and
+/// what that task's executor wrote under it; both leave with the task. Its
+/// other reports still go to history as lead-left.
+#[tokio::test]
+async fn a_lead_left_out_keeps_the_card_of_an_open_task_until_the_task_ends() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a", "b"]);
+    let (task, internal) = task_in(&ws, &project, "Design the page");
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    accept(&ws, "a", input("a1", 0, vec![bound("page", "status", &task), put("page/notes", "report"), put("audit", "report")])).await;
+    accept(&ws, "c", input("c1", 1, vec![put("page/result", "report")])).await;
+    set_leads(&ws, &project, &["b"]);
+    assert_eq!(row(&ws, &project, "audit"), (false, Some("lead-left".into())), "a report bound to no task");
+    for key in ["page", "page/notes", "page/result"] {
+        assert_eq!(row(&ws, &project, key), (true, None), "{key}: the open task's card stays");
+    }
+    task_set(&ws, &task, json!({"status":"done"}));
+    for key in ["page", "page/notes", "page/result"] {
+        assert_eq!(row(&ws, &project, key), (false, Some("archived".into())), "{key}: leaves with its task");
+    }
+}
+
 #[tokio::test]
 async fn an_archived_or_cancelled_task_archives_its_card_too() {
     let (_dir, ws, project) = lab();
