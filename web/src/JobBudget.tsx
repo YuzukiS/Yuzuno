@@ -323,6 +323,28 @@ export type JobsBudgetView = {
   /** Whether this host's Jobs run on This Mac (a macOS Core), where the
    * budget only queues and records them. Absent from Cores before YN-108 M2c. */
   mac?: { available?: boolean };
+  /** The first Job in this host's queue and what it lacks (YN-194); null
+   * with nothing queued, absent from older Cores. */
+  queueHead?: QueueHeadView | null;
+};
+export type QueueHeadView = {
+  jobId: string;
+  name: string;
+  taskRef?: string | null;
+  waitingSince: string | null;
+  waits: "memory" | "cpu" | "swap" | "gpu" | "other";
+  reason: string;
+  need: Resources;
+  free: Resources;
+  short: Resources;
+  holders: {
+    jobId: string;
+    name: string;
+    reservation: Resources;
+    startedAt: string | null;
+    endsBy: string | null;
+    typicalSeconds: number | null;
+  }[];
 };
 export const validBudget = (value: JobsBudgetView) =>
   !!value?.machine &&
