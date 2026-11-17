@@ -98,7 +98,11 @@ fn a_stage_behind_a_stalled_one_is_stalled_too_and_a_cancel_ends_them() {
     s.request_run_cancel(Some("a"), id).unwrap();
     for key in ["a2", "a3"] {
         assert_eq!(latest(&s, &run, key)["status"], "cancelled", "{key}");
+        // Cancelled, it is no longer shown stalled (review 7c11f699, P3).
+        assert!(attempts(&s.run(id).unwrap(), key)[0].get("stalled").is_none(), "{key}");
     }
+    let rows = s.list_jobs_for(Some("a"), json!({"limit":50})).unwrap();
+    assert!(rows["jobs"].as_array().unwrap().iter().all(|row| row.get("stalled").is_none()), "{rows}");
 }
 
 #[test]

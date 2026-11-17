@@ -330,6 +330,20 @@ fn compact_projection_bounds_text_and_both_modes_omit_environment() {
     );
 }
 
+/// YN-194: a Job whose Git guard found a change at exit says so in its row.
+#[test]
+fn a_row_says_when_the_guard_found_a_change_at_exit() {
+    let f = Fixture::new();
+    let mut job = f.job("a", "T-1", "succeeded", false);
+    job["result"] = json!({"guardAtExit":{"attempt":job["attempt"],"unchanged":false,"changed":["/fixture/a.rs"]}});
+    store::save(&f.store.db.write().unwrap(), &job).unwrap();
+    let quiet = f.job("a", "T-1", "succeeded", false);
+    let list = f.list(json!({"limit":5}));
+    let row = |id: &Value| list["jobs"].as_array().unwrap().iter().find(|r| r["id"] == *id).unwrap().clone();
+    assert_eq!(row(&job["id"])["guardChangedDuringRun"], true);
+    assert!(row(&quiet["id"]).get("guardChangedDuringRun").is_none());
+}
+
 #[test]
 fn synthetic_response_size_receipt() {
     let f = Fixture::new();

@@ -237,6 +237,21 @@
   margin-left: 6px;
 }
 /* Four cells to a row on a wide panel; in use on top, the rest beneath. */
+/* The first Job in the queue and who holds what it lacks (YN-194). */
+.jobs-queue-head {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.jobs-queue-head p {
+  margin: 0;
+}
+.jobs-queue-head-holders {
+  color: var(--text-secondary);
+}
 .jobs-budget-meters {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));

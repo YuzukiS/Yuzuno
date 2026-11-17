@@ -476,9 +476,9 @@ def check_artifact(cwd, artifact):
     entry['ok'] = True
     return entry
 
-def guard_reason(spec, current):
-    """Which frozen inputs changed before launch, by name."""
-    frozen = spec['snapshot']
+def changed_inputs(frozen, current):
+    """What differs between two snapshots, by name: the Git commit (or a
+    guarded path's committed content) and each file whose content differs."""
     changed = []
     before_git, after_git = frozen.get('git') or {}, current.get('git') or {}
     if 'guardPaths' in before_git:
@@ -492,14 +492,56 @@ def guard_reason(spec, current):
     before = {f['path']: f['sha256'] for f in frozen.get('files', [])}
     after = {f['path']: f['sha256'] for f in current.get('files', [])}
     changed += [p for p in sorted(set(before) | set(after)) if before.get(p) != after.get(p)]
+    return changed
+
+def shown_list(changed):
+    return ', '.join(changed[:5]) + (f' and {len(changed) - 5} more' if len(changed) > 5 else '')
+
+def guard_reason(spec, current):
+    """Which frozen inputs changed before launch, by name."""
+    frozen = spec['snapshot']
+    changed = changed_inputs(frozen, current)
     if frozen.get('resumeFrom') != current.get('resumeFrom'):
         changed.append('the checkpoint it resumes from')
     if not changed:
         changed.append('the list of changed tracked files')
-    shown = ', '.join(changed[:5]) + (f' and {len(changed) - 5} more' if len(changed) > 5 else '')
+    shown = shown_list(changed)
     hint = (" If an earlier stage writes a tracked file, declare it as that stage's artifact."
             if spec.get('run') else '')
     return f'Guarded inputs changed while queued ({shown}); command was not started.{hint}'
+
+GUARD_EXIT = 'guard-exit.json'
+
+def exit_guard(spec):
+    """The Git guard checked again once the command exited (YN-194): the
+    same snapshot as before the start, compared by commit (or guarded paths)
+    and by each file's content. What the command declared it writes (its
+    artifacts and outputs) is left out, and so is the coarse list of changed
+    files, which those writes alter. None without guardGit or Git state."""
+    frozen = spec.get('snapshot') or {}
+    if not (spec.get('guardGit') and isinstance(frozen.get('git'), dict)):
+        return None
+    record = {'attempt': spec['attempt'], 'checkedAt': time.time()}
+    try:
+        current = snapshot(spec)
+    except Exception as error:
+        return {**record, 'unchanged': None, 'problem': f'the work tree could not be read again: {error}'[:300]}
+    def real(path):
+        # Named as snapshot() names its files, through the resolved folder, so
+        # a cwd reached through a symlink still matches (as guardExclude is).
+        path = Path(path)
+        return str(path.parent.resolve() / path.name)
+    cwd = Path(spec['cwd']).resolve()
+    own = {real(cwd / (item['path'] if isinstance(item, dict) else item))
+           for item in (spec.get('artifacts') or []) + (spec.get('outputs') or [])}
+    def without_own(value):
+        return {**value, 'files': [f for f in value.get('files', []) if real(f['path']) not in own]}
+    changed = changed_inputs(without_own(frozen), without_own(current))
+    if not changed:
+        return {**record, 'unchanged': True}
+    return {**record, 'unchanged': False, 'changed': changed[:20],
+            'reason': f'The guarded work tree changed while the command ran ({shown_list(changed)}), '
+                      'by the command or by someone else: its results may not match the code it was submitted with.'}
 
 def same_artifact(recorded, now):
     """The artifact a stage succeeded with is still the one on disk."""
@@ -1082,6 +1124,15 @@ def launch(spec, folder, stage):
                                                'artifacts': [check_artifact(spec['cwd'], a) for a in spec['artifacts']]})
         except Exception:
             pass
+    # The Git guard again, now that the command has exited (YN-194): inside
+    # this attempt's limits and timeout, never failing the worker itself; a
+    # change is said, the exit status stays the command's own.
+    try:
+        checked = exit_guard(spec)
+        if checked is not None:
+            atomic(folder / GUARD_EXIT, checked)
+    except Exception:
+        pass
     # Last: the collector looks for what the command left only after this.
     try:
         atomic(folder / WORKER_EXIT, {'attempt': spec['attempt'], 'exitCode': code, 'at': time.time()})
@@ -1109,6 +1160,10 @@ def reports(spec, folder):
             # This attempt's start check of its guarded paths (T-50), if it got that far.
             guard = read(folder / 'guard.json')
             value['guard'] = guard if isinstance(guard, dict) and guard.get('attempt') == spec['attempt'] else None
+        if spec.get('guardGit'):
+            # Its check again at exit (YN-194), if the command got that far.
+            at_exit = read(folder / GUARD_EXIT)
+            value['guardAtExit'] = at_exit if isinstance(at_exit, dict) and at_exit.get('attempt') == spec['attempt'] else None
         json.dumps(value, allow_nan=False)
         return value
     except Exception as error:

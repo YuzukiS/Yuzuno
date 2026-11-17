@@ -215,6 +215,7 @@ fn exit(job: &Value) -> Value {
 /// Git work tree there (guardGit, YN-83 S2), which the record says.
 fn code(job: &Value) -> Value {
     let mut code = code_frozen(job);
+    at_exit(job, &mut code);
     if job["snapshot"]["remote"] == true && code["git"].is_object() {
         code["reportedBy"] = json!(format!("{}: its own helper read the Git work tree there",
             job["executor"]["machineName"].as_str().unwrap_or("the remote machine")));
@@ -222,6 +223,30 @@ fn code(job: &Value) -> Value {
     code
 }
 
+/// What the check again at exit found (YN-194, host.py `exit_guard`), when
+/// it ran: unchanged extends what was verified to the command's end; a
+/// change says what changed; a check that could not read says why.
+fn at_exit(job: &Value, code: &mut Value) {
+    let exit = &job["result"]["guardAtExit"];
+    if !exit.is_object() || !code["git"].is_object() {
+        return;
+    }
+    match exit["unchanged"].as_bool() {
+        Some(true) => {
+            code["git"]["unchangedAtExit"] = json!(true);
+            if code["state"] == "verified" {
+                code["when"] = json!(format!("{}, and again when it exited: unchanged", code["when"].as_str().unwrap_or("")));
+            }
+        }
+        Some(false) => {
+            code["git"]["unchangedAtExit"] = json!(false);
+            code["git"]["changedAtExit"] = exit["changed"].clone();
+            code["state"] = json!("changedDuringRun");
+            code["when"] = json!(exit["reason"].as_str().unwrap_or("The guarded work tree changed while the command ran"));
+        }
+        None => code["git"]["atExitProblem"] = exit["problem"].clone(),
+    }
+}
 fn code_frozen(job: &Value) -> Value {
     let snapshot = &job["snapshot"];
     let git = &snapshot["git"];
@@ -243,9 +268,12 @@ fn code_frozen(job: &Value) -> Value {
     }
     if let Some(head) = git["head"].as_str() {
         let status = &git["statusSha256"];
+        // A command that never started was checked at submission only (YN-194).
+        let started = job["startedAt"].is_string();
         return json!({"git": {"head": head, "statusSha256": status,
                 "trackedChanges": if status == EMPTY_SHA256 { "none" } else { "present: their files are among the inputs" }},
-            "state": "verified", "when": "At submission, and checked again before the command started"});
+            "state": if started { "verified" } else { "declared" },
+            "when": if started { "At submission, and checked again before the command started" } else { "At submission only: the command did not start" }});
     }
     let note = if snapshot["remote"] == true {
         "No Git state was recorded on that machine: guardGit was off, or the working directory there is not in a Git work tree"

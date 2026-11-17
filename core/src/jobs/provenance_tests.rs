@@ -412,3 +412,36 @@ fn guarded_paths_export_both_heads_and_whether_they_were_unchanged_at_the_start(
     let (m, _) = export(&[local_job()], vec![Ok(Value::Null)]);
     assert!(m["attempts"][0]["code"]["git"].get("guardPaths").is_none());
 }
+
+/// YN-194: the Git guard checked again at exit. Unchanged extends what was
+/// verified to the end; a change makes it changedDuringRun with what changed;
+/// a Job that never started was checked at submission only; a check that could
+/// not read says why and keeps what the start verified.
+#[test]
+fn the_guard_at_exit_extends_the_verified_code_or_says_what_changed_while_it_ran() {
+    let code = |job: &Value| export(&[job.clone()], vec![Ok(json!({"segments":0}))]).0["attempts"][0]["code"].clone();
+    let mut job = local_job();
+    job["result"]["guardAtExit"] = json!({"attempt":"a1","checkedAt":3.0,"unchanged":true});
+    let same = code(&job);
+    assert_eq!((same["state"].as_str(), same["git"]["unchangedAtExit"].as_bool()), (Some("verified"), Some(true)));
+    assert!(same["when"].as_str().unwrap().ends_with("and again when it exited: unchanged"), "{same}");
+    job["result"]["guardAtExit"] = json!({"attempt":"a1","checkedAt":3.0,"unchanged":false,
+        "changed":["/home/someone/work/lib/util.py"],
+        "reason":"The guarded work tree changed while the command ran (/home/someone/work/lib/util.py), by the command or by someone else: its results may not match the code it was submitted with."});
+    let changed = code(&job);
+    assert_eq!(changed["state"], "changedDuringRun");
+    assert_eq!(changed["git"]["unchangedAtExit"], false);
+    assert!(changed["when"].as_str().unwrap().contains("changed while the command ran"));
+    let (_, report) = export(&[job.clone()], vec![Ok(json!({"segments":0}))]);
+    assert!(report.contains("changedDuringRun"), "{report}");
+    job["result"]["guardAtExit"] = json!({"attempt":"a1","checkedAt":3.0,"unchanged":null,"problem":"the work tree could not be read again: too many files"});
+    let unread = code(&job);
+    assert_eq!(unread["state"], "verified");
+    assert_eq!(unread["git"]["atExitProblem"], "the work tree could not be read again: too many files");
+    // Never started: checked at submission only, not verified.
+    let mut queued = local_job();
+    queued["startedAt"] = Value::Null;
+    queued["result"] = json!({"jobId":queued["id"],"attempt":"a1","status":"rejected"});
+    let never = code(&queued);
+    assert_eq!((never["state"].as_str(), never["when"].as_str()), (Some("declared"), Some("At submission only: the command did not start")));
+}
