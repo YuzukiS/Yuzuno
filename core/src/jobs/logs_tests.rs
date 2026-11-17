@@ -65,7 +65,7 @@ async fn tail_and_grep_read_lines_of_the_whole_ring_with_their_offsets() {
     assert_eq!(lines, ["test two ... FAILED", "test three ... ok", "error: test failed, to rerun pass `--lib`"]);
     assert_eq!(tail["lines"][0]["offset"], 1000 + older.len() as u64);
     assert_eq!((tail["linesMatched"].as_u64(), tail["more"].as_bool()), (Some(6), Some(true)));
-    assert_eq!(tail["searched"], json!({"fromOffset":1000,"toOffset":1000 + (older.len() + newer.len()) as u64}));
+    assert_eq!(tail["searched"], json!({"fromOffset":1000,"toOffset":1000 + (older.len() + newer.len()) as u64,"offsetsExact":true}));
     assert_eq!(tail["truncated"], true, "output before offset 1000 was overwritten");
     // grep: only the lines that contain the text, oldest first.
     let grep = logs(&ws, json!({"jobId":id,"grep":" ... "})).await.unwrap();
@@ -74,6 +74,9 @@ async fn tail_and_grep_read_lines_of_the_whole_ring_with_their_offsets() {
     assert_eq!(found.iter().map(|f| f.1).collect::<Vec<_>>(), ["test one ... ok", "test two ... FAILED", "test three ... ok"]);
     assert_eq!(found[0].0, 1000 + b"Compiling a\nwarning: unused x\n".len() as u64);
     assert_eq!(grep["more"], false);
+    // The ring's first line may be the end of an overwritten one (review 6c243065).
+    let first = logs(&ws, json!({"jobId":id,"grep":"Compiling"})).await.unwrap();
+    assert_eq!(first["lines"], json!([{"offset":1000,"text":"Compiling a","mayBeCut":true}]));
     let last = logs(&ws, json!({"jobId":id,"grep":"FAILED","tail":1})).await.unwrap();
     assert_eq!(last["lines"], json!([{"offset":1000 + older.len() as u64,"text":"test two ... FAILED"}]));
     assert_eq!(logs(&ws, json!({"jobId":id,"grep":"no such text"})).await.unwrap()["lines"], json!([]));
@@ -115,8 +118,13 @@ fn long_lines_and_many_matches_stay_bounded_newest_kept() {
     let total: usize = answer["lines"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap().len() + 1).sum();
     assert!(total <= LOG_BYTES && answer["more"] == true, "{total}");
     // A last line not ended by a newline is a line; an empty tail after one is not.
-    assert_eq!(log_lines(b"a\nb", 5, None, Some(5))["lines"], json!([{"offset":5,"text":"a"},{"offset":7,"text":"b"}]));
-    assert_eq!(log_lines(b"a\n", 0, None, None)["lines"], json!([{"offset":0,"text":"a"}]));
+    assert_eq!(log_lines(b"a\nb", 5, None, Some(5))["lines"], json!([{"offset":5,"text":"a","mayBeCut":true},{"offset":7,"text":"b"}]));
+    assert_eq!(log_lines(b"a\n", 0, None, None)["lines"], json!([{"offset":0,"text":"a"}]), "nothing before offset 0");
+    // Another machine's page: offsets are the ring's only if nothing was replaced in decoding.
+    let page = json!({"offset":40,"nextOffset":52,"text":"ab\ncd"});
+    assert_eq!(remote_page(&page), (40, 52, b"ab\ncd".to_vec(), true));
+    let page = json!({"offset":40,"nextOffset":52,"text":"\u{FFFD}b\ncd"});
+    assert_eq!(remote_page(&page).3, false, "a replaced byte shifts the offsets after it");
     assert_eq!(list::last_line("ok\n\n  last words  \n\n").as_deref(), Some("last words"));
     assert_eq!(list::last_line("\n \n"), None);
     assert_eq!(list::last_line(&"界".repeat(300)).unwrap().chars().count(), 201);
