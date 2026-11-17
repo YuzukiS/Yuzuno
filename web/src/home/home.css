@@ -1995,3 +1995,21 @@ ul.home-widget {
 .home-repaired-note ul {
   padding-left: 1.2em;
 }
+
+/* A card changing as the user acts on it (YN-203, surface.ts resizeFrom):
+   what it holds is clipped to its moving edge. clip, not hidden: nothing
+   can scroll it. */
+.home-section[data-resizing] {
+  overflow: clip;
+}
+/* A copy of what it was fades out over it (surface.ts dissolveFrom),
+   placed against the card. */
+.home-section[data-ghosting] {
+  position: relative;
+}
+/* While it moves, what it holds keeps its place: an answer card's buttons
+   stay under the pointer instead of riding its edge, so a second press
+   finds them (YN-203). On a deck its cell decides, as the deck's own rules. */
+.home-section[data-resizing]:not([data-deck-cols]) > .home-answer {
+  flex: none;
+}
