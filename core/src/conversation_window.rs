@@ -91,26 +91,44 @@ pub fn bounded_item(item: &Value) -> Value {
     out
 }
 
-/// A user message's preview keeps who it came from and when, as Core marked
-/// it (`input_origin`, `conversation_time`), and a reply from Home its
-/// `_yuzunoHome` (YN-201): the reply as the user saw it, which the web draws
-/// in place of its text. Such a preview is held to MAX_HOME_PREVIEW_BYTES as
-/// sent, measured again after each step down: past it (which a snapshot
-/// `input_origin` keeps never takes it) the reply's identity stays without
-/// its snapshot, and past it still, the preview is the plain one.
+/// A user message's preview keeps who it came from and when, as Core marks
+/// them, in their own forms only (`input_origin::MARKS`,
+/// `conversation_time::item_time`), so both are small; any other value is
+/// left out. A reply from Home keeps its `_yuzunoHome` too (YN-201): the
+/// reply as the user saw it, which the web draws in place of its text. Each
+/// step down is measured again, as sent, against the bound the web holds
+/// that preview to (`fits`): past it the reply's snapshot goes, then its
+/// identity, then who and when, leaving the plain preview.
 fn keep_origin(item: &Value, out: &mut Value) {
-    for key in ["_yuzunoInput", crate::conversation_time::ITEM_TIME] {
-        if let Some(value) = item.get(key) { out[key] = value.clone(); }
+    if let Some(by) = item["_yuzunoInput"].as_str().filter(|by| crate::input_origin::MARKS.contains(by)) {
+        out["_yuzunoInput"] = by.into();
     }
-    let Some(home) = item.get("_yuzunoHome").filter(|_| item["_yuzunoInput"] == "home") else { return };
-    let over = |out: &Value| serde_json::to_vec(out).map_or(true, |v| v.len() > MAX_HOME_PREVIEW_BYTES);
-    out["_yuzunoHome"] = home.clone();
-    if over(out) {
-        if let Some(home) = out["_yuzunoHome"].as_object_mut() { home.remove("snapshot"); }
+    if let Some(time) = crate::conversation_time::item_time(item) {
+        out[crate::conversation_time::ITEM_TIME] = time;
     }
-    if over(out) {
-        if let Some(fields) = out.as_object_mut() { fields.remove("_yuzunoHome"); }
+    if out["_yuzunoInput"] == "home" && item["_yuzunoHome"]["projectId"].is_string() {
+        out["_yuzunoHome"] = item["_yuzunoHome"].clone();
     }
+    let without = |out: &mut Value, key: &str| {
+        if let Some(fields) = out.as_object_mut() { fields.remove(key); }
+    };
+    if !fits(out) {
+        if let Some(home) = out.get_mut("_yuzunoHome").and_then(Value::as_object_mut) { home.remove("snapshot"); }
+    }
+    if !fits(out) { without(out, "_yuzunoHome"); }
+    if !fits(out) {
+        without(out, "_yuzunoInput");
+        without(out, crate::conversation_time::ITEM_TIME);
+    }
+}
+
+/// Whether a user message's preview fits a window as the web holds one
+/// (web/src/detail-patch.ts `fitsWindow`): a reply from Home's, marked so
+/// with a Project, within MAX_HOME_PREVIEW_BYTES; any other within
+/// MAX_ITEM_BYTES.
+fn fits(out: &Value) -> bool {
+    let home = out["_yuzunoInput"] == "home" && out["_yuzunoHome"]["projectId"].is_string();
+    serde_json::to_vec(out).is_ok_and(|bytes| bytes.len() <= if home { MAX_HOME_PREVIEW_BYTES } else { MAX_ITEM_BYTES })
 }
 
 /// An Item whose body is not sent: what it is, and the facts that place it.
@@ -773,6 +791,55 @@ mod tests {
             "_yuzunoInput":"home","_yuzunoHome":yours["_yuzunoHome"].clone(),"_yuzunoTime":yours["_yuzunoTime"].clone()});
         let shown = bounded_item(&tool);
         assert!(["_yuzunoInput", "_yuzunoHome", "_yuzunoTime"].iter().all(|key| shown.get(*key).is_none()));
+    }
+    /// YN-201: who sent a large user message and when are kept only in the
+    /// forms Core writes them in, rebuilt from those forms, so a preview's
+    /// size never rests on them: a time with more in it keeps only its time
+    /// and source, any other form of either is left out. Each preview ends
+    /// within the bound the web holds it to (detail-patch.ts fitsWindow): a
+    /// reply from Home's, marked so with a Project, within
+    /// MAX_HOME_PREVIEW_BYTES; any other within MAX_ITEM_BYTES. A defence of
+    /// the projection: Core's own marking only ever writes these forms.
+    #[test]
+    fn a_user_preview_keeps_who_and_when_only_in_the_forms_core_writes() {
+        let size = |item: &Value| serde_json::to_vec(item).unwrap().len();
+        let message = |input: Value, time: Value| json!({"id":"m","type":"userMessage","status":"completed",
+            "content":[{"type":"text","text":"x".repeat(MAX_ITEM_BYTES)}],"_yuzunoInput":input,"_yuzunoTime":time});
+        // As Core writes them: as they are.
+        for source in crate::conversation_time::TIME_SOURCES {
+            let time = json!({"at":1_794_800_000_000_i64,"source":source});
+            let shown = bounded_item(&message(json!("you"), time.clone()));
+            assert_eq!((shown["_yuzunoInput"].clone(), shown["_yuzunoTime"].clone()), (json!("you"), time));
+        }
+        // A time with more in it: its time and source only, the preview within the plain bound.
+        let padded = bounded_item(&message(json!("you"), json!({"at":5,"source":"core","note":"x".repeat(MAX_HOME_PREVIEW_BYTES)})));
+        assert_eq!(padded["_yuzunoTime"], json!({"at":5,"source":"core"}));
+        assert!(size(&padded) <= MAX_ITEM_BYTES, "{}", size(&padded));
+        // Any other form of a time: left out.
+        for time in [json!("yesterday"), json!({"at":"5","source":"core"}), json!({"at":0,"source":"core"}), json!({"at":-1,"source":"core"}),
+            json!({"at":5.5,"source":"core"}), json!({"at":5,"source":"elsewhere"}), json!({"at":5}), json!(null), json!([5, "core"])] {
+            assert!(bounded_item(&message(json!("you"), time.clone())).get("_yuzunoTime").is_none(), "{time}");
+        }
+        // A mark Core never writes, however long: left out.
+        for input in [json!("admin"), json!("x".repeat(MAX_HOME_PREVIEW_BYTES)), json!(["home"]), json!(1)] {
+            let shown = bounded_item(&message(input, json!({"at":5,"source":"core"})));
+            assert!(shown.get("_yuzunoInput").is_none() && shown.get("_yuzunoHome").is_none());
+            assert!(size(&shown) <= MAX_ITEM_BYTES, "{}", size(&shown));
+        }
+        // A reply from Home with a time with more in it: its time bounded, its snapshot kept, within its bound.
+        let mut reply = home_reply("h", &"x".repeat(MAX_ITEM_BYTES), "answer");
+        reply["_yuzunoTime"]["note"] = "x".repeat(MAX_HOME_PREVIEW_BYTES).into();
+        let shown = bounded_item(&reply);
+        assert_eq!(shown["_yuzunoTime"], json!({"at":1_794_800_000_000_u64,"source":"core"}));
+        assert_eq!(shown["_yuzunoHome"], reply["_yuzunoHome"]);
+        assert!(size(&shown) <= MAX_HOME_PREVIEW_BYTES, "{}", size(&shown));
+        // An identity naming no Project is no reply from Home to the web: none kept, within the plain bound.
+        let mut nameless = home_reply("n", &"x".repeat(MAX_ITEM_BYTES), &"长".repeat(20_000));
+        nameless["_yuzunoHome"]["projectId"] = json!(7);
+        let shown = bounded_item(&nameless);
+        assert!(shown.get("_yuzunoHome").is_none());
+        assert_eq!(shown["_yuzunoInput"], "home");
+        assert!(size(&shown) <= MAX_ITEM_BYTES, "{}", size(&shown));
     }
     /// YN-201: Home previews over MAX_ITEM_BYTES share a page's bound as any
     /// Item does: the Items each page selects stay within MAX_BODY_BYTES (the

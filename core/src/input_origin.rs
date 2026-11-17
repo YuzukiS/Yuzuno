@@ -22,6 +22,8 @@ pub(crate) const HOME_MAX_BYTES: usize = 128 * 1024;
 
 /// `_yuzunoInput` values Core confirmed the person wrote.
 pub(crate) const HUMAN: [&str; 4] = ["you", "home", "form", "answer"];
+/// Every `_yuzunoInput` value `annotate` marks a user message with.
+pub(crate) const MARKS: [&str; 11] = ["you", "home", "form", "answer", "peer", "reminder", "resume", "schedule", "update", "native", "unconfirmed"];
 
 /// Listed to read the conversation by: the person's inputs, and inputs no
 /// record attributes, shown apart from them.
