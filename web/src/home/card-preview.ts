@@ -13,6 +13,14 @@ export const TABLE_PREVIEW = { rows: 3, columns: 3 } as const;
 export const LARGE_TABLE_PREVIEW = { rows: 8, columns: 6 } as const;
 /** Metrics values a large card shows in its frame (Dev 7, 2547); the page shows them all. */
 export const LARGE_METRICS = 6;
+/** Values a short metrics block shows beside its first, as a card's front draws it (low density, Blocks.tsx). */
+export const MORE_METRICS = 3;
+/**
+ * Lines a card gives its text (Dev 7's v9, v12): the lead's first paragraph (summary-card.css
+ * line-clamp), the conditions (CardConditions), the title when it opens the report page. A large
+ * card reads one more of the first two. card-face.ts tells authors the same.
+ */
+export const CARD_LINES = { lead: 3, largeLead: 4, conditions: 2, largeConditions: 3, title: 2 } as const;
 
 /**
  * The one figure a card shows in its frame, bounded (T-18): never the

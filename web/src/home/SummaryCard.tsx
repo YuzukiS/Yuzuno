@@ -20,7 +20,7 @@ import { DeskCardClaim } from "./brief/ResearchDesk";
 import { changedSinceSeen, readBefore, sectionDomId, unreadChange } from "./brief-layout";
 import { PinOff } from "lucide-react";
 import { CardFoldWorkspace } from "./card-fold";
-import { CARD_FILES, cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, selfContained, shownSize, TABLE_PREVIEW, type CardFigure, type CardFile, type CardSize } from "./card-preview";
+import { CARD_FILES, CARD_LINES, cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, selfContained, shownSize, TABLE_PREVIEW, type CardFigure, type CardFile, type CardSize } from "./card-preview";
 import { CardPage, CardPageLine } from "./CardPage";
 import { pageReplyTo } from "./PageSend";
 import { openInPortal } from "../portal";
@@ -310,7 +310,7 @@ export const SummaryCard = memo(function SummaryCard({
             </div>
           )}
           {content.kind === "named" && content.conditions && (
-            <CardConditions section={section} projectId={projectId} id={content.conditions} lines={size === "large" ? 3 : 2} />
+            <CardConditions section={section} projectId={projectId} id={content.conditions} lines={size === "large" ? CARD_LINES.largeConditions : CARD_LINES.conditions} />
           )}
         </div>
         {figure}

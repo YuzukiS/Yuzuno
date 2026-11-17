@@ -1,17 +1,21 @@
 // Core's result validator. One request per line on stdin, {id, spec}, or
-// {id, op:"briefSection", section, previousBody?} for a Project Brief; one
-// answer per line on stdout, in order. Stateless: Core may stop it at any
+// {id, op:"briefSection", section, previousBody?} for a Project Brief, or
+// {id, op:"briefCard", section, refreshes?, requested?} for the card a section
+// Core accepted shows on Home (YN-209); one answer per line on stdout, in order. Stateless: Core may stop it at any
 // time and start another. result-validator.mjs bundles this with the
 // contract and zod into runtimes/result-validator/validator.mjs, which
 // imports nothing at run time but Node's own modules.
 // previousBody is trusted Core context for block edits only, never an
-// Agent-supplied field of brief_update or the section.
+// Agent-supplied field of brief_update or the section; so are refreshes (the
+// card refreshes itself) and requested (the summary's ids as the Agent sent
+// them, before Core normalized or repaired the section).
 import { createInterface } from "node:readline";
 import { checkResultSpec, ResultError, SCHEMA_VERSION } from "../src/intelligent-ui/contract.ts";
 import { clarificationMessage, clarificationSchema } from "../src/intelligent-ui/clarification.ts";
 import { BRIEF_SCHEMA_VERSION, BriefError } from "../src/intelligent-ui/brief-contract.ts";
 import { adviseBriefSection } from "../src/intelligent-ui/brief-advice.ts";
 import { acceptBriefSection } from "../src/intelligent-ui/brief-repair.ts";
+import { cardFace, FACE_NOTE } from "../src/home/card-face.ts";
 
 /**
  * One `put` envelope, without its op: normalized with its advice (T-176) and
@@ -27,6 +31,19 @@ function briefSection(id, section, previousBody) {
   }
 }
 
+/**
+ * What a section Core accepted shows on Home (card-face.ts), and the note told
+ * with it; an Ask's card is null. Never a check: nothing here refuses.
+ */
+function briefCard(id, section, refreshes, requested) {
+  try {
+    const card = cardFace(section, { refreshes: refreshes === true, requested });
+    return { id, ok: true, schemaVersion: BRIEF_SCHEMA_VERSION, card, note: FACE_NOTE };
+  } catch (error) {
+    return { id, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function answer(line) {
   let request;
   try {
@@ -36,6 +53,7 @@ function answer(line) {
   }
   const id = request?.id ?? null;
   if (request?.op === "briefSection") return briefSection(id, request.section, request.previousBody);
+  if (request?.op === "briefCard") return briefCard(id, request.section, request.refreshes, request.requested);
   if (request?.op !== undefined) return { id, error: "unknown op" };
   try {
     const { spec, defaults } = checkResultSpec(request?.spec);
