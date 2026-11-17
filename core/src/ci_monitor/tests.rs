@@ -406,13 +406,14 @@ print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n'+link+'\r\n'+json.dumps(data))
     force(&ws);
     tick(&ws).await.unwrap();
     assert_eq!(mail(&ws.store, "a").len(), 3);
-    // Each failed attempt's jobs were read once (YN-196). This fixture answers
-    // them with no jobs, so nothing is compared and nothing is read again.
+    // Each failed attempt's jobs were read (YN-196). This fixture answers them
+    // with a run, not jobs: the read fails, so nothing is recorded and a later
+    // observation may read them again; the mails above went out regardless.
     let requests = std::fs::read_to_string(dir.path().join("requests")).unwrap();
     for failed in ["42", "43"] {
         let jobs = format!("repos/o/r/actions/runs/{failed}/attempts/1/jobs?per_page=100&page=1");
-        assert_eq!(requests.lines().filter(|ep| *ep == jobs).count(), 1, "{jobs}");
-        assert!(ws.store.ci_failures_known(&format!("github:123:{failed}:1")).unwrap());
+        assert!(requests.lines().any(|ep| ep == jobs), "{jobs}");
+        assert!(!ws.store.ci_failures_known(&format!("github:123:{failed}:1")).unwrap());
     }
     assert!(!requests.lines().any(|ep| ep == "repos/o/r/actions/runs/42/attempts/2/jobs?per_page=100&page=1"), "a passed attempt is not read");
     ws.store

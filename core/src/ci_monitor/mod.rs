@@ -455,9 +455,10 @@ fn failed_steps(jobs: &Value) -> Vec<Value> {
 }
 /// Reads, once per failed attempt, where it failed, so that its mail can name
 /// other recent attempts that failed at the same job and step (YN-196). At
-/// most FAILURE_READS jobs reads per observation. A failed read records no
-/// failed step for that attempt, so it is not read again and its mail has no
-/// note; it never fails the observation.
+/// most FAILURE_READS jobs reads per observation. A failed read (a cooldown,
+/// a rate limit, a network error) records nothing, so a later observation
+/// reads it again; the mail of that observation has no note, and the
+/// observation itself never fails.
 async fn record_failures(ws: &Arc<Workspace>, runs: &[Value], ttl: i64) {
     let mut reads = 0;
     for run in runs {
@@ -469,7 +470,10 @@ async fn record_failures(ws: &Arc<Workspace>, runs: &[Value], ttl: i64) {
             continue;
         }
         reads += 1;
-        let failed = details(ws, run, 1, ttl).await.map(|(jobs, _)| failed_steps(&jobs)).unwrap_or_default();
+        let Ok((jobs, _)) = details(ws, run, 1, ttl).await else {
+            continue;
+        };
+        let failed = failed_steps(&jobs);
         let run = run.clone();
         let _ = ws.stored(move |s| s.ci_record_failures(&run, &failed)).await;
     }
