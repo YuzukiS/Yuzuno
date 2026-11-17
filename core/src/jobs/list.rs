@@ -153,7 +153,7 @@ impl Store {
              LEFT JOIN project_tasks p ON p.task_id=j.task_id
              WHERE (?1 IS NULL OR j.agent_id=?1) AND (?2 IS NULL OR j.task_id=?2)
                AND (?3=0 OR (?3=1 AND p.project_id IS NULL) OR (?3=2 AND p.project_id=?4))
-               AND j.seq<?5 AND (?6=0 OR j.reserved=1 OR j.status IN ('queued','waiting'))
+               AND j.seq<?5 AND (?6=0 OR (j.reserved=1 OR j.status='queued' OR (j.status='waiting' AND json_extract(j.data,'$.stalled') IS NULL)))
                AND (?6=1 OR ?8 IS NULL OR j.status IN (SELECT value FROM json_each(?8)))
                AND (?6=1 OR ?9 IS NULL OR json_extract(j.data,'$.createdAt')>=?9)
                AND (?6=1 OR ?10 IS NULL OR instr(lower(COALESCE(json_extract(j.data,'$.reason'),'')),lower(?10))>0)
@@ -260,6 +260,10 @@ fn compact_job(job: &Value) -> Value {
     if !job["run"]["id"].is_null() {
         out["run"] = json!({"id":job["run"]["id"],"stage":job["run"]["stage"],"attempt":job["run"]["attempt"]});
     }
+    // A waiting stage that cannot start without a retry or a cancel (YN-194).
+    if job["stalled"].is_string() {
+        out["stalled"] = job["stalled"].clone();
+    }
     // What it used and what it retried (YN-194), from its record alone.
     let peak = &super::resource_summary::attempt(job)["actual"]["memoryPeakMiB"];
     if let Some(peak) = peak.as_f64() {
@@ -279,7 +283,7 @@ pub(super) fn last_line(text: &str) -> Option<String> {
     Some(if end < line.len() { format!("{}…", &line[..end]) } else { line.to_owned() })
 }
 
-pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. History filters (live page unfiltered): status (Job statuses), since (createdAt at or after, RFC 3339), reasonContains (case-insensitive). Compact rows add memoryPeakMiB when measured, retryOf, and for a failed Job on this host lastLine, its last output line. job_get has full details. GUI global history/live behavior is unchanged.";
+pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. A waiting run stage marked stalled (upstream: behind a stage that did not succeed; costLimit: its run's cost limit) cannot start without job_run_retry or job_run_cancel and is not live. History filters (live page unfiltered): status (Job statuses), since (createdAt at or after, RFC 3339), reasonContains (case-insensitive). Compact rows add memoryPeakMiB when measured, retryOf, and for a failed Job on this host lastLine, its last output line. job_get has full details. GUI global history/live behavior is unchanged.";
 
 pub(super) fn schema() -> Value {
     json!({

@@ -123,9 +123,9 @@ export function useSystemNotifications(
     const host = browserHost(isNative, knownDesktopNotifier());
     const access = notificationAccess(host);
     const wanted = notices.filter((notice) => notifies(now, access, notice.kind));
-    // In the desktop app the page cannot tell whether it is looked at (on
-    // Windows, a minimized window's page still says it is visible and
-    // focused): the app decides from its window, given `whenAway` (T-188).
+    // In the desktop app the app decides from its window, given `whenAway`
+    // (T-188): the page's own reading was not to be trusted there (until
+    // YN-199 a minimized Windows window's page said it was visible).
     const viaApp = host.native && !!host.desktop;
     if (!wanted.length || (!inView && !viaApp && !away())) return;
     for (const notice of merged(wanted))

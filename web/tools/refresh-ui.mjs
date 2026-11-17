@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { DIGEST_FILE, sourceDigest } from "./source-digest.mjs";
 
 const web = fileURLToPath(new URL("../", import.meta.url));
 const daily = join(web, "dist");
@@ -40,17 +41,8 @@ async function hashes(root, paths) {
     ),
   );
 }
-async function sourceHash() {
-  const paths = [
-    ...(await files(join(web, "src"))).map((p) => join("src", p)),
-    "index.html",
-    "package.json",
-    "package-lock.json",
-    "tsconfig.json",
-    "vite.config.ts",
-  ];
-  return digest(JSON.stringify(await hashes(web, paths)));
-}
+// The same digest every build stamps into its output (YN-194).
+const sourceHash = () => sourceDigest(web);
 function run(script, args, dist, flags = []) {
   const result = spawnSync(
     process.execPath,
@@ -120,6 +112,7 @@ async function publish(dist) {
         !(
           p === "index.html" ||
           p === "design-preview.html" ||
+          p === DIGEST_FILE ||
           p.startsWith("assets/")
         ),
     )

@@ -81,7 +81,43 @@ pub(crate) fn archiving(db: &Connection, agent: &str) -> Result<Option<Archiving
 pub(crate) fn begin(store: &Store, agent: &str, by: &str) -> Result<bool> {
     let mut db = store.db.write()?;
     let tx = db.transaction()?;
-    if archiving(&tx, agent)?.is_some() {
+    let begun = begin_in(&tx, agent, by)?;
+    tx.commit()?;
+    Ok(begun)
+}
+
+/// As `begin`, for the release a task's done sets off (YN-192): in the same
+/// write, not begun while `agent` is still the assignee of another task that
+/// has not ended, which it names instead. A dispatch to `agent` is one write
+/// too, refused once this one has begun (`refuse_dispatch`): whichever is
+/// first decides, so the read that chose it can't close it on new work.
+pub(crate) fn begin_on_done(store: &Store, agent: &str, by: &str, task: &str) -> Result<std::result::Result<bool, String>> {
+    let mut db = store.db.write()?;
+    let tx = db.transaction()?;
+    if let Some(other) = crate::executor_release::working_elsewhere(&tx, agent, task)? {
+        return Ok(Err(other));
+    }
+    let begun = begin_in(&tx, agent, by)?;
+    tx.commit()?;
+    Ok(Ok(begun))
+}
+
+/// A task is not dispatched to an executor being released (YN-192): its
+/// close would end that work too.
+pub(crate) fn refuse_dispatch(db: &Connection, agent: &str) -> Result<()> {
+    if let Some(release) = archiving(db, agent)? {
+        bail!(
+            "executor_archiving: this executor is being released (since {}), so it takes no new task: its close would end \
+             that work too; dispatch the task to another executor",
+            release.since
+        );
+    }
+    Ok(())
+}
+
+/// The release's first write, in `tx`: false when it has begun already.
+fn begin_in(tx: &Connection, agent: &str, by: &str) -> Result<bool> {
+    if archiving(tx, agent)?.is_some() {
         return Ok(false);
     }
     let at = now();
@@ -90,8 +126,7 @@ pub(crate) fn begin(store: &Store, agent: &str, by: &str) -> Result<bool> {
         params![agent, by, at],
     )?;
     tx.execute("UPDATE agent_roles SET state='archiving',updated_at=?2 WHERE agent_id=?1 AND kind='executor'", params![agent, at])?;
-    crate::ci_monitor::lifecycle::close_agent_subscriptions(&tx, agent, "executor_released")?;
-    tx.commit()?;
+    crate::ci_monitor::lifecycle::close_agent_subscriptions(tx, agent, "executor_released")?;
     Ok(true)
 }
 

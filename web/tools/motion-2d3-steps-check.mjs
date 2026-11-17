@@ -99,14 +99,16 @@ function readSteps([selector, gapMs]) {
   const segments = [...root.querySelectorAll(".step-moving")];
   const seg = segments[0] ?? null;
   const style = seg && getComputedStyle(seg);
+  // The lit segment is the bar's ::before, moved by transform (YN-199).
+  const lit = seg && getComputedStyle(seg, "::before");
   const items = [...root.querySelectorAll(":scope > li")].map((li) => ({ state: li.dataset.state, text: li.textContent, box: box(li),
     segment: !!li.querySelector(".step-moving") }));
-  const first = seg && style.backgroundPosition;
+  const first = seg && lit.transform;
   return new Promise((done) => setTimeout(() => done({
     root: box(root), items, segments: segments.length,
     segment: seg && { box: box(seg), hidden: seg.getAttribute("aria-hidden"), position: style.position, text: seg.textContent,
-      animation: [style.animationName, style.animationDuration, style.animationIterationCount].join(" "),
-      positions: [first, getComputedStyle(seg).backgroundPosition] },
+      animation: [lit.animationName, lit.animationDuration, lit.animationIterationCount].join(" "),
+      positions: [first, getComputedStyle(seg, "::before").transform] },
   }), gapMs));
 }
 /** The same list with its segment taken out of the page: whether anything else moves. */
@@ -246,7 +248,8 @@ for (const run of runs) {
       list.className = "update-steps";
       list.innerHTML = '<li class="is-current">x</li><li class="is-next">y</li>';
       document.body.append(list);
-      const [current, next] = [...list.children].map((li) => getComputedStyle(li, "::before"));
+      // The current bar's lit segment is its ::after (YN-199).
+      const [current, next] = [...list.children].map((li) => getComputedStyle(li, "::after"));
       const out = { current: [current.animationName, current.animationDuration, current.animationIterationCount].join(" "), next: next.animationName,
         keyframes: names.filter((n) => /step-moving/.test(n)) };
       list.remove();

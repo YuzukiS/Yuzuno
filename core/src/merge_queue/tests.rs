@@ -410,6 +410,19 @@ async fn a_released_head_with_green_ci_on_the_current_main_merges_and_is_followe
         ["PUT repos/owner/repo/pulls/11/merge"],
         "the only write is one merge request"
     );
+    // YN-193: the task's PR link reads merged at the merged head, without a
+    // github_refresh, and the task's view says where the entry stands.
+    let links = lab.ws.store.github_list(None, Some(lab.task.as_str())).unwrap();
+    let link = &links["links"][0];
+    assert_eq!(
+        (link["snapshot"]["state"].clone(), link["snapshot"]["headSha"].clone(), link["snapshot"]["mergeCommitSha"].clone(), link["stale"].clone()),
+        (json!("merged"), json!(head()), json!(merge_commit()), json!(false)),
+        "{link}"
+    );
+    let current = lab.ws.store.collaboration_call(Some("lead"), "task_get", json!({"taskId":lab.task,"view":"current"})).unwrap();
+    let row = &current["current"]["delivery"]["pullRequests"][0];
+    assert_eq!((row["state"].clone(), row["headSha"].clone(), row["mergeQueue"]["state"].clone()), (json!("merged"), json!(head()), json!("merged")), "{row}");
+    assert!(row["mergeQueue"].get("blocker").is_none(), "nothing holds a merged entry: {row}");
     let put = calls(lab.dir.path()).into_iter().find(|c| c["method"] == "PUT").unwrap();
     assert_eq!(put["body"], json!({"merge_method":"merge","sha":head()}), "a merge commit pinned to the released head");
     let m = &e["merge"];
@@ -4258,4 +4271,38 @@ async fn the_users_own_acceptance_needs_no_reply_and_holds_only_for_that_round()
     assert_eq!((e["state"].as_str(), e["reason"].as_str()), (Some("stopped"), Some("review_not_passing")), "{e}");
     assert!(e["detail"].as_str().unwrap().contains("found “A new problem” (P2), which the release doesn't acknowledge"), "{e}");
     assert!(writes(lab.dir.path()).is_empty(), "nothing was written to GitHub");
+}
+
+/// YN-193: what holds an entry now, worked out when it is read: the
+/// repository's pause (except for the revert that ends it), its switch, the
+/// wait its last check named, or the reason it stopped; nothing once it
+/// merges, ends or is cancelled, or before its first check.
+#[test]
+fn an_entry_says_what_holds_it_now() {
+    let queue = json!({"enabled":true,"paused":null});
+    let paused = json!({"enabled":true,"paused":{"reason":"main_red","at":"2026-11-16T01:30:00+00:00","entryId":"e0","detail":"Main CI run 9 concluded failure"}});
+    let entry = |state: &str| json!({"id":"e1","state":state,"reason":null,"detail":"No run of workflow Desktop macOS on the head yet",
+        "waitingSince":1_794_790_800_i64,"updatedAt":"2026-11-16T02:00:00+00:00"});
+    assert_eq!(store::blocker(&entry("queued"), &queue), Value::Null, "not checked yet");
+    assert_eq!(store::blocker(&entry("waiting"), &queue),
+        json!({"code":"waiting","since":"2026-11-16T01:00:00+00:00","detail":"No run of workflow Desktop macOS on the head yet"}));
+    for state in ["queued", "waiting", "ready"] {
+        assert_eq!(store::blocker(&entry(state), &paused),
+            json!({"code":"queue_paused","reason":"main_red","since":"2026-11-16T01:30:00+00:00","detail":"Main CI run 9 concluded failure"}), "{state}");
+    }
+    let mut revert = entry("waiting");
+    revert["kind"] = json!("revert");
+    revert["revert"] = json!({"of":"e0"});
+    assert_eq!(store::blocker(&revert, &paused)["code"], "waiting", "the revert of the red merge passes its pause");
+    let mut ready = entry("ready");
+    ready["detail"] = json!("Every check held, but the merge queue is off");
+    assert_eq!(store::blocker(&ready, &json!({"enabled":false})), json!({"code":"queue_off","detail":"Every check held, but the merge queue is off"}));
+    let mut stopped = entry("stopped");
+    stopped["reason"] = json!("conflict");
+    stopped["detail"] = json!("GitHub reports that the PR cannot merge into its base main");
+    assert_eq!(store::blocker(&stopped, &paused),
+        json!({"code":"conflict","since":"2026-11-16T02:00:00+00:00","detail":"GitHub reports that the PR cannot merge into its base main"}));
+    for state in ["merging", "merged", "done", "cancelled"] {
+        assert_eq!(store::blocker(&entry(state), &paused), Value::Null, "{state}");
+    }
 }

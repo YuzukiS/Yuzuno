@@ -188,8 +188,9 @@ fn associations_survive_restart_rename_and_failure_without_completing_tasks() {
         2
     );
 }
-/// T-204: how many of a task's 30 places are used, what the 31st gets, and
-/// that nothing is unlinked for the user.
+/// T-204, YN-193: a task's 30 places count its links that are not merged PRs
+/// (closed ones count: they can be reopened), all its links are at most 100,
+/// what a refused link gets, and that nothing is unlinked for the user.
 #[test]
 fn a_task_says_how_many_of_its_30_links_are_used_and_refuses_the_31st_with_what_to_do() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,35 +202,59 @@ fn a_task_says_how_many_of_its_30_links_are_used_and_refuses_the_31st_with_what_
     let capacity = |s: &Store| {
         let page = s.github_list(None, Some(&id)).unwrap();
         let c = &page["capacity"];
-        (c["linkedCount"].as_i64().unwrap(), c["limit"].as_i64().unwrap(), c["remaining"].as_i64().unwrap(), page["links"].as_array().unwrap().len())
+        assert_eq!((c["limit"].clone(), c["totalLimit"].clone()), (json!(30), json!(100)));
+        (c["linkedCount"].as_i64().unwrap(), c["countedCount"].as_i64().unwrap(), c["remaining"].as_i64().unwrap(), page["links"].as_array().unwrap().len())
     };
-    assert_eq!(capacity(&s), (0, 30, 30, 0));
+    let link = |n: u64, kind: &str, state: &str| {
+        s.github_link_object(&id, &r, kind, n, json!({"title":format!("Synthetic {n}"),"state":state}))
+    };
+    assert_eq!(capacity(&s), (0, 0, 30, 0));
     // A project's answer has no task capacity.
     assert!(s.github_list(Some(&p.id), None).unwrap().get("capacity").is_none());
-    // Closed and merged ones count like open ones.
+    // Closed ones count like open ones; a merged PR takes no place.
     for n in 1..=30u64 {
         let state = ["open", "closed", "merged"][(n % 3) as usize];
-        s.github_link_object(&id, &r, if n % 2 == 0 { "pull" } else { "issue" }, n, json!({"title":format!("Synthetic {n}"),"state":state}))
-            .unwrap();
+        link(n, if state == "merged" || n % 2 == 0 { "pull" } else { "issue" }, state).unwrap();
     }
-    assert_eq!(capacity(&s), (30, 30, 0, 30));
-    // Linking one already linked takes no second place, also when full.
-    s.github_link_object(&id, &r, "pull", 2, json!({"title":"Synthetic 2","state":"merged"})).unwrap();
-    assert_eq!(capacity(&s), (30, 30, 0, 30));
-    // The 31st is refused with the numbers and what to do; nothing changes.
-    let refused = s
-        .github_link_object(&id, &r, "pull", 31, json!({"title":"Synthetic 31","state":"open"}))
-        .unwrap_err()
-        .to_string();
-    for part in ["link_limit_reached:", "linkedCount 30", "limit 30", "remaining 0", "closed and merged", "Nothing was linked", "action unlink", "linkId", "no longer needs"] {
+    assert_eq!(capacity(&s), (30, 20, 10, 30));
+    // Linking one already linked takes no second place.
+    link(2, "pull", "merged").unwrap();
+    assert_eq!(capacity(&s), (30, 20, 10, 30));
+    for n in 31..=40u64 {
+        link(n, "pull", "open").unwrap();
+    }
+    assert_eq!(capacity(&s), (40, 30, 0, 40));
+    // The next open one is refused with the numbers and what to do; nothing changes.
+    let refused = link(41, "pull", "open").unwrap_err().to_string();
+    for part in ["link_limit_reached:", "countedCount 30", "limit 30", "linkedCount 40", "totalLimit 100", "Merged PRs take no place", "closed ones do",
+        "Nothing was linked", "action unlink", "linkId", "no longer needs"] {
         assert!(refused.contains(part), "{part}: {refused}");
     }
-    assert_eq!(capacity(&s), (30, 30, 0, 30));
-    // The user unlinks one: one place is free, and the 31st fits.
+    assert_eq!(capacity(&s), (40, 30, 0, 40));
+    // A merged PR still fits: it takes no place.
+    link(41, "pull", "merged").unwrap();
+    assert_eq!(capacity(&s), (41, 30, 0, 41));
+    // The user unlinks a closed one: one place is free, and an open one fits.
     s.github_unlink_object(&id, "7:issue:1").unwrap();
-    assert_eq!(capacity(&s), (29, 30, 1, 29));
-    s.github_link_object(&id, &r, "pull", 31, json!({"title":"Synthetic 31","state":"open"})).unwrap();
-    assert_eq!(capacity(&s), (30, 30, 0, 30));
+    assert_eq!(capacity(&s), (40, 29, 1, 40));
+    link(42, "pull", "open").unwrap();
+    assert_eq!(capacity(&s), (41, 30, 0, 41));
+    // All links, merged ones too, are at most 100.
+    for n in 43..=101u64 {
+        link(n, "pull", "merged").unwrap();
+    }
+    assert_eq!(capacity(&s), (100, 30, 0, 100));
+    let refused = link(102, "pull", "merged").unwrap_err().to_string();
+    assert!(refused.contains("linkedCount 100, totalLimit 100"), "{refused}");
+    assert_eq!(capacity(&s), (100, 30, 0, 100));
+}
+/// YN-193: a task's github_refresh reads its links again, except merged PRs,
+/// which no longer change.
+#[test]
+fn a_task_refresh_reads_its_links_again_except_merged_prs() {
+    let page = json!({"links":[{"id":"7:pull:1","snapshot":{"state":"open"}},{"id":"7:pull:2","snapshot":{"state":"merged"}},
+        {"id":"7:issue:3","snapshot":{"state":"closed"}},{"id":"7:pull:4","snapshot":{"state":"draft"}}]});
+    assert_eq!(keys(&page, false), ["7:pull:1", "7:issue:3", "7:pull:4"]);
 }
 #[tokio::test]
 async fn missing_gh_is_actionable() {

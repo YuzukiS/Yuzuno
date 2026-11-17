@@ -77,3 +77,32 @@ fn a_pr_leaves_one_failure_after_reads_uncounted_whether_stamped_or_older() {
     // Any other round gets no stamp.
     assert!(stamp(&completed, &[]).is_none());
 }
+
+/// YN-193: each round says whether it counts, from its own record, as the
+/// limit counts it; and the round of the head that merged is not outdated.
+#[test]
+fn a_round_says_whether_it_counts_toward_the_limit() {
+    let mut early = no_report("a", &[]);
+    early.as_object_mut().unwrap().remove("nativeStartedAt");
+    assert_eq!(counts_toward_limit(&early), json!(false), "started nothing");
+    assert_eq!(counts_toward_limit(&no_report("a", &[])), json!(false), "no report, read nothing");
+    assert_eq!(counts_toward_limit(&no_report("a", &["source_read"])), Value::Null, "an older unstamped one depends on the PR's other rounds");
+    let mut stamped = no_report("a", &["source_read"]);
+    stamped["roundLimit"] = stamp(&stamped, &[]).unwrap();
+    assert_eq!(counts_toward_limit(&stamped), json!(false), "its stamp decides");
+    for status in ["completed", "cancelled", "running"] {
+        assert_eq!(counts_toward_limit(&json!({"id":"c","status":status})), json!(true), "{status}");
+    }
+
+    use super::super::store::outdated;
+    let round = json!({"baseSha":"b".repeat(40),"headSha":"h".repeat(40)});
+    let snapshot = |state: &str, base: char| json!({"state":state,"baseSha":base.to_string().repeat(40),"headSha":"h".repeat(40)});
+    assert_eq!(outdated(&round, &snapshot("open", 'b')), json!(false));
+    assert_eq!(outdated(&round, &snapshot("open", 'n')), json!(true), "an open PR's new base is a new candidate");
+    assert_eq!(outdated(&round, &snapshot("merged", 'n')), json!(false), "the merge moved the base: only the head says");
+    assert_eq!(outdated(&round, &snapshot("closed", 'n')), json!(false));
+    let mut moved = snapshot("merged", 'n');
+    moved["headSha"] = json!("x".repeat(40));
+    assert_eq!(outdated(&round, &moved), json!(true), "a merged PR at another head");
+    assert_eq!(outdated(&round, &json!({"state":"open"})), Value::Null, "an unread snapshot is unverified");
+}

@@ -68,7 +68,10 @@ fn decorate_named(
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .is_none_or(|t| chrono::Utc::now().signed_duration_since(t).num_seconds() > 180);
-    v["stale"] = json!(old || !v["error"].is_null());
+    // A merged PR is final: GitHub cannot reopen it, so its state and head
+    // no longer change however old the read (YN-193).
+    let merged = v["snapshot"]["state"] == "merged";
+    v["stale"] = json!((old && !merged) || !v["error"].is_null());
     Ok(v)
 }
 pub(crate) fn task_links(db: &Connection, task: &str) -> Result<Vec<Value>> {
@@ -138,19 +141,37 @@ pub(crate) fn task_link_counts(db: &Connection, ids: &[&str]) -> Result<std::col
     Ok(result)
 }
 
-/// The most GitHub objects one task links: PRs and Issues, closed and merged
-/// ones too; unlinking one frees its place.
+/// The most GitHub objects one task links that are not merged PRs: open
+/// ones, drafts, Issues, and closed ones, which can be reopened, so
+/// github_refresh still reads them. A merged PR is final: it takes no place
+/// and is not read again (YN-193). Unlinking one frees its place.
 pub(crate) const TASK_LINK_LIMIT: i64 = 30;
+/// The most GitHub objects one task links at all, merged PRs included, so a
+/// task's links stay bounded (YN-193): 30 places plus 70 merged PRs, whose
+/// short rows in task_get stay near 25 KB.
+pub(crate) const TASK_LINK_TOTAL: i64 = 100;
+/// How many of a task's links, other than `except`, are not merged PRs, and
+/// how many there are in all.
+fn link_counts(db: &Connection, task: &str, except: &str) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        "SELECT COUNT(*) FILTER (WHERE COALESCE(json_extract(o.data,'$.snapshot.state'),'')<>'merged'),COUNT(*)
+           FROM github_task_links l JOIN github_objects o ON o.id=l.object_id WHERE l.task_id=?1 AND l.object_id<>?2",
+        params![task, except],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
 
 /// How full a task's links are, beside the links themselves in each
-/// github_links answer for a task (T-204), counted as a compact row counts them.
+/// github_links answer for a task (T-204).
 fn link_capacity(db: &Connection, task: &str) -> Result<Value> {
-    let linked = task_link_counts(db, &[task])?.get(task).copied().unwrap_or(0);
+    let (counted, linked) = link_counts(db, task, "")?;
     Ok(json!({
         "linkedCount": linked,
+        "countedCount": counted,
         "limit": TASK_LINK_LIMIT,
-        "remaining": (TASK_LINK_LIMIT - linked).max(0),
-        "note": "Every PR and Issue linked to this task counts, closed and merged ones too; linking one already linked takes no second place. When it is full, unlink one this task no longer needs (action unlink with its linkId). Nothing is unlinked for you.",
+        "remaining": (TASK_LINK_LIMIT - counted).max(0).min(TASK_LINK_TOTAL - linked),
+        "totalLimit": TASK_LINK_TOTAL,
+        "note": "limit counts the PRs and Issues linked to this task that are not merged PRs (countedCount); closed ones count, since they can be reopened. A merged PR takes no place and github_refresh no longer reads it; all links together, merged ones too, are at most totalLimit. Linking one already linked takes no second place. When it is full, unlink one this task no longer needs (action unlink with its linkId). Nothing is unlinked for you.",
     }))
 }
 
@@ -333,16 +354,13 @@ pub(crate) fn link_object(
         );
     }
     let id = format!("{}:{kind}:{number}", repo.id);
-    let count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM github_task_links WHERE task_id=?1 AND object_id!=?2",
-        params![task, id],
-        |r| r.get(0),
-    )?;
+    let (counted, linked) = link_counts(db, &task, &id)?;
     ensure!(
-        count < TASK_LINK_LIMIT,
-        "link_limit_reached: this task already links {count} GitHub objects, closed and merged ones too \
-         (linkedCount {count}, limit {TASK_LINK_LIMIT}, remaining 0). Nothing was linked. To link this one, \
-         first unlink one this task no longer needs (github_links action unlink with its linkId)."
+        (counted < TASK_LINK_LIMIT || snapshot["state"] == "merged") && linked < TASK_LINK_TOTAL,
+        "link_limit_reached: this task already links {linked} GitHub objects, {counted} of them not merged PRs \
+         (countedCount {counted}, limit {TASK_LINK_LIMIT}; linkedCount {linked}, totalLimit {TASK_LINK_TOTAL}). \
+         Nothing was linked. Merged PRs take no place in limit; closed ones do. To link this one, first unlink one \
+         this task no longer needs (github_links action unlink with its linkId)."
     );
     save_repository(db, repo)?;
     let data = json!({"snapshot":snapshot,"syncedAt":now(),"lastAttemptAt":now(),"error":null});

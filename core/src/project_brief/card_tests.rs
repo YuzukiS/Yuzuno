@@ -359,6 +359,24 @@ async fn a_section_without_a_task_reads_as_before_and_the_migration_runs_again_u
     }
 }
 
+/// YN-195 (review ede2b8f1): an edit that only binds or unbinds a status
+/// section writes no content, so its facts keep their asOf, stale or not.
+#[tokio::test]
+async fn binding_a_status_to_a_task_keeps_its_as_of() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Design the page");
+    let mut old = put("page", "status");
+    old["status"] = json!({"asOf":"2026-01-01T00:00:00Z","validFor":60});
+    accept(&ws, "a", input("a1", 0, vec![old])).await;
+    accept(&ws, "a", input("a2", 1, vec![json!({"op":"edit","key":"page","task":task})])).await;
+    let read = brief(&ws, "a");
+    assert_eq!(card(&read, "page")["task"]["id"], json!(task));
+    assert_eq!(section(&read, "page")["status"], json!({"asOf":"2026-01-01T00:00:00Z","validFor":60,"stale":true}));
+    accept(&ws, "a", input("a3", 2, vec![json!({"op":"edit","key":"page","task":null})])).await;
+    assert_eq!(section(&brief(&ws, "a"), "page")["status"]["asOf"], "2026-01-01T00:00:00Z");
+}
+
 /// The exception lets a card's executor write where it otherwise could not,
 /// never more than anyone may: a topic still has at most MAX_SUBTOPICS
 /// sub-topics, and the generated validator checks its sections as any
@@ -373,7 +391,7 @@ async fn a_cards_executor_writes_within_the_limits_every_section_has() {
     accept(&ws, "c", input("c1", 1, vec![put("page/four", "report")])).await;
     let full = reject(&ws, "c", input("c2", 2, vec![put("page/five", "report")])).await;
     assert_eq!(codes(&full), ["topic_limit"], "{full}");
-    assert!(full["problems"][0]["reason"].as_str().unwrap().contains(&format!("{MAX_SUBTOPICS} sub-topics")));
+    assert!(full["problems"][0]["reason"].as_str().unwrap().contains(&format!("{MAX_SUBTOPICS} report or status sub-topics")));
 
     let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
     let mut large = put("page/four", "report");

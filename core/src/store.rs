@@ -573,6 +573,13 @@ impl Drop for Store {
     }
 }
 
+/// Every Agent's ID, in the order they were made.
+fn agent_ids(db: &Connection) -> Result<Vec<String>> {
+    let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
+    let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
 /// Unfinished Jobs that run on a machine.
 fn machine_jobs(db: &Connection, id: &str) -> Result<i64> {
     Ok(db.query_row(
@@ -2124,9 +2131,7 @@ impl Store {
     pub fn agents(&self) -> Result<Vec<Agent>> {
         let (ids, mut projects, kinds, mut released, mut lifecycles) = {
             let db = self.db.read()?;
-            let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
-            let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?,
+            (agent_ids(&db)?, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?,
                 crate::executor_lifecycle::all(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
@@ -2139,6 +2144,22 @@ impl Store {
             crate::executor_release::show(&mut agent, released.remove(&id));
             agent.executor = lifecycles.remove(&id);
             agents.push(agent);
+        }
+        Ok(agents)
+    }
+
+    /// Every Agent as listed, without what `agents` adds to each (its Project,
+    /// role, release and executor lifecycle, about ten queries per executor):
+    /// for a loop that reads only the listing, which memory keeps after its
+    /// first read (YN-198).
+    pub fn listed_agents(&self) -> Result<Vec<Agent>> {
+        let ids = agent_ids(&*self.db.read()?)?;
+        let mut agents = Vec::with_capacity(ids.len());
+        for id in ids {
+            // None: deleted since the list was read.
+            if let Some(listed) = self.listed(&id, Load::Reader)? {
+                agents.push(listed.agent);
+            }
         }
         Ok(agents)
     }

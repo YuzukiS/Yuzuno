@@ -244,16 +244,67 @@ impl Store {
 
     /// Separate priority batches keep a working Agent's urgent notification from
     /// reserving or reading normal mail that should wait for a turn boundary.
+    /// Where a batch's mail starts is `peer_batch_after`'s, read only for a
+    /// wake-up that goes out (YN-197).
     pub fn pending_peer_deliveries(&self) -> Result<Vec<Value>> {
         // A refused wake-up whose wait has passed is pending again (T-50).
         self.retry_refused_peer_deliveries()?;
+        let (batches, unreachable) = {
+            let db = self.db.read()?;
+            self.peer_batches(&db, None)?
+        };
+        // Mail no wake-up can ever ring is skipped once, so the next rounds
+        // no longer read it (YN-197). It stays in the mailbox.
+        if !unreachable.is_empty() {
+            let mut db = self.db.write()?;
+            let tx = db.transaction()?;
+            for (recipient, reason) in &unreachable {
+                tx.execute(
+                    "UPDATE collaboration_messages SET delivery_state='skipped',delivery_detail=json_patch(delivery_detail,?2)
+                     WHERE recipient_id=?1 AND delivery_state='pending'
+                       AND COALESCE(json_extract(data,'$.metadata.kind'),'')!='update_wait'",
+                    params![recipient, json!({"reason":reason,"at":now()}).to_string()],
+                )?;
+            }
+            tx.commit()?;
+        }
+        Ok(batches)
+    }
+
+    /// This recipient's pending batch of `priority`, as
+    /// `pending_peer_deliveries` lists it, from its mail alone: what a
+    /// wake-up reads again once it holds the Agent's gate.
+    pub fn pending_peer_batch(&self, recipient: &str, priority: &str) -> Result<Option<Value>> {
         let db = self.db.read()?;
-        let mut q = db.prepare("SELECT recipient_id,MAX(seq),COUNT(*),
-            (SELECT MIN(older.seq)-1 FROM collaboration_messages older
-             WHERE older.recipient_id=m.recipient_id
-               AND COALESCE(json_extract(older.data,'$.priority'),'normal')=COALESCE(json_extract(m.data,'$.priority'),'normal')
-               AND NOT EXISTS(
-               SELECT 1 FROM collaboration_message_reads seen WHERE seen.message_seq=older.seq AND seen.reader_id=older.recipient_id))
+        Ok(self.peer_batches(&db, Some(recipient))?.0.into_iter().find(|batch| batch["priority"] == priority))
+    }
+
+    /// The sequence a wake-up asks `recipient` to read its `priority` mail
+    /// after: just before its oldest unread mail of that priority, whatever
+    /// that mail's delivery state, so mail an earlier wake-up announced and
+    /// the Agent did not read comes too. It walks the mailbox from its oldest
+    /// mail, so it is read only for a wake-up that goes out (YN-197). None
+    /// when nothing of that priority is unread.
+    pub fn peer_batch_after(&self, recipient: &str, priority: &str) -> Result<Option<i64>> {
+        let db = self.db.read()?;
+        Ok(db.query_row(
+            "SELECT MIN(seq)-1 FROM collaboration_messages m WHERE recipient_id=?1
+               AND COALESCE(json_extract(data,'$.priority'),'normal')=?2
+               AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r
+                 WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)",
+            params![recipient, priority],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
+    }
+
+    /// Unread pending mail by recipient and priority, of every recipient or
+    /// only `only`'s: the batches a wake-up may ring, and the recipients
+    /// whose pending mail none ever will, with why. A released executor can
+    /// never be reopened (`executor_release::REOPEN_REFUSED`), and an Agent
+    /// that is gone never comes back; a closed Agent that can be reopened
+    /// keeps its mail pending.
+    fn peer_batches(&self, db: &Connection, only: Option<&str>) -> Result<(Vec<Value>, Vec<(String, &'static str)>)> {
+        let mut q = db.prepare(&format!("SELECT recipient_id,MAX(seq),COUNT(*)
             ,COALESCE(json_extract(m.data,'$.priority'),'normal') AS priority
             -- Mail that rings: all but Core's session notices, which join
             -- (YN-5), and its quiet notices, which wait for either (YN-68).
@@ -261,42 +312,47 @@ impl Store {
               AND COALESCE(json_extract(m.data,'$.wake'),'ring')!='quiet') AS ringing
             ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')=?1) AS joining
             ,SUM(COALESCE(json_extract(m.data,'$.wake'),'ring')='quiet') AS quiet
+            ,EXISTS(SELECT 1 FROM agent_roles role WHERE role.agent_id=m.recipient_id AND role.archived_at IS NOT NULL)
             FROM collaboration_messages m
-            WHERE delivery_state='pending' AND COALESCE(json_extract(m.data,'$.metadata.kind'),'')!='update_wait'
+            WHERE delivery_state='pending' {}
+              AND COALESCE(json_extract(m.data,'$.metadata.kind'),'')!='update_wait'
               AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r
                 WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)
-            GROUP BY recipient_id,priority ORDER BY CASE priority WHEN 'urgent' THEN 0 ELSE 1 END,MIN(seq)")?;
-        let rows = q.query_map([crate::session_baseline::KIND], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, i64>(7)?,
-            ))
-        })?;
-        let mut batches = Vec::new();
-        for row in rows {
-            let (id, through, count, after, priority, ringing, joining, quiet) = row?;
-            // Quiet notices alone are no delivery: they wait in the mailbox
-            // for the next one, whatever brings it (YN-68).
-            if ringing == 0 && joining == 0 {
+            GROUP BY recipient_id,priority ORDER BY CASE priority WHEN 'urgent' THEN 0 ELSE 1 END,MIN(seq)",
+            if only.is_some() { "AND recipient_id=?2" } else { "" }))?;
+        type Group = (String, i64, i64, String, i64, i64, i64, bool);
+        fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Group> {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+        }
+        let kind = crate::session_baseline::KIND;
+        let rows = match only {
+            Some(recipient) => q.query_map(params![kind, recipient], row)?.collect::<rusqlite::Result<Vec<_>>>()?,
+            None => q.query_map([kind], row)?.collect::<rusqlite::Result<Vec<_>>>()?,
+        };
+        let (mut batches, mut unreachable) = (Vec::new(), Vec::<(String, &'static str)>::new());
+        for (id, through, count, priority, ringing, joining, quiet, released) in rows {
+            if unreachable.iter().any(|(gone, _)| *gone == id) {
                 continue;
             }
             // The listed view: parsing whole records here, on every wake-up
             // while mail waits, held back every other Agent's events.
-            if let Some(brief) = self.brief_in(&db, &id)? {
-                if brief.agent.closed_at.is_none() {
-                    // joinOnly: nothing in it may start a Turn (YN-5).
-                    batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,
-                        "messageCount":count,"joinOnly":ringing == 0,"quietCount":quiet}));
+            let brief = if released { None } else { self.brief_in(db, &id)? };
+            let Some(brief) = brief else {
+                if released || !crate::record_rows::exists(db, &id)? {
+                    unreachable.push((id, if released { "recipient_released" } else { "recipient_deleted" }));
                 }
+                continue;
+            };
+            // Quiet notices alone are no delivery: they wait in the mailbox
+            // for the next one, whatever brings it (YN-68).
+            if (ringing == 0 && joining == 0) || brief.agent.closed_at.is_some() {
+                continue;
             }
+            // joinOnly: nothing in it may start a Turn (YN-5).
+            batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,
+                "messageCount":count,"joinOnly":ringing == 0,"quietCount":quiet}));
         }
-        Ok(batches)
+        Ok((batches, unreachable))
     }
 
     /// The runtime reserves pending messages before calling a Harness. Finishing
@@ -1305,6 +1361,8 @@ fn task_dispatch(
         .context("agent_not_found: recipient does not exist")?;
     // Said before that it is closed: an archived executor is never reopened (T-36).
     crate::executor_archive::refuse_mail(db, &recipient_id)?;
+    // Nor given work while its release closes it (YN-192).
+    crate::executor_archiving::refuse_dispatch(db, &recipient_id)?;
     ensure!(
         recipient.agent.closed_at.is_none(),
         "agent_closed: reopen the recipient before dispatching work"
@@ -2242,10 +2300,11 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0]["priority"], "urgent");
         assert_eq!(batches[0]["messageCount"], 2);
-        assert_eq!(batches[0]["afterSeq"], mail[1]["seq"].as_i64().unwrap() - 1);
+        let after = store.peer_batch_after("b", "urgent").unwrap().unwrap();
+        assert_eq!(after, mail[1]["seq"].as_i64().unwrap() - 1);
         assert_eq!(batches[0]["throughSeq"], mail[3]["seq"]);
         assert_eq!(batches[1]["priority"], "normal");
-        assert_eq!(batches[1]["afterSeq"], mail[0]["seq"].as_i64().unwrap() - 1);
+        assert_eq!(store.peer_batch_after("b", "normal").unwrap(), Some(mail[0]["seq"].as_i64().unwrap() - 1));
         let through = batches[0]["throughSeq"].as_i64().unwrap();
         assert_eq!(
             store
@@ -2257,7 +2316,7 @@ mod tests {
             .collaboration_call(
                 Some("b"),
                 "peer_read",
-                json!({"priority":"urgent","afterSeq":batches[0]["afterSeq"],"limit":1}),
+                json!({"priority":"urgent","afterSeq":after,"limit":1}),
             )
             .unwrap();
         assert_eq!(first["messages"][0]["id"], mail[1]["id"]);
@@ -2266,7 +2325,7 @@ mod tests {
             .collaboration_call(
                 Some("b"),
                 "peer_read",
-                json!({"priority":"urgent","afterSeq":batches[0]["afterSeq"],"limit":1}),
+                json!({"priority":"urgent","afterSeq":after,"limit":1}),
             )
             .unwrap();
         assert_eq!(retry, first);
@@ -2656,10 +2715,8 @@ mod tests {
         let (_dir, store) = fixture();
         let first = send(&store, "first", "b");
         let seq1 = first["seq"].as_i64().unwrap();
-        assert_eq!(
-            store.pending_peer_deliveries().unwrap()[0]["afterSeq"],
-            seq1 - 1
-        );
+        assert_eq!(store.pending_peer_deliveries().unwrap().len(), 1);
+        assert_eq!(store.peer_batch_after("b", "normal").unwrap(), Some(seq1 - 1));
         store
             .set_peer_delivery("b", seq1, "sending", json!({}))
             .unwrap();
@@ -2673,8 +2730,8 @@ mod tests {
             seq2
         );
         assert_eq!(
-            store.pending_peer_deliveries().unwrap()[0]["afterSeq"],
-            seq1 - 1 // A new notice also exposes previously unfetched mail, without replaying its native input.
+            store.peer_batch_after("b", "normal").unwrap(),
+            Some(seq1 - 1) // A new notice also exposes previously unfetched mail, without replaying its native input.
         );
         store
             .set_peer_delivery("b", seq2, "sending", json!({}))
@@ -2729,7 +2786,73 @@ mod tests {
         let next = send(&store, "fresh", "b");
         let batch = store.pending_peer_deliveries().unwrap();
         assert_eq!(batch[0]["messageCount"], 1);
-        assert_eq!(batch[0]["afterSeq"], next["seq"].as_i64().unwrap() - 1);
+        assert_eq!(store.peer_batch_after("b", "normal").unwrap(), Some(next["seq"].as_i64().unwrap() - 1));
+    }
+
+    fn delivery_of(store: &Store, message: &Value) -> (String, Value) {
+        store.db.read().unwrap().query_row(
+            "SELECT delivery_state,delivery_detail FROM collaboration_messages WHERE id=?1",
+            [message["id"].as_str().unwrap()],
+            |r| Ok((r.get::<_, String>(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap())),
+        ).unwrap()
+    }
+
+    fn closed(store: &Store, id: &str, at: Option<String>) {
+        store.update(id, "test/closed", &json!({}), move |d| d.agent.closed_at = at).unwrap();
+    }
+
+    #[test]
+    fn mail_no_wake_up_can_ring_is_skipped_once_and_stays_in_the_mailbox() {
+        let (_dir, store) = fixture();
+        store.insert(&agent("d")).unwrap();
+        let released = send(&store, "to-released", "b");
+        let reopenable = send(&store, "to-closed", "c");
+        let gone = send(&store, "to-gone", "d");
+        // b is a released executor (closed, and never reopened); c is only
+        // closed, so it can be reopened; d is deleted.
+        store.db.write().unwrap().execute("INSERT INTO agent_roles(agent_id,kind,archived_at,created_at,updated_at)
+            VALUES('b','executor',?1,?1,?1)", [now()]).unwrap();
+        closed(&store, "b", Some(now()));
+        closed(&store, "c", Some(now()));
+        closed(&store, "d", Some(now()));
+        store.delete_closed_agent("d").unwrap();
+
+        let batches = store.pending_peer_deliveries().unwrap();
+        assert!(batches.is_empty(), "{batches:#?}");
+        let (state, detail) = delivery_of(&store, &released);
+        assert_eq!((state.as_str(), detail["reason"].as_str()), ("skipped", Some("recipient_released")), "{detail}");
+        assert!(detail["at"].is_string());
+        let (state, detail) = delivery_of(&store, &gone);
+        assert_eq!((state.as_str(), detail["reason"].as_str()), ("skipped", Some("recipient_deleted")), "{detail}");
+        assert_eq!(delivery_of(&store, &reopenable).0, "pending");
+        // Still in the mailbox, read as before.
+        let inbox = store.collaboration_call(None, "peer_read", json!({"agentId":"b"})).unwrap();
+        assert_eq!(inbox["messages"][0]["id"], released["id"]);
+        assert_eq!(inbox["messages"][0]["delivery"]["state"], "skipped");
+        // A reopened Agent's mail rings as it did.
+        closed(&store, "c", None);
+        let batches = store.pending_peer_deliveries().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!((batches[0]["agentId"].as_str(), batches[0]["throughSeq"].as_i64()), (Some("c"), reopenable["seq"].as_i64()));
+        assert!(batches[0].get("afterSeq").is_none(), "where it starts is read only for a wake-up that goes out");
+    }
+
+    #[test]
+    fn a_wake_up_reads_its_recipients_batch_from_that_mail_alone() {
+        let (_dir, store) = fixture();
+        let to_b = send(&store, "to-b", "b");
+        let to_c = send(&store, "to-c", "c");
+        let batch = store.pending_peer_batch("b", "normal").unwrap().unwrap();
+        assert_eq!((batch["agentId"].as_str(), batch["throughSeq"].as_i64(), batch["messageCount"].as_i64()),
+            (Some("b"), to_b["seq"].as_i64(), Some(1)));
+        assert_eq!(store.pending_peer_batch("c", "normal").unwrap().unwrap()["throughSeq"], to_c["seq"]);
+        assert!(store.pending_peer_batch("b", "urgent").unwrap().is_none());
+        // The same batch the whole round lists for it.
+        let all = store.pending_peer_deliveries().unwrap();
+        assert_eq!(all.iter().find(|b| b["agentId"] == "b"), Some(&batch));
+        store.collaboration_call(Some("b"), "peer_read", json!({})).unwrap();
+        assert!(store.pending_peer_batch("b", "normal").unwrap().is_none());
+        assert_eq!(store.peer_batch_after("b", "normal").unwrap(), None);
     }
 
     #[test]

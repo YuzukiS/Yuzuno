@@ -1048,8 +1048,10 @@ p {
     var(--text-secondary) 65%
   );
   background-size: 250% 100%;
+  background-position: 60% 0;
   background-clip: text;
   color: transparent;
+  /* Only opacity moves, which the compositor draws (YN-199). */
   animation: activity-glint 4.5s ease-in-out infinite;
 }
 @keyframes activity-bob {
@@ -1061,8 +1063,7 @@ p {
   50% { opacity: 1; transform: scale(1); }
 }
 @keyframes activity-glint {
-  0%, 20% { background-position: 100% 0; }
-  80%, 100% { background-position: 0 0; }
+  50% { opacity: 0.6; }
 }
 @media (prefers-reduced-motion: reduce), (forced-colors: active) {
   .activity-yuzu,
@@ -2937,25 +2938,34 @@ p {
    along its bar, as on the update steps' current bar (updates.css). Under
    reduced motion it stands still, and the step's text carries it. */
 .step-moving {
+  position: relative;
   display: block;
   height: 3px;
+  overflow: hidden;
   border-radius: 2px;
+  background: color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+}
+/* The segment, half the bar long, travels from just before the bar to just
+   past it; transform moves it on the compositor (YN-199). */
+.step-moving::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 50%;
   background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--accent-ink) 55%, transparent),
-      transparent
-    )
-    0 0 / 50% 100% no-repeat,
-    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent-ink) 55%, transparent),
+    transparent
+  );
   animation: step-moving 1.6s ease-in-out infinite;
 }
 @keyframes step-moving {
   from {
-    background-position: -100% 0, 0 0;
+    transform: translateX(-100%);
   }
   to {
-    background-position: 200% 0, 0 0;
+    transform: translateX(200%);
   }
 }
 /* The box an inline panel reveals in (surface.ts useRevealIn): it holds the

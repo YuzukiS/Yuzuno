@@ -385,6 +385,8 @@ fn the_current_path_reads_through_its_indexes() {
         (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
         (super::LATEST_REVIEWER_RUN, "pr_reviews_task"), (super::REVIEW_COUNTS, "pr_reviews_task"),
         (super::LATEST_RUN, "(watch_id=?)"), (super::MESSAGE_STATE, "(id=?)"),
+        // A PR's newest merge entry on the task and its queue (YN-193).
+        (super::LATEST_MERGE, "merge_entries_task"), (super::MERGE_QUEUE, "INTEGER PRIMARY KEY"),
         // A research record and its line (T-17): by key, never the history.
         (super::super::research::ONE_ACTIVITY, "INTEGER PRIMARY KEY"),
         (super::super::research::RECORD_BY_ID, "collaboration_activity_research_id"),

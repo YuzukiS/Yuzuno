@@ -25,6 +25,9 @@ pub(super) const NEWEST_SUBSCRIPTIONS: &str = "SELECT id,watch_id FROM ci_subscr
 pub(super) const SUBSCRIPTION_COUNT: &str = "SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1";
 // CROSS JOIN keeps the watch's own runs the outer loop: never every run's.
 pub(super) const LATEST_RUN: &str = "SELECT r.data FROM ci_watch_runs w CROSS JOIN ci_runs r ON r.id=w.run_id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1";
+/// A PR's newest merge entry on the task, and its repository's queue (YN-193).
+pub(super) const LATEST_MERGE: &str = "SELECT data FROM merge_entries WHERE task_id=?1 AND repository_id=?2 AND number=?3 ORDER BY rowid DESC LIMIT 1";
+pub(super) const MERGE_QUEUE: &str = "SELECT data FROM merge_repositories WHERE repository_id=?1";
 /// The result mail's delivery now, by its unique id (T-203).
 pub(super) const MESSAGE_STATE: &str = "SELECT delivery_state FROM collaboration_messages WHERE id=?1";
 /// A result is a report as it was submitted; what happened to the task after it
@@ -37,8 +40,9 @@ const RESULT_NOTE: &str = "The latest result as reported at reportedAt, never re
 const DELIVERY_NOTE: &str = "Read from Core's records, each with the time Core observed it (observedAt; lastAttemptAt \
     and error only after a refresh failed). A PR's ci is all of this head's checks as GitHub reported them when Core \
     last read the PR (github_refresh reads them again); its watchedRuns are single workflow runs on its head, not all \
-    of its checks. Merged and closed PRs are short rows: github_links has each whole. Unknown, stale or unobserved is \
-    not passing; nothing here merges, approves or completes anything";
+    of its checks. Merged and closed PRs are short rows: github_links has each whole. mergeQueue is the PR's newest \
+    merge entry on this task, with what holds it now (blocker; merge_get has the entry whole). Unknown, stale or \
+    unobserved is not passing; nothing here merges, approves or completes anything";
 const MORE: &str = "task_get view \"activity\" (afterSeq, limit) pages the history; view \"full\" is the whole record with \
     executions and materials; dispatchId reads the fixed materials; review_get reads a review; github_links reads \
     each linked PR whole";
@@ -62,6 +66,20 @@ fn present(mut value: Value) -> Value {
 /// A PR that is merged or closed: there is nothing left to decide on it.
 fn finished(state: &Value) -> bool {
     matches!(state.as_str(), Some("merged" | "closed"))
+}
+
+/// The PR's newest merge entry on the task, short: its state, reason and
+/// blocker (YN-193). None when the queue has none for it.
+fn merge_queue(db: &Connection, task: &str, link: &Value) -> Result<Option<Value>> {
+    let raw: Option<String> = db
+        .query_row(LATEST_MERGE, params![task, link["repositoryId"].as_i64(), link["number"].as_i64()], |r| r.get(0))
+        .optional()?;
+    let Some(raw) = raw else { return Ok(None) };
+    let e: Value = serde_json::from_str(&raw)?;
+    let queue: Option<String> = db.query_row(MERGE_QUEUE, [e["repositoryId"].as_i64()], |r| r.get(0)).optional()?;
+    let queue = queue.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?.unwrap_or_else(|| json!({}));
+    Ok(Some(present(json!({"entryId": e["id"], "state": e["state"], "reason": e["reason"],
+        "blocker": crate::merge_queue::store::blocker(&e, &queue)}))))
 }
 
 fn actor(value: &Value) -> Value {
@@ -201,7 +219,8 @@ pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
             // may be out of date (a reopened PR), and unknown is not finished.
             let mut row = present(json!({"linkId": link["id"], "number": link["number"], "url": link["url"],
                 "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
-                "stale": link["stale"].as_bool().filter(|stale| *stale), "error": link["error"]}));
+                "stale": link["stale"].as_bool().filter(|stale| *stale), "error": link["error"],
+                "mergeQueue": merge_queue(db, task, link)?}));
             if !link["error"].is_null() {
                 row["lastAttemptAt"] = link["lastAttemptAt"].clone();
             }
@@ -242,7 +261,7 @@ pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
             // failed refresh sets error and the attempt's time, never observedAt.
             "observedAt": snapshot["observedAt"], "stale": link["stale"], "error": link["error"], "ci": ci,
             "reviews": {"attempts": attempts, "reviewerRuns": runs},
-            "latestReview": latest.as_ref().map(|r| review(r, &head))});
+            "latestReview": latest.as_ref().map(|r| review(r, &head)), "mergeQueue": merge_queue(db, task, link)?});
         if !link["error"].is_null() {
             row["lastAttemptAt"] = link["lastAttemptAt"].clone();
         }
