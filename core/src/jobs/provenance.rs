@@ -223,7 +223,7 @@ fn code(job: &Value) -> Value {
     code
 }
 
-/// What the check again at exit found (YN-194, host.py `exit_guard`), when
+/// What the check again at exit found (YN-194, host.py's and remote_job.py's `exit_guard`), when
 /// it ran: unchanged extends what was verified to the command's end; a
 /// change says what changed; a check that could not read says why.
 fn at_exit(job: &Value, code: &mut Value) {

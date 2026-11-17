@@ -152,6 +152,34 @@ class Parity(unittest.TestCase):
             (self.work / ("part%d.bin" % i)).write_bytes(b"y" * (2 * MIB - 1))
         self.assertIn("over the 16 MiB total limit", self.same())
 
+    def exits(self, change, artifacts=()):
+        """Each side's check again at exit (YN-194), frozen on this tree and
+        read after `change` ran: True, or the names of what changed."""
+        cwd, declared = str(self.work), [{"path": p} for p in artifacts]
+        local = {"cwd": cwd, "guardGit": True, "guardPaths": [], "guardExclude": [], "inputs": [], "attempt": "a",
+                 "artifacts": declared}
+        local["snapshot"] = HOST.snapshot(local)
+        state, tracked = REMOTE.git_snapshot(cwd, [], [])
+        inputs = [REMOTE.input_facts(cwd, p) for p in tracked]
+        remote = {"cwd": cwd, "git": {"frozen": state, "guardExclude": []}, "inputs": inputs, "artifacts": declared}
+        change()
+        answers = [HOST.exit_guard(local), REMOTE.exit_guard(remote, "a")]
+        return [True if a["unchanged"] else sorted(Path(n).name if os.path.isabs(n) else n for n in a["changed"])
+                for a in answers]
+
+    def test_the_check_at_exit_names_the_same_changes(self):
+        (self.work / "b.txt").write_text("dirty at submit\n")
+        self.assertEqual(self.exits(lambda: None), [True, True])
+        self.assertEqual(self.exits(lambda: (self.work / "a.txt").write_text("changed\n")), [["a.txt"]] * 2)
+        self.assertEqual(self.exits(lambda: (self.work / "b.txt").write_text("again\n")), [["b.txt"]] * 2)
+        # Its own declared artifact is left out, dirty at submit or not.
+        own = lambda: [(self.work / n).write_text("its output\n") for n in ("a.txt", "b.txt")]
+        self.assertEqual(self.exits(own, artifacts=["a.txt", "b.txt"]), [True, True])
+
+    def test_a_commit_while_it_ran_is_named_alike_at_exit(self):
+        self.assertEqual(self.exits(lambda: git(self.work, "commit", "-q", "--allow-empty", "-m", "later")),
+                         [["the Git commit"]] * 2)
+
     def test_outside_a_work_tree(self):
         plain = self.base / "plain"
         plain.mkdir()

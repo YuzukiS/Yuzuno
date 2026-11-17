@@ -44,7 +44,9 @@ Inputs and artifacts are files on this machine. inspect (no attempt, nothing
 written) reads a job's inputs for Core to freeze at submit; a start carries
 them as frozen and the supervisor checks them again last thing before the
 command may run, which never runs if one changed; with guardGit, so is
-cwd's Git work tree (git_snapshot, by host.py's rules). After a clean exit it
+cwd's Git work tree (git_snapshot, by host.py's rules), read again once the
+command exits by itself (exit_guard: a change is recorded, never a failure).
+After a clean exit it
 checks each declared artifact as local jobs do, and records whether its path
 already held a file before the command ran and whether that file is
 unchanged: an observation, never a verdict on who wrote it.
@@ -612,21 +614,61 @@ def git_snapshot(cwd, paths, exclude, explicit=()):
     return git, sorted(tracked)
 
 
-def guard_reason(spec, now, tracked, changed):
-    before, after = spec["git"]["frozen"] or {}, now or {}
-    items = []
+def git_changes(before, after):
+    """host.py changed_inputs' Git part: the guarded paths' committed content,
+    else the commit."""
     if "guardPaths" in before:
         found = {g["path"]: (g["object"], g["type"]) for g in after.get("guardPaths") or []}
-        items += ["the committed content of guarded path %s" % g["path"] for g in before["guardPaths"]
-                  if found.get(g["path"]) != (g["object"], g["type"])]
-    elif before.get("head") != after.get("head"):
-        items.append("the Git commit")
+        return ["the committed content of guarded path %s" % g["path"] for g in before["guardPaths"]
+                if found.get(g["path"]) != (g["object"], g["type"])]
+    return ["the Git commit"] if before.get("head") != after.get("head") else []
+
+
+def shown_list(items):
+    return ", ".join(items[:5]) + (" and %d more" % (len(items) - 5) if len(items) > 5 else "")
+
+
+def guard_reason(spec, now, tracked, changed):
+    items = git_changes(spec["git"]["frozen"] or {}, now or {})
     frozen = {i["path"] for i in spec.get("inputs") or []}
     items += changed + [p for p in tracked if p not in frozen]
-    shown = ", ".join(items[:5]) + (" and %d more" % (len(items) - 5) if len(items) > 5 else "")
     hint = " If an earlier stage writes a tracked file, declare it as that stage's artifact." if "needs" in spec else ""
     return "Guarded inputs changed while queued (%s); command was not started.%s" % (
-        shown or "the list of changed tracked files", hint)
+        shown_list(items) or "the list of changed tracked files", hint)
+
+
+def exit_guard(spec, attempt):
+    """host.py exit_guard on this machine (YN-194): the work tree read again
+    once the command exited, compared with the start's by commit (or guarded
+    paths) and by each file's content. The files the job declared it writes
+    are left out, and so is the status digest, which those writes alter."""
+    frozen = spec["git"]["frozen"]
+    if not frozen:
+        return None
+    record = {"attempt": attempt, "checkedAt": time.time()}
+    try:
+        now, tracked = git_snapshot(spec["cwd"], [g["path"] for g in frozen.get("guardPaths") or []],
+                                    spec["git"].get("guardExclude") or [])
+    except Exception as error:
+        return dict(record, unchanged=None, problem=("the work tree could not be read again: %s" % error)[:300])
+    cwd = Path(spec["cwd"]).resolve()
+
+    def real(path):
+        # As snapshots name files: through the resolved folder.
+        path = cwd / path
+        return str(path.parent.resolve() / path.name)
+    own = {real(p) for p in [a["path"] for a in spec.get("artifacts") or []] + (spec.get("outputs") or [])}
+    inputs = spec.get("inputs") or []
+    named = {i["path"] for i in inputs}
+    # Named by path, as host.py names them.
+    changed = (git_changes(frozen, now or {})
+               + [i["path"] for i in inputs if real(i["path"]) not in own and inputs_changed(dict(spec, inputs=[i]))]
+               + [p for p in tracked if p not in named and real(p) not in own])
+    if not changed:
+        return dict(record, unchanged=True)
+    return dict(record, unchanged=False, changed=[c[:300] for c in changed[:20]], reason=(
+        "The guarded work tree changed while the command ran (%s), by the command or by someone else: its results "
+        "may not match the code it was submitted with." % shown_list(changed))[:1000])
 
 
 def upstream_problem(spec):
@@ -1259,6 +1301,15 @@ if thawed:
     extra = dict(extra or {}, thawedToStop=thawed)
 if checked_guard:
     extra = dict(extra or {}, guard=checked_guard)
+# The Git guard again, now that the command exited by itself (YN-194, as
+# host.py's worker checks it): a change is said, never a failure.
+if guard is not None and why is None and settled:
+    try:
+        at_exit = exit_guard(spec, intent["attempt"])
+    except Exception:
+        at_exit = None
+    if at_exit:
+        extra = dict(extra or {}, guardAtExit=at_exit)
 if not settled:
     # Stopping was never confirmed: this machine could not be asked whether
     # anything of the group is left. Nothing terminal is written here, and
@@ -2249,8 +2300,9 @@ def within_frame(reply, mark, action):
     are left out, which artifactsOmitted says (fields, count, the reply's
     size), and are kept, with the whole check, in the attempt's artifacts.json
     here. Bounded by construction: an artifact's check has no path in it, at
-    most 20 artifacts are declared, and a reason with them is at most 1,000
-    characters plus a note. An inspect too long for it is refused, nothing
+    most 20 artifacts are declared, a reason with them is at most 1,000
+    characters plus a note, and guardAtExit names at most 20 changes of 300
+    characters with a reason of 1,000. An inspect too long for it is refused, nothing
     frozen. Anything else too long for it (none, by construction) is
     unclear."""
     text = json.dumps(reply)
