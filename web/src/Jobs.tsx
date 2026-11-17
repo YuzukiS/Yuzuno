@@ -1311,6 +1311,9 @@ export function Jobs({
                         label={t.queue}
                         items={page.jobs}
                         place={placeJob}
+                        // A stage stalled behind its run waits on, out of the
+                        // active group: the group's title must not say it ended (YN-194).
+                        historyLabel={page.jobs.some((job) => job.status === "waiting" && job.stalled) ? t.endedOrStopped : undefined}
                         selected={selected}
                         empty={
                           listed ? (
