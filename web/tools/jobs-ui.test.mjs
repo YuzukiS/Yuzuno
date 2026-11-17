@@ -28,20 +28,24 @@ const ciPage = {runs:[ciRun],subscriptions:[ciSub],hasMore:false,nextBefore:null
 const resources = { cpuMillis: 500, memoryMiB: 128, swapMiB: 0 };
 const job = { usage:{MemoryCurrent:'18446744073709551615',MemoryPeak:'18446744073709551615'}, id: 'job-one', requestId: 'accepted', name: '中文 training', taskRef: 'T-47', agentId: 'a', agent: { name: 'Mori' }, machine: { name: 'Local WSL' }, status: 'unknown', reserved: true, reason: 'Reservation held until process groups are verified', resources, reservation: { cpuMillis: 600, memoryMiB: 192, swapMiB: 0 }, cursor: 1, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: null, argv: ['/usr/bin/true'], cwd: '/workspace', env: {}, outputs: ['report.json'] };
 const page = jobs => ({ jobs, hasMore: false, nextBefore: null });
+// GET /api/jobs/budget as the panel reads it, with the counts a read reports.
+const budgetView = (activeCount = 1, queuedCount = 1) => ({ budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount, queuedCount, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } });
 // `pollMs`: the panel's 3 s poll runs every pollMs instead, its firings
 // counted (`ticks`); every other timer is as the product sets it (T-60).
-// `logs`: answers a job's output instead of the fixed one.
-function mount(handler = () => page([]), stored = {}, { pollMs, logs } = {}) {
+// `logs`: answers a job's output instead of the fixed one. `budget`: answers
+// the n-th read of the budget instead of the fixed one (YN-210).
+function mount(handler = () => page([]), stored = {}, { pollMs, logs, budget } = {}) {
   const vc = new VirtualConsole(), errors = [], calls = [];
   vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://isolated.test', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: vc });
   const w = dom.window;
   for (const [k, v] of Object.entries(stored)) w.localStorage.setItem(k, v);
+  let budgetReads = 0;
   w.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ url, body });
     let value;
-    if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } };
+    if (url === '/api/jobs/budget' && !body) value = budget ? await budget(++budgetReads) : budgetView();
     else if (url.endsWith('/logs')) value = logs ? await logs(url) : { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
     else value = await handler(url, body);
     if (value instanceof Error) throw value;
@@ -119,6 +123,157 @@ test('the Jobs panel reads nothing while the page is hidden, and reads at once w
       assert.ok(reads(p, url) > 0, `${url} is read`);
     const ticked = p.ticks(), budget = reads(p, '/api/jobs/budget');
     await until(() => p.ticks() > ticked && reads(p, '/api/jobs/budget') > budget);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210: Core's budget answer that started first (a held read)
+// arrives after the next interval's, and used to put the older counts back
+// in the same window. A later-started read owns the screen, whatever order
+// the answers arrive in.
+test('a budget answer that started first and arrives last never puts older counts back', async () => {
+  let release;
+  const held = new Promise(resolve => (release = resolve));
+  const unanswered = new Promise(() => {});
+  const p = mount(url => page([]), {}, {
+    pollMs: 200,
+    // The first read belongs to the closed panel's toolbar entry; the open
+    // panel's first read is the one held back.
+    budget: async n => {
+      if (n === 1) return budgetView(0, 0);
+      if (n === 2) { await held; return budgetView(1); }
+      if (n === 3) return budgetView(2);
+      return unanswered;
+    },
+  });
+  try {
+    await open(p);
+    await until(() => (p.doc.querySelector('.jobs-budget-counts')?.textContent || '').startsWith('2 active'));
+    release();
+    await wait(); await wait(); await wait(); await wait();
+    assert.match(p.doc.querySelector('.jobs-budget-counts').textContent, /^2 active · 1 queued/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210: an earlier read of the chosen job that answers after the
+// list already showed it finished must not bring back its older, shorter
+// output: the finished job's last lines stay on screen.
+test('an earlier detail read that arrives after the job finished does not put its older output back', async () => {
+  const running = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  const finished = { ...running, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
+  let done = false, details = 0, release;
+  const held = new Promise(resolve => (release = resolve));
+  let output = { text: 'first lines\nlast lines', oldestOffset: 0, totalBytes: 22 };
+  const p = mount(async url => {
+    if (url === '/api/jobs/job-one') {
+      details++;
+      if (details === 1) { await held; return running; }
+      return done ? finished : running;
+    }
+    return page([done ? finished : running]);
+  }, {}, { pollMs: 200, logs: () => output });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => details === 1);
+    done = true;
+    // The next read sees the finished row and reads its details and output.
+    await until(() => p.doc.querySelector('.job-log')?.textContent.includes('last lines'));
+    output = { text: 'first lines', oldestOffset: 0, totalBytes: 11 };
+    release();
+    await wait(); await wait(); await wait(); await wait();
+    assert.match(p.doc.querySelector('.job-log').textContent, /last lines/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210 (review P2): the 3 s interval starts a read whether or
+// not one is still on its way. A newer read used to cancel every older one,
+// so with a Core slower than the interval nothing ever appeared. The newest
+// answer that arrives still shows.
+test('a read slower than the poll interval still shows its list and budget', async () => {
+  const slow = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  let lists = 0;
+  const p = mount(async url => {
+    if (url.startsWith('/api/jobs?')) {
+      lists++;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return page([slow]);
+    }
+    return url === '/api/jobs/job-one' ? slow : page([slow]);
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => lists >= 4);
+    await wait(); await wait(); await wait(); await wait();
+    assert.ok(lists >= 4, 'the interval started further reads while one was slow');
+    assert.ok(p.doc.querySelector('.job-row'), 'the slow read still showed its rows');
+    assert.ok(p.doc.querySelector('.jobs-budget-counts'), 'and its budget');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210 (review 2 P2): "Earlier" adds an older page to the live
+// list. A poll that starts after that read and answers first must not throw
+// the page away: the reader's click still shows its rows.
+test('an Earlier page still appears when a poll read that started after it answers first', async () => {
+  const first = { ...job, id: 'job-one', name: 'first job', status: 'succeeded', reserved: false, attempt: 'one', finishedAt: new Date().toISOString() };
+  const older = { ...job, id: 'job-old', name: 'older job', cursor: 2, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
+  const p = mount(async url => {
+    if (url.includes('before=5')) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return { jobs: [older], hasMore: false, nextBefore: null };
+    }
+    return { jobs: [first], hasMore: true, nextBefore: 5 };
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => button(p, 'Earlier jobs'));
+    button(p, 'Earlier jobs').click();
+    await until(() => [...p.doc.querySelectorAll('.job-row')].some(row => row.textContent.includes('older job')));
+    assert.ok(p.calls.some(c => c.url.includes('before=5')), 'the older page was read');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210 (Lead, review 2 P2): an "Earlier" page is a snapshot from
+// before the live reads. It may only add history the list does not show;
+// a row already shown (finished or active) stays as the live reads show it,
+// and a live active row is not dropped.
+test('an Earlier page adds only older history and never overwrites or drops what is live', async () => {
+  const at = new Date().toISOString();
+  const runningA = { ...job, id: 'job-a', name: 'job A', cursor: 10, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  const doneA = { ...runningA, status: 'succeeded', reserved: false, finishedAt: at };
+  const activeB = { ...job, id: 'job-b', name: 'job B', cursor: 9, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  const oldC = { ...job, id: 'job-c', name: 'older job C', cursor: 2, status: 'succeeded', reserved: false, finishedAt: at };
+  const rowText = name => [...p.doc.querySelectorAll('.job-row')].find(row => row.textContent.includes(name))?.textContent || '';
+  let live = 'initial';
+  const frozen = new Promise(() => {});
+  const p = mount(async url => {
+    if (url.includes('before=5')) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      // The snapshot this page was read from: A was still running.
+      return { jobs: [oldC, runningA], hasMore: false, nextBefore: null };
+    }
+    // One live read after the click, then none: what the older page writes
+    // last stays on screen for the assertion.
+    if (live === 'initial') return { jobs: [runningA], hasMore: true, nextBefore: 5 };
+    if (live === 'fresh') {
+      live = 'frozen';
+      return { jobs: [doneA], liveJobs: [activeB], hasMore: true, nextBefore: 5 };
+    }
+    return frozen;
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => rowText('job A').includes('Running'));
+    button(p, 'Earlier jobs').click();
+    live = 'fresh';
+    await until(() => rowText('job A').includes('Completed'));
+    await until(() => rowText('older job C'));
+    assert.match(rowText('job A'), /Completed/, 'the older page does not put A back to running');
+    assert.ok(rowText('job B'), 'the live active job stays');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

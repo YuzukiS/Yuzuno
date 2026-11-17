@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight,
+  CircleAlert,
   CircleCheck,
+  CircleDashed,
   GitPullRequest,
   RefreshCw,
 } from "lucide-react";
@@ -35,6 +37,32 @@ type Round = {
   review: Step;
   ci: Step;
 };
+type ReviewEvidence = {
+  id: string;
+  status: string;
+  conclusion: string;
+  actualModel: string | null;
+  finishedAt: string | null;
+  /** The revision it reviewed; absent from older Cores. */
+  baseSha?: string | null;
+  headSha?: string | null;
+};
+type CiEvidence = {
+  watch: {
+    observedAt: string | null;
+    error: string | null;
+    /** What the watch saw at its last read; the runs are that commit's. */
+    currentHeadSha?: string | null;
+    currentPr?: { baseSha?: string | null } | null;
+  };
+  runs: {
+    id: string;
+    name: string;
+    conclusion: string | null;
+    status: string;
+    url: string;
+  }[];
+};
 type Flow = {
   id: string;
   enabled: boolean;
@@ -45,23 +73,10 @@ type Flow = {
   reason: string;
   rounds: Round[];
   candidate: DeliveryCandidate;
-  reviewEvidence: {
-    id: string;
-    status: string;
-    conclusion: string;
-    actualModel: string | null;
-    finishedAt: string | null;
-  } | null;
-  ciEvidence: {
-    watch: { observedAt: string | null; error: string | null };
-    runs: {
-      id: string;
-      name: string;
-      conclusion: string | null;
-      status: string;
-      url: string;
-    }[];
-  } | null;
+  /** The round record's attempt number, from a Core that names it (YN-12 S4). */
+  attempt?: number;
+  reviewEvidence: ReviewEvidence | null;
+  ciEvidence: CiEvidence | null;
 };
 type Page = { flow: Flow | null; settings: Settings };
 // A task's delivery in the interface language (T-189). Core's reason, the
@@ -94,6 +109,29 @@ const deliveryText = strings({
   notConfirmed: "Not confirmed",
   evidence: "Original review evidence ↗",
   ciObserved: (at: string) => `CI observed ${at}`,
+  // The waiting line at the entry (R-18 #4): which candidate, how it was
+  // attempted, what it waits for, when that was last observed, and what a
+  // person can do now. Core's reason and state are its own facts.
+  roundHead: (round: number, head: string) => `Round ${round} · head ${head}`,
+  attempt: (attempt: number) => `attempt ${attempt}`,
+  noEvidence: "No review or CI observation yet",
+  reviewFinished: (at: string) => `Review finished ${at}`,
+  reviewOther: (head: string) => `Review evidence is for another revision (head ${head}); it does not apply to this candidate.`,
+  reviewUnrecorded: "This review does not record its revision; whether it applies to this candidate is unconfirmed.",
+  ciOther: (head: string) => `CI evidence is for another revision (head ${head}); it does not mark this candidate green.`,
+  ciUnrecorded: "This CI evidence does not record its revision; whether it applies to this candidate is unconfirmed.",
+  actions: {
+    awaiting_result: "A matching result submission starts review.",
+    waiting_review: "Read again every few seconds; Refresh reads now.",
+    waiting_ci: "Refresh reads CI now; nothing reruns it from here.",
+    waiting_fix: "Push a fix, then explicitly continue the delivery.",
+    ci_failed: "Inspect the failed runs; CI is never rerun from here.",
+    ready_to_merge: "A person checks merge requirements and merges; nothing is deployed.",
+    needs_judgment: "Refresh and reconcile before another candidate.",
+    infrastructure_error: "Refresh; an inactive or unreadable review or CI needs attention.",
+    candidate_changed: "Authorize the next candidate for the new revision.",
+    stopped: "Delivery stopped; existing evidence is kept.",
+  } as Record<string, string>,
   identities: "Authorization and operation identities",
   round: (round: number) => `Round ${round}`,
   result: (id: string | null) => `Result: ${id || "Not submitted"}`,
@@ -145,6 +183,26 @@ const deliveryText = strings({
   notConfirmed: "未确认",
   evidence: "原始审查证据 ↗",
   ciObserved: (at) => `CI 观察于 ${at}`,
+  roundHead: (round, head) => `第 ${round} 轮 · head ${head}`,
+  attempt: (attempt) => `尝试 ${attempt}`,
+  noEvidence: "尚无审查或 CI 观察",
+  reviewFinished: (at) => `审查完成于 ${at}`,
+  reviewOther: (head) => `审查证据属于另一个修订（head ${head}），不适用于当前候选。`,
+  reviewUnrecorded: "此审查未记录其修订，是否适用于当前候选未确认。",
+  ciOther: (head) => `CI 证据属于另一个修订（head ${head}），不能把当前候选标为通过。`,
+  ciUnrecorded: "此 CI 证据未记录其修订，是否适用于当前候选未确认。",
+  actions: {
+    awaiting_result: "提交匹配的结果后开始审查。",
+    waiting_review: "每几秒重读一次；刷新立即读取。",
+    waiting_ci: "刷新立即读取 CI；这里不会重跑 CI。",
+    waiting_fix: "推送修复后，再明确继续交付。",
+    ci_failed: "查看失败的运行；这里不会重跑 CI。",
+    ready_to_merge: "由人核对合并要求并合并；不会部署。",
+    needs_judgment: "刷新并核对后再决定下一个候选。",
+    infrastructure_error: "刷新；未生效或无法读取的审查或 CI 需要处理。",
+    candidate_changed: "为新的修订授权下一个候选。",
+    stopped: "交付已停止；已有证据保留。",
+  },
   identities: "授权与操作标识",
   round: (round) => `第 ${round} 轮`,
   result: (id) => `结果：${id || "未提交"}`,
@@ -177,6 +235,9 @@ const call = <T,>(op: string, body: object, signal?: AbortSignal) =>
     signal,
   });
 const short = (s: string | undefined, unknown: string) => s?.slice(0, 8) || unknown;
+/** Two revisions are the same commit, whatever the case GitHub wrote it in. */
+const sameSha = (a: string | null | undefined, b: string | null | undefined) =>
+  !!a && !!b && a.toLowerCase() === b.toLowerCase();
 export function DeliveryFlow({
   taskId,
   revision,
@@ -232,6 +293,24 @@ export function DeliveryFlow({
   }, [load]);
   const flow = page?.flow;
   const round = flow?.rounds.at(-1);
+  // Which candidate each fact belongs to (R-18 #4): a green review or CI run
+  // for a revision other than the fixed candidate is not this candidate's.
+  const review = flow?.reviewEvidence ?? null;
+  const reviewMatches = review?.headSha && review.baseSha
+    ? sameSha(review.headSha, flow?.candidate.headSha) && sameSha(review.baseSha, flow?.candidate.baseSha)
+    : null;
+  const reviewRunning = !!review && ["queued", "preparing", "running"].includes(review.status);
+  const reviewPasses = !!review && review.status === "completed" &&
+    (review.conclusion === "no_findings" || review.conclusion === "approved_with_notes");
+  const ciHead = flow?.ciEvidence?.watch.currentHeadSha ?? null;
+  const ciMatches = ciHead ? sameSha(ciHead, flow!.candidate.headSha) : null;
+  // When the facts were last observed, in the one waiting line.
+  const observedAt = flow?.ciEvidence?.watch.observedAt
+    ? t.ciObserved(new Date(flow.ciEvidence.watch.observedAt).toLocaleString())
+    : review?.finishedAt
+      ? t.reviewFinished(new Date(review.finishedAt).toLocaleString())
+      : t.noEvidence;
+  const action = flow ? t.actions[flow.state] : undefined;
   const candidateKey =
     flow?.state === "awaiting_result" ? JSON.stringify(flow.candidate) : "";
   useEffect(() => {
@@ -310,7 +389,17 @@ export function DeliveryFlow({
       )}
       {flow ? (
         <>
-          <p>{flow.reason}</p>
+          {/* The normal entry: which candidate, what it waits for, when the
+              facts were observed and what a person can do now, in one line. */}
+          <p className="delivery-wait">
+            <strong>{t.roundHead(flow.candidate.round, short(flow.candidate.headSha, t.unknown))}</strong>
+            {flow.attempt != null && <> · {t.attempt(flow.attempt)}</>}
+            {" · "}
+            {flow.reason}
+            {" · "}
+            <span className="delivery-wait-at">{observedAt}</span>
+            {action && <> · {action}</>}
+          </p>
           <div className="delivery-revision">
             <a href={flow.url} target="_blank" rel="noreferrer">
               {t.linkedPr}
@@ -322,22 +411,26 @@ export function DeliveryFlow({
           </div>
           <div className="delivery-evidence">
             <span>
-              <CircleCheck size={13} />{" "}
-              {flow.reviewEvidence
-                ? `${flow.reviewEvidence.status} · ${flow.reviewEvidence.conclusion.replaceAll("_", " ")}`
+              {reviewPasses && reviewMatches !== false
+                ? <CircleCheck size={13} />
+                : reviewRunning
+                  ? <CircleDashed size={13} />
+                  : <CircleAlert size={13} />}{" "}
+              {review
+                ? `${review.status} · ${review.conclusion.replaceAll("_", " ")}`
                 : t.noReview}
             </span>
-            {flow.reviewEvidence && (
+            {review && (
               <small>
                 {t.reviewer}
-                {flow.reviewEvidence.actualModel || t.notConfirmed} ·{" "}
+                {review.actualModel || t.notConfirmed} ·{" "}
                 <button
                   type="button"
                   className="text-button"
                   onClick={() =>
                     openTaskReview({
                       taskId,
-                      reviewId: flow.reviewEvidence!.id,
+                      reviewId: review.id,
                     })
                   }
                 >
@@ -345,16 +438,27 @@ export function DeliveryFlow({
                 </button>
               </small>
             )}
+            {review && reviewMatches === false && (
+              <small className="delivery-mismatch" role="status">
+                {t.reviewOther(short(review.headSha ?? undefined, t.unknown))}
+              </small>
+            )}
+            {review && reviewMatches === null && (
+              <small className="delivery-mismatch" role="status">{t.reviewUnrecorded}</small>
+            )}
+            {ciHead && ciMatches === false && (
+              <small className="delivery-mismatch" role="status">
+                {t.ciOther(short(ciHead, t.unknown))}
+              </small>
+            )}
+            {flow.ciEvidence && !ciHead && (
+              <small className="delivery-mismatch" role="status">{t.ciUnrecorded}</small>
+            )}
             {flow.ciEvidence?.runs.map((run) => (
               <a key={run.id} href={run.url} target="_blank" rel="noreferrer">
                 {run.name} · {run.conclusion || run.status} ↗
               </a>
             ))}
-            {flow.ciEvidence?.watch.observedAt && (
-              <small>
-                {t.ciObserved(new Date(flow.ciEvidence.watch.observedAt).toLocaleString())}
-              </small>
-            )}
           </div>
           <details>
             <summary>{t.identities}</summary>

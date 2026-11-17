@@ -676,6 +676,15 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
+  // The newest answer written for the list (with the budget) and for the
+  // chosen job's details and output. A read writes only if it is newer than
+  // what is already on screen: a slow answer that started first but arrives
+  // last is dropped, while a read that takes longer than the poll interval
+  // still shows once it answers (the interval starts reads whether or not
+  // one is in flight; R-18 / YN-210).
+  const reads = useRef(0);
+  const listedAt = useRef(0);
+  const detailedAt = useRef(0);
   // The selected job as last read finished (T-60): its details and output are
   // read no more until the list shows it changed, or it is looked at afresh.
   const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
@@ -683,6 +692,16 @@ export function Jobs({
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
+      const read = ++reads.current;
+      // An "Earlier" read adds one older page to the live list; it never
+      // replaces the list or the budget, so a poll read that started later
+      // must not discard it (the merge uses the rows shown now).
+      const paged = before !== undefined;
+      // This read still belongs to the shown panel, and is newer than what
+      // the list or the details already show.
+      const shown = () => stamp === generation.current;
+      const ownsList = () => shown() && read > listedAt.current;
+      const ownsDetail = () => shown() && read > detailedAt.current;
       // The selected job's row in the list just read, if it is there (T-60).
       let row: Job | undefined;
       try {
@@ -697,11 +716,31 @@ export function Jobs({
             throw e;
           }),
         ]);
-        if (stamp !== generation.current) return;
+        if (paged) {
+          if (!shown()) return;
+        } else if (!ownsList()) {
+          return;
+        }
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
         row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
         setPage((old) => {
+          if (paged) {
+            // An Earlier page only adds the history it alone has: rows
+            // already on screen, active or finished, stay as the live reads
+            // show them, and a page row never overwrites one of them. Its own
+            // page carries the cursor.
+            const shownIds = new Set(old.jobs.map((j) => j.id));
+            const older = [...next.jobs, ...(next.liveJobs || [])].filter(
+              (j) => !active(j) && !shownIds.has(j.id),
+            );
+            const jobs = [...old.jobs, ...older];
+            jobs.sort(
+              (a, b) =>
+                Number(active(b)) - Number(active(a)) || b.cursor - a.cursor,
+            );
+            return { ...next, jobs, liveJobs: old.liveJobs, hasMore: next.hasMore, nextBefore: next.nextBefore };
+          }
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
             ...retained,
@@ -720,6 +759,9 @@ export function Jobs({
               before || !old.jobs.length ? next.nextBefore : old.nextBefore,
           };
         });
+        // The live list, budget and chosen job stay the poll's: this answer
+        // only added its page.
+        if (paged) return;
         setListed(true);
         if (typeof capacity === "string") {
           setBudget(null);
@@ -730,8 +772,16 @@ export function Jobs({
           setBudget(capacity);
           setBudgetRefusal("");
         }
+        listedAt.current = read;
       } catch (e) {
-        if (stamp === generation.current) {
+        // A page the reader asked for says why it failed, even if a poll has
+        // answered since; the poll's list read owns the live list.
+        if (paged ? shown() : ownsList()) {
+          if (!paged) {
+            // This answer, not the one before it, owns the list now: an older
+            // success must not cover a newer failure either.
+            listedAt.current = read;
+          }
           setError(errorText(e));
           if (selected)
             setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));
@@ -743,9 +793,12 @@ export function Jobs({
       // again (T-60). A row turning finished gives one more read, then none.
       const done = settled.current;
       if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
+      // A newer read already showed this job's details: this older answer
+      // adds nothing. A newer list read that stopped before the details
+      // (the settled return above) leaves this read to show them.
+      if (!ownsDetail()) return;
       // A failure already shown for this job stays until its read succeeds.
-      if (stamp === generation.current)
-        setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
+      setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
         // Its details first, then its output: output read after a finished
         // job's details has all of it, so only that read settles the job.
@@ -753,14 +806,18 @@ export function Jobs({
         // (T-60, #642 R2 1e487ee9).
         const job = await api<Job>(`/jobs/${selected}`);
         const output = await api<Log>(`/jobs/${selected}/logs`);
-        if (stamp === generation.current) {
+        if (ownsDetail()) {
+          detailedAt.current = read;
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
           settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
-        if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
+        if (ownsDetail()) {
+          detailedAt.current = read;
+          setDetailRead({ id: selected, failure: errorText(e) });
+        }
       }
     },
     [scope, selected],
