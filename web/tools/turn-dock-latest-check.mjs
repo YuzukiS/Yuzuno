@@ -149,6 +149,13 @@ try {
 
   // Keyboard: focus inside the dock shows the stop too.
   await page.mouse.move(500, 400);
+  // Up as a reader goes, with the wheel: that ends Back to latest's one-press
+  // pin (readerScrollsUp), which keeps the end in view for a few frames and
+  // takes any scroll in that time for its own (YN-19). Since YN-204 the band
+  // closes as the button leaves, so the stop can leave a few frames before
+  // the pin does, and a scroll set from here alone was then the pin's: 2 of 6
+  // runs never left the end (4 of 5 on a rerun; main's build 5 of 5).
+  await page.mouse.wheel(0, -2000);
   await pane.evaluate((el) => el.scrollTo({ top: 0, behavior: "instant" }));
   await latestStop.waitFor({ state: "attached" });
   await page.locator(".turn-dock-stop").first().focus();
