@@ -507,8 +507,8 @@ impl Named {
             agents: ids("agents", "SELECT id FROM agents")?,
             projects: ids("projects", "SELECT id FROM projects")?,
             jobs: ids("local_jobs", "SELECT id FROM local_jobs")?,
-            finished_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status NOT IN ('preparing','running')")?,
-            running_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status IN ('preparing','running')")?,
+            finished_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status NOT IN ('queued','preparing','running')")?,
+            running_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status IN ('queued','preparing','running')")?,
             attachments: ids("project_brief_snapshots", "SELECT DISTINCT sha256 FROM project_brief_snapshots")?,
         })
     }

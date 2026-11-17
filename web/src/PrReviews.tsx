@@ -82,7 +82,7 @@ type Page = {
   nextBefore: number | null;
 };
 const active = (r: Review) =>
-  r.status === "preparing" || r.status === "running";
+  r.status === "queued" || r.status === "preparing" || r.status === "running";
 const short = (sha: string | null, pending: string) => sha?.slice(0, 8) || pending;
 const harnessName = (harness: string | null | undefined) =>
   harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : null;

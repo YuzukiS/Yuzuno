@@ -11,7 +11,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
       link_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, report TEXT);
       CREATE INDEX IF NOT EXISTS pr_reviews_task ON pr_reviews(task_id);
       CREATE UNIQUE INDEX IF NOT EXISTS pr_reviews_active ON pr_reviews(task_id,link_id)
-      WHERE status IN ('preparing','running');",
+      WHERE status IN ('preparing','running');
+      CREATE UNIQUE INDEX IF NOT EXISTS pr_reviews_open ON pr_reviews(task_id,link_id)
+      WHERE status IN ('queued','preparing','running');",
     )?;
     super::evidence::migrate(db)
 }
@@ -59,7 +61,8 @@ fn known_unreviewable(tx: &Connection, task: &str, link: &str, base: &str, head:
 
 /// One PR's rounds across tasks, in the order they were created, except
 /// `except`. Only a failed or unknown round's record can show that it
-/// reached no verdict (round_limit.rs); any other is read as its status.
+/// reached no verdict, and a cancelled one's that it was cancelled in the
+/// queue before it started (round_limit.rs); any other is read as its status.
 fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<Value>> {
     Ok(pr_rounds_with_heads(tx, repository, number, except)?.into_iter().map(|(round, _)| round).collect())
 }
@@ -68,7 +71,7 @@ fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, exce
 /// head it asked for. Read in the same query, so the two stay in step.
 fn pr_rounds_with_heads(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<(Value, Option<String>)>> {
     let mut q = tx.prepare(
-        "SELECT id,status,CASE WHEN status IN ('failed','unknown') THEN data END,
+        "SELECT id,status,CASE WHEN status IN ('failed','unknown','cancelled') THEN data END,
                 COALESCE(json_extract(data,'$.headSha'),json_extract(data,'$.requestedHeadSha')) FROM pr_reviews
            WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2 AND id IS NOT ?3 ORDER BY rowid",
     )?;
@@ -195,6 +198,67 @@ fn dispatcher_copy(tx: &Connection, data: &Value) -> Result<Option<crate::collab
 }
 
 impl Store {
+    /// Both review slots are taken (YN-192): `id`, just created, waits for
+    /// one, and says how many rounds wait ahead of it.
+    pub(crate) fn queue_pr_review(&self, id: &str) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let data: String = tx.query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='preparing'", [id], |r| r.get(0))?;
+        let ahead: i64 = tx.query_row("SELECT COUNT(*) FROM pr_reviews WHERE status='queued'", [], |r| r.get(0))?;
+        let mut run: Value = serde_json::from_str(&data)?;
+        run["status"] = json!("queued");
+        run["phase"] = json!(match ahead {
+            0 => "Waiting for a review slot: both are in use".to_owned(),
+            1 => "Waiting for a review slot: both are in use, 1 round ahead".to_owned(),
+            n => format!("Waiting for a review slot: both are in use, {n} rounds ahead"),
+        });
+        run["queue"] = json!({"ahead":ahead,"since":now()});
+        tx.execute("UPDATE pr_reviews SET status='queued',data=?2 WHERE id=?1 AND status='preparing'", params![id, run.to_string()])?;
+        tx.commit()?;
+        Ok(run)
+    }
+
+    /// A queued round's slot is free: it is preparing now, as a round that
+    /// found a slot at once; None when it ended meanwhile.
+    pub(crate) fn dequeue_pr_review(&self, id: &str) -> Result<Option<Value>> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let data: Option<String> = tx.query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='queued'", [id], |r| r.get(0)).optional()?;
+        let Some(data) = data else { return Ok(None) };
+        let mut run: Value = serde_json::from_str(&data)?;
+        run["status"] = json!("preparing");
+        run["phase"] = json!("Fetching fixed PR revision");
+        run["queue"]["startedAt"] = json!(now());
+        tx.execute("UPDATE pr_reviews SET status='preparing',data=?2 WHERE id=?1 AND status='queued'", params![id, run.to_string()])?;
+        tx.commit()?;
+        Ok(Some(run))
+    }
+
+    /// A queued round cancelled before it started: it ends cancelled, read
+    /// nothing, and counts toward no round limit; true when it did. Read and
+    /// written in one write, only while it is still queued: one that left the
+    /// queue and started meanwhile is left as it is (YN-192, Lead seq 15511).
+    pub(crate) fn cancel_queued_pr_review(&self, id: &str) -> Result<QueuedCancel> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let data: Option<String> = tx
+            .query_row("SELECT data FROM pr_reviews WHERE id=?1 AND status='queued'", [id], |r| r.get(0)).optional()?;
+        let Some(data) = data else { return Ok(QueuedCancel::NoLongerQueued) };
+        if !save_in(&tx, &cancelled_in_queue(serde_json::from_str(&data)?), None, true)? {
+            return Ok(QueuedCancel::NoLongerQueued);
+        }
+        tx.commit()?;
+        Ok(QueuedCancel::Cancelled)
+    }
+
+    /// The rounds that wait for a review slot, oldest first.
+    pub(crate) fn queued_pr_reviews(&self) -> Result<Vec<String>> {
+        let db = self.db.read()?;
+        let mut query = db.prepare("SELECT id FROM pr_reviews WHERE status='queued' ORDER BY rowid")?;
+        let ids = query.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(ids)
+    }
+
     pub(crate) fn recover_pr_reviews(&self) -> Result<()> {
         let pending = {
             let db = self.db.read()?;
@@ -270,7 +334,7 @@ impl Store {
             count < 1000,
             "This task has reached its review history limit"
         );
-        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running'))", params![task,link], |r| r.get(0))?;
+        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('queued','preparing','running'))", params![task,link], |r| r.get(0))?;
         ensure!(!busy, "A review for this PR is already running");
         // Before a new paid round exists: an earlier completed round of this
         // exact candidate already found paths no round can cover.
@@ -432,7 +496,7 @@ impl Store {
             .into_iter()
             .find(|v| v["id"] == link.as_str())
             .context("PR is no longer linked to this task")?;
-        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running'))", params![task,link], |r| r.get(0))?;
+        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('queued','preparing','running'))", params![task,link], |r| r.get(0))?;
         ensure!(!busy, "A review for this PR is already running");
         // One continuation per parent. Only a child that provably started no
         // model (it failed before its native start was recorded) leaves it.
@@ -495,6 +559,32 @@ impl Store {
     }
 
     pub(crate) fn save_pr_review(&self, data: &Value, report: Option<&str>) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        ensure!(save_in(&tx, data, report, false)?, "Review has already ended");
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// As `cancel_queued_pr_review` writes it, from a record `run` read
+    /// earlier: for the test that replays a cancel racing its round's start.
+    #[cfg(test)]
+    pub(crate) fn end_queued_from(&self, run: &Value) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let ended = save_in(&tx, run, None, true)?;
+        if ended {
+            tx.commit()?;
+        }
+        Ok(ended)
+    }
+}
+
+/// `run` saved in `tx`, with the mail and the task line its end sends:
+/// false when no row took it (YN-192: `only_queued`, a round no longer
+/// queued, which left the queue and started, is left as it is).
+fn save_in(tx: &Connection, data: &Value, report: Option<&str>, only_queued: bool) -> Result<bool> {
+    {
         let status = data["status"].as_str().context("Review status missing")?;
         let id = data["id"].as_str().context("Review id missing")?;
         let mut stored_data = data.clone();
@@ -507,12 +597,10 @@ impl Store {
         };
         stored_data["notificationId"] = json!(notification_id);
         // A terminal run is immutable. A retry always gets a new record.
-        let mut db = self.db.write()?;
-        let tx = db.transaction()?;
         // A round that ended without a report records, as it ends, whether it
         // counts toward its PR's started rounds and why (round_limit.rs).
         if !matches!(status, "preparing" | "running") {
-            let others = pr_rounds(&tx, data["repositoryId"].as_i64(), data["number"].as_i64(), Some(id))?;
+            let others = pr_rounds(tx, data["repositoryId"].as_i64(), data["number"].as_i64(), Some(id))?;
             if let Some(stamp) = super::round_limit::stamp(data, &others) {
                 stored_data["roundLimit"] = stamp;
             }
@@ -521,7 +609,7 @@ impl Store {
         // The dispatcher's copy of an executor's own round, named on the
         // record before it is written (review_get shows it).
         let copy = match notification_id {
-            Some(_) => dispatcher_copy(&tx, data)?.map(|to| (uuid::Uuid::new_v4().to_string(), to)),
+            Some(_) => dispatcher_copy(tx, data)?.map(|to| (uuid::Uuid::new_v4().to_string(), to)),
             None => None,
         };
         if let Some((copy_id, to)) = &copy {
@@ -529,8 +617,12 @@ impl Store {
         }
         // Ending only a preparing or running round makes it end once, so
         // there is one original and at most one copy.
-        let n = tx.execute("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN ('preparing','running')",params![id,status,stored_data.to_string(),report])?;
-        ensure!(n == 1, "Review has already ended");
+        let from = if only_queued { "('queued')" } else { "('queued','preparing','running')" };
+        let n = tx.execute(&format!("UPDATE pr_reviews SET status=?2,data=?3,report=COALESCE(?4,report) WHERE id=?1 AND status IN {from}"),
+            params![id,status,stored_data.to_string(),report])?;
+        if n != 1 {
+            return Ok(false);
+        }
         if !matches!(status, "preparing" | "running") {
             let actor = crate::collaboration_store::TaskActor {
                 kind: "system".into(),
@@ -540,7 +632,7 @@ impl Store {
             if let Some(message_id) = notification_id {
                 let task = data["taskId"].as_str().context("Missing review task")?;
                 let public_task =
-                    crate::collaboration_store::task_number(&tx, &crate::collaboration_store::task_key(&tx, task)?.0)?;
+                    crate::collaboration_store::task_number(tx, &crate::collaboration_store::task_key(tx, task)?.0)?;
                 let mut body = format!("Code review {} has ended: {status}. Model conclusion: {}. Task {public_task}; PR {}. Fixed base {}, head {}, merge base {}. Read the retained report with review_get(taskId={public_task}, reviewId={id}). Findings, CI, task acceptance and merging are separate; this notification does not authorize another review or automatic rework.{}", data["round"], data["conclusion"].as_str().unwrap_or("unknown"), data["url"].as_str().unwrap_or("unknown"), data["baseSha"].as_str().unwrap_or("not resolved"), data["headSha"].as_str().unwrap_or("not resolved"), data["mergeBaseSha"].as_str().unwrap_or("not resolved"), data["error"].as_str().map(|e|format!(" Error: {e}")).unwrap_or_default());
                 if data["kind"] == "continuation" {
                     body.push_str(&format!(" It continued round {} within what that round left of its budget, as a new reviewer run; its coverage and conclusion are over both rounds.", data["continuation"]["parentRound"]));
@@ -562,7 +654,7 @@ impl Store {
                     .map(|n| format!("PR #{n}"));
                 let metadata = json!({"kind":"review","reviewId":id,"status":status,"conclusion":data["conclusion"],"policyVersion":data["policyVersion"],"reasonCodes":data["reasonCodes"],"name":pr});
                 crate::collaboration_store::insert_message(
-                    &tx,
+                    tx,
                     json!({"id":message_id,"seq":0,"sender":actor,"recipient":data["notificationRecipient"],"body":body,"taskId":task,"replyTo":null,"threadId":message_id,"createdAt":now(),"source":{"reviewId":id},"priority":"normal","reviewId":id,
                         "metadata":metadata}),
                 )?;
@@ -576,14 +668,14 @@ impl Store {
                     metadata["copyFor"] = json!("dispatcher");
                     metadata["requester"] = requester["id"].clone();
                     crate::collaboration_store::insert_message(
-                        &tx,
+                        tx,
                         json!({"id":copy_id,"seq":0,"sender":actor,"recipient":to,"body":body,"taskId":task,"replyTo":null,"threadId":copy_id,"createdAt":now(),"source":{"reviewId":id},"priority":"normal","reviewId":id,
                             "metadata":metadata}),
                     )?;
                 }
             }
             crate::collaboration_store::activity(
-                &tx,
+                tx,
                 data["taskId"].as_str().context("Missing task")?,
                 "comment",
                 &actor,
@@ -591,10 +683,32 @@ impl Store {
                 json!({"body":format!("Code review round {} · {}: {}. Model conclusion: {}. Open PR reviews for the fixed revision, findings and original report.{}{round_limit}",data["round"],id,status,data["conclusion"].as_str().unwrap_or("unknown"),data["error"].as_str().map(|s|format!(" {s}")).unwrap_or_default()),"reviewId":id}),
             )?;
         }
-        tx.commit()?;
-        Ok(())
+        Ok(true)
     }
+}
 
+/// What `cancel_queued_pr_review` did: ended the round, or found it no
+/// longer queued (it started, or ended, meanwhile) and wrote nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum QueuedCancel {
+    Cancelled,
+    NoLongerQueued,
+}
+
+/// What a queued round cancelled before it started records.
+pub(super) fn cancelled_in_queue(mut run: Value) -> Value {
+    run["status"] = json!("cancelled");
+    run["conclusion"] = json!("unknown");
+    run["error"] = json!("Cancelled while it waited for a review slot; it never started");
+    super::policy::execution_reason(&mut run, "execution_cancelled");
+    run["roundLimit"] = json!({"counts":false,"read":"nothing",
+        "why":"It was cancelled while it waited for a review slot and never started, so it doesn't count toward this PR's two started rounds."});
+    run["finishedAt"] = json!(now());
+    run["phase"] = json!("cancelled");
+    run
+}
+
+impl Store {
     pub(crate) fn list_pr_reviews(&self, task: &str, before: Option<i64>) -> Result<Value> {
         self.pr_reviews_page(task, before, false)
     }

@@ -282,7 +282,7 @@ export function DeliveryFlow({
     round &&
     round.number < flow.maxRounds &&
     flow.reviewEvidence &&
-    !["preparing", "running", "unknown"].includes(flow.reviewEvidence.status);
+    !["queued", "preparing", "running", "unknown"].includes(flow.reviewEvidence.status);
   if (!manage && !flow && !error) return null;
   return (
     <section className="delivery-flow" aria-label={t.aria}>

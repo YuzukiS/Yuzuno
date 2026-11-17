@@ -36,7 +36,7 @@ fn rounds(db: &Connection, task: &str, link: &str, head: &str) -> Result<Value> 
             continue;
         }
         match (status.as_str(), conclusion.as_deref()) {
-            ("preparing" | "running", _) => running = true,
+            ("queued" | "preparing" | "running", _) => running = true,
             ("completed", Some("no_findings" | "approved_with_notes")) if reviewed => {
                 approved += 1;
                 changes = false;

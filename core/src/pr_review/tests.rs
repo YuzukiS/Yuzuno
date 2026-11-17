@@ -1416,3 +1416,274 @@ fn a_start_without_the_new_flag_serializes_as_before() {
 
 /// YN-12 S2: the dispatcher's copy of an executor's own round.
 mod copy;
+
+/// A Workspace whose GitHub is unreachable (a round that starts ends at its
+/// first read) and a task with PR 7:pull:1 linked: YN-192's queue tests.
+fn queue_workspace(dir: &std::path::Path) -> (Arc<Workspace>, String) {
+    let mut ws = Workspace::new(dir.join("data"), "/tmp".into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = dir.join("no-gh").to_string_lossy().into();
+    let task = ws.store.collaboration_call(None, "task_create", json!({"requestId":"create","title":"Deliver PR"})).unwrap()["task"]["id"]
+        .as_str().unwrap().to_owned();
+    ws.store.github_link_object(&task, &Repository { id: 7, full_name: "owner/repo".into() }, "pull", 1,
+        json!({"baseSha":"a".repeat(40),"headSha":"b".repeat(40)})).unwrap();
+    (ws, task)
+}
+
+async fn status_leaves(ws: &Workspace, task: &str, id: &str, from: &str) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let run = ws.store.pr_review_report(task, id).unwrap();
+        if run["status"] != from {
+            return run;
+        }
+        assert!(std::time::Instant::now() < deadline, "still {from}: {run}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// YN-192 (20): with both review slots in use, review_start queues the round
+/// instead of refusing it. It is open (its PR takes no second round meanwhile)
+/// and starts once a slot frees.
+#[tokio::test]
+async fn a_round_waits_for_a_review_slot_and_starts_when_one_frees() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let start = |request: &str| json!({"requestId":request,"taskId":task,"linkId":"7:pull:1"});
+    let queued = ws.collaboration_call(None, "review_start", start("r1")).await.unwrap();
+    assert_eq!(queued["status"], "queued", "{queued}");
+    assert_eq!(queued["phase"], "Waiting for a review slot: both are in use");
+    let id = queued["id"].as_str().unwrap().to_owned();
+    let second = ws.collaboration_call(None, "review_start", start("r2")).await.unwrap_err().to_string();
+    assert!(second.contains("already running"), "{second}");
+    assert_eq!(ws.store.pr_review_report(&task, &id).unwrap()["status"], "queued", "it waits while both slots are in use");
+    drop(held);
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert!(run["queue"]["startedAt"].is_string(), "it left the queue and started: {run}");
+}
+
+/// YN-192 (20): a queued round cancelled before it starts ends cancelled,
+/// read nothing, and counts toward no round limit.
+#[tokio::test]
+async fn a_queued_round_cancelled_before_it_starts_does_not_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let _held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let queued = ws.collaboration_call(None, "review_start", json!({"requestId":"r1","taskId":task,"linkId":"7:pull:1"})).await.unwrap();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    ws.collaboration_call(None, "review_cancel", json!({"taskId":task,"reviewId":id})).await.unwrap();
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert_eq!(run["status"], "cancelled", "{run}");
+    assert!(run["nativeStartedAt"].is_null(), "it never started");
+    assert_eq!(run["roundLimit"]["counts"], false, "{run}");
+    // As the limit reads it: through the PR's stored rounds (R3 58b8b376).
+    let started = store::started_rounds(&ws.store.db.read().unwrap(), &json!({"repositoryId":7,"number":1})).unwrap();
+    assert_eq!(started, (0, 0), "{run}");
+}
+
+/// YN-192 (20), R3 58b8b376 P1: the round limit as Core enforces it, through
+/// the PR's stored rounds (`started_rounds`, `counts_toward_limit`,
+/// `counted_at_head`) and the admission of a new round. A queued round holds
+/// its place; cancelled before it started, it leaves all three and a new
+/// round is admitted. One cancelled after it started still counts and keeps
+/// its start and ledger; an older cancelled round without a stamp counts as
+/// it always did.
+#[test]
+fn a_round_cancelled_in_the_queue_frees_its_place_in_the_prs_round_limit() {
+    let head = "c".repeat(40);
+    let pr = json!({"repositoryId":7,"number":1});
+    let limit = |s: &Store, id: &str| {
+        let db = s.db.read().unwrap();
+        (
+            store::started_rounds(&db, &pr).unwrap().0,
+            store::counts_toward_limit(&db, id).unwrap(),
+            store::counted_at_head(&db, Some(7), Some(1), &head).unwrap().map(|(id, _)| id),
+        )
+    };
+    let refused = |s: &Store, task: &str, key: &str| {
+        let error = s.create_pr_review(Some("dev"), &input(task, key), key).unwrap_err().to_string();
+        assert!(error.starts_with("round_limit:"), "{error}");
+    };
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    completed_full_round(&s, &task, "first");
+    let mut waits = input(&task, "waits");
+    waits.head_sha = Some(head.clone());
+    s.create_pr_review(None, &waits, "waits").unwrap();
+    s.queue_pr_review("waits").unwrap();
+    // Queued, it holds the PR's second round (open, it also keeps any other
+    // round of the PR from starting meanwhile).
+    assert_eq!(limit(&s, "waits"), (2, true, Some("waits".to_owned())));
+    // Cancelled before it started, it leaves the limit; a new round is admitted.
+    assert_eq!(s.cancel_queued_pr_review("waits").unwrap(), store::QueuedCancel::Cancelled);
+    assert_eq!(limit(&s, "waits"), (1, false, None), "{}", s.pr_review_report(&task, "waits").unwrap());
+    let (mut ran, created) = s.create_pr_review(Some("dev"), &input(&task, "ran"), "ran").unwrap();
+    assert!(created, "{ran}");
+    // That one starts, then is cancelled by its reviewer: it counts.
+    ran["status"] = json!("running");
+    ran["headSha"] = json!(&head);
+    ran["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    ran["ledger"]["calls"] = json!(4);
+    s.save_pr_review(&ran, None).unwrap();
+    ran["status"] = json!("cancelled");
+    s.save_pr_review(&ran, None).unwrap();
+    assert_eq!(limit(&s, "ran"), (2, true, Some("ran".to_owned())));
+    let run = s.pr_review_report(&task, "ran").unwrap();
+    assert_eq!((run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()), (Some("2026-11-17T00:00:00Z"), Some(4)), "{run}");
+    assert!(run["roundLimit"].is_null(), "{run}");
+    refused(&s, &task, "fourth");
+    // Older cancelled rounds without a stamp, with or without a ledger, count.
+    let (_dir, s, task) = setup();
+    agent(&s, "dev", "Dev");
+    for key in ["old", "older"] {
+        let mut old = input(&task, key);
+        old.head_sha = Some(head.clone());
+        let (mut run, _) = s.create_pr_review(None, &old, key).unwrap();
+        run["status"] = json!("cancelled");
+        if key == "older" {
+            run.as_object_mut().unwrap().remove("ledger");
+        }
+        s.save_pr_review(&run, None).unwrap();
+    }
+    assert_eq!(limit(&s, "older"), (2, true, Some("old".to_owned())));
+    refused(&s, &task, "next");
+}
+
+/// YN-192 (20): a queued round never started, so a restart leaves it queued
+/// (unlike a preparing one, which ends unknown) for the next start to resume.
+#[test]
+fn a_queued_round_survives_a_restart_to_wait_again() {
+    let (dir, s, task) = setup();
+    s.create_pr_review(None, &input(&task, "queued"), "queued").unwrap();
+    let run = s.queue_pr_review("queued").unwrap();
+    assert_eq!((run["status"].as_str(), run["queue"]["ahead"].as_i64()), (Some("queued"), Some(0)));
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    s.recover_pr_reviews().unwrap();
+    assert_eq!(s.queued_pr_reviews().unwrap(), ["queued"]);
+    let started = s.dequeue_pr_review("queued").unwrap().unwrap();
+    assert_eq!(started["status"], "preparing");
+    assert!(s.dequeue_pr_review("queued").unwrap().is_none(), "it leaves the queue once");
+}
+
+/// YN-192 (20), R1 7c713564: a round whose slot frees while an update drains
+/// Core gives the slot back and waits on, still cancellable, and starts once
+/// the update is cancelled and admission reopens.
+#[tokio::test]
+async fn a_queued_round_waits_through_an_update_drain_and_starts_when_it_reopens() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    let held = ws.pr_reviews.slots.clone().try_acquire_many_owned(2).unwrap();
+    let queued = ws.collaboration_call(None, "review_start", json!({"requestId":"r1","taskId":task,"linkId":"7:pull:1"})).await.unwrap();
+    let id = queued["id"].as_str().unwrap().to_owned();
+    ws.admission.begin_drain("update-1").unwrap();
+    drop(held);
+    // Its waiter gets a slot, can't enter while Core drains, and gives it back.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(ws.store.pr_review_report(&task, &id).unwrap()["status"], "queued");
+    assert!(ws.pr_reviews.jobs.lock().unwrap().contains_key(&id), "still waiting, so a cancel reaches it");
+    assert_eq!(ws.pr_reviews.slots.available_permits(), 2, "the slot went back");
+    ws.admission.reopen("update-1").unwrap();
+    let run = status_leaves(&ws, &task, &id, "queued").await;
+    assert!(run["queue"]["startedAt"].is_string(), "it started once admission reopened: {run}");
+}
+
+/// YN-192 (20), R1 7c713564: review_cancel ends a queued round nothing waits
+/// for any more, as one cancelled in its queue.
+#[tokio::test]
+async fn review_cancel_ends_a_queued_round_whose_waiter_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "orphan"), "orphan").unwrap();
+    ws.store.queue_pr_review("orphan").unwrap();
+    let cancel = ws.collaboration_call(None, "review_cancel", json!({"taskId":task,"reviewId":"orphan"})).await.unwrap();
+    assert_eq!((cancel["cancellationRequested"].as_bool(), cancel["status"].as_str()), (Some(true), Some("cancelled")), "{cancel}");
+    let run = ws.store.pr_review_report(&task, "orphan").unwrap();
+    assert_eq!((run["status"].as_str(), run["roundLimit"]["counts"].as_bool()), (Some("cancelled"), Some(false)), "{run}");
+}
+
+/// YN-192 (20), Lead seq 15511 (R2 119463ab's P3): a cancel that read a round
+/// while it was queued, then lost the race to its waiter starting it, never
+/// lands on the started round: its status, start and ledger stay, it is not
+/// marked as never started, and the cancel says it did nothing. A round still
+/// queued is cancelled, uncounted, as before.
+#[test]
+fn a_cancel_that_loses_the_race_to_a_start_never_overwrites_the_started_round() {
+    let (_dir, s, task) = setup();
+    s.create_pr_review(None, &input(&task, "raced"), "raced").unwrap();
+    // What the cancel read, while the round was queued...
+    let read = s.queue_pr_review("raced").unwrap();
+    // ...then its waiter took a slot and started it, before the cancel wrote.
+    let mut started = s.dequeue_pr_review("raced").unwrap().unwrap();
+    started["status"] = json!("running");
+    started["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    started["ledger"]["calls"] = json!(3);
+    s.save_pr_review(&started, None).unwrap();
+    // The cancel's write, of what it read: it does not land.
+    assert!(!s.end_queued_from(&store::cancelled_in_queue(read)).unwrap(), "only a round still queued is cancelled");
+    assert_eq!(s.cancel_queued_pr_review("raced").unwrap(), store::QueuedCancel::NoLongerQueued, "nor by a cancel that reads it now");
+    let run = s.pr_review_report(&task, "raced").unwrap();
+    assert_eq!((run["status"].as_str(), run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()),
+        (Some("running"), Some("2026-11-17T00:00:00Z"), Some(3)), "{run}");
+    assert!(run["roundLimit"].is_null() && run["error"].is_null(), "not marked as never started: {run}");
+    // It ends as rounds end; a round still queued is cancelled and doesn't count.
+    started["status"] = json!("failed");
+    s.save_pr_review(&started, None).unwrap();
+    s.create_pr_review(None, &input(&task, "waiting"), "waiting").unwrap();
+    s.queue_pr_review("waiting").unwrap();
+    assert_eq!(s.cancel_queued_pr_review("waiting").unwrap(), store::QueuedCancel::Cancelled);
+    let run = s.pr_review_report(&task, "waiting").unwrap();
+    assert_eq!((run["status"].as_str(), run["roundLimit"]["counts"].as_bool()), (Some("cancelled"), Some(false)), "{run}");
+}
+
+/// The task lines a round's end writes: one per end, never two.
+fn ends(s: &Store, review: &str) -> i64 {
+    s.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM collaboration_task_activity WHERE json_extract(data,'$.reviewId')=?1
+         AND json_extract(data,'$.body') LIKE 'Code review round % · ' || ?1 || ': cancelled.%'", [review], |r| r.get(0)).unwrap()
+}
+
+/// YN-192 (20), Lead seq 15513, one order: the cancel wins. The round ends
+/// cancelled, uncounted, with one end; a later cancel changes nothing.
+#[tokio::test]
+async fn a_cancel_that_wins_ends_the_queued_round_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "waits"), "waits").unwrap();
+    ws.store.queue_pr_review("waits").unwrap();
+    let (requested, status) = cancel_queued(&ws, &task, "waits").await.unwrap();
+    assert_eq!((requested, status.as_str()), (true, Some("cancelled")));
+    assert_eq!(ends(&ws.store, "waits"), 1);
+    let (requested, status) = cancel_queued(&ws, &task, "waits").await.unwrap();
+    assert_eq!((requested, status.as_str()), (false, Some("cancelled")), "it ended already; nothing runs to tell");
+    assert_eq!(ends(&ws.store, "waits"), 1, "one end, not two");
+    assert_eq!(ws.store.pr_review_report(&task, "waits").unwrap()["roundLimit"]["counts"], false);
+}
+
+/// YN-192 (20), Lead seq 15513, the other order: its waiter starts the round
+/// before the cancel's write. The cancel writes nothing; it reaches the
+/// running round's reviewer as a cancel of a running round does, and the
+/// round keeps its start and ledger and counts.
+#[tokio::test]
+async fn a_start_that_wins_still_gets_the_cancel_signal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "starts"), "starts").unwrap();
+    ws.store.queue_pr_review("starts").unwrap();
+    // Its waiter, registered, takes the slot and starts it.
+    let (tx, reviewer) = watch::channel(false);
+    ws.pr_reviews.jobs.lock().unwrap().insert("starts".into(), tx);
+    let mut started = ws.store.dequeue_pr_review("starts").unwrap().unwrap();
+    started["status"] = json!("running");
+    started["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    started["ledger"]["calls"] = json!(5);
+    ws.store.save_pr_review(&started, None).unwrap();
+    // The cancel that had read it as queued.
+    let (requested, status) = cancel_queued(&ws, &task, "starts").await.unwrap();
+    assert_eq!((requested, status.as_str()), (true, Some("running")), "the cancel reached it, and it still runs");
+    assert!(*reviewer.borrow(), "its reviewer was told to stop");
+    let run = ws.store.pr_review_report(&task, "starts").unwrap();
+    assert_eq!((run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()), (Some("2026-11-17T00:00:00Z"), Some(5)), "{run}");
+    assert!(run["roundLimit"].is_null(), "not marked uncounted: {run}");
+    assert_eq!(ends(&ws.store, "starts"), 0, "it ends as a running round ends, by its reviewer");
+}

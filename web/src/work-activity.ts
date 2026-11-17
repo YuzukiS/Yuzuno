@@ -123,7 +123,7 @@ export function jobWork(status: string): Counted {
  */
 export function reviewWork(status: string, passed: boolean, conclusion: string | null | undefined): WorkState {
   switch (status) {
-    case "preparing": case "running":
+    case "queued": case "preparing": case "running":
       return "current";
     case "completed":
       return passed ? "done" : conclusion === "changes_requested" ? "exception" : "unrecognized";

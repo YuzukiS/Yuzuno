@@ -105,7 +105,7 @@ test("CI counts by what it concluded", () => {
 });
 
 test("a review counts by what Core made of it, and only a pass is done", () => {
-  for (const going of ["preparing", "running"])
+  for (const going of ["queued", "preparing", "running"])
     assert.equal(reviewWork(going, false, null), "current", going);
   // Only a passing review is done; its own rule for that is reviewPassed.
   assert.equal(reviewWork("completed", true, "no_findings"), "done");

@@ -213,17 +213,43 @@ pub async fn call(
     );
     let input: Reference = serde_json::from_value(input)?;
     let id = input.review_id.clone();
+    let task = input.task_id.clone();
     let run = ws
         .stored(move |s| s.pr_review_report(&input.task_id, &input.review_id))
         .await?;
     if operation == "review_get" {
         return Ok(run);
     }
-    let mut requested = false;
-    if let Some(job) = ws.pr_reviews.jobs.lock().unwrap().get(&id) {
-        requested = job.send(true).is_ok();
+    let mut requested = signal_cancel(&ws, &id);
+    let mut status = run["status"].clone();
+    if !requested && run["status"] == "queued" {
+        (requested, status) = cancel_queued(&ws, &task, &id).await?;
     }
-    Ok(json!({"id":id,"reviewId":id,"status":run["status"],"cancellationRequested":requested}))
+    Ok(json!({"id":id,"reviewId":id,"status":status,"cancellationRequested":requested}))
+}
+
+/// Tells `id`'s live waiter or reviewer to stop: false when nothing of it runs here.
+fn signal_cancel(ws: &Workspace, id: &str) -> bool {
+    ws.pr_reviews.jobs.lock().unwrap().get(id).is_some_and(|job| job.send(true).is_ok())
+}
+
+/// The cancel of a round read as queued, with nothing of it running here
+/// (YN-192). Still queued, it ends here, in the one write that finds it so.
+/// Started meanwhile, it is cancelled as a running round is, by its own
+/// reviewer, keeping its start, ledger and count. Whether a cancel happened
+/// or reached the round, and its status now.
+pub(super) async fn cancel_queued(ws: &Arc<Workspace>, task: &str, id: &str) -> Result<(bool, Value)> {
+    let key = id.to_owned();
+    let requested = match ws.stored(move |s| s.cancel_queued_pr_review(&key)).await? {
+        store::QueuedCancel::Cancelled => {
+            announce(ws);
+            true
+        }
+        store::QueuedCancel::NoLongerQueued => signal_cancel(ws, id),
+    };
+    let (task, key) = (task.to_owned(), id.to_owned());
+    let status = ws.stored(move |s| s.pr_review_report(&task, &key)).await?["status"].clone();
+    Ok((requested, status))
 }
 
 async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> Result<Value> {
@@ -255,12 +281,8 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> 
     // could only fail against GitHub's PR after the round was counted.
     fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref(), true)
         .map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No review was started.")))?;
-    let slot = ws
-        .pr_reviews
-        .slots
-        .clone()
-        .try_acquire_owned()
-        .context("Two PR reviews are already running; retry when one finishes")?;
+    // Both slots taken: the round waits for one instead of being refused (YN-192).
+    let slot = ws.pr_reviews.slots.clone().try_acquire_owned().ok();
     let id = uuid::Uuid::new_v4().to_string();
     let create_id = id.clone();
     let create = input.clone();
@@ -270,8 +292,107 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> 
     if !created {
         return Ok(run);
     }
+    let Some(slot) = slot else {
+        // The queue takes its own admission when the round starts.
+        drop(admission);
+        let queued = id.clone();
+        let run = ws.stored(move |s| s.queue_pr_review(&queued)).await?;
+        announce(&ws);
+        wait_for_slot(ws, id);
+        return Ok(run);
+    };
     announce(&ws);
-    Ok(spawn(ws, admission, slot, id, run, input.base_sha, input.head_sha, None))
+    Ok(spawn(ws, admission, slot, id, run, input.base_sha, input.head_sha, None, None))
+}
+
+/// A round both review slots were taken for (YN-192) waits for one, then
+/// starts as `launch` starts one, with the base and head it was asked for.
+/// Cancelled meanwhile, it ends without starting and counts toward no round
+/// limit. While an update drains Core it gives its slot back and waits,
+/// still cancellable, until admission reopens (an update cancelled) or the
+/// next start resumes it (`start_review_queue`).
+fn wait_for_slot(ws: Arc<Workspace>, id: String) {
+    let (tx, mut cancellation) = watch::channel(false);
+    ws.pr_reviews.jobs.lock().unwrap().insert(id.clone(), tx);
+    let gate = ws.admission.clone();
+    tokio::spawn(async move {
+        loop {
+            // A change of admission, armed before it is read: a drain's end.
+            let reopened = gate.changed.notified();
+            tokio::pin!(reopened);
+            reopened.as_mut().enable();
+            let slot = if *cancellation.borrow() {
+                None
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.changed() => None,
+                    slot = ws.pr_reviews.slots.clone().acquire_owned() => slot.ok(),
+                }
+            };
+            if *cancellation.borrow() {
+                end_queued(&ws, &id).await;
+                return;
+            }
+            let Some(slot) = slot else { break };
+            let Ok(admission) = gate.enter_work() else {
+                drop(slot);
+                tokio::select! {
+                    biased;
+                    _ = cancellation.changed() => {}
+                    _ = &mut reopened => {}
+                }
+                continue;
+            };
+            let key = id.clone();
+            match ws.stored(move |s| s.dequeue_pr_review(&key)).await {
+                Ok(Some(run)) => {
+                    announce(&ws);
+                    let base = run["requestedBaseSha"].as_str().map(str::to_owned);
+                    let head = run["requestedHeadSha"].as_str().map(str::to_owned);
+                    spawn(ws, admission, slot, id, run, base, head, None, Some(cancellation));
+                    return;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    // It stays queued, blocking its PR, and only waits for a
+                    // cancel: nothing here tries again. The queue is resumed
+                    // when Core next starts (`start_review_queue`).
+                    eprintln!("Review {id} could not leave its queue: {error:#}");
+                    drop((slot, admission));
+                    let _ = cancellation.changed().await;
+                    end_queued(&ws, &id).await;
+                    return;
+                }
+            }
+        }
+        ws.pr_reviews.jobs.lock().unwrap().remove(&id);
+    });
+}
+
+/// A queued round cancelled before it started ends so, and its waiter with it.
+async fn end_queued(ws: &Arc<Workspace>, id: &str) {
+    let key = id.to_owned();
+    // Not queued any more (it ended meanwhile): nothing is written.
+    if let Err(error) = ws.stored(move |s| s.cancel_queued_pr_review(&key)).await {
+        eprintln!("Review {id} could not be cancelled in its queue: {error:#}");
+    }
+    announce(ws);
+    ws.pr_reviews.jobs.lock().unwrap().remove(id);
+}
+
+impl Workspace {
+    /// The rounds that waited for a review slot when Core stopped wait again,
+    /// oldest first (YN-192).
+    pub fn start_review_queue(self: &Arc<Self>) {
+        let ws = self.clone();
+        tokio::spawn(async move {
+            match ws.stored(|s| s.queued_pr_reviews()).await {
+                Ok(ids) => ids.into_iter().for_each(|id| wait_for_slot(ws.clone(), id)),
+                Err(error) => eprintln!("Queued reviews were not resumed: {error:#}"),
+            }
+        });
+    }
 }
 
 /// A bounded continuation of one completed round of the same snapshot: a
@@ -317,7 +438,7 @@ async fn launch_continuation(ws: Arc<Workspace>, actor: Option<String>, input: c
         return Ok(run);
     }
     announce(&ws);
-    Ok(spawn(ws, admission, slot, id, run, Some(input.base_sha), Some(input.head_sha), parent))
+    Ok(spawn(ws, admission, slot, id, run, Some(input.base_sha), Some(input.head_sha), parent, None))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -330,10 +451,18 @@ fn spawn(
     base_sha: Option<String>,
     head_sha: Option<String>,
     parent: Option<Value>,
+    // A queued round's own (wait_for_slot), so a cancel meanwhile is seen.
+    watched: Option<watch::Receiver<bool>>,
 ) -> Value {
     let response = run.clone();
-    let (tx, mut cancellation) = watch::channel(false);
-    ws.pr_reviews.jobs.lock().unwrap().insert(id.clone(), tx);
+    let mut cancellation = match watched {
+        Some(watched) => watched,
+        None => {
+            let (tx, cancellation) = watch::channel(false);
+            ws.pr_reviews.jobs.lock().unwrap().insert(id.clone(), tx);
+            cancellation
+        }
+    };
     tokio::spawn(async move {
         let _admission = admission;
         let _slot = slot;
@@ -662,7 +791,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         tool
     };
     vec![
-      definition("review_start","Explicitly request an independent read-only review with the review Harness/model settings for its task (its project's, else the Workspace's, else built in) of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. A PR gets at most two started rounds across tasks, full ones included, counted as round_limit does; beyond that a round is refused before it exists unless the active dispatcher passes beyondRoundLimit or the user starts it. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
+      definition("review_start","Explicitly request an independent read-only review with the review Harness/model settings for its task (its project's, else the Workspace's, else built in) of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. A PR gets at most two started rounds across tasks, full ones included, counted as round_limit does; beyond that a round is refused before it exists unless the active dispatcher passes beyondRoundLimit or the user starts it. When both review slots are in use it answers queued and starts in turn; review_cancel ends a queued round, which then doesn't count. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
         "baseSha":resolved("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "headSha":resolved("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."},
