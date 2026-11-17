@@ -630,6 +630,16 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(checked['unchanged'], checked)
 
+    def test_a_cwd_reached_through_a_symlink_still_leaves_its_own_artifact_out(self):
+        # The snapshot names files through the resolved folder (review 66c56e84).
+        link = Path(self.tmp.name) / 'link'
+        link.symlink_to(self.work, target_is_directory=True)
+        self.spec['cwd'] = str(link)
+        code, checked = self.git_guarded('echo \'{"a":1}\' > out.json; exit 0', artifacts=['out.json'])
+        self.assertEqual(code, 0)
+        self.assertEqual((self.work/'out.json').read_text(), '{"a":1}\n', 'it wrote its tracked artifact')
+        self.assertTrue(checked['unchanged'], checked)
+
     def test_a_commit_while_it_ran_is_said_by_name(self):
         code, checked = self.git_guarded('git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m later; exit 3')
         self.assertEqual(checked['changed'], ['the Git commit'])

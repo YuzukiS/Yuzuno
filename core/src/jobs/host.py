@@ -525,11 +525,16 @@ def exit_guard(spec):
         current = snapshot(spec)
     except Exception as error:
         return {**record, 'unchanged': None, 'problem': f'the work tree could not be read again: {error}'[:300]}
-    cwd = Path(spec['cwd'])
-    own = {os.path.normpath(str(cwd / item['path'] if isinstance(item, dict) else cwd / item))
+    def real(path):
+        # Named as snapshot() names its files, through the resolved folder, so
+        # a cwd reached through a symlink still matches (as guardExclude is).
+        path = Path(path)
+        return str(path.parent.resolve() / path.name)
+    cwd = Path(spec['cwd']).resolve()
+    own = {real(cwd / (item['path'] if isinstance(item, dict) else item))
            for item in (spec.get('artifacts') or []) + (spec.get('outputs') or [])}
     def without_own(value):
-        return {**value, 'files': [f for f in value.get('files', []) if os.path.normpath(f['path']) not in own]}
+        return {**value, 'files': [f for f in value.get('files', []) if real(f['path']) not in own]}
     changed = changed_inputs(without_own(frozen), without_own(current))
     if not changed:
         return {**record, 'unchanged': True}
