@@ -2094,7 +2094,7 @@ const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB 
     before the start, not a read-only snapshot while it runs. An input missing at submit is recorded as missing.";
 /// guardGit in short (T-29): what it adds to the inputs, and that those count.
 const GUARD_GIT: &str = "Also freeze the Git HEAD of cwd's checkout and its changed tracked files (not untracked or ignored ones), \
-    checked like inputs before the command starts, and on this host again when it exits: a change then is said (result.guardAtExit, \
+    checked like inputs before the command starts, and again when it exits: a change then is said (result.guardAtExit, \
     its mail, guardChangedDuringRun in job_list), not a failure. Those files count toward the same limits as inputs: 2 MiB each, 16 MiB and 128 \
     files together with them. Set it to false for a checkout with large uncommitted files, and list in inputs what the command reads. \
     To let commits and edits elsewhere in the checkout go on while it waits or runs, name the paths it depends on in guardPaths.";

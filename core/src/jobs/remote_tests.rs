@@ -2907,6 +2907,38 @@ async fn guard_paths_on_the_machine_let_head_move_but_not_the_guarded_content() 
     assert!(error.starts_with("Inputs on lab box cannot be frozen, so nothing was submitted: guardPaths must be inside the Git work tree of cwd"), "{error}");
 }
 
+/// YN-194 (P6b): with guardGit the helper checks the work tree again on the
+/// machine once the command exits, as host.py's worker does here: a tracked
+/// file the command changed is named in result.guardAtExit and its exit
+/// status stays its own; its own declared tracked artifact is left out; a
+/// job without guardGit is not checked.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guard_git_is_checked_again_on_the_machine_when_the_command_exits() {
+    let lab = lab();
+    repo(&lab);
+    let root = lab.work.canonicalize().unwrap();
+    let settled = |j: &Value| j["reserved"] == false && j["status"] != "queued";
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let writes = create_frozen(&lab, input(&lab, "writes", "echo v2 > a.txt; exit 3", json!({"guardGit":true})), snapshot);
+    let ended = until(&lab, &lab.ssh, &writes, settled).await;
+    assert_eq!((ended["status"].as_str(), ended["reason"].as_str()), (Some("failed"), Some("exit-code 3")), "{ended}");
+    let exit = &ended["result"]["guardAtExit"];
+    assert_eq!((exit["unchanged"].as_bool(), &exit["changed"]), (Some(false), &json!([root.join("a.txt")])), "{ended}");
+    assert_eq!(exit["attempt"], ended["attempt"]);
+    assert!(exit["reason"].as_str().unwrap().contains("changed while the command ran"), "{exit}");
+    git(&lab, &["checkout", "--", "a.txt"]);
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let own = create_frozen(&lab, input(&lab, "own", "echo out > b.txt",
+        json!({"guardGit":true,"artifacts":[{"path":"b.txt","format":"bytes"}]})), snapshot);
+    let ended = until(&lab, &lab.ssh, &own, settled).await;
+    assert_eq!(ended["status"], "succeeded", "{ended}");
+    assert_eq!(ended["result"]["guardAtExit"]["unchanged"], true, "its own artifact is left out: {ended}");
+    let plain = create(&lab, input(&lab, "plain", "echo v3 > a.txt", json!({})));
+    let ended = until(&lab, &lab.ssh, &plain, settled).await;
+    assert!(ended["status"] == "succeeded" && ended["result"].get("guardAtExit").is_none(), "{ended}");
+}
+
 /// The Git there is the account's own, on its PATH, as python3 is: none, or
 /// Apple's stand-in on a Mac without the Command Line Tools, refuses the
 /// submit with why, and nothing is frozen.

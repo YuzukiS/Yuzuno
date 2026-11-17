@@ -930,6 +930,11 @@ pub(super) fn evidence(job: &Value, reply: &Value) -> Option<Value> {
             if let Some(guard) = result.get("guard").filter(|guard| guard.is_object()) {
                 value["guard"] = guard.clone();
             }
+            // With guardGit, what the check again at exit found there, as
+            // local jobs carry it (YN-194): mail, list and provenance read it.
+            if let Some(exit) = result.get("guardAtExit").filter(|exit| exit.is_object()) {
+                value["guardAtExit"] = exit.clone();
+            }
             // Checked on that machine after a clean exit, as for local jobs;
             // absent when they were not checked (a failure, a cancel).
             if let Some(artifacts) = result.get("artifacts") {
