@@ -661,6 +661,26 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertIsNone(host.remove_tmpdir(self.spec, self.folder), "another attempt's record is not this one's")
         self.assertTrue(made.exists())
 
+    def test_an_unreadable_tmpdir_record_never_keeps_the_outcome_from_being_recorded(self):
+        # Cleanup goes with the outcome (Lead's check of #1056): a record that
+        # cannot be read is said, nothing is inferred or removed, and the
+        # command's own outcome is written all the same.
+        self.in_data_folder()
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            made = host.make_tmpdir(self.spec, self.folder)
+        record = self.folder/'tmpdir.json'
+        for broken in (lambda: record.write_bytes(b'{"attempt": '), lambda: record.write_bytes(b'\xff\xfe'),
+                       lambda: (record.unlink(), record.mkdir())):
+            (self.folder/'result.json').unlink(missing_ok=True)
+            broken()
+            outcome = self.recorded()
+            self.assertEqual((outcome['status'], outcome['evidence']['systemd']['ExecMainStatus']), ('failed', '1'))
+            self.assertEqual(host.read(self.folder/'result.json')['status'], 'failed', 'written')
+            self.assertFalse(outcome['tmpdir']['removed'])
+            self.assertIn('record could not be read', outcome['tmpdir']['problem'])
+            self.assertNotIn('path', outcome['tmpdir'], 'nothing inferred')
+            self.assertTrue(made.exists(), 'nothing removed')
+
     # YN-194: the Git guard checked again once the command exited.
     def git_guarded(self, command, artifacts=()):
         git = lambda *args: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *args],

@@ -769,8 +769,12 @@ def remove_tmpdir(spec, folder):
     """Remove this attempt's TMPDIR once its outcome is final, and say how
     that went; None when it had none. Only the folder make_tmpdir made is
     removed: directly under this data folder's t and named j…. One that
-    cannot be removed is left where it is and said."""
-    record = read(folder / TMPDIR_RECORD)
+    cannot be removed is left where it is and said. A record that cannot be
+    read is said too, and nothing is inferred from it or removed."""
+    try:
+        record = read(folder / TMPDIR_RECORD)
+    except (OSError, ValueError) as error:
+        return {'removed': False, 'problem': f'its temporary folder record could not be read: {error}'[:300]}
     if not (isinstance(record, dict) and record.get('attempt') == spec['attempt'] and isinstance(record.get('path'), str)):
         return None
     path = Path(record['path'])
@@ -1195,7 +1199,11 @@ def result(spec, folder, status, evidence, reason=None):
             return previous
         # Once its outcome is final, nothing of it runs: its TMPDIR goes.
         if status != 'unknown':
-            left = remove_tmpdir(spec, folder)
+            # Cleanup goes with the outcome; it never keeps one from being recorded.
+            try:
+                left = remove_tmpdir(spec, folder)
+            except Exception as error:
+                left = {'removed': False, 'problem': f'its temporary folder was not cleaned up: {error}'[:300]}
             if left:
                 value['tmpdir'] = left
         atomic(folder / 'result.json', value)
