@@ -973,6 +973,53 @@ test("YN-195 a report's or status's Markdown block over the advice length shows 
   assert.deepEqual(page.errors, []);
 });
 
+test("YN-195 review 4eab0f94: only a report's or status's page folds; a card's front never does, and the control always says what the fold shows", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  // A lead with no blank line in it is one opening to a card, but two blocks (a line, then a list) to the page.
+  const items = Array.from({ length: 24 }, (_, i) => `- Item ${i + 1}: something the reader may want later, said at some length.`).join("\n");
+  const lead = `The nightly backup runs.\n${items}`;
+  assert.ok([...lead].length > window.foldChars);
+  const report = readSection(page, {
+    op: "put", key: "fold-card", kind: "report", title: "Fold on a card",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", size: "small" } }, children: ["lead"] },
+      lead: { type: "Markdown", props: { text: lead } } } },
+  });
+  // The card's front: its lead, never folded.
+  window.renderCard(report, PROJECT, { deck: true });
+  assert.ok(document.querySelector(".home-summary-lead"), "the card shows its lead");
+  assert.equal(document.querySelector(".brief-markdown-fold"), null, "no fold on a card's front");
+  // The same body drawn at the card front's density folds nothing either; on its page it folds.
+  window.unmountSection();
+  window.renderSection(report, PROJECT, {}, "", "low");
+  assert.equal(document.querySelector(".brief-markdown-fold"), null, "no fold at low density");
+  window.unmountSection();
+  window.renderSection(report, PROJECT);
+  assert.ok(document.querySelector(".brief-markdown-fold"), "the page folds it");
+
+  // Opened, then short (nothing to fold), then long again: the control's words follow what the details shows.
+  const md = (text) => readSection(page, {
+    op: "put", key: "fold-again", kind: "report", title: "Fold again",
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text } } } },
+  });
+  const steps = Array.from({ length: 24 }, (_, i) => `- Step ${i + 1}: what was done, said at the length an Agent writes it.`).join("\n");
+  const long = `## Result\n\nDone.\n\n${steps}`;
+  const more = () => document.querySelector("details.brief-markdown-more");
+  const label = () => more()?.querySelector("summary")?.textContent ?? null;
+  window.unmountSection();
+  window.renderSection(md(long), PROJECT);
+  more().open = true;
+  more().dispatchEvent(new window.Event("toggle"));
+  await until(() => label() === "Show less", "opened");
+  window.renderSection(md("Short now."), PROJECT);
+  assert.equal(more(), null, "nothing to fold");
+  window.renderSection(md(long), PROJECT);
+  assert.equal(label() === "Show less", more().open, `the words match the details: ${label()} / open ${more().open}`);
+  assert.deepEqual(page.errors, []);
+});
+
 test("live references open the app's existing panels, GitHub pages or nothing", async (t) => {
   const page = mount(respond);
   t.after(page.close);

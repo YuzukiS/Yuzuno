@@ -3,6 +3,7 @@ import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { parseMessageLink, parseReportLink, useMessageLinks } from "../../deep-link";
 import { useStrings } from "../../i18n";
 import { BriefContext } from "./BriefContext";
+import { useBriefDensity } from "./density";
 import { briefText } from "./brief-text";
 import { briefMarkdownHtml } from "./markdown-html";
 import "./markdown-fold.css";
@@ -46,14 +47,20 @@ export function foldHtml(html: string): { lead: string; rest: string; hidden: nu
  * GitHub-flavoured Markdown written by an Agent, sanitized as
  * briefMarkdownHtml says. Fenced code and log excerpts keep their lines and
  * scroll inside a bounded block. A report's or status's block longer than
- * FOLD_CHARS shows its opening and folds the rest (YN-195); an Ask's never
- * folds, as Core advises only reports and statuses.
+ * FOLD_CHARS, drawn whole (its page, high density), shows its opening and
+ * folds the rest (YN-195). Nothing else folds: an Ask's, as Core advises
+ * only reports and statuses; a card's front (low density), which shows only
+ * an opening and sends the reader to the page; and Markdown drawn outside a
+ * section, such as a card's lead (review 4eab0f94).
  */
 export function BriefMarkdown({ text }: { text: string }) {
   const t = useStrings(briefText);
   const kind = useContext(BriefContext)?.section.kind;
+  const whole = useBriefDensity() === "high";
   const html = useMemo(() => briefMarkdownHtml(text), [text]);
-  const fold = useMemo(() => (kind !== "ask" && chars(text) > FOLD_CHARS ? foldHtml(html) : null), [kind, text, html]);
+  const foldable = whole && (kind === "report" || kind === "status") && chars(text) > FOLD_CHARS;
+  const fold = useMemo(() => (foldable ? foldHtml(html) : null), [foldable, html]);
+  // Controlled, so that the control's words always say what the details shows (review 4eab0f94).
   const [open, setOpen] = useState(false);
   const links = useMessageLinks();
   const follow = (event: MouseEvent<HTMLElement>) => {
@@ -84,11 +91,11 @@ export function BriefMarkdown({ text }: { text: string }) {
     event.preventDefault();
   };
   if (!fold) return <div className="prose brief-markdown" dangerouslySetInnerHTML={{ __html: html }} onClick={follow} />;
-  // A details element, so that the browser's find in page still reaches the folded text and opens it.
+  // A details element: the folded text stays in the page, where find in page and assistive technology still read it.
   return (
     <div className="brief-markdown-fold" onClick={follow}>
       <div className="prose brief-markdown" dangerouslySetInnerHTML={{ __html: fold.lead }} />
-      <details className="brief-markdown-more" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <details className="brief-markdown-more" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
         <summary>{open ? t.markdownLess : t.markdownMore(fold.hidden)}</summary>
         <div className="prose brief-markdown" dangerouslySetInnerHTML={{ __html: fold.rest }} />
       </details>
