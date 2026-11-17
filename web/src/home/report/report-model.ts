@@ -59,7 +59,8 @@ export function summaryOf(section: Section): Summary | null {
  * top-level blocks in the author's order (`flow`), and its top-level
  * Sources and Attachments, which the page keeps in view beside or after
  * the body rather than in the flow. `details` are the titled Groups the
- * author named to start folded; nothing else folds.
+ * author named to start folded; besides them only a long Markdown block
+ * folds, within itself (Markdown.tsx, YN-195).
  */
 export type ReportParts = {
   summary: Summary | null;

@@ -53,7 +53,7 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   const long = markdown.filter(([, chars]) => chars > A.markdownChars);
   for (const [key, chars] of long)
     advice.push(hint("long_markdown", at(key, ".props.text"),
-      `Markdown "${key}" is ${chars} characters (advice starts above ${A.markdownChars}). A reader finds the point sooner when it comes first and the detail stays on its Task.`));
+      `Markdown "${key}" is ${chars} characters (advice starts above ${A.markdownChars}). Home shows a block this long from its headings and first paragraph, the rest behind Show all, so the point belongs there; a reader finds it sooner still when the detail stays on its Task.`));
   const total = markdown.reduce((sum, [, chars]) => sum + chars, 0);
   if (!long.length && total > A.sectionMarkdownChars) {
     const [key] = markdown.reduce((most, one) => (one[1] > most[1] ? one : most));

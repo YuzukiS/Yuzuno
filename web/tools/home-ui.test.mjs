@@ -2816,7 +2816,8 @@ test("T-9 a report's plain fields read back as written once the copy is rendered
     await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
     const page = await openReport(p, "p-app", "pasted");
     await waitFor(() => page.querySelector(".brief-markdown"), "the pasted copy");
-    const rendered = page.querySelector(".brief-markdown");
+    // A copy over 1,200 characters is one block the page folds after its opening (YN-195): read the whole block.
+    const rendered = page.querySelector(".brief-markdown-fold") ?? page.querySelector(".brief-markdown");
     const visible = rendered.textContent.replace(/\s+/g, " ");
     const lost = Object.entries(plainFields).filter(([, text]) => !visible.includes(text)).map(([field]) => field);
     assert.deepEqual(lost, [], `every plain field reads back as its characters; lost: ${lost.join(", ")}`);
@@ -2972,7 +2973,8 @@ test("T-9 a fence a Markdown block leaves open before a research desk ends with 
     await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
     const page = await openReport(p, "p-app", "pasted");
     await waitFor(() => page.querySelector(".brief-markdown"), "the pasted copy");
-    const rendered = page.querySelector(".brief-markdown");
+    // A copy over 1,200 characters is one block the page folds after its opening (YN-195): read the whole block.
+    const rendered = page.querySelector(".brief-markdown-fold") ?? page.querySelector(".brief-markdown");
     const code = [...rendered.querySelectorAll("pre")].map((pre) => pre.textContent);
     assert.deepEqual(code, ["raw log line\n"], "only the notes' own line is code");
     const headings = [...rendered.querySelectorAll("h4")].map((h) => h.textContent);

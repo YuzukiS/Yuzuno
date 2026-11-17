@@ -160,6 +160,9 @@ export const briefText = strings({
   carouselNext: "Next",
   // Tabs (YN-113 R6): the row of tabs, when its author gave it no label.
   tabs: "Pages",
+  // A long Markdown block on a report or status page (YN-195): its opening shown, the rest folded.
+  markdownMore: (count: number) => `Show all · ${count} more characters`,
+  markdownLess: "Show less",
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -292,6 +295,8 @@ export const briefText = strings({
   carouselPrevious: "上一页",
   carouselNext: "下一页",
   tabs: "分页",
+  markdownMore: (count) => `展开全文 · 还有 ${count} 字`,
+  markdownLess: "收起",
 });
 
 /**
