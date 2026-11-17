@@ -693,6 +693,10 @@ export function Jobs({
     async (before?: number) => {
       const stamp = generation.current;
       const read = ++reads.current;
+      // An "Earlier" read adds one older page to the live list; it never
+      // replaces the list or the budget, so a poll read that started later
+      // must not discard it (the merge uses the rows shown now).
+      const paged = before !== undefined;
       // This read still belongs to the shown panel, and is newer than what
       // the list or the details already show.
       const shown = () => stamp === generation.current;
@@ -712,7 +716,11 @@ export function Jobs({
             throw e;
           }),
         ]);
-        if (!ownsList()) return;
+        if (paged) {
+          if (!shown()) return;
+        } else if (!ownsList()) {
+          return;
+        }
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
         row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
@@ -735,6 +743,9 @@ export function Jobs({
               before || !old.jobs.length ? next.nextBefore : old.nextBefore,
           };
         });
+        // The live list, budget and chosen job stay the poll's: this answer
+        // only added its page.
+        if (paged) return;
         setListed(true);
         if (typeof capacity === "string") {
           setBudget(null);
@@ -747,10 +758,14 @@ export function Jobs({
         }
         listedAt.current = read;
       } catch (e) {
-        if (ownsList()) {
-          // This answer, not the one before it, owns the list now: an older
-          // success must not cover a newer failure either.
-          listedAt.current = read;
+        // A page the reader asked for says why it failed, even if a poll has
+        // answered since; the poll's list read owns the live list.
+        if (paged ? shown() : ownsList()) {
+          if (!paged) {
+            // This answer, not the one before it, owns the list now: an older
+            // success must not cover a newer failure either.
+            listedAt.current = read;
+          }
           setError(errorText(e));
           if (selected)
             setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));

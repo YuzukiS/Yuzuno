@@ -214,6 +214,29 @@ test('a read slower than the poll interval still shows its list and budget', asy
   } finally { p.close(); }
 });
 
+// R-18 #4 / YN-210 (review 2 P2): "Earlier" adds an older page to the live
+// list. A poll that starts after that read and answers first must not throw
+// the page away: the reader's click still shows its rows.
+test('an Earlier page still appears when a poll read that started after it answers first', async () => {
+  const first = { ...job, id: 'job-one', name: 'first job', status: 'succeeded', reserved: false, attempt: 'one', finishedAt: new Date().toISOString() };
+  const older = { ...job, id: 'job-old', name: 'older job', cursor: 2, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
+  const p = mount(async url => {
+    if (url.includes('before=5')) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return { jobs: [older], hasMore: false, nextBefore: null };
+    }
+    return { jobs: [first], hasMore: true, nextBefore: 5 };
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => button(p, 'Earlier jobs'));
+    button(p, 'Earlier jobs').click();
+    await until(() => [...p.doc.querySelectorAll('.job-row')].some(row => row.textContent.includes('older job')));
+    assert.ok(p.calls.some(c => c.url.includes('before=5')), 'the older page was read');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // T-60: a finished job's details and output no longer change. Read once it
 // is seen finished; again only once the list shows it changed (a new
 // attempt), or on Refresh. The list goes on being read.
