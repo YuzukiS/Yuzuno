@@ -456,13 +456,7 @@ async fn a_card_whose_owner_no_longer_leads_left_or_was_removed_pauses_and_nothi
     let log: Log = Default::default();
     let send = sender(&ws, &log);
     let paused = || refresh_of(&ws, &project, identity).paused_reason.map(|why| why.code);
-    set_leads(&ws, &project, &["b", "c"]);
-    refresh::tick(&ws, &send, at("2026-11-14T08:00:05Z")).await.unwrap();
-    assert_eq!(paused(), Some("owner_not_lead".to_owned()));
-    assert!(refresh_of(&ws, &project, identity).paused_reason.unwrap().message_zh.contains("已不是项目负责人"));
-    set_leads(&ws, &project, &["a", "b", "c"]);
     // Closed.
-    turn_on(&ws, &project, identity);
     ws.store.update("a", "test/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
     refresh::tick(&ws, &send, at("2026-11-14T08:01:00Z")).await.unwrap();
     assert_eq!(paused(), Some("owner_closed".to_owned()));
@@ -489,6 +483,16 @@ async fn a_card_whose_owner_no_longer_leads_left_or_was_removed_pauses_and_nothi
     make(&ws, &project, identity, json!({"every":"day","at":"08:00"}), "2026-11-13T09:00:00Z");
     refresh::tick(&ws, &send, at("2026-11-14T08:03:00Z")).await.unwrap();
     assert_eq!(paused(), Some("card_removed".to_owned()));
+    // A lead the user no longer lists: its card leaves for history (YN-195), and the refresh pauses saying why.
+    working(&ws, "a", "t-again");
+    let again = put_card(&ws, "a", &project, "Synthetic digest again").await;
+    ended(&ws, "a", "completed", None);
+    make(&ws, &project, again, json!({"every":"day","at":"08:00"}), "2026-11-13T09:00:00Z");
+    set_leads(&ws, &project, &["b", "c"]);
+    refresh::tick(&ws, &send, at("2026-11-14T08:04:00Z")).await.unwrap();
+    let why = refresh_of(&ws, &project, again).paused_reason.unwrap();
+    assert_eq!(why.code, "owner_not_lead");
+    assert!(why.message_zh.contains("已不是项目负责人"), "{}", why.message_zh);
     assert!(sends(&log).is_empty(), "nothing went to an owner that may no longer take it");
 }
 

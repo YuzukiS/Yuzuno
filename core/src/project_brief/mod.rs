@@ -16,7 +16,7 @@ mod attachments;
 mod cards;
 /// The end of a task archives its cards (YN-86 S2a), in the transaction
 /// that ends it (collaboration_store.rs `save_task`).
-pub(crate) use cards::task_closed;
+pub(crate) use cards::{lead_left, task_closed};
 /// What the Project's requests read of cards and write as one (YN-86 S3a-2,
 /// project_requests): a card by its key or identity, who answers for a
 /// task's card, its Asks, and the card project_route puts.

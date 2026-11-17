@@ -247,6 +247,10 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
             tx.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead' AND project_id=?2", params![agent, project])?;
             // A front desk is one of the Project's leads (YN-86 §4.1).
             crate::project_requests::lead_left(&tx, agent, project)?;
+            // Its reports and statuses there go to history (YN-195). One
+            // that moved to another Project instead leaves them for a lead
+            // to claim (membership_changed), as an owner that left.
+            crate::project_brief::lead_left(&tx, agent, project)?;
         }
     }
     for agent in &ids {
