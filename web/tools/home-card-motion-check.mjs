@@ -10,6 +10,9 @@
 //   own parts; it keeps inner scrolls; one at most, nested no deeper than one.
 // - Interrupted (fast presses, Reply again part way in, changes it did not make, endless changes) it ends consistent;
 //   a card replied from its foot ends in view; the answer card's buttons stay under the pointer.
+// - A report's Reply on the deck: opened, closed with ✕, opened again and sent, closed with Escape: its edge never
+//   moves at once, the reply fades in only once the copy is gone, focus goes into its field and back to Reply, and
+//   the card is as tall as before once closed.
 // - Reduced motion: at its end at once; turned on meanwhile, every animation, the copy and a scroll to the focus stop
 //   at their end.
 //   YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-card-motion-check.mjs
@@ -52,6 +55,14 @@ const home = () => ({ generatedAt: new Date().toISOString(), order: ["p1"],
 
 // ---- How requests are answered: a reply as Core takes it (the ask replied, then the receipt), slowly when asked.
 const server = { slowReply: false, readDelay: 0 };
+const until = async (fn, label, ms = 10_000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (fn()) return;
+    if (Date.now() > end) throw new Error(`${label}: timed out`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
 const send = (response, status, value) => {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
@@ -62,6 +73,7 @@ const CARD_MS = 500, OUT_MS = 190, IN_MS = 310;
 // The Ask where Home shows it first, in Needs you; and on its project's page, on the deck (YN-86).
 const LIST = '.home-needs-you [data-section-key="p1-ask"]';
 const DECK = '[data-project-home="p1"] [data-section-key="p1-ask"]';
+const REPORT = '[data-project-home="p1"] [data-section-key="p1-r1"]';
 // In the page: a card as it is now (its parts, the copy fading over it, every animation of its own under way), and
 // its frames for a while from now.
 function cardHelpers() {
@@ -91,6 +103,15 @@ function cardHelpers() {
       answerOpacity: opacity(card.querySelector(":scope > .home-answer")),
       askOpacity: opacity(live(card, ".home-ask")),
       repliedBlock: !!live(card, ".home-ask-replied"),
+      // A report's reply: its box, and where focus is.
+      replyOpacity: opacity(card.querySelector(":scope > .home-card-reply")),
+      focus: (() => {
+        const a = document.activeElement;
+        if (!a || !card.contains(a) || a.closest(".card-ghost")) return a && a !== document.body ? "elsewhere" : null;
+        if (card.querySelector(":scope > .home-card-reply")?.contains(a) && a.matches("[data-composer-input], textarea, [contenteditable='true']")) return "reply-field";
+        if (a.classList.contains("home-reply-open")) return "reply-button";
+        return "card";
+      })(),
       realText: [...card.children].filter((c) => !c.classList.contains("card-ghost")).map((c) => c.textContent).join(" ").replace(/\s+/g, " ").slice(0, 300),
       // The card's own motion (its resize, the copy's fade, its fades in), not a button's hover transition.
       anims: card.getAnimations({ subtree: true }).filter((a) => a.playState === "running" && !(typeof CSSTransition !== "undefined" && a instanceof CSSTransition)).map((a) => ({
@@ -108,7 +129,8 @@ function cardHelpers() {
       if (performance.now() - t0 < ms) requestAnimationFrame(step);
       else done(out);
     };
-    requestAnimationFrame(step);
+    // One now, before what follows is done: a change drawn by the next frame is still seen as one.
+    step();
   });
 }
 
@@ -148,15 +170,19 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
     }
     if (url.pathname === "/api/projects/p1/brief/reply" && request.method === "POST") {
       const sent = JSON.parse(body);
-      report.replies.push({ key: sent.key, choice: sent.choice ?? null, text: sent.text ?? null });
+      report.replies.push({ key: sent.key, agentId: sent.agentId ?? null, choice: sent.choice ?? null, text: sent.text ?? null,
+        version: sent.version ?? null, askVersion: sent.askVersion ?? null });
       // As slowly as Core can be, when a scene asks: the reply, then Home's read after it, each a moment.
       if (server.slowReply) {
         server.slowReply = false;
         await new Promise((r) => setTimeout(r, 220));
         server.readDelay = 260;
       }
-      const picked = sent.choice ? atlasAsk().ask.reply.options.find((o) => o.id === sent.choice)?.label : null;
-      atlas = { ...atlas, state: "replied", replyText: picked || sent.text, repliedAt: new Date().toISOString() };
+      // A report's reply is delivered and changes nothing on Home; the Ask's makes it replied.
+      if (sent.key === "p1-ask") {
+        const picked = sent.choice ? atlasAsk().ask.reply.options.find((o) => o.id === sent.choice)?.label : null;
+        atlas = { ...atlas, state: "replied", replyText: picked || sent.text, repliedAt: new Date().toISOString() };
+      }
       return send(response, 200, { input: { ...sent, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-own", error: null });
     }
     // Seen, opened, defer: taken, nothing else changes here.
@@ -225,9 +251,9 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
     const settledShut = (s) => s.answer && !s.resizing && s.anims.length === 0 && s.ghosts === 0;
     const y = m;
     const cardScenes = run.reduced
-      ? ["reply", "again@30", "details-fast", "hidden-top", "deck"]
+      ? ["reply", "again@30", "details-fast", "hidden-top", "deck", "report-reply"]
       : ["reply", "through", "open-after-out", "close", "svg-ids", "scroll-copy", "rapid", "unseen-press", "again@200", "details-fast", "restart",
-        "reduced-toggle", "reduced-midway", "reduced-scroll", "non-dom", "chase", "hidden-top", "deck"];
+        "reduced-toggle", "reduced-midway", "reduced-scroll", "non-dom", "chase", "hidden-top", "deck", "report-reply"];
     for (const scene of cardScenes) {
       try {
         if (scene === "reply") {
@@ -668,6 +694,64 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           y.hiddenTop = { before, settled: s };
           ok(`${tag}: a long card replied from its foot, its top above the view, ends in view`,
             before.top < before.viewTop && s.answer && s.top >= s.viewTop - 1 && s.top < s.viewBottom, y.hiddenTop);
+        }
+        if (scene === "report-reply") {
+          // A report's Reply on its project's page (its summary card): opened, a draft written, closed with ✕, opened
+          // again (the draft kept), closed with Escape, opened again and sent. Each step's frames from just before it.
+          await fresh("p1");
+          sel = REPORT;
+          await card().evaluate((c) => c.scrollIntoView({ block: "center", behavior: "instant" }));
+          await page.waitForTimeout(250);
+          const sized = (r) => r.anims.some((a) => a.on === "card" && a.props.includes("height"));
+          const jumpsOf = (rows) => rows.filter((r, i) => i > 0 && Math.abs(r.height - rows[i - 1].height) > 4 && !sized(r) && !sized(rows[i - 1]))
+            .map((r) => ({ t: r.t, height: r.height }));
+          // While a copy is seen (> 0.02), the reply (new) is not (≤ 0.02): its most seen then.
+          const crossing = (rows) => Math.max(0, ...rows.filter((r) => r.ghost && r.ghost.opacity > 0.02 && r.replyOpacity !== null).map((r) => r.replyOpacity));
+          const still = (rows) => rows.every((r) => r.anims.length === 0 && r.ghosts === 0);
+          const step = async (act, ms = 1300) => {
+            const pending = frames(ms);
+            await act();
+            const rows = await pending;
+            return { rows, end: await idle() };
+          };
+          const replyButton = () => page.locator(`${sel} .home-reply-open`);
+          const field = () => page.locator(`${sel} > .home-card-reply`).locator("[data-composer-input], textarea").first();
+          const draftText = () => field().evaluate((f) => ("value" in f ? f.value : f.textContent) ?? "");
+          const words = "Looks right; ship it after the signed build.";
+          const shut = await look();
+          const open = await step(() => pressAt(replyButton()));
+          await page.keyboard.type(words);
+          const closed = await step(() => pressAt(page.locator(`${sel} > .home-card-reply button.icon-button[aria-label^="Close the reply"]`)));
+          const reopened = await step(() => pressAt(replyButton()));
+          const kept = await draftText();
+          const escaped = await step(() => page.keyboard.press("Escape"));
+          const again = await step(() => pressAt(replyButton()));
+          const before = report.replies.length;
+          const sent = await step(() => pressAt(page.locator(`${sel} > .home-card-reply form button[type="submit"]`)), 1600);
+          await until(() => report.replies.length > before, "the report's reply sent");
+          await page.waitForTimeout(300);
+          const delivered = report.replies.slice(before);
+          const after = { ...(await look()), draft: await draftText().catch(() => null) };
+          const brief = (x) => ({ jumps: jumpsOf(x.rows), crossing: crossing(x.rows), still: still(x.rows), heights: [x.rows[0]?.height, x.end.height],
+            end: { height: x.end.height, reply: x.end.replyOpacity, focus: x.end.focus, ghosts: x.end.ghosts, anims: x.end.anims.length } });
+          y.reportReply = { shut: { height: shut.height, focus: shut.focus }, open: brief(open), closed: brief(closed), reopened: brief(reopened), kept,
+            escaped: brief(escaped), again: brief(again), sent: brief(sent), delivered,
+            after: { height: after.height, reply: after.replyOpacity, focus: after.focus, draft: after.draft, kind: await card().evaluate((c) => c.className) } };
+          const settled = (x) => x.end.anims.length === 0 && x.end.ghosts === 0;
+          // The edge moves, never at once, under normal motion; nothing moves under reduced (there it is at its end at once).
+          const moved = (x) => (run.reduced ? still(x.rows) : jumpsOf(x.rows).length === 0 && x.rows.some(sized));
+          const opened = (x) => moved(x) && crossing(x.rows) <= 0.02 && settled(x) && x.end.replyOpacity === 1 && x.end.focus === "reply-field";
+          const shutAgain = (x) => moved(x) && settled(x) && x.end.replyOpacity === null && x.end.focus === "reply-button" && Math.abs(x.end.height - shut.height) <= 1;
+          ok(`${tag}: a report's Reply opens ${motion("with its edge moving (never at once), the reply fading in only once the copy is gone", "at once, nothing moving")}, focus in its field`,
+            opened(open), y.reportReply.open);
+          ok(`${tag}: closed with ✕ ${motion("with its edge moving back", "at once")}: focus on Reply, the card as tall as before`, shutAgain(closed), { shut: y.reportReply.shut, closed: y.reportReply.closed });
+          ok(`${tag}: opened again, the draft written before is in its field, focus there`, opened(reopened) && kept.includes(words), { reopened: y.reportReply.reopened, kept });
+          ok(`${tag}: Escape closes it ${motion("with its edge moving back", "at once")}: focus on Reply, the card as tall as before`, shutAgain(escaped), { shut: y.reportReply.shut, escaped: y.reportReply.escaped });
+          ok(`${tag}: opened again and sent: one reply to its author, with its words, on the report's version; the card's edge never moving at once; still the report's card`,
+            opened(again) && moved(sent) && settled(sent)
+              && delivered.length === 1 && delivered[0].key === "p1-r1" && delivered[0].agentId === "a" && delivered[0].text === words && delivered[0].version === 1
+              && delivered[0].choice === null && delivered[0].askVersion === null && /\bkind-report\b/.test(y.reportReply.after.kind),
+            { again: y.reportReply.again, sent: y.reportReply.sent, delivered, after: y.reportReply.after });
         }
         if (scene === "deck") {
           // On its project's page, in a cell of the deck: reply, Reply again, Question and details twice, fast.

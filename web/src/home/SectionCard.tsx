@@ -117,8 +117,8 @@ function useReservedHeight(content: string, collapsed: boolean) {
  */
 type ResizeProps = {
   target: RefObject<HTMLElement | null>;
-  /** The Ask or its answer card. */
-  face: "ask" | "answer";
+  /** The Ask or its answer card; a report's summary card (SummaryCard), whose Reply alone is followed. */
+  face: "ask" | "answer" | "summary";
   /** Its body shown. */
   open: boolean;
   /** Each own reply sent from it, and each Reply again on an Ask's reply block: what changes is its reply area. */
@@ -140,7 +140,7 @@ const CHANGED = {
 };
 const same = (a: Readonly<ResizeProps>, b: Readonly<ResizeProps>) =>
   a.face === b.face && a.open === b.open && a.step === b.step && a.reply === b.reply && a.content === b.content;
-class CardResize extends Component<ResizeProps, object, Before | null> {
+export class CardResize extends Component<ResizeProps, object, Before | null> {
   getSnapshotBeforeUpdate(previous: Readonly<ResizeProps>) {
     const card = this.props.target.current;
     if (!card || same(previous, this.props)) return null;
