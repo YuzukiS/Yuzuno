@@ -594,7 +594,13 @@ Once an executor's work is accepted, it is released: Core closes it for good.
   `not_project_lead`, naming both Projects; anyone else with
   `not_dispatcher`, and a standing Agent or a lead with `not_executor`.
 - **Setting its task done releases it too,** when its dispatcher, a lead of
-  its Project or you set it. An executor can't set its own task done.
+  its Project or you set it. An executor can't set its own task done. The
+  task releases the executors made for it and the one it is assigned to now,
+  but not one that is still assigned another task that is not done,
+  cancelled or archived: its dispatcher sent it on there, and that task's
+  done releases it (YN-192). Core decides that in the same write that
+  begins the release, and refuses a task dispatched to an executor whose
+  release has begun (`executor_archiving`): whichever comes first decides.
 - **While its work is still going, it is archiving.** A Job of its still
   running, its delivery flow under way, or a pull request operation of its
   in flight: the release waits for it, and its answer's `archiving.reason`
@@ -719,6 +725,14 @@ things are not its to do:
   lead (`invalid_lead`), and a list an older Core kept that names it doesn't
   make it one. It can still ask you its own questions, and what it wrote
   before shows with the team's sections.
+
+Nor is a lead's or your work its to do, so its list of Yuzuno's tools leaves
+out the ones Core would refuse it anyway (YN-192): `machines_list`,
+`handover_update`, `executor_templates_change`, `executor_release`,
+`merge_enqueue`, `merge_cancel`, `merge_retry`, `merge_unpause`,
+`merge_revert`, `cleanup_restore` and `project_route`. Called anyway, each
+refuses it by its own check, as before. Its harness reads the list when the
+executor's session starts.
 
 ## After an executor is released
 

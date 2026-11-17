@@ -313,7 +313,8 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       assert.deepEqual([r.state, r.form, r.pill, r.dot], [state, form, pill ? pill[i] : null, dot], `${tag}: ${id} at rest`);
       assert.ok(["idle", "working", "waiting", "done", "failed"].includes(r.state), `${tag}: ${id}'s ring is one of five`);
       assert.equal(r.marks, state === "done" || state === "failed" ? 1 : 0, `${tag}: ${id}'s mark`);
-      assert.ok(r.rings.every((c) => /^r-(idle|track|arc|breathe|full)$/.test(c)), `${tag}: ${id}'s ring has no rounds, dots, dashes or box: ${r.rings}`);
+      // Needs you breathes with a second, thicker circle fading over the first (YN-199).
+      assert.ok(r.rings.every((c) => /^r-(idle|track|arc|breathe|breathe-glow|full)$/.test(c)), `${tag}: ${id}'s ring has no rounds, dots, dashes or box: ${r.rings}`);
       assert.deepEqual(r.ring, [22, 22], `${tag}: ${id}'s ring is 22 px`);
       assert.equal(r.one, id === "lead" && lang === "en" ? "Dev Lead 2Lead" : ONE[id], `${tag}: ${id}'s line one`);
       assert.ok(r.lines >= 1 && r.lines <= 3, `${tag}: ${id} is ${r.lines} lines`);

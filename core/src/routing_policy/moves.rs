@@ -40,12 +40,15 @@ pub(crate) struct OnAccount {
 impl Store {
     /// The routed executors with a claude-swap account that are connected on this
     /// Core host, open and not disconnected by the user; or the one `agent` names.
+    /// An archived one is closed for good (executor_release.rs `follow_close`,
+    /// `archive_closed`), so it is left out before its record is read (YN-198).
     pub(crate) fn routing_on_accounts(&self, agent: Option<&str>) -> Result<Vec<OnAccount>> {
         let db = self.db.read()?;
         let mut statement = db.prepare(
             "SELECT p.agent_id, p.profile, d.route_json, a.data
              FROM agent_runtime_profiles p JOIN executor_dispatches d ON d.agent_id=p.agent_id JOIN agents a ON a.id=p.agent_id
-             WHERE d.route_json IS NOT NULL AND json_extract(p.profile,'$.kind')='claudeAccount' AND (?1 IS NULL OR p.agent_id=?1)")?;
+             WHERE d.route_json IS NOT NULL AND json_extract(p.profile,'$.kind')='claudeAccount' AND (?1 IS NULL OR p.agent_id=?1)
+               AND NOT EXISTS(SELECT 1 FROM agent_roles r WHERE r.agent_id=p.agent_id AND r.archived_at IS NOT NULL)")?;
         let rows = statement.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();

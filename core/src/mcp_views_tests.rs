@@ -252,6 +252,26 @@ fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
     is_part_of(row, &listed, "row");
     assert!(rows["more"].as_str().unwrap().contains("merge_get"));
     assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
+    // A row keeps what holds its entry now (YN-193).
+    let mut held = listed.clone();
+    held["blocker"] = json!({"code":"queue_paused","reason":"main_red","since":"t4"});
+    let rows = answer("merge_list", json!({"entries":[held],"nextBefore":null,"hasMore":false}), Some("summary"));
+    assert_eq!(rows["entries"][0]["blocker"], json!({"code":"queue_paused","reason":"main_red","since":"t4"}));
+}
+
+/// YN-193: the queue's epoch seconds reach an Agent as ISO times, as the
+/// entry's other times are; 0 (due at once) is no time.
+#[test]
+fn a_merge_entrys_wait_times_are_iso_times() {
+    let mut waiting = merge_entry();
+    waiting["state"] = json!("waiting");
+    waiting["waitingSince"] = json!(1_794_790_800_i64);
+    waiting["nextCheck"] = json!(0);
+    let short = answer("merge_get", waiting.clone(), Some("summary"));
+    assert_eq!((short["waitingSince"].clone(), short["nextCheck"].clone()), (json!("2026-11-16T01:00:00+00:00"), Value::Null));
+    assert_eq!(answer("merge_get", waiting.clone(), Some("full"))["waitingSince"], 1_794_790_800_i64, "view full is the record as stored");
+    let rows = answer("merge_list", json!({"entries":[waiting],"nextBefore":null,"hasMore":false}), Some("summary"));
+    assert_eq!(rows["entries"][0]["waitingSince"], "2026-11-16T01:00:00+00:00");
 }
 
 #[test]

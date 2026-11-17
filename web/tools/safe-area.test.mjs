@@ -7,11 +7,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkDist } from "./source-digest.mjs";
 
 const distUrl = process.env.YUZUNO_UI_DIST
   ? pathToFileURL(resolve(process.env.YUZUNO_UI_DIST) + "/")
   : new URL("../dist/", import.meta.url);
+// Only a build of these sources (YN-194).
+await checkDist(fileURLToPath(distUrl));
 const index = await readFile(new URL("index.html", distUrl), "utf8");
 const css = (await Promise.all((await readdir(new URL("assets/", distUrl)))
   .filter((name) => name.endsWith(".css"))

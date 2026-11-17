@@ -206,6 +206,15 @@ impl CollaborationHandler {
             .map_or(true, |level| level.as_deref() == Some(crate::permission_levels::READ_ONLY))
     }
 
+    /// Whether the caller is an executor, read at each listing (YN-192): its
+    /// list leaves out the tools Core always refuses it. An unreadable kind
+    /// lists them, as before; each refuses it by its own check.
+    async fn executor(&self) -> bool {
+        let actor = self.actor.clone();
+        self.ws.stored(move |store| crate::agent_roles::kind(&*store.db.read()?, &actor)).await
+            .is_ok_and(|kind| kind == crate::agent_roles::EXECUTOR)
+    }
+
     /// The answer as the caller can read it (YN-69 S8): OpenCode shows nothing
     /// of a tool output line over 51,200 bytes, and compact JSON is one line,
     /// so an OpenCode Agent gets a short refusal saying how to read it in
@@ -248,6 +257,8 @@ impl ServerHandler for CollaborationHandler {
         result.tools = self.tools.as_ref().clone();
         if self.read_only().await {
             result.tools.retain(|tool| crate::permission_levels::read_only_allows(&tool.name));
+        } else if self.executor().await {
+            result.tools.retain(|tool| crate::permission_levels::executor_lists(&tool.name));
         }
         Ok(result)
     }
@@ -738,6 +749,50 @@ mod tests {
         let unrefused = other.call_tool(call("job_submit", json!({}))).await.unwrap();
         let error = unrefused.structured_content.unwrap()["error"].as_str().unwrap_or_default().to_owned();
         assert!(!error.starts_with("read_only:"), "another Agent is not read-only: {error}");
+    }
+
+    /// YN-192 (17): an executor is not listed the tools Core always refuses it
+    /// (permission_levels::LEAD_ONLY_TOOLS); called anyway, one is refused by
+    /// its own check, as before. Another Agent lists every tool.
+    #[tokio::test]
+    async fn an_executor_lists_no_tool_only_a_lead_or_the_user_may_use() {
+        let (_directory, ws) = fixture();
+        ws.store.db.write().unwrap().execute(
+            "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,state,created_at,updated_at)
+             VALUES('agent-a','executor','design','agent:lead','dispatched','now','now')", []).unwrap();
+        let everything: Vec<String> = crate::collaboration_store::tool_definitions().iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned()).collect();
+        for tool in crate::permission_levels::LEAD_ONLY_TOOLS {
+            assert!(everything.iter().any(|name| name == tool), "{tool} is one of Yuzuno's tools");
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = router(ws.clone(), port);
+        let _server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let connect = |agent: &'static str| {
+            let token = ws.store.collaboration_mcp_token(agent).unwrap();
+            let transport = StreamableHttpClientTransport::with_client(
+                reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+                StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/{agent}")).auth_header(token),
+            );
+            async move { tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap() }
+        };
+        let (executor, other) = (connect("agent-a").await, connect("agent-b").await);
+        let mut listed: Vec<String> = executor.list_all_tools().await.unwrap().iter().map(|t| t.name.to_string()).collect();
+        listed.sort();
+        let mut kept: Vec<String> = everything.iter().filter(|name| crate::permission_levels::executor_lists(name)).cloned().collect();
+        kept.sort();
+        assert_eq!(listed, kept, "every tool but the lead's and the user's");
+        assert_eq!(kept.len(), everything.len() - crate::permission_levels::LEAD_ONLY_TOOLS.len());
+        assert_eq!(other.list_all_tools().await.unwrap().len(), everything.len(), "another Agent lists every tool");
+        let call = |name: &'static str, arguments: Value| CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone());
+        for (tool, arguments, says) in [("machines_list", json!({}), "not_lead:"),
+            ("executor_release", json!({"requestId":"self","agentId":"agent-a"}), "not_dispatcher:")] {
+            let refused = executor.call_tool(call(tool, arguments)).await.unwrap();
+            assert_eq!(refused.is_error, Some(true), "{tool}");
+            let error = refused.structured_content.unwrap()["error"].as_str().unwrap().to_owned();
+            assert!(error.starts_with(says), "{tool}: {error}");
+        }
     }
 
     /// YN-86 S3a-2 (Dev Lead 2, seq 12103): a front desk at the read-only

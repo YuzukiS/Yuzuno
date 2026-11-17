@@ -118,7 +118,7 @@ impl Store {
              LEFT JOIN project_tasks p ON p.task_id=j.task_id
              WHERE (?1 IS NULL OR j.agent_id=?1) AND (?2 IS NULL OR j.task_id=?2)
                AND (?3=0 OR (?3=1 AND p.project_id IS NULL) OR (?3=2 AND p.project_id=?4))
-               AND j.seq<?5 AND (?6=0 OR j.reserved=1 OR j.status IN ('queued','waiting'))
+               AND j.seq<?5 AND (?6=0 OR (j.reserved=1 OR j.status='queued' OR (j.status='waiting' AND json_extract(j.data,'$.stalled') IS NULL)))
              ORDER BY j.seq DESC LIMIT ?7",
         )?;
         let mut page = |before: Option<i64>, live: bool| -> Result<(Vec<Value>, bool, Value)> {
@@ -218,10 +218,14 @@ fn compact_job(job: &Value) -> Value {
     if !job["run"]["id"].is_null() {
         out["run"] = json!({"id":job["run"]["id"],"stage":job["run"]["stage"],"attempt":job["run"]["attempt"]});
     }
+    // A waiting stage that cannot start without a retry or a cancel (YN-194).
+    if job["stalled"].is_string() {
+        out["stalled"] = job["stalled"].clone();
+    }
     out
 }
 
-pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. job_get has full details. GUI global history/live behavior is unchanged.";
+pub(super) const DESCRIPTION: &str = "List managed jobs, defaulting to your own Agent with compact rows. Explicit agentId/taskId filters select across Agents without adding self. Use scope workspace for all projects, or projectId (null for tasks without a Project); Project membership follows the task, not the Agent. Filters are discovery, not authorization. Each history and live page has at most limit entries (default 10, max 50), newest first. Follow nextBefore while hasMore and independently nextLiveBefore as liveBefore while liveHasMore, keeping filters. jobs contains history including live jobs; liveJobIds identifies the current live page, and liveJobs supplies only rows not already in jobs. Each response serializes a job once; pages are live observations, not frozen snapshots. A waiting run stage marked stalled (upstream: behind a stage that did not succeed; costLimit: its run's cost limit) cannot start without job_run_retry or job_run_cancel and is not live. job_get has full details. GUI global history/live behavior is unchanged.";
 
 pub(super) fn schema() -> Value {
     json!({

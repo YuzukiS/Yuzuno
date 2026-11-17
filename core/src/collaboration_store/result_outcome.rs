@@ -8,6 +8,10 @@ const NOTE: &str = "Criteria, remaining work and the suggested next Agent are th
 
 pub(super) fn schema() -> Value {
     let text = |max| json!({"type":"string","maxLength":max});
+    // Free text Core counts in UTF-8 bytes (YN-192): maxLength stays a true
+    // bound, as no text has fewer bytes than characters.
+    let prose = |max: usize| json!({"type":"string","maxLength":max,
+        "description":format!("At most {max} UTF-8 bytes (a CJK character takes 3).")});
     let artifact = json!({"type":"object","additionalProperties":false,
         "properties":{"jobId":text(128),"attempt":{"type":"string","format":"uuid"},
             "path":text(4096),"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},
@@ -17,12 +21,12 @@ pub(super) fn schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "description":"Optional author report, at most 32768 UTF-8 bytes both as sent and as stored, once each cited record's summary and the next Agent are filled in; 20 criteria, 40 artifact references and 40 research records in total. References must match checked artifacts of this task's exact Job attempt. records name this task's own research records (task_comment research) by activity; each keeps a citation summary fixed at submission (type, id, title, status or counts, version, author, time), not a copy of its text, method or sources. Reported criterion status is the result author's judgement against the fixed acceptance, not independent verification or acceptance, and is never derived from a cited claim's status: a negative finding can meet a criterion that asks a question. nextAgentId is a suggestion, never assignment or mail.",
         "properties":{"criteria":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,
-            "properties":{"id":text(128),"label":text(300),"report":text(4000),
+            "properties":{"id":text(128),"label":prose(300),"report":prose(4000),
                 "reportedStatus":{"type":"string","enum":["met","not_met","unknown"]},
                 "artifacts":{"type":"array","maxItems":10,"items":artifact},
                 "records":{"type":"array","maxItems":10,"items":record}},
             "required":["id","label","report","reportedStatus","artifacts"]}},
-            "remaining":text(8000),"nextAgentId":text(128),"nextStep":text(4000)},
+            "remaining":prose(8000),"nextAgentId":text(128),"nextStep":prose(4000)},
         "required":["criteria"]})
 }
 

@@ -573,6 +573,13 @@ impl Drop for Store {
     }
 }
 
+/// Every Agent's ID, in the order they were made.
+fn agent_ids(db: &Connection) -> Result<Vec<String>> {
+    let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
+    let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
 /// Unfinished Jobs that run on a machine.
 fn machine_jobs(db: &Connection, id: &str) -> Result<i64> {
     Ok(db.query_row(
@@ -580,9 +587,13 @@ fn machine_jobs(db: &Connection, id: &str) -> Result<i64> {
          AND json_extract(data,'$.executor.machineId')=?1", [id], |r| r.get(0))?)
 }
 
+/// The Agent's results, requests and errors after the reviewed sequence.
+/// Counted on every event, holding the writer: through `UNREAD_INDEX`, which
+/// SQLite uses only while this names its kinds exactly as the index does.
+const UNREAD: &str = "SELECT COUNT(*) FROM journal WHERE agent_id=?1 AND seq>?2 AND kind IN ('turn/completed','request','runtime/error')";
+
 fn unread(db: &Connection, id: &str, reviewed: i64) -> Result<u64> {
-    Ok(db.query_row("SELECT COUNT(*) FROM journal WHERE agent_id=?1 AND seq>?2 AND kind IN ('turn/completed','request','runtime/error')",
-        params![id, reviewed], |r| r.get::<_, i64>(0))? as u64)
+    Ok(db.query_row(UNREAD, params![id, reviewed], |r| r.get::<_, i64>(0))? as u64)
 }
 
 /// Whether Agent ?1's Turn ?2 has its completion journaled or came from a
@@ -1139,6 +1150,12 @@ fn project_window_marked(
 const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
     ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed';
     CREATE INDEX IF NOT EXISTS journal_turn_ends ON journal(agent_id, seq) WHERE kind='turn/completed'";
+/// `UNREAD`'s rows only, so a count reads those it counts and not every row
+/// since the review (YN-198). The first Core to open a Workspace with it
+/// builds it, once, from the whole journal; an earlier Core keeps it up to
+/// date as it writes, as SQLite does for every index.
+const UNREAD_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_unread ON journal(agent_id, seq)
+    WHERE kind IN ('turn/completed','request','runtime/error')";
 /// The busy timeout of every Store connection.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1239,6 +1256,7 @@ impl Store {
         crate::cleanup_plans::migrate(&db)?;
         record_rows::migrate(&db)?;
         db.execute_batch(COMPLETION_INDEX)?;
+        db.execute_batch(UNREAD_INDEX)?;
         db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES('workspaceId',?1)",
             [uuid::Uuid::new_v4().to_string()])?;
         let store = Self {
@@ -1512,6 +1530,8 @@ impl Store {
             bail!("远程机器不存在");
         }
         tx.execute("DELETE FROM machine_checks WHERE machine_id=?1", [id])?;
+        // Its Job environment goes with it (YN-194).
+        tx.execute("DELETE FROM job_machine_env WHERE machine=?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -2124,9 +2144,7 @@ impl Store {
     pub fn agents(&self) -> Result<Vec<Agent>> {
         let (ids, mut projects, kinds, mut released, mut lifecycles) = {
             let db = self.db.read()?;
-            let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
-            let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?,
+            (agent_ids(&db)?, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?,
                 crate::executor_lifecycle::all(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
@@ -2139,6 +2157,22 @@ impl Store {
             crate::executor_release::show(&mut agent, released.remove(&id));
             agent.executor = lifecycles.remove(&id);
             agents.push(agent);
+        }
+        Ok(agents)
+    }
+
+    /// Every Agent as listed, without what `agents` adds to each (its Project,
+    /// role, release and executor lifecycle, about ten queries per executor):
+    /// for a loop that reads only the listing, which memory keeps after its
+    /// first read (YN-198).
+    pub fn listed_agents(&self) -> Result<Vec<Agent>> {
+        let ids = agent_ids(&*self.db.read()?)?;
+        let mut agents = Vec::with_capacity(ids.len());
+        for id in ids {
+            // None: deleted since the list was read.
+            if let Some(listed) = self.listed(&id, Load::Reader)? {
+                agents.push(listed.agent);
+            }
         }
         Ok(agents)
     }

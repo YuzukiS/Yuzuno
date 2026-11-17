@@ -580,6 +580,8 @@ fn card(store: &Store, db: &Connection, refresh: &Refresh) -> Result<Result<Card
         Some(row) => {
             return Ok(Err(match row.history_reason.as_deref() {
                 Some("archived") => reason("card_archived", "The card's task ended, so the card was archived", "卡片对应的任务已结束，卡片已归档"),
+                Some("lead-left") => reason("owner_not_lead", format!("{}, the card's owner, no longer leads the Project", row.owner_name),
+                    format!("卡片的主人 {} 已不是项目负责人", row.owner_name)),
                 _ => reason("card_removed", "The card was removed from Home", "卡片已从主页移除"),
             }))
         }

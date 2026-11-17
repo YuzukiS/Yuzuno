@@ -1595,7 +1595,8 @@ impl Workspace {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let Some(ws) = weak.upgrade() else { break; };
-                let agents = ws.stored(|store| store.agents()).await.unwrap_or_default();
+                // The listing alone: no executor's lifecycle is read every 2 s (YN-198).
+                let agents = ws.stored(|store| store.listed_agents()).await.unwrap_or_default();
                 for agent in agents {
                     let Ok(_permit) = ws.admission.enter_work() else { break; };
                     if agent.closed_at.is_some() || agent.disconnected_at.is_some() || agent.remote.is_none() || agent.thread_id.is_none() { continue; }

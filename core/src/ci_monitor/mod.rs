@@ -115,6 +115,10 @@ struct List {
     agent_id: Option<String>,
     task_id: Option<String>,
     before: Option<i64>,
+    /// "active" (the default) or "all": which subscriptions the first page
+    /// lists (YN-193). The GUI's page asks for all.
+    #[serde(default)]
+    subscriptions: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -172,7 +176,7 @@ async fn list(
             ws,
             None,
             "ci_list".into(),
-            json!({"agentId":q.agent_id,"taskId":q.task_id,"before":q.before}),
+            json!({"agentId":q.agent_id,"taskId":q.task_id,"before":q.before,"subscriptions":q.subscriptions.as_deref().unwrap_or("all")}),
         )
         .await?,
     ))
@@ -236,7 +240,12 @@ pub async fn call(
     match operation.as_str() {
         "ci_list" => {
             let q: List = serde_json::from_value(input)?;
-            ws.stored(move |s| s.ci_list(q.agent_id.as_deref(), q.task_id.as_deref(), q.before))
+            let all = match q.subscriptions.as_deref() {
+                None | Some("active") => false,
+                Some("all") => true,
+                Some(_) => bail!("subscriptions must be active or all"),
+            };
+            ws.stored(move |s| s.ci_list_scoped(q.agent_id.as_deref(), q.task_id.as_deref(), q.before, all))
                 .await
         }
         "ci_unsubscribe" => {
@@ -769,11 +778,19 @@ async fn tick(ws: &Arc<Workspace>) -> Result<bool> {
     .map_err(|e| e.to_string());
     let id = w["id"].as_str().unwrap().to_owned();
     let update_id = id.clone();
-    if let Err(e) = ws.stored(move |s| s.ci_observe(&update_id, result)).await {
-        ws.stored(move |s| s.ci_observe(&id, Err(e.to_string())))
-            .await?;
+    let seen = match ws.stored(move |s| s.ci_observe(&update_id, result)).await {
+        Ok(seen) => seen,
+        Err(e) => {
+            ws.stored(move |s| s.ci_observe(&id, Err(e.to_string())))
+                .await?;
+            true
+        }
+    };
+    // Only an observation that changed something is announced (YN-198):
+    // each announcement has every client read Jobs, reviews and CI again.
+    if seen {
+        changed(ws);
     }
-    changed(ws);
     Ok(true)
 }
 /// Notes each run read: the oldest GitHub answer and GitHub's poll interval.
@@ -877,7 +894,10 @@ async fn observe(ws: &Arc<Workspace>, w: &Value, ttl: i64) -> Result<Observed> {
                 .context("Missing current PR SHA")?
                 .to_owned(),
         );
-        current_pr = Some(json!({"baseSha":pr["value"]["base"]["sha"],"state":pr["value"]["state"],"merged":pr["value"]["merged"]}));
+        // GitHub's merge verdict comes with this same read (YN-193): a PR
+        // with merge conflicts gets no pull_request run (lifecycle.rs).
+        current_pr = Some(json!({"baseSha":pr["value"]["base"]["sha"],"baseBranch":pr["value"]["base"]["ref"],"state":pr["value"]["state"],"merged":pr["value"]["merged"],
+            "mergeable":pr["value"]["mergeable"],"mergeableState":pr["value"]["mergeable_state"]}));
         let mut endpoint = format!(
             "repos/{name}/actions/runs?head_sha={}&per_page=100&page=1",
             w["expectedSha"].as_str().unwrap()
@@ -976,7 +996,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         make(
             "ci_subscribe",
-            "Persistently watch an explicit GitHub.com PR at expectedSha, an Actions run, or a commit's runs on one branch for one event (a commit URL with branch and event, for example a merge commit on main for push, before any run exists), for your Agent and existing task. Core shares bounded reads, monitors for up to seven days and sends each completed run/attempt once through normal system mailbox; you may end your Turn. A commit watch waits for runs to appear (state waiting_for_run), reading less often while none does; it matches only runs of that exact SHA, branch, event and repository, never a PR's run or another branch's; if no matching run was observed by its expiry, one mail says so (with any failed reads), which is not proof that none ran. PR head changes never change the watched SHA. Same SHA reruns remain separate attempts. No workflow trigger/cancel/rerun, local CPU/RAM reservation, task completion or PR approval. Use a stable requestId for lost-reply retries; a new request explicitly renews monitoring. PR candidates close on task closure or observed PR merge; run and commit verification survive task closure until their fresh terminal results are notified (a commit watch also needs ten minutes of complete reads after the request that see nothing new, a bounded window for later workflows). Old request replay never reactivates monitoring.",
+            "Persistently watch an explicit GitHub.com PR at expectedSha, an Actions run, or a commit's runs on one branch for one event (a commit URL with branch and event, for example a merge commit on main for push, before any run exists), for your Agent and existing task. Core shares bounded reads, monitors for up to seven days and sends each completed run/attempt once through normal system mailbox; you may end your Turn. A commit watch waits for runs to appear (state waiting_for_run), reading less often while none does; it matches only runs of that exact SHA, branch, event and repository, never a PR's run or another branch's; if no matching run was observed by its expiry, one mail says so (with any failed reads), which is not proof that none ran. PR head changes never change the watched SHA. A PR head GitHub reports as conflicting with its base, with no run on it, shows state conflicting and mails once: GitHub starts no pull_request CI for it. Same SHA reruns remain separate attempts. No workflow trigger/cancel/rerun, local CPU/RAM reservation, task completion or PR approval. Use a stable requestId for lost-reply retries; a new request explicitly renews monitoring. PR candidates close on task closure or observed PR merge; run and commit verification survive task closure until their fresh terminal results are notified (a commit watch also needs ten minutes of complete reads after the request that see nothing new, a bounded window for later workflows). Old request replay never reactivates monitoring.",
             json!({"requestId":string,"taskId":task_reference,"url":{"type":"string","description":"A GitHub.com pull request, Actions run or commit URL (https://github.com/{owner}/{repo}/commit/{sha})."},"expectedSha":expected_schema(),
                 "branch":{"type":"string","description":"Commit URL only, and required there: GitHub's exact head branch of the runs to watch, for example main."},
                 "event":{"type":"string","description":"Commit URL only, and required there: GitHub's exact event of the runs to watch, for example push."}}),
@@ -984,8 +1004,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         make(
             "ci_list",
-            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
-            json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"}}),
+            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Subscriptions come on the first page only (without before): the active ones, or with subscriptions \"all\" the newest 200 including ended ones with their closure reasons; activeSubscriptionCount counts the active ones. Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
+            json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"},"subscriptions":{"type":"string","enum":["active","all"],"default":"active"}}),
             vec![],
         ),
         make(

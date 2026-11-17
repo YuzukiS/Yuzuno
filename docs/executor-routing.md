@@ -257,6 +257,15 @@ profile, refreshes its tokens and guards the default login.
   set: memory writes then ask as before. `additionalDirectories` does not
   help here: the real path is under `~/.claude`, a protected path, and Claude
   Code still asks.
+- **Executors keep no auto memory (YN-192).** Every Claude Agent of a
+  repository shares one auto memory folder, its lead's. So Core starts each
+  executor's Claude bridge on this host with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+  whatever its profile: it neither loads that folder's `MEMORY.md` nor is
+  told to write there, and keeps its task's facts on the task. That makes the
+  real-path setting above moot for an executor. Measured with Claude Code
+  2.1.318 against a stand-in API: a write the model makes into the folder by
+  itself is still let through. A lead, your own Agents and an executor on
+  another machine keep auto memory as before.
 - This was written against claude-swap **1.0.0** and tested only with
   stand-ins: a stub `cswap` and a stub `claude_swap` package. Whether it works
   with a real claude-swap and two real accounts is a separate check, made with

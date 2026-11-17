@@ -1613,7 +1613,34 @@ ul.home-widget {
 .home-composer-tools {
   display: flex;
   align-items: center;
+  width: max-content;
   padding: 0 4px 3px;
+}
+/* One line while the words fit (YN-202), as the conversation's composer
+   (styles.css .composer[data-shape="line"]): "+" in the first cell, the text
+   in the second, centred in the line; Send, beside the box, meets its bottom
+   edge. Its lengths are plain, which composer-shape.ts reads for the room. */
+.home-composer[data-shape] {
+  --composer-inset-start: 0px;
+  --composer-inset-end: 0px;
+  --composer-control: 30px;
+  --composer-line-text-x: 8px;
+}
+.home-composer[data-shape="line"] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+}
+.home-composer[data-shape="line"] > .home-composer-tools {
+  grid-area: 1 / 1;
+}
+.home-composer[data-shape="line"] > .pasted-text-composer {
+  grid-area: 1 / 2;
+  min-width: 0;
+}
+.home-composer[data-shape="line"] .pasted-text-composer .cm-content {
+  min-height: var(--composer-control);
+  padding: max(2px, calc((var(--composer-control) - 1.5em) / 2)) var(--composer-line-text-x);
 }
 .home-ask-replied {
   display: flex;

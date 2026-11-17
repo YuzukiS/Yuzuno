@@ -58,7 +58,7 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
         run_id TEXT NOT NULL, stage TEXT NOT NULL, attempt INTEGER NOT NULL,
         job_id TEXT UNIQUE NOT NULL, PRIMARY KEY(run_id,stage,attempt));",
     )?;
-    Ok(())
+    mark_stopped_runs(db)
 }
 
 /// A research record of the run's task, named by its activity (T-17).
@@ -317,6 +317,7 @@ impl RunSubmit {
             service: None,
             service_link: None,
             service_control: None,
+            env_from_machine: None,
         }
     }
 }
@@ -723,10 +724,12 @@ pub(super) fn waiting_count(db: &Connection) -> Result<i64> {
 /// every one.
 fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
     let run = get_run(db, id)?;
-    let all = attempts(db, id)?;
-    let latest = latest(&all);
-    let after = after::states(db, &run)?;
-    let limited = limit_reached(&run, &all).is_some();
+    stalled_in(db, &run, &attempts(db, id)?)
+}
+fn stalled_in(db: &Connection, run: &Value, all: &BTreeMap<String, Vec<Value>>) -> Result<BTreeSet<String>> {
+    let latest = latest(all);
+    let after = after::states(db, run)?;
+    let limited = limit_reached(run, all).is_some();
     let mut stalled = BTreeSet::new();
     // Run order is dependency order: a stage needs only earlier ones.
     for stage in run["stages"].as_array().into_iter().flatten() {
@@ -740,11 +743,130 @@ fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
             .flatten()
             .filter_map(Value::as_str)
             .any(|need| stalled.contains(need));
-        if limited || behind || matches!(upstream(&run, stage, &latest, &after), Upstream::Blocked(_)) {
+        if limited || behind || matches!(upstream(run, stage, &latest, &after), Upstream::Blocked(_)) {
             stalled.insert(key.to_owned());
         }
     }
     Ok(stalled)
+}
+
+/// Marks each waiting stage `stalled_in` finds with why it cannot start
+/// (YN-194): behind a stage that did not succeed ("upstream"), or held by the
+/// run's cost limit ("costLimit"); and clears the mark of one that no longer
+/// is. The Jobs lists and the rail leave a marked stage out of what is still
+/// going; it stays `waiting`, so a retry still releases it.
+fn mark_stalled(db: &Connection, id: &str) -> Result<bool> {
+    let run = get_run(db, id)?;
+    let all = attempts(db, id)?;
+    let stalled = stalled_in(db, &run, &all)?;
+    let why = if limit_reached(&run, &all).is_some() { "costLimit" } else { "upstream" };
+    let mut changed = false;
+    for (key, mut job) in latest(&all) {
+        let mark = (job["status"] == "waiting" && stalled.contains(&key)).then_some(why);
+        if job["stalled"].as_str() == mark {
+            continue;
+        }
+        match mark {
+            Some(mark) => job["stalled"] = json!(mark),
+            None => {
+                if let Some(fields) = job.as_object_mut() {
+                    fields.remove("stalled");
+                }
+            }
+        }
+        save(db, &job)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// Marks the waiting stages of every run that stopped before this Core
+/// marked them (YN-194), once its database is opened: each open finds
+/// nothing more to change.
+fn mark_stopped_runs(db: &Connection) -> Result<()> {
+    let ids: Vec<String> = db
+        .prepare(
+            "SELECT id FROM local_job_runs WHERE json_extract(data,'$.settledAt') IS NULL
+             AND json_extract(data,'$.idleAt') IS NOT NULL AND json_extract(data,'$.cancelRequestedAt') IS NULL",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in ids {
+        mark_stalled(db, &id)?;
+    }
+    Ok(())
+}
+
+/// The run's record of the attempts that ended without success while other
+/// stages still went on (YN-194), cleared once the run stops.
+const STOPS_WHILE_GOING: &str = "stopsWhileGoing";
+
+/// The latest attempts that ended without success, or with an unknown
+/// outcome: what stops the stages that need them. One the user stopped at a
+/// checkpoint is not one of them.
+fn stopped_attempts(latest: &HashMap<String, Value>) -> Vec<Value> {
+    latest
+        .values()
+        .filter(|job| {
+            let status = job["status"].as_str().unwrap_or("");
+            (status == "unknown" || RETRYABLE.contains(&status)) && !checkpointed(job)
+        })
+        .cloned()
+        .collect()
+}
+
+/// One mail when a run stops on a stage that did not succeed while its
+/// other stages still went on (YN-194): that stage's own mail went out then,
+/// and nothing else says the run can no longer go on. When what stopped it
+/// ended last, its own mail is the news and this sends none.
+fn stopped_notice(db: &Connection, run: &mut Value, all: &BTreeMap<String, Vec<Value>>, stops: &[Value]) -> Result<()> {
+    let seen = run[STOPS_WHILE_GOING].as_array().cloned().unwrap_or_default();
+    if stops.is_empty() || !stops.iter().all(|job| seen.contains(&job["id"])) {
+        return Ok(());
+    }
+    let id = run["id"].as_str().context("Missing run identity")?.to_owned();
+    let latest = latest(all);
+    let order: Vec<&str> = run["stages"].as_array().into_iter().flatten().filter_map(|s| s["key"].as_str()).collect();
+    let mut ended: Vec<String> = Vec::new();
+    let mut waiting: Vec<&str> = Vec::new();
+    for key in &order {
+        let Some(job) = latest.get(*key) else { continue };
+        if stops.iter().any(|stop| stop["id"] == job["id"]) {
+            ended.push(format!("{key} attempt {} {}", job["run"]["attempt"], job["status"].as_str().unwrap_or("unknown")));
+        } else if job["status"] == "waiting" {
+            waiting.push(key);
+        }
+    }
+    // The mail names the newest attempt that ended, as the run's other mail does.
+    let Some(last) = all
+        .values()
+        .flatten()
+        .filter(|j| j["finishedAt"].is_string())
+        .max_by(|a, b| a["finishedAt"].as_str().cmp(&b["finishedAt"].as_str()))
+        .or_else(|| stops.first())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let task = collaboration::task_number(db, &collaboration::task_key(db, run["taskId"].as_str().unwrap_or(""))?.0)?;
+    let body = format!(
+        "Run {} ({id}) stopped: {}. Nothing more of it can start{}. Retry a stage with job_run_retry(runId={id}, stage=<its key>) (an unknown outcome first needs job_cancel to confirm its processes stopped), or stop the run with job_run_cancel. Until then its waiting stages count as unfinished Jobs: a Workspace move and an offline backup wait for them. Task {task}. Read job_run_get(runId={id}) for each attempt's evidence.",
+        run["name"].as_str().unwrap_or(""),
+        ended.join("; "),
+        if waiting.is_empty() { String::new() } else { format!(": {} wait for it", waiting.join(", ")) },
+    );
+    let mail = notify_message(
+        db,
+        &run["agent"],
+        run["taskId"].as_str().unwrap_or(""),
+        &last,
+        "stopped",
+        run["name"].as_str().unwrap_or(""),
+        &id,
+        body,
+    )?;
+    run["notifications"]["stopped"] = json!(mail);
+    Ok(())
 }
 
 /// What a released stage checks before its command starts: every artifact of
@@ -893,6 +1015,10 @@ fn advance_at(store: &Store, db: &Connection, id: &str, depth: u32) -> Result<bo
                         job["guardChecks"] = json!(guard_checks(&run, stage, &latest, &after));
                         job["status"] = json!("queued");
                         job["reason"] = json!("Waiting for shared machine capacity");
+                        // Released after a retry: no longer held back.
+                        if let Some(fields) = job.as_object_mut() {
+                            fields.remove("stalled");
+                        }
                         save(db, &job)?;
                         changed = true;
                         continue;
@@ -910,19 +1036,47 @@ fn advance_at(store: &Store, db: &Connection, id: &str, depth: u32) -> Result<bo
             save_run(db, &run)?;
             changed = true;
         }
+        changed |= mark_stalled(db, id)?;
     }
     changed |= settle(store, db, &mut run)?;
     // A run waiting on a stage that ended without success, an unknown outcome
     // or its cost limit changes only through a recorded outcome, a retry or a
     // cancellation, each of which advances it itself: the safety net skips it.
     if run["settledAt"].is_null() {
+        let all = attempts(db, id)?;
+        let status = run_status(&run, &all);
         let idle = matches!(
-            run_status(&run, &attempts(db, id)?),
+            status,
             "failed" | "unknown" | "checkpointed" | "blocked_by_run" | "blocked" | "waiting_analysis"
         );
-        if run["idleAt"].is_string() != idle {
-            run["idleAt"] = if idle { json!(now()) } else { Value::Null };
+        let stops = stopped_attempts(&latest(&all));
+        if idle && run["idleAt"].is_null() {
+            run["idleAt"] = json!(now());
+            if matches!(status, "failed" | "unknown") {
+                stopped_notice(db, &mut run, &all, &stops)?;
+            }
+            if let Some(fields) = run.as_object_mut() {
+                fields.remove(STOPS_WHILE_GOING);
+            }
             save_run(db, &run)?;
+        } else if !idle {
+            // A stage that did not succeed while others still went on (YN-194):
+            // its own mail went out then, before the run stopped.
+            let mut seen: Vec<Value> = run[STOPS_WHILE_GOING].as_array().cloned().unwrap_or_default();
+            let mut noted = run["idleAt"].is_string();
+            for job in &stops {
+                if !seen.contains(&job["id"]) {
+                    seen.push(job["id"].clone());
+                    noted = true;
+                }
+            }
+            if noted {
+                run["idleAt"] = Value::Null;
+                if !seen.is_empty() {
+                    run[STOPS_WHILE_GOING] = json!(seen);
+                }
+                save_run(db, &run)?;
+            }
         }
     }
     // The runs waiting for this one read it again, in this transaction: a

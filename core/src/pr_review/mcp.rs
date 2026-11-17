@@ -72,6 +72,7 @@ pub(super) fn list_row(data: &Value) -> Value {
     for key in [
         "cursor",
         "outdated",
+        "countsTowardLimit",
         "requestedBaseSha",
         "requestedHeadSha",
         "contextIncomplete",
@@ -151,6 +152,7 @@ pub(super) fn list_schema() -> Value {
     row.insert("cursor".into(), json!({"type":"integer"}));
     for key in [
         "outdated",
+        "countsTowardLimit",
         "contextIncomplete",
         "acknowledgedUnreviewable",
         "reviewerStarted",

@@ -534,6 +534,7 @@ pub(super) fn ending_note(db: &Connection, project: &str, key: &str, owner: &str
             " The task this section is the card of ended (done, cancelled or archived), so it left the live Brief at {at}; \
              put it again under this key to write a new section."
         )),
+        "lead-left" => Some(format!(" You stopped leading this Project, so it left the live Brief at {at}.")),
         _ => None,
     }))
 }

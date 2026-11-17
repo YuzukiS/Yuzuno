@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_MEMORY_BYTES, cgroupLimits, verdict } from "./jsdom-limits.mjs";
+import { describe, holdsDom, install } from "./jsdom-assert.mjs";
 
 const tools = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(tools, "../..");
@@ -111,10 +112,10 @@ test("every test that loads jsdom, directly or through what it imports, asks the
     return !first || resolve(dirname(file), first) !== join(tools, "jsdom-guard.mjs");
   });
   assert.deepEqual(missing.map((file) => file.slice(repo.length + 1)), [], "the guard must be the first import");
-  // The guard and its decisions load nothing that could bring jsdom in.
-  for (const module of ["jsdom-guard.mjs", "jsdom-limits.mjs"])
+  // The guard, its decisions and its assertions load nothing that could bring jsdom in.
+  for (const module of ["jsdom-guard.mjs", "jsdom-limits.mjs", "jsdom-assert.mjs"])
     for (const spec of specifiers(readFileSync(join(tools, module), "utf8")))
-      assert.ok(spec.startsWith("node:") || spec === "./jsdom-limits.mjs", `${module} imports ${spec}`);
+      assert.ok(spec.startsWith("node:") || ["./jsdom-limits.mjs", "./jsdom-assert.mjs"].includes(spec), `${module} imports ${spec}`);
 });
 
 test("a first import that ends the process runs before any later module, CommonJS or ESM, is evaluated", () => {
@@ -151,4 +152,162 @@ test("a failing boolean assertion carries only the boolean, never the node it wa
   assert.equal(thrown.message, "the dialog does not reopen");
   assert.equal(thrown.actual, false);
   assert.ok(thrown.message.length < 100);
+});
+
+// The guard's assertions (YN-196), on stand-ins: no jsdom is needed here.
+// A DOM object is known by its WebIDL class names on the prototype chain and
+// by jsdom's own record of what it wraps, under a symbol named "impl".
+const classed = (...names) => names.reduceRight((proto, name) => Object.create(proto, { [Symbol.toStringTag]: { value: name } }), Object.prototype);
+const jsdomOwn = (object) => Object.defineProperty(object, Symbol("impl"), { value: {} });
+const NODE = classed("HTMLLIElement", "HTMLElement", "Element", "Node", "EventTarget");
+/** A rendered DOM node: React's fiber chain makes it large and cyclic. */
+function renderedNode(tag = "li", attributes = { id: "zz", class: "row" }) {
+  const node = jsdomOwn(Object.assign(Object.create(NODE), { nodeType: 1, nodeName: tag.toUpperCase(), localName: tag, getAttribute: (name) => attributes[name] ?? null }));
+  let fiber = { stateNode: node };
+  node.__reactFiber$x = fiber;
+  for (let i = 0; i < 2000; i++) fiber = fiber.return = { stateNode: node, child: fiber, memoizedProps: { i } };
+  return node;
+}
+function failure(call) {
+  try {
+    call();
+  } catch (error) {
+    return error;
+  }
+  assert.fail("the assertion passed");
+}
+const firstFrame = (error) => error.stack.split("\n").find((line) => line.trimStart().startsWith("at ")) ?? "";
+
+install();
+
+test("a failing comparison names a DOM object in one short line instead of inspecting it", () => {
+  const node = renderedNode();
+  for (const [call, operator] of [
+    [() => assert.equal(node, null, "row zz is gone"), "strictEqual"],
+    [() => assert.strictEqual(node, undefined, "row zz is gone"), "strictEqual"],
+    [() => assert.notEqual(node, node, "row zz is gone"), "notStrictEqual"],
+    [() => assert.deepEqual([node], [], "row zz is gone"), "deepStrictEqual"],
+    [() => assert.notDeepEqual({ row: node }, { row: node }, "row zz is gone"), "notDeepStrictEqual"],
+  ]) {
+    const error = failure(call);
+    assert.ok(error instanceof assert.AssertionError, String(error).slice(0, 200));
+    assert.ok(error.message.length < 500, `message length ${error.message.length}`);
+    assert.match(error.message, /^row zz is gone/);
+    assert.equal(error.operator, operator);
+    assert.equal(typeof error.actual, "string");
+    assert.ok(firstFrame(error).includes(import.meta.url), `the stack starts in the test: ${firstFrame(error)}`);
+  }
+  const unnamed = failure(() => assert.equal(node, null));
+  assert.equal(unnamed.actual, '<li id="zz" class="row">');
+  assert.equal(unnamed.expected, null);
+  assert.match(unnamed.message, /^Expected values to be strictly equal:/);
+  assert.ok(unnamed.message.includes('<li id="zz" class="row">'));
+  assert.equal(failure(() => assert.deepEqual([node, node], [])).actual, 'Array(2) [<li id="zz" class="row">, <li id="zz" class="row">]');
+  // Two different nodes that read alike still fail as different.
+  assert.match(failure(() => assert.equal(node, renderedNode())).expected, /\(another object\)$/);
+});
+
+test("comparisons keep Node's own results, arguments and messages", () => {
+  const node = renderedNode();
+  const other = renderedNode("p", {});
+  assert.equal(node, node);
+  assert.notEqual(node, other);
+  assert.deepEqual([node, NaN], [node, NaN]);
+  failure(() => assert.deepEqual([node, 0], [node, -0]));
+  assert.notDeepEqual([node, 0], [node, -0]);
+  // Too few arguments are Node's error, not a pass (YN-196 review).
+  for (const call of [() => assert.notEqual(node), () => assert.notDeepEqual(node), () => assert.equal(node)])
+    assert.equal(failure(call).code, "ERR_MISSING_ARGS");
+  // A message is taken as this Node takes it: text, a function, an Error, or an explicit undefined.
+  const own = new TypeError("own");
+  for (const message of ["row zz is gone", () => "lazy", own, undefined]) {
+    const dom = failure(() => assert.equal(node, null, message));
+    const plain = failure(() => assert.equal("x", null, message));
+    assert.equal(dom.constructor, plain.constructor, String(message));
+    assert.equal(dom.message.split("\n")[0], plain.message.split("\n")[0], String(message));
+  }
+  assert.equal(failure(() => assert.equal(node, null, own)), own);
+  // A message function gets what Node gives it: the values themselves, as
+  // often as Node calls it, and its own error (YN-196 review).
+  const called = (value, message) => {
+    const seen = [];
+    const error = failure(() => assert.equal(value, null, (...values) => (seen.push(values), message(...values))));
+    return { seen, error };
+  };
+  const dom = called(node, (actual) => `still ${actual.localName}`);
+  const plain = called("x", () => "still x");
+  assert.equal(dom.seen.length, plain.seen.length, "called as often as Node calls it");
+  if (plain.seen.length) {
+    assert.equal(dom.seen[0][0], node);
+    assert.equal(dom.seen[0][1], null);
+    assert.match(dom.error.message, /^still li/);
+  }
+  const boom = new RangeError("boom");
+  const thrower = () => {
+    throw boom;
+  };
+  for (const message of [thrower, () => 42]) {
+    const fromDom = failure(() => assert.equal(node, null, message));
+    const fromPlain = failure(() => assert.equal("x", null, message));
+    assert.equal(fromDom === boom, fromPlain === boom);
+    assert.equal(fromDom.constructor, fromPlain.constructor);
+    assert.equal(fromDom.message.split("\n")[0], fromPlain.message.split("\n")[0]);
+  }
+  // Without a DOM object it is Node's own failure, stack included.
+  const error = failure(() => assert.equal(1, 2));
+  assert.equal(error.generatedMessage, true);
+  assert.match(error.message, /^Expected values to be strictly equal:[\s\S]*1 !== 2/);
+  assert.ok(firstFrame(error).includes(import.meta.url), `the stack starts in the test: ${firstFrame(error)}`);
+});
+
+test("finding a DOM object runs no getter and no Proxy trap", () => {
+  let reads = 0;
+  const count = () => ++reads;
+  // A getter read early once made a failing comparison pass (YN-196 review):
+  // it fails, as in Node, and looking for a DOM object read it not at all.
+  let n = 0;
+  const lazy = { get x() { return ++n; } };
+  holdsDom(lazy);
+  holdsDom({ wrapped: lazy });
+  assert.equal(n, 0);
+  failure(() => assert.deepEqual(lazy, { x: 2 }));
+  const node = renderedNode();
+  const sneaky = { get nodeType() { return count(); }, get window() { return count(); }, get child() { count(); return node; } };
+  const trapped = new Proxy(node, { get: count, getPrototypeOf: () => (count(), NODE), ownKeys: () => (count(), []), getOwnPropertyDescriptor: count });
+  for (const value of [sneaky, trapped, [trapped], new Proxy([node], { ownKeys: () => (count(), []) })]) assert.equal(holdsDom(value), false);
+  // A Proxy further up the chain, as behind jsdom's Window.prototype, is not touched either.
+  const traps = { get: count, getPrototypeOf: () => (count(), null), getOwnPropertyDescriptor: () => (count(), undefined), ownKeys: () => (count(), []) };
+  const windowLike = jsdomOwn(Object.create(Object.create(new Proxy(classed("EventTarget"), traps), { [Symbol.toStringTag]: { value: "Window" } })));
+  assert.equal(holdsDom(windowLike), true);
+  assert.equal(describe(windowLike), "Window");
+  assert.equal(reads, 0);
+});
+
+test("what counts as a DOM object, and how one is described", () => {
+  const text = jsdomOwn(Object.assign(Object.create(classed("Text", "CharacterData", "Node")), { nodeType: 3, nodeName: "#text", data: "x".repeat(100) }));
+  const window = jsdomOwn(Object.create(classed("Window", "EventTarget")));
+  assert.equal(holdsDom(text), true);
+  assert.equal(holdsDom(window), true);
+  assert.equal(holdsDom([1, renderedNode()]), true);
+  assert.equal(holdsDom({ list: [renderedNode()] }), false, "only one level down");
+  assert.equal(holdsDom({ nodeType: 1, nodeName: "LI" }), false, "a plain object that looks like one is not");
+  assert.equal(describe(window), "Window");
+  assert.equal(describe(text), `#text "${"x".repeat(39)}…"`);
+  assert.equal(describe(jsdomOwn(Object.assign(Object.create(classed("Document", "Node")), { nodeType: 9, nodeName: "#document" }))), "#document");
+  // Only jsdom's own: a plain object with the class names is Node's to compare
+  // and report (YN-196 review), and so is a window without the record.
+  const lookalike = Object.assign(Object.create(classed("Node")), { nodeType: 1 });
+  assert.equal(holdsDom(lookalike), false);
+  assert.equal(holdsDom(Object.create(classed("Window"))), false);
+  const native = failure(() => assert.equal(lookalike, null));
+  assert.ok(native instanceof assert.AssertionError);
+  assert.equal(native.actual, lookalike, "Node's own failure, with the object itself");
+  // One of jsdom's that cannot be read as a node is named by its class, never a TypeError.
+  const unreadable = jsdomOwn(Object.assign(Object.create(NODE), { nodeType: 1 }));
+  assert.equal(describe(unreadable), "[HTMLLIElement]");
+  const named = failure(() => assert.equal(unreadable, null));
+  assert.ok(named instanceof assert.AssertionError);
+  assert.equal(named.actual, "[HTMLLIElement]");
+  assert.equal(describe(renderedNode("div", {})), "<div>");
+  assert.equal(describe(null), "null");
 });

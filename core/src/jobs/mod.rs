@@ -21,6 +21,9 @@ mod ids;
 #[cfg(test)]
 mod ids_tests;
 mod list;
+mod machine_env;
+#[cfg(test)]
+mod machine_env_tests;
 #[cfg(test)]
 mod list_tests;
 mod limit;
@@ -340,6 +343,11 @@ pub(crate) struct Submit {
     /// GUI lifecycle CAS only; never deserialized from job_submit or a retained spec.
     #[serde(skip)]
     service_control: Option<service_control::StartGuard>,
+    /// The names env took from its machine's Job environment once it was
+    /// merged in (YN-194, machine_env::apply), before the Job's identity is
+    /// computed; None until then. Never part of the request.
+    #[serde(skip)]
+    env_from_machine: Option<Vec<String>>,
 }
 
 /// A command's own stop protocol: on the user's stop its wrapper sends it
@@ -493,8 +501,8 @@ impl Submit {
         if self.machine_id.as_deref() == Some(remote::WINDOWS) {
             return;
         }
-        self.env.entry("PATH".into()).or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-        self.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
+        self.env.entry("PATH".into()).or_insert_with(|| machine_env::DEFAULT_PATH.into());
+        self.env.entry("LANG".into()).or_insert_with(|| machine_env::DEFAULT_LANG.into());
     }
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -774,6 +782,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/budget", get(budget).post(set_budget))
         .route("/api/jobs/disk", post(set_disk_reserve))
         .route("/api/jobs/windows", post(set_windows_jobs))
+        .route("/api/jobs/machine-env", get(machine_envs).post(set_machine_env))
         .route("/api/jobs/live", get(live))
         .route("/api/jobs/suggestion", get(suggestion_for))
         .route("/api/jobs/gpus", get(gpus))
@@ -1203,6 +1212,27 @@ async fn set_windows_jobs(
     Ok(Json(json!({"maxJobs": max_jobs.map_or(remote::SLOTS, i64::from), "set": max_jobs.is_some(), "defaultMaxJobs": remote::SLOTS})))
 }
 
+/// Each machine's Job environment (YN-194): the user's, from Settings.
+async fn machine_envs(AppState(ws): AppState<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(ws.stored(|s| s.machine_envs()).await?))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MachineEnv {
+    machine: String,
+    env: BTreeMap<String, String>,
+}
+/// Save one machine's Job environment, whole; an empty one clears it. Only
+/// Jobs created from now on take it.
+async fn set_machine_env(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Json(input): Json<MachineEnv>,
+) -> Result<Json<Value>, ApiError> {
+    let saved = ws.stored(move |s| s.set_machine_env(&input.machine, &input.env)).await?;
+    changed(&ws);
+    Ok(Json(saved))
+}
+
 async fn set_disk_reserve(
     AppState(ws): AppState<Arc<Workspace>>,
     Json(input): Json<DiskReserve>,
@@ -1498,8 +1528,8 @@ pub async fn call(
                 stage
                     .env
                     .entry("PATH".into())
-                    .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
-                stage.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
+                    .or_insert_with(|| machine_env::DEFAULT_PATH.into());
+                stage.env.entry("LANG".into()).or_insert_with(|| machine_env::DEFAULT_LANG.into());
             }
             input.validate()?;
             // The runs it waits for by whole ID, so a repeat naming them by
@@ -1548,7 +1578,13 @@ pub async fn call(
             let mut produced: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
                 std::collections::HashMap::new();
             for stage in &input.stages {
-                let submit = input.submit(stage);
+                let mut submit = input.submit(stage);
+                // Its machine's Job environment, merged now (YN-194): the
+                // stage's identity, and whether an earlier attempt can be
+                // reused, are of the env it will run with.
+                let machine_key = machine_env::key_of(submit.machine_id.as_deref()).to_owned();
+                let from = ws.stored(move |s| s.machine_env(&machine_key)).await?;
+                machine_env::apply(&mut submit, &from).map_err(|error| anyhow::anyhow!("Stage {}: {error:#}", stage.key()))?;
                 let key = stage.key().to_owned();
                 let mut exclude = std::collections::BTreeSet::new();
                 for need in stage.needs() {
@@ -2035,7 +2071,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
-        "env":{"type":"object","additionalProperties":{"type":"string"}},
+        "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Variables for the command, over the Job environment the user set for its machine in Settings → Machines (yours win; a PATH or LANG equal to Core's default /usr/local/bin:/usr/bin:/bin or C.UTF-8 counts as that default and is replaced). The Job's env and envFromMachine show what it got."},
         "resources":{"type":"object","description":RESOURCES,"properties":{"cpuMillis":{"type":"integer","minimum":100,"maximum":256000},
             "cpuMillisMin":{"type":"integer","minimum":100,"maximum":256000},"cpuMillisMax":{"type":"integer","minimum":100,"maximum":256000},
             "cpuPolicy":{"type":"string","enum":["elastic","fixed"],"default":"elastic"},
@@ -2084,7 +2120,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_submit", "Submit an authorized long-running command on this Core's host, tied to an existing task and your Agent: on Linux/WSL with cgroup limits; on a macOS Core it runs on This Mac (machineId mac) in the limited mode, limits declared only. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
         make("job_suggestion", "Before submitting, read what earlier runs of the same Job suggest requesting: this task's Jobs of the same name or argv, else the other tasks of its Project with the same argv (never another Project). Their newest five runs measured whole on this host count, only if one succeeded: memoryMiB = max(1.3 × largest peak, peak + 1 GiB), rounded up to 512 MiB; cpuMillis = 1.5 × largest average cores; hitMemoryLimit marks a run killed at its limit. basedOn lists them, another Agent's by Job ID, task and numbers only. null without such a run. Reserves and changes nothing.", json!({"taskId":task_reference,"name":string,"argv":{"type":"array","items":string,"maxItems":128}}), vec!["taskId","name"]),
-        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, cpuWaiting, rule, heldBy, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
+        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero (on windows only peak memory is measured); valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, cpuWaiting, rule, heldBy, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
         make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own. suggestions: per stage, what earlier measured runs of the same Job suggest, as job_submit's suggestion, kept with the run; never applied. afterRuns: start only after other runs of yours, each when succeeded (default: it must succeed; its declared artifacts are this run's upstream) or settled (ordering only: it must end, succeeded or cancelled); while one holds it the run is blocked_by_run, with one mail.",
