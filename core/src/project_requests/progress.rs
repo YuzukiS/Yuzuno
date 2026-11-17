@@ -31,12 +31,14 @@ fn tasks(rows: &[RouteRow]) -> Vec<String> {
     tasks
 }
 
-/// A task as a request's card shows it: its key, status, and whether it
-/// ended (done, cancelled or archived, as cards.rs ends a card).
+/// A task as a request's card shows it: its key, status, whether it ended
+/// (done, cancelled or archived, as cards.rs ends a card), and its newest
+/// result, if any (YN-208): which, its status then and when.
 struct Task {
     key: String,
     status: String,
     archived_at: Option<String>,
+    result: Option<Value>,
 }
 
 impl Task {
@@ -46,18 +48,25 @@ impl Task {
 }
 
 fn task(db: &Connection, id: &str) -> Result<Option<Task>> {
-    let row: Option<(Option<String>, Option<String>)> = db
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = db
         .query_row(
-            "SELECT json_extract(data,'$.status'),json_extract(data,'$.archivedAt') FROM collaboration_tasks WHERE id=?1",
+            "SELECT json_extract(data,'$.status'),json_extract(data,'$.archivedAt'),
+             CASE WHEN json_type(data,'$.result')='object' THEN json_object('id',json_extract(data,'$.result.id'),
+             'status',json_extract(data,'$.result.status'),'reportedAt',json_extract(data,'$.result.reportedAt')) END
+             FROM collaboration_tasks WHERE id=?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    Ok(row.map(|(status, archived_at)| Task {
-        key: crate::collaboration_store::task_shown(db, id),
-        status: status.unwrap_or_default(),
-        archived_at,
-    }))
+    row.map(|(status, archived_at, result)| -> Result<Task> {
+        Ok(Task {
+            key: crate::collaboration_store::task_shown(db, id),
+            status: status.unwrap_or_default(),
+            archived_at,
+            result: result.map(|raw| serde_json::from_str(&raw)).transpose()?,
+        })
+    })
+    .transpose()
 }
 
 /// When the task ended: its newest write that set it done or cancelled,
@@ -108,7 +117,9 @@ pub(super) const CONFIRM_FROM: &str = "requests.confirmFrom";
 /// - `notes`: the front desk's short replies, oldest first;
 /// - `routes`: its routes and the user's reassignments of its cards, by time;
 /// - `cards`: one per task it went to, as Home shows the card and who
-///   answers for it now; `progress`: how many of their tasks ended;
+///   answers for it now, with its task's newest result (`result`) and what
+///   its results named as delivered (`deliverables`, YN-208), each as it
+///   stands now; `progress`: how many of their tasks ended;
 /// - `state`: waiting (no card yet), doing, ended (every card's task ended,
 ///   YN-184), answered (no card, the front desk answered it with an answer
 ///   route, and no follow-up came after its newest note; YN-136), or done:
@@ -168,6 +179,11 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confir
             "live":card.as_ref().is_some_and(|c| c.live),
             "task":{"id":task.key,"status":task.status,"archived":task.archived_at.is_some()},
             "responsible":crate::project_brief::responsible_json(db, id)?,
+            // Done, readable and confirmed are three facts (YN-208): the task's
+            // status above, its result and deliverables here, the request's
+            // confirmedAt below; none is read from another.
+            "result":task.result,
+            "deliverables":crate::collaboration_store::deliverables::shown(db, project, id)?,
         }));
         if first_request(db, id)? != Some(n) {
             continue;
