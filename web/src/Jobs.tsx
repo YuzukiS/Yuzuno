@@ -123,6 +123,9 @@ type Job = {
   };
   /** One attempt of a run's stage (T-105). */
   run?: { id: string; stage: string; attempt: number } | null;
+  /** A waiting stage that cannot start without a retry or a cancel, and
+   * why (YN-194): not counted as still going. */
+  stalled?: "upstream" | "costLimit" | null;
   artifacts?: { path: string }[];
   /** What a live attempt has reported so far. */
   reports?: { cost?: Cost | null; progress?: Progress | null } | null;
@@ -200,9 +203,10 @@ const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "re
  * the running nor the queued count; undefined from a Core that does not
  * count them. */
 const waitingOf = (budget: JobsBudgetView) => (Number.isFinite(budget.waitingCount) ? budget.waitingCount : undefined);
-/** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
+/** Still to finish: holding capacity, queued, or a stage waiting for an
+ * upstream that can still let it start (one marked stalled cannot, YN-194). */
 const active = (job: Job) =>
-  job.reserved || job.status === "queued" || job.status === "waiting";
+  job.reserved || job.status === "queued" || (job.status === "waiting" && !job.stalled);
 const memory = (miB: number) =>
   miB >= 1024
     ? `${(miB / 1024).toFixed(1)} GiB`
@@ -277,6 +281,7 @@ const checkpointed = (job: Job) =>
 function stateOf(job: Job, t: JobsText = en) {
   if (stoppingAtCheckpoint(job)) return { name: t.stoppingAtCheckpoint, mark: job.status };
   if (checkpointed(job)) return { name: t.stoppedAtCheckpoint, mark: job.status };
+  if (job.status === "waiting" && job.stalled) return { name: t.stalled[job.stalled] || job.stalled, mark: job.status };
   const pause = job.status === "running" ? pauseOf(job) : null;
   if (!pause) return { name: t.status[job.status] || job.status, mark: job.status };
   const name =

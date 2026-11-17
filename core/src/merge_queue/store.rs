@@ -94,6 +94,10 @@ fn actor_key(actor: Option<&str>) -> String {
 fn epoch() -> i64 {
     chrono::Utc::now().timestamp()
 }
+/// An epoch second as the ISO time the entry's other fields use (YN-193).
+fn iso(epoch: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.to_rfc3339()).unwrap_or_default()
+}
 fn entry(db: &Connection, id: &str) -> Result<Value> {
     let raw: Option<String> = db
         .query_row("SELECT data FROM merge_entries WHERE id=?1", [id], |r| r.get(0))
@@ -525,6 +529,57 @@ pub(crate) fn task_summary(db: &Connection, task: &str) -> Result<Option<String>
     Ok((!lines.is_empty()).then(|| format!("Merge queue, by Core's records: {}.", lines.join("; "))))
 }
 
+/// The task's link of the PR as GitHub answered the merge (YN-193): merged,
+/// at the head the merge was pinned to, with its merge commit, so a reader
+/// of the task no longer sees an open PR at an older head. Only these facts
+/// change; the next github_refresh replaces the whole snapshot from GitHub,
+/// which says the same. A revert entry, or a PR no task links, has no such
+/// link, and nothing changes.
+fn merged_link(db: &Connection, e: &Value, merge_commit: &str) -> Result<()> {
+    let (Some(link), Some(head)) = (e["linkId"].as_str(), e["headSha"].as_str()) else {
+        return Ok(());
+    };
+    if e["kind"] == "revert" {
+        return Ok(());
+    }
+    db.execute(
+        "UPDATE github_objects SET data=json_set(data,'$.snapshot.state','merged','$.snapshot.headSha',?2,
+           '$.snapshot.mergeCommitSha',?3,'$.snapshot.mergedAt',?4,'$.snapshot.observedAt',?4,'$.error',NULL)
+         WHERE id=?1 AND kind='pull'",
+        params![link, head, merge_commit, now()],
+    )?;
+    Ok(())
+}
+
+/// What holds an entry now (YN-193), worked out from the entry and its
+/// repository's queue `r` when it is read, never stored: the repository's
+/// pause, its switch while the entry is ready, the wait its last check named
+/// (`detail`), or the reason it stopped (docs/merge-queue.md's codes). Null
+/// once it merges, ends or is cancelled, and while it waits for its first check.
+pub(crate) fn blocker(e: &Value, r: &Value) -> Value {
+    let paused = &r["paused"];
+    let since = |epoch: &Value| epoch.as_i64().and_then(|t| chrono::DateTime::from_timestamp(t, 0)).map(|t| t.to_rfc3339());
+    let mut b = match e["state"].as_str().unwrap_or("") {
+        "queued" | "waiting" | "ready" if !paused.is_null() && !revert_passes(e, paused) => {
+            json!({"code":"queue_paused","reason":paused["reason"],"since":paused["at"],"detail":paused["detail"]})
+        }
+        "ready" if r["enabled"] != true => json!({"code":"queue_off","detail":e["detail"]}),
+        "waiting" | "ready" => json!({"code":"waiting","since":since(&e["waitingSince"]),"detail":e["detail"]}),
+        "stopped" => json!({"code":e["reason"],"since":e["updatedAt"],"detail":e["detail"]}),
+        _ => return Value::Null,
+    };
+    if let Some(map) = b.as_object_mut() {
+        map.retain(|_, v| !v.is_null());
+    }
+    b
+}
+/// `e` with its blocker, by its repository's queue as stored now.
+fn with_blocker(db: &Connection, mut e: Value) -> Result<Value> {
+    let r = repository(db, e["repositoryId"].as_i64().unwrap_or(0))?;
+    e["blocker"] = blocker(&e, &r);
+    Ok(e)
+}
+
 /// System mail to each of `recipients`, once to each Agent it reaches: a
 /// released executor's copy goes to its dispatcher (`executor_archive`),
 /// who may be a recipient already (YN-68).
@@ -901,13 +956,13 @@ impl Store {
     pub(super) fn merge_get(&self, input: &Scope) -> Result<Value> {
         let db = self.db.read()?;
         if let Some(id) = &input.entry_id {
-            return entry(&db, id);
+            return with_blocker(&db, entry(&db, id)?);
         }
         let task = collab::task_key(&db, input.task_id.as_deref().context("invalid_input: give entryId or taskId")?)?.0;
         let raw: Option<String> = db
             .query_row("SELECT data FROM merge_entries WHERE task_id=?1 ORDER BY rowid DESC LIMIT 1", [task], |r| r.get(0))
             .optional()?;
-        Ok(serde_json::from_str(&raw.context("merge_entry_not_found: This task has no merge entry")?)?)
+        with_blocker(&db, serde_json::from_str(&raw.context("merge_entry_not_found: This task has no merge entry")?)?)
     }
 
     /// Newest first, a page of `limit` (50 when not given) before the cursor
@@ -931,7 +986,18 @@ impl Store {
         let more = rows.len() as i64 > limit;
         rows.truncate(limit as usize);
         let next = rows.last().map(|(rowid, _)| *rowid);
-        Ok(json!({"entries":rows.into_iter().map(|(_, e)| e).collect::<Vec<_>>(),"nextBefore":next,"hasMore":more}))
+        // Each row's blocker, each repository's queue read once.
+        let mut queues: std::collections::HashMap<i64, Value> = Default::default();
+        let mut entries = Vec::with_capacity(rows.len());
+        for (_, mut e) in rows {
+            let id = e["repositoryId"].as_i64().unwrap_or(0);
+            if !queues.contains_key(&id) {
+                queues.insert(id, repository(&db, id)?);
+            }
+            e["blocker"] = blocker(&e, &queues[&id]);
+            entries.push(e);
+        }
+        Ok(json!({"entries":entries,"nextBefore":next,"hasMore":more}))
     }
 
     /// Whether `actor` may cancel or retry entry `id`: the Agent that released
@@ -1232,6 +1298,7 @@ impl Store {
                 e["detail"] = json!(format!("Merged as {sha}; Core checks the merge commit and follows main's push CI."));
                 e["merge"]["sha"] = json!(sha);
                 e["merge"]["mergedAt"] = json!(now());
+                merged_link(&tx, &e, &sha)?;
                 next_chain_step(&tx, id)?;
                 e["readFailures"] = json!(0);
                 e["waits"] = json!(0);
@@ -1406,9 +1473,10 @@ impl Store {
                             let pace = if running { RUNNING_MAIN_CI } else { (60i64 << waits.min(3)).min(600) };
                             e["nextCheck"] = json!(now_epoch + pace);
                             if now_epoch - since > WAIT_LIMIT {
-                                e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":"No finished push run of CI on the merge commit within six hours"});
+                                let detail = format!("No finished push run of CI on the merge commit within six hours of waiting for it, since {}", iso(since));
+                                e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":detail});
                                 e["state"] = json!("done");
-                                e["detail"] = json!("No finished push run of CI on the merge commit within six hours.");
+                                e["detail"] = json!(format!("{detail}."));
                                 announce_as = Some("urgent");
                             }
                         }
@@ -2068,7 +2136,14 @@ fn wait(e: &mut Value, detail: String, at_least: i64, now_epoch: i64) {
     e["waitingSince"] = json!(since);
     e["nextCheck"] = json!((now_epoch + (60i64 << waits.min(3)).min(600)).max(at_least));
     if now_epoch - since > WAIT_LIMIT {
-        stop(e, "wait_timeout", format!("Still waiting after six hours: {detail}"));
+        // The six hours count from `since`, which a check that held, a retry
+        // or a paused queue starts again (YN-193: #896 waited 16.7 h in all).
+        let why = format!(
+            "Still waiting: no check held for six hours, counted since {} (time while the repository's queue was paused, or before a check that held, is not counted; released {}): {detail}",
+            iso(since),
+            e["createdAt"].as_str().unwrap_or("?")
+        );
+        stop(e, "wait_timeout", why);
     } else {
         e["state"] = json!("waiting");
         e["reason"] = json!("waiting");

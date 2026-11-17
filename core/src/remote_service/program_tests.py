@@ -908,8 +908,12 @@ class GpuTests(unittest.TestCase):
         publishes; stopped and its children killed at the end."""
         for name, value in SCALED_GPU.items():
             setattr(p, name, value)
-        self.spawned = []
-        self.published = []
+        # This program's own lists. A program stopped earlier in the same
+        # test can still call its recorders from its GPU thread (after its
+        # child was killed it says unavailable), and that must not reach a
+        # later program's lists (YN-196, after main CI run 43948584180).
+        spawned, published = [], []
+        self.spawned, self.published = spawned, published
         real = p.CHILDREN.popen
 
         def popen(argv, *args, **kwargs):
@@ -917,12 +921,12 @@ class GpuTests(unittest.TestCase):
                 raise AssertionError("a test started %r" % (argv,))
             process = real(argv, *args, **kwargs)
             self.created.append(process)
-            self.spawned.append(time.monotonic())
+            spawned.append(time.monotonic())
             return process
         p.CHILDREN.popen = popen
 
         def publish(devices, why):
-            self.published.append((time.monotonic(), devices, why))
+            published.append((time.monotonic(), devices, why))
         p.publish_gpu = publish
         self.addCleanup(self.stop, p)
         return p
@@ -1035,6 +1039,7 @@ class GpuTests(unittest.TestCase):
             before = len(lines_of(self.pids))
             p.set_gpu(True)
             self.wait(lambda: "unavailable" in self.whys())
+            self.assertTrue(self.spawned, "%s: no child was started; published %r" % (mode, self.published))
             # When the program said so: the retry counts from there, not from
             # when this test saw it (a loaded macOS runner saw it 0.1 s late).
             ended = min(at for at, devices, why in self.published if why == "unavailable")
@@ -1048,6 +1053,19 @@ class GpuTests(unittest.TestCase):
             self.wait(lambda: len(lines_of(self.pids)) == before + 2)
             self.assertGreaterEqual(self.spawned[1] - ended, 1.0 - 0.05, mode)
             self.stop(p)
+
+    def test_a_stopped_program_never_records_into_the_next_ones_lists(self):
+        # The recorders only (YN-196): a stopped program's calls, made after
+        # the next program was armed, reach its own lists and not the next
+        # one's. Called directly, without a sleep; not its real GPU thread.
+        old = self.p
+        old_spawned, old_published = self.spawned, self.published
+        self.arm(fresh())
+        old.stop_work()
+        old.publish_gpu(None, "unavailable")
+        old.CHILDREN.popen([self.tool], stdout=subprocess.DEVNULL)
+        self.assertEqual((len(old_spawned), [why for _, _, why in old_published]), (1, ["unavailable"]))
+        self.assertEqual((self.spawned, self.published), ([], []))
 
     def test_a_child_that_read_then_failed_is_started_again_after_a_doubling_backoff(self):
         p = self.p

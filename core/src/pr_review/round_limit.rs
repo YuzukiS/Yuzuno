@@ -58,6 +58,22 @@ pub(super) fn ending(run: &Value) -> Ending {
     Ending::NoReport { read }
 }
 
+/// Whether this round counts toward its PR's two started rounds, read from
+/// its own record (YN-193): its stamp, else its ending as `counts` judges an
+/// unstamped round; one still running counts until it ends. Null for an
+/// older unstamped round that ended without a report after reading source:
+/// that depends on the PR's other rounds.
+pub(super) fn counts_toward_limit(run: &Value) -> Value {
+    if let Some(counts) = run["roundLimit"]["counts"].as_bool() {
+        return json!(counts);
+    }
+    match ending(run) {
+        Ending::NotStarted | Ending::NoReport { read: false } => json!(false),
+        Ending::NoReport { read: true } => Value::Null,
+        Ending::Other => json!(true),
+    }
+}
+
 fn stamped_uncounted_after_reads(run: &Value) -> bool {
     run["roundLimit"]["counts"] == false && run["roundLimit"]["read"] == "some"
 }

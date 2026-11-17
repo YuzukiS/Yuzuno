@@ -340,12 +340,15 @@ impl Layout {
         if !path.exists() {
             return Ok(Journal::default());
         }
+        let meta = fs::symlink_metadata(&path)?;
         ensure!(
-            fs::symlink_metadata(&path)?.file_type().is_file()
-                && fs::metadata(&path)?.len() < 4 * 1024 * 1024,
+            meta.file_type().is_file() && meta.len() < 4 * 1024 * 1024,
             "Invalid update state file"
         );
-        Ok(serde_json::from_reader(File::open(path)?)?)
+        // Whole, then parsed (YN-197): parsing from the file itself read it a
+        // byte per call, twice a collaboration round. Read every time: the
+        // journal also checks control requests and decides phases.
+        Ok(serde_json::from_slice(&fs::read(&path)?)?)
     }
     /// Every writer reloads under an OS lock. HTTP cancel and helper transitions
     /// cannot overwrite each other's decisions or lose an idempotency receipt.
@@ -406,6 +409,38 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(layout.journal().unwrap().requests.len(), 8);
+    }
+    #[test]
+    fn every_read_sees_the_file_as_it_is_now() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout::open(dir.path()).unwrap();
+        assert!(layout.journal().unwrap().requests.is_empty());
+        layout.edit(|s| {
+            s.requests.push(("a".into(), "first".into()));
+            Ok(())
+        }).unwrap();
+        let path = layout.updates().join("state.json");
+        assert_eq!(layout.journal().unwrap().requests[0].1, "first");
+        // Rewritten in place with the same length and mtime: still read anew
+        // (YN-197: no read is reused, whatever the file's metadata says).
+        let before = fs::metadata(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap().replace("first", "fifth");
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+        file.set_modified(before.modified().unwrap()).unwrap();
+        drop(file);
+        assert_eq!(fs::metadata(&path).unwrap().len(), before.len());
+        assert_eq!(layout.journal().unwrap().requests[0].1, "fifth");
+        // A write reads the file itself, and replaces it: every read after sees it.
+        layout.edit(|s| {
+            assert_eq!(s.requests[0].1, "fifth");
+            s.requests.push(("b".into(), "second".into()));
+            Ok(())
+        }).unwrap();
+        assert_eq!(layout.journal().unwrap().requests.len(), 2);
+        assert_eq!(layout.clone().journal().unwrap().requests.len(), 2);
+        assert_eq!(Layout::open(dir.path()).unwrap().journal().unwrap().requests.len(), 2);
     }
     #[test]
     fn process_identity_includes_start_time_and_executable() {

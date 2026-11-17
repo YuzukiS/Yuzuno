@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { bundledFiles, bundledPackages, noticesText } from "./tools/third-party-notices.mjs";
+import { DIGEST_FILE, sourceDigest } from "./tools/source-digest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -87,8 +88,27 @@ const homeScreen: Plugin = {
   },
 };
 
+// What the build was built from (YN-194): the digest of the UI's sources as
+// they were when the build began, written beside index.html once the files
+// are out, so a test of a built UI can refuse one built from other sources
+// (tools/source-digest.mjs). A source edited while it builds is not stamped
+// as built.
+let digestAtStart: Promise<string> | undefined;
+const sourceStamp: Plugin = {
+  name: "yuzuno-source-digest",
+  apply: "build",
+  buildStart() {
+    digestAtStart = sourceDigest(here);
+  },
+  async writeBundle(options) {
+    const dir = options.dir ?? join(here, "dist");
+    const sha256 = await (digestAtStart ?? sourceDigest(here));
+    writeFileSync(join(dir, DIGEST_FILE), `${JSON.stringify({ schema: 1, sha256 })}\n`);
+  },
+};
+
 export default defineConfig({
-  plugins: [react(), licenses, homeScreen],
+  plugins: [react(), licenses, homeScreen, sourceStamp],
   server: {
     port: 5173,
     strictPort: true,

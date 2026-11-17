@@ -145,25 +145,16 @@ details[data-source-jump][open]::details-content {
   display: inline-block;
 }
 
-/* The tool still running: a soft band of light passes over its label. */
+/* The tool still running: its label dims and brightens. Only opacity
+   moves, which the compositor draws (YN-199). */
 @media (prefers-reduced-motion: no-preference) and (not (forced-colors: active)) {
   .tool-item[data-running] > summary > span:first-of-type {
-    mask-image: linear-gradient(
-      100deg,
-      rgb(0 0 0 / 0.55) 38%,
-      #000 50%,
-      rgb(0 0 0 / 0.55) 62%
-    );
-    mask-size: 300% 100%;
-    animation: tool-shimmer 1.9s linear infinite;
+    animation: tool-shimmer 1.9s ease-in-out infinite;
   }
 }
 @keyframes tool-shimmer {
-  from {
-    mask-position: 100% 0;
-  }
-  to {
-    mask-position: 0 0;
+  50% {
+    opacity: 0.55;
   }
 }
 
