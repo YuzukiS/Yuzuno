@@ -28,20 +28,24 @@ const ciPage = {runs:[ciRun],subscriptions:[ciSub],hasMore:false,nextBefore:null
 const resources = { cpuMillis: 500, memoryMiB: 128, swapMiB: 0 };
 const job = { usage:{MemoryCurrent:'18446744073709551615',MemoryPeak:'18446744073709551615'}, id: 'job-one', requestId: 'accepted', name: '中文 training', taskRef: 'T-47', agentId: 'a', agent: { name: 'Mori' }, machine: { name: 'Local WSL' }, status: 'unknown', reserved: true, reason: 'Reservation held until process groups are verified', resources, reservation: { cpuMillis: 600, memoryMiB: 192, swapMiB: 0 }, cursor: 1, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: null, argv: ['/usr/bin/true'], cwd: '/workspace', env: {}, outputs: ['report.json'] };
 const page = jobs => ({ jobs, hasMore: false, nextBefore: null });
+// GET /api/jobs/budget as the panel reads it, with the counts a read reports.
+const budgetView = (activeCount = 1, queuedCount = 1) => ({ budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount, queuedCount, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } });
 // `pollMs`: the panel's 3 s poll runs every pollMs instead, its firings
 // counted (`ticks`); every other timer is as the product sets it (T-60).
-// `logs`: answers a job's output instead of the fixed one.
-function mount(handler = () => page([]), stored = {}, { pollMs, logs } = {}) {
+// `logs`: answers a job's output instead of the fixed one. `budget`: answers
+// the n-th read of the budget instead of the fixed one (YN-210).
+function mount(handler = () => page([]), stored = {}, { pollMs, logs, budget } = {}) {
   const vc = new VirtualConsole(), errors = [], calls = [];
   vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://isolated.test', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: vc });
   const w = dom.window;
   for (const [k, v] of Object.entries(stored)) w.localStorage.setItem(k, v);
+  let budgetReads = 0;
   w.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ url, body });
     let value;
-    if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } };
+    if (url === '/api/jobs/budget' && !body) value = budget ? await budget(++budgetReads) : budgetView();
     else if (url.endsWith('/logs')) value = logs ? await logs(url) : { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
     else value = await handler(url, body);
     if (value instanceof Error) throw value;
@@ -119,6 +123,67 @@ test('the Jobs panel reads nothing while the page is hidden, and reads at once w
       assert.ok(reads(p, url) > 0, `${url} is read`);
     const ticked = p.ticks(), budget = reads(p, '/api/jobs/budget');
     await until(() => p.ticks() > ticked && reads(p, '/api/jobs/budget') > budget);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210: Core's budget answer that started first (a held read)
+// arrives after the next interval's, and used to put the older counts back
+// in the same window. A later-started read owns the screen, whatever order
+// the answers arrive in.
+test('a budget answer that started first and arrives last never puts older counts back', async () => {
+  let release;
+  const held = new Promise(resolve => (release = resolve));
+  const unanswered = new Promise(() => {});
+  const p = mount(url => page([]), {}, {
+    pollMs: 200,
+    // The first read belongs to the closed panel's toolbar entry; the open
+    // panel's first read is the one held back.
+    budget: async n => {
+      if (n === 1) return budgetView(0, 0);
+      if (n === 2) { await held; return budgetView(1); }
+      if (n === 3) return budgetView(2);
+      return unanswered;
+    },
+  });
+  try {
+    await open(p);
+    await until(() => (p.doc.querySelector('.jobs-budget-counts')?.textContent || '').startsWith('2 active'));
+    release();
+    await wait(); await wait(); await wait(); await wait();
+    assert.match(p.doc.querySelector('.jobs-budget-counts').textContent, /^2 active · 1 queued/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// R-18 #4 / YN-210: an earlier read of the chosen job that answers after the
+// list already showed it finished must not bring back its older, shorter
+// output: the finished job's last lines stay on screen.
+test('an earlier detail read that arrives after the job finished does not put its older output back', async () => {
+  const running = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  const finished = { ...running, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() };
+  let done = false, details = 0, release;
+  const held = new Promise(resolve => (release = resolve));
+  let output = { text: 'first lines\nlast lines', oldestOffset: 0, totalBytes: 22 };
+  const p = mount(async url => {
+    if (url === '/api/jobs/job-one') {
+      details++;
+      if (details === 1) { await held; return running; }
+      return done ? finished : running;
+    }
+    return page([done ? finished : running]);
+  }, {}, { pollMs: 200, logs: () => output });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => details === 1);
+    done = true;
+    // The next read sees the finished row and reads its details and output.
+    await until(() => p.doc.querySelector('.job-log')?.textContent.includes('last lines'));
+    output = { text: 'first lines', oldestOffset: 0, totalBytes: 11 };
+    release();
+    await wait(); await wait(); await wait(); await wait();
+    assert.match(p.doc.querySelector('.job-log').textContent, /last lines/);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

@@ -676,6 +676,11 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
+  // The newest read of the list and of the chosen job: a read that started
+  // earlier and answers later is dropped, so a slow answer cannot put older
+  // counts, rows or output back (two reads can overlap in one window: the
+  // interval's and one a press started; R-18 / YN-210).
+  const reads = useRef(0);
   // The selected job as last read finished (T-60): its details and output are
   // read no more until the list shows it changed, or it is looked at afresh.
   const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
@@ -683,6 +688,9 @@ export function Jobs({
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
+      const read = ++reads.current;
+      // This read still belongs to the shown panel and is the newest one.
+      const mine = () => stamp === generation.current && read === reads.current;
       // The selected job's row in the list just read, if it is there (T-60).
       let row: Job | undefined;
       try {
@@ -697,7 +705,7 @@ export function Jobs({
             throw e;
           }),
         ]);
-        if (stamp !== generation.current) return;
+        if (!mine()) return;
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
         row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
@@ -731,7 +739,7 @@ export function Jobs({
           setBudgetRefusal("");
         }
       } catch (e) {
-        if (stamp === generation.current) {
+        if (mine()) {
           setError(errorText(e));
           if (selected)
             setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));
@@ -744,7 +752,7 @@ export function Jobs({
       const done = settled.current;
       if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
       // A failure already shown for this job stays until its read succeeds.
-      if (stamp === generation.current)
+      if (mine())
         setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
         // Its details first, then its output: output read after a finished
@@ -753,14 +761,14 @@ export function Jobs({
         // (T-60, #642 R2 1e487ee9).
         const job = await api<Job>(`/jobs/${selected}`);
         const output = await api<Log>(`/jobs/${selected}/logs`);
-        if (stamp === generation.current) {
+        if (mine()) {
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
           settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
-        if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
+        if (mine()) setDetailRead({ id: selected, failure: errorText(e) });
       }
     },
     [scope, selected],
