@@ -60,7 +60,46 @@ fn evidence_problem(job: &Value) -> Option<&'static str> {
     None
 }
 
+/// What Windows on this PC measures of an attempt (YN-194).
+pub(super) const WINDOWS_SCOPE: &str = "Per attempt, the Windows Job Object of the command: its peak committed memory as Windows reports it (PeakJobMemoryUsed). That peak counts commit the Job Object refused, so it can be above the job's memory limit. The Windows helper reports no CPU time or worker wall time. Unknown measurements are null.";
+
+/// A Windows attempt's summary (YN-194): the peak the Windows helper recorded
+/// in its final result (windows_job.cs, `limits.peakJobMemoryBytes`), only
+/// for an attempt that started with limits; never CPU or wall time. None for
+/// a Job that does not run on Windows, which `attempt` measures as before.
+fn windows_attempt(job: &Value) -> Option<Value> {
+    if job["executor"]["kind"] != "windows" {
+        return None;
+    }
+    let ended = matches!(job["status"].as_str(), Some("succeeded" | "failed" | "cancelled" | "interrupted" | "rejected"));
+    let own = same_nonempty(&job["attempt"], &job["result"]["attempt"]);
+    let peak = (ended && own)
+        .then(|| counter(&job["result"]["evidence"]["result"]["limits"]["peakJobMemoryBytes"]))
+        .flatten();
+    let reason = if !ended {
+        "No final measurement is available yet"
+    } else if !own {
+        "Final evidence does not identify this attempt"
+    } else if peak.is_none() {
+        "Windows recorded no peak: the attempt started without limits there"
+    } else {
+        "Windows reports only its Job Object's peak memory: CPU time and worker wall time are not measured"
+    };
+    Some(json!({
+        "measurement": if peak.is_some() { "partial" } else { "unavailable" },
+        "reason": reason,
+        "declared": {"memoryMiB": counter(&job["resources"]["memoryMiB"]),
+            "cpuCores": counter(&job["resources"]["cpuMillis"]).map(|n| n as f64 / 1000.0)},
+        "actual": {"memoryPeakMiB": peak.map(|n| n as f64 / 1_048_576.0), "cpuSeconds": null,
+            "workerWallSeconds": null, "averageCpuCores": null},
+        "scope": WINDOWS_SCOPE
+    }))
+}
+
 pub(super) fn attempt(job: &Value) -> Value {
+    if let Some(windows) = windows_attempt(job) {
+        return windows;
+    }
     let mut problem = evidence_problem(job);
     let systemd = &job["result"]["evidence"]["systemd"];
     let measured = problem.is_none();
@@ -106,7 +145,9 @@ fn number(value: &Value) -> String {
 }
 
 fn line(job: &Value) -> String {
-    let summary = attempt(job);
+    line_of(&attempt(job))
+}
+fn line_of(summary: &Value) -> String {
     let actual = &summary["actual"];
     let declared = &summary["declared"];
     let average = if actual["averageCpuCoresReason"] == "too_short" {
@@ -127,8 +168,11 @@ fn line(job: &Value) -> String {
     )
 }
 
+/// A completion mail's resource line, with what its numbers measure: a
+/// Windows attempt's scope is its own (YN-194).
 pub(super) fn mail(job: &Value) -> String {
-    format!(" Resources: {}. {SCOPE}", line(job))
+    let summary = attempt(job);
+    format!(" Resources: {}. {}", line_of(&summary), summary["scope"].as_str().unwrap_or(SCOPE))
 }
 
 pub(super) fn run_mail(all: &BTreeMap<String, Vec<Value>>) -> String {
