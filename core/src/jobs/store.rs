@@ -141,10 +141,7 @@ fn saved_max_active(db: &Connection) -> Result<Option<u32>> {
 /// an SSH machine's jobs hold that machine's own. This Mac's are a macOS
 /// Core's own Jobs: they hold its budget and its maxActive slots.
 pub(super) fn reserved(db: &Connection) -> Result<(Resources, usize)> {
-    let mut q = db.prepare(
-        "SELECT data FROM local_jobs WHERE reserved=1 AND (json_extract(data,'$.executor') IS NULL
-         OR json_extract(data,'$.executor.kind') IN ('windows','mac'))",
-    )?;
+    let mut q = db.prepare(&format!("SELECT data FROM local_jobs WHERE reserved=1 AND {BUDGET_JOBS}"))?;
     let mut total = Resources::default();
     let mut count = 0;
     for row in q.query_map([], |r| r.get::<_, String>(0))? {
@@ -215,6 +212,10 @@ fn triple(r: &Resources) -> String {
 }
 /// This host's own Jobs (This Mac's on a macOS Core), as a SQL condition.
 const HOST_JOBS: &str = "(json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind')='mac')";
+/// The Jobs holding this host's budget, as a SQL condition: its own and the
+/// Windows ones of the same PC (`reserved`).
+const BUDGET_JOBS: &str =
+    "(json_extract(data,'$.executor') IS NULL OR json_extract(data,'$.executor.kind') IN ('windows','mac'))";
 /// The running Jobs a queue head is shown beside, at most.
 const HOLDERS: usize = 3;
 
@@ -252,7 +253,9 @@ fn queue_head(db: &Connection, free: &Resources) -> Result<Value> {
         "memory" => "memory",
         _ => "other",
     };
-    let mut q = db.prepare(&format!("SELECT data FROM local_jobs WHERE reserved=1 AND {HOST_JOBS}"))?;
+    // Whatever holds the budget the head is short of, Windows Jobs of this PC
+    // included, as `reserved` counts it.
+    let mut q = db.prepare(&format!("SELECT data FROM local_jobs WHERE reserved=1 AND {BUDGET_JOBS}"))?;
     let mut holders = q
         .query_map([], |r| r.get::<_, String>(0))?
         .map(|raw| Ok(serde_json::from_str::<Value>(&raw?)?))

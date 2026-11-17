@@ -451,21 +451,29 @@ fn the_budget_names_the_queue_head_what_it_lacks_and_who_holds_it() {
     held["status"] = json!("running");
     held["startedAt"] = json!("2026-11-16T10:00:00+00:00");
     super::store::save(&s.db.write().unwrap(), &held).unwrap();
+    // A Windows Job of this PC holds 2112 MiB of the same budget.
+    let windows = submit("windows", "Win", 2048);
+    let mut win = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    win["status"] = json!("running");
+    win["executor"] = json!({"kind": "windows", "machineId": "windows", "machineName": "Windows on this PC"});
+    super::store::save(&s.db.write().unwrap(), &win).unwrap();
     // The next one needs more than is free: it waits, at the head.
     let big = submit("big", "Big", 6000);
     assert!(s.reserve_next_job(None, None, None).unwrap().is_none());
     let head = s.job_budget_view(machine()).unwrap()["queueHead"].clone();
     assert_eq!((head["jobId"].clone(), head["waits"].as_str()), (big["id"].clone(), Some("memory")), "{head}");
     assert_eq!(head["need"]["memoryMiB"], 6064);
-    assert_eq!(head["free"]["memoryMiB"], 8192 - 4160);
-    assert_eq!(head["short"]["memoryMiB"], 6064 - (8192 - 4160));
+    assert_eq!(head["free"]["memoryMiB"], 8192 - 4160 - 2112);
+    assert_eq!(head["short"]["memoryMiB"], 6064 - (8192 - 4160 - 2112));
     assert!(head["reason"].as_str().unwrap().contains("Waiting for shared RAM reservation"));
     assert!(head["waitingSince"].is_string());
     let holder = &head["holders"][0];
     assert_eq!(holder["jobId"], running["id"]);
     assert_eq!(holder["typicalSeconds"], 3.0, "the median of earlier measured runs of the same Job");
     assert_eq!(holder["endsBy"], "2026-11-16T11:00:00+00:00");
-    assert_eq!(head["holders"].as_array().unwrap().len(), 1);
+    // The Windows Job holds part of what it lacks: it is named too (review 258e1012).
+    assert_eq!(head["holders"][1]["jobId"], windows["id"], "{head}");
+    assert_eq!(head["holders"].as_array().unwrap().len(), 2);
     assert!(head["scope"].as_str().unwrap().contains("not a forecast"));
     // The reason's tail ("… 0 MiB swap may start ahead of it") does not make it a swap wait.
     assert!(head["reason"].as_str().unwrap().contains("swap may start ahead"), "{head}");
