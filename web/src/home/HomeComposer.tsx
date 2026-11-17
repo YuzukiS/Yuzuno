@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ImagePlus, Paperclip, SquareDashedMousePointer } from "lucide-react";
 import { PastedTextComposer, type ComposerHandle } from "../PastedTextComposer";
+import { useComposerShape } from "../composer-shape";
 import { ComposerAddMenu, type ComposerAddItem } from "../ComposerAddMenu";
 import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
@@ -108,9 +109,12 @@ export const HomeComposer = forwardRef<
     attach?: HomeAttach;
     /** Whether its images or files are being saved: nothing is sent until they are. */
     onUploading?: (busy: boolean) => void;
+    /** One line while its text fits beside "+", as the conversation's composer
+     * does; text above its tools once it wraps (YN-202). */
+    oneLine?: boolean;
   }
 >(function HomeComposer(
-  { slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape, attributes, sendKey: fieldKey, attach, onUploading },
+  { slot, label, placeholder, words, onWords, onSubmit, readOnly = false, onEscape, attributes, sendKey: fieldKey, attach, onUploading, oneLine = false },
   ref,
 ) {
   const { sendKey: deviceKey } = useDevicePreferences();
@@ -224,6 +228,19 @@ export const HomeComposer = forwardRef<
   const error = attach ? uploads.error(slot) : "";
   const fileError = filesOn ? files.error(slot) : "";
   const fileRefusal = attach?.files?.refusal ?? null;
+  // One line while the words fit beside "+", as the conversation's composer
+  // (composer-shape.ts); anything under the text, or text that wraps, is a
+  // block (YN-202). Its Send is beside the box, not in it.
+  const [box, setBox] = useState<HTMLDivElement | null>(null);
+  const { shape } = useComposerShape(
+    oneLine ? box : null,
+    () => editor.current?.lineExtent() ?? null,
+    images.length > 0 || keptFiles.length > 0 || !!error || !!fileError,
+    [words, readOnly, busy],
+    placeholder,
+    undefined,
+    { tools: ".home-composer-tools", send: null },
+  );
   const items: ComposerAddItem[] = attach
     ? [
         {
@@ -259,7 +276,9 @@ export const HomeComposer = forwardRef<
     : [];
   return (
     <div
+      ref={setBox}
       className="home-composer"
+      data-shape={oneLine ? shape : undefined}
       data-readonly={readOnly ? "" : undefined}
       data-attach={attach ? "" : undefined}
       onKeyDown={(event) => {

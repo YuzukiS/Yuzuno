@@ -14,6 +14,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS local_jobs_agent ON local_jobs(agent_id,seq);
         -- A task's Jobs, newest first (job_list by task, job_cost).
         CREATE INDEX IF NOT EXISTS local_jobs_task ON local_jobs(task_id,seq);
+        -- The few reserved Jobs, which admission, the Jobs tick and the live
+        -- lists read every time (YN-198). Keyed by reserved itself, so that a
+        -- query's `reserved=1 OR status IN (...)` reads it and local_jobs_state
+        -- instead of every row. An earlier Core keeps it up to date as it writes.
+        CREATE INDEX IF NOT EXISTS local_jobs_reserved ON local_jobs(reserved) WHERE reserved=1;
         CREATE TABLE IF NOT EXISTS local_job_settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS local_job_disk (id INTEGER PRIMARY KEY CHECK(id=1), reserve_gib INTEGER);
         -- The most Windows attempts at once on the PC this Core's WSL runs on;
@@ -24,6 +29,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- row) is the default. Kept apart from local_job_settings for the same
         -- reason. An older Core ignores it and runs its own four.
         CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
+    super::machine_env::migrate(db)?;
     super::runs::migrate(db)?;
     super::history::migrate(db)?;
     super::gpu::migrate(db)?;
@@ -478,6 +484,11 @@ pub(super) fn new_job(
     let id = uuid::Uuid::new_v4().to_string();
     let attempt = uuid::Uuid::new_v4().to_string();
     let mut value = serde_json::to_value(input)?;
+    // The names its env took from its machine's Job environment (YN-194),
+    // merged in by its caller before its identity (machine_env::apply).
+    if let Some(taken) = input.env_from_machine.as_ref().filter(|t| !t.is_empty()) {
+        value["envFromMachine"] = json!(taken);
+    }
     value["id"] = json!(id);
     value["attempt"] = json!(attempt);
     value["taskId"] = json!(task);
@@ -697,8 +708,16 @@ impl Store {
                 crate::service_jobs::check(&tx, &task, link)?;
             }
         }
+        // The request as sent, for its retries; then its machine's Job
+        // environment, as saved now, under its own (YN-194), before its
+        // identity: what it runs with is what it is.
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
+        let mut input = input;
+        if input.env_from_machine.is_none() {
+            let from = super::machine_env::get(&tx, super::machine_env::key_of(input.machine_id.as_deref()))?;
+            super::machine_env::apply(&mut input, &from)?;
+        }
         let identity = super::runs::job_identity(&input, &snapshot);
         // What earlier runs of the same Job suggest, read before it is in the
         // table and kept with it, its request beside it (YN-6 S2).
@@ -1527,6 +1546,22 @@ impl Store {
             [max_jobs],
         )?;
         Ok(max_jobs)
+    }
+    /// Each machine's Job environment, as the user saved it (YN-194).
+    pub(super) fn machine_envs(&self) -> Result<Value> {
+        super::machine_env::all(&*self.db.read()?)
+    }
+    /// One machine's saved Job environment (empty when none).
+    pub(super) fn machine_env(&self, machine: &str) -> Result<std::collections::BTreeMap<String, String>> {
+        super::machine_env::get(&*self.db.read()?, machine)
+    }
+    /// Save one machine's Job environment, whole (empty clears it).
+    pub(super) fn set_machine_env(&self, machine: &str, env: &std::collections::BTreeMap<String, String>) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let saved = super::machine_env::set(&tx, machine, env)?;
+        tx.commit()?;
+        Ok(saved)
     }
     /// Whether this host's Jobs budget is saved (`init_job_budget`, or the user's).
     pub(super) fn job_budget_saved(&self) -> Result<bool> {
