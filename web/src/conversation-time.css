@@ -67,3 +67,24 @@
 :root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .turn-footer-separator {
   color: var(--line);
 }
+
+/* YN-204 (R-16): the time line and Rewind wrap as one. The time line keeps
+   Rewind's room at its end and Rewind hands it back with a negative margin,
+   so when the line cannot hold the time line and Rewind both, the two go to
+   the next line together, the time at the left, Rewind at the right; where
+   they fit, nothing changes. Before, the time line stayed and Rewind took a
+   line of its own (669px wide: three actions, 243px of time and shells,
+   72px of Rewind on a 559px column). A phone keeps its own two lines above. */
+.app:not(.phone) .reply-actions:has(> .tip-hold > .rewind-open) {
+  --reply-end-room: calc(6 * (9px + var(--font-adjust, 3px)) + 8px);
+}
+.app:not(.phone) .reply-actions:has(> .tip-hold > .rewind-open) > .turn-footer {
+  flex: 1 0 auto;
+  /* At the start of its own line it lines up with the actions' icons, which
+     sit 5px into their buttons (the row is pulled 5px left). */
+  padding-left: 5px;
+  padding-right: var(--reply-end-room);
+}
+.app:not(.phone) .reply-actions:has(> .turn-footer) > .tip-hold:has(> .rewind-open) {
+  margin-left: calc(-1 * var(--reply-end-room));
+}

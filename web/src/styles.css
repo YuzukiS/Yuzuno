@@ -166,7 +166,10 @@ p {
   height: 100dvh;
   min-height: 500px;
   /* Only the background reaches under a notch or the home indicator. */
-  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  padding: var(--safe-top) var(--safe-right) var(--shell-bottom) var(--safe-left);
+  /* What the bottom edge keeps clear: the home indicator's inset, none
+     while the keyboard covers it (YN-204). */
+  --shell-bottom: var(--safe-bottom);
   display: grid;
   grid-template-columns: var(--rail-width, 244px) minmax(0, 1fr);
   grid-template-rows: 57px minmax(0, 1fr) 27px;
@@ -1295,7 +1298,9 @@ p {
 }
 .composer-area {
   flex-shrink: 0;
-  margin: 8px var(--composer-gutter) 15px;
+  /* Inside the bottom inset, not on top of it (YN-204): 15px, or what the
+     inset leaves of it. */
+  margin: 8px var(--composer-gutter) max(0px, 15px - var(--shell-bottom));
   /* The composer's focus glow sits behind it, inside this area. */
   isolation: isolate;
 }
@@ -3187,7 +3192,7 @@ p {
     font-size: calc(14px + var(--font-adjust, 3px));
   }
   .main-panel { --composer-gutter: 14px; }
-  .composer-area { margin-bottom: 12px; }
+  .composer-area { margin-bottom: max(0px, 12px - var(--shell-bottom)); }
   .composer textarea {
     font-size: calc(10px + var(--font-adjust, 3px));
     min-height: 58px;
@@ -3550,9 +3555,10 @@ p {
      nothing covers the bottom. */
   height: min(100dvh, var(--visual-height, 100dvh));
 }
-/* The keyboard covers the home indicator: no padding is kept for it. */
-:root[data-keyboard] .app.phone {
-  padding-bottom: 0;
+/* The keyboard covers the home indicator: no padding is kept for it, on a
+   phone and on a wider touch screen alike (YN-204). */
+:root[data-keyboard] .app {
+  --shell-bottom: 0px;
 }
 .app.phone > .rail,
 .app.phone > .main-panel,
@@ -3687,8 +3693,9 @@ p {
    fits what the keyboard leaves, so the input area and Send stay on screen
    rather than under it (T-15). The keyboard covers the bottom of a tablet or
    an opened folding phone exactly as it covers a phone's, and the shell was
-   100dvh tall through all of it. Only the height moves here: the rest of this
-   layout has the room to stay as it is, which a phone's does not. */
+   100dvh tall through all of it. Only the height moves here, and the home
+   indicator's inset goes as on a phone (--shell-bottom, above): the rest of
+   this layout has the room to stay as it is, which a phone's does not. */
 :root[data-keyboard] .app:not(.phone) {
   /* min-height: 500px is the desktop minimum and it floored this at 500 when
      the keyboard left 369, which put the input area back under the keyboard.
@@ -3741,7 +3748,7 @@ p {
   display: none;
 }
 .app.phone .composer-area {
-  margin-bottom: 8px;
+  margin-bottom: max(0px, 8px - var(--shell-bottom));
 }
 .app.phone .composer:not([data-shape="line"]) .pasted-text-composer .cm-content {
   min-height: 44px;
@@ -3842,11 +3849,11 @@ p {
   }
   /* The group keeps its outline — it reads as one set of tools — and loses
      only the padding inside it. */
-  .app:not(.phone) .conversation-header .conversation-actions {
-    padding: 0;
+  .app:not(.phone) .conversation-header {
+    --head-control: 40px;
+    --head-inset: 0px;
   }
   .app:not(.phone) .conversation-action {
-    height: 40px;
     min-width: 40px;
   }
 }

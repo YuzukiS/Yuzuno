@@ -118,6 +118,23 @@ const open = async (width, height) => {
     await page.locator(".agent-list .agent-select").first().click();
   await page.locator(".conversation-scroll").waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
+  // The conversation settled first: a column that changes width as it opens
+  // has what is being read held in place for six frames (useReadingHold), and
+  // a scroll set inside them was put back (on main's build and on YN-204's
+  // alike, 2 of 18 and 4 of 12 runs: 157-203px short of the end, nothing
+  // pressable in view). Eight still frames of the pane and its column first.
+  await page.evaluate(() => new Promise((done) => {
+    const p = document.querySelector(".conversation-scroll"), column = p.querySelector(".conversation-inner");
+    let last = "", still = 0;
+    const look = () => {
+      const now = `${p.scrollTop}|${p.scrollHeight}|${p.clientHeight}|${column?.getBoundingClientRect().width}`;
+      still = now === last ? still + 1 : 0;
+      last = now;
+      if (still >= 8) done();
+      else requestAnimationFrame(look);
+    };
+    requestAnimationFrame(look);
+  }));
   // At the end of the conversation, which is where the approval is and where
   // nothing can be scrolled out from under the pin.
   await page.evaluate(() => { const p = document.querySelector(".conversation-scroll"); p.scrollTop = p.scrollHeight; });

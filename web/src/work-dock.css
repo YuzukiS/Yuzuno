@@ -390,7 +390,7 @@
    says the counts and opens the list (T-15). */
 .work-activity-entry {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   min-height: 24px;
   margin: 0;

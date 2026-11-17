@@ -34,5 +34,9 @@ test("the app is padded by the safe-area insets, which are zero elsewhere", () =
     assert.match(css, new RegExp(`--safe-${side}:\\s*env\\(safe-area-inset-${side},\\s*0(px)?\\)`), side);
   // The rule for .app itself, not one for .app under another selector (the Portal's, T-5).
   const app = css.match(/(?:^|[{}])\.app\{[^}]*\}/)?.[0] ?? "";
-  assert.match(app, /padding:\s*var\(--safe-top\)\s+var\(--safe-right\)\s+var\(--safe-bottom\)\s+var\(--safe-left\)/, app);
+  // The bottom goes through --shell-bottom, the home indicator's inset unless
+  // the keyboard covers it (YN-204).
+  assert.match(app, /padding:\s*var\(--safe-top\)\s+var\(--safe-right\)\s+var\(--shell-bottom\)\s+var\(--safe-left\)/, app);
+  assert.match(app, /--shell-bottom:\s*var\(--safe-bottom\)/, app);
+  assert.match(css, /:root\[data-keyboard\] \.app\{--shell-bottom:\s*0(px)?\}/);
 });

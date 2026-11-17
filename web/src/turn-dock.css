@@ -51,22 +51,33 @@
    above the composer (YN-19, the user's choice). From T-15 it rode the
    composer's top edge at the right, where it lay over the composer's expand
    icon. It covers no line of text: while it shows, the pane ends above it
-   and it sits in a band of its own, and while it does not the column's end
-   keeps that band as room, so neither its coming nor its going moves what
-   is being read or the end of it (the pane and the room change together).
+   and it sits in a band of its own. Its coming moves nothing (the pane loses
+   the band at its foot, 96px or more from the end).
    A phone keeps it in the dock buttons' strip, between them
    (phone-docks.css). */
 .app:not(.phone) .conversation-body {
   --latest-band: 44px;
 }
+/* The band is there only while Back to latest is (YN-204, R-16; the user's
+   choice). It used to stay at the column's end as room while the button
+   was gone, so that its going moved nothing either, and at the end that
+   left 69px between the last reply and the input area (44 of them empty):
+   the end now keeps 16px. The button leaves under 48px from the end; when
+   it does, the band closes over --motion-small and an end already in view
+   settles down by what the band still covered, 44px at most. */
 .app:not(.phone) .conversation-body > .conversation-scroll > .conversation-inner {
-  padding-bottom: calc(25px + var(--latest-band));
+  padding-bottom: 16px;
+}
+.app:not(.phone) .conversation-body > .conversation-scroll {
+  transition: margin-bottom var(--motion-small) var(--ease-standard);
 }
 .app:not(.phone) .conversation-body[data-latest] > .conversation-scroll {
   margin-bottom: var(--latest-band);
 }
-.app:not(.phone) .conversation-body[data-latest] > .conversation-scroll > .conversation-inner {
-  padding-bottom: 25px;
+@media (prefers-reduced-motion: reduce) {
+  .app:not(.phone) .conversation-body > .conversation-scroll {
+    transition: none;
+  }
 }
 .app:not(.phone) .conversation-body > :is(.jump-latest, .jump-latest-leaving) {
   bottom: 6px;
