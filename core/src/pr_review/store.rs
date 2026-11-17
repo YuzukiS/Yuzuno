@@ -61,7 +61,8 @@ fn known_unreviewable(tx: &Connection, task: &str, link: &str, base: &str, head:
 
 /// One PR's rounds across tasks, in the order they were created, except
 /// `except`. Only a failed or unknown round's record can show that it
-/// reached no verdict (round_limit.rs); any other is read as its status.
+/// reached no verdict, and a cancelled one's that it was cancelled in the
+/// queue before it started (round_limit.rs); any other is read as its status.
 fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<Value>> {
     Ok(pr_rounds_with_heads(tx, repository, number, except)?.into_iter().map(|(round, _)| round).collect())
 }
@@ -70,7 +71,7 @@ fn pr_rounds(tx: &Connection, repository: Option<i64>, number: Option<i64>, exce
 /// head it asked for. Read in the same query, so the two stay in step.
 fn pr_rounds_with_heads(tx: &Connection, repository: Option<i64>, number: Option<i64>, except: Option<&str>) -> Result<Vec<(Value, Option<String>)>> {
     let mut q = tx.prepare(
-        "SELECT id,status,CASE WHEN status IN ('failed','unknown') THEN data END,
+        "SELECT id,status,CASE WHEN status IN ('failed','unknown','cancelled') THEN data END,
                 COALESCE(json_extract(data,'$.headSha'),json_extract(data,'$.requestedHeadSha')) FROM pr_reviews
            WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2 AND id IS NOT ?3 ORDER BY rowid",
     )?;

@@ -11,9 +11,11 @@
 //!   `unknown`). One that read nothing but the change manifest never counts.
 //!   Of those that read source first, only the PR's first doesn't count: it
 //!   had no verdict to retry away from, but it spent its budget, so a
-//!   reviewer that keeps failing is counted from its second such round on.
+//!   reviewer that keeps failing is counted from its second such round on;
+//! - it was cancelled while it waited for a review slot, before it started
+//!   (YN-192): stamped so in the same write that cancels it.
 //!
-//! Every other round counts: a report of any kind, a cancellation, a
+//! Every other round counts: a report of any kind, any other cancellation, a
 //! deadline, a restart, an unconfirmed shutdown, one still running, and an
 //! older round without a ledger.
 //!

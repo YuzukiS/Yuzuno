@@ -355,7 +355,9 @@ fn wait_for_slot(ws: Arc<Workspace>, id: String) {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    // It stays queued and cancellable; the next start tries again.
+                    // It stays queued, blocking its PR, and only waits for a
+                    // cancel: nothing here tries again. The queue is resumed
+                    // when Core next starts (`start_review_queue`).
                     eprintln!("Review {id} could not leave its queue: {error:#}");
                     drop((slot, admission));
                     let _ = cancellation.changed().await;
