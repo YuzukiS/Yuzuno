@@ -1341,6 +1341,51 @@ fn validate_budget(input: &Resources) -> Result<()> {
     Ok(())
 }
 
+/// Whether `program` names an executable file as a command's argv[0] is
+/// found: a path (with a /) from `cwd`, else each directory of `path` in
+/// turn. An empty entry of PATH (the current directory) is not looked in.
+fn command_found(program: &str, cwd: &std::path::Path, path: &str) -> bool {
+    #[cfg(unix)]
+    fn executable(file: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(file).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    fn executable(file: &std::path::Path) -> bool {
+        file.is_file()
+    }
+    if program.contains('/') {
+        return executable(&cwd.join(program));
+    }
+    path.split(':').filter(|dir| !dir.is_empty()).any(|dir| executable(&std::path::Path::new(dir).join(program)))
+}
+
+/// What a new Job on this host is told at submit when its command cannot be
+/// found (YN-194): its argv[0] is no executable on its own PATH, so it would
+/// most likely end at once with exit code 127. Only a notice: the Job is
+/// queued as submitted. Not for another machine, whose files Core does not
+/// see, nor for a Job whose env has no PATH.
+fn command_notice(job: &Value) -> Option<String> {
+    if !matches!(job["target"]["kind"].as_str(), Some("local" | "mac")) {
+        return None;
+    }
+    let program = job["argv"][0].as_str()?;
+    let path = job["env"]["PATH"].as_str()?;
+    let cwd = std::path::Path::new(job["cwd"].as_str()?);
+    (!command_found(program, cwd, path)).then(|| format!(
+        "argv[0] {program} is not an executable file {} as Core sees it now, so the command will most likely end with exit code 127. \
+         Give PATH in env, or have the user set this machine's Job environment in Settings → Machines. The Job is queued as submitted.",
+        if program.contains('/') { format!("from cwd {}", cwd.display()) } else { format!("on its PATH ({path})") }
+    ))
+}
+/// A receipt with the notice beside it, when there is one.
+fn with_notice(mut answer: Value, notice: Option<String>) -> Value {
+    if let Some(notice) = notice {
+        answer["notice"] = json!(notice);
+    }
+    answer
+}
+
 /// A read-only executor reads only its own task's Jobs (YN-74 ④b, Lead mail
 /// 10783): job_get and job_logs refuse it any other, before anything of
 /// that Job is read. Anyone else reads as before.
@@ -1459,7 +1504,9 @@ pub async fn call(
                     .await?;
                 changed(&ws);
                 ws.jobs.remote_wake.notify_one();
-                return Ok(suggestion::beside(&ws, job, query).await);
+                // This Mac is this host: its files are Core's to look at.
+                let notice = command_notice(&job);
+                return Ok(with_notice(suggestion::beside(&ws, job, query).await, notice));
             }
             // On a host that cannot run local Jobs, writing the helper is
             // refused (host::local_host): after the retry and the alias above,
@@ -1490,7 +1537,8 @@ pub async fn call(
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
-            Ok(suggestion::beside(&ws, job, query).await)
+            let notice = command_notice(&job);
+            Ok(with_notice(suggestion::beside(&ws, job, query).await, notice))
         }
         "job_list" => {
             let agent = actor.clone();
@@ -1757,7 +1805,21 @@ pub async fn call(
             changed(&ws);
             ws.jobs.wake.notify_one();
             ws.jobs.remote_wake.notify_one();
-            Ok(suggestion::beside_run(&ws, run, queries).await)
+            // Each new stage whose command cannot be found is told so beside
+            // it (YN-194), as a Job's receipt is.
+            let firsts: Vec<(String, String)> = run["stages"].as_array().into_iter().flatten()
+                .filter_map(|stage| Some((stage["key"].as_str()?.to_owned(), stage["attempts"][0]["id"].as_str()?.to_owned())))
+                .collect();
+            let notices = ws.stored(move |s| {
+                firsts.iter().map(|(key, id)| Ok((key.clone(), command_notice(&s.job(id)?)))).collect::<Result<Vec<_>>>()
+            }).await?;
+            let mut answer = suggestion::beside_run(&ws, run, queries).await;
+            for (key, notice) in notices {
+                if let Some(stage) = answer["stages"].as_array_mut().into_iter().flatten().find(|stage| stage["key"] == key.as_str()) {
+                    *stage = with_notice(stage.take(), notice);
+                }
+            }
+            Ok(answer)
         }
         "job_run_get" => {
             let q: RunReference = serde_json::from_value(input)?;
@@ -2223,7 +2285,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
     let run_id = json!({"runId":run_ref});
     vec![
-        make("job_submit", "Submit an authorized long-running command on this Core's host, tied to an existing task and your Agent: on Linux/WSL with cgroup limits; on a macOS Core it runs on This Mac (machineId mac) in the limited mode, limits declared only. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
+        make("job_submit", "Submit an authorized long-running command on this Core's host, tied to an existing task and your Agent: on Linux/WSL with cgroup limits; on a macOS Core it runs on This Mac (machineId mac) in the limited mode, limits declared only. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. On this Linux host an env without TMPDIR, TMP or TEMP gets a short one of its own under Core's data folder, removed at its end. The answer's notice says when argv[0] is not found on its PATH (it is still queued). suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
         make("job_suggestion", "Before submitting, read what earlier runs of the same Job suggest requesting: this task's Jobs of the same name or argv, else the other tasks of its Project with the same argv (never another Project). Their newest five runs measured whole on this host count, only if one succeeded: memoryMiB = max(1.3 × largest peak, peak + 1 GiB), rounded up to 512 MiB; cpuMillis = 1.5 × largest average cores; hitMemoryLimit marks a run killed at its limit. basedOn lists them, another Agent's by Job ID, task and numbers only. null without such a run. Reserves and changes nothing.", json!({"taskId":task_reference,"name":string,"argv":{"type":"array","items":string,"maxItems":128}}), vec!["taskId","name"]),
         make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero (on windows only peak memory is measured); valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, cpuWaiting, rule, heldBy, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),

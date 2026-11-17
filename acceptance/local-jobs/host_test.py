@@ -600,6 +600,87 @@ class WorkerLaunchTests(unittest.TestCase):
         self.assertEqual((self.work/'cpu.txt').read_text(), f"1600 {self.folder/'cpu-millis'}\n")
         self.assertEqual(host.read(self.folder/'started.json')['limits']['cpu.weight'], '5')
 
+    # YN-194: a short TMPDIR of its own on disk for each attempt.
+    def in_data_folder(self):
+        """The attempt folder as Core lays it out: <data>/jobs/<id>."""
+        self.data = Path(self.tmp.name) / 'data'
+        self.folder = self.data / 'jobs' / 'one'
+        self.folder.mkdir(parents=True)
+        self.spec['argv'] = ['/bin/sh','-c','echo "$TMPDIR|$TMP|$TEMP" > tmp.txt; [ -n "$TMPDIR" ] && touch "$TMPDIR/x.sock"; exit 3']
+
+    def test_an_attempt_gets_a_short_tmpdir_of_its_own_that_goes_with_its_outcome(self):
+        self.in_data_folder()
+        made = self.data / 't' / ('j' + self.spec['attempt'][:8])
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), f'{made}|{made}|{made}\n', 'TMPDIR, TMP and TEMP name it')
+        self.assertTrue((made/'x.sock').exists(), 'the command wrote into it')
+        self.assertEqual(made.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(host.read(self.folder/'tmpdir.json'), {'attempt': self.spec['attempt'], 'path': str(made)})
+        # An unknown outcome is not an end: it stays.
+        host.result(self.spec, self.folder, 'unknown', {}, 'unknown')
+        self.assertTrue(made.exists())
+        outcome = self.recorded()
+        self.assertEqual(outcome['tmpdir'], {'path': str(made), 'removed': True})
+        self.assertFalse(made.exists(), 'removed with its final outcome')
+        self.assertEqual(self.recorded()['tmpdir'], outcome['tmpdir'], 'the first final outcome stays')
+
+    def test_a_jobs_own_tmpdir_wins_and_none_is_made(self):
+        self.in_data_folder()
+        own = Path(self.tmp.name) / 'own'
+        own.mkdir()
+        self.spec['env'] = {'TMPDIR': str(own)}
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), f'{own}||\n')
+        self.assertFalse((self.data/'t').exists())
+        self.assertNotIn('tmpdir', self.recorded())
+
+    def test_a_path_too_long_for_a_socket_or_another_layout_gets_none(self):
+        self.in_data_folder()
+        with patch.object(host, 'TMPDIR_LIMIT', 10):
+            self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'tmp.txt').read_text(), '||\n', 'started as before, without one')
+        self.assertFalse((self.data/'t').exists())
+        self.assertIsNone(host.tmpdir_root(Path(self.tmp.name)/'job'), 'a folder not under jobs/ has no root')
+
+    def test_a_clash_takes_a_longer_name_and_a_record_not_its_own_is_never_removed(self):
+        self.in_data_folder()
+        self.spec['attempt'] = 'abcdef0123456789'
+        (self.data/'t'/'jabcdef01').mkdir(parents=True)
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            made = host.make_tmpdir(self.spec, self.folder)
+        self.assertEqual(made, self.data/'t'/'jabcdef012345')
+        elsewhere = Path(self.tmp.name) / 'keep'
+        elsewhere.mkdir()
+        host.atomic(self.folder/'tmpdir.json', {'attempt': self.spec['attempt'], 'path': str(elsewhere)})
+        left = host.remove_tmpdir(self.spec, self.folder)
+        self.assertEqual((left['removed'], left['path']), (False, str(elsewhere)))
+        self.assertTrue(elsewhere.exists(), 'never removed')
+        host.atomic(self.folder/'tmpdir.json', {'attempt': 'another', 'path': str(made)})
+        self.assertIsNone(host.remove_tmpdir(self.spec, self.folder), "another attempt's record is not this one's")
+        self.assertTrue(made.exists())
+
+    def test_an_unreadable_tmpdir_record_never_keeps_the_outcome_from_being_recorded(self):
+        # Cleanup goes with the outcome (Lead's check of #1056): a record that
+        # cannot be read is said, nothing is inferred or removed, and the
+        # command's own outcome is written all the same.
+        self.in_data_folder()
+        with patch.object(host, 'TMPDIR_LIMIT', 4096):
+            made = host.make_tmpdir(self.spec, self.folder)
+        record = self.folder/'tmpdir.json'
+        for broken in (lambda: record.write_bytes(b'{"attempt": '), lambda: record.write_bytes(b'\xff\xfe'),
+                       lambda: (record.unlink(), record.mkdir())):
+            (self.folder/'result.json').unlink(missing_ok=True)
+            broken()
+            outcome = self.recorded()
+            self.assertEqual((outcome['status'], outcome['evidence']['systemd']['ExecMainStatus']), ('failed', '1'))
+            self.assertEqual(host.read(self.folder/'result.json')['status'], 'failed', 'written')
+            self.assertFalse(outcome['tmpdir']['removed'])
+            self.assertIn('record could not be read', outcome['tmpdir']['problem'])
+            self.assertNotIn('path', outcome['tmpdir'], 'nothing inferred')
+            self.assertTrue(made.exists(), 'nothing removed')
+
     # YN-194: the Git guard checked again once the command exited.
     def git_guarded(self, command, artifacts=()):
         git = lambda *args: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *args],

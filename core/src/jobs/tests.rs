@@ -1810,6 +1810,47 @@ async fn a_child_that_ends_within_the_grace_is_not_left_over_and_its_output_is_k
     assert!(logs.contains("early") && logs.contains("late"), "{logs}");
 }
 
+/// YN-194: a Job on this host whose argv[0] is no executable on its own PATH
+/// (or from its cwd) is told so at submit; it is queued all the same, and a
+/// Job on another machine, whose files Core does not see, is told nothing.
+#[cfg(unix)]
+#[test]
+fn a_command_that_cannot_be_found_is_noticed_at_submit_and_queued_all_the_same() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let tool = bin.join("tool");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plain = bin.join("plain");
+    std::fs::write(&plain, "not a program").unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let path = format!("/nowhere::{}", bin.display());
+    assert!(command_found("tool", dir.path(), &path));
+    assert!(!command_found("cargo", dir.path(), &path));
+    assert!(!command_found("plain", dir.path(), &path), "not executable");
+    assert!(!command_found("bin", dir.path(), &path), "a directory is no command");
+    assert!(command_found("bin/tool", dir.path(), "/usr/bin"), "a path is read from cwd");
+    assert!(command_found(tool.to_str().unwrap(), std::path::Path::new("/"), ""));
+    assert!(!command_found("tool", dir.path(), ""), "an empty PATH entry is not the current directory");
+
+    let job = |kind: &str, argv0: &str| json!({"target":{"kind":kind},"argv":[argv0, "test"],"cwd":dir.path(),"env":{"PATH":path}});
+    let notice = command_notice(&job("local", "cargo")).expect("told");
+    assert!(notice.contains("argv[0] cargo") && notice.contains(&path) && notice.contains("exit code 127")
+        && notice.contains("Settings → Machines") && notice.contains("queued as submitted"), "{notice}");
+    assert!(command_notice(&job("mac", "./missing")).unwrap().contains("from cwd"));
+    assert!(command_notice(&job("local", "tool")).is_none());
+    for kind in ["ssh", "windows"] {
+        assert!(command_notice(&job(kind, "cargo")).is_none(), "{kind}: its files are not this host's");
+    }
+    assert!(command_notice(&json!({"target":{"kind":"local"},"argv":["cargo"],"cwd":"/","env":{}})).is_none(), "no PATH, nothing to say");
+    let receipt = with_notice(json!({"id":"j"}), command_notice(&job("local", "cargo")));
+    assert_eq!(receipt["id"], "j");
+    assert!(receipt["notice"].is_string());
+    assert!(with_notice(json!({"id":"j"}), None).get("notice").is_none());
+}
+
 /// Admission, the Jobs tick and the live lists read the few reserved Jobs
 /// every time: through `local_jobs_reserved`, in both forms they take, never
 /// every Job (YN-198). Verbatim from `active_jobs` and `QueueState::read`.
