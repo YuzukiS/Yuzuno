@@ -1527,7 +1527,93 @@ async fn review_cancel_ends_a_queued_round_whose_waiter_is_gone() {
     ws.store.create_pr_review(None, &input(&task, "orphan"), "orphan").unwrap();
     ws.store.queue_pr_review("orphan").unwrap();
     let cancel = ws.collaboration_call(None, "review_cancel", json!({"taskId":task,"reviewId":"orphan"})).await.unwrap();
-    assert_eq!(cancel["cancellationRequested"], true, "{cancel}");
+    assert_eq!((cancel["cancellationRequested"].as_bool(), cancel["status"].as_str()), (Some(true), Some("cancelled")), "{cancel}");
     let run = ws.store.pr_review_report(&task, "orphan").unwrap();
     assert_eq!((run["status"].as_str(), run["roundLimit"]["counts"].as_bool()), (Some("cancelled"), Some(false)), "{run}");
+}
+
+/// YN-192 (20), Lead seq 15511 (R2 119463ab's P3): a cancel that read a round
+/// while it was queued, then lost the race to its waiter starting it, never
+/// lands on the started round: its status, start and ledger stay, it is not
+/// marked as never started, and the cancel says it did nothing. A round still
+/// queued is cancelled, uncounted, as before.
+#[test]
+fn a_cancel_that_loses_the_race_to_a_start_never_overwrites_the_started_round() {
+    let (_dir, s, task) = setup();
+    s.create_pr_review(None, &input(&task, "raced"), "raced").unwrap();
+    // What the cancel read, while the round was queued...
+    let read = s.queue_pr_review("raced").unwrap();
+    // ...then its waiter took a slot and started it, before the cancel wrote.
+    let mut started = s.dequeue_pr_review("raced").unwrap().unwrap();
+    started["status"] = json!("running");
+    started["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    started["ledger"]["calls"] = json!(3);
+    s.save_pr_review(&started, None).unwrap();
+    // The cancel's write, of what it read: it does not land.
+    assert!(!s.end_queued_from(&store::cancelled_in_queue(read)).unwrap(), "only a round still queued is cancelled");
+    assert_eq!(s.cancel_queued_pr_review("raced").unwrap(), store::QueuedCancel::NoLongerQueued, "nor by a cancel that reads it now");
+    let run = s.pr_review_report(&task, "raced").unwrap();
+    assert_eq!((run["status"].as_str(), run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()),
+        (Some("running"), Some("2026-11-17T00:00:00Z"), Some(3)), "{run}");
+    assert!(run["roundLimit"].is_null() && run["error"].is_null(), "not marked as never started: {run}");
+    // It ends as rounds end; a round still queued is cancelled and doesn't count.
+    started["status"] = json!("failed");
+    s.save_pr_review(&started, None).unwrap();
+    s.create_pr_review(None, &input(&task, "waiting"), "waiting").unwrap();
+    s.queue_pr_review("waiting").unwrap();
+    assert_eq!(s.cancel_queued_pr_review("waiting").unwrap(), store::QueuedCancel::Cancelled);
+    let run = s.pr_review_report(&task, "waiting").unwrap();
+    assert_eq!((run["status"].as_str(), run["roundLimit"]["counts"].as_bool()), (Some("cancelled"), Some(false)), "{run}");
+}
+
+/// The task lines a round's end writes: one per end, never two.
+fn ends(s: &Store, review: &str) -> i64 {
+    s.db.read().unwrap().query_row(
+        "SELECT COUNT(*) FROM collaboration_task_activity WHERE json_extract(data,'$.reviewId')=?1
+         AND json_extract(data,'$.body') LIKE 'Code review round % · ' || ?1 || ': cancelled.%'", [review], |r| r.get(0)).unwrap()
+}
+
+/// YN-192 (20), Lead seq 15513, one order: the cancel wins. The round ends
+/// cancelled, uncounted, with one end; a later cancel changes nothing.
+#[tokio::test]
+async fn a_cancel_that_wins_ends_the_queued_round_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "waits"), "waits").unwrap();
+    ws.store.queue_pr_review("waits").unwrap();
+    let (requested, status) = cancel_queued(&ws, &task, "waits").await.unwrap();
+    assert_eq!((requested, status.as_str()), (true, Some("cancelled")));
+    assert_eq!(ends(&ws.store, "waits"), 1);
+    let (requested, status) = cancel_queued(&ws, &task, "waits").await.unwrap();
+    assert_eq!((requested, status.as_str()), (false, Some("cancelled")), "it ended already; nothing runs to tell");
+    assert_eq!(ends(&ws.store, "waits"), 1, "one end, not two");
+    assert_eq!(ws.store.pr_review_report(&task, "waits").unwrap()["roundLimit"]["counts"], false);
+}
+
+/// YN-192 (20), Lead seq 15513, the other order: its waiter starts the round
+/// before the cancel's write. The cancel writes nothing; it reaches the
+/// running round's reviewer as a cancel of a running round does, and the
+/// round keeps its start and ledger and counts.
+#[tokio::test]
+async fn a_start_that_wins_still_gets_the_cancel_signal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ws, task) = queue_workspace(dir.path());
+    ws.store.create_pr_review(None, &input(&task, "starts"), "starts").unwrap();
+    ws.store.queue_pr_review("starts").unwrap();
+    // Its waiter, registered, takes the slot and starts it.
+    let (tx, reviewer) = watch::channel(false);
+    ws.pr_reviews.jobs.lock().unwrap().insert("starts".into(), tx);
+    let mut started = ws.store.dequeue_pr_review("starts").unwrap().unwrap();
+    started["status"] = json!("running");
+    started["nativeStartedAt"] = json!("2026-11-17T00:00:00Z");
+    started["ledger"]["calls"] = json!(5);
+    ws.store.save_pr_review(&started, None).unwrap();
+    // The cancel that had read it as queued.
+    let (requested, status) = cancel_queued(&ws, &task, "starts").await.unwrap();
+    assert_eq!((requested, status.as_str()), (true, Some("running")), "the cancel reached it, and it still runs");
+    assert!(*reviewer.borrow(), "its reviewer was told to stop");
+    let run = ws.store.pr_review_report(&task, "starts").unwrap();
+    assert_eq!((run["nativeStartedAt"].as_str(), run["ledger"]["calls"].as_i64()), (Some("2026-11-17T00:00:00Z"), Some(5)), "{run}");
+    assert!(run["roundLimit"].is_null(), "not marked uncounted: {run}");
+    assert_eq!(ends(&ws.store, "starts"), 0, "it ends as a running round ends, by its reviewer");
 }

@@ -213,24 +213,43 @@ pub async fn call(
     );
     let input: Reference = serde_json::from_value(input)?;
     let id = input.review_id.clone();
+    let task = input.task_id.clone();
     let run = ws
         .stored(move |s| s.pr_review_report(&input.task_id, &input.review_id))
         .await?;
     if operation == "review_get" {
         return Ok(run);
     }
-    let mut requested = false;
-    if let Some(job) = ws.pr_reviews.jobs.lock().unwrap().get(&id) {
-        requested = job.send(true).is_ok();
-    }
-    // A queued round nothing waits for any more is ended here (YN-192).
+    let mut requested = signal_cancel(&ws, &id);
+    let mut status = run["status"].clone();
     if !requested && run["status"] == "queued" {
-        let key = id.clone();
-        ws.stored(move |s| s.cancel_queued_pr_review(&key)).await?;
-        announce(&ws);
-        requested = true;
+        (requested, status) = cancel_queued(&ws, &task, &id).await?;
     }
-    Ok(json!({"id":id,"reviewId":id,"status":run["status"],"cancellationRequested":requested}))
+    Ok(json!({"id":id,"reviewId":id,"status":status,"cancellationRequested":requested}))
+}
+
+/// Tells `id`'s live waiter or reviewer to stop: false when nothing of it runs here.
+fn signal_cancel(ws: &Workspace, id: &str) -> bool {
+    ws.pr_reviews.jobs.lock().unwrap().get(id).is_some_and(|job| job.send(true).is_ok())
+}
+
+/// The cancel of a round read as queued, with nothing of it running here
+/// (YN-192). Still queued, it ends here, in the one write that finds it so.
+/// Started meanwhile, it is cancelled as a running round is, by its own
+/// reviewer, keeping its start, ledger and count. Whether a cancel happened
+/// or reached the round, and its status now.
+pub(super) async fn cancel_queued(ws: &Arc<Workspace>, task: &str, id: &str) -> Result<(bool, Value)> {
+    let key = id.to_owned();
+    let requested = match ws.stored(move |s| s.cancel_queued_pr_review(&key)).await? {
+        store::QueuedCancel::Cancelled => {
+            announce(ws);
+            true
+        }
+        store::QueuedCancel::NoLongerQueued => signal_cancel(ws, id),
+    };
+    let (task, key) = (task.to_owned(), id.to_owned());
+    let status = ws.stored(move |s| s.pr_review_report(&task, &key)).await?["status"].clone();
+    Ok((requested, status))
 }
 
 async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> Result<Value> {
@@ -352,6 +371,7 @@ fn wait_for_slot(ws: Arc<Workspace>, id: String) {
 /// A queued round cancelled before it started ends so, and its waiter with it.
 async fn end_queued(ws: &Arc<Workspace>, id: &str) {
     let key = id.to_owned();
+    // Not queued any more (it ended meanwhile): nothing is written.
     if let Err(error) = ws.stored(move |s| s.cancel_queued_pr_review(&key)).await {
         eprintln!("Review {id} could not be cancelled in its queue: {error:#}");
     }
