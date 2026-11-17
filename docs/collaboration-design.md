@@ -24,6 +24,7 @@
   - **读取**：不访问网络，重新读取仍用 `github_refresh`/`ci_refresh`。
 - 当前视图只放现在做决定要用的内容（YN-69）：
   - 已合入或已关闭的 PR 只列短行：`linkId`、`number`、`url`、`title`、`state`、`headSha`，以及最新评审的 `reviewId`、`conclusion`、`forCurrentHead`。整份快照用 `github_links` 读。
+  - 每个 PR 行带 `mergeQueue`（这个 PR 在本任务上最新的合并条目）：`entryId`、`state`、`reason` 和 `blocker`（现在被什么挡住，读的时候算，见 [merge-queue.md](merge-queue.md#states)）；没有条目就不写。合并队列合入时把这个 PR 链接写成 `merged`、合入的 head，不用再 `github_refresh`（YN-193）。
   - 值为空的字段不写。
   - 最新评审不写 harness 和 model（用 `review_get` 读）。
   - CI 订阅的 `latestRun` 不重复订阅本身已有的仓库、分支、事件和尝试次数，但始终写出它的 `headSha`。

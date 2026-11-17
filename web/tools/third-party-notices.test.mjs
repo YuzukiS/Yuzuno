@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { bundledFiles, bundledPackages, noticesText, packageDir } from "./third-party-notices.mjs";
+import { checkDist } from "./source-digest.mjs";
 
 const dist = process.env.YUZUNO_UI_DIST
   ? resolve(process.env.YUZUNO_UI_DIST)
@@ -63,6 +64,8 @@ test("a package reached through a symlinked node_modules is listed once, with th
 const WITHOUT_TEXT = ["react-remove-scroll-bar", "victory-vendor"];
 
 test("the built UI carries the project license, the font license and its third-party notices", async () => {
+  // Only a build of these sources (YN-194).
+  await checkDist(dist);
   for (const name of ["LICENSE", "LICENSE-NotoSansSC.txt", "THIRD_PARTY_NOTICES.txt"])
     assert.ok(existsSync(join(dist, "licenses", name)), `licenses/${name} is in the build`);
   const notices = await readFile(join(dist, "licenses/THIRD_PARTY_NOTICES.txt"), "utf8");

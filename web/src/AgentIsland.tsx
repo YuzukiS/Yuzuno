@@ -171,7 +171,8 @@ export function IslandRing({ state }: { state: RingState }) {
     case "working":
       body = <>{circle("r-track")}<g className="r-spin">{circle("r-arc", { strokeDasharray: `${C * 0.25} ${C}`, transform: "rotate(-90 12 12)" })}</g></>;
       break;
-    case "waiting": body = circle("r-breathe"); break;
+    // Needs you breathes with a thicker ring fading in and out over it (YN-199).
+    case "waiting": body = <>{circle("r-breathe")}{circle("r-breathe-glow")}</>; break;
     case "done": case "green": body = <>{circle("r-full")}<path className="r-mark" d="M7.6 12.3 L10.6 15.2 L16.4 8.9" /></>; break;
     case "failed": case "red": body = <>{circle("r-full")}<path className="r-mark" d="M8.6 8.6 L15.4 15.4 M15.4 8.6 L8.6 15.4" /></>; break;
   }

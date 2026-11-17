@@ -659,6 +659,11 @@ impl Workspace {
     /// perf-sse: the stream ticker's per-Agent announcement. Its Items were
     /// already sent; clients update the Agent's listed entry from it. Off the
     /// async workers (the ticker's job); elsewhere it is a refetch notice.
+    ///
+    /// It does not wake the collaboration worker (YN-197): streamed output
+    /// changes nothing a delivery or a continue checks. A streamed event that
+    /// does (`store::Watched`: status, connection, requests, Turns, receipts)
+    /// is announced with `changed`, which wakes it.
     pub fn progressed(&self, id: &str) {
         match self.listed_off_worker(id) {
             Some(agent) => {
@@ -667,7 +672,6 @@ impl Workspace {
             }
             None => self.announce_changed(id),
         }
-        self.collaboration_wakeup.notify_one();
     }
 
     /// perf-sse: the Codex catalog connection's state, shown with the
@@ -1337,5 +1341,30 @@ mod tests {
         let progress = serde_json::from_str::<Value>(&live.try_next().unwrap().data).unwrap();
         assert_eq!((progress["type"].as_str(), progress["agent"]["id"].as_str()), (Some("agent.progress"), Some("a")));
         assert_eq!(progress["rev"], ws.store.rev("a"));
+    }
+
+    /// Streamed output does not wake the collaboration worker; a change of
+    /// what it checks does (YN-197).
+    #[tokio::test]
+    async fn only_a_change_the_collaboration_worker_checks_wakes_it() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+        let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":"/tmp","model":"m",
+            "color":"sage","threadId":"thread","status":"working","createdAt":"","updatedAt":"","unreadCount":0,
+            "pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[{"id":"t","status":"inProgress","items":[]}],
+            "pending":[],"artifacts":[]})).unwrap();
+        ws.store.insert(&detail).unwrap();
+        let woken = |ws: Arc<Workspace>| async move {
+            tokio::time::timeout(Duration::from_millis(100), ws.collaboration_wakeup.notified()).await.is_ok()
+        };
+        // Whatever setup left.
+        let _ = woken(ws.clone()).await;
+        let off = ws.clone();
+        crate::db::blocking(move || { off.progressed("a"); Ok(()) }).await.unwrap();
+        ws.progressed("a");
+        assert!(!woken(ws.clone()).await, "streamed output woke the collaboration worker");
+        ws.changed("a");
+        assert!(woken(ws.clone()).await, "a change did not wake it");
     }
 }

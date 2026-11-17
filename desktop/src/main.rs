@@ -24,6 +24,9 @@ mod update;
 // Which app bundle the Mac app runs from, for its in-app update (YN-181).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod update_rules;
+// A minimized window's page is hidden, as WebView2 asks of its host (YN-199).
+#[cfg(windows)]
+mod webview_visibility;
 
 use connection::{
     desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
@@ -1324,6 +1327,7 @@ fn main() {
                 // The embedded/workspace Connection button provides a visible entry.
                 window.hide_menu()?;
                 chrome::apply(&window, AppearanceTheme::Light);
+                webview_visibility::follow(&window);
             }
             window.show()?;
             Ok(())

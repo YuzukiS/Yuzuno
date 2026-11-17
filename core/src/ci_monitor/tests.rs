@@ -6,6 +6,8 @@ mod stopped_refresh;
 #[cfg(unix)]
 #[path = "commit_watch_tests.rs"]
 mod commit_watch;
+#[path = "limits_tests.rs"]
+mod limits;
 fn setup() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
@@ -1249,4 +1251,69 @@ fn a_release_stops_the_executors_own_subscriptions_and_no_one_elses() {
     assert_eq!(flow["active"], true, "its delivery flow's interest stays with the flow: {after}");
     assert_eq!(after["active"], true, "so the subscription goes on for the flow");
     assert_eq!(read(&theirs["id"])["active"], true, "another Agent's watch goes on");
+}
+/// YN-193: GitHub starts no pull_request workflow for a PR with merge
+/// conflicts. A watched PR head GitHub reports as conflicting, with no run on
+/// it, says so once to each subscription and is read less often; GitHub
+/// still computing, a head with a run, an older head or a merged PR says
+/// nothing of the kind.
+#[test]
+fn a_conflicting_pr_head_without_runs_says_so_once_to_each_subscription() {
+    let pr = |mergeable: Value, state: &str| {
+        json!({"baseSha":"c".repeat(40),"baseBranch":"main","state":"open","merged":false,"mergeable":mergeable,"mergeableState":state})
+    };
+    let observed = |pr: Value, runs: Vec<Value>, head: &str| Observed { pr: Some(pr), ..seen(runs, Some(head.repeat(40))) };
+    let state = |s: &Store, sub: &Value| {
+        s.ci_list(None, None, None).unwrap()["subscriptions"].as_array().unwrap().iter()
+            .find(|row| row["id"] == sub["id"]).unwrap()["watch"]["state"].clone()
+    };
+    let conflicts = |s: &Store, agent: &str| mail(s, agent).into_iter().filter(|m| m["metadata"]["status"] == "conflicting").collect::<Vec<_>>();
+
+    let (_dir, s) = setup();
+    let a = subscribe(&s, "a", "watch");
+    subscribe(&s, "b", "watch");
+    let w = a["watchId"].as_str().unwrap().to_owned();
+    // GitHub is still computing whether it can merge: nothing is decided.
+    s.ci_observe(&w, Ok(observed(pr(Value::Null, "unknown"), vec![], "a"))).unwrap();
+    assert_eq!(state(&s, &a), "watching");
+    assert!(conflicts(&s, "a").is_empty());
+    // Conflicting, no run: one mail to each subscription, however often seen.
+    s.ci_observe(&w, Ok(observed(pr(json!(false), "dirty"), vec![], "a"))).unwrap();
+    s.ci_observe(&w, Ok(observed(pr(json!(false), "dirty"), vec![], "a"))).unwrap();
+    assert_eq!(state(&s, &a), "conflicting");
+    let told = conflicts(&s, "a");
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(conflicts(&s, "b").len(), 1);
+    let m = &told[0];
+    assert_eq!((m["sender"]["kind"].clone(), m["metadata"]["kind"].clone(), m["metadata"]["prNumber"].clone()), (json!("system"), json!("ci"), json!(7)));
+    let body = m["body"].as_str().unwrap();
+    assert!(body.contains("conflicts with its base main at the watched head aaaa"), "{body}");
+    assert!(body.contains("no pull_request CI run of this head is expected"), "{body}");
+    // It is read as a commit waiting for its first run is: after an hour of
+    // waiting, every ten minutes, not every 30 seconds for seven days.
+    let earlier = super::stamp(chrono::Utc::now().timestamp() - 7200);
+    {
+        let db = s.db.write().unwrap();
+        db.execute("UPDATE ci_watches SET data=json_set(data,'$.createdAt',?2) WHERE id=?1", rusqlite::params![w, earlier]).unwrap();
+        db.execute("UPDATE ci_interests SET data=json_set(data,'$.openedAt',?1)", [&earlier]).unwrap();
+    }
+    s.ci_observe(&w, Ok(observed(pr(json!(false), "dirty"), vec![], "a"))).unwrap();
+    let due: i64 = s.db.read().unwrap().query_row("SELECT next_poll FROM ci_watches WHERE id=?1", [&w], |r| r.get(0)).unwrap();
+    assert!(due - chrono::Utc::now().timestamp() > 500, "conflicting is read every ten minutes after an hour: {due}");
+    // A run on the head (a push workflow, say): watching again, no new notice.
+    s.ci_observe(&w, Ok(observed(pr(json!(false), "dirty"), vec![run(1, "in_progress", Value::Null)], "a"))).unwrap();
+    assert_eq!(state(&s, &a), "watching");
+    assert_eq!(conflicts(&s, "a").len(), 1);
+
+    // An older head, or a PR GitHub already merged, is never told so.
+    let (_dir, s) = setup();
+    let a = subscribe(&s, "a", "watch");
+    let w = a["watchId"].as_str().unwrap().to_owned();
+    s.ci_observe(&w, Ok(observed(pr(json!(false), "dirty"), vec![], "b"))).unwrap();
+    assert_eq!(state(&s, &a), "older_commit");
+    let merged = json!({"baseSha":"c".repeat(40),"baseBranch":"main","state":"closed","merged":true,"mergeable":false,"mergeableState":"dirty"});
+    assert!(!lifecycle::conflicting(&merged));
+    assert!(lifecycle::conflicting(&pr(json!(false), "unknown")) && lifecycle::conflicting(&pr(json!(true), "dirty")));
+    assert!(!lifecycle::conflicting(&pr(json!(true), "blocked")));
+    assert!(conflicts(&s, "a").is_empty());
 }

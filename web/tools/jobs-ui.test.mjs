@@ -572,6 +572,22 @@ test('Actions share the Jobs shell, preserve old SHA and show paged jobs without
   }finally{p.close();}
 });
 
+// YN-193: Core lists subscriptions on the first page only; earlier runs keep them.
+test('earlier CI runs keep the subscriptions the first page listed',async()=>{
+  const older = { ...ciRun, id:'github:123:41:1', runId:'41', attempt:'1', cursor:0 };
+  const p=mount(url=>url.startsWith('/api/ci?') && url.includes('before=1')?{runs:[older],subscriptions:[],hasMore:false,nextBefore:null}
+    :url.startsWith('/api/ci?')?{runs:[ciRun],subscriptions:[ciSub],hasMore:true,nextBefore:1}:page([]));
+  try{
+    await open(p);button(p,'GitHub Actions').click();
+    await until(()=>button(p,'Earlier CI runs'));
+    assert.equal(p.doc.querySelectorAll('.ci-subscription').length,1);
+    button(p,'Earlier CI runs').click();
+    await until(()=>p.calls.some(c=>c.url.startsWith('/api/ci?') && c.url.includes('before=1')));
+    await until(()=>p.doc.querySelectorAll('.ci-jobs .job-row').length===2);
+    assert.equal(p.doc.querySelectorAll('.ci-subscription').length,1,'the subscription stays listed');
+  }finally{p.close();}
+});
+
 test('explicit CI subscription pins commit, retries same request and stops without cancelling a run',async()=>{
   let count=0;
   const p=mount((url,body)=>{
@@ -614,6 +630,19 @@ test('a commit watch names its exact target, says it waits for a run, and its fo
     assert.match(row.textContent,/Commit aaaaaaaa · main · push/);
     assert.match(row.textContent,/Waiting for a run of aaaaaaaa/);
     assert.equal(row.querySelector('a').getAttribute('href'),commitUrl);
+  }finally{p.close();}
+});
+
+// YN-193: GitHub runs no pull_request CI for a PR with merge conflicts.
+test('a PR watch GitHub reports as conflicting says no CI comes until the conflict is resolved',async()=>{
+  const conflictSub = { ...ciSub, id:'conflict-sub', watch:{ ...ciSub.watch, currentHeadSha:'a'.repeat(40), state:'conflicting' } };
+  const p=mount(url=>url.startsWith('/api/ci?')?{runs:[],subscriptions:[conflictSub],hasMore:false,nextBefore:null}:page([]));
+  try{
+    await open(p);button(p,'GitHub Actions').click();
+    await until(()=>p.doc.querySelector('.ci-subscription'));
+    const row=p.doc.querySelector('.ci-subscription');
+    assert.match(row.textContent,/Conflicts with its base: GitHub runs no CI for this commit/);
+    assert.doesNotMatch(row.textContent,/Older commit/);
   }finally{p.close();}
 });
 

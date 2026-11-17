@@ -589,6 +589,22 @@ main run from before the retry no longer counts once main is green again. It
 never reruns CI: a red job has to be rerun by other means first. An entry
 stopped with `dry_run_ended` cannot be retried.
 
+`merge_get` and each `merge_list` row say what holds the entry now as
+`blocker`, worked out when they are read and never stored (YN-193). Its `code`
+is `queue_paused` while the repository's queue is paused (with the pause's
+`reason`, `since` and `detail`; not for the revert that ends the pause),
+`queue_off` while an entry that is ready waits for the switch, `waiting` with
+the last check's `detail` and the `since` of its wait, or, for a stopped
+entry, its `reason` from the table above. There is none once it merges, ends
+or is cancelled, or before its first check. `task_get` shows each PR's newest
+entry on the task the same way, as `mergeQueue`.
+
+When the merge lands, Core also marks the task's link of the PR merged, at
+the head the merge was pinned to and with its merge commit, in the same
+write as the entry's `merged`. `task_get` and `github_links` then no longer
+show an open PR at an older head; a later `github_refresh` reads the same
+from GitHub. A PR merged on GitHub by hand still needs `github_refresh`.
+
 ## Requirements
 
 The Core host needs **gh 2.97.0 or later**. Job logs are read with
@@ -671,4 +687,6 @@ nothing merges; a person merges it, or reviews it again. An entry released
 with acknowledged binary files (YN-52), still waiting, stops the same way with
 a Core from before that change, which does not read the acknowledgement. So
 does one released with acknowledged findings (YN-67), with a Core from before
-that change.
+that change. A PR link a Core with YN-193 marked merged is a merged snapshot
+like any other to an older Core, which ignores its `mergeCommitSha` and
+`mergedAt`; `blocker` is never stored, so nothing of it is left.

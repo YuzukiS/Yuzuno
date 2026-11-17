@@ -226,6 +226,7 @@ const ciText = strings({
   until: (when: string) => `until ${when}`,
   lastObserved: (when: string) => `Last observed ${when}`,
   olderCommit: (head: string, sha: string) => `Older commit: current PR head is ${head}. These results apply only to ${sha}.`,
+  conflicting: "Conflicts with its base: GitHub runs no CI for this commit until the conflict is resolved and a new commit is pushed.",
   lastAttempt: (when: string) => ` · Last attempt ${when}`,
   needsAttention: " · Paused after repeated failures; subscribe again to resume.",
   truncated: "More than 1,000 runs match this commit; use GitHub for the complete history.",
@@ -337,6 +338,7 @@ const ciText = strings({
   until: (when) => `直到 ${when}`,
   lastObserved: (when) => `上次观察于 ${when}`,
   olderCommit: (head, sha) => `较旧的提交：当前 PR head 是 ${head}。这些结果只适用于 ${sha}。`,
+  conflicting: "与目标分支冲突：解决冲突并推送新的提交之前，GitHub 不会为这个提交跑 CI。",
   lastAttempt: (when) => ` · 上次尝试于 ${when}`,
   needsAttention: " · 多次失败后已暂停；重新订阅即可恢复。",
   truncated: "与此提交匹配的运行超过 1,000 个；完整历史请在 GitHub 上查看。",
@@ -698,6 +700,9 @@ export function CiJobs({
           before
             ? {
                 ...p,
+                // Subscriptions come on the first page only (YN-193).
+                subscriptions: old.subscriptions,
+                subscriptionsTruncated: old.subscriptionsTruncated,
                 runs: [
                   ...new Map(
                     [...old.runs, ...p.runs].map((r) => [r.id, r]),
@@ -1092,6 +1097,7 @@ export function CiJobs({
                     {s.watch.currentHeadSha !== s.watch.expectedSha && (
                       <p>{t.olderCommit(s.watch.currentHeadSha.slice(0, 8), s.watch.expectedSha.slice(0, 8))}</p>
                     )}
+                    {s.watch.state === "conflicting" && <p>{t.conflicting}</p>}
                     {s.watch.error && (
                       <p className="inline-error">
                         {s.watch.error}

@@ -193,6 +193,61 @@ test("streamed changes patch the shown Agent; another Agent's events never read 
   }
 });
 
+test("streamed progress reaches the Agent list in one batch per 250 ms, newest entry per Agent, only on a drawn frame (YN-199)", async () => {
+  const p = await mount({ holdPoll: true });
+  try {
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    const lists = p.count("/api/workspace");
+    p.send({ type: "reset", refresh: true, reason: "new" }, "e-1");
+    await until(() => p.count("/api/workspace") > lists, "the reset's list read");
+    const name = (id) => p.d.querySelector(`.agent-row[data-agent-id="${id}"] .agent-name`)?.textContent;
+    await until(() => name("a") === "Mori" && name("b") === "Hana", "both rows");
+    // Every name a row shows from here on.
+    const shown = new Set();
+    const observer = new p.w.MutationObserver(() => { shown.add(name("a")); shown.add(name("b")); });
+    observer.observe(p.d.body, { subtree: true, childList: true, characterData: true });
+    const entry = (id, rev, title) => ({ type: "agent.progress", agentId: id, rev, lastSeq: rev,
+      agent: { ...p.core.agents.find((a) => a.id === id), name: title, rev, lastSeq: rev } });
+
+    // A burst: three entries for Hana, one for Mori, one timer for all.
+    p.timers.during({ 250: 250 }, () => {
+      p.send(entry("b", 21, "Hana one"), "e-2");
+      p.send(entry("a", 11, "Mori one"), "e-3");
+      p.send(entry("b", 22, "Hana two"), "e-4");
+      p.send(entry("b", 23, "Hana three"), "e-5");
+    });
+    assert.equal(p.timers.requested.filter((ms) => ms === 250).length, 1, "one 250 ms wait for the whole burst");
+    assert.equal(name("b"), "Hana", "nothing applied at once");
+    await until(() => name("b") === "Hana three" && name("a") === "Mori one", "the batch");
+    assert.ok(!shown.has("Hana one") && !shown.has("Hana two"), `only the newest entry is drawn: ${[...shown].join(", ")}`);
+
+    // No frame drawn (a hidden page draws none): nothing applied until one is.
+    const held = [];
+    const frame = p.w.requestAnimationFrame;
+    p.w.requestAnimationFrame = (callback) => held.push(callback);
+    try {
+      p.send(entry("b", 24, "Hana four"), "e-6");
+      await pause(600);
+      assert.equal(name("b"), "Hana three", "waits for a frame");
+      assert.ok(held.length >= 1, "a frame was asked for");
+    } finally {
+      p.w.requestAnimationFrame = frame;
+    }
+    for (const callback of held.splice(0)) callback(p.w.performance.now());
+    await until(() => name("b") === "Hana four", "applied on the next frame");
+
+    // An entry older than the row never replaces it.
+    p.send(entry("b", 22, "Hana old"), "e-7");
+    await pause(600);
+    assert.equal(name("b"), "Hana four", "an older entry is dropped");
+    observer.disconnect();
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("an open stream does not poll; a closed one polls and a reopened one refetches", async () => {
   const p = await mount();
   try {

@@ -87,6 +87,28 @@ test('a waiting stage is live, says what it waits for, and names its stage and a
   } finally { p.close(); }
 });
 
+// YN-194: a waiting stage Core marked stalled cannot start without a retry or a cancel: it says so, in its row
+// and on its run, and is no longer among what still goes on.
+test('a stalled stage says it is blocked upstream and is not among the active jobs (YN-194)', async () => {
+  const stalled = { ...waiting, stalled: 'upstream' };
+  const stalledRun = { ...run, stages: [run.stages[0], { ...run.stages[1], attempts: [{ ...run.stages[1].attempts[0], stalled: 'upstream' }] }] };
+  const p = mount(url => url === '/api/jobs/job-3' ? stalled : url === '/api/jobs/runs/run-1' ? stalledRun : ({ ...page([stalled, failed]), liveJobs: [] }));
+  try {
+    await open(p);
+    await until(() => row(p, '· judge'));
+    const text = row(p, '· judge').textContent;
+    assert.match(text, /Blocked upstream/);
+    assert.doesNotMatch(text, /Waiting for upstream/);
+    assert.equal(row(p, '· judge').closest('.job-group-active'), null);
+    row(p, '· judge').click();
+    await until(() => p.doc.querySelector('.job-run'));
+    const stage = [...p.doc.querySelectorAll('.job-run-stage')].find(li => li.textContent.includes('judge'));
+    assert.match(stage.querySelector('.job-state').textContent, /Blocked upstream/);
+    assert.equal(stage.querySelector('.job-state').classList.contains('state-stalled'), true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // YN-30: a run whose work only waits in the queue says it is queued and what its first stage waits for, shows
 // Core's reason beside that stage, and can still be cancelled.
 test('a queued run says what it waits for, shows the reason beside its stage, and can be cancelled (YN-30)', async () => {
