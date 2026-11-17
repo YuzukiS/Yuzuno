@@ -29,6 +29,19 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+/* The entry line: candidate, wait, observation and action, one paragraph. */
+.delivery-wait {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+}
+.delivery-wait-at {
+  color: var(--muted);
+}
+.delivery-mismatch {
+  color: var(--coral);
+}
 .delivery-revision {
   display: flex;
   align-items: center;

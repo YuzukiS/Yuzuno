@@ -361,3 +361,123 @@ test("a running flow follows the language; Core's reason, the review's outcome, 
     h.dom.window.close();
   }
 });
+
+// R-18 #4 / YN-210: the normal entry states, in one line, which candidate it
+// is, how it was attempted, what it waits for, when that was observed and
+// what a person can do now.
+test("the delivery entry names the candidate, its wait, the observation and the action in one line", async () => {
+  const f = flow("waiting_ci");
+  f.attempt = 2;
+  f.reviewEvidence = {
+    id: "original", status: "completed", conclusion: "no_findings", actualModel: "gpt-6.1-sol",
+    finishedAt: "2026-11-17T20:00:00Z", baseSha: candidate.baseSha, headSha: candidate.headSha,
+  };
+  f.ciEvidence = {
+    watch: { observedAt: "2026-11-17T20:05:00Z", error: null, currentHeadSha: candidate.headSha, currentPr: { baseSha: candidate.baseSha } },
+    runs: [],
+  };
+  const h = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: f }));
+  try {
+    h.render();
+    await tick();
+    await tick();
+    const line = h.dom.window.document.querySelector(".delivery-wait");
+    assert.ok(line, "the delivery entry has its waiting line");
+    const text = line.textContent;
+    assert.match(text, /Round 1 · head bbbbbbbb/);
+    assert.match(text, /attempt 2/);
+    assert.match(text, /Explicit delivery candidate/, "the reason shown is Core's");
+    assert.match(text, /CI observed/, "when the fact was observed");
+    assert.match(text, /Refresh reads CI now/, "what a person can do now");
+    assert.ok(h.text().includes("Waiting for CI"));
+  } finally {
+    h.dom.window.close();
+  }
+});
+
+// R-18 #4 / YN-210: an earlier candidate's green review and CI success stay
+// labelled as that revision's; they never make the fixed candidate look green.
+test("facts from another revision are labelled and do not mark the new candidate green", async () => {
+  const old = "c".repeat(40);
+  const f = flow("candidate_changed");
+  f.reviewEvidence = {
+    id: "original", status: "completed", conclusion: "no_findings", actualModel: "gpt-6.1-sol",
+    finishedAt: "2026-11-17T20:00:00Z", baseSha: candidate.baseSha, headSha: old,
+  };
+  f.ciEvidence = {
+    watch: { observedAt: "2026-11-17T20:05:00Z", error: null, currentHeadSha: old, currentPr: { baseSha: candidate.baseSha } },
+    runs: [{ id: "run-old", name: "CI", conclusion: "success", status: "completed", url: "https://github.com/o/r/actions/runs/1" }],
+  };
+  const h = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: f }));
+  try {
+    h.render();
+    await tick();
+    await tick();
+    const text = h.text();
+    assert.ok(text.includes("Revision changed"));
+    assert.match(text, /Review evidence is for another revision \(head cccccccc\)/);
+    assert.match(text, /CI evidence is for another revision \(head cccccccc\)/);
+    const evidence = h.dom.window.document.querySelector(".delivery-evidence");
+    assert.equal(evidence.querySelector(".lucide-circle-check"), null, "the pass marker is not this candidate's");
+    assert.ok(evidence.querySelector(".lucide-circle-alert"), "the review is marked, not green");
+  } finally {
+    h.dom.window.close();
+  }
+});
+
+// R-18 #4 / YN-210: a review that has not finished and one that failed are
+// told apart, and a failed CI run is not shown as a pass.
+test("an unfinished review, an unknown one and failed CI are distinguishable", async () => {
+  const running = flow("waiting_review");
+  running.reviewEvidence = {
+    id: "running", status: "running", conclusion: "unknown", actualModel: null,
+    finishedAt: null, baseSha: candidate.baseSha, headSha: candidate.headSha,
+  };
+  const first = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: running }));
+  try {
+    first.render();
+    await tick();
+    await tick();
+    const evidence = first.dom.window.document.querySelector(".delivery-evidence");
+    assert.ok(evidence.querySelector(".lucide-circle-dashed"), "a review still running is in progress");
+    assert.equal(evidence.querySelector(".lucide-circle-check"), null);
+    assert.ok(first.text().includes("Waiting for review"));
+  } finally {
+    first.dom.window.close();
+  }
+  const unknown = flow("infrastructure_error");
+  unknown.reviewEvidence = {
+    id: "unknown", status: "unknown", conclusion: "unknown", actualModel: null,
+    finishedAt: null, baseSha: candidate.baseSha, headSha: candidate.headSha,
+  };
+  const second = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: unknown }));
+  try {
+    second.render();
+    await tick();
+    await tick();
+    assert.match(second.text(), /unknown · unknown/);
+    assert.match(second.text(), /Refresh; an inactive or unreadable review or CI needs attention/);
+  } finally {
+    second.dom.window.close();
+  }
+  const failed = flow("ci_failed");
+  failed.reviewEvidence = {
+    id: "pass", status: "completed", conclusion: "no_findings", actualModel: "gpt-6.1-sol",
+    finishedAt: "2026-11-17T20:00:00Z", baseSha: candidate.baseSha, headSha: candidate.headSha,
+  };
+  failed.ciEvidence = {
+    watch: { observedAt: "2026-11-17T20:05:00Z", error: null, currentHeadSha: candidate.headSha, currentPr: { baseSha: candidate.baseSha } },
+    runs: [{ id: "run-1", name: "CI", conclusion: "failure", status: "completed", url: "https://github.com/o/r/actions/runs/1" }],
+  };
+  const third = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: failed }));
+  try {
+    third.render();
+    await tick();
+    await tick();
+    assert.ok(third.text().includes("CI did not pass"));
+    assert.ok(third.text().includes("Inspect the failed runs; CI is never rerun from here."));
+    assert.match(third.text(), /CI · failure ↗/);
+  } finally {
+    third.dom.window.close();
+  }
+});
