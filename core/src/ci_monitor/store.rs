@@ -176,9 +176,11 @@ fn notify(db: &Connection, watch_id: &str) -> Result<bool> {
     Ok(sent)
 }
 
-/// Other attempts of this run's workflow, newest first, that failed at one of
-/// the same jobs and steps (YN-196): at most SAME_LISTED, from the newest
-/// SAME_SCANNED failed attempts Core recorded. Only runs Core observed count.
+/// Other attempts of this run's workflow (same repository and workflow), the
+/// most recently recorded first, that failed at a job and step of the same
+/// names (YN-196): at most SAME_LISTED, from the SAME_SCANNED most recently
+/// recorded failed attempts. Only runs Core observed count, and the same names
+/// do not prove the same bug.
 fn same_failures(db: &Connection, rid: &str) -> Result<Vec<Value>> {
     let mine: Option<(String, String, String)> = db
         .query_row(
@@ -250,8 +252,9 @@ impl Store {
             .optional()?
             .is_some())
     }
-    /// Records where a failed attempt failed: its failed jobs and steps, maybe
-    /// none. Bounded like ci_runs; once full, nothing more is recorded.
+    /// Records where a failed attempt failed: its failed jobs and steps (at most
+    /// 20), maybe none. Once the table holds 10000 attempts nothing more is
+    /// recorded; older rows are not replaced.
     pub(super) fn ci_record_failures(&self, run: &Value, failed: &[Value]) -> Result<()> {
         let db = self.db.write()?;
         let count: i64 = db.query_row("SELECT COUNT(*) FROM ci_run_failures", [], |r| r.get(0))?;

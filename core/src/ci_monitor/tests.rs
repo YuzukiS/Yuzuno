@@ -449,6 +449,70 @@ fn failed_steps_name_each_failed_job_and_its_first_step_that_did_not_succeed() {
 }
 
 #[test]
+fn only_a_page_whose_jobs_all_finished_says_where_an_attempt_failed() {
+    let job = |status: &str, conclusion: Value| json!({"name":"Web UI (typecheck, build, test 1/2)","rawStatus":status,"conclusion":conclusion,"steps":[{"name":"Test files","conclusion":conclusion}]});
+    assert_eq!(terminal_failures(&json!({"jobs":[job("in_progress", Value::Null)]})), None);
+    assert_eq!(terminal_failures(&json!({"jobs":[job("completed", json!("failure")), job("queued", Value::Null)]})), None);
+    assert_eq!(
+        terminal_failures(&json!({"jobs":[job("completed", json!("failure"))]})),
+        Some(vec![json!({"job":"Web UI (typecheck, build, test 1/2)","key":"Web UI","step":"Test files"})])
+    );
+    assert_eq!(terminal_failures(&json!({"jobs":[]})), Some(vec![]), "a failed attempt without jobs");
+    assert_eq!(terminal_failures(&json!({})), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_jobs_page_cached_while_the_attempt_ran_is_not_taken_as_where_it_failed() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, s) = setup();
+    subscribe(&s, "a", "one");
+    drop(s);
+    let phase = dir.path().join("phase");
+    std::fs::write(&phase, "running").unwrap();
+    let program = dir.path().join("gh-fixture");
+    let fixture = r##"#!/usr/bin/python3
+import json,sys,pathlib
+root=pathlib.Path(__file__).parent
+phase=(root/'phase').read_text()
+ep=next(v for v in sys.argv if v.startswith(('repos/','repositories/')))
+etag='"'+phase+'-'+ep+'"'
+if 'If-None-Match: '+etag in sys.argv:
+ print('HTTP/2.0 304 Not Modified\r\nEtag: '+etag+'\r\n\r\n')
+ sys.exit(0)
+done=phase=='failed'
+run={'id':42,'run_attempt':1,'head_sha':'a'*40,'name':'CI','workflow_id':9,'repository':{'id':123},'status':'completed' if done else 'in_progress','conclusion':'failure' if done else None}
+step={'number':2,'name':'Test files','status':'completed' if done else 'in_progress','conclusion':'failure' if done else None}
+job={'id':7,'run_id':42,'run_attempt':1,'head_sha':'a'*40,'name':'Web UI (typecheck, build, test 1/2)','status':run['status'],'conclusion':run['conclusion'],'steps':[step]}
+if ep=='repositories/123':data={'id':123,'full_name':'o/r'}
+elif '/pulls/7' in ep:data={'number':7,'base':{'repo':{'id':123}},'head':{'sha':'a'*40}}
+elif '/jobs' in ep:data={'total_count':1,'jobs':[job]}
+elif '/attempts/1' in ep:data=run
+else:data={'total_count':1,'workflow_runs':[run]}
+print('HTTP/2.0 200 OK\r\nEtag: '+etag+'\r\n\r\n'+json.dumps(data))
+"##;
+    std::fs::write(&program, fixture).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut ws = Workspace::new(dir.path().into(), "/workspace".into(), "unused".into()).unwrap();
+    Arc::get_mut(&mut ws).unwrap().github.client.program = program.to_string_lossy().into();
+    tick(&ws).await.unwrap();
+    // While it runs, its jobs are read, as ci_get does: a page with no failure
+    // yet, which the shared cache keeps for a while.
+    let running = client::run(&json!({"id":42,"run_attempt":1,"head_sha":"a".repeat(40),"name":"CI","workflow_id":9,"repository":{"id":123},"status":"in_progress","conclusion":null}), 123, "o/r").unwrap();
+    let (cached, _) = details(&ws, &running, 1, 60).await.unwrap();
+    assert_eq!(cached["jobs"][0]["rawStatus"], "in_progress");
+    // It fails. Only the watch is due again: the cached jobs page is still valid.
+    std::fs::write(&phase, "failed").unwrap();
+    ws.store.db.write().unwrap().execute("UPDATE ci_watches SET next_poll=0", []).unwrap();
+    tick(&ws).await.unwrap();
+    let kept: String = ws.store.db.read().unwrap()
+        .query_row("SELECT data FROM ci_run_failures WHERE run_id='github:123:42:1'", [], |r| r.get(0))
+        .unwrap();
+    assert!(kept.contains("\"step\":\"Test files\""), "where it failed, as GitHub has it now: {kept}");
+    assert_eq!(mail(&ws.store, "a").len(), 1, "one mail, sent once");
+}
+
+#[test]
 fn a_failure_mail_names_other_runs_of_its_workflow_that_failed_at_the_same_job_and_step() {
     let (_dir, s) = setup();
     let sub = subscribe(&s, "a", "one");

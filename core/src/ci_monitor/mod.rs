@@ -453,13 +453,15 @@ fn failed_steps(jobs: &Value) -> Vec<Value> {
     }
     found
 }
-/// Reads, once per failed attempt, where it failed, so that its mail can name
-/// other recent attempts that failed at the same job and step (YN-196). At
-/// most FAILURE_READS jobs reads per observation. A failed read (a cooldown,
-/// a rate limit, a network error) records nothing, so a later observation
-/// reads it again; the mail of that observation has no note, and the
-/// observation itself never fails.
-async fn record_failures(ws: &Arc<Workspace>, runs: &[Value], ttl: i64) {
+/// Records where each newly failed attempt failed, so that its mail can name
+/// other recent attempts that failed at the same job and step (YN-196). It
+/// asks GitHub for the attempt's first jobs page (`fresh_jobs`) for at most
+/// FAILURE_READS attempts per observation, and records it only once every
+/// job on it has finished. A failed read (a cooldown, a rate limit, a network
+/// error) or a page with an unfinished job records nothing, so a later
+/// observation reads it again; the mail of that observation has no note, and
+/// the observation itself never fails.
+async fn record_failures(ws: &Arc<Workspace>, runs: &[Value]) {
     let mut reads = 0;
     for run in runs {
         if run["status"] != "failed" || run["rawStatus"] != "completed" || reads == FAILURE_READS {
@@ -470,17 +472,43 @@ async fn record_failures(ws: &Arc<Workspace>, runs: &[Value], ttl: i64) {
             continue;
         }
         reads += 1;
-        let Ok((jobs, _)) = details(ws, run, 1, ttl).await else {
+        let Ok(jobs) = fresh_jobs(ws, run).await else {
             continue;
         };
-        let failed = failed_steps(&jobs);
+        let Some(failed) = terminal_failures(&jobs) else {
+            continue;
+        };
         let run = run.clone();
         let _ = ws.stored(move |s| s.ci_record_failures(&run, &failed)).await;
     }
 }
-/// Jobs reads for newly failed attempts in one observation: a head runs a few
-/// workflows, and each read goes through the shared cache and its cooldowns.
+/// Newly failed attempts whose first jobs page one observation asks for (one
+/// request each, a page of up to 100 jobs): a head runs a few workflows, and
+/// each request goes through the shared cache's ETag and cooldowns.
 const FAILURE_READS: usize = 5;
+/// An attempt's first jobs page as GitHub has it now. Always asked again (an
+/// unchanged page costs a 304), because a page cached while the attempt still
+/// ran stays valid for a while and its jobs had not failed yet; this runs
+/// before the observation that saw the failure clears that cache.
+async fn fresh_jobs(ws: &Arc<Workspace>, run: &Value) -> Result<Value> {
+    let endpoint = format!(
+        "repos/{}/actions/runs/{}/attempts/{}/jobs?per_page=100&page=1",
+        run["repository"].as_str().context("Missing repository")?,
+        run["runId"].as_str().context("Missing run ID")?,
+        run["attempt"].as_str().context("Missing attempt")?
+    );
+    let read = client::revalidate(ws, endpoint.clone()).await?;
+    let next = client::next_page(read["link"].as_str().unwrap_or(""), &endpoint, 1)?.is_some();
+    client::jobs(&read["value"], run, 1, next)
+}
+/// The failed jobs of a page whose every job has finished, or None while one
+/// has not: such a page cannot yet say where the attempt failed.
+fn terminal_failures(jobs: &Value) -> Option<Vec<Value>> {
+    let all = jobs["jobs"].as_array()?;
+    all.iter()
+        .all(|job| job["rawStatus"] == "completed")
+        .then(|| failed_steps(jobs))
+}
 /// One bounded jobs/steps page of a run, and the cached read behind it.
 async fn details(ws: &Arc<Workspace>, run: &Value, page: u64, ttl: i64) -> Result<(Value, Value)> {
     let endpoint = format!(
@@ -998,7 +1026,7 @@ async fn observe(ws: &Arc<Workspace>, w: &Value, ttl: i64) -> Result<Observed> {
         );
         result.push(run);
     }
-    record_failures(ws, &result, ttl).await;
+    record_failures(ws, &result).await;
     Ok(Observed {
         runs: result,
         head,
