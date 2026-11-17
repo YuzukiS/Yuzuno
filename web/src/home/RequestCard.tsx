@@ -1,12 +1,14 @@
-import { forwardRef, useContext } from "react";
-import { LoaderCircle } from "lucide-react";
+import { forwardRef, useContext, type ReactNode } from "react";
+import { FileText, GitPullRequest, LoaderCircle, MessageSquare, Tag } from "lucide-react";
+import type { ReportLink } from "../deep-link";
 import { useLanguage } from "../i18n";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import { CardAgents, shownResponsible, taskEnded, type ShownResponsible } from "./card-responsible";
+import { openTask } from "./CardResponsible";
 import { absolute, relative } from "./format";
 import { cardBinding, cardTitle, mergedInto, requestState, untitledHint } from "./project-talk";
-import type { ProjectRequest, RequestCard as RequestCardShown } from "./project-talk-api";
+import type { Deliverable, ProjectRequest, RequestCard as RequestCardShown } from "./project-talk-api";
 import { requestTrail, RoutingEvents, type ShowCard } from "./RoutingEvents";
 import { talkText } from "./talk-text";
 
@@ -37,9 +39,11 @@ export const RequestCard = forwardRef<
     onResend: () => void;
     onConfirm: () => void;
     onCard: ShowCard;
+    /** Opens a report a card's task delivered (YN-208), over Home. */
+    onReport: OpenDeliveredReport;
   }
 >(function RequestCard(
-  { request, selected, trailOpen, readOnly, resending, confirming, confirmError, onTitle, onFollowUp, onTrail, onResend, onConfirm, onCard },
+  { request, selected, trailOpen, readOnly, resending, confirming, confirmError, onTitle, onFollowUp, onTrail, onResend, onConfirm, onCard, onReport },
   ref,
 ) {
   const language = useLanguage();
@@ -114,6 +118,7 @@ export const RequestCard = forwardRef<
         </span>
       </div>
       {confirmError && <p className="request-card-error" role="alert">{t.confirmFailed(confirmError)}</p>}
+      {one && <CardDeliverables card={one} one onReport={onReport} />}
       {request.cards.length > 1 ? (
         <ol className="request-card-cards" aria-label={t.requestCards}>
           {request.cards.map((card, index) => {
@@ -135,6 +140,7 @@ export const RequestCard = forwardRef<
                     {t.openCard}
                   </span>
                 </button>
+                <CardDeliverables card={card} onReport={onReport} />
               </li>
             );
           })}
@@ -192,4 +198,120 @@ function OneCard({
       </button>
     </Tip>
   );
+}
+
+/** Opens a report a card's task delivered (YN-208): the exact version its result named, by its identity on Home. */
+export type OpenDeliveredReport = (link: Omit<ReportLink, "workspaceId" | "projectId">) => void;
+
+/**
+ * What a card's task delivered (YN-208), under its card: each deliverable its newest result that named any named,
+ * opened from here, with where it stands now. Nothing is guessed: a task that ended with none says so and opens the
+ * task. An older Core, which reads no deliverables, shows nothing here.
+ */
+function CardDeliverables({ card, one = false, onReport }: { card: RequestCardShown; one?: boolean; onReport: OpenDeliveredReport }) {
+  const language = useLanguage();
+  const t = talkText(language);
+  const time = useTimeDisplay();
+  if (card.deliverables === undefined) return null;
+  const items = card.deliverables?.items ?? [];
+  const name = cardTitle(card);
+  if (!items.length) {
+    if (!taskEnded(cardBinding(card))) return null;
+    const why = card.task.status === "cancelled" ? t.cancelledNone : card.result ? t.noDeliverable : t.noResult;
+    return (
+      <p className="request-deliverables-none" data-one={one ? "" : undefined}>
+        <span>{why}</span>
+        <button type="button" className="talk-link" aria-label={t.openTaskLabel(card.task.id)} onClick={() => openTask(card.task.id)}>
+          {t.openTask}
+        </button>
+      </p>
+    );
+  }
+  return (
+    <ul className="request-deliverables" data-one={one ? "" : undefined} aria-label={t.deliverables(name)}>
+      {items.map((item, index) => (
+        <li key={index}>
+          <DeliverableLine item={item} task={card.task.id} onReport={onReport} time={(at) => absolute(at, time)} ago={(at) => relative(at, language)} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DeliverableLine({ item, task, onReport, time, ago }: {
+  item: Deliverable;
+  task: string;
+  onReport: OpenDeliveredReport;
+  time: (at: string) => string;
+  ago: (at: string) => string;
+}) {
+  const t = talkText(useLanguage());
+  const body = (icon: ReactNode, title: string, meta: string, go: string | null) => (
+    <>
+      {icon}
+      <span className="request-deliverable-title">{title}</span>
+      {go && <span className="request-deliverable-go" aria-hidden="true">{go}</span>}
+      <span className="request-deliverable-meta">{[meta, item.note].filter(Boolean).join(" · ")}</span>
+    </>
+  );
+  const tip = (title: string, meta: string, extra?: string) => <TipText title={title} body={[item.note, extra].filter(Boolean).join("\n") || undefined} meta={meta} />;
+  switch (item.kind) {
+    case "report": {
+      const open = item.state === "replaced" ? item.currentVersion : item.state === "gone" ? null : item.version;
+      const newer = item.currentVersion !== null && item.currentVersion > item.version ? item.currentVersion : null;
+      const meta = item.state === "history" ? t.reportInHistory(item.version, newer)
+        : item.state === "replaced" ? t.reportReplaced(item.version, item.currentVersion ?? item.version)
+          : item.state === "gone" ? t.reportGone(item.version) : t.reportVersion(item.version);
+      const go = open === null ? t.openTask : open === item.version ? t.openReport : t.openVersion(open);
+      return (
+        <Tip content={tip(item.title, meta)} describe={false}>
+          <button
+            type="button"
+            className="request-deliverable"
+            data-kind="report"
+            data-state={item.state}
+            aria-label={open === null ? t.openTaskLabel(task) : t.openReportLabel(item.title, open)}
+            onClick={(event) => {
+              if (open === null) {
+                openTask(task);
+                return;
+              }
+              // Focus first, where a browser does not focus a clicked button (Safari): Back from the report returns here.
+              event.currentTarget.focus({ preventScroll: true });
+              onReport({ key: item.key, version: open, sectionId: item.sectionId });
+            }}
+          >
+            {body(<FileText size={13} aria-hidden="true" />, item.title, meta, go)}
+          </button>
+        </Tip>
+      );
+    }
+    case "pr": {
+      const meta = t.prMeta(item.number, t.prState[item.state], item.observedAt ? ago(item.observedAt) : "");
+      return (
+        <Tip content={tip(item.title, meta, item.observedAt ? t.prObserved(time(item.observedAt)) : undefined)} describe={false}>
+          <a className="request-deliverable" data-kind="pr" data-state={item.state} href={item.url} target="_blank" rel="noopener noreferrer">
+            {body(<GitPullRequest size={13} aria-hidden="true" />, item.title, meta, t.openPr)}
+          </a>
+        </Tip>
+      );
+    }
+    case "release": {
+      const meta = t.releaseMeta(item.tag);
+      return (
+        <Tip content={tip(item.title, meta, t.releaseTip)} describe={false}>
+          <a className="request-deliverable" data-kind="release" href={item.url} target="_blank" rel="noopener noreferrer">
+            {body(<Tag size={13} aria-hidden="true" />, item.title, meta, t.openRelease)}
+          </a>
+        </Tip>
+      );
+    }
+    case "answer":
+      // Whole, wrapped: a phone has no tip to read the rest in.
+      return (
+        <p className="request-deliverable" data-kind="answer">
+          {body(<MessageSquare size={13} aria-hidden="true" />, item.text, item.title ?? t.answer, null)}
+        </p>
+      );
+  }
 }

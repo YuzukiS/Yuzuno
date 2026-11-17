@@ -46,6 +46,20 @@ export type RouteEvent = {
   error?: string;
 };
 
+/**
+ * One deliverable a card's task registered on a result (YN-208), as Core reads it now: its title and one-line note
+ * as the result named them, and whether it can be opened. A report is the version the result named (`sectionId`
+ * tells it from another report later under its key): live, in History, replaced by a newer version of the same
+ * report (`currentVersion`), or no longer on Home. A PR's state is GitHub's as Core last read it.
+ */
+export type Deliverable =
+  | { kind: "report"; title: string; note: string | null; key: string; version: number; sectionId: number;
+      state: "live" | "history" | "replaced" | "gone"; currentVersion: number | null }
+  | { kind: "pr"; title: string; note: string | null; url: string; repository: string; number: number;
+      state: "open" | "merged" | "closed" | "unknown"; observedAt: string | null }
+  | { kind: "release"; title: string; note: string | null; url: string; repository: string; tag: string }
+  | { kind: "answer"; title: string | null; note: null; text: string };
+
 /** One card a request went to (progress.rs): as Home shows it, and who answers for it now. */
 export type RequestCard = {
   sectionId: number | null;
@@ -54,6 +68,10 @@ export type RequestCard = {
   live: boolean;
   task: { id: string; status: string; archived: boolean };
   responsible: { agentId: string; name: string; kind: "executor" | "lead" | "agent"; state: string } | null;
+  /** The task's newest result (YN-208), or null without one; absent from an older Core. */
+  result?: { id: string; status: string; reportedAt: string } | null;
+  /** What the newest result that named deliverables named (YN-208), or null; absent from an older Core. */
+  deliverables?: { resultId: string; reportedAt: string; items: Deliverable[] } | null;
 };
 
 /** Core's line in the conversation (progress.rs): an Ask on one of its cards, or a card's task that ended. */
