@@ -676,11 +676,15 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
-  // The newest read of the list and of the chosen job: a read that started
-  // earlier and answers later is dropped, so a slow answer cannot put older
-  // counts, rows or output back (two reads can overlap in one window: the
-  // interval's and one a press started; R-18 / YN-210).
+  // The newest answer written for the list (with the budget) and for the
+  // chosen job's details and output. A read writes only if it is newer than
+  // what is already on screen: a slow answer that started first but arrives
+  // last is dropped, while a read that takes longer than the poll interval
+  // still shows once it answers (the interval starts reads whether or not
+  // one is in flight; R-18 / YN-210).
   const reads = useRef(0);
+  const listedAt = useRef(0);
+  const detailedAt = useRef(0);
   // The selected job as last read finished (T-60): its details and output are
   // read no more until the list shows it changed, or it is looked at afresh.
   const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
@@ -689,8 +693,11 @@ export function Jobs({
     async (before?: number) => {
       const stamp = generation.current;
       const read = ++reads.current;
-      // This read still belongs to the shown panel and is the newest one.
-      const mine = () => stamp === generation.current && read === reads.current;
+      // This read still belongs to the shown panel, and is newer than what
+      // the list or the details already show.
+      const shown = () => stamp === generation.current;
+      const ownsList = () => shown() && read > listedAt.current;
+      const ownsDetail = () => shown() && read > detailedAt.current;
       // The selected job's row in the list just read, if it is there (T-60).
       let row: Job | undefined;
       try {
@@ -705,7 +712,7 @@ export function Jobs({
             throw e;
           }),
         ]);
-        if (!mine()) return;
+        if (!ownsList()) return;
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
         row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
@@ -738,8 +745,12 @@ export function Jobs({
           setBudget(capacity);
           setBudgetRefusal("");
         }
+        listedAt.current = read;
       } catch (e) {
-        if (mine()) {
+        if (ownsList()) {
+          // This answer, not the one before it, owns the list now: an older
+          // success must not cover a newer failure either.
+          listedAt.current = read;
           setError(errorText(e));
           if (selected)
             setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));
@@ -751,9 +762,12 @@ export function Jobs({
       // again (T-60). A row turning finished gives one more read, then none.
       const done = settled.current;
       if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
+      // A newer read already showed this job's details: this older answer
+      // adds nothing. A newer list read that stopped before the details
+      // (the settled return above) leaves this read to show them.
+      if (!ownsDetail()) return;
       // A failure already shown for this job stays until its read succeeds.
-      if (mine())
-        setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
+      setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
         // Its details first, then its output: output read after a finished
         // job's details has all of it, so only that read settles the job.
@@ -761,14 +775,18 @@ export function Jobs({
         // (T-60, #642 R2 1e487ee9).
         const job = await api<Job>(`/jobs/${selected}`);
         const output = await api<Log>(`/jobs/${selected}/logs`);
-        if (mine()) {
+        if (ownsDetail()) {
+          detailedAt.current = read;
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
           settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
-        if (mine()) setDetailRead({ id: selected, failure: errorText(e) });
+        if (ownsDetail()) {
+          detailedAt.current = read;
+          setDetailRead({ id: selected, failure: errorText(e) });
+        }
       }
     },
     [scope, selected],

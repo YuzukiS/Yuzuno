@@ -188,6 +188,32 @@ test('an earlier detail read that arrives after the job finished does not put it
   } finally { p.close(); }
 });
 
+// R-18 #4 / YN-210 (review P2): the 3 s interval starts a read whether or
+// not one is still on its way. A newer read used to cancel every older one,
+// so with a Core slower than the interval nothing ever appeared. The newest
+// answer that arrives still shows.
+test('a read slower than the poll interval still shows its list and budget', async () => {
+  const slow = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits' };
+  let lists = 0;
+  const p = mount(async url => {
+    if (url.startsWith('/api/jobs?')) {
+      lists++;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return page([slow]);
+    }
+    return url === '/api/jobs/job-one' ? slow : page([slow]);
+  }, {}, { pollMs: 100 });
+  try {
+    await open(p);
+    await until(() => lists >= 4);
+    await wait(); await wait(); await wait(); await wait();
+    assert.ok(lists >= 4, 'the interval started further reads while one was slow');
+    assert.ok(p.doc.querySelector('.job-row'), 'the slow read still showed its rows');
+    assert.ok(p.doc.querySelector('.jobs-budget-counts'), 'and its budget');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // T-60: a finished job's details and output no longer change. Read once it
 // is seen finished; again only once the list shows it changed (a new
 // attempt), or on Refresh. The list goes on being read.

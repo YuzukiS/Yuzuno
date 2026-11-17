@@ -393,7 +393,7 @@ export function DeliveryFlow({
               facts were observed and what a person can do now, in one line. */}
           <p className="delivery-wait">
             <strong>{t.roundHead(flow.candidate.round, short(flow.candidate.headSha, t.unknown))}</strong>
-            {flow.attempt && <> · {t.attempt(flow.attempt)}</>}
+            {flow.attempt != null && <> · {t.attempt(flow.attempt)}</>}
             {" · "}
             {flow.reason}
             {" · "}
