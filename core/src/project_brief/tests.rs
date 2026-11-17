@@ -394,10 +394,12 @@ async fn an_agent_with_three_unresolved_asks_still_puts_a_fourth_and_a_fifth() {
     close(&ws, "b", true);
     let claimed = call(&ws, "a", input("a4", 4, vec![op("claim", "theirs")])).await.unwrap();
     assert!(claimed.is_ok(), "a claimed sixth unresolved ask is accepted: {claimed:?}");
-    // openAsks still counts them, as information; limits name no cap.
+    // openAsks still counts them, as information; the contract's limits name
+    // no cap (the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search). brief_get carries no
+    // limits (YN-192): brief_guide limits has them.
     let read = brief(&ws, "a");
     assert_eq!(read["you"]["openAsks"], 6);
-    assert!(read["limits"].get("openAsksPerAgent").is_none(), "{}", read["limits"]);
+    assert!(read.get("limits").is_none(), "{}", read["limits"]);
     // Needs you lists every open one; the replied q1 waits for its owner.
     let mut needs: Vec<Value> = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
         .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect();

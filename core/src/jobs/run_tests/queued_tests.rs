@@ -128,3 +128,19 @@ fn each_admission_reason_has_its_kind_and_an_unknown_one_is_plain_capacity() {
         assert_eq!(waiting_for(reason), kind, "{reason}");
     }
 }
+
+/// YN-192 (25): a page of runs says what their cost covers once, not in each
+/// run; a run read alone still says it.
+#[test]
+fn a_page_of_runs_says_what_their_cost_covers_once() {
+    let (_dir, s) = setup();
+    let first = create(&s, "first", json!([stage("prep", &[])]));
+    create(&s, "second", json!([stage("prep", &[])]));
+    let page = s.list_runs(Some("a"), Some("T-1"), None, None, false).unwrap();
+    let runs = page["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|run| run["cost"].is_object() && run["cost"].get("scope").is_none()), "{page}");
+    let scope = s.run(first["id"].as_str().unwrap()).unwrap()["cost"]["scope"].clone();
+    assert!(scope.as_str().is_some_and(|text| text.contains("never as zero")), "{scope}");
+    assert_eq!(page["costScope"], scope, "once for the page, as a run read alone says it");
+}

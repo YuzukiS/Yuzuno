@@ -2605,7 +2605,7 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, ` +
     `recentlyLeft (your sections that left lately and why: a report the user marked seen is no longer among the sections), recentlyLeftMore, capabilities; ` +
     `for a lead (a Home editor) homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
-    `granting nothing} and the limits. ` +
+    `granting nothing}; the limits are in brief_guide limits. ` +
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:

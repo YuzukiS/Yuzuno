@@ -1857,11 +1857,16 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let more = ids.len() > 20;
+        // What each run's cost says of its sources, once for the page (YN-192).
+        let mut cost_scope = Value::Null;
         let runs = ids
             .iter()
             .take(20)
             .map(|id| {
-                let run = run_view(&db, id)?;
+                let mut run = run_view(&db, id)?;
+                if let Some(scope) = run["cost"].as_object_mut().and_then(|cost| cost.remove("scope")) {
+                    cost_scope = scope;
+                }
                 let stages: Vec<Value> = run["stages"]
                     .as_array()
                     .into_iter()
@@ -1877,9 +1882,11 @@ impl Store {
                 Ok(row)
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(
-            json!({"runs":runs,"hasMore":more,"nextBefore":runs.last().map(|r| r["cursor"].clone())}),
-        )
+        let mut page = json!({"runs":runs,"hasMore":more,"nextBefore":runs.last().map(|r| r["cursor"].clone())});
+        if !cost_scope.is_null() {
+            page["costScope"] = cost_scope;
+        }
+        Ok(page)
     }
     /// An explicit new attempt of a stage whose latest attempt ended without success.
     pub(super) fn retry_stage(
