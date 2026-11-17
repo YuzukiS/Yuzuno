@@ -796,6 +796,7 @@ export function ProjectTalk({
                 label={quote ? t.followUpLabel(quote.title) : t.field(projectName)}
                 placeholder={quote ? t.followUpPlaceholder : t.placeholder(projectName)}
                 words={words}
+                oneLine
                 onWords={(next) => write({ text: next.text, blocks: next.blocks, images: next.images, files: next.files })}
                 onSubmit={() => void send()}
                 readOnly={readOnly || blocked}
