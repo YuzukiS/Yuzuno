@@ -746,6 +746,8 @@ struct Log {
 const LOG_LINES: usize = 200;
 const LOG_BYTES: usize = 32768;
 const LOG_LINE_CHARS: usize = 500;
+/// How much of a failed Job's newest output job_list reads for its lastLine.
+const LAST_LINE_BYTES: u64 = 8192;
 
 /// The lines of `bytes` (output starting at byte `start`) that contain
 /// `grep`, or all of them, then the last `tail` of those: each with the byte
@@ -1452,8 +1454,9 @@ pub async fn call(
                 for key in ["jobs", "liveJobs"] {
                     for row in page[key].as_array_mut().into_iter().flatten() {
                         if row["status"] == "failed" && row["machineId"].is_null() {
-                            let tail = host::logs(&ws.data_dir, &json!({"id": row["id"]}), None).await;
-                            if let Some(line) = tail.ok().and_then(|t| list::last_line(t["text"].as_str()?)) {
+                            // Only the end of its output, never the whole ring.
+                            let tail = host::newest(&ws.data_dir, &json!({"id": row["id"]}), LAST_LINE_BYTES).await;
+                            if let Some(line) = tail.ok().and_then(|t| list::last_line(&String::from_utf8_lossy(&t))) {
                                 row["lastLine"] = json!(line);
                             }
                         }

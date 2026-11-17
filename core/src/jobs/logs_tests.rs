@@ -34,6 +34,20 @@ async fn logs(ws: &Arc<Workspace>, input: Value) -> anyhow::Result<Value> {
     call(ws.clone(), Some("a".into()), "job_logs".into(), input).await
 }
 
+/// job_list's lastLine reads only the newest bytes of the ring (review
+/// 6c243065): the same bytes as the end of the whole ring, across segments.
+#[tokio::test]
+async fn the_newest_bytes_are_the_end_of_the_ring_read_alone() {
+    let (dir, ws) = setup();
+    let (older, newer) = (b"one\ntwo\nthree\n", b"four\nfive");
+    let job = failed_with_output(dir.path(), &ws, older, newer);
+    let whole = [older.as_slice(), newer.as_slice()].concat();
+    for limit in [0u64, 3, 9, 12, 23, 1000] {
+        let from = whole.len().saturating_sub(limit as usize);
+        assert_eq!(host::newest(&ws.data_dir, &job, limit).await.unwrap(), whole[from..], "limit {limit}");
+    }
+}
+
 #[tokio::test]
 async fn tail_and_grep_read_lines_of_the_whole_ring_with_their_offsets() {
     let (dir, ws) = setup();

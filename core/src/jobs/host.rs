@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     process::Command,
 };
 
@@ -590,6 +590,38 @@ pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Resul
 pub(super) async fn retained(data: &Path, job: &Value) -> Result<(u64, u64, Vec<u8>)> {
     let (chunks, oldest, total) = ring(data, job).await?;
     Ok((oldest, total, slice(&chunks, oldest, total)))
+}
+/// The newest `limit` bytes of the attempt's output, read from the end of
+/// its segments alone: the rest of the ring is never read (job_list's
+/// lastLine, YN-194).
+pub(super) async fn newest(data: &Path, job: &Value, limit: u64) -> Result<Vec<u8>> {
+    let dir = folder(data, job)?;
+    let mut segments = Vec::new();
+    for index in 0..2 {
+        let mut file = match tokio::fs::File::open(dir.join(format!("log-{index}.bin"))).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let length = file.metadata().await?.len();
+        if length < 8 {
+            continue;
+        }
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header).await?;
+        segments.push((u64::from_be_bytes(header), (length - 8).min(1024 * 1024), file));
+    }
+    segments.sort_by_key(|s| s.0);
+    let start = segments.last().map_or(0, |s| s.0 + s.1).saturating_sub(limit);
+    let mut bytes = Vec::new();
+    for (at, len, file) in &mut segments {
+        let lo = start.saturating_sub(*at).min(*len);
+        if *len > lo {
+            file.seek(std::io::SeekFrom::Start(8 + lo)).await?;
+            file.take(*len - lo).read_to_end(&mut bytes).await?;
+        }
+    }
+    Ok(bytes)
 }
 fn slice(chunks: &[(u64, Vec<u8>)], start: u64, end: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
