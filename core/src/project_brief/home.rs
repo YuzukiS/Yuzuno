@@ -314,6 +314,13 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 if let Some(refresh) = refreshes.get(&row.identity).filter(|_| refreshed.insert(row.identity)) {
                     section["refresh"] = refresh.clone();
                 }
+                // A task's card's earlier versions (YN-212 C2), only when it has any.
+                if cards::task_card(row) {
+                    let revisions = sections::revisions(&db, id, row.identity)?;
+                    if !revisions.is_empty() {
+                        section["revisions"] = json!(revisions);
+                    }
+                }
                 Ok(section)
             }).collect()
         };

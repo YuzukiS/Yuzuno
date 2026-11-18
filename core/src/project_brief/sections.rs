@@ -28,8 +28,9 @@ pub(super) struct Row {
     pub deferred_until: Option<String>,
     pub updated_at: String,
     pub updated_turn_id: Option<String>,
-    /// Why a section is history: seen, removed, resolved, archived, or
-    /// refreshed (a past issue of a card that refreshes itself, YN-113).
+    /// Why a section is history: seen, removed, resolved, archived,
+    /// refreshed (a past issue of a card that refreshes itself, YN-113), or
+    /// revised (an earlier version of a task's card, YN-212 C2).
     pub history_reason: Option<String>,
     /// When it became history.
     pub history_at: Option<String>,
@@ -160,13 +161,36 @@ pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
 /// Seen reports, removed and resolved sections of the last 30 days, newest
 /// first: Home's history. Not a card's past issues (`refreshed`, YN-113 §3.4):
 /// a card refreshed every 2 hours would put 360 of them here in 30 days; they
-/// are read by the card's identity (`of_identity`).
+/// are read by the card's identity (`of_identity`). Nor a task's card's
+/// earlier versions (`revised`, YN-212 C2), which its card lists (`revisions`).
 pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
     read(
         db,
-        "project_id=?1 AND live=0 AND history_at>=?2 AND history_reason IS NOT 'refreshed' ORDER BY history_at DESC, seq DESC",
+        "project_id=?1 AND live=0 AND history_at>=?2 AND COALESCE(history_reason,'') NOT IN ('refreshed','revised')
+         ORDER BY history_at DESC, seq DESC",
         params![project, history_cutoff()],
     )
+}
+
+/// At most this many of a card's earlier versions in its `revisions`: each
+/// write of a task's card keeps the one it replaces for 30 days, and a status
+/// written every hour would list 720. The rest stay readable by version.
+pub(super) const REVISIONS_SHOWN: usize = 20;
+
+/// The earlier versions of the task's card with this identity on Home that
+/// history keeps (YN-212 C2), newest first, at most REVISIONS_SHOWN: each
+/// one's version, who wrote it and when.
+pub(super) fn revisions(db: &Connection, project: &str, identity: i64) -> Result<Vec<Value>> {
+    let mut query = db.prepare_cached(
+        "SELECT version,COALESCE(author_id,owner_id),COALESCE(author_name,owner_name),updated_at FROM project_brief_sections
+         WHERE project_id=?1 AND COALESCE(lineage,seq)=?2 AND live=0 AND history_reason='revised' AND history_at>=?3
+         ORDER BY version DESC LIMIT ?4",
+    )?;
+    let rows = query.query_map(params![project, identity, history_cutoff(), REVISIONS_SHOWN as i64], |r| {
+        Ok(json!({"version":r.get::<_, i64>(0)?,"author":{"agentId":r.get::<_, String>(1)?,"name":r.get::<_, String>(2)?},
+            "at":r.get::<_, String>(3)?}))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Every version of the section with this identity on Home that is live or
