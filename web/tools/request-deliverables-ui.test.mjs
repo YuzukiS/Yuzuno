@@ -244,6 +244,9 @@ test("older requests are read from the requests side, and a done one's report st
   more.click();
   await until(() => page.cardOf(3), "the older request is read");
   assert.ok(page.calls.some((c) => c.url.endsWith("/requests?before=7")));
+  // Read from the page before, it comes after the requests shown, not above them (PR 1093 R1): Done, newest first.
+  assert.deepEqual([...page.document.querySelectorAll(".request-done [data-request-block]")].map((el) => Number(el.dataset.requestBlock)),
+    [7, 6, 5, 3]);
   const fold = page.document.querySelector(".request-done");
   fold.open = true;
   const [open] = page.delivered(3, "YN-70");
