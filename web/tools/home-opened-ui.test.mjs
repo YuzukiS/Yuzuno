@@ -163,6 +163,9 @@ async function openHome(state, options, render = {}, project = "p1") {
   p.window.startProject = project;
   p.window.renderHome(render);
   await until(() => p.document.querySelector(".project-home, .home-layout [data-glance-project]"), "Home read");
+  // A Project's page draws its cards once its requests are read (YN-212): wait a moment for them, as a reader would.
+  for (let i = 0; i < 100 && p.document.querySelector(".project-home") && !p.document.querySelector(".project-home [data-section-key]"); i++)
+    await tick(20);
   await tick(40);
   return p;
 }
