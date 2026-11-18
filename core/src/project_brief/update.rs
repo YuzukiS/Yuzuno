@@ -1596,8 +1596,8 @@ fn apply(
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
                              ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
-                             author_id,author_name)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15)",
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15,?4)",
                             params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
                                 at, ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id,
                                 ctx.agent, ctx.agent_name],
@@ -1613,8 +1613,8 @@ fn apply(
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
                              ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
-                             author_id,author_name)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,CASE WHEN ?16 THEN ?17 ELSE ?18 END,?19,?20)",
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,CASE WHEN ?16 THEN ?17 ELSE ?18 END,?19,?20,?4)",
                             params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
                                 state, since, replied_at, reply_text, deferred, at, ctx.turn.turn, row.identity,
                                 task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
@@ -1625,7 +1625,7 @@ fn apply(
                         tx.execute(
                             "UPDATE project_brief_sections SET kind=?2,version=?3,owner_name=?4,data=?5,ask_state=?6,ask_since=?7,
                              replied_at=?8,reply_text=?9,reply_form=NULL,reply_images=NULL,reply_files=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12,
-                             task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END,author_id=?15,author_name=?16 WHERE seq=?1",
+                             task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END,author_id=?15,author_name=?16,author_version=?3 WHERE seq=?1",
                             params![row.seq, change.kind, row.version + 1, kept_owner(row, ctx).1, data.to_string(), state, since,
                                 replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten(),
                                 ctx.agent, ctx.agent_name],
@@ -1667,8 +1667,8 @@ fn apply(
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
                              ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
-                             author_id,author_name)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12,?13,?5,?6)",
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12,?13,?5,?6,?4)",
                             params![ctx.project, change.key, change.kind, previous + 1, ctx.agent, ctx.agent_name,
                                 data.to_string(), state, since, at, ctx.turn.turn, lineage, task_id],
                         )?;
@@ -1719,8 +1719,8 @@ fn apply(
                     tx.execute(
                         "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
                          ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
-                         author_id,author_name)
-                         VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15)",
+                         author_id,author_name,author_version)
+                         VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15,?4)",
                         params![ctx.project, change.key, row.kind, row.version + 1, owner, owner_name, data.to_string(), at,
                             ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
                     )?;
@@ -1732,7 +1732,7 @@ fn apply(
                 } else {
                     tx.execute(
                         "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
-                         task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END,author_id=?9,author_name=?10 WHERE seq=?1",
+                         task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END,author_id=?9,author_name=?10,author_version=?2 WHERE seq=?1",
                         params![row.seq, row.version + 1, kept_owner(row, ctx).1, data.to_string(), at, ctx.turn.turn, task.is_some(),
                             task.clone().flatten(), ctx.agent, ctx.agent_name],
                     )?;

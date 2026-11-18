@@ -449,27 +449,28 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
          WHERE live=1 AND task_id IS NOT NULL;",
     )?;
-    // author_id, author_name: who wrote each version's content (YN-212 C1).
-    // A task's card is written by its Project's leads and its task's current
-    // executor, not only by its owner, so the owner no longer says who wrote
-    // it. Filled from the owner once, when added; a row an older Core writes
-    // later leaves them NULL and reads as its owner's (sections.rs COLUMNS),
-    // as does a row left unfilled by an open that stopped between the steps.
-    // A known limit after a downgrade (PR 1086 R1, P3): a row another writer
-    // last wrote here and an older Core then edits in place keeps that writer
-    // as its author until this Core writes it again.
+    // author_id, author_name, author_version: who wrote each version's
+    // content, and the version they wrote (YN-212 C1). A task's card is
+    // written by its Project's leads and its task's current executor, not
+    // only by its owner, so the owner no longer says who wrote it. A row reads
+    // as its author's only while its version is the one the author wrote
+    // (sections.rs COLUMNS): a row an older Core writes leaves them NULL, and
+    // one it edits in place gets a new version with the author left as it
+    // was; both read as their owner's, as every version did before. Filled
+    // from the owner once, when added; a row left unfilled by an open that
+    // stopped between the steps reads as its owner's too.
     let has_column = |name: &str| -> Result<bool> {
         Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name=?1)", [name], |r| r.get(0))?)
     };
-    let fill = !has_column("author_id")?;
-    if fill {
-        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN author_id TEXT")?;
+    let fill = !has_column("author_version")?;
+    for column in ["author_id TEXT", "author_name TEXT", "author_version INTEGER"] {
+        let name = column.split(' ').next().unwrap_or_default();
+        if !has_column(name)? {
+            db.execute_batch(&format!("ALTER TABLE project_brief_sections ADD COLUMN {column}"))?;
+        }
     }
-    if !has_column("author_name")? {
-        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN author_name TEXT")?;
-    }
     if fill {
-        db.execute_batch("UPDATE project_brief_sections SET author_id=owner_id,author_name=owner_name WHERE author_id IS NULL")?;
+        db.execute_batch("UPDATE project_brief_sections SET author_id=owner_id,author_name=owner_name,author_version=version")?;
     }
     // The cards that refresh themselves (YN-113), by their identity on Home.
     // Older Cores ignore it.
