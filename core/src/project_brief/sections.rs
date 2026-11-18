@@ -5,9 +5,12 @@ use super::*;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
+// Who wrote a row's version (YN-212 C1): its author, recorded with the
+// version it wrote (author_version); a row an older Core wrote, or edited in
+// place since (a new version, the author left as it was), is its owner's.
 const COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,\
 replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
-COALESCE(author_id,owner_id),COALESCE(author_name,owner_name)";
+CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END";
 
 #[derive(Clone, Debug)]
 pub(super) struct Row {
@@ -74,7 +77,7 @@ fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Resu
 const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
 json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
 replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
-COALESCE(author_id,owner_id),COALESCE(author_name,owner_name)";
+CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END";
 
 fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
     let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
