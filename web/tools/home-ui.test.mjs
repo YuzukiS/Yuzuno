@@ -294,6 +294,22 @@ async function wholeHome(p) {
 const chips = (p, id) => [...p.glance(id).querySelectorAll(".home-chip")].map((c) => c.textContent);
 /** A reply's field under `root` (YN-91: the conversation's composer), or null. */
 const replyField = (root) => root?.querySelector(".home-text-reply [data-composer-input]") ?? null;
+/** An Ask's one button that sends its decision, or its words where they answer it (YN-213). */
+const decideButton = (root) =>
+  root?.querySelector(".home-ask-decision .clarification footer .primary-button, .home-ask-decision .home-ask-actions .primary-button") ?? null;
+/** What sends an Ask's words: free text alone has its own button; beside a decision, its one button. */
+const sendOf = (root) => root?.querySelector(".home-text-reply button[type=submit]") ?? decideButton(root);
+/** An Ask's option or approach labelled `label`, to pick. */
+const radioOf = (root, label) =>
+  [...root.querySelectorAll(".home-ask-decision fieldset label")].find((l) => l.textContent.includes(label))?.querySelector("input") ?? null;
+/** Picks it and sends it with the one button (YN-213). */
+async function pickAndSend(root, label) {
+  const input = radioOf(root, label);
+  assert.ok(input, `${label} is offered`);
+  input.click();
+  await waitFor(() => /^Submit: /.test(decideButton(root)?.textContent.trim() ?? ""), `${label} is picked`);
+  decideButton(root).click();
+}
 // A report or status is read on its page, opened from its card (T-18, Lead 2270).
 async function openReport(p, projectId, key) {
   card(p, projectId, key).querySelector(".home-report-open").click();
@@ -699,7 +715,7 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     assert.equal(p.w.localStorage.getItem("yuzuno.home-outbox.v1"), null, "a delivered reply leaves the outbox");
     // Choosing one of two approaches sends a pre-filled reply to that owner.
     const budget = card(p, "p-app", "budget");
-    p.button("Choose B", budget).click();
+    await pickAndSend(budget, "Plan B");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 3, "the choice was sent");
     const choice = p.posts(/\/brief\/reply$/)[2].body;
     assert.equal(choice.key, "budget");
@@ -725,12 +741,12 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
   }
 });
 
-test("an option button sends its id and no text; the label shows as sent", async () => {
+test("an option, picked and sent with the one button, sends its id and no text; the label shows as sent", async () => {
   const p = await mount();
   try {
     // Answered in place in Needs you, on the whole of Home (YN-86 §2.1).
     assert.ok(card(p, "p-app", "release").closest(".home-needs-you"));
-    p.button("Ship today", card(p, "p-app", "release")).click();
+    await pickAndSend(card(p, "p-app", "release"), "Ship today");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "the option was sent");
     const { body: sent } = p.posts(/\/brief\/reply$/)[0];
     assert.equal(sent.key, "release");
@@ -754,7 +770,7 @@ test("an Ask answered in Needs you keeps its answer card where it was until the 
     const count = () => p.doc.querySelector(".home-needs-you h2 .nav-count").textContent;
     assert.deepEqual(keys(), ["ask:p-app:release", "ask:p-app:budget", "approval:r-1"]);
     assert.equal(count(), "3");
-    p.button("Ship today", card(p, "p-app", "release")).click();
+    await pickAndSend(card(p, "p-app", "release"), "Ship today");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "the option was sent");
     // Core has the reply: the Ask is no longer in its Needs you.
     const release = p.state.home.projects[0].brief.sections.find((s) => s.key === "release");
@@ -828,7 +844,7 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
     assert.equal(p.button("Defer", budget), undefined);
     // Reply again, on the card, brings the controls back.
     p.button("Reply again", budget).click();
-    await waitFor(() => p.button("Choose B", budget), "the choice is offered again");
+    await waitFor(() => radioOf(budget, "Plan B"), "the choice is offered again");
     // Updated by its owner after the reply: Updated, not New, and what the owner says now in place.
     const deploy = card(p, "p-app", "deploy");
     assert.ok(deploy.classList.contains("is-replied") && deploy.classList.contains("is-answer"));
@@ -916,7 +932,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.ok(p.doc.activeElement === release(), "focus, gone with the reply's controls, is on the card");
     assert.deepEqual(deck(), order, "its place on the deck kept: only its size changed");
     // A choice.
-    p.button("Choose B", budget()).click();
+    await pickAndSend(budget(), "Plan B");
     await waitFor(() => budget().classList.contains("is-answer"), "a choice: the answer card as soon as Core has it");
     assert.match(budget().querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/);
     // A form, sent at its defaults (it copies its answers as it sends them).
@@ -1057,7 +1073,7 @@ test("a reply Core cannot confirm never shows as replied", async () => {
   const p = await mount({ open: "p-app", replyStatus: "uncertain" });
   try {
     const release = card(p, "p-app", "release");
-    p.button("Ship today", release).click();
+    await pickAndSend(release, "Ship today");
     await waitFor(() => release.querySelector('[role="alert"]'), "the unconfirmed delivery is shown");
     assert.match(release.querySelector('[role="alert"]').textContent, /not confirmed/);
     assert.equal(release.querySelector(".home-ask-replied"), null, "not shown as replied");
@@ -2325,7 +2341,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     assert.equal(composerText(askField(again)), "Only after the docs land.", "the text is back after a reload");
     assert.equal(release.querySelector(".home-reply-target select").value, "b", "and its recipient");
     assert.match(release.textContent, /Kept from before, not sent yet: your reply to this ask\./);
-    again.button("Send", release.querySelector(".home-text-reply")).click();
+    sendOf(release).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 1, "the reply is being sent");
     // Written while it is being sent: not what was sent, so it stays.
     await type(again, askField(again), "Only after the docs land. And the changelog.");
@@ -2341,7 +2357,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     again.button("Reply again", card(again, "p-app", "release")).click();
     await pause();
     assert.equal(composerText(askField(again)), "Only after the docs land. And the changelog.");
-    again.button("Send", card(again, "p-app", "release").querySelector(".home-text-reply")).click();
+    sendOf(card(again, "p-app", "release")).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 2, "the second reply is sent");
     await waitFor(() => again.w.localStorage.getItem(ASK_DRAFTS) === null, "a delivered reply leaves no draft");
     assert.equal(again.posts(/\/brief\/reply$/)[1].body.text, "Only after the docs land. And the changelog.");
@@ -2373,7 +2389,7 @@ test("YN-38 an Ask asked again while the user writes keeps the words and sends t
     const release = () => card(p, "p-app", "release");
     assert.doesNotMatch(release().textContent, /began this reply on version|Refer it to/);
     assert.equal(composerText(askField(p)), "Ship after QA.", "the text stays");
-    const send = () => p.button("Send", release().querySelector(".home-text-reply"));
+    const send = () => sendOf(release());
     assert.equal(send().disabled, false, "no step before it can be sent");
     assert.equal(p.button("Refer it to version 4", release()), undefined);
     send().click();
@@ -2484,10 +2500,10 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
     const release = card(gone, "p-app", "release");
     assert.equal(composerText(askField(gone)), "For an Agent who left.");
     assert.equal(release.querySelector(".home-reply-target select").value, "", "no recipient is chosen for the user");
-    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, true);
-    assert.equal(gone.button("Ship today", release).disabled, true, "nor does an option send it anywhere");
+    assert.equal(sendOf(release).disabled, true);
+    assert.equal(radioOf(release, "Ship today").disabled, true, "nor does an option send it anywhere");
     await choose(gone, release.querySelector(".home-reply-target select"), "a");
-    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, false);
+    assert.equal(sendOf(release).disabled, false);
     assert.equal(gone.posts(/\/brief\/reply$/).length, 0);
   } finally {
     gone.close();

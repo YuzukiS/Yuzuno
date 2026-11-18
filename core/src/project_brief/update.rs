@@ -699,17 +699,34 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         let at = format!("changes[{index}]");
         let key = change.key.as_str();
         let existing = planned.get(key).cloned();
+        let row_now = rows.get(key).copied();
         // The task a section is the card of (YN-86 S2a): a lead binds it to
-        // a task of this Project that is not archived, or unbinds it.
-        // `binds`: the task this change binds it to, while that is open.
+        // a task of this Project that is not archived, or unbinds it; a
+        // task's current executor binds its own task's card at its key and
+        // nothing else (YN-212 C1). `binds`: the task this change binds it
+        // to, while that is open. `own_card`: an executor's own binding.
         let mut binds = None;
+        let mut own_card = false;
         if let Some(task) = &change.task {
             if !can_edit {
-                problems.push(problem("invalid_task", format!("{at}.task"),
-                    "Only a lead of this Project binds a section to a task or unbinds it; leave task out.", "sections"));
-                continue;
-            }
-            if let Some(reference) = task {
+                let own = match (task, change.op) {
+                    (Some(reference), Op::Put | Op::Edit) => {
+                        cards::own_card_binding(db, &ctx.project, key, reference, &ctx.agent, row_now)?
+                    }
+                    _ => None,
+                };
+                let Some(id) = own else {
+                    problems.push(problem("invalid_task", format!("{at}.task"),
+                        "Only a lead of this Project binds a section to a task or unbinds it. A task's current executor binds only \
+                         its own task's card, at its task's key in lower case (e.g. yn-90 for YN-90); otherwise leave task out.",
+                        "sections"));
+                    continue;
+                };
+                own_card = true;
+                if !cards::task_ended(db, &id)? {
+                    binds = Some(id);
+                }
+            } else if let Some(reference) = task {
                 match cards::bindable(db, &ctx.project, reference)? {
                     Err(why) => {
                         problems.push(problem("invalid_task", format!("{at}.task"), why, "sections"));
@@ -721,6 +738,21 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             }
         }
         let unbinding = matches!(change.task, Some(None));
+        // A task's card an executor writes as its task's current executor
+        // (YN-212 C1): the card itself, a status or a report, or a new one
+        // at its task's key that its own `task` binds.
+        let card_kind = matches!(change.kind.as_str(), "status" | "report");
+        let executor_card = match change.op {
+            Op::Put => card_kind && match row_now {
+                Some(row) => cards::may_write_card(db, row, &ctx.agent)?,
+                None => own_card,
+            },
+            Op::Edit | Op::Patch => match row_now {
+                Some(row) => cards::may_write_card(db, row, &ctx.agent)?,
+                None => false,
+            },
+            _ => false,
+        };
         if !can_edit {
             let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
             let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
@@ -732,29 +764,67 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 Op::Edit | Op::Patch => rows.get(key).is_some_and(|row| row.kind != "ask"),
                 _ => false,
             };
-            let card = sub && cards::may_write_sub(db, &ctx.project, key, &ctx.agent)?;
+            let card = (sub && cards::may_write_sub(db, &ctx.project, key, &ctx.agent)?) || executor_card;
             let permitted = match change.op {
                 Op::Put => (change.kind == "ask" && (existing.is_none() || own_ask)) || card,
                 // An edit keeps the stored kind: an Ask-only member edits
                 // only its own ask, never a report or status it wrote before,
-                // but for its card's sub-topics.
+                // but for its task's card and its sub-topics.
                 Op::Edit | Op::Patch => own_ask || card,
                 Op::Resolve => own_ask,
                 // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
                 Op::Remove => own,
                 Op::Claim => false,
             };
-            if !permitted && sub && crate::agent_roles::kind(db, &ctx.agent)? == crate::agent_roles::EXECUTOR {
+            let card_like = sub || (matches!(change.op, Op::Put | Op::Edit | Op::Patch) && row_now.is_some_and(cards::task_card));
+            if !permitted && card_like && crate::agent_roles::kind(db, &ctx.agent)? == crate::agent_roles::EXECUTOR {
                 problems.push(problem("not_card_responsible", format!("{at}.key"), format!(
-                    "{key} is not under the card of a task you are the current executor of. You may put and edit report and status \
-                     sub-topics only under the topic whose section a lead bound to your task (e.g. its-topic/result), while you are \
-                     that task's newest executor not yet released; otherwise you are Ask-only here: your own asks, removing your own \
-                     older sections, or noChange:true."), "sections"));
+                    "{key} is neither the card of a task you are the current executor of nor under it. While you are that task's \
+                     newest executor not yet released, you may put and edit its card itself (the section bound to your task, at its \
+                     key in lower case such as yn-90, a status or a report), and report and status sub-topics under the topic whose \
+                     section is bound to your task (e.g. yn-90/result); otherwise you are Ask-only here: your own asks, removing \
+                     your own older sections, or noChange:true."), "sections"));
                 continue;
             }
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
                     "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
+                continue;
+            }
+        }
+        // A task's card written by one that does not own it (YN-212 C1): a
+        // lead, or the task's current executor. Its content only: the owner
+        // stays, and so do the binding and the refresh, which only its owner
+        // changes.
+        let card_writer = existing.as_ref().is_some_and(|p| p.owner != ctx.agent)
+            && row_now.is_some_and(cards::task_card)
+            && match change.op {
+                Op::Put => card_kind && (can_edit || executor_card),
+                Op::Edit | Op::Patch => can_edit || executor_card,
+                _ => false,
+            };
+        if card_writer {
+            let current = row_now.and_then(|row| row.task_id.as_deref());
+            let rebinds = match &change.task {
+                None => false,
+                Some(None) => true,
+                Some(Some(reference)) => match cards::bindable(db, &ctx.project, reference)? {
+                    Ok(id) => Some(id.as_str()) != current,
+                    Err(_) => true,
+                },
+            };
+            if rebinds {
+                problems.push(problem("invalid_task", format!("{at}.task"), format!(
+                    "{key} is a task's card you write but do not own; only its owner binds it to another task or unbinds it. \
+                     Leave task out, or name the task it is bound to."), "sections"));
+                continue;
+            }
+            // A card's refresh runs as its owner (refresh_writes.rs): only the
+            // owner sets, changes or removes it.
+            if change.refresh.is_some() {
+                problems.push(problem("not_owner", format!("{at}.refresh"), format!(
+                    "{key} is a task's card you write but do not own; its refresh runs as its owner, so only its owner sets, \
+                     changes or removes it. Leave refresh out: the card keeps the refresh it has."), "refresh"));
                 continue;
             }
         }
@@ -789,7 +859,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         match change.op {
             Op::Put => {
                 match &existing {
-                    Some(p) if p.owner != ctx.agent => {
+                    Some(p) if p.owner != ctx.agent && !card_writer => {
                         problems.push(not_owner(p));
                         continue;
                     }
@@ -818,7 +888,12 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                     Some(_) => binds.clone(),
                     None => existing.as_ref().and_then(|p| p.card_of.clone()),
                 };
-                let entry = Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask", card_of };
+                // A card written by one that does not own it keeps its owner.
+                let owner = match &existing {
+                    Some(p) if card_writer => p.owner.clone(),
+                    _ => ctx.agent.clone(),
+                };
+                let entry = Planned { owner, open_ask: change.kind == "ask", card_of };
                 if let Some(why) = topic_limit(&planned, key, &entry, unbinding) {
                     let field = if existing.is_some() { "task" } else { "key" };
                     problems.push(problem("topic_limit", format!("{at}.{field}"), why, "limits"));
@@ -842,7 +917,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                     note if note.is_empty() => format!("No live section has key {key}; create it with put."),
                     note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
                 }, "sections")),
-                Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
+                Some(p) if p.owner != ctx.agent && !card_writer => problems.push(not_owner(p)),
                 Some(p) => {
                     if change.task.is_some() {
                         let entry = Planned { card_of: binds.clone(), ..p.clone() };
@@ -1430,6 +1505,32 @@ fn section_data(normalized: &Value, submitted: &Value, staged: &[attachments::St
     data
 }
 
+/// Who owns `row` once `ctx` writes it, and the name it is shown by: its
+/// owner, by its name as of this write when that is the writer, as before.
+/// A task's card written by a lead or its task's current executor that does
+/// not own it (YN-212 C1) keeps its owner and the owner's name; the writer
+/// is its author.
+fn kept_owner<'a>(row: &'a Row, ctx: &'a Caller) -> (&'a str, &'a str) {
+    if row.owner_id == ctx.agent {
+        (&ctx.agent, &ctx.agent_name)
+    } else {
+        (&row.owner_id, &row.owner_name)
+    }
+}
+
+/// Puts `row`, the live version of a task's card a write replaces, into
+/// history as revised (YN-212 C2): it keeps its body, attachments and author
+/// under the same identity for HISTORY_DAYS, so a link to that version still
+/// opens it (sections::find), while Home's History leaves it out
+/// (sections::history). Nothing else of the section changes.
+fn revise(tx: &Connection, row: &Row, at: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE project_brief_sections SET live=0,history_reason='revised',history_at=?2 WHERE seq=?1",
+        params![row.seq, at],
+    )?;
+    Ok(())
+}
+
 fn apply(
     tx: &Connection,
     ctx: &Caller,
@@ -1491,12 +1592,32 @@ fn apply(
                             "UPDATE project_brief_sections SET live=0,history_reason='refreshed',history_at=?2 WHERE seq=?1",
                             params![row.seq, at],
                         )?;
+                        let (owner, owner_name) = kept_owner(row, ctx);
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
-                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END)",
-                            params![ctx.project, change.key, change.kind, row.version + 1, ctx.agent, ctx.agent_name, data.to_string(),
-                                at, ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id],
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15,?4)",
+                            params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
+                                at, ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id,
+                                ctx.agent, ctx.agent_name],
+                        )?;
+                        (tx.last_insert_rowid(), row.version + 1, row.identity)
+                    }
+                    // A task's card keeps the version this put replaces as
+                    // history (YN-212 C2), under the same identity, as a
+                    // refreshed report does above.
+                    Some(row) if cards::task_card(row) => {
+                        revise(tx, row, &at)?;
+                        let (owner, owner_name) = kept_owner(row, ctx);
+                        tx.execute(
+                            "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,CASE WHEN ?16 THEN ?17 ELSE ?18 END,?19,?20,?4)",
+                            params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
+                                state, since, replied_at, reply_text, deferred, at, ctx.turn.turn, row.identity,
+                                task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
                         )?;
                         (tx.last_insert_rowid(), row.version + 1, row.identity)
                     }
@@ -1504,9 +1625,10 @@ fn apply(
                         tx.execute(
                             "UPDATE project_brief_sections SET kind=?2,version=?3,owner_name=?4,data=?5,ask_state=?6,ask_since=?7,
                              replied_at=?8,reply_text=?9,reply_form=NULL,reply_images=NULL,reply_files=NULL,deferred_until=?10,updated_at=?11,updated_turn_id=?12,
-                             task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END WHERE seq=?1",
-                            params![row.seq, change.kind, row.version + 1, ctx.agent_name, data.to_string(), state, since,
-                                replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
+                             task_id=CASE WHEN ?13 THEN ?14 ELSE task_id END,author_id=?15,author_name=?16,author_version=?3 WHERE seq=?1",
+                            params![row.seq, change.kind, row.version + 1, kept_owner(row, ctx).1, data.to_string(), state, since,
+                                replied_at, reply_text, deferred, at, ctx.turn.turn, task.is_some(), task.clone().flatten(),
+                                ctx.agent, ctx.agent_name],
                         )?;
                         (row.seq, row.version + 1, row.identity)
                     }
@@ -1544,8 +1666,9 @@ fn apply(
                         };
                         tx.execute(
                             "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
-                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id)
-                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12,?13)",
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,NULL,?10,?11,?12,?13,?5,?6,?4)",
                             params![ctx.project, change.key, change.kind, previous + 1, ctx.agent, ctx.agent_name,
                                 data.to_string(), state, since, at, ctx.turn.turn, lineage, task_id],
                         )?;
@@ -1587,11 +1710,33 @@ fn apply(
                     }
                     repairs => data["repairs"] = json!(repairs),
                 }
-                tx.execute(
-                    "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
-                     task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END WHERE seq=?1",
-                    params![row.seq, row.version + 1, ctx.agent_name, data.to_string(), at, ctx.turn.turn, task.is_some(), task.clone().flatten()],
-                )?;
+                if cards::task_card(row) {
+                    // A task's card keeps the version this edit replaces
+                    // (YN-212 C2); the new version keeps its attachments,
+                    // so their snapshots stay indexed for it too.
+                    revise(tx, row, &at)?;
+                    let (owner, owner_name) = kept_owner(row, ctx);
+                    tx.execute(
+                        "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
+                         ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                         author_id,author_name,author_version)
+                         VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15,?4)",
+                        params![ctx.project, change.key, row.kind, row.version + 1, owner, owner_name, data.to_string(), at,
+                            ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
+                    )?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO project_brief_snapshots(section_seq,project_id,sha256,size)
+                         SELECT ?1,project_id,sha256,size FROM project_brief_snapshots WHERE section_seq=?2",
+                        params![tx.last_insert_rowid(), row.seq],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
+                         task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END,author_id=?9,author_name=?10,author_version=?2 WHERE seq=?1",
+                        params![row.seq, row.version + 1, kept_owner(row, ctx).1, data.to_string(), at, ctx.turn.turn, task.is_some(),
+                            task.clone().flatten(), ctx.agent, ctx.agent_name],
+                    )?;
+                }
                 let mut entry = bound(row.version + 1);
                 if let Some(refresh) = super::refresh_writes::apply(tx, ctx, change, row.identity)? {
                     entry["refresh"] = refresh;

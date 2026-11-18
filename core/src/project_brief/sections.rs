@@ -5,8 +5,12 @@ use super::*;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
+// Who wrote a row's version (YN-212 C1): its author, recorded with the
+// version it wrote (author_version); a row an older Core wrote, or edited in
+// place since (a new version, the author left as it was), is its owner's.
 const COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
+CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END";
 
 #[derive(Clone, Debug)]
 pub(super) struct Row {
@@ -27,8 +31,9 @@ pub(super) struct Row {
     pub deferred_until: Option<String>,
     pub updated_at: String,
     pub updated_turn_id: Option<String>,
-    /// Why a section is history: seen, removed, resolved, archived, or
-    /// refreshed (a past issue of a card that refreshes itself, YN-113).
+    /// Why a section is history: seen, removed, resolved, archived,
+    /// refreshed (a past issue of a card that refreshes itself, YN-113), or
+    /// revised (an earlier version of a task's card, YN-212 C2).
     pub history_reason: Option<String>,
     /// When it became history.
     pub history_at: Option<String>,
@@ -44,6 +49,11 @@ pub(super) struct Row {
     /// The files the user's reply to this version of an ask carried
     /// (YN-145); none for any other section or reply.
     pub reply_files: Vec<crate::input_files::FileRef>,
+    /// Who wrote this version's content (YN-212 C1): its owner, or a lead or
+    /// the task's current executor writing a task's card it does not own.
+    /// A row an older Core wrote names its owner.
+    pub author_id: String,
+    pub author_name: String,
 }
 
 impl Row {
@@ -67,7 +77,8 @@ fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Resu
 /// SQLite extracts these, so a large body is never read into Core.
 const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
 json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
+CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END";
 
 fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
     let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
@@ -97,6 +108,8 @@ fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl ru
                 // As kept by mark_replied_form; a value Core cannot read shows none.
                 reply_images: r.get::<_, Option<String>>(20)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
                 reply_files: r.get::<_, Option<String>>(21)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
+                author_id: r.get(22)?,
+                author_name: r.get(23)?,
             },
             r.get::<_, String>(8)?,
         ))
@@ -151,13 +164,38 @@ pub(super) fn bound_to(db: &Connection, task: &str) -> Result<Vec<Row>> {
 /// Seen reports, removed and resolved sections of the last 30 days, newest
 /// first: Home's history. Not a card's past issues (`refreshed`, YN-113 §3.4):
 /// a card refreshed every 2 hours would put 360 of them here in 30 days; they
-/// are read by the card's identity (`of_identity`).
+/// are read by the card's identity (`of_identity`). Nor a task's card's
+/// earlier versions (`revised`, YN-212 C2), which its card lists (`revisions`).
 pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
     read(
         db,
-        "project_id=?1 AND live=0 AND history_at>=?2 AND history_reason IS NOT 'refreshed' ORDER BY history_at DESC, seq DESC",
+        "project_id=?1 AND live=0 AND history_at>=?2 AND COALESCE(history_reason,'') NOT IN ('refreshed','revised')
+         ORDER BY history_at DESC, seq DESC",
         params![project, history_cutoff()],
     )
+}
+
+/// At most this many of a card's earlier versions in its `revisions`: each
+/// write of a task's card keeps the one it replaces for 30 days, and a status
+/// written every hour would list 720. The rest stay readable by version.
+pub(super) const REVISIONS_SHOWN: usize = 20;
+
+/// The earlier versions of the task's card with this identity on Home that
+/// history keeps (YN-212 C2), newest first, at most REVISIONS_SHOWN: each
+/// one's version, who wrote it and when.
+pub(super) fn revisions(db: &Connection, project: &str, identity: i64) -> Result<Vec<Value>> {
+    let mut query = db.prepare_cached(
+        "SELECT version,CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_id ELSE owner_id END,
+                CASE WHEN author_version IS version AND author_id IS NOT NULL THEN author_name ELSE owner_name END,updated_at
+         FROM project_brief_sections
+         WHERE project_id=?1 AND COALESCE(lineage,seq)=?2 AND live=0 AND history_reason='revised' AND history_at>=?3
+         ORDER BY version DESC LIMIT ?4",
+    )?;
+    let rows = query.query_map(params![project, identity, history_cutoff(), REVISIONS_SHOWN as i64], |r| {
+        Ok(json!({"version":r.get::<_, i64>(0)?,"author":{"agentId":r.get::<_, String>(1)?,"name":r.get::<_, String>(2)?},
+            "at":r.get::<_, String>(3)?}))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Every version of the section with this identity on Home that is live or
@@ -447,6 +485,7 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
     let mut section = json!({
         "key":row.key,"kind":row.kind,"title":data["title"],"version":row.version,
         "owner":{"agentId":row.owner_id,"name":owner.name,"state":owner.state},
+        "author":{"agentId":row.author_id,"name":row.author_name},
         "updatedAt":row.updated_at,"updatedTurnId":row.updated_turn_id,"body":data["body"],
         "attachments":attachments,
         "refs":refs,
@@ -549,6 +588,8 @@ pub(super) fn expire_history(db: &Connection) -> Result<()> {
         [&cutoff],
     )?;
     db.execute("DELETE FROM project_brief_sections WHERE live=0 AND history_at<?1", [&cutoff])?;
+    // And the notes on asks that are no longer kept (YN-213).
+    super::ask_notes::expire(db)?;
     Ok(())
 }
 

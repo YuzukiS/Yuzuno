@@ -324,7 +324,11 @@ test("a gate it asked about on Home is answered in its Overview with Home's own 
     const row = p.doc.querySelector('.agent-list article[data-agent-id="g"]');
     assert.equal(row.querySelector(".agent-island")?.getAttribute("data-state"), "waiting", "its ring needs you");
     // Answered here: Home's reply to that version of the ask, to its executor.
-    [...card.querySelectorAll(".home-ask-options button")].find((b) => b.textContent === "One JSON file").click();
+    // Picked, then sent with the Ask's one button (YN-213).
+    [...card.querySelectorAll(".home-ask-options label")].find((l) => l.textContent === "One JSON file").querySelector("input").click();
+    const submit = () => card.querySelector(".home-ask-actions .primary-button");
+    await waitFor(() => submit()?.textContent.trim() === "Submit: One JSON file", "picked");
+    submit().click();
     await waitFor(() => p.calls.some((c) => c.url.endsWith("/api/projects/p/brief/reply")), "the reply sent");
     const sent = p.calls.find((c) => c.url.endsWith("/api/projects/p/brief/reply"));
     assert.equal(sent.method, "POST");

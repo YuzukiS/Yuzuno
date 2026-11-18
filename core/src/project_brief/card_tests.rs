@@ -351,7 +351,7 @@ async fn a_reply_to_a_released_executors_card_goes_to_its_responsible_agent() {
     let reply = |key: &str, id: &str, card: Option<(i64, &str)>, ask: Option<i64>| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: if ask.is_some() { String::new() } else { "Looks right.".into() },
         client_message_id: id.into(), choice: ask.map(|_| "left".into()), version: card.map(|(v, _)| v),
-        title: card.map(|(_, t)| t.to_owned()), ask_version: ask, workspace_id: ask.map(|_| workspace.clone()), form: None, images: vec![], files: vec![] };
+        title: card.map(|(_, t)| t.to_owned()), ask_version: ask, workspace_id: ask.map(|_| workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     home::reply(&ws, project.clone(), reply("page", "r1", Some((1, "About page")), None)).await.unwrap();
     let sent = ws.store.receipt("c", "r1").unwrap().expect("the card's responsible Agent has it");
     assert!(sent.input.text.contains(&format!("\nThis card is bound to task {task}; you are its responsible Agent.\n\nLooks right.")), "{}", sent.input.text);
@@ -410,7 +410,7 @@ async fn a_section_without_a_task_reads_as_before_and_the_migration_runs_again_u
         let mut fields: Vec<&str> = section.as_object().unwrap().keys().map(String::as_str).collect();
         fields.sort();
         assert!(!fields.contains(&"card"), "{fields:?}");
-        let known = ["ask", "attachments", "body", "history", "id", "key", "kind", "opened", "owner", "refs", "seen", "status", "title", "updatedAt", "updatedTurnId", "version"];
+        let known = ["ask", "attachments", "author", "body", "history", "id", "key", "kind", "opened", "owner", "refs", "seen", "status", "title", "updatedAt", "updatedTurnId", "version"];
         assert!(fields.iter().all(|field| known.contains(field)), "{fields:?}");
     }
 }
@@ -574,4 +574,319 @@ async fn only_one_card_per_open_task_is_left_out_of_the_topic_count() {
     accept(&ws, "a", input("a6", 1, vec![put("t0", "status")])).await;
     assert_eq!(codes(&reject(&ws, "a", input("a7", 2, vec![op("remove", "t1"), put("t12", "status")])).await), ["topic_limit"]);
     accept(&ws, "a", input("a8", 2, vec![op("remove", "t1"), op("remove", "t2"), put("t12", "status")])).await;
+}
+
+/// The live row under `key`: its owner, author and version.
+fn written(ws: &Workspace, project: &str, key: &str) -> (String, String, String, i64) {
+    let row = sections::live_key(&ws.store.db.read().unwrap(), project, key).unwrap().expect("a live section");
+    (row.owner_id, row.owner_name, row.author_id, row.version)
+}
+
+fn edit_note(key: &str, text: &str) -> Value {
+    json!({"op":"edit","key":key,"elements":{"note":{"type":"Markdown","props":{"text":text}}}})
+}
+
+/// YN-212 C1: a task's card is written by its Project's leads, not only by
+/// the lead that put it. Another lead puts, edits and patches it while its
+/// owner still leads, without a claim; the owner and the binding stay, and
+/// each version names its author. Removing it stays its owner's, and so do
+/// binding it to another task or unbinding it, and its refresh, which runs as
+/// its owner (PR 1086 R1). A lead's section bound to no task stays its owner's.
+#[tokio::test]
+async fn another_lead_writes_an_open_tasks_card_while_its_owner_still_leads() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a", "b"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let (other, _) = task_in(&ws, &project, "Other work");
+    let key = task.to_lowercase();
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task), put("plan", "status")])).await;
+    assert_eq!(written(&ws, &project, &key), ("a".into(), "Agent a".into(), "a".into(), 1));
+
+    accept(&ws, "b", input("b1", 1, vec![put(&key, "status")])).await;
+    assert_eq!(written(&ws, &project, &key), ("a".into(), "Agent a".into(), "b".into(), 2), "the owner stays; b wrote it");
+    accept(&ws, "b", input("b2", 2, vec![edit_note(&key, "Signing: 3 of 5.")])).await;
+    accept(&ws, "b", input("b3", 3, vec![json!({"op":"patch","key":key,"patch":[{"op":"replace","path":"/elements/note/props/text","value":"Signed."}]})])).await;
+    let shown = section(&brief(&ws, "a"), &key).clone();
+    assert_eq!((shown["owner"]["agentId"].clone(), shown["author"].clone(), shown["card"]["task"]["id"].clone()),
+        (json!("a"), json!({"agentId":"b","name":"Agent b"}), json!(task)), "{shown}");
+    // At its end the same key becomes the task's report, by another lead too.
+    accept(&ws, "b", input("b4", 4, vec![put(&key, "report")])).await;
+    assert_eq!(section(&brief(&ws, "a"), &key)["kind"], "report");
+    // The owner writes it again: its author again.
+    accept(&ws, "a", input("a2", 5, vec![edit_note(&key, "Released.")])).await;
+    assert_eq!(written(&ws, &project, &key), ("a".into(), "Agent a".into(), "a".into(), 6));
+
+    for (request, change, code) in [
+        ("b-remove", op("remove", &key), "not_owner"),
+        ("b-unbind", json!({"op":"edit","key":key,"task":null}), "invalid_task"),
+        ("b-rebind", {let mut change = put(&key, "report"); change["task"] = json!(other); change}, "invalid_task"),
+        ("b-ask", put(&key, "ask"), "not_owner"),
+        ("b-plan", put("plan", "status"), "not_owner"),
+        // Its refresh runs as its owner: set, changed or removed by its owner only.
+        ("b-refresh", {let mut change = put(&key, "report"); change["refresh"] = json!({"every":"day","instruction":"Sum up the release."}); change},
+            "not_owner"),
+        ("b-refresh-edit", json!({"op":"edit","key":key,"refresh":{"every":"hours","hours":6}}), "not_owner"),
+        ("b-refresh-off", json!({"op":"edit","key":key,"refresh":null}), "not_owner"),
+    ] {
+        let refused = reject(&ws, "b", input(request, 6, vec![change])).await;
+        assert_eq!(codes(&refused), [code], "{request}: {refused}");
+    }
+    // Naming the task it is bound to changes nothing of the binding.
+    let mut same = put(&key, "report");
+    same["task"] = json!(task);
+    accept(&ws, "b", input("b5", 6, vec![same])).await;
+    assert_eq!(written(&ws, &project, &key).0, "a");
+}
+
+/// YN-212 C1: the lead that put a card no longer leads (Dev Lead 2 to Dev
+/// Lead): the card of its open task stays live (YN-195), Home shows it with
+/// the leads' sections though its owner is no lead, and the new lead updates
+/// it with no claim.
+#[tokio::test]
+async fn a_new_lead_updates_the_card_its_old_lead_put_and_home_shows_it() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task)])).await;
+    set_leads(&ws, &project, &["b"]);
+    accept(&ws, "b", input("b1", 1, vec![edit_note(&key, "Taken over.")])).await;
+    assert_eq!(written(&ws, &project, &key), ("a".into(), "Agent a".into(), "b".into(), 2));
+    let panel = panel(&ws);
+    assert!(keys(&panel, "sections").contains(&key), "{panel}");
+    assert!(!keys(&panel, "teamSections").contains(&key));
+}
+
+/// YN-212 C1: a task's current executor puts its own task's card at the
+/// task's key, bound with task to its task, and keeps writing it; it writes
+/// the card a lead put for its task (a front desk's) too, which stays that
+/// lead's. It binds nothing else, writes no other task's card, and no other
+/// member writes a card it neither leads nor executes. Released, it writes
+/// none.
+#[tokio::test]
+async fn a_tasks_current_executor_writes_its_own_tasks_card_and_no_other() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Build the page");
+    let (other, other_internal) = task_in(&ws, &project, "Fix the dock");
+    let (key, other_key) = (task.to_lowercase(), other.to_lowercase());
+    ws.store.set_agent_project("d", Some(&project)).unwrap();
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    role(&ws.store, "d", &other_internal, "agent:a", "d2", "running", None);
+
+    let answer = accept(&ws, "c", input("c1", 0, vec![bound(&key, "status", &task)])).await;
+    assert_eq!(answer["sections"][0]["task"], json!(task));
+    assert_eq!(written(&ws, &project, &key), ("c".into(), "Agent c".into(), "c".into(), 1));
+    assert_eq!(card(&brief(&ws, "a"), &key)["task"]["id"], json!(task));
+    accept(&ws, "c", input("c2", 1, vec![edit_note(&key, "Half done.")])).await;
+    accept(&ws, "c", input("c3", 2, vec![bound(&key, "status", &task)])).await;
+    // Its sub-topics under its own card, as under a lead's.
+    accept(&ws, "c", input("c4", 3, vec![put(&format!("{key}/result"), "report")])).await;
+    let panel = panel(&ws);
+    assert!(keys(&panel, "sections").contains(&key), "Home shows an executor's card with the leads'");
+
+    // The lead's card of the other task, which d executes.
+    accept(&ws, "a", input("a1", 4, vec![bound(&other_key, "status", &other)])).await;
+    for (request, change, code) in [
+        ("c-elsewhere", bound("page", "status", &task), "invalid_task"),
+        ("c-other-task", bound(&other_key, "status", &other), "invalid_task"),
+        ("c-other-put", put(&other_key, "status"), "not_card_responsible"),
+        ("c-other-edit", edit_note(&other_key, "Mine."), "not_card_responsible"),
+        ("c-unbound", put("notes", "status"), "ask_only"),
+        ("c-as-ask", put(&key, "ask"), "not_card_responsible"),
+    ] {
+        let refused = reject(&ws, "c", input(request, 5, vec![change])).await;
+        assert_eq!(codes(&refused), [code], "{request}: {refused}");
+    }
+    // d writes the card a lead put for its task, which stays the lead's.
+    accept(&ws, "d", input("d1", 5, vec![edit_note(&other_key, "Fixing.")])).await;
+    accept(&ws, "d", input("d2", 6, vec![put(&other_key, "report")])).await;
+    assert_eq!(written(&ws, &project, &other_key), ("a".into(), "Agent a".into(), "d".into(), 3));
+    assert_eq!(codes(&reject(&ws, "d", input("d3", 7, vec![op("remove", &other_key)])).await), ["ask_only"]);
+
+    // b leads nothing and executes nothing here.
+    for (request, change) in [("b-put", put(&key, "status")), ("b-edit", edit_note(&key, "Mine.")), ("b-new", bound("fresh", "status", &task))] {
+        let refused = reject(&ws, "b", input(request, 7, vec![change])).await;
+        assert!(matches!(codes(&refused)[0].as_str(), "ask_only" | "invalid_task"), "{request}: {refused}");
+    }
+    // A newer executor of the task answers for it now; the old one is refused.
+    role(&ws.store, "b", &internal, "agent:a", "d3", "running", None);
+    assert_eq!(codes(&reject(&ws, "c", input("c5", 7, vec![edit_note(&key, "Still me.")])).await), ["not_card_responsible"]);
+    accept(&ws, "b", input("b1", 7, vec![edit_note(&key, "Taken over.")])).await;
+    assert_eq!(written(&ws, &project, &key), ("c".into(), "Agent c".into(), "b".into(), 4));
+}
+
+/// YN-212 C1: two writers of one card read the Brief at the same version;
+/// the first write is taken, the second is refused with version_conflict and
+/// the card as the first left it, to merge into.
+#[tokio::test]
+async fn the_later_of_two_writers_of_a_card_gets_a_version_conflict() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Build the page");
+    let key = task.to_lowercase();
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task)])).await;
+    accept(&ws, "c", input("c1", 1, vec![edit_note(&key, "From the executor.")])).await;
+    let refused = reject(&ws, "a", input("a2", 1, vec![edit_note(&key, "From the lead.")])).await;
+    assert_eq!(codes(&refused), ["version_conflict"]);
+    let latest = &refused["latest"]["sections"][0];
+    assert_eq!((latest["key"].clone(), latest["version"].clone(), latest["author"]["agentId"].clone()), (json!(key), json!(2), json!("c")));
+    accept(&ws, "a", input("a3", 2, vec![edit_note(&key, "From the lead.")])).await;
+    assert_eq!(written(&ws, &project, &key), ("a".into(), "Agent a".into(), "a".into(), 3));
+}
+
+/// YN-212 C1: a database from before authors: each row's author is filled
+/// from its owner once, however often the migration runs; a row an older
+/// Core writes later, with no author, reads as its owner's.
+#[tokio::test]
+async fn sections_written_before_authors_read_as_their_owners() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("a1", 0, vec![put("plan", "report")])).await;
+    accept(&ws, "b", input("b1", 1, vec![put("state", "status")])).await;
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute_batch("ALTER TABLE project_brief_sections DROP COLUMN author_id; ALTER TABLE project_brief_sections DROP COLUMN author_name;
+            ALTER TABLE project_brief_sections DROP COLUMN author_version;").unwrap();
+        migrate(&db).unwrap();
+        migrate(&db).unwrap();
+        let filled: i64 = db.query_row("SELECT COUNT(*) FROM project_brief_sections WHERE author_id=owner_id AND author_name=owner_name
+            AND author_version=version", [], |r| r.get(0)).unwrap();
+        assert_eq!(filled, 2);
+        db.execute("UPDATE project_brief_sections SET author_id=NULL,author_name=NULL,author_version=NULL WHERE key='state'", []).unwrap();
+    }
+    assert_eq!(written(&ws, &project, "plan").2, "a");
+    assert_eq!(section(&brief(&ws, "a"), "state")["author"], json!({"agentId":"b","name":"Agent b"}));
+}
+
+fn note_text(row: &sections::Row) -> Value {
+    row.data["body"]["elements"]["note"]["props"]["text"].clone()
+}
+
+/// YN-212 C2: each write of a task's card keeps the version it replaces,
+/// with its body and author, under the same identity: found by its version
+/// (a link to it still opens it), listed on Home in the card's revisions,
+/// newest first, left out of Home's History, and gone with history's days.
+/// A section that is no task's card still changes in place.
+#[tokio::test]
+async fn a_tasks_card_keeps_each_version_its_writes_replace() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task), put("plan", "status")])).await;
+    accept(&ws, "c", input("c1", 1, vec![edit_note(&key, "Signing: 3 of 5.")])).await;
+    accept(&ws, "c", input("c2", 2, vec![json!({"op":"patch","key":key,"patch":[{"op":"replace","path":"/elements/note/props/text","value":"Signed."}]})])).await;
+    accept(&ws, "a", input("a2", 3, vec![put(&key, "report"), edit_note("plan", "Plan B.")])).await;
+    let identity = sections::live_key(&ws.store.db.read().unwrap(), &project, &key).unwrap().unwrap().identity;
+    {
+        let db = ws.store.db.read().unwrap();
+        let kept = |version| sections::find(&db, &project, &key, Some(version)).unwrap().expect("kept");
+        for (version, author, text) in [(1, "a", "Hello"), (2, "c", "Signing: 3 of 5."), (3, "c", "Signed.")] {
+            let row = kept(version);
+            assert_eq!((row.live, row.history_reason.as_deref(), row.identity, row.author_id.as_str(), row.kind.as_str(), note_text(&row)),
+                (false, Some("revised"), identity, author, "status", json!(text)), "version {version}");
+        }
+        let live = sections::live_key(&db, &project, &key).unwrap().unwrap();
+        assert_eq!((live.version, live.kind.as_str(), live.owner_id.as_str(), live.author_id.as_str()), (4, "report", "a", "a"));
+        let plan: i64 = db.query_row("SELECT COUNT(*) FROM project_brief_sections WHERE key='plan'", [], |r| r.get(0)).unwrap();
+        assert_eq!(plan, 1, "a section that is no task's card changes in place");
+    }
+    // The version route reads an earlier version whole.
+    let old = crate::project_brief::refresh_writes::version(&ws.store, &project, identity, 2).unwrap().unwrap_or_else(|_| panic!("refused"));
+    assert_eq!((old["version"].clone(), old["author"]["agentId"].clone(), old["historyReason"].clone()), (json!(2), json!("c"), json!("revised")));
+
+    let home = panel(&ws);
+    let shown = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
+    let listed: Vec<(Value, Value)> = shown["revisions"].as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
+    assert_eq!(listed, [(json!(3), json!("c")), (json!(2), json!("c")), (json!(1), json!("a"))]);
+    assert_eq!(shown["id"], json!(identity), "the same section on Home");
+    assert!(!keys(&home, "history").contains(&key), "History leaves the earlier versions out");
+    let plan = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "plan").unwrap();
+    assert!(plan.get("revisions").is_none(), "{plan}");
+    assert!(section(&brief(&ws, "a"), &key).get("revisions").is_none(), "brief_get stays as it was");
+
+    // After history's days they go with the rest of history; the card stays.
+    ws.store.db.write().unwrap().execute("UPDATE project_brief_sections SET history_at='2026-01-01T00:00:00Z' WHERE history_reason='revised'", []).unwrap();
+    accept(&ws, "a", input("a3", 4, vec![edit_note("plan", "Plan C.")])).await;
+    let left: i64 = ws.store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM project_brief_sections WHERE history_reason='revised'", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0);
+    let after = panel(&ws);
+    let shown = after["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap();
+    assert!(shown.get("revisions").is_none() && shown["version"] == 4, "{shown}");
+}
+
+/// YN-212 C2: a card edited keeps showing its attachments: the new version
+/// indexes the same snapshots, so collecting garbage leaves them, and the
+/// earlier version reads its own by version. The card's end archives the
+/// live version as before (YN-195), its earlier versions stay readable.
+#[tokio::test]
+async fn an_edited_card_keeps_its_attachments_and_its_end_archives_it_as_before() {
+    let (dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "signed files").unwrap();
+    let mut card = bound(&key, "status", &task);
+    card["attachments"] = attach(&file);
+    accept(&ws, "a", input("a1", 0, vec![card])).await;
+    accept(&ws, "a", input("a2", 1, vec![edit_note(&key, "Edited.")])).await;
+    let cache = attachments::dir(&ws.data_dir);
+    attachments::collect_garbage(&ws.store, &cache).unwrap();
+    for version in [None, Some(1)] {
+        let (path, _) = attachments::snapshot_file(&ws.store, &cache, &project, &key, "notes.txt", version).unwrap().ok().expect("kept");
+        assert!(path.is_file(), "{version:?}");
+    }
+    task_set(&ws, &task, json!({"status":"done"}));
+    assert_eq!(row(&ws, &project, &key), (false, Some("archived".into())), "its end archives the live version");
+    let first = sections::find(&ws.store.db.read().unwrap(), &project, &key, Some(1)).unwrap().expect("kept");
+    assert_eq!(first.history_reason.as_deref(), Some("revised"));
+}
+
+/// The lead's check (YN-212, seq 11728): this Core, then an older one, then
+/// this one again. Lead b writes lead a's task card here (its author b).
+/// An older Core, where only a card's owner writes it, edits it in place as
+/// it does (update.rs before C1: a new version, owner_name, data and times;
+/// the author columns, unknown to it, left as they were). Read here again,
+/// that version is its owner's, not b's; the next version this Core writes
+/// is its writer's again.
+#[tokio::test]
+async fn an_older_cores_edit_reads_as_its_owners_not_the_earlier_writers() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a", "b"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task)])).await;
+    accept(&ws, "b", input("b1", 1, vec![edit_note(&key, "Signing: 3 of 5.")])).await;
+    assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
+    // The older Core's own edit, as it writes it.
+    {
+        let db = ws.store.db.write().unwrap();
+        let (seq, version, data): (i64, i64, String) = db.query_row(
+            "SELECT seq,version,data FROM project_brief_sections WHERE project_id=?1 AND key=?2 AND live=1", params![project, key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        let mut data: Value = serde_json::from_str(&data).unwrap();
+        data["body"]["elements"]["note"]["props"]["text"] = json!("Signed by the older Core.");
+        db.execute("UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
+                     task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END WHERE seq=?1",
+            params![seq, version + 1, "Agent a", data.to_string(), crate::model::now(), Option::<String>::None, false, Option::<String>::None])
+            .unwrap();
+    }
+    let shown = section(&brief(&ws, "a"), &key).clone();
+    assert_eq!((shown["version"].clone(), shown["author"].clone()), (json!(3), json!({"agentId":"a","name":"Agent a"})),
+        "the older Core's version is its owner's: {shown}");
+    let home = panel(&ws);
+    assert_eq!(section(&home["brief"], &key)["author"]["agentId"], "a", "on Home too");
+    // This Core again (the Brief's version as the older Core left it): the next version is its writer's.
+    accept(&ws, "b", input("b2", 2, vec![edit_note(&key, "Released.")])).await;
+    assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
+    // C2: the versions it replaced keep their authors as read here, the older Core's as its owner's. Version 2,
+    // which the older Core edited in place, is no row of its own any more: an older Core keeps no version it
+    // replaces, so history has version 1 (a's) and version 3 (the older Core's, a's), not b's version 2.
+    let revisions = section(&panel(&ws)["brief"], &key)["revisions"].clone();
+    let authors: Vec<(Value, Value)> = revisions.as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
+    assert_eq!(authors, [(json!(3), json!("a")), (json!(1), json!("a"))], "{revisions}");
 }
