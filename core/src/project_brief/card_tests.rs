@@ -883,8 +883,10 @@ async fn an_older_cores_edit_reads_as_its_owners_not_the_earlier_writers() {
     // This Core again (the Brief's version as the older Core left it): the next version is its writer's.
     accept(&ws, "b", input("b2", 2, vec![edit_note(&key, "Released.")])).await;
     assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
-    // C2: the versions it replaced keep their authors as read here, the older Core's as its owner's.
+    // C2: the versions it replaced keep their authors as read here, the older Core's as its owner's. Version 2,
+    // which the older Core edited in place, is no row of its own any more: an older Core keeps no version it
+    // replaces, so history has version 1 (a's) and version 3 (the older Core's, a's), not b's version 2.
     let revisions = section(&panel(&ws)["brief"], &key)["revisions"].clone();
     let authors: Vec<(Value, Value)> = revisions.as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
-    assert_eq!(authors, [(json!(3), json!("a")), (json!(2), json!("b")), (json!(1), json!("a"))], "{revisions}");
+    assert_eq!(authors, [(json!(3), json!("a")), (json!(1), json!("a"))], "{revisions}");
 }
