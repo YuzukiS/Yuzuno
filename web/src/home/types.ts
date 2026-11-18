@@ -87,6 +87,9 @@ export type Section = {
   title: string;
   version: number;
   owner: { agentId: string; name: string; state: "active" | "closed" | "deleted" | "moved" };
+  /** Who wrote this version (YN-212 C1): its owner, or a lead or its task's current executor writing a task's card
+   * it does not own. Absent from older Cores, whose owner wrote every version. */
+  author?: { agentId: string; name: string };
   updatedAt: string;
   updatedTurnId: string | null;
   /** A json-render spec: { root, elements } with a BriefBody root. */
@@ -215,6 +218,9 @@ export type CardBinding = {
   /** Where the card came from (YN-86 S3a-2, project_requests::handoffs): the requests routed to it, each once, and
    * its routes and reassignments, oldest first. Never the user's words. Absent until a request was routed to it. */
   handoffs?: CardHandoffs;
+  /** A route's placeholder card (YN-212 C3): the status project_route put before its task's card was written, still
+   * as it put it. Absent from older Cores, and once anyone wrote the card. */
+  placeholder?: boolean;
 };
 
 export type CardHandoffs = {
