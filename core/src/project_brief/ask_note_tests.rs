@@ -67,7 +67,8 @@ async fn a_note_reaches_the_asks_agent_says_it_answers_nothing_and_leaves_the_as
     assert!(message.starts_with(&format!("Note from the user on Home, about version 1 of the Project Brief section `decide` (\"About decide\") \
         of Code (Workspace {workspace}, Project {project}):\n> Which way?\n\nThe preview won't open; send a screenshot first?\n")), "{message}");
     assert!(message.contains("This note is not an answer") && message.contains("approved nothing")
-        && message.contains("stays open in their Needs you at version 1") && message.contains("Act on none of its options as chosen"), "{message}");
+        && message.contains("The ask stays open in their Needs you at version 1, with what they had begun to answer kept there.")
+        && message.contains("Act on none of its options as chosen"), "{message}");
     assert!(!message.contains("now replied") && !message.contains("Chose:"), "{message}");
     // Images alone: said so, never an empty line.
     assert!(home::compose_note(&workspace, "Code", &project, &row, "  ").contains("\n(No words: see what the note attached.)\n"));
@@ -112,9 +113,13 @@ async fn a_note_reaches_the_asks_agent_says_it_answers_nothing_and_leaves_the_as
     assert!(ask["notes"].as_array().is_some_and(|notes| !notes.is_empty()), "{ask}");
     assert!(!needs_you(&ws, "decide"));
 
-    // A note on a replied ask keeps it replied, with its reply.
+    // A note on a replied ask keeps it replied, with its reply, and its message says so, not that the ask waits in
+    // Needs you.
+    let replied = sections::live_key(&ws.store.db.read().unwrap(), &project, "decide").unwrap().unwrap();
+    let said = home::compose_note(&workspace, "Code", &project, &replied, "One more thing");
+    assert!(said.contains("The ask stays as it was at version 1: replied, with the answer they gave before") && !said.contains("Needs you"), "{said}");
     let later = note(&ws, "b", "One more thing", "n2");
-    delivered_before(&ws, &project, &later, home::compose_note(&workspace, "Code", &project, &row, "One more thing"));
+    delivered_before(&ws, &project, &later, said);
     home::reply(&ws, project.clone(), later).await.unwrap();
     let ask = home_ask(&ws, "decide");
     assert_eq!((ask["state"].clone(), ask["replyText"].clone()), (json!("replied"), json!("Left")));

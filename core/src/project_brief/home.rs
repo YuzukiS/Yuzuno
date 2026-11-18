@@ -562,12 +562,16 @@ pub(super) fn compose_note(workspace: &str, project: &str, project_id: &str, row
         "" => message.push_str("\n(No words: see what the note attached.)\n"),
         text => message.push_str(&format!("\n{text}\n")),
     }
+    // Where the ask stays, as it is now: a note changes nothing of it (an answered ask stays answered).
+    let stays = if row.replied_ask() {
+        format!("The ask stays as it was at version {}: replied, with the answer they gave before, which this note does not change.", row.version)
+    } else {
+        format!("The ask stays open in their Needs you at version {}, with what they had begun to answer kept there.", row.version)
+    };
     message.push_str(&format!(
         "\nThis note is not an answer: the user chose none of the ask's options, answered nothing of its form and approved \
-         nothing. The ask stays open in their Needs you at version {}, with what they had begun to answer kept there. Take the \
-         note as a question or a remark about the ask: answer it by revising the ask (edit or put it), or resolve or remove the \
-         ask if it no longer applies. Act on none of its options as chosen.",
-        row.version
+         nothing. {stays} Take the note as a question or a remark about the ask: answer it by revising the ask (edit or put it), \
+         or resolve or remove the ask if it no longer applies. Act on none of its options as chosen."
     ));
     message
 }
