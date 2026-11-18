@@ -179,6 +179,10 @@ export function ProjectHome({
   const pending = panel?.pending ?? [];
   // What needs the user (§3.4): the blocks in Needs you, the approvals and the executors' matters.
   const needsCount = counts.needs + pending.length + executors.length;
+  // What the Needs you group holds on the page: its blocks as this visit holds them (useHeldBlocks), so a block
+  // whose Ask the user just answered stays where it was, the approvals, the executors' matters and the Project's
+  // own block when an Ask of its own waits. The chip above counts what needs the user now (needsCount).
+  const needsShown = groups.needs.length + pending.length + executors.length + (projectBlock?.group === "needs" ? 1 : 0);
   const unseen = panel ? projectUnseen(panel) : 0;
   const changed = sections.filter(changedSinceSeen).length;
   const asks = waitingAsks(needsYou);
@@ -416,7 +420,7 @@ export function ProjectHome({
       {projectBlock?.group === "needs" && projectView}
     </>
   );
-  const empty = !needsCount && !groups.doing.length && !groups.done.length && !projectBlock && !restOfHistory.length;
+  const empty = !needsShown && !groups.doing.length && !groups.done.length && !projectBlock && !restOfHistory.length;
   return (
     <ProjectTalkLink.Provider value={talkLink}>
     <div className="project-home" data-project-home={id} data-view={view} ref={root}>
@@ -500,10 +504,10 @@ export function ProjectHome({
           {arrival && !arrival.inCard && arrival.note}
           {empty && <p className="home-note home-brief-empty">{t.noContent}</p>}
           <div className="request-blocks">
-            {needsCount > 0 || projectBlock?.group === "needs" ? (
+            {needsShown > 0 ? (
               <section className="request-group" data-group="needs" aria-label={tb.groups.needs}>
                 <h2 className="request-group-title">
-                  {tb.groups.needs} <span>{needsCount + (projectBlock?.group === "needs" ? 1 : 0)}</span>
+                  {tb.groups.needs} <span>{needsShown}</span>
                 </h2>
                 {needs}
               </section>
