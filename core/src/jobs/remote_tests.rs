@@ -2940,6 +2940,16 @@ async fn guard_git_is_checked_again_on_the_machine_when_the_command_exits() {
     let plain = create(&lab, input(&lab, "plain", "echo v3 > a.txt", json!({})));
     let ended = until(&lab, &lab.ssh, &plain, settled).await;
     assert!(ended["status"] == "succeeded" && ended["result"].get("guardAtExit").is_none(), "{ended}");
+    // A cancelled attempt never claims its tree was unchanged: the check runs
+    // only once the command ended by itself and its group was stopped.
+    git(&lab, &["checkout", "--", "a.txt"]);
+    let snapshot = guarded(&lab, &lab.ssh, &[]).await.unwrap();
+    let stopped = create_frozen(&lab, input(&lab, "stopped", "sleep 60", json!({"guardGit":true})), snapshot);
+    until(&lab, &lab.ssh, &stopped, |j| j["status"] == "running").await;
+    cancel(&lab, &stopped);
+    let ended = until(&lab, &lab.ssh, &stopped, settled).await;
+    assert_eq!(ended["status"], "cancelled", "{ended}");
+    assert!(ended["result"].get("guardAtExit").is_none(), "{ended}");
 }
 
 /// The Git there is the account's own, on its PATH, as python3 is: none, or
@@ -2993,7 +3003,7 @@ fn the_shared_guard_rules_answer_as_each_helper_did() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "guard_rules_tests.py failed:\n{stderr}");
     let ran = stderr.lines().find_map(|line| line.strip_prefix("Ran ")?.split_whitespace().next()?.parse::<usize>().ok());
-    assert!(ran >= Some(20), "guard_rules_tests.py ran {ran:?} tests:\n{stderr}");
+    assert!(ran >= Some(30), "guard_rules_tests.py ran {ran:?} tests:\n{stderr}");
 }
 
 /// remote_git_parity_tests.py: guardGit on a machine (remote_job.py
