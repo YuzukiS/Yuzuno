@@ -1,6 +1,5 @@
 import { readDeviceValue, saveDeviceValue } from "../device-storage";
-import type { CardBinding } from "./types";
-import { delivered, type ProjectRequest, type RequestCard, type RequestLine, type RequestReply } from "./project-talk-api";
+import { delivered, type ProjectRequest, type RequestLine, type RequestReply } from "./project-talk-api";
 
 /**
  * "Talk to the project" (YN-86 §4.1, §4.3–4.5; YN-212 §3) as pure facts from
@@ -118,33 +117,3 @@ export function earlierBefore(requests: readonly ProjectRequest[]) {
   const times = from.map((r) => time(r.createdAt));
   return going.length ? Math.min(...times) : Math.max(...times);
 }
-
-// Used by RequestCard.tsx only, from before the page read by request (YN-212); W3c removes them with it.
-
-/**
- * A request's state word (§4.3): not confirmed delivered, waiting for the front desk, in progress, its cards ended and
- * waiting for the user's confirmation (YN-184), answered with no card (YN-136) and waiting for it too, or done.
- */
-export type RequestState = "unconfirmed" | "waiting" | "doing" | "ended" | "answered" | "done";
-
-export const requestState = (request: ProjectRequest): RequestState =>
-  !delivered(request.delivery) ? "unconfirmed" : request.state;
-
-/**
- * The card a request was joined to (§4.4): when every route that put it on
- * a card joined an existing one, the first of those cards; else null.
- */
-export function mergedInto(request: ProjectRequest): RequestCard | null {
-  const toCards = request.routes.filter((r) => r.state === "done" && (r.kind === "card" || r.kind === "existing"));
-  if (!toCards.length || toCards.some((r) => r.kind !== "existing")) return null;
-  return request.cards[0] ?? null;
-}
-
-/** A request's card as a card's foot reads it (card-responsible.ts): its task and who answers for it. */
-export const cardBinding = (card: RequestCard): CardBinding => ({
-  task: { id: card.task.id, title: card.title ?? "", status: card.task.status, archived: card.task.archived },
-  responsible: card.responsible,
-});
-
-/** The title a request's card is shown with: the card's, else the task's key. */
-export const cardTitle = (card: RequestCard) => card.title || card.key || card.task.id;

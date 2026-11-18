@@ -40,7 +40,7 @@ window.tasks=[];
 window.addEventListener('yuzuno:open-task-review',(event)=>window.tasks.push(event.detail.taskId));
 const links={href:()=>null,open:()=>{},reportHref:()=>null,openReport:(link)=>window.reports.push({link,focused:document.activeElement?.className||''})};
 const projects=[{id:'p1',name:'Atlas',defaultDirs:{},createdAt:'',updatedAt:''}];
-window.renderTalk=()=>flushSync(()=>root.render(<MessageLinks.Provider value={links}><Home workspaceId="ws" revision={0} jobsRevision={0} agents={[]} projects={projects} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} visit={0} project="p1" onOpenProject={()=>{}} onCloseProject={()=>{}}/></MessageLinks.Provider>));`,
+window.renderTalk=(revision=0)=>flushSync(()=>root.render(<MessageLinks.Provider value={links}><Home workspaceId="ws" revision={revision} jobsRevision={0} agents={[]} projects={projects} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} visit={0} project="p1" onOpenProject={()=>{}} onCloseProject={()=>{}}/></MessageLinks.Provider>));`,
   );
   const result = await build({
     root,
@@ -81,8 +81,14 @@ const report = (version, state, currentVersion, extra = {}) =>
   ({ kind: "report", title: "Atlas review", note: "Six improvements, in order", key: "audit-review", version, sectionId: 518, state, currentVersion, ...extra });
 const ANSWER = "The default is JSON; Settings → Export switches it to CSV or Markdown, and each project keeps its own choice.";
 
+/** A request the user confirmed done, its one card done with nothing named. */
+const finished = (n, minutes) => request(n, `Finished R-${n}`, "done", [card(600 + n, `YN-${50 + n}`, "done", { result: result(minutes), deliverables: null })],
+  { confirmedAt: ago(minutes - 1) });
+/** `arrived`: a request confirmed during the visit, newer than every one shown (PR 1093 R1). */
+let arrived = false;
 /** R-9 as R-18: a review whose report is out while the release it asked for goes on. R-8: every other way a card stands. */
 const requests = () => [
+  ...(arrived ? [finished(10, 2)] : []),
   request(9, "Review the architecture, then release", "doing", [
     card(516, "YN-96", "done", { result: result(70), deliverables: delivered([report(2, "live", 2)], 70) }),
     card(530, "YN-97", "doing", { result: null, deliverables: null }),
@@ -107,11 +113,14 @@ const requests = () => [
   // From an older Core: no result or deliverables at all.
   request(7, "From an older Core", "ended", [{ sectionId: 507, key: "yn-80", title: "Old card", live: false,
     task: { id: "YN-80", status: "done", archived: false }, responsible: null }]),
+  // Done when the page is first read.
+  finished(6, 400),
 ];
 /** Older, done, read only when asked: its report still opens from it. */
 const older = () => [
   request(3, "An older review", "done", [card(400, "YN-70", "done", { result: result(5000), deliverables: delivered([report(4, "history", 4, { key: "older-review", sectionId: 400, title: "Older review" })], 5000) })],
     { confirmedAt: ago(4900) }),
+  finished(2, 6000),
 ];
 
 /** Home's read: the Project and nothing of its Brief; its requests are read apart. */
@@ -125,6 +134,7 @@ const home = () => ({
 });
 
 function mount({ lang = "en" } = {}) {
+  arrived = false;
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -243,7 +253,16 @@ test("older requests are read from the requests side, and a done one's report st
   assert.ok(more, "the page reads older requests itself");
   more.click();
   await until(() => page.cardOf(3), "the older request is read");
-  assert.ok(page.calls.some((c) => c.url.endsWith("/requests?before=7")));
+  assert.ok(page.calls.some((c) => c.url.endsWith("/requests?before=6")));
+  // PR 1093 R1: what the page held stays where it was, and the page read from before comes after it, newest first;
+  // a request newer than every one shown comes in at the top of its group.
+  const done = () => [...page.document.querySelectorAll(".request-done [data-request-block]")].map((el) => Number(el.dataset.requestBlock));
+  assert.deepEqual(done(), [6, 3, 2], "the older ones after R-6, in their own order");
+  arrived = true;
+  // The Workspace changed, as its events say: the page reads its requests again.
+  page.window.renderTalk(1);
+  await until(() => page.cardOf(10), "R-10, confirmed meanwhile");
+  assert.deepEqual(done(), [10, 6, 3, 2], "the new one on top; the rest where they were");
   const fold = page.document.querySelector(".request-done");
   fold.open = true;
   const [open] = page.delivered(3, "YN-70");
