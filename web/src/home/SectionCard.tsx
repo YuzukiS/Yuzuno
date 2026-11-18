@@ -110,7 +110,7 @@ function useReservedHeight(content: string, collapsed: boolean) {
  * (dissolveFrom). What changed is kept unseen until the old has faded out,
  * then fades in (fadeInFrom): the user's round 3, "渐隐到消失之后再开始渐显".
  * What did not change is the same in both and does not move. Played before
- * the frame is painted, once the deck has packed the card (ProjectDeck's
+ * the frame is painted, once the deck has packed the card (useDeckPacking's
  * layout effect, after the card's, when Core's read changed it). An act of
  * the user's lets go of anything held for the card it was; a new version
  * from Core keeps what is held (T-19 HM:A4: it does not shrink while read).
