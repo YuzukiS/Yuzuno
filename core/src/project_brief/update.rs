@@ -1518,6 +1518,19 @@ fn kept_owner<'a>(row: &'a Row, ctx: &'a Caller) -> (&'a str, &'a str) {
     }
 }
 
+/// Puts `row`, the live version of a task's card a write replaces, into
+/// history as revised (YN-212 C2): it keeps its body, attachments and author
+/// under the same identity for HISTORY_DAYS, so a link to that version still
+/// opens it (sections::find), while Home's History leaves it out
+/// (sections::history). Nothing else of the section changes.
+fn revise(tx: &Connection, row: &Row, at: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE project_brief_sections SET live=0,history_reason='revised',history_at=?2 WHERE seq=?1",
+        params![row.seq, at],
+    )?;
+    Ok(())
+}
+
 fn apply(
     tx: &Connection,
     ctx: &Caller,
@@ -1588,6 +1601,23 @@ fn apply(
                             params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
                                 at, ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id,
                                 ctx.agent, ctx.agent_name],
+                        )?;
+                        (tx.last_insert_rowid(), row.version + 1, row.identity)
+                    }
+                    // A task's card keeps the version this put replaces as
+                    // history (YN-212 C2), under the same identity, as a
+                    // refreshed report does above.
+                    Some(row) if cards::task_card(row) => {
+                        revise(tx, row, &at)?;
+                        let (owner, owner_name) = kept_owner(row, ctx);
+                        tx.execute(
+                            "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
+                             ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                             author_id,author_name,author_version)
+                             VALUES(?1,?2,1,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,CASE WHEN ?16 THEN ?17 ELSE ?18 END,?19,?20,?4)",
+                            params![ctx.project, change.key, change.kind, row.version + 1, owner, owner_name, data.to_string(),
+                                state, since, replied_at, reply_text, deferred, at, ctx.turn.turn, row.identity,
+                                task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
                         )?;
                         (tx.last_insert_rowid(), row.version + 1, row.identity)
                     }
@@ -1680,12 +1710,33 @@ fn apply(
                     }
                     repairs => data["repairs"] = json!(repairs),
                 }
-                tx.execute(
-                    "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
-                     task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END,author_id=?9,author_name=?10,author_version=?2 WHERE seq=?1",
-                    params![row.seq, row.version + 1, kept_owner(row, ctx).1, data.to_string(), at, ctx.turn.turn, task.is_some(),
-                        task.clone().flatten(), ctx.agent, ctx.agent_name],
-                )?;
+                if cards::task_card(row) {
+                    // A task's card keeps the version this edit replaces
+                    // (YN-212 C2); the new version keeps its attachments,
+                    // so their snapshots stay indexed for it too.
+                    revise(tx, row, &at)?;
+                    let (owner, owner_name) = kept_owner(row, ctx);
+                    tx.execute(
+                        "INSERT INTO project_brief_sections(project_id,key,live,kind,version,owner_id,owner_name,data,
+                         ask_state,ask_since,replied_at,reply_text,deferred_until,updated_at,updated_turn_id,lineage,task_id,
+                         author_id,author_name,author_version)
+                         VALUES(?1,?2,1,?3,?4,?5,?6,?7,NULL,NULL,NULL,NULL,NULL,?8,?9,?10,CASE WHEN ?11 THEN ?12 ELSE ?13 END,?14,?15,?4)",
+                        params![ctx.project, change.key, row.kind, row.version + 1, owner, owner_name, data.to_string(), at,
+                            ctx.turn.turn, row.identity, task.is_some(), task.clone().flatten(), row.task_id, ctx.agent, ctx.agent_name],
+                    )?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO project_brief_snapshots(section_seq,project_id,sha256,size)
+                         SELECT ?1,project_id,sha256,size FROM project_brief_snapshots WHERE section_seq=?2",
+                        params![tx.last_insert_rowid(), row.seq],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
+                         task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END,author_id=?9,author_name=?10,author_version=?2 WHERE seq=?1",
+                        params![row.seq, row.version + 1, kept_owner(row, ctx).1, data.to_string(), at, ctx.turn.turn, task.is_some(),
+                            task.clone().flatten(), ctx.agent, ctx.agent_name],
+                    )?;
+                }
                 let mut entry = bound(row.version + 1);
                 if let Some(refresh) = super::refresh_writes::apply(tx, ctx, change, row.identity)? {
                     entry["refresh"] = refresh;

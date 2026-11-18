@@ -759,6 +759,93 @@ async fn sections_written_before_authors_read_as_their_owners() {
     assert_eq!(section(&brief(&ws, "a"), "state")["author"], json!({"agentId":"b","name":"Agent b"}));
 }
 
+fn note_text(row: &sections::Row) -> Value {
+    row.data["body"]["elements"]["note"]["props"]["text"].clone()
+}
+
+/// YN-212 C2: each write of a task's card keeps the version it replaces,
+/// with its body and author, under the same identity: found by its version
+/// (a link to it still opens it), listed on Home in the card's revisions,
+/// newest first, left out of Home's History, and gone with history's days.
+/// A section that is no task's card still changes in place.
+#[tokio::test]
+async fn a_tasks_card_keeps_each_version_its_writes_replace() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, internal) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task), put("plan", "status")])).await;
+    accept(&ws, "c", input("c1", 1, vec![edit_note(&key, "Signing: 3 of 5.")])).await;
+    accept(&ws, "c", input("c2", 2, vec![json!({"op":"patch","key":key,"patch":[{"op":"replace","path":"/elements/note/props/text","value":"Signed."}]})])).await;
+    accept(&ws, "a", input("a2", 3, vec![put(&key, "report"), edit_note("plan", "Plan B.")])).await;
+    let identity = sections::live_key(&ws.store.db.read().unwrap(), &project, &key).unwrap().unwrap().identity;
+    {
+        let db = ws.store.db.read().unwrap();
+        let kept = |version| sections::find(&db, &project, &key, Some(version)).unwrap().expect("kept");
+        for (version, author, text) in [(1, "a", "Hello"), (2, "c", "Signing: 3 of 5."), (3, "c", "Signed.")] {
+            let row = kept(version);
+            assert_eq!((row.live, row.history_reason.as_deref(), row.identity, row.author_id.as_str(), row.kind.as_str(), note_text(&row)),
+                (false, Some("revised"), identity, author, "status", json!(text)), "version {version}");
+        }
+        let live = sections::live_key(&db, &project, &key).unwrap().unwrap();
+        assert_eq!((live.version, live.kind.as_str(), live.owner_id.as_str(), live.author_id.as_str()), (4, "report", "a", "a"));
+        let plan: i64 = db.query_row("SELECT COUNT(*) FROM project_brief_sections WHERE key='plan'", [], |r| r.get(0)).unwrap();
+        assert_eq!(plan, 1, "a section that is no task's card changes in place");
+    }
+    // The version route reads an earlier version whole.
+    let old = crate::project_brief::refresh_writes::version(&ws.store, &project, identity, 2).unwrap().unwrap_or_else(|_| panic!("refused"));
+    assert_eq!((old["version"].clone(), old["author"]["agentId"].clone(), old["historyReason"].clone()), (json!(2), json!("c"), json!("revised")));
+
+    let home = panel(&ws);
+    let shown = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
+    let listed: Vec<(Value, Value)> = shown["revisions"].as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
+    assert_eq!(listed, [(json!(3), json!("c")), (json!(2), json!("c")), (json!(1), json!("a"))]);
+    assert_eq!(shown["id"], json!(identity), "the same section on Home");
+    assert!(!keys(&home, "history").contains(&key), "History leaves the earlier versions out");
+    let plan = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "plan").unwrap();
+    assert!(plan.get("revisions").is_none(), "{plan}");
+    assert!(section(&brief(&ws, "a"), &key).get("revisions").is_none(), "brief_get stays as it was");
+
+    // After history's days they go with the rest of history; the card stays.
+    ws.store.db.write().unwrap().execute("UPDATE project_brief_sections SET history_at='2026-01-01T00:00:00Z' WHERE history_reason='revised'", []).unwrap();
+    accept(&ws, "a", input("a3", 4, vec![edit_note("plan", "Plan C.")])).await;
+    let left: i64 = ws.store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM project_brief_sections WHERE history_reason='revised'", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0);
+    let after = panel(&ws);
+    let shown = after["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap();
+    assert!(shown.get("revisions").is_none() && shown["version"] == 4, "{shown}");
+}
+
+/// YN-212 C2: a card edited keeps showing its attachments: the new version
+/// indexes the same snapshots, so collecting garbage leaves them, and the
+/// earlier version reads its own by version. The card's end archives the
+/// live version as before (YN-195), its earlier versions stay readable.
+#[tokio::test]
+async fn an_edited_card_keeps_its_attachments_and_its_end_archives_it_as_before() {
+    let (dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "signed files").unwrap();
+    let mut card = bound(&key, "status", &task);
+    card["attachments"] = attach(&file);
+    accept(&ws, "a", input("a1", 0, vec![card])).await;
+    accept(&ws, "a", input("a2", 1, vec![edit_note(&key, "Edited.")])).await;
+    let cache = attachments::dir(&ws.data_dir);
+    attachments::collect_garbage(&ws.store, &cache).unwrap();
+    for version in [None, Some(1)] {
+        let (path, _) = attachments::snapshot_file(&ws.store, &cache, &project, &key, "notes.txt", version).unwrap().ok().expect("kept");
+        assert!(path.is_file(), "{version:?}");
+    }
+    task_set(&ws, &task, json!({"status":"done"}));
+    assert_eq!(row(&ws, &project, &key), (false, Some("archived".into())), "its end archives the live version");
+    let first = sections::find(&ws.store.db.read().unwrap(), &project, &key, Some(1)).unwrap().expect("kept");
+    assert_eq!(first.history_reason.as_deref(), Some("revised"));
+}
+
 /// The lead's check (YN-212, seq 11728): this Core, then an older one, then
 /// this one again. Lead b writes lead a's task card here (its author b).
 /// An older Core, where only a card's owner writes it, edits it in place as
@@ -796,4 +883,10 @@ async fn an_older_cores_edit_reads_as_its_owners_not_the_earlier_writers() {
     // This Core again (the Brief's version as the older Core left it): the next version is its writer's.
     accept(&ws, "b", input("b2", 2, vec![edit_note(&key, "Released.")])).await;
     assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
+    // C2: the versions it replaced keep their authors as read here, the older Core's as its owner's. Version 2,
+    // which the older Core edited in place, is no row of its own any more: an older Core keeps no version it
+    // replaces, so history has version 1 (a's) and version 3 (the older Core's, a's), not b's version 2.
+    let revisions = section(&panel(&ws)["brief"], &key)["revisions"].clone();
+    let authors: Vec<(Value, Value)> = revisions.as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
+    assert_eq!(authors, [(json!(3), json!("a")), (json!(1), json!("a"))], "{revisions}");
 }
