@@ -225,6 +225,32 @@ test("a task's earlier cards fold under its one card; its task is said unless it
   assert.deepEqual(page.errors, []);
 });
 
+// YN-212 W4: who wrote the version shown (Core's author, C1; else its owner), a card older than the user's reply on
+// its task, and the card's earlier versions (C2), each opening the report page at that version by its identity.
+test("a task's card says who wrote it and that it was written before your reply, and opens its earlier versions", async () => {
+  const page = mount({ opened: ["r7", "r9"] });
+  const { requests, sections } = fixtures();
+  const card7 = sections.find((s) => s.key === "yn-91");
+  card7.updatedAt = ago(70);
+  card7.revisions = [{ version: 1, author: { agentId: "x", name: "YN-91 · Design" }, at: ago(90) }];
+  page.window.renderPage({ requests, sections });
+  await tick();
+  const task = page.block(7).querySelector('.request-task[data-task="YN-91"]');
+  assert.equal(page.text(task.querySelector(".request-task-before")), "Written before your reply", "the reply at 55 min, the card at 70");
+  assert.equal(page.text(task.querySelector('.request-task-card [data-section-key="yn-91"] .home-card-author')), "Written by Dev Lead",
+    "no author from Core: its owner");
+  assert.equal(page.text(page.block(9).querySelector(".home-card-author")), "Written by YN-93 · Export", "Core's author");
+  const versions = task.querySelector(".request-task-versions");
+  assert.equal(versions.open, false, "folded");
+  assert.equal(page.text(versions.querySelector("summary")), "Earlier version 1");
+  assert.match(page.text(versions.querySelector("li")), /^Version 1\s*by YN-91 · Design/);
+  versions.querySelector("button").click();
+  assert.deepEqual(page.calls().at(-1), { report: { key: "yn-91", version: 1, sectionId: card7.id } });
+  // A card with no earlier version, or read the same time as the reply, says neither.
+  assert.equal(page.block(9).querySelector(".request-task-versions, .request-task-before"), null);
+  assert.deepEqual(page.errors, []);
+});
+
 test("read only: no action, the first look and what was delivered stay", () => {
   const page = mount({ readOnly: true });
   assert.equal(page.document.querySelectorAll(".request-block-action").length, 0);

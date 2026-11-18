@@ -44,6 +44,7 @@ export const reportText = strings({
   arrived: (shown: number, now: number) =>
     `You are reading version ${shown}. Version ${now} has arrived; parts of version ${shown} read from its files may no longer show.`,
   notKept: (shown: number) => `Version ${shown} is no longer on Home. This is what the page read of it; parts read from its files may no longer show.`,
+  revised: (shown: number, now: number) => `An earlier version of this card, version ${shown}, as its history keeps it for 30 days; version ${now} is current.`,
   history: (reason: Reason): string =>
     reason === "seen"
       ? "You marked this report seen; it is in History."
@@ -100,6 +101,7 @@ export const reportText = strings({
   openKept: (n: number) => `打开第 ${n} 版（历史中）`,
   arrived: (shown: number, now: number) => `你正在阅读第 ${shown} 版。第 ${now} 版已送达；第 ${shown} 版中读自文件的部分可能已无法显示。`,
   notKept: (shown: number) => `第 ${shown} 版已不在 Home 上。这是本页读到的内容；读自文件的部分可能已无法显示。`,
+  revised: (shown: number, now: number) => `这张卡的旧版本：第 ${shown} 版，历史保留 30 天；当前是第 ${now} 版。`,
   history: (reason: Reason): string =>
     reason === "seen" ? "你已将此报告标为已读，它在历史中。" : reason === "resolved" ? "此项已解决，它在历史中。"
       : reason === "archived" ? "已归档：此报告所在卡片的任务已结束，它在历史中。"
