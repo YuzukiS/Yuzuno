@@ -87,11 +87,12 @@ const agents = [
 ];
 const projects = [{ id: "p1", name: "atlas-notes", defaultDirs: {}, createdAt: "", updatedAt: "" }];
 
-function homeData() {
+/** Home's read; `answered`: the user has replied to the Ask on YN-7's card since (it then needs no one). */
+function homeData(answered = false) {
   return {
     generatedAt: ago(0),
     order: ["p1"],
-    needsYou: [{ kind: "ask", projectId: "p1", agentId: "a", agentName: "Mori", sectionKey: "question", title: "Which layout?", since: ago(30) }],
+    needsYou: answered ? [] : [{ kind: "ask", projectId: "p1", agentId: "a", agentName: "Mori", sectionKey: "question", title: "Which layout?", since: ago(30) }],
     projects: [{
       project: { id: "p1", name: "atlas-notes" },
       contentEditors: { version: 1, editorAgentIds: ["a"] },
@@ -103,7 +104,8 @@ function homeData() {
           // Read, but its task goes on: in progress (§2.2).
           section("spec", "report", "Page spec", 3, mori, { ...read(3), card: { task: buildTask, responsible: builder } }),
           section("question", "ask", "Which layout?", 1, mori, {
-            ask: { question: "Left or right?", state: "open", reply: { options: [{ id: "left", label: "Left" }], freeText: true } },
+            ask: { question: "Left or right?", reply: { options: [{ id: "left", label: "Left" }], freeText: true },
+              ...(answered ? { state: "replied", repliedAt: ago(1), replyText: "Left" } : { state: "open" }) },
             card: { task: buildTask, responsible: builder } }),
           // No task: as before.
           section("plain", "report", "Plain notes", 1, mori, read(1)),
@@ -150,12 +152,13 @@ function mount({ language } = {}) {
   window.HTMLElement.prototype.scrollIntoView = function () {};
   window.HTMLElement.prototype.scrollTo = function () {};
   window.addEventListener("yuzuno:open-task-review", (event) => opened.push(event.detail));
+  const state = { answered: false };
   window.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     const request = { url: String(url), method, body: init.body ? JSON.parse(init.body) : null };
     requests.push(request);
     let answer = { repositories: [], links: [] };
-    if (request.url === "/api/home") answer = homeData();
+    if (request.url === "/api/home") answer = homeData(state.answered);
     else if (method === "GET" && /\/requests(\?|$)/.test(request.url)) answer = { requests: pageRequests(), hasMore: false };
     else if (request.url.endsWith("/brief/reply"))
       answer = { input: { ...request.body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t2", error: null };
@@ -166,7 +169,7 @@ function mount({ language } = {}) {
   const card = (key) => (unfoldBlocks(document), document.querySelector(`.project-home [data-section-key="${key}"]`));
   const strip = (key) => card(key)?.querySelector(".home-card-responsible") ?? null;
   const words = (element) => element.textContent.replace(/\s+/g, " ").trim();
-  return { window, document, errors, requests, opened, card, strip, words, close: () => window.close() };
+  return { window, document, errors, requests, opened, state, card, strip, words, close: () => window.close() };
 }
 
 async function openPage(options) {
@@ -283,6 +286,27 @@ test("a card whose task is done is in its request's block in Done: a report not 
   assert.equal(design.querySelector(".home-seen"), null, "nothing to mark seen");
   p.strip("design").querySelector(".home-card-session").click();
   assert.deepEqual(realm(p.window.navigated), [{ kind: "agent", agentId: "z" }], "the released executor's session");
+  assert.deepEqual(p.errors, []);
+});
+
+// PR 1092 R1: a request's block keeps the group this visit first showed it in (useHeldBlocks). Its Ask answered
+// meanwhile, nothing needs the user any more, yet the block stays in Needs you, where the user's finger is, until the
+// next visit; the group's heading counts what it holds.
+test("a block whose Ask the user just answered stays in Needs you for the visit, the heading counting what it holds", async (t) => {
+  const p = await openPage();
+  t.after(p.close);
+  const needs = () => p.document.querySelector('.project-home .request-group[data-group="needs"]');
+  const chip = () => p.document.querySelector(".project-home-head .home-chip.is-attention");
+  assert.ok(needs()?.querySelector('[data-request-block="1"]'), "R-1, its Ask open, in Needs you");
+  assert.equal(needs().querySelector(".request-group-title span").textContent, "1");
+  assert.ok(chip(), "something needs the user");
+  p.state.answered = true;
+  p.document.querySelector('.project-home [aria-label="Refresh Home"]').click();
+  await until(() => !chip(), "Core's next read: nothing needs the user");
+  await tick(40);
+  assert.ok(needs()?.querySelector('[data-request-block="1"]'), "R-1 stays in Needs you, not dropped from the page");
+  assert.equal(needs().querySelector(".request-group-title span").textContent, "1", "counted once");
+  assert.equal(p.document.querySelectorAll('.project-home [data-request-block="1"]').length, 1, "once on the page");
   assert.deepEqual(p.errors, []);
 });
 

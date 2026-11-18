@@ -3897,6 +3897,8 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
     const block = p.doc.querySelector('[data-project-home="p-app"] [data-project-block]');
     assert.equal(block.closest(".request-group")?.dataset.group, "needs", "with open Asks, in Needs you");
+    assert.equal(block.closest(".request-group").querySelector(".request-group-title span").textContent, "1",
+      "the group's heading counts the Project's block once, as the chip does (PR 1092 R1)");
     unfoldBlocks(p.doc);
     await waitFor(() => p.doc.getElementById("home-section-p-app-release"), "the Project's block open");
     for (const key of ["release", "budget", "notes/review", "notes", "reviewed"])
