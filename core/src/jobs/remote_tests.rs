@@ -2732,10 +2732,13 @@ fn a_check_is_due_by_the_cancel_the_change_or_the_cadence_and_roots_match_by_the
 /// Linux takes at most MAX_ARG_STRLEN in one argument: 32 pages, 131,072
 /// bytes with 4 KiB pages (include/uapi/linux/binfmts.h). 120 KiB leaves 8 KiB
 /// (YN-83 S2 design §3.8); past it the helper has to travel another way.
+/// YN-207's shared guard rules travel inside it too, so this guards their size.
 #[test]
 fn the_jobs_helper_command_fits_one_argument() {
-    let command = format!("python3 -c {}", crate::remote::shell_quote(include_str!("remote_job.py")));
+    let helper = include_str!("remote_job.py");
+    let command = format!("python3 -c {}", crate::remote::shell_quote(helper));
     assert!(command.len() <= 120 * 1024, "the helper's command is {} bytes", command.len());
+    assert!(helper.len() < command.len(), "the quotes alone add bytes");
 }
 
 /// v4 (YN-83 S2) binds the Git state guardGit froze there and its
@@ -2968,6 +2971,29 @@ async fn guard_git_needs_a_git_on_the_accounts_path_there() {
     let apple = account("apple-git", Some("#!/bin/sh\necho 'xcode-select: note: No developer tools were found, requesting install.' >&2\nexit 1\n"));
     let error = guarded(&lab, &apple, &[]).await.unwrap_err().to_string();
     assert_eq!(error, "Inputs on lab box cannot be frozen, so nothing was submitted: its git is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install)");
+}
+
+/// guard_rules_tests.py: the rules host.py and remote_job.py now carry from
+/// one source (core/src/jobs/guard_rules.py) answer as each helper answered
+/// before it shared them, field for field, on the same frozen facts; both
+/// copies answer alike; the snapshot keeps the shape older records read.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_shared_guard_rules_answer_as_each_helper_did() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = |name: &str| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/jobs").join(name);
+    let output = std::process::Command::new("/usr/bin/python3")
+        .args(["-I", "-B"])
+        .args([source("guard_rules_tests.py"), source("host.py"), source("remote_job.py"),
+                source("guard_rules.py")])
+        .env("HOME", temp.path())
+        .env("TMPDIR", temp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "guard_rules_tests.py failed:\n{stderr}");
+    let ran = stderr.lines().find_map(|line| line.strip_prefix("Ran ")?.split_whitespace().next()?.parse::<usize>().ok());
+    assert!(ran >= Some(20), "guard_rules_tests.py ran {ran:?} tests:\n{stderr}");
 }
 
 /// remote_git_parity_tests.py: guardGit on a machine (remote_job.py

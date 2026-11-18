@@ -178,6 +178,12 @@ jobs:
       - name: Launcher tests
         run: python3 -m unittest discover --start-directory scripts --pattern 'test_*.py' --verbose
 
+      # The Job input guard's rules live in one source and are copied into
+      # host.py and remote_job.py (YN-207): a drifted copy fails here, before
+      # the helper is built and sent.
+      - name: Guard rule copies
+        run: python3 scripts/sync_guard_rules.py --check
+
       # The change-scope, docs-link and public-CI scripts, against small fixtures.
       - name: CI script tests
         run: python3 -m unittest discover --start-directory .github/scripts --pattern 'test_*.py' --verbose
