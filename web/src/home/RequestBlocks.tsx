@@ -332,6 +332,22 @@ export function RequestBlockView({
         {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
         <span className="request-block-time"><When at={request.createdAt} /></span>
       </header>
+      {asks.length > 0 && (
+        <div className="request-block-asks" role="group" aria-label={t.asks(title)}>
+          {asks.map((ask) => (
+            <AskCard key={ask.key} section={ask} common={common} />
+          ))}
+          {/* An Ask of a task it joined is shown under that task's request: a line to it, not the Ask again. */}
+          {elsewhere && askedHere && (
+            <p className="request-block-joined">
+              <span>{t.fact.askElsewhere(elsewhere.title, elsewhere.count, elsewhere.home)}</span>
+              <button type="button" className="talk-link" onClick={() => onAction("answer", elsewhere.home, elsewhere.key)}>
+                {t.show}
+              </button>
+            </p>
+          )}
+        </div>
+      )}
       {!askedHere && (
         <div className="request-block-fact">
           <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
@@ -354,22 +370,6 @@ export function RequestBlockView({
           {error && (
             <p className="inline-error request-block-error" role="alert">
               {error}
-            </p>
-          )}
-        </div>
-      )}
-      {asks.length > 0 && (
-        <div className="request-block-asks" role="group" aria-label={t.asks(title)}>
-          {asks.map((ask) => (
-            <AskCard key={ask.key} section={ask} common={common} />
-          ))}
-          {/* An Ask of a task it joined is shown under that task's request: a line to it, not the Ask again. */}
-          {elsewhere && askedHere && (
-            <p className="request-block-joined">
-              <span>{t.fact.askElsewhere(elsewhere.title, elsewhere.count, elsewhere.home)}</span>
-              <button type="button" className="talk-link" onClick={() => onAction("answer", elsewhere.home, elsewhere.key)}>
-                {t.show}
-              </button>
             </p>
           )}
         </div>

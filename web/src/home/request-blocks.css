@@ -63,10 +63,12 @@
 .request-block {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  /* Its open Asks right under its title (W5): a fact that comes after an answer goes below them, so an Ask answered
+     in this visit does not move. */
   grid-template-areas:
     "head head"
-    "fact act"
     "asks asks"
+    "fact act"
     "delivered delivered"
     "more more"
     "body body";
@@ -440,8 +442,8 @@
   .request-block {
     grid-template-areas:
       "head head"
-      "fact fact"
       "asks asks"
+      "fact fact"
       "delivered delivered"
       "more act"
       "body body";
