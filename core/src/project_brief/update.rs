@@ -702,10 +702,12 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         let existing = planned.get(key).cloned();
         let row_now = rows.get(key).copied();
         // The task a section is the card of (YN-86 S2a): a lead binds it to
-        // a task of this Project that is not archived, or unbinds it; a
-        // task's current executor binds its own task's card at its key and
-        // nothing else (YN-212 C1). `binds`: the task this change binds it
-        // to, while that is open. `own_card`: an executor's own binding.
+        // a task of this Project that is not archived, or unbinds it; the
+        // one who answers for a task (its current executor, else its
+        // assignee that is no executor: cards::writes_for) binds its own
+        // task's card at its key and nothing else (YN-212 C1, C3 R1).
+        // `binds`: the task this change binds it to, while that is open.
+        // `own_card`: that one's own binding.
         let mut binds = None;
         let mut own_card = false;
         if let Some(task) = &change.task {
@@ -718,8 +720,9 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 };
                 let Some(id) = own else {
                     problems.push(problem("invalid_task", format!("{at}.task"),
-                        "Only a lead of this Project binds a section to a task or unbinds it. A task's current executor binds only \
-                         its own task's card, at its task's key in lower case (e.g. yn-90 for YN-90); otherwise leave task out.",
+                        "Only a lead of this Project binds a section to a task or unbinds it. Whoever answers for a task (its current \
+                         executor, else its assignee) binds only that task's card, at its key in lower case (e.g. yn-90 for YN-90); \
+                         otherwise leave task out.",
                         "sections"));
                     continue;
                 };
@@ -739,11 +742,11 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             }
         }
         let unbinding = matches!(change.task, Some(None));
-        // A task's card an executor writes as its task's current executor
-        // (YN-212 C1): the card itself, a status or a report, or a new one
-        // at its task's key that its own `task` binds.
+        // A task's card written by the one who answers for its task (YN-212
+        // C1, C3 R1): the card itself, a status or a report, or a new one at
+        // its task's key that its own `task` binds.
         let card_kind = matches!(change.kind.as_str(), "status" | "report");
-        let executor_card = match change.op {
+        let responsible_card = match change.op {
             Op::Put => card_kind && match row_now {
                 Some(row) => cards::may_write_card(db, row, &ctx.agent)?,
                 None => own_card,
@@ -765,7 +768,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 Op::Edit | Op::Patch => rows.get(key).is_some_and(|row| row.kind != "ask"),
                 _ => false,
             };
-            let card = (sub && cards::may_write_sub(db, &ctx.project, key, &ctx.agent)?) || executor_card;
+            let card = (sub && cards::may_write_sub(db, &ctx.project, key, &ctx.agent)?) || responsible_card;
             let permitted = match change.op {
                 Op::Put => (change.kind == "ask" && (existing.is_none() || own_ask)) || card,
                 // An edit keeps the stored kind: an Ask-only member edits
@@ -794,14 +797,14 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             }
         }
         // A task's card written by one that does not own it (YN-212 C1): a
-        // lead, or the task's current executor. Its content only: the owner
+        // lead, or the one who answers for its task. Its content only: the owner
         // stays, and so do the binding and the refresh, which only its owner
         // changes.
         let card_writer = existing.as_ref().is_some_and(|p| p.owner != ctx.agent)
             && row_now.is_some_and(cards::task_card)
             && match change.op {
-                Op::Put => card_kind && (can_edit || executor_card),
-                Op::Edit | Op::Patch => can_edit || executor_card,
+                Op::Put => card_kind && (can_edit || responsible_card),
+                Op::Edit | Op::Patch => can_edit || responsible_card,
                 _ => false,
             };
         if card_writer {
@@ -1508,8 +1511,8 @@ fn section_data(normalized: &Value, submitted: &Value, staged: &[attachments::St
 
 /// Who owns `row` once `ctx` writes it, and the name it is shown by: its
 /// owner, by its name as of this write when that is the writer, as before.
-/// A task's card written by a lead or its task's current executor that does
-/// not own it (YN-212 C1) keeps its owner and the owner's name; the writer
+/// A task's card written by a lead or the one who answers for its task that
+/// does not own it (YN-212 C1) keeps its owner and the owner's name; the writer
 /// is its author.
 fn kept_owner<'a>(row: &'a Row, ctx: &'a Caller) -> (&'a str, &'a str) {
     if row.owner_id == ctx.agent {

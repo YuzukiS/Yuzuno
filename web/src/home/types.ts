@@ -87,8 +87,8 @@ export type Section = {
   title: string;
   version: number;
   owner: { agentId: string; name: string; state: "active" | "closed" | "deleted" | "moved" };
-  /** Who wrote this version (YN-212 C1): its owner, or a lead or its task's current executor writing a task's card
-   * it does not own. Absent from older Cores, whose owner wrote every version. */
+  /** Who wrote this version (YN-212 C1): its owner, or a lead or the one who answers for its task writing a task's
+   * card it does not own. Absent from older Cores, whose owner wrote every version. */
   author?: { agentId: string; name: string };
   updatedAt: string;
   updatedTurnId: string | null;

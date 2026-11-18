@@ -204,3 +204,52 @@ async fn a_card_an_older_route_put_reads_as_its_placeholder_until_written() {
     assert!(written["card"].get("placeholder").is_none(), "{written}");
     assert_eq!(written["owner"]["agentId"], "desk", "its owner stays");
 }
+
+/// `agent` puts task `task`'s card at its key, bound to it, as `write_card`
+/// does: Core's answer, or its refusal.
+async fn put_card(lab: &Lab, agent: &str, task: &str, text: &str) -> anyhow::Result<Value> {
+    let version = lab.ws.collaboration_call(Some(agent), "brief_get", json!({"keys":[]})).await.unwrap()["version"].clone();
+    lab.ws.collaboration_call(Some(agent), "brief_update", json!({"requestId":uuid::Uuid::new_v4().to_string(),"expectedVersion":version,
+        "changes":[{"op":"put","key":task.to_lowercase(),"kind":"status","title":format!("{task} 进展"),"markdown":text,
+        "status":{"asOf":crate::model::now(),"validFor":3600},"task":task}]})).await
+}
+
+// PR 1091 R1 (P2): a card route to an Agent here that leads nothing and
+// executes nothing gives it the task (its assignee) and puts no card. It
+// answers for the task, so it writes the task's first card at the task's
+// key, as an executor would, and keeps writing it; the request finds the
+// card there. Another Agent of the Project binds nothing to that task.
+// Reassigned from the page to that other Agent, the first writes it no
+// more and the other does; the card stays the first one's.
+#[tokio::test]
+async fn an_agent_given_a_card_route_writes_its_tasks_card_and_another_does_not() {
+    let lab = lab();
+    lab.ws.store.insert(&agent("other", "Other")).unwrap();
+    lab.ws.store.set_agent_project("other", Some(&lab.project)).unwrap();
+    running(&lab.ws, "other");
+    let n = lab.say("写导出文档", "m1").await;
+    let made = lab.route("desk", n, "导出文档", "好。", vec![to_agent("导出文档", "member", "写文档")]).await.unwrap();
+    let task = made["routes"][0]["task"].as_str().unwrap().to_owned();
+    let key = task.to_lowercase();
+    assert_eq!(lab.task(&task)["assignee"]["id"], "member");
+    assert_eq!(rows_at(&lab, &key), 0, "routing puts no card");
+
+    let refused = put_card(&lab, "other", &task, "我来写。").await.unwrap_err().to_string();
+    assert!(refused.contains("invalid_task"), "not its task: {refused}");
+    assert_eq!(rows_at(&lab, &key), 0);
+    let identity = lab.write_card("member", &task).await;
+    assert_eq!(found(&lab, &[n]), [(json!(identity), json!(key))], "the request finds the card it wrote");
+    put_card(&lab, "member", &task, "写了一半。").await.unwrap();
+    assert_eq!(lab.section(&key).await.unwrap()["card"]["responsible"]["agentId"], "member");
+
+    let body = json!({"workspaceId":lab.workspace,"to":{"agentId":"other"},"why":"换人写","clientRequestId":"r1"});
+    let (status, answer) = reassign_on_page(&lab, &json!(identity), body, false).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let refused = put_card(&lab, "member", &task, "还是我。").await.unwrap_err().to_string();
+    assert!(refused.contains("invalid_task"), "no longer its task: {refused}");
+    put_card(&lab, "other", &task, "接手了。").await.unwrap();
+    let card = lab.section(&key).await.unwrap();
+    assert_eq!((card["owner"]["agentId"].clone(), card["author"]["agentId"].clone(), card["card"]["responsible"]["agentId"].clone()),
+        (json!("member"), json!("other"), json!("other")));
+    assert_eq!(found(&lab, &[n]), [(json!(identity), json!(key))], "the same card");
+}

@@ -105,17 +105,34 @@ impl Responsible {
     }
 }
 
+/// The task's assignee (`assigneeAgentId`), if it has one.
+fn assignee(db: &Connection, task: &str) -> Result<Option<String>> {
+    Ok(db
+        .query_row("SELECT json_extract(data,'$.assigneeAgentId') FROM collaboration_tasks WHERE id=?1", [task], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten())
+}
+
+/// Whether `agent` writes `task`'s card as the one who answers for the task
+/// (YN-212 C1; C3 R1): its newest executor not yet released; or, while it
+/// has none, its assignee when that is no executor, such as an Agent a card
+/// route or a reassignment gave the task to. An executor released from the
+/// task writes it no more, though it may still be its assignee.
+fn writes_for(db: &Connection, task: &str, agent: &str) -> Result<bool> {
+    if let Some(executor) = current_executor(db, task)? {
+        return Ok(executor == agent);
+    }
+    Ok(assignee(db, task)?.as_deref() == Some(agent) && crate::agent_roles::kind(db, agent)? != crate::agent_roles::EXECUTOR)
+}
+
 /// The task's newest executor not yet released; else its assignee, when
 /// that Agent still exists; else nobody.
 pub(super) fn responsible(db: &Connection, task: &str) -> Result<Option<Responsible>> {
     let agent = match current_executor(db, task)? {
         Some(agent) => Some(agent),
-        None => db
-            .query_row("SELECT json_extract(data,'$.assigneeAgentId') FROM collaboration_tasks WHERE id=?1", [task], |r| {
-                r.get::<_, Option<String>>(0)
-            })
-            .optional()?
-            .flatten(),
+        None => assignee(db, task)?,
     };
     let Some(agent) = agent else { return Ok(None) };
     let listed: Option<(Option<String>, bool, Option<String>)> = db
@@ -161,9 +178,9 @@ pub(super) fn may_write_sub(db: &Connection, project: &str, key: &str, agent: &s
 
 /// A task's card itself (YN-212 C1): a topic's own section, not a sub-topic,
 /// bound to a task by its own `task`, as a status (while the task goes on)
-/// or a report (once it ends). Its Project's leads and its task's current
-/// executor write it, not only its owner (update.rs rules); an Ask, or a
-/// section bound only implicitly, stays its owner's.
+/// or a report (once it ends). Its Project's leads and the one who answers
+/// for its task (`writes_for`) write it, not only its owner (update.rs
+/// rules); an Ask, or a section bound only implicitly, stays its owner's.
 pub(super) fn task_card(row: &Row) -> bool {
     row.task_id.is_some() && !row.key.contains('/') && matches!(row.kind.as_str(), "status" | "report")
 }
@@ -180,24 +197,25 @@ pub(crate) fn card_key(db: &Connection, task: &str) -> String {
     crate::collaboration_store::task_shown(db, task).to_lowercase()
 }
 
-/// Whether `agent` writes `row` as its task's current executor (YN-212 C1):
-/// `row` is a task's card (`task_card`) and `agent` that task's newest
-/// executor not yet released.
+/// Whether `agent` writes `row` as the one who answers for its task (YN-212
+/// C1): `row` is a task's card (`task_card`) and `agent` writes for that
+/// task (`writes_for`).
 pub(super) fn may_write_card(db: &Connection, row: &Row, agent: &str) -> Result<bool> {
     let Some(task) = row.task_id.as_deref().filter(|_| task_card(row)) else { return Ok(false) };
-    Ok(current_executor(db, task)?.as_deref() == Some(agent))
+    writes_for(db, task, agent)
 }
 
-/// The task an executor's own `task` binds (YN-212 C1), by internal ID:
-/// `reference` names a task of `project` that is not archived, `agent` is
-/// its current executor, `key` is its card's key (`card_key`), and the live
-/// section under `key`, if there is one, is already bound to it. So an
-/// executor puts its task's card at its key and keeps it bound, and binds
+/// The task the own `task` of the one who answers for it binds (YN-212 C1),
+/// by internal ID: `reference` names a task of `project` that is not
+/// archived, `agent` writes for it (`writes_for`: its current executor, else
+/// its assignee that is no executor), `key` is its card's key (`card_key`),
+/// and the live section under `key`, if there is one, is already bound to
+/// it. So it puts its task's card at its key and keeps it bound, and binds
 /// nothing else. None when any of that is not so.
 pub(super) fn own_card_binding(db: &Connection, project: &str, key: &str, reference: &str, agent: &str, live: Option<&Row>)
     -> Result<Option<String>> {
     let Ok(task) = bindable(db, project, reference)? else { return Ok(None) };
-    if current_executor(db, &task)?.as_deref() != Some(agent) || card_key(db, &task) != key {
+    if !writes_for(db, &task, agent)? || card_key(db, &task) != key {
         return Ok(None);
     }
     if live.is_some_and(|row| row.task_id.as_deref() != Some(task.as_str())) {

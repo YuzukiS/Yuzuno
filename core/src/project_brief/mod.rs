@@ -286,7 +286,7 @@ fn update_properties(project: Value) -> Value {
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
             "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
-            "task":{"type":["string","null"],"description":"put or edit, by a lead, or by a Task's current executor for its own Task's card at its key (yn-90 for YN-90): the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
+            "task":{"type":["string","null"],"description":"put or edit, by a lead, or by whoever answers for a Task (its current executor, else its assignee) for that Task's card at its key (yn-90 for YN-90): the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
             "refresh":{"type":["object","null"],"description":"put or edit of a report, by a lead: {every: day|hours|week, at?, hours?, days?, zone?, instruction, paused?} makes it refresh itself; null removes it; a put without it keeps it. Creating, speeding up or a new instruction only in a Turn the user started. See brief_guide refresh."}}}}
     })
 }
@@ -453,7 +453,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     )?;
     // author_id, author_name, author_version: who wrote each version's
     // content, and the version they wrote (YN-212 C1). A task's card is
-    // written by its Project's leads and its task's current executor, not
+    // written by its Project's leads and the one who answers for its task, not
     // only by its owner, so the owner no longer says who wrote it. A row reads
     // as its author's only while its version is the one the author wrote
     // (sections.rs COLUMNS): a row an older Core writes leaves them NULL, and

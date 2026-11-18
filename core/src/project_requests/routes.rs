@@ -994,9 +994,9 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
             agent
         }
     };
-    // The task's card is its executor's (or its lead's) to write, at the task's
-    // key in lower case (YN-212 C3): the route records that key and puts no
-    // card; the request finds the card there once written, by its binding
+    // The task's card is for whoever answers for the task to write (its
+    // executor, or the Agent given; a lead too), at the task's key in lower
+    // case (YN-212 C3): the route records that key and puts no card; the request finds the card there once written, by its binding
     // (progress.rs). Who took it and why are the route's.
     if row.card_key.is_none() {
         // A key another section holds, bound to no task or another, is no

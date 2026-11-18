@@ -50,7 +50,7 @@ pub(super) struct Row {
     /// (YN-145); none for any other section or reply.
     pub reply_files: Vec<crate::input_files::FileRef>,
     /// Who wrote this version's content (YN-212 C1): its owner, or a lead or
-    /// the task's current executor writing a task's card it does not own.
+    /// the one who answers for the task writing a task's card it does not own.
     /// A row an older Core wrote names its owner.
     pub author_id: String,
     pub author_name: String,
