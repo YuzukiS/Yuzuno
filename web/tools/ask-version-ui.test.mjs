@@ -250,8 +250,8 @@ test("YN-38 words Core refuses because the ask moved on go to its latest version
   t.after(page.close);
   page.render(section("plan", 2));
   await page.type("Plan A, as discussed.");
-  // Core already has version 3; this page has not read it yet.
-  page.box.asks.plan = section("plan", 3, everything, { question: "Which plan should we take now?" });
+  // Core already has version 3, which still takes words as an answer (YN-213); this page has not read it yet.
+  page.box.asks.plan = section("plan", 3, said, { question: "Which plan should we take now?" });
   page.sendButton().click();
   await tick();
   const sent = page.replies();

@@ -1,8 +1,11 @@
-// Every open Ask takes a reply in the user's own words (T-9), whatever the
-// Agent declared: options, a choice or a form never take the writing field
-// away, and `freeText.prompt` only names it. In a real browser against the
-// production bundle, with an explicit API fixture: no Core, no Agent, and
-// nothing is sent but the replies these checks make on purpose.
+// Every open Ask takes the user's own words (T-9), whatever the Agent
+// declared: options, a choice or a form never take the writing field away,
+// and `freeText.prompt` names it. Beside a decision the words go with it, and
+// alone they answer an ask that asks for them (`freeText`) or one with nothing
+// to pick; otherwise "Wait, what?" sends them as a note (YN-213). In a real
+// browser against the production bundle, with an explicit API fixture: no
+// Core, no Agent, and nothing is sent but the replies these checks make on
+// purpose.
 //   YUZUNO_UI_DIST=<isolated build> node tools/ask-free-text-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -40,8 +43,8 @@ const ask = (key, title, question, reply, extra = {}) => ({
   attachments: [], refs: {}, seen: null, history: false,
   body: body(question), ask: { question, state: "open", reply, ...extra },
 });
-// One ask of every shape an Agent can declare. Only `prompt` names the field;
-// none of them decides whether it is there.
+// One ask of every shape an Agent can declare. None of them decides whether
+// the field is there; `prompt` names it. The choice also asks for words.
 const form = {
   id: "plan", title: "Which parts ship first?",
   fields: [{ id: "part", type: "single", label: "First part", required: false,
@@ -52,7 +55,7 @@ const form = {
 const template = [
   ask("options", "Ship today?", "Ship the release today?", { options: [{ id: "ship", label: "Ship today" }, { id: "wait", label: "Wait" }] }),
   ask("choice", "Plan A or B?", "Which plan should we take?", { choice: {
-    a: { id: "plan-a", label: "Plan A" }, b: { id: "plan-b", label: "Plan B", detail: "Slower, safer" } } }),
+    a: { id: "plan-a", label: "Plan A" }, b: { id: "plan-b", label: "Plan B", detail: "Slower, safer" } }, freeText: true }),
   ask("form", "What ships first?", "Answer the form, or write instead.", { form }),
   ask("prompt", "Name the release", "What should this release be called?", { freeText: { prompt: "Write the name you want" } }),
   ask("plain", "Anything to add?", "Anything else before we ship?", { freeText: true }),
@@ -95,7 +98,9 @@ async function open({ width, height, touch, theme }) {
       writes.push({ path, body: sent });
       if (path === "/api/projects/p1/brief/reply") {
         const section = sections.find((s) => s.key === sent.key);
-        if (section) section.ask = { ...section.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: sent.text };
+        // A note answers nothing (YN-213): the ask stays as it was.
+        if (section && sent.intent !== "note")
+          section.ask = { ...section.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: sent.text };
         return route.fulfill({ json: { input: { text: sent.text, clientMessageId: sent.clientMessageId }, status: "accepted", turnId: "mori-t2", error: null } });
       }
       return route.fulfill({ json: { ok: true } });
@@ -134,15 +139,19 @@ const reply = (page, key) =>
   card(page, key).evaluate((el) => {
     const box = el.querySelector(".home-ask-reply");
     const field = box?.querySelector(".home-text-reply [data-composer-input]");
-    const send = box?.querySelector(".home-text-reply button[type=submit]");
+    // Free text alone has its own button; an ask with a decision, its one button (YN-213).
+    const send = box?.querySelector(".home-text-reply button[type=submit]")
+      ?? box?.querySelector(".home-ask-decision .clarification footer .primary-button, .home-ask-decision .home-ask-actions .primary-button");
     return {
       writable: !!field,
       placeholder: field?.getAttribute("aria-placeholder") ?? null,
       sendDisabled: send?.disabled ?? null,
-      options: [...(box?.querySelectorAll(".home-ask-options button") || [])].map((b) => b.textContent),
+      waitWhat: [...(box?.querySelectorAll("button") || [])].some((b) => b.textContent.trim() === "Wait, what?"),
+      options: [...(box?.querySelectorAll(".home-ask-options label") || [])].map((l) => l.textContent.trim()),
       choices: [...(box?.querySelectorAll(".home-choice") || [])].map((c) => c.querySelector("strong").textContent),
       form: !!box?.querySelector("form.clarification, .clarification"),
-      replied: !!el.querySelector(".home-ask-replied"),
+      // Answered: the reply in place, or the answer card it becomes (YN-21).
+      replied: !!el.querySelector(".home-ask-replied, .home-answer-reply"),
     };
   });
 
@@ -159,17 +168,19 @@ try {
         // The field is there whatever the ask declares.
         for (const [key, state] of Object.entries(shown))
           assert.equal(state.writable, true, `${key} takes free text: ${JSON.stringify(state)}`);
-        // What the Agent declared is still there, with its own submit.
+        // What the Agent declared is still there, to pick, sent with the one button; Wait, what? beside a decision.
         assert.deepEqual(shown.options.options, ["Ship today", "Wait"], JSON.stringify(shown.options));
         assert.deepEqual(shown.choice.choices, ["Plan A", "Plan B"], JSON.stringify(shown.choice));
         assert.equal(shown.form.form, true, JSON.stringify(shown.form));
-        // `prompt` only names the field; the others keep the default wording.
+        for (const key of ["options", "choice", "form"]) assert.equal(shown[key].waitWhat, true, `${key}: ${JSON.stringify(shown[key])}`);
+        for (const key of ["prompt", "plain"]) assert.equal(shown[key].waitWhat, false, `${key}: its words are the answer`);
+        // `prompt` names the field; beside a decision the words are a note to it, alone a reply.
         assert.equal(shown.prompt.placeholder, "Write the name you want");
-        assert.equal(shown.options.placeholder, shown.plain.placeholder);
-        assert.match(shown.plain.placeholder, /\S/);
-        // Empty: nothing can be sent.
+        assert.equal(shown.options.placeholder, "Add a note (optional)");
+        assert.equal(shown.plain.placeholder, "Write a reply…");
+        // Empty: nothing can be sent; a form whose questions are all optional is its own answer, as it always was.
         for (const [key, state] of Object.entries(shown))
-          assert.equal(state.sendDisabled, true, `${key} sends nothing while empty: ${JSON.stringify(state)}`);
+          if (key !== "form") assert.equal(state.sendDisabled, true, `${key} sends nothing while empty: ${JSON.stringify(state)}`);
         assert.deepEqual(writes.filter((w) => w.path.endsWith("/brief/reply")), [], "nothing sent by drawing the cards");
         record(`${view.name} ${theme}: every open ask takes free text beside what it declares`, shown);
 
@@ -185,14 +196,15 @@ try {
           record(`${view.name} ${theme}: the reply controls fit the width`, { overflow });
         }
 
-        // Writing and sending on a choice-only ask: the one the old condition
-        // left with no way to answer in words.
+        // Writing and sending on a choice that asks for words: the words alone are the answer (YN-213).
         if (!view.touch && theme === "light") {
           const field = card(page, "choice").locator(".home-text-reply [data-composer-input]");
           await field.fill("Plan B, but keep the old import for a week.");
           const before = writes.length;
-          await card(page, "choice").locator(".home-text-reply button[type=submit]").click();
-          await card(page, "choice").locator(".home-ask-replied").waitFor({ timeout: 10_000 });
+          const send = card(page, "choice").locator(".home-ask-actions .primary-button");
+          assert.equal((await send.textContent()).trim(), "Send reply");
+          await send.click();
+          await card(page, "choice").locator(".home-ask-replied, .home-answer-reply").first().waitFor({ timeout: 10_000 });
           const sent = writes.slice(before).filter((w) => w.path.endsWith("/brief/reply"));
           assert.equal(sent.length, 1, JSON.stringify(sent));
           assert.equal(sent[0].body.key, "choice");
@@ -203,7 +215,20 @@ try {
           const shot = `${output}/ask-choice-replied-${view.name}-${theme}.png`;
           await card(page, "choice").screenshot({ path: shot });
           report.shots.push(shot);
-          record("a choice-only ask answered in words: one reply sent, with no choice id, then shown as replied", sent[0].body);
+          record("a choice that asks for words, answered in words: one reply sent, with no choice id, then shown as replied", sent[0].body);
+          // Options that do not ask for words: the words decide nothing; they go as a note, and the ask stays open.
+          await card(page, "options").locator(".home-text-reply [data-composer-input]").fill("Which build is this?");
+          const submit = card(page, "options").locator(".home-ask-actions .primary-button");
+          assert.equal(await submit.isDisabled(), true, "nothing picked: nothing to decide with");
+          await card(page, "options").getByRole("button", { name: "Wait, what?", exact: true }).click();
+          await page.keyboard.insertText("Which build is this?");
+          const noted = writes.length;
+          await card(page, "options").locator(".home-ask-note .primary-button").click();
+          await card(page, "options").locator(".home-ask-notes").waitFor({ timeout: 10_000 });
+          const note = writes.slice(noted).filter((w) => w.path.endsWith("/brief/reply"));
+          assert.deepEqual(note.map((w) => [w.body.key, w.body.intent, w.body.choice ?? null, w.body.text]), [["options", "note", null, "Which build is this?"]]);
+          assert.equal((await reply(page, "options")).replied, false, "the ask still waits");
+          record("options that do not ask for words: the words go as a note, and the ask stays open", note[0].body);
         }
       } finally {
         report.writes.push(...writes.map((write) => ({ view: `${view.name} ${theme}`, ...write })));

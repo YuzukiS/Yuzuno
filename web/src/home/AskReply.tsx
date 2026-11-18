@@ -309,6 +309,14 @@ const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
 type NoteDraft = { key: string; text: string; blocks?: ReplyWords["blocks"]; images?: HomeImage[]; files?: HomeFile[]; at: string };
 const noteDrafts = draftStore<NoteDraft>("yuzuno.home-ask-notes.v1");
 
+/**
+ * Whether words alone answer an ask that offers `reply` (YN-213): one with nothing to pick or fill in, or one that
+ * asks for words beside its options (`freeText`); never one with a form. Words begun as an answer go to a newer
+ * version only where they still answer it; elsewhere they stay a draft, to go with a decision or as a note.
+ */
+export const wordsAnswerAsk = (reply: NonNullable<Section["ask"]>["reply"]) =>
+  !(reply.options?.length || reply.choice || reply.form) || (!!reply.freeText && !reply.form);
+
 /** A form reply's text as it is shown: without the line of IDs Core reads its answers by (YN-213). */
 export const withoutFormIds = (text: string) => text.replace(/\n\n\{"formId":.*\}(?=\n\n|$)/, "");
 
@@ -609,14 +617,15 @@ export function AskReply({
     const before = ask.repliedAt ?? null;
     setSentBefore(null);
     setResending(was);
-    // Refused because the ask moved on, never delivered: words go to its
-    // latest version, a note as a note; a pick or a form's answers are the user's to give again there.
+    // Refused because the ask moved on, never delivered: a note goes to its latest version as a note, and words
+    // answering it to the latest only where words still answer it (YN-213); a pick or a form's answers are the
+    // user's to give again there.
     const follow: Follow | undefined = !was.choice && !was.form
-      ? (now) => ({
+      ? (now) => was.intent === "note" || wordsAnswerAsk(now.ask!.reply) ? {
           text: was.text, shown: was.shown ?? was.text, askVersion: now.version,
           ...(was.images?.length ? { images: was.images } : {}), ...(was.files?.length ? { files: was.files } : {}),
           ...(was.intent ? { intent: was.intent } : {}),
-        })
+        } : null
       : undefined;
     let went: { receipt: MessageReceipt; version: number | null };
     try {
@@ -740,8 +749,8 @@ export function AskReply({
     if (!wordsAnswer || held || replyTooLong(words)) return;
     const text = words.trim();
     const sent = { text, shown: text, ...attached };
-    // To the version on screen; words go to a newer one as they are.
-    await deliver({ ...sent, askVersion: section.version }, (now) => ({ ...sent, askVersion: now.version }));
+    // To the version on screen; words go to a newer one as they are, where words still answer it.
+    await deliver({ ...sent, askVersion: section.version }, (now) => wordsAnswerAsk(now.ask!.reply) ? { ...sent, askVersion: now.version } : null);
     if (!latest.current || latest.current.text.trim() === text) keep(null);
     setRestored(false);
   };
@@ -1085,7 +1094,9 @@ export function AskReply({
             onSend={async (text, images, files) => {
               const taken = { ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) };
               // To the version on screen; words go to a newer one as they are.
-              await deliver({ text, shown: text, askVersion: section.version, ...taken }, (now) => ({ text, shown: text, askVersion: now.version, ...taken }));
+              // A newer version that asks for a choice or a form instead does not take them: they stay a draft (YN-213).
+              await deliver({ text, shown: text, askVersion: section.version, ...taken }, (now) =>
+                wordsAnswerAsk(now.ask!.reply) ? { text, shown: text, askVersion: now.version, ...taken } : null);
               // Only what was sent leaves: anything written while it was being sent stays.
               if (!latest.current || latest.current.text.trim() === text) keep(null);
               setRestored(false);

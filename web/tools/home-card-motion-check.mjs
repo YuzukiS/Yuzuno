@@ -229,11 +229,14 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
       atlas = { state: "open", version: atlas.version + 1, replyText: null, repliedAt: null, body: "" };
       sel = project ? DECK : LIST;
       await page.evaluate(([n, p]) => window.renderHome(n, p), [++mounts, project]);
-      await page.locator(`${sel} .home-ask-options button`).first().waitFor({ timeout: 8000 });
+      // The option picked, so the one button sends it (YN-213): pressing that button is the reply these scenes follow.
+      await page.locator(`${sel} .home-ask-options input`).first().waitFor({ timeout: 8000 });
+      await page.locator(`${sel} .home-ask-options input`).first().check();
+      await page.locator(`${sel} .home-ask-actions .primary-button:not([disabled])`).waitFor({ timeout: 8000 });
       await card().evaluate((c) => c.scrollIntoView({ block: "center", behavior: "instant" }));
       await page.waitForTimeout(250);
     };
-    const option = () => page.locator(`${sel} .home-ask-options button`).first();
+    const option = () => page.locator(`${sel} .home-ask-actions .primary-button`).first();
     const answer = async () => {
       await option().click();
       await page.locator(`${sel}.is-answer`).waitFor({ state: "attached", timeout: 8000 });
@@ -683,7 +686,7 @@ html,body{height:100%;margin:0}#root{height:100vh;display:flex;flex-direction:co
           await fresh();
           await card().evaluate((c) => {
             const view = c.closest(".home-view");
-            const button = c.querySelector(".home-ask-options button");
+            const button = c.querySelector(".home-ask-actions .primary-button");
             view.scrollTop += button.getBoundingClientRect().bottom - Math.min(view.getBoundingClientRect().bottom, innerHeight) + 140;
           });
           await page.waitForTimeout(300);

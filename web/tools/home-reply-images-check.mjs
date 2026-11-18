@@ -6,7 +6,8 @@
 //  - choosing an Agent that can't take images says so under them and holds
 //    Send; the one that can takes the reply with the images' IDs, and the
 //    sent line counts them;
-//  - an Ask's pick goes without the images, which stay in its draft;
+//  - an Ask's pick goes with the words and images beside it, as one reply,
+//    with the one button that names the pick (YN-213);
 //  - an answered Ask's card shows the images its reply took;
 //  - nothing is wider than the window.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_CHECK_OUTPUT=<dir> node tools/home-reply-images-check.mjs
@@ -234,7 +235,7 @@ try {
         return { fit, images: reply.images.length };
       });
 
-      await check(`${view.name}: an Ask's pick goes without the images, which stay in its draft`, async () => {
+      await check(`${view.name}: an Ask's pick goes with the words and images beside it, as one reply (YN-213)`, async () => {
         const pick = card(page, "pick");
         const box = pick.locator(".home-ask-reply");
         await box.locator(".home-text-reply [data-composer-input]").fill(view.lang === "en" ? "A, but with B's menu" : "A，菜单用 B 的");
@@ -244,12 +245,17 @@ try {
         assert.equal(fit.outside, 0, JSON.stringify(fit));
         assert.ok(fit.page <= fit.window + 1, `nothing wider than the window: ${JSON.stringify(fit)}`);
         await shoot(pick, `${view.name}-ask-draft`);
-        await box.getByRole("button", { name: "Layout A", exact: true }).click();
+        // Picked, then sent with the one button that names it.
+        await box.locator(".home-ask-options label").filter({ hasText: "Layout A" }).locator("input").check();
+        const submit = box.locator(".home-ask-decision .home-ask-actions .primary-button");
+        assert.match(await submit.textContent(), /Layout A/);
+        await submit.click();
         await sent(page, writes, 2);
         const reply = replies(writes)[1];
         assert.equal(reply.choice, "a");
-        assert.equal(reply.images, undefined, "a pick goes without images");
-        return { choice: reply.choice };
+        assert.equal(reply.text, view.lang === "en" ? "A, but with B's menu" : "A，菜单用 B 的");
+        assert.equal(reply.images?.length, 1, "the images go with the pick");
+        return { choice: reply.choice, images: reply.images.length };
       });
 
       await check(`${view.name}: an answered Ask's card shows the images its reply took`, async () => {

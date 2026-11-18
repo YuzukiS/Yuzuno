@@ -70,6 +70,8 @@ const refused = (message) => ({ status: 409, body: { error: message, code: "mess
 function mount(answer = accepted) {
   const errors = [];
   const posts = [];
+  // The asks Core's Home read has now, by key: what Home reads after Core refused a reply as the ask moved on.
+  const asks = {};
   let ids = 0;
   let window;
   let document;
@@ -87,6 +89,10 @@ function mount(answer = accepted) {
     window.fetch = async (url, init = {}) => {
       const body = init.body ? JSON.parse(init.body) : null;
       posts.push({ url: String(url), method: init.method || "GET", body });
+      if (String(url).endsWith("/api/home")) {
+        const home = { projects: [{ project: { id: "p1", name: "P1" }, brief: { version: 1, history: [], sections: Object.values(asks) } }] };
+        return { ok: true, status: 200, json: async () => home, text: async () => JSON.stringify(home) };
+      }
       const { status, body: reply } = await answer(body);
       // A plain body, as serde words a refusal, is no JSON.
       const plain = typeof reply === "string";
@@ -121,7 +127,7 @@ function mount(answer = accepted) {
   const outbox = () => Object.values(JSON.parse(window.localStorage.getItem("yuzuno.home-outbox.v1") || "{}"));
   return {
     get window() { return window; }, get document() { return document; },
-    errors, posts, render, reload, button, primary, radio, decision, words, noteField, type, replies, notes, alerts, outbox,
+    errors, posts, asks, render, reload, button, primary, radio, decision, words, noteField, type, replies, notes, alerts, outbox,
     close: () => window.close(),
   };
 }
@@ -281,10 +287,8 @@ test("a note not confirmed goes again as it was, a note still; refused because t
   await tick();
   assert.match(page.document.querySelector(".home-ask-unconfirmed").textContent, /Previous note not confirmed yet/);
   page.reload();
-  // Home reads the latest version when Core refuses the one sent.
-  page.window.fetch = ((own) => async (url, init) => String(url).endsWith("/api/home")
-    ? { ok: true, status: 200, json: async () => ({ projects: [{ project: { id: "p1" }, brief: { version: 3, history: [], sections: [section("ship", 3)] } }] }) }
-    : own(url, init))(page.window.fetch);
+  // Core has version 3 now: Home reads it when Core refuses the one sent.
+  page.asks.ship = section("ship", 3);
   page.render(section("ship", 2));
   page.button("Retry previous reply").click();
   await tick();
@@ -294,6 +298,77 @@ test("a note not confirmed goes again as it was, a note still; refused because t
   assert.equal(sent[1].clientMessageId, sent[0].clientMessageId, "the retry is the same message");
   assert.equal(page.document.querySelector(".home-ask-replied"), null, "a note never shows the Ask as answered");
   assert.deepEqual(page.errors, []);
+});
+
+// Words begun where an ask took them as its answer, refused because it moved on: they go to the newer version only
+// where words still answer it. A newer version that asks for a choice or a form keeps them as a draft, never sent
+// as its answer; they can still go as a note, which follows to the newer version.
+const refusesOlder = (latest) => (body) => body.askVersion < latest
+  ? refused(`ask_changed: version ${body.askVersion} of the ask \`${body.key}\` can't be answered now`) : accepted(body);
+
+test("words answering an ask that asked for them never answer its newer version that asks for a choice or a form; they stay, to go as a note", async (t) => {
+  for (const [how, before, after] of [
+    ["options with free text, then options alone", { ...options, freeText: true }, options],
+    ["free text alone, then a form", { freeText: true }, { form }],
+  ]) {
+    const page = mount(refusesOlder(3));
+    try {
+      page.render(section("ship", 2, before));
+      const field = page.document.querySelector(".home-ask-words [data-composer-input], .home-text-reply [data-composer-input]");
+      await page.type(field, "Ship it after QA.");
+      page.asks.ship = section("ship", 3, after);
+      page.document.querySelector(".home-ask-actions .primary-button, .home-text-reply button[type=submit]").click();
+      await tick();
+      assert.deepEqual(page.replies().map((b) => b.askVersion), [2], `${how}: nothing sent to version 3 as its answer`);
+      assert.ok(page.alerts().some((a) => /The question changed before your reply was sent, so nothing was sent/.test(a)), `${how}: ${page.alerts()}`);
+      // Home shows version 3: the words are still there, beside its decision, and can go as a note.
+      page.render(section("ship", 3, after));
+      assert.equal(composerText(page.words()), "Ship it after QA.", `${how}: kept`);
+      assert.equal(page.document.querySelector(".home-ask-replied"), null, how);
+      page.button("Wait, what?").click();
+      await tick();
+      await page.type(page.noteField(), "Ship it after QA.");
+      page.button("Send to Agent").click();
+      await tick();
+      assert.deepEqual(page.replies().at(-1), { key: "ship", agentId: "mori", text: "Ship it after QA.", clientMessageId: page.replies().at(-1).clientMessageId,
+        askVersion: 3, workspaceId: "ws-1", intent: "note" }, `${how}: as a note`);
+      assert.deepEqual(page.errors, [], how);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("words not confirmed go again as they were; refused as the ask moved on, to its newer version only where words still answer it", async (t) => {
+  for (const [how, after, goes] of [["still takes words", { ...options, freeText: true }, true], ["asks for a choice now", options, false]]) {
+    let lose = true;
+    const page = mount((body) => {
+      if (lose) { lose = false; throw new TypeError("Failed to fetch"); }
+      return refusesOlder(3)(body);
+    });
+    try {
+      page.render(section("ship", 2, { ...options, freeText: true }));
+      await page.type(page.words(), "Ship it after QA.");
+      page.primary().click();
+      await tick();
+      page.asks.ship = section("ship", 3, after);
+      page.button("Retry previous reply").click();
+      await tick();
+      const sent = page.replies();
+      assert.deepEqual(sent.map((b) => [b.askVersion, b.text, b.intent ?? null]),
+        [[2, "Ship it after QA.", null], [2, "Ship it after QA.", null], ...(goes ? [[3, "Ship it after QA.", null]] : [])], how);
+      assert.equal(sent[1].clientMessageId, sent[0].clientMessageId, `${how}: the retry is the same message`);
+      if (!goes) {
+        assert.ok(page.alerts().some((a) => /The question changed before your reply was sent/.test(a)), `${how}: ${page.alerts()}`);
+        page.render(section("ship", 3, after));
+        assert.equal(composerText(page.words()), "Ship it after QA.", `${how}: kept as a draft`);
+        assert.equal(page.document.querySelector(".home-ask-replied"), null, how);
+      }
+      assert.deepEqual(page.errors, [], how);
+    } finally {
+      page.close();
+    }
+  }
 });
 
 test("the notes Core keeps show on the Ask, newest first, each with the version it was written on", async (t) => {
