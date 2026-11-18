@@ -63,8 +63,11 @@ const everything = {
   choice: { a: { id: "plan-a", label: "Plan A" }, b: { id: "plan-b", label: "Plan B" } },
   form,
 };
+/** Options and two approaches, and the user's own words as an answer (`freeText`, YN-213: words alone answer only
+ * an ask that asks for them, and one without a form). */
+const said = { options: everything.options, choice: everything.choice, freeText: true };
 /** An ask as Core sends it, at `version`. */
-const section = (key, version, reply = everything, ask = {}) => ({
+const section = (key, version, reply = said, ask = {}) => ({
   key, kind: "ask", title: "Which plan?", version,
   owner: { agentId: "mori", name: "Mori", state: "active" },
   updatedAt: new Date().toISOString(), updatedTurnId: null, attachments: [], refs: {}, seen: null, history: false,
@@ -153,7 +156,18 @@ function mount(answer = accepted) {
   // The reply's field: the conversation's composer (YN-91).
   const field = () => document.querySelector(".home-text-reply [data-composer-input]");
   const fieldValue = () => composerText(field());
-  const sendButton = () => document.querySelector(".home-text-reply button[type=submit]");
+  /** The one button that sends the decision (YN-213): the form's, or the ask's own below its words. */
+  const primary = () => document.querySelector(".home-ask-decision .clarification footer .primary-button, .home-ask-decision .home-ask-actions .primary-button");
+  // Free text alone has its own button; an ask with a decision sends words with its one button.
+  const sendButton = () => document.querySelector(".home-text-reply button[type=submit]") ?? primary();
+  /** The option or approach labelled `label` to pick (YN-213). */
+  const radio = (label) => [...document.querySelectorAll(".home-ask-decision fieldset label")].find((l) => l.textContent.includes(label))?.querySelector("input");
+  /** Picks it and sends it with the one button. */
+  const choose = async (label) => {
+    radio(label).click();
+    await tick();
+    primary().click();
+  };
   const type = async (text) => {
     setComposerText(field(), text);
     await tick();
@@ -165,7 +179,8 @@ function mount(answer = accepted) {
   const homeReads = () => posts.filter((post) => post.url.endsWith("/api/home")).length;
   return {
     get window() { return window; }, get document() { return document; },
-    errors, posts, replies, render, field, fieldValue, sendButton, type, button, notes, box, reload, outbox, homeReads, close: () => window.close(),
+    errors, posts, replies, render, field, fieldValue, sendButton, primary, radio, choose, type, button, notes, box, reload, outbox, homeReads,
+    close: () => window.close(),
   };
 }
 
@@ -173,12 +188,12 @@ test("every way of answering an ask names the version answered and the Workspace
   const page = mount();
   t.after(page.close);
   page.render(section("opt", 4));
-  page.button("Ship today").click();
+  await page.choose("Ship today");
   await tick();
   page.render(section("pick", 4));
-  page.document.querySelectorAll(".home-choice button")[1].click();
+  await page.choose("Plan B");
   await tick();
-  page.render(section("form", 4), { workspaceId: "ws-2" });
+  page.render(section("form", 4, everything), { workspaceId: "ws-2" });
   page.document.querySelector(".clarification footer .primary-button").click();
   await tick();
   page.render(section("words", 4));
@@ -215,6 +230,12 @@ test("a form's answers go as the text Home writes of them with the same ids besi
   const page = mount();
   t.after(page.close);
   page.render(section("setup", 1, { form: homeFormReply.form }));
+  // A choice's default is a suggestion on Home (YN-213): the user picks the same answers themselves.
+  const f = formOf(page);
+  for (const label of ["深色", "宽字", "键盘"]) {
+    f.radio(label).click();
+    await tick();
+  }
   page.document.querySelector(".clarification footer .primary-button").click();
   await tick();
   const sent = page.replies();
@@ -229,8 +250,8 @@ test("YN-38 words Core refuses because the ask moved on go to its latest version
   t.after(page.close);
   page.render(section("plan", 2));
   await page.type("Plan A, as discussed.");
-  // Core already has version 3; this page has not read it yet.
-  page.box.asks.plan = section("plan", 3, everything, { question: "Which plan should we take now?" });
+  // Core already has version 3, which still takes words as an answer (YN-213); this page has not read it yet.
+  page.box.asks.plan = section("plan", 3, said, { question: "Which plan should we take now?" });
   page.sendButton().click();
   await tick();
   const sent = page.replies();
@@ -259,7 +280,7 @@ test("YN-38 a pick Core refuses because the ask moved on goes to the latest only
     try {
       page.render(section("opt", 2));
       page.box.asks.opt = latest(3);
-      page.button("Ship today").click();
+      await page.choose("Ship today");
       await tick();
       const sent = page.replies();
       assert.deepEqual(sent.map((b) => [b.askVersion, b.choice]), goes ? [[2, "ship"], [3, "ship"]] : [[2, "ship"]], `${how}: ${JSON.stringify(sent)}`);
@@ -332,7 +353,7 @@ test("a send not confirmed goes again exactly as it was, even after the ask is a
   // The owner asked again meanwhile; the retry still answers version 2.
   page.render(section("plan", 3));
   assert.equal(page.sendButton().disabled, true, "nothing else is sent from here meanwhile");
-  assert.equal(page.button("Ship today").disabled, true);
+  assert.equal(page.radio("Ship today").disabled, true);
   sendAgainButton(page, 2).click();
   await tick();
   const [first, second] = page.replies();
@@ -372,22 +393,22 @@ test("① an option whose outcome is unknown goes again as it was after the ask 
   t.after(page.close);
   c.lose(true);
   page.render(section("opt", 2));
-  page.button("Ship today").click();
+  await page.choose("Ship today");
   await tick();
   page.render(section("opt", 3, everything, { question: "Ship on Monday instead?" }));
   page.reload();
   page.render(section("opt", 3, everything, { question: "Ship on Monday instead?" }));
   assert.equal(unconfirmedOf(page)?.preview, "Ship today", JSON.stringify(unconfirmedOf(page)));
-  assert.equal(page.button("Ship today").disabled, true, "the same option is neither its retry nor a new reply meanwhile");
+  assert.equal(page.radio("Ship today").disabled, true, "the same option is neither its retry nor a new reply meanwhile");
   sendAgainButton(page, 2).click();
   await tick();
   const [first, second] = page.replies();
   assert.deepEqual(second, first, "the same version, option and client id");
   assert.equal(c.delivered.size, 1, "Core delivered it once");
-  assert.ok(page.notes().some((n) => /Your reply to version 2 of this ask was delivered before, so nothing more was sent\. Home shows version 3/.test(n)),
-    JSON.stringify(page.notes()));
+  assert.equal(page.notes().filter((n) => /Your reply to version 2 of this ask was delivered before, so nothing more was sent\. Home shows version 3/.test(n)).length, 1,
+    `said once: ${JSON.stringify(page.notes())}`);
   // Answering version 3 is a new reply, given once the earlier one is settled.
-  page.button("Ship today").click();
+  await page.choose("Ship today");
   await tick();
   const third = page.replies()[2];
   assert.deepEqual([third.choice, third.askVersion], ["ship", 3]);
@@ -400,10 +421,10 @@ test("② a choice whose outcome is unknown goes again as it was after its label
   const c = core((body) => body.askVersion === 2 && "ask_changed: version 2 of the ask `pick` can't be answered now");
   const page = mount((body) => c.answer(body));
   t.after(page.close);
-  const planB = () => page.document.querySelectorAll(".home-choice button")[1];
+  const planB = () => page.radio("Plan B");
   c.lose(false);
   page.render(section("pick", 2));
-  planB().click();
+  await page.choose("Plan B");
   await tick();
   const changed = { ...everything, choice: { a: { id: "plan-a", label: "Plan A, now in one release" }, b: { id: "plan-b", label: "Plan B, now in two" } } };
   page.reload();
@@ -417,7 +438,7 @@ test("② a choice whose outcome is unknown goes again as it was after its label
   assert.equal(c.delivered.size, 0, "nothing delivered");
   assert.ok(page.notes().some((n) => /The question changed before your reply was sent, so nothing was sent/.test(n)), JSON.stringify(page.notes()));
   assert.deepEqual(page.outbox(), [], "never submitted: no retry record");
-  planB().click();
+  await page.choose("Plan B");
   await tick();
   const third = page.replies()[2];
   assert.deepEqual([third.choice, third.askVersion], ["plan-b", 3]);
@@ -605,15 +626,20 @@ test("YN-38 answers whose version record was evicted are kept after a reload whe
   assert.deepEqual(page.errors, []);
 });
 
+/** What a form says it suggests (YN-213): a choice's default, never chosen for the user. */
+const suggestions = (page) => [...page.document.querySelectorAll(".clarification-note p")].map((n) => n.textContent).filter((n) => /^Suggested:/.test(n));
+
 test("a changed schema alone is never an edit: an untouched form follows the question in place and keeps no answers or version", async (t) => {
   const page = mount();
   t.after(page.close);
   const f = formOf(page);
   page.render(section("form", 1, { form: defaulted("ui") }));
   page.render(section("form", 2, { form: { ...changedForm, fields: [{ ...changedForm.fields[0], default: { value: "docs", source: "The plan" } }] } }));
-  assert.equal(f.radio("The docs").checked, true, "version 2's own default");
+  assert.deepEqual(suggestions(page), ["Suggested: “The docs” (The plan). Choose it yourself to send it."], "version 2's own default, as a suggestion");
+  assert.ok(["The UI", "Core", "The docs"].every((label) => !f.radio(label).checked), "nothing chosen for the user");
   page.render(section("form", 3, { form: defaulted("core") }));
-  assert.equal(f.radio("Core").checked, true, "version 3's own default");
+  assert.deepEqual(suggestions(page), ["Suggested: “Core” (The plan). Choose it yourself to send it."], "version 3's own default");
+  assert.equal(f.radio("Core").checked, false);
   assert.ok(!page.notes().some(carriedNote) && !page.document.querySelector(".clarification-carried"), JSON.stringify([page.notes(), f.notes()]));
   assert.ok(!Object.keys(page.window.localStorage).some((k) => k.startsWith("yuzuno.clarification.v1:")), "no answers kept");
   assert.deepEqual(formVersions(page), [], "no version kept");
@@ -677,16 +703,16 @@ test("sent again on an ask resolved or removed since, the unconfirmed reply is r
     try {
       c.lose(false);
       page.render(section("opt", 2));
-      page.button("Ship today").click();
+      await page.choose("Ship today");
       await tick();
-      assert.equal(page.button("Ship today").disabled, true, code);
+      assert.equal(page.radio("Ship today").disabled, true, code);
       sendAgainButton(page, 2).click();
       await tick();
       const [first, second] = page.replies();
       assert.deepEqual(second, first, `${code}: sent again as it was`);
       assert.ok(page.notes().some((n) => said.test(n)), `${code}: ${JSON.stringify(page.notes())}`);
       assert.deepEqual(page.outbox(), [], `${code}: never submitted, no record`);
-      assert.equal(page.button("Ship today").disabled, false, `${code}: open again`);
+      assert.equal(page.radio("Ship today").disabled, false, `${code}: open again`);
       assert.equal(c.delivered.size, 0);
       assert.deepEqual(page.errors, []);
     } finally {
@@ -760,7 +786,7 @@ test("④ discarding the unconfirmed reply forgets it here and says it may have 
   page.button("Clear pending record").click();
   await tick();
   assert.deepEqual(page.outbox(), []);
-  assert.ok(page.notes().some((n) => /Cleared here only: it may already have been delivered/.test(n)), JSON.stringify(page.notes()));
+  assert.equal(page.notes().filter((n) => /Cleared here only: it may already have been delivered/.test(n)).length, 1, `said once: ${JSON.stringify(page.notes())}`);
   assert.equal(page.replies().length, 1, "nothing sent");
   // A form: its answers stay version 2's.
   c.lose(true);
@@ -782,28 +808,31 @@ test("④ discarding the unconfirmed reply forgets it here and says it may have 
   assert.deepEqual(page.errors, []);
 });
 
-test("in place, an unedited form shows the new question's own defaults; a form sent with its defaults goes again with them", async (t) => {
+test("in place, an unedited form suggests the new question's own default and chooses none; a form sent goes again with its answers", async (t) => {
   const c = core();
   const page = mount((body) => c.answer(body));
   t.after(page.close);
   const f = formOf(page);
   // Nothing written in it: the ask changes in place, without a reload.
   page.render(section("form", 1, { form: defaulted("ui"), freeText: true }));
-  assert.equal(f.radio("The UI").checked, true);
+  assert.deepEqual(suggestions(page), ["Suggested: “The UI” (The plan). Choose it yourself to send it."]);
+  assert.equal(f.radio("The UI").checked, false, "a default is never the user's answer until they choose it (YN-213)");
   page.field().focus();
   page.render(section("form", 2, { form: defaulted("core"), freeText: true }));
-  assert.equal(f.radio("Core").checked, true, "the default of version 2");
-  assert.equal(f.radio("The UI").checked, false, "not version 1's");
+  assert.deepEqual(suggestions(page), ["Suggested: “Core” (The plan). Choose it yourself to send it."], "the default of version 2");
   assert.equal(page.document.activeElement, page.field(), "focus stays where the user is");
   assert.ok(!page.notes().some(carriedNote) && !page.document.querySelector(".clarification-carried"), JSON.stringify(f.notes()));
+  // Sent untouched, it answers nothing in that field: the default is not sent as the user's.
   f.submit().click();
   await tick();
   const [fresh] = page.replies();
   assert.equal(fresh.askVersion, 2);
-  assert.match(fresh.text, /- First part: Core/);
-  // Sent with its defaults, unconfirmed: those answers are that send's, here and after a reload.
+  assert.match(fresh.text, /- First part: \(no answer\)/);
+  // Sent with the user's own answer, unconfirmed: those answers are that send's, here and after a reload.
   c.lose(true);
   page.render(section("sent", 1, { form: defaulted("ui") }));
+  f.radio("The UI").click();
+  await tick();
   f.submit().click();
   await tick();
   page.render(section("sent", 2, { form: defaulted("core") }));
@@ -871,10 +900,10 @@ test("a pick refused because the ask was resolved or removed says so and sends n
   const page = mount(() => answers.shift());
   t.after(page.close);
   page.render(section("plan", 5));
-  page.button("Wait").click();
+  await page.choose("Wait");
   await tick();
   assert.ok(page.notes().some((n) => /This ask was resolved before your reply was sent, so nothing was sent\./.test(n)), JSON.stringify(page.notes()));
-  page.button("Ship today").click();
+  await page.choose("Ship today");
   await tick();
   assert.ok(page.notes().some((n) => /This ask was removed before your reply was sent, so nothing was sent\./.test(n)), JSON.stringify(page.notes()));
   assert.equal(page.replies().length, 2, "one request per click, none repeated");

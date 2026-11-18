@@ -16,6 +16,9 @@ export { homeReplyOf } from "./home-reply-model";
 export const homeReplyText = strings({
   label: "Reply from Home",
   fromHome: "From Home",
+  // A note on an ask (YN-213, "Wait, what?"): the user's words that answer nothing.
+  noteLabel: "Note from Home",
+  noteFromHome: "Note from Home · not an answer",
   projectBrief: "Project Brief",
   version: (n: number) => `version ${n}`,
   earlier: "an earlier reply, shown as sent",
@@ -39,6 +42,8 @@ export const homeReplyText = strings({
 }, {
   label: "来自 Home 的回复",
   fromHome: "来自 Home",
+  noteLabel: "来自 Home 的留言",
+  noteFromHome: "来自 Home 的留言 · 不是作答",
   projectBrief: "项目 Brief",
   version: (n: number) => `第 ${n} 版`,
   earlier: "较早的回复，按发送时的原样显示",
@@ -143,10 +148,11 @@ export function HomeReply({ origin, item, agentId, turnId }: { origin: HomeReply
   const actions = !snapshot ? [original, home] : phone ? [copy, home, question, original] : [copy, question, original, home];
   const title = snapshot?.sectionKind === null ? t.projectBrief : snapshot?.title ?? origin.key;
   return (
-    <section className={`home-reply${snapshot ? "" : " earlier"}`} data-layout={phone ? "phone" : undefined} aria-label={t.label}>
+    <section className={`home-reply${snapshot ? "" : " earlier"}`} data-layout={phone ? "phone" : undefined}
+      data-intent={origin.intent} aria-label={origin.intent === "note" ? t.noteLabel : t.label}>
       <div className="home-reply-source">
         <House size={13} aria-hidden="true" />
-        <span>{t.fromHome}</span>
+        <span>{origin.intent === "note" ? t.noteFromHome : t.fromHome}</span>
         <span aria-hidden="true">·</span>
         {snapshot ? (
           <>

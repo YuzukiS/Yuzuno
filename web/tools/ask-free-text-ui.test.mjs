@@ -9,10 +9,13 @@ import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 
-// An open Ask always takes a reply in the user's own words (T-9), whatever
-// the Agent declared: options, a choice or a form never take the writing
-// field away, and `freeText.prompt` only names it. The real AskReply, with
-// Core answered here; nothing is sent but what a test sends on purpose.
+// An open Ask always takes the user's own words (T-9), whatever the Agent
+// declared: options, a choice or a form never take the writing field away,
+// and `freeText.prompt` names it. Beside a decision (YN-213) the words go with
+// it, as one reply, and alone they answer only an ask that asks for them
+// (`freeText`); otherwise "Wait, what?" sends them as a note. The real
+// AskReply, with Core answered here; nothing is sent but what a test sends on
+// purpose.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -91,7 +94,9 @@ function mount() {
   // The reply's field: the conversation's composer (YN-91).
   const field = () => document.querySelector(".home-text-reply [data-composer-input]");
   const fieldValue = () => composerText(field());
-  const sendButton = () => document.querySelector(".home-text-reply button[type=submit]");
+  // Free text alone has its own button; an ask with a decision sends words with its one button (YN-213).
+  const sendButton = () => document.querySelector(".home-text-reply button[type=submit]")
+    ?? document.querySelector(".home-ask-decision .home-ask-actions .primary-button");
   const type = async (text) => {
     setComposerText(field(), text);
     await tick();
@@ -114,7 +119,7 @@ test("every open ask takes free text, whatever its Agent declared", (t) => {
     assert.ok(page.field(), `${what}: the ask takes a written reply`);
     // What the Agent declared is still there, with its own way to send.
     if (value.ask.reply.options)
-      assert.equal(page.document.querySelectorAll(".home-ask-options button").length, 2, what);
+      assert.equal(page.document.querySelectorAll(".home-ask-options input[type=radio]").length, 2, what);
     if (value.ask.reply.choice)
       assert.equal(page.document.querySelectorAll(".home-choice").length, 2, what);
     if (value.ask.reply.form) assert.ok(page.document.querySelector(".clarification"), what);
@@ -123,23 +128,22 @@ test("every open ask takes free text, whatever its Agent declared", (t) => {
   assert.deepEqual(page.errors, []);
 });
 
-test("freeText only names the field; it never decides whether there is one", (t) => {
+test("freeText never decides whether there is a field; its prompt names it", (t) => {
   const page = mount();
   t.after(page.close);
   page.render(section("a", { options: [{ id: "y", label: "Yes" }, { id: "n", label: "No" }] }));
-  const standard = page.field().getAttribute("aria-placeholder");
-  assert.match(standard, /\S/);
+  assert.equal(page.field().getAttribute("aria-placeholder"), "Add a note (optional)", "beside a decision, the words go with it");
   page.render(section("b", { freeText: true }));
-  assert.equal(page.field().getAttribute("aria-placeholder"), standard, "declaring free text changes nothing");
+  assert.equal(page.field().getAttribute("aria-placeholder"), "Write a reply…");
   page.render(section("c", { choice: { a: { id: "a", label: "A" }, b: { id: "b", label: "B" } },
     freeText: { prompt: "Say which and why" } }));
   assert.equal(page.field().getAttribute("aria-placeholder"), "Say which and why", "a prompt names the field");
 });
 
-test("an empty reply cannot be sent", async (t) => {
+test("an empty reply cannot be sent, and words alone answer only an ask that asks for them", async (t) => {
   const page = mount();
   t.after(page.close);
-  page.render(section("a", { options: [{ id: "y", label: "Yes" }, { id: "n", label: "No" }] }));
+  page.render(section("a", { freeText: true }));
   assert.equal(page.sendButton().disabled, true);
   await page.type("   ");
   assert.equal(page.sendButton().disabled, true, "blank text is not a reply");
@@ -148,13 +152,21 @@ test("an empty reply cannot be sent", async (t) => {
   assert.deepEqual(page.posts, []);
   await page.type("Yes, but after the docs land");
   assert.equal(page.sendButton().disabled, false);
+  // Options without freeText (YN-213): the words go with a choice, or as a note ("Wait, what?"), never as the answer.
+  page.render(section("b", { options: [{ id: "y", label: "Yes" }, { id: "n", label: "No" }] }));
+  await page.type("Hm, what does Yes ship?");
+  assert.equal(page.sendButton().disabled, true, "no choice: nothing to decide with yet");
+  assert.equal(page.sendButton().textContent.trim(), "Submit decision");
+  assert.ok([...page.document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Wait, what?"), "the words can go as a note");
+  assert.deepEqual(page.posts, []);
 });
 
-test("a choice-only ask answered in words sends the text, with no choice id", async (t) => {
+test("a choice ask that asks for words, answered in words, sends the text with no choice id", async (t) => {
   const page = mount();
   t.after(page.close);
-  page.render(section("plan", { choice: { a: { id: "plan-a", label: "Plan A" }, b: { id: "plan-b", label: "Plan B" } } }));
+  page.render(section("plan", { choice: { a: { id: "plan-a", label: "Plan A" }, b: { id: "plan-b", label: "Plan B" } }, freeText: true }));
   await page.type("Plan B, but keep the old import for a week.");
+  assert.equal(page.sendButton().textContent.trim(), "Send reply");
   page.sendButton().click();
   await tick();
   const sent = page.posts.filter((post) => post.method === "POST");

@@ -43,6 +43,14 @@ export type HomeReplyInput = {
   /** Files the user attached on Home (YN-145), as the Project's files saved
    * them: Core copies them to whoever the reply goes to. Only sent with any. */
   files?: HomeFile[];
+  /** A note on an ask (YN-213, "Wait, what?"): the user's words and what
+   * they attached, answering nothing. Core sends it with no choice or form,
+   * and the ask stays as it was. Only sent for a note: an older Core refuses
+   * the field, and nothing is sent. */
+  intent?: "note";
+  /** The user's own words beside a form's answers (YN-213), sent after them
+   * in the same message. Only with a form, and only with words. */
+  note?: string;
 };
 
 export type LinkedRepositories = {
@@ -224,6 +232,12 @@ export const olderCoreImages = (error: unknown) =>
 export const olderCoreFiles = (error: unknown) =>
   error instanceof HttpError && /unknown field `files`/.test(errorText(error));
 
+/** A Core from before notes on an ask and a form's own words (YN-213) refuses a reply that has
+ * either, or a form's answers with images or files: nothing was sent, and it is never sent as
+ * something else, such as an answer. */
+export const olderCoreNotes = (error: unknown) =>
+  error instanceof HttpError && (/unknown field `(intent|note)`/.test(errorText(error)) || /^form_(images|files):/.test(errorText(error)));
+
 /** Core's reason without its code, or that an older Core refused the reply. */
 export function explain(error: unknown) {
   if (olderCore(error)) return OLDER_CORE;
@@ -248,6 +262,8 @@ export async function sendReply(
     images?: string[];
     /** Files the user attached (YN-145), as the Project's files saved them. */
     files?: HomeFile[];
+    intent?: HomeReplyInput["intent"];
+    note?: string;
   },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
@@ -263,7 +279,9 @@ export async function sendReply(
     (kept.workspaceId ?? null) === (reply.workspaceId ?? null) &&
     JSON.stringify(kept.form ?? null) === JSON.stringify(reply.form ?? null) &&
     JSON.stringify(kept.images ?? []) === JSON.stringify(reply.images ?? []) &&
-    JSON.stringify(kept.files ?? []) === JSON.stringify(reply.files ?? []);
+    JSON.stringify(kept.files ?? []) === JSON.stringify(reply.files ?? []) &&
+    (kept.intent ?? null) === (reply.intent ?? null) &&
+    (kept.note ?? null) === (reply.note ?? null);
   const input: Outbound = same
     ? kept
     : {
@@ -277,6 +295,9 @@ export async function sendReply(
         // Only with images or files: a reply without goes to an older Core as before.
         ...(reply.images?.length ? { images: reply.images } : {}),
         ...(reply.files?.length ? { files: reply.files } : {}),
+        // Only for a note, and a form's words: anything else goes to an older Core as before (YN-213).
+        ...(reply.intent ? { intent: reply.intent } : {}),
+        ...(reply.note ? { note: reply.note } : {}),
         shown: reply.shown ?? reply.text,
         sentAt: new Date().toISOString(),
       };
