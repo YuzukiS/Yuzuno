@@ -8,6 +8,7 @@ import type { Agent } from "../types";
 import { requestDomId } from "./brief-layout";
 import { openTask } from "./CardResponsible";
 import { CardAgents } from "./card-responsible";
+import { DeckSizes } from "./card-sizes";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
 import { conversation, untitledHint } from "./project-talk";
@@ -15,7 +16,7 @@ import type { ProjectRequest } from "./project-talk-api";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
-import type { BlockAction, BlockFact, BlockGroup, ProjectBlock, RequestBlock, TaskRow, Who } from "./request-blocks";
+import { openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
@@ -41,6 +42,7 @@ export const blockText = strings(
     fact: {
       unconfirmed: "Not confirmed delivered",
       ask: (title: string, n: number) => `Waiting for you: ${title}${n > 1 ? ` (+${n - 1} more)` : ""}`,
+      askElsewhere: (title: string, n: number, home: number) => `Waiting for you under R-${home}: ${title}${n > 1 ? ` (+${n - 1} more)` : ""}`,
       result: (task: string, done: boolean, n: number) => `${task} ${done ? "is done · " : ""}delivered ${n} ${n === 1 ? "item" : "items"}`,
       going: (n: number) => ` · ${n} more in progress`,
       ended: (task: string, cancelled: boolean) => `${task} ${cancelled ? "was cancelled" : "ended"} with nothing to open`,
@@ -55,6 +57,7 @@ export const blockText = strings(
     },
     alsoFor: (ns: number[]) => `Also for ${ns.map((n) => `R-${n}`).join(", ")}`,
     joined: (task: string, title: string, home: number) => `Joined ${task} “${title}” · its card is under R-${home}`,
+    asks: (title: string) => `Questions for you in “${title}”`,
     show: "Show →",
     noCardYet: (who: string) => `No card yet · with ${who}`,
     cardGone: "Its card is no longer on Home",
@@ -89,6 +92,7 @@ export const blockText = strings(
     fact: {
       unconfirmed: "没确认送达",
       ask: (title, n) => `等你决定：${title}${n > 1 ? `（另 ${n - 1} 项）` : ""}`,
+      askElsewhere: (title, n, home) => `在 R-${home} 下等你决定：${title}${n > 1 ? `（另 ${n - 1} 项）` : ""}`,
       result: (task, done, n) => `${task} ${done ? "已完成 · " : ""}交付 ${n} 项`,
       going: (n) => ` · 另 ${n} 项进行中`,
       ended: (task, cancelled) => `${task} 已${cancelled ? "取消" : "结束"}，没有可打开的结果`,
@@ -103,6 +107,7 @@ export const blockText = strings(
     },
     alsoFor: (ns) => `也服务于 ${ns.map((n) => `R-${n}`).join("、")}`,
     joined: (task, title, home) => `并入 ${task}「${title}」· 卡片在 R-${home} 下`,
+    asks: (title) => `「${title}」里等你回答的问题`,
     show: "查看 →",
     noCardYet: (who) => `还没有卡 · 交给 ${who}`,
     cardGone: "卡片已不在 Home",
@@ -133,6 +138,11 @@ export type BlockCommon = {
   onReport: OpenDeliveredReport;
   /** A note to show in a card (a reply's "Open on Home" landed there, T-9). */
   notice?: (section: Section) => ReactNode;
+  /**
+   * Whether an Ask is shown in its block's first look (W5): while it is open, and, once the user answered it in
+   * this visit, where it was until the next visit. Each Ask is drawn there only, never again in the folded part.
+   */
+  upFront: (section: Section) => boolean;
 };
 
 const FACT_ICON: Record<BlockFact["kind"], ReactNode> = {
@@ -175,7 +185,7 @@ function FactLines({ fact }: { fact: BlockFact }) {
       text = t.fact.unconfirmed;
       break;
     case "ask":
-      text = t.fact.ask(fact.title, fact.count);
+      text = fact.home === null ? t.fact.ask(fact.title, fact.count) : t.fact.askElsewhere(fact.title, fact.count, fact.home);
       meta = <>{fact.task} · <When at={fact.at} /></>;
       break;
     case "answered":
@@ -223,9 +233,55 @@ function FactLines({ fact }: { fact: BlockFact }) {
 }
 
 /**
+ * Whether an Ask is shown in its block's first look (W5, R-20 follow-up): while it is open; and one the page showed
+ * open in this visit stays there once answered, the answer in its place (SectionCard's short reply), until the next
+ * visit, as a block keeps its group (useHeldBlocks). A new visit starts afresh.
+ *
+ * Under each key only the newest Ask seen open in this visit is held, by Home's identity for the section, which an
+ * answer's new version keeps and a new section under the same key does not (PR 1098 R1, R2): an Ask the Agent
+ * resolved and asked again under its key gives way to the new one and is an Answered line again, never a second
+ * card beside it. `asks` are every Ask on the page, read first so that this holds whichever block is drawn first.
+ * An older Core names no identity: then only a live entry is held, by its key.
+ */
+export function useAsksUpFront(asks: readonly Section[]) {
+  const sizes = useContext(DeckSizes);
+  const visit = sizes?.visit ?? 0;
+  const shown = useRef({ visit, latest: new Map<string, string>() });
+  if (shown.current.visit !== visit) shown.current = { visit, latest: new Map() };
+  const { latest } = shown.current;
+  const identity = (section: Section) => (section.id === undefined ? `k:${section.key}` : `i:${section.id}`);
+  for (const ask of asks) if (openAsk(ask)) latest.set(ask.key, identity(ask));
+  return (section: Section) => {
+    if (section.kind !== "ask") return false;
+    if (openAsk(section)) {
+      latest.set(section.key, identity(section));
+      return true;
+    }
+    return latest.get(section.key) === identity(section) && (section.id !== undefined || !section.history);
+  };
+}
+
+/** An Ask as Home draws it, answerable where it stands (W5: the same card the block used to unfold to). */
+function AskCard({ section, common }: { section: Section; common: BlockCommon }) {
+  return (
+    <SectionCard
+      section={section}
+      projectId={common.projectId}
+      workspaceId={common.workspaceId}
+      agents={common.agents}
+      readOnly={common.readOnly || section.history}
+      onSeen={common.onSeen}
+      onChanged={common.onChanged}
+      notice={common.notice?.(section)}
+    />
+  );
+}
+
+/**
  * One request (YN-212 §3.2): its number and title; one latest fact and one
- * action; what its tasks delivered, each openable; folded, its tasks (one
- * card each), the tasks it joined, and its own conversation.
+ * action, or its open Asks, each answerable in the first look (W5); what its
+ * tasks delivered, each openable; folded, its tasks (one card each), the
+ * tasks it joined, and its own conversation.
  */
 export function RequestBlockView({
   block,
@@ -258,6 +314,10 @@ export function RequestBlockView({
   const said = conversation([request]).length;
   const tasks = block.tasks.length + block.joined.length;
   const label = action ? t.actions[action] : "";
+  const asks = block.asks.filter(common.upFront);
+  // Its own open Ask is the fact, shown whole below: no line repeats its question.
+  const askedHere = fact.kind === "ask" && fact.home === null && asks.length > 0;
+  const elsewhere = block.askedElsewhere;
   return (
     <article
       className="request-block"
@@ -277,10 +337,28 @@ export function RequestBlockView({
         {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
         <span className="request-block-time"><When at={request.createdAt} /></span>
       </header>
-      <div className="request-block-fact">
-        <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
-        <FactLines fact={fact} />
-      </div>
+      {asks.length > 0 && (
+        <div className="request-block-asks" role="group" aria-label={t.asks(title)}>
+          {asks.map((ask) => (
+            <AskCard key={ask.key} section={ask} common={common} />
+          ))}
+          {/* An Ask of a task it joined is shown under that task's request: a line to it, not the Ask again. */}
+          {elsewhere && askedHere && (
+            <p className="request-block-joined">
+              <span>{t.fact.askElsewhere(elsewhere.title, elsewhere.count, elsewhere.home)}</span>
+              <button type="button" className="talk-link" onClick={() => onAction("answer", elsewhere.home, elsewhere.key)}>
+                {t.show}
+              </button>
+            </p>
+          )}
+        </div>
+      )}
+      {!askedHere && (
+        <div className="request-block-fact">
+          <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
+          <FactLines fact={fact} />
+        </div>
+      )}
       {action && !common.readOnly && (
         <div className="request-block-act">
           <button
@@ -349,7 +427,11 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
   const tt = talkText(language);
   const agents = useContext(CardAgents);
   const who = row.responsible ? agents.get(row.responsible.agentId)?.name || row.responsible.name : row.task.id;
-  const asks = { open: row.asks.filter((a) => a.ask?.state === "open"), answered: row.asks.filter((a) => a.ask?.state !== "open") };
+  // An Ask in the block's first look is drawn there only (W5).
+  const asks = {
+    open: row.asks.filter((a) => a.ask?.state === "open" && !common.upFront(a)),
+    answered: row.asks.filter((a) => a.ask?.state !== "open" && !common.upFront(a)),
+  };
   const over = row.task.archived || row.task.status === "done" || row.task.status === "cancelled";
   const openIt = (
     <button type="button" className="talk-link" aria-label={tt.openTaskLabel(row.task.id)} onClick={() => openTask(row.task.id)}>
@@ -513,7 +595,9 @@ function RequestThread({ request }: { request: ProjectRequest }) {
 export function ProjectBlockView({ block, open, onToggle, common }: { block: ProjectBlock; open: boolean; onToggle: () => void; common: BlockCommon }) {
   const language = useLanguage();
   const t = blockText(language);
-  const all: Section[] = [...block.asks, ...block.sections];
+  // Its open Asks in the first look, answerable there (W5); the rest one line each until opened.
+  const asks = block.asks.filter(common.upFront);
+  const all: Section[] = [...block.asks.filter((ask) => !asks.includes(ask)), ...block.sections];
   // Opened, its cards keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
   // deck-packing.ts), in a deck of the block's own width.
   const grid = useRef<HTMLDivElement>(null);
@@ -527,7 +611,14 @@ export function ProjectBlockView({ block, open, onToggle, common }: { block: Pro
         </button>
         {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
       </header>
-      {open ? (
+      {asks.length > 0 && (
+        <div className="request-block-asks" role="group" aria-label={t.asks(t.projectNote)}>
+          {asks.map((ask) => (
+            <AskCard key={ask.key} section={ask} common={common} />
+          ))}
+        </div>
+      )}
+      {all.length === 0 ? null : open ? (
         <div className="request-block-body project-block-cards">
           <div ref={grid} className="home-brief">
             {all.map((section) =>
@@ -571,10 +662,12 @@ export function ProjectBlockView({ block, open, onToggle, common }: { block: Pro
           ))}
         </ul>
       )}
-      <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
-        <ChevronDown size={13} aria-hidden="true" />
-        {open ? t.less : t.projectMore(all.length)}
-      </button>
+      {all.length > 0 && (
+        <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
+          <ChevronDown size={13} aria-hidden="true" />
+          {open ? t.less : t.projectMore(all.length)}
+        </button>
+      )}
     </article>
   );
 }

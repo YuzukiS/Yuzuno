@@ -21,7 +21,11 @@ import type { Section } from "./types";
 /** Needs you, in progress, done (confirmed by the user, YN-184). */
 export type BlockGroup = "needs" | "doing" | "done";
 
-/** The one action a block's first look offers: answer > send again > confirm done > follow up. */
+/**
+ * The one action a block's first look offers: answer > send again > confirm done > follow up. Answer is offered
+ * only by a block whose open Ask is shown under another request it joined; an Ask of its own is shown in it, to
+ * answer there (W5, R-20 follow-up).
+ */
 export type BlockAction = "answer" | "resend" | "confirm" | "follow";
 
 /** Who answers for a task now, as Core reads it (cards.rs `responsible`). */
@@ -34,8 +38,11 @@ export type Who = NonNullable<RequestCard["responsible"]>;
 export type BlockFact =
   /** 1. The user's words are not confirmed delivered. */
   | { kind: "unconfirmed" }
-  /** 2. A task of the block has an open Ask: the oldest, and how many more. */
-  | { kind: "ask"; title: string; key: string; count: number; task: string; at: string }
+  /**
+   * 2. A task of the block has an open Ask: the oldest, and how many more. `home` is null when it is one of the
+   * block's own tasks, whose Asks the block shows; else the request whose block shows it (a joined task).
+   */
+  | { kind: "ask"; title: string; key: string; count: number; task: string; at: string; home: number | null }
   /** 3. The front desk answered it itself (YN-136). */
   | { kind: "answered"; text: string; at: string }
   /** 4. Its tasks delivered, and no task going on wrote its card since. */
@@ -80,14 +87,24 @@ export type TaskRow = {
 
 export type DeliveredGroup = { task: string; title: string; items: Deliverable[] };
 
+/** An open Ask of a task the block joined, shown under the request that task is shown under. */
+export type AskedElsewhere = { home: number; key: string; title: string; count: number };
+
 export type RequestBlock = {
   kind: "request";
   key: string;
   request: ProjectRequest;
   group: BlockGroup;
   fact: BlockFact;
-  /** None once the user confirmed it done. */
+  /** None once the user confirmed it done, and none for an Ask the block shows itself. */
   action: BlockAction | null;
+  /**
+   * The Asks of the tasks shown here, each once, oldest first (W5): an open one is shown in the block's first look,
+   * answerable there, not behind Answer; the view keeps one the user answered in this visit where it was.
+   */
+  asks: Section[];
+  /** Open Asks of tasks it joined, shown in the block of the request they are under. */
+  askedElsewhere: AskedElsewhere | null;
   /** What its tasks' newest results delivered, newest result first, each task once. */
   delivered: DeliveredGroup[];
   /** The tasks shown here in full. */
@@ -106,6 +123,7 @@ export type ProjectBlock = {
   key: "project";
   group: BlockGroup;
   sections: Section[];
+  /** Its Asks, oldest first: an open one is shown in its first look, as a request block's (W5). */
   asks: Section[];
   unread: boolean;
   last: number;
@@ -144,6 +162,16 @@ function unique(sections: readonly Section[]) {
 }
 
 const newestFirst = (a: Section, b: Section) => Number(a.history) - Number(b.history) || time(b.updatedAt) - time(a.updatedAt);
+
+/** An Ask the user has not answered, live. */
+export const openAsk = (section: Section) => section.kind === "ask" && !section.history && section.ask?.state === "open";
+
+/**
+ * Asks in the order they were put, oldest first: by Home's identity, which a new section gets in turn and a new
+ * version keeps, so an answer moves none of them; an older Core's, without one, by when it was last written.
+ */
+const asked = (a: Section, b: Section) =>
+  a.id !== undefined && b.id !== undefined ? a.id - b.id : time(a.updatedAt) - time(b.updatedAt);
 
 function rowsOf(requests: readonly ProjectRequest[], sections: readonly Section[]) {
   const all = unique(sections);
@@ -233,17 +261,24 @@ function progressOf(row: TaskRow, request: ProjectRequest): { fact: BlockFact; a
   return { fact: { kind: "working", who: row.responsible, task: row.task.id, at: new Date(at).toISOString() }, at };
 }
 
-/** The block's latest fact and its one action (§3.2), from its tasks (shown here or joined) and what they delivered. */
-function factOf(request: ProjectRequest, rows: readonly TaskRow[], delivered: readonly DeliveredGroup[]): { fact: BlockFact; action: BlockAction } {
+/** The open Asks of `rows`, oldest first, each with its row. */
+const openAsks = (rows: readonly TaskRow[]) =>
+  rows.flatMap((row) => row.asks.filter(openAsk).map((ask) => ({ ask, row }))).sort((a, b) => asked(a.ask, b.ask));
+
+/**
+ * The block's latest fact and its one action (§3.2), from its tasks (shown here or joined) and what they delivered.
+ * An open Ask of its own tasks is shown in the block (W5): no action leads to it.
+ */
+function factOf(request: ProjectRequest, rows: readonly TaskRow[], delivered: readonly DeliveredGroup[]): { fact: BlockFact; action: BlockAction | null } {
   if (!reached(request.delivery)) return { fact: { kind: "unconfirmed" }, action: "resend" };
-  const open = rows
-    .flatMap((row) => row.asks.filter((a) => a.ask?.state === "open").map((ask) => ({ ask, row })))
-    .sort((a, b) => time(a.ask.updatedAt) - time(b.ask.updatedAt));
+  const own = openAsks(rows.filter((row) => row.home === request.n));
+  const open = own.length ? own : openAsks(rows);
   if (open.length) {
     const { ask, row } = open[0];
+    const home = own.length ? null : row.home;
     return {
-      fact: { kind: "ask", title: ask.ask?.question || ask.title, key: ask.key, count: open.length, task: row.task.id, at: ask.updatedAt },
-      action: "answer",
+      fact: { kind: "ask", title: ask.ask?.question || ask.title, key: ask.key, count: open.length, task: row.task.id, at: ask.updatedAt, home },
+      action: home === null ? null : "answer",
     };
   }
   const note = request.notes.at(-1);
@@ -317,6 +352,9 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
     const { fact, action } = factOf(request, mine, delivered);
     const group = groupOf(request, fact);
     const own = mine.flatMap((row) => [row.card, ...row.asks]).filter((s): s is Section => !!s && !s.history);
+    const tasks = mine.filter((row) => row.home === request.n);
+    const joined = mine.filter((row) => row.home !== request.n);
+    const elsewhere = openAsks(joined);
     blocks.push({
       kind: "request",
       key: `r${request.n}`,
@@ -324,9 +362,13 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
       group,
       fact,
       action: group === "done" ? null : action,
+      asks: tasks.flatMap((row) => row.asks).sort(asked),
+      askedElsewhere: elsewhere.length
+        ? { home: elsewhere[0].row.home, key: elsewhere[0].ask.key, title: elsewhere[0].ask.ask?.question || elsewhere[0].ask.title, count: elsewhere.length }
+        : null,
       delivered,
-      tasks: mine.filter((row) => row.home === request.n),
-      joined: mine.filter((row) => row.home !== request.n),
+      tasks,
+      joined,
       unread: own.some(changedSinceSeen),
       last: Math.max(
         time(request.createdAt),
@@ -344,12 +386,12 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
     b.request.n - a.request.n);
   const taken = new Set(rows.keys());
   const rest = unique(sections).filter((s) => !s.history && !isPlaceholder(s) && !taken.has(taskOf(s) ?? ""));
-  const asks = rest.filter((s) => s.kind === "ask");
+  const asks = rest.filter((s) => s.kind === "ask").sort(asked);
   const project: ProjectBlock | null = rest.length
     ? {
         kind: "project",
         key: "project",
-        group: asks.some((a) => a.ask?.state === "open") ? "needs" : "doing",
+        group: asks.some(openAsk) ? "needs" : "doing",
         sections: rest.filter((s) => s.kind !== "ask"),
         asks,
         unread: rest.some(changedSinceSeen),
@@ -365,6 +407,11 @@ export function blockCounts(blocks: readonly RequestBlock[], project: ProjectBlo
   for (const block of blocks) counts[block.group] += 1;
   if (project) counts[project.group] += 1;
   return counts;
+}
+
+/** Whether `key` is an open Ask a block shows in its first look (W5): a jump to it opens no block. */
+export function askUpFront(key: string, blocks: readonly RequestBlock[], project: ProjectBlock | null) {
+  return [...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])].some((ask) => ask.key === key && openAsk(ask));
 }
 
 /** The block a section is shown in (a card link, a jump to an Ask): its task's home request's, else the Project's. */

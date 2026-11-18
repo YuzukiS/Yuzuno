@@ -25,7 +25,7 @@ try {
     `import React, {useState} from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
-import {RequestBlockView, ProjectBlockView} from ${JSON.stringify(path.join(root, "src/home/RequestBlocks.tsx"))};
+import {RequestBlockView, ProjectBlockView, useAsksUpFront} from ${JSON.stringify(path.join(root, "src/home/RequestBlocks.tsx"))};
 import {pageBlocks} from ${JSON.stringify(path.join(root, "src/home/request-blocks.ts"))};
 import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-responsible.ts"))};
 const root=createRoot(document.getElementById('root'));
@@ -34,8 +34,9 @@ function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
   const [open, setOpen] = useState(new Set(window.opened || []));
   const toggle = (key) => setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
+  const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])]);
   const common = {projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly, onSeen: async () => {}, onChanged: () => {},
-    onReport: (link) => window.calls.push({report: link})};
+    onReport: (link) => window.calls.push({report: link}), upFront};
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
     {project && <ProjectBlockView block={project} open={open.has('project')} onToggle={() => toggle('project')} common={common}/>}</div>;
@@ -142,10 +143,15 @@ test("each request's first look: its one fact, its one action and what it delive
   const fact = (n) => page.text(page.block(n).querySelector(".request-block-fact-line"));
   const meta = (n) => page.text(page.block(n).querySelector(".request-block-fact-meta"));
   const action = (n) => page.block(n).querySelector(".request-block-action");
-  assert.equal(fact(7), "Waiting for you: Which layout?");
-  assert.match(meta(7), /^YN-91 · /);
-  assert.equal(action(7).dataset.action, "answer");
-  assert.ok(action(7).classList.contains("is-primary"));
+  // W5: R-7's open Ask is its first look, whole and answerable there; no line repeats its question, no Answer.
+  const asks = page.block(7).querySelector(".request-block-asks");
+  assert.equal(asks.getAttribute("aria-label"), "Questions for you in “Request 7”");
+  assert.deepEqual([...asks.querySelectorAll("[data-section-key]")].map((el) => el.dataset.sectionKey), ["yn-91/pick"]);
+  assert.match(page.text(asks), /Which layout\?/);
+  assert.ok(asks.querySelector("textarea, [data-composer-input], button"), "its reply is there");
+  assert.equal(page.block(7).querySelector(".request-block-fact"), null);
+  assert.equal(action(7), null);
+  assert.equal(page.document.activeElement, page.document.body, "shown, nothing takes the focus");
   assert.equal(fact(8), "YN-92 is done · delivered 2 items");
   assert.equal(action(8).dataset.action, "confirm");
   assert.equal(page.block(8).querySelectorAll(".request-block-delivered li").length, 2);
@@ -162,9 +168,9 @@ test("each request's first look: its one fact, its one action and what it delive
 test("the same in Chinese", () => {
   const page = mount({ lang: "zh" });
   const fact = (n) => page.text(page.block(n).querySelector(".request-block-fact-line"));
-  assert.equal(fact(7), "等你决定：Which layout?");
+  assert.equal(page.block(7).querySelector(".request-block-asks").getAttribute("aria-label"), "「Request 7」里等你回答的问题");
+  assert.equal(page.block(7).querySelector(".request-block-action"), null, "no 回答 before the Ask: it is there");
   assert.equal(fact(8), "YN-92 已完成 · 交付 2 项");
-  assert.equal(page.text(page.block(7).querySelector(".request-block-action")), "回答");
   assert.equal(page.text(page.block(8).querySelector(".request-block-action")), "确认完成");
   assert.equal(page.text(page.block(9).querySelector(".request-block-action")), "追问");
   assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^卡片已过有效期 · YN-93 · Export 写 · /);
@@ -172,15 +178,14 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.document.querySelector("[data-project-block] .request-block-title")), "不属于任何请求");
 });
 
-test("an action says which request it is for; an answer names its Ask; a deliverable opens its version", () => {
+test("an action says which request it is for; a deliverable opens its version", () => {
   const page = mount();
-  for (const n of [7, 8, 9]) page.block(n).querySelector(".request-block-action").click();
+  for (const n of [8, 9]) page.block(n).querySelector(".request-block-action").click();
   assert.deepEqual(page.calls(), [
-    { action: "answer", n: 7, key: "yn-91/pick" },
     { action: "confirm", n: 8, key: null },
     { action: "follow", n: 9, key: null },
   ]);
-  assert.equal(page.block(7).querySelector(".request-block-action").getAttribute("aria-label"), "Answer: R-7");
+  assert.equal(page.block(8).querySelector(".request-block-action").getAttribute("aria-label"), "Confirm done: R-8");
   page.block(8).querySelector('.request-deliverable[data-kind="report"]').click();
   assert.deepEqual(page.calls().at(-1), { report: { key: "yn-92", version: 3, sectionId: 999 } });
 });
@@ -189,7 +194,8 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   const page = mount({ opened: ["r7", "r10", "r9"] });
   const r7 = page.block(7);
   const parts = [...r7.querySelector(".request-task").children].map((el) => el.dataset.sectionKey ?? el.querySelector("[data-section-key]")?.dataset.sectionKey ?? el.className);
-  assert.deepEqual(parts, ["yn-91/pick", "yn-91", "request-task-answered"], "the open Ask, the one card, the answered Ask");
+  assert.deepEqual(parts, ["yn-91", "request-task-answered"], "the one card, the answered Ask: the open Ask is in the first look only");
+  assert.equal(r7.querySelectorAll('[data-section-key="yn-91/pick"]').length, 1, "unfolded, the Ask is not drawn again");
   assert.equal(page.text(r7.querySelector(".request-task-answered")), "Answered: Casual copy? → Yes");
   assert.equal(page.text(r7.querySelector(".request-thread > summary")), "Conversation 3");
   // R-10 joined R-9's task: one line, which shows R-9.
@@ -248,6 +254,115 @@ test("a task's card says who wrote it and that it was written before your reply,
   assert.deepEqual(page.calls().at(-1), { report: { key: "yn-91", version: 1, sectionId: card7.id } });
   // A card with no earlier version, or read the same time as the reply, says neither.
   assert.equal(page.block(9).querySelector(".request-task-versions, .request-task-before"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+// W5 (R-20 follow-up): every open Ask is in its block's first look, each once. A task two requests share shows its
+// Ask under the first; the other says where, and its Answer goes there. Answered in this visit, an Ask stays where it
+// was; the Project's own Asks are up front too.
+test("every open Ask is in the first look once: two of one task, one of a shared task, one answered now, the Project's", async () => {
+  const page = mount();
+  const data = fixtures();
+  const extra = {
+    owner: { agentId: "x", name: "YN-91 · Design", state: "active" },
+    ask: { question: "Which font?", state: "open", reply: { options: [{ id: "s", label: "Serif" }], freeText: true } }, card: bind("YN-91"),
+  };
+  const font = section("yn-91/font", "ask", "Pick a font", 10, extra);
+  const shared = section("yn-93/scope", "ask", "Export scope", 8, {
+    ask: { question: "JSON too?", state: "open", reply: { freeText: true } }, card: bind("YN-93"),
+  });
+  const mine = section("pick", "ask", "Release window", 6, { ask: { question: "Ship on Friday?", state: "open", reply: { freeText: true } } });
+  const render = (sections) => page.window.renderPage({ requests: data.requests, sections, readOnly: false });
+  render([...data.sections, font, shared, mine]);
+  await tick();
+  const keys = (el) => [...el.querySelectorAll(".request-block-asks [data-section-key]")].map((card) => card.dataset.sectionKey);
+  assert.deepEqual(keys(page.block(7)), ["yn-91/pick", "yn-91/font"], "both, in the order they were put, each answerable");
+  assert.deepEqual(keys(page.block(9)), ["yn-93/scope"], "the shared task's Ask under R-9, where its card is");
+  assert.deepEqual(keys(page.block(10)), [], "not drawn again under R-10");
+  assert.equal(page.text(page.block(10).querySelector(".request-block-fact-line")), "Waiting for you under R-9: JSON too?");
+  page.block(10).querySelector(".request-block-action").click();
+  assert.deepEqual(page.calls().at(-1), { action: "answer", n: 10, key: "yn-93/scope" }, "its Answer goes to the Ask under R-9");
+  const own = page.document.querySelector("[data-project-block]");
+  assert.deepEqual(keys(own), ["pick"]);
+  assert.deepEqual([...own.querySelectorAll(".project-block-line-title")].map(page.text), ["Development state"], "its other cards one line each");
+  assert.equal(page.document.querySelectorAll('[data-section-key="yn-91/pick"], [data-section-key="yn-93/scope"], [data-section-key="pick"]').length, 3);
+
+  // Core's next read: R-7's first Ask answered. It stays where it was for the visit, its answer in its place.
+  const replied = data.sections.map((s) => s.key === "yn-91/pick"
+    ? { ...s, version: 3, ask: { ...s.ask, state: "replied", repliedAt: ago(0), replyText: "A" } }
+    : s);
+  render([...replied, font, shared, mine]);
+  await tick();
+  assert.deepEqual(keys(page.block(7)), ["yn-91/pick", "yn-91/font"], "nothing moved");
+  page.block(7).querySelector(".request-block-more").click();
+  await tick();
+  assert.equal(page.block(7).querySelectorAll('[data-section-key="yn-91/pick"]').length, 1, "unfolded, not drawn again");
+  assert.deepEqual([...page.block(7).querySelectorAll(".request-task-answered")].map(page.text), ["Answered: Casual copy? → Yes"],
+    "the Ask answered now is not a line below as well");
+  assert.deepEqual(page.errors, []);
+});
+
+// PR 1098 R1: an Ask kept in History under a key a new open Ask uses again is another section (another identity):
+// only the new one is up front, held there once answered; the old one stays an Answered line, never a second card.
+test("an older Ask in History under the same key stays an Answered line beside the new one up front", async () => {
+  const page = mount({ opened: ["r7"] });
+  const data = fixtures();
+  const old = section("yn-91/pick", "ask", "Pick a layout", 300, {
+    history: true, historyReason: "resolved", card: bind("YN-91"),
+    ask: { question: "Which layout, first round?", state: "resolved", reply: { freeText: true }, repliedAt: ago(290), replyText: "B" },
+  });
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, old], readOnly: false });
+  await tick();
+  const block = page.block(7);
+  const upFront = () => [...block.querySelectorAll(".request-block-asks [data-section-key]")].map((el) => el.dataset.sectionKey);
+  assert.deepEqual(upFront(), ["yn-91/pick"]);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1, "one card by that id");
+  assert.deepEqual([...block.querySelectorAll(".request-task-answered")].map(page.text),
+    ["Answered: Casual copy? → Yes", "Answered: Which layout, first round? → B"], "the live one first, then History's");
+  // The new one answered meanwhile: still the only one up front.
+  const answered = data.sections.map((s) => s.key === "yn-91/pick" ? { ...s, version: 3, ask: { ...s.ask, state: "replied", repliedAt: ago(0), replyText: "A" } } : s);
+  page.window.renderPage({ requests: data.requests, sections: [...answered, old], readOnly: false });
+  await tick();
+  assert.deepEqual(upFront(), ["yn-91/pick"]);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1);
+  assert.deepEqual(page.errors, []);
+});
+
+// PR 1098 R2: the same visit. The user answers the Ask; its Agent resolves it into History and asks again under the
+// same key: the new one is up front alone, the earlier one an Answered line again, and so once the new one is answered.
+test("an Ask answered in this visit, resolved and asked again under its key, gives way to the new one", async () => {
+  const page = mount({ opened: ["r7"] });
+  const data = fixtures();
+  const render = (sections) => page.window.renderPage({ requests: data.requests, sections, readOnly: false });
+  const block = () => page.block(7);
+  const answeredLines = () => [...block().querySelectorAll(".request-task-answered")].map(page.text);
+  const first = data.sections.find((s) => s.key === "yn-91/pick");
+  const rest = data.sections.filter((s) => s.key !== "yn-91/pick");
+  await tick();
+  // Answered here: held where it was.
+  const replied = { ...first, version: 3, ask: { ...first.ask, state: "replied", repliedAt: ago(1), replyText: "A" } };
+  render([...rest, replied]);
+  await tick();
+  assert.equal(block().querySelectorAll(".request-block-asks [data-section-key]").length, 1);
+  // Resolved into History, and asked again under its key: another section.
+  const resolved = { ...replied, version: 4, history: true, historyReason: "resolved", ask: { ...replied.ask, state: "resolved" } };
+  const again = section("yn-91/pick", "ask", "Pick a layout again", 0, {
+    owner: { agentId: "x", name: "YN-91 · Design", state: "active" }, card: bind("YN-91"),
+    ask: { question: "Which layout, now that A is in?", state: "open", reply: { freeText: true } },
+  });
+  render([...rest, resolved, again]);
+  await tick();
+  const cards = () => [...block().querySelectorAll(".request-block-asks [data-section-key]")];
+  assert.equal(cards().length, 1, "the new one alone up front");
+  assert.match(page.text(cards()[0]), /now that A is in/);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1, "one card by that id");
+  assert.ok(answeredLines().includes("Answered: Which layout? → A"), JSON.stringify(answeredLines()));
+  // The new one answered too: still the only one up front; the earlier one stays a line.
+  render([...rest, resolved, { ...again, version: 2, ask: { ...again.ask, state: "replied", repliedAt: ago(0), replyText: "B" } }]);
+  await tick();
+  assert.equal(cards().length, 1);
+  assert.match(page.text(cards()[0]), /now that A is in/);
+  assert.ok(answeredLines().includes("Answered: Which layout? → A"));
   assert.deepEqual(page.errors, []);
 });
 

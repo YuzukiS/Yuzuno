@@ -429,6 +429,8 @@ test("Seen sends exactly the versions on screen; one arriving meanwhile stays un
     assert.ok(card(p, "p-app", "release").classList.contains("is-changed"), "the newer version is still unseen");
     // On its page: what it read is not highlighted, and Seen all sends every version shown.
     const app = await openProject(p, "p-app");
+    // The page draws its cards once its requests are read, and its open Ask before that (W5): wait for this one.
+    await waitFor(() => card(p, "p-app", "notes"), "the notes card on its page");
     assert.equal(card(p, "p-app", "notes").classList.contains("is-changed"), false, "a seen version is not highlighted");
     // Core's next read finds nothing waiting in App any more.
     const panel = p.state.home.projects[0];

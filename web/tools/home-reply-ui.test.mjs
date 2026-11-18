@@ -472,6 +472,9 @@ async function arrive(data, origin, n = 1) {
 }
 const note = (page) => page.document.querySelector(".home-reply-arrival");
 const cardOf = (page, key) => (unfoldBlocks(page.document), page.document.querySelector(`[data-section-key="${key}"]`));
+// The landing waits for the page's requests (a card is in its request's block); since W5 an open Ask is drawn on the
+// page's first render, so the card is there before the focus is: wait for the focus, not a fixed time.
+const focused = (page, card, label = "the card it answered is focused") => until(() => page.document.activeElement === card(), label);
 const pressBack = (page) => [...note(page).querySelectorAll("button")].find((b) => b.textContent === "Back to your reply").click();
 async function arrivals(cases) {
   for (const [label, data, origin, check] of cases) {
@@ -497,7 +500,7 @@ test("on Home, the same section later says which version was answered, in its ca
   t.after(page.close);
   assert.equal(note(page).closest('[data-section-key="export-paging"]'), cardOf(page, "export-paging"));
   assert.equal(note(page).textContent, "You replied to version 3 of this ask. It has changed since; this is version 4, not the one you answered.Back to your reply");
-  assert.equal(page.document.activeElement, cardOf(page, "export-paging"), "the card it answered is focused");
+  await focused(page, () => cardOf(page, "export-paging"));
   pressBack(page);
   assert.deepEqual(JSON.parse(JSON.stringify(page.window.actions)), [["back", back]]);
   assert.deepEqual(page.errors, []);
@@ -505,9 +508,9 @@ test("on Home, the same section later says which version was answered, in its ca
 
 test("on Home, a resolved, removed or seen section is said from its own record, the same version only shown", async () => {
   await arrivals([
-    ["same version", homeData([ask("export-paging", 10, 3)]), askReply, (page) => {
+    ["same version", homeData([ask("export-paging", 10, 3)]), askReply, async (page) => {
       assert.equal(note(page), null);
-      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+      await focused(page, () => cardOf(page, "export-paging"));
     }],
     // Resolving adds a version: the record is the section's by its identity, not by version.
     ["resolved", homeData([], [ended(ask, "export-paging", 10, 4, "resolved")]), askReply, (page) =>
@@ -563,9 +566,9 @@ test("on Home, a reply that names no section is told only by its very version", 
   const legacy = { ...bothOrigin };
   assert.equal(legacy.sectionId, undefined);
   await arrivals([
-    ["same version", homeData([ask("export-paging", 10, 3)]), legacy, (page) => {
+    ["same version", homeData([ask("export-paging", 10, 3)]), legacy, async (page) => {
       assert.equal(note(page), null);
-      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+      await focused(page, () => cardOf(page, "export-paging"));
     }],
     // A later version may be another section: Home can't tell, and opens no card as the one answered.
     ["later version", homeData([ask("export-paging", 11, 4)]), legacy, (page) => {
@@ -584,20 +587,21 @@ test("on Home, a reply that names no section is told only by its very version", 
 // R1 839f91d1: a section kept out of view (its author no longer a content
 // editor) is a card of the Project's own block (YN-212: before, the page's
 // closed "Cards from the team"): a reply to it opens the block.
-test("on Home, the section answered from the team is shown: its block open, its card unfolded and focused, again on each opening", async (t) => {
+// W5: an open Ask is in its block's first look, so landing on it opens no block; its card is unfolded and focused.
+test("on Home, the section answered from the team is shown: in its block's first look, unfolded and focused, again on each opening", async (t) => {
   const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
   const block = (page) => page.document.querySelector("[data-project-block]");
   const shown = (page) => page.document.querySelector('[data-section-key="export-paging"]');
   await arrivals([
-    ["same version", team(3), askReply, (page) => {
-      assert.ok(block(page).hasAttribute("data-open"), "the Project's block holds it: open");
+    ["same version", team(3), askReply, async (page) => {
+      assert.ok(shown(page).closest(".request-block-asks")?.closest("[data-project-block]"), "the Project's block shows it in its first look");
       assert.equal(note(page), null);
-      assert.equal(page.document.activeElement, shown(page));
+      await focused(page, () => shown(page));
     }],
-    ["changed", team(4), askReply, (page) => {
-      assert.ok(block(page).hasAttribute("data-open"));
+    ["changed", team(4), askReply, async (page) => {
+      assert.ok(shown(page).closest(".request-block-asks"));
       assert.equal(note(page).closest('[data-section-key="export-paging"]'), shown(page), "the note in the card it answered");
-      assert.equal(page.document.activeElement, shown(page));
+      await focused(page, () => shown(page));
     }],
   ]);
   // Opened again after the user folded the card and the block: shown again.
@@ -609,7 +613,8 @@ test("on Home, the section answered from the team is shown: its block open, its 
   block(page).querySelector(".request-block-more").click();
   await until(() => !block(page).hasAttribute("data-open"), "the block folded by the user");
   page.window.renderHome({ origin: askReply, back, n: 2 });
-  await until(() => block(page).hasAttribute("data-open") && shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
+  await until(() => shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
+  assert.ok(!block(page).hasAttribute("data-open"), "the block stays as the user folded it: the Ask is in its first look");
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));
