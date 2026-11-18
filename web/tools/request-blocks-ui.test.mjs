@@ -145,7 +145,7 @@ test("each request's first look: its one fact, its one action and what it delive
   const action = (n) => page.block(n).querySelector(".request-block-action");
   // W5: R-7's open Ask is its first look, whole and answerable there; no line repeats its question, no Answer.
   const asks = page.block(7).querySelector(".request-block-asks");
-  assert.equal(asks.getAttribute("aria-label"), "Questions for you in “Settings layout”");
+  assert.equal(asks.getAttribute("aria-label"), "Questions for you in “Request 7”");
   assert.deepEqual([...asks.querySelectorAll("[data-section-key]")].map((el) => el.dataset.sectionKey), ["yn-91/pick"]);
   assert.match(page.text(asks), /Which layout\?/);
   assert.ok(asks.querySelector("textarea, [data-composer-input], button"), "its reply is there");
@@ -168,7 +168,7 @@ test("each request's first look: its one fact, its one action and what it delive
 test("the same in Chinese", () => {
   const page = mount({ lang: "zh" });
   const fact = (n) => page.text(page.block(n).querySelector(".request-block-fact-line"));
-  assert.equal(page.block(7).querySelector(".request-block-asks").getAttribute("aria-label"), "「Settings layout」里等你回答的问题");
+  assert.equal(page.block(7).querySelector(".request-block-asks").getAttribute("aria-label"), "「Request 7」里等你回答的问题");
   assert.equal(page.block(7).querySelector(".request-block-action"), null, "no 回答 before the Ask: it is there");
   assert.equal(fact(8), "YN-92 已完成 · 交付 2 项");
   assert.equal(page.text(page.block(8).querySelector(".request-block-action")), "确认完成");

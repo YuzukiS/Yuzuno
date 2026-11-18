@@ -584,18 +584,19 @@ test("on Home, a reply that names no section is told only by its very version", 
 // R1 839f91d1: a section kept out of view (its author no longer a content
 // editor) is a card of the Project's own block (YN-212: before, the page's
 // closed "Cards from the team"): a reply to it opens the block.
-test("on Home, the section answered from the team is shown: its block open, its card unfolded and focused, again on each opening", async (t) => {
+// W5: an open Ask is in its block's first look, so landing on it opens no block; its card is unfolded and focused.
+test("on Home, the section answered from the team is shown: in its block's first look, unfolded and focused, again on each opening", async (t) => {
   const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
   const block = (page) => page.document.querySelector("[data-project-block]");
   const shown = (page) => page.document.querySelector('[data-section-key="export-paging"]');
   await arrivals([
     ["same version", team(3), askReply, (page) => {
-      assert.ok(block(page).hasAttribute("data-open"), "the Project's block holds it: open");
+      assert.ok(shown(page).closest(".request-block-asks")?.closest("[data-project-block]"), "the Project's block shows it in its first look");
       assert.equal(note(page), null);
       assert.equal(page.document.activeElement, shown(page));
     }],
     ["changed", team(4), askReply, (page) => {
-      assert.ok(block(page).hasAttribute("data-open"));
+      assert.ok(shown(page).closest(".request-block-asks"));
       assert.equal(note(page).closest('[data-section-key="export-paging"]'), shown(page), "the note in the card it answered");
       assert.equal(page.document.activeElement, shown(page));
     }],
@@ -609,7 +610,8 @@ test("on Home, the section answered from the team is shown: its block open, its 
   block(page).querySelector(".request-block-more").click();
   await until(() => !block(page).hasAttribute("data-open"), "the block folded by the user");
   page.window.renderHome({ origin: askReply, back, n: 2 });
-  await until(() => block(page).hasAttribute("data-open") && shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
+  await until(() => shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
+  assert.ok(!block(page).hasAttribute("data-open"), "the block stays as the user folded it: the Ask is in its first look");
   await tick(40);
   assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));
