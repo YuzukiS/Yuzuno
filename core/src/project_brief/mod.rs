@@ -455,6 +455,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     // it. Filled from the owner once, when added; a row an older Core writes
     // later leaves them NULL and reads as its owner's (sections.rs COLUMNS),
     // as does a row left unfilled by an open that stopped between the steps.
+    // A known limit after a downgrade (PR 1086 R1, P3): a row another writer
+    // last wrote here and an older Core then edits in place keeps that writer
+    // as its author until this Core writes it again.
     let has_column = |name: &str| -> Result<bool> {
         Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name=?1)", [name], |r| r.get(0))?)
     };
