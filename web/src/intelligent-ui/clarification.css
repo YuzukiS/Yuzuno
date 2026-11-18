@@ -165,6 +165,13 @@
   flex: 1 1 12rem;
   line-height: 1.5;
 }
+/* Home's "Wait, what?" in the line's place (YN-213); on a phone the button comes first, a row of its own. */
+@media (max-width: 520px) {
+  .clarification footer:has(.home-wait-what) {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+}
 .clarification footer button {
   gap: 0.4rem;
 }

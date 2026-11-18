@@ -31,13 +31,27 @@ export type PushHost = {
   Notification?: { readonly permission: string; requestPermission(): Promise<string> };
 };
 
+/**
+ * This browser's service worker container, or undefined where it has none or
+ * reading it is refused: Chromium throws a SecurityError for a frame sandboxed
+ * without allow-same-origin (R-21), as Home frames an HTML attachment such as
+ * the design preview.
+ */
+export function readServiceWorker(): ServiceWorkerContainer | undefined {
+  try {
+    return typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
+  } catch {
+    return undefined;
+  }
+}
+
 export const browserPushHost = (): PushHost => ({
   isSecureContext: window.isSecureContext,
   userAgent: navigator.userAgent,
   maxTouchPoints: navigator.maxTouchPoints || 0,
   standalone: window.matchMedia?.("(display-mode: standalone)").matches
     || (navigator as Navigator & { standalone?: boolean }).standalone === true,
-  serviceWorker: navigator.serviceWorker,
+  serviceWorker: readServiceWorker(),
   hasPushManager: "PushManager" in window,
   Notification: (window as Window & { Notification?: PushHost["Notification"] }).Notification,
 });

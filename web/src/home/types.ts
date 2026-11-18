@@ -87,6 +87,9 @@ export type Section = {
   title: string;
   version: number;
   owner: { agentId: string; name: string; state: "active" | "closed" | "deleted" | "moved" };
+  /** Who wrote this version (YN-212 C1): its owner, or a lead or its task's current executor writing a task's card
+   * it does not own. Absent from older Cores, whose owner wrote every version. */
+  author?: { agentId: string; name: string };
   updatedAt: string;
   updatedTurnId: string | null;
   /** A json-render spec: { root, elements } with a BriefBody root. */
@@ -104,6 +107,10 @@ export type Section = {
     deferredUntil?: string;
     /** An executor's gate (T-43 S4): the step of its task's template this asks you to approve. */
     gate?: AskGate;
+    /** The user's notes on this ask (YN-213, "Wait, what?"), newest first, at most 5: words and what they
+     * attached, sent to an Agent without answering. Kept apart from the reply; absent without any, and from
+     * older Cores. */
+    notes?: AskNote[];
   };
   status?: { asOf: string; validFor: number; stale: boolean };
   time?: { due?: string; eta?: string; nextUpdate?: string };
@@ -215,6 +222,9 @@ export type CardBinding = {
   /** Where the card came from (YN-86 S3a-2, project_requests::handoffs): the requests routed to it, each once, and
    * its routes and reassignments, oldest first. Never the user's words. Absent until a request was routed to it. */
   handoffs?: CardHandoffs;
+  /** A route's placeholder card (YN-212 C3): the status project_route put before its task's card was written, still
+   * as it put it. Absent from older Cores, and once anyone wrote the card. */
+  placeholder?: boolean;
 };
 
 export type CardHandoffs = {
@@ -289,6 +299,16 @@ export type NeedsYouItem = {
   gate?: AskGate;
   title: string;
   since: string;
+};
+
+/** One note on an ask (YN-213): the version it was written on, when, its words and who it went to. */
+export type AskNote = {
+  version: number;
+  at: string;
+  text: string;
+  agentId: string;
+  images?: string[];
+  files?: import("./home-files").HomeFile[];
 };
 
 /** The step of its task's template an executor's ask is the approval of (T-43 S4), counted from 0. */

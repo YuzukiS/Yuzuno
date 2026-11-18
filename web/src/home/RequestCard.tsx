@@ -238,7 +238,8 @@ function CardDeliverables({ card, one = false, onReport }: { card: RequestCardSh
   );
 }
 
-function DeliverableLine({ item, task, onReport, time, ago }: {
+/** One deliverable, opened from where it is listed: a request's card here, a request's block (RequestBlocks.tsx). */
+export function DeliverableLine({ item, task, onReport, time, ago }: {
   item: Deliverable;
   task: string;
   onReport: OpenDeliveredReport;

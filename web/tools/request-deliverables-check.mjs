@@ -1,6 +1,7 @@
 // YN-208 in Chromium, every API answered here (no Core, no daily data),
 // through the production build, on a Project's page: what each card of a
-// request delivered, opened from the request.
+// request delivered, opened from the request (YN-212: from its block on the
+// page read by request, under the block's fact).
 //  - R-9 is shaped like R-18: its review's report is out while the release
 //    it asked for goes on; one click opens the report at the version named,
 //    and the page's Back returns to the project, the request and the button;
@@ -126,7 +127,7 @@ const older = () => [
 ];
 const words = {
   en: { older: "Read older requests", done: /^Done \d+$/ },
-  "zh-Hans": { older: "读更早的需求", done: /^已完成 \d+$/ },
+  "zh-Hans": { older: "读更早的请求", done: /^已完成 \d+$/ },
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
@@ -208,7 +209,7 @@ async function check(run) {
   });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${run.name}: ${error.message}`));
-  const requestCard = (n) => page.locator(`.request-card[data-request="${n}"]`);
+  const requestCard = (n) => page.locator(`[data-request-block="${n}"]`);
   const shot = async (name, locator) => {
     const file = `${run.name}-${name}.png`;
     await page.mouse.move(1, 1);
@@ -231,14 +232,14 @@ async function check(run) {
     await page.evaluate(() => document.fonts.ready);
 
     // Nothing wider than its column; an answer whole, wrapped.
-    const fold = page.locator(".project-talk-done > summary");
+    const fold = page.locator(".request-done > summary");
     await fold.click();
     await requestCard(5).waitFor();
     const fit = await page.evaluate(() => {
       const out = { over: [], cut: [] };
-      const side = document.querySelector(".project-talk-requests");
-      const frame = side.getBoundingClientRect();
-      for (const el of side.querySelectorAll(".request-card, .request-deliverable, .request-deliverables-none")) {
+      const side = document.querySelector(".request-blocks");
+      const frame = document.querySelector(".home-view").getBoundingClientRect();
+      for (const el of side.querySelectorAll(".request-block, .request-deliverable, .request-deliverables-none")) {
         const box = el.getBoundingClientRect();
         if (box.width && (box.right > frame.right + 1 || box.left < frame.left - 1)) out.over.push({ el: el.className, right: box.right, frame: frame.right });
       }
@@ -256,23 +257,23 @@ async function check(run) {
     const review = requestCard(9).locator('.request-deliverable[data-kind="report"]');
     assert.equal(await requestCard(9).locator(".request-deliverable").count(), 1, "the release names nothing yet");
     await openAndBack(review, "#/report?w=ws-talk&p=p-dev&k=audit-review&v=2&s=518");
-    assert.ok(await focused('.request-card[data-request="9"] .request-deliverable[data-kind="report"]'), "Back focuses the button that opened it");
+    assert.ok(await focused('[data-request-block="9"] .request-deliverable[data-kind="report"]'), "Back focuses the button that opened it");
     pass("R-9's report opens at the version named, and Back returns to its button");
 
     // R-7 in the Done fold: replaced, so its same report's version Home keeps opens; the fold stays open.
     const replaced = requestCard(7).locator('.request-deliverable[data-kind="report"]');
     await openAndBack(replaced, "#/report?w=ws-talk&p=p-dev&k=export-formats&v=3&s=505");
-    assert.equal(await page.locator(".project-talk-done").getAttribute("open"), "", "the Done fold is still open");
-    assert.ok(await focused('.request-card[data-request="7"] .request-deliverable'), "Back focuses the button in the fold");
+    assert.equal(await page.locator(".request-done").getAttribute("open"), "", "the Done fold is still open");
+    assert.ok(await focused('[data-request-block="7"] .request-deliverable'), "Back focuses the button in the fold");
     pass("a replaced report opens its kept version from the Done fold, and Back returns there");
 
     // An older request, read from the requests side: its report in History opens, and Back returns to it.
-    await page.locator(".project-talk-requests button", { hasText: w.older }).click();
+    await page.locator(".project-talk-earlier", { hasText: w.older }).click();
     await requestCard(3).waitFor({ timeout: 10_000 });
     const old = requestCard(3).locator('.request-deliverable[data-kind="report"]');
     await old.scrollIntoViewIfNeeded();
     await openAndBack(old, "#/report?w=ws-talk&p=p-dev&k=older-review&v=4&s=400");
-    assert.ok(await focused('.request-card[data-request="3"] .request-deliverable'), "Back focuses the older request's button");
+    assert.ok(await focused('[data-request-block="3"] .request-deliverable'), "Back focuses the older request's button");
     await shot("r3", requestCard(3));
     pass("an older request's report, in History, opens from it and Back returns to it");
 

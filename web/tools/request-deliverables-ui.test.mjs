@@ -7,8 +7,11 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
-// YN-208: what each card of a request delivered, opened from the request.
+// YN-208: what each card of a request delivered, opened from the request
+// (YN-212: from its block on the Project's page, under its fact; why a task
+// that ended delivered nothing is in its row, inside the block).
 // A report opens at the version its result named, over Home (the report
 // link's own way, so Back returns to the button that opened it); a version
 // no longer kept is said, with the same report's version Home keeps; a PR
@@ -29,15 +32,15 @@ try {
     `import React from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
-import {ProjectTalk} from ${JSON.stringify(path.join(root, "src/home/ProjectTalk.tsx"))};
-import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-responsible.ts"))};
+import {Home} from ${JSON.stringify(path.join(root, "src/home/Home.tsx"))};
 import {MessageLinks} from ${JSON.stringify(path.join(root, "src/deep-link.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.reports=[];
 window.tasks=[];
 window.addEventListener('yuzuno:open-task-review',(event)=>window.tasks.push(event.detail.taskId));
 const links={href:()=>null,open:()=>{},reportHref:()=>null,openReport:(link)=>window.reports.push({link,focused:document.activeElement?.className||''})};
-window.renderTalk=()=>flushSync(()=>root.render(<MessageLinks.Provider value={links}><CardAgents.Provider value={new Map()}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onCard={()=>{}} onNavigate={()=>{}}/></CardAgents.Provider></MessageLinks.Provider>));`,
+const projects=[{id:'p1',name:'Atlas',defaultDirs:{},createdAt:'',updatedAt:''}];
+window.renderTalk=()=>flushSync(()=>root.render(<MessageLinks.Provider value={links}><Home workspaceId="ws" revision={0} jobsRevision={0} agents={[]} projects={projects} readOnly={false} onNavigate={()=>{}} onChanged={()=>{}} visit={0} project="p1" onOpenProject={()=>{}} onCloseProject={()=>{}}/></MessageLinks.Provider>));`,
   );
   const result = await build({
     root,
@@ -111,6 +114,16 @@ const older = () => [
     { confirmedAt: ago(4900) }),
 ];
 
+/** Home's read: the Project and nothing of its Brief; its requests are read apart. */
+const home = () => ({
+  generatedAt: ago(0), order: ["p1"], needsYou: [],
+  projects: [{
+    project: { id: "p1", name: "Atlas" }, contentEditors: { version: 1, editorAgentIds: ["d"] },
+    agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
+    errors: [], pending: [], jobs: [], missing: [], unseen: 0, brief: { version: 1, sections: [], history: [] },
+  }],
+});
+
 function mount({ lang = "en" } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -122,6 +135,8 @@ function mount({ lang = "en" } = {}) {
   window.Range.prototype.getClientRects ||= () => [];
   window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
   window.HTMLElement.prototype.scrollTo = function () {};
+  window.HTMLElement.prototype.scrollIntoView = function () {};
+  window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   window.matchMedia = (query) => ({ media: query, matches: false, addEventListener() {}, removeEventListener() {} });
   window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
   window.localStorage.setItem("yuzuno.projectTalkView.ws.p1", JSON.stringify("requests"));
@@ -130,43 +145,44 @@ function mount({ lang = "en" } = {}) {
   window.fetch = async (url, init = {}) => {
     const call = { url: String(url), method: init.method || "GET" };
     calls.push(call);
+    if (call.url === "/api/home") return answer(home());
     if (call.url.endsWith("/front-desk")) return answer({ version: 1, agentId: null, effectiveAgentId: "d" });
     if (/\/requests\?before=/.test(call.url)) return answer({ requests: older(), hasMore: false });
     if (/\/requests$/.test(call.url)) return answer({ requests: requests(), hasMore: true });
-    return answer({});
+    return answer({ repositories: [], links: [] });
   };
   window.eval(bundle);
   const document = window.document;
-  const cardOf = (n) => document.querySelector(`.request-card[data-request="${n}"]`);
-  const lines = (n, task) => {
-    const row = [...cardOf(n).querySelectorAll(".request-card-cards > li")].find((li) => li.querySelector(".request-card-row-title").textContent === `Card ${task}`);
-    return row;
-  };
-  const posts = () => calls.filter((c) => c.method !== "GET");
-  return { window, document, errors, calls, cardOf, lines, posts, close: () => window.close() };
+  // A request's block; what one of its tasks delivered, under the block's fact; that task's row, in the block opened.
+  const cardOf = (n) => document.querySelector(`[data-request-block="${n}"]`);
+  const delivered = (n, task) => [...(cardOf(n)?.querySelectorAll(`.request-block-delivered > li[data-task="${task}"] .request-deliverable`) ?? [])];
+  const lines = (n, task) => (unfoldBlocks(document), cardOf(n)?.querySelector(`.request-task[data-task="${task}"]`) ?? null);
+  const posts = () => calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/github_repositories"));
+  return { window, document, errors, calls, cardOf, delivered, lines, posts, close: () => window.close() };
 }
 
 async function talk(options) {
   const page = mount(options);
   page.window.renderTalk();
   await until(() => page.cardOf(9), "the requests are read");
-  await tick();
+  page.lines(9, "YN-96");
+  await until(() => page.lines(8, "YN-83"), "the blocks opened");
   return page;
 }
 
 test("R-18's shape: the review's report opens from its request at the version named while the release goes on", async (t) => {
   const page = await talk();
   t.after(page.close);
-  const review = page.lines(9, "YN-96");
-  const open = review.querySelector('.request-deliverable[data-kind="report"]');
+  const [open] = page.delivered(9, "YN-96");
+  assert.equal(open.dataset.kind, "report");
   assert.equal(open.tagName, "BUTTON");
   assert.equal(open.getAttribute("aria-label"), "Open the report “Atlas review”, version 2");
   assert.match(open.textContent, /Atlas review.*Open report.*Report · version 2 · Six improvements, in order/);
   open.click();
   assert.deepEqual(plain(page.window.reports), [{ link: { workspaceId: "ws", projectId: "p1", key: "audit-review", version: 2, sectionId: 518 },
     focused: "request-deliverable" }], "the very version, by its identity; the button holds focus for Back");
-  const release = page.lines(9, "YN-97");
-  assert.equal(release.querySelector(".request-deliverables, .request-deliverables-none"), null, "going on, nothing named: nothing said");
+  assert.deepEqual(page.delivered(9, "YN-97"), []);
+  assert.equal(page.lines(9, "YN-97").querySelector(".request-deliverables-none"), null, "going on, nothing named: nothing said");
   assert.deepEqual(page.posts(), [], "opening confirms nothing");
   assert.deepEqual(page.errors, []);
 });
@@ -174,7 +190,7 @@ test("R-18's shape: the review's report opens from its request at the version na
 test("each report as it stands, PRs with when GitHub was read, releases unchecked, an answer whole", async (t) => {
   const page = await talk();
   t.after(page.close);
-  const items = [...page.lines(8, "YN-81").querySelectorAll(".request-deliverable")];
+  const items = page.delivered(8, "YN-81");
   // In History with a newer version: still the version named.
   items[0].click();
   assert.match(items[0].textContent, /Report · version 1 in History · version 3 is current/);
@@ -191,7 +207,7 @@ test("each report as it stands, PRs with when GitHub was read, releases unchecke
   ]);
   assert.deepEqual(plain(page.window.tasks), ["YN-81"]);
 
-  const [pr, release, answer] = page.lines(8, "YN-82").querySelectorAll(".request-deliverable");
+  const [pr, release, answer] = page.delivered(8, "YN-82");
   assert.equal(pr.tagName, "A");
   assert.equal(pr.getAttribute("href"), "https://github.com/example/atlas/pull/81");
   assert.equal(pr.getAttribute("target"), "_blank");
@@ -212,25 +228,25 @@ test("an ended card with nothing named says why and opens its task; an older Cor
   assert.equal(why("YN-84"), "Its result names nothing to open");
   assert.equal(why("YN-85"), "Ended with no result");
   assert.equal(why("YN-86"), "Its result names nothing to open", "a cleared list");
-  const openTask = [...page.lines(8, "YN-84").querySelectorAll("button")].find((b) => b.textContent === "Open task");
+  const openTask = [...page.lines(8, "YN-84").querySelectorAll(".request-deliverables-none button")].find((b) => b.textContent === "Open task");
   openTask.click();
   assert.deepEqual(plain(page.window.tasks), ["YN-84"]);
   const old = page.cardOf(7);
-  assert.equal(old.querySelector(".request-deliverables, .request-deliverables-none"), null, "an older Core: nothing new, nothing guessed");
+  assert.equal(old.querySelector(".request-block-delivered, .request-deliverables-none"), null, "an older Core: nothing new, nothing guessed");
   assert.deepEqual(page.errors, []);
 });
 
 test("older requests are read from the requests side, and a done one's report still opens", async (t) => {
   const page = await talk({ lang: "zh" });
   t.after(page.close);
-  const more = [...page.document.querySelectorAll(".project-talk-requests button")].find((b) => b.textContent.trim() === "读更早的需求");
-  assert.ok(more, "the requests side reads older requests itself");
+  const more = [...page.document.querySelectorAll(".project-talk-earlier")].find((b) => b.textContent.trim() === "读更早的请求");
+  assert.ok(more, "the page reads older requests itself");
   more.click();
   await until(() => page.cardOf(3), "the older request is read");
   assert.ok(page.calls.some((c) => c.url.endsWith("/requests?before=7")));
-  const fold = page.document.querySelector(".project-talk-done");
+  const fold = page.document.querySelector(".request-done");
   fold.open = true;
-  const open = page.cardOf(3).querySelector('.request-deliverable[data-kind="report"]');
+  const [open] = page.delivered(3, "YN-70");
   assert.equal(open.getAttribute("aria-label"), "打开报告「Older review」第 4 版");
   assert.match(open.textContent, /报告 · 第 4 版 · 在 History/);
   open.click();

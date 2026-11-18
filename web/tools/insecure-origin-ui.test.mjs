@@ -8,6 +8,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { hoverTip } from "./tip-dom.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-36: the built app opened over plain http on a LAN or tailnet address
 // (here 192.0.2.10, a documentation address). Such a page is not a secure
@@ -174,7 +175,7 @@ async function mount({ copies = null } = {}) {
     w.close();
     throw error;
   }
-  const card = (key) => doc.getElementById(`home-section-p-app-${key}`);
+  const card = (key) => (unfoldBlocks(doc), doc.getElementById(`home-section-p-app-${key}`));
   /** What the page says went wrong, if anything: each alert's words. */
   const alerts = (root = doc) => [...root.querySelectorAll('[role="alert"]')].map((e) => e.textContent.trim()).filter(Boolean);
   return {
@@ -228,17 +229,25 @@ test("YN-36 over plain http on a LAN address, a written reply to an Ask is sent 
 test("YN-36 over plain http, an option, a choice, a form and what is said to the project are sent too, each with its own id", async () => {
   const p = await mount();
   try {
-    p.button("Ship today", p.card("release")).click();
+    // Picked, then sent with the Ask's one button (YN-213).
+    const send = async (card, label) => {
+      [...card.querySelectorAll(".home-ask-decision fieldset label")].find((l) => l.textContent.includes(label)).querySelector("input").click();
+      const button = () => card.querySelector(".home-ask-decision .home-ask-actions .primary-button");
+      await waitFor(() => /^Submit: /.test(button()?.textContent.trim() ?? ""), `${label} is picked`);
+      button().click();
+    };
+    await send(p.card("release"), "Ship today");
     await waitFor(() => replies(p).length === 1, () => `the option was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[0].body.choice, "ship");
-    p.button("Choose B", p.card("budget")).click();
+    await send(p.card("budget"), "Plan B");
     await waitFor(() => replies(p).length === 2, () => `the choice was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[1].body.choice, "plan-b");
     p.card("scope").querySelector(".clarification footer .primary-button").click();
     await waitFor(() => replies(p).length === 3, () => `the form was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[2].body.form?.formId, "scope");
-    // What is said to the project goes to its front desk as a request (YN-86 §4.2).
-    const talk = p.doc.querySelector('[data-project-home="p-app"] .project-talk');
+    // What is said to the project goes to its front desk as a request (YN-86 §4.2), from the composer in
+    // Home's dock under the page (YN-212).
+    const talk = p.doc;
     await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
     await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
     talk.querySelector(".project-talk-send").click();

@@ -12,6 +12,8 @@
 //!
 //! Rust naming: `store::Brief` is an Agent's listed view; everything here is
 //! a Project Brief.
+/// The user's notes on an ask, apart from its reply (YN-213).
+mod ask_notes;
 mod attachments;
 mod cards;
 /// The end of a task archives its cards (YN-86 S2a), in the transaction
@@ -475,6 +477,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     // The cards that refresh themselves (YN-113), by their identity on Home.
     // Older Cores ignore it.
     refresh::migrate(db)?;
+    // The user's notes on an ask (YN-213), apart from its reply. Older Cores
+    // ignore them.
+    ask_notes::migrate(db)?;
     Ok(())
 }
 

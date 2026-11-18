@@ -209,11 +209,13 @@ const shown = () => page.evaluate(async () => {
     outOfDate: text(panel.querySelector("details.home-out-of-date > summary")),
     ask: {
       question: text(ship.querySelector(".home-question")),
-      options: all(".home-ask-options button", ship),
+      // Options to pick, sent with the one button; words alone answer it, as it asks for them (YN-213).
+      options: all(".home-ask-options label", ship),
       target: all(".home-ask-reply > .home-reply-target label, .home-ask-reply > .home-reply-target option", ship),
       placeholder: ship.querySelector(".home-text-reply [data-composer-input]").getAttribute("aria-placeholder"),
       typed: typed(ship.querySelector(".home-text-reply [data-composer-input]")),
-      send: text(ship.querySelector(".home-text-reply button")),
+      send: text(ship.querySelector(".home-ask-actions .primary-button")),
+      waitWhat: text(ship.querySelector(".home-wait-what")),
       defer: all(".home-defer button", ship),
     },
     reply: {
@@ -350,7 +352,7 @@ try {
   assert.ok(enPages.load.meta.includes("Next update in 2 h"), JSON.stringify(enPages.load.meta));
   assert.deepEqual(en.ask.options, ["Ship", "Wait"]);
   assert.deepEqual(en.ask.target, ["Send to", "Mori"]);
-  assert.deepEqual([en.ask.placeholder, en.ask.send], ["Write a reply…", "Send"]);
+  assert.deepEqual([en.ask.placeholder, en.ask.send, en.ask.waitWhat], ["Add a note (optional)", "Send reply", "Wait, what?"]);
   assert.deepEqual(en.ask.defer, ["Defer", "1 hour", "Tomorrow", "Next week"]);
   assert.deepEqual(en.reply, { head: "Reply to “Progress” · version 1", to: "To", placeholder: "A reply for Mori…", typed: DRAFT, send: "Send", close: "Close the reply; the draft is kept" });
   assert.deepEqual([en.seenAll, en.team], ["Seen all", "Team details & history"]);
@@ -393,7 +395,7 @@ try {
   assert.match(zh.cards.load.meta[1], /^数据截至 .+ · 已超过 1 小时的有效期$/);
   assert.match(zh.outOfDate, /^已过期 · 1 个状态 · 最新数据 .+$/);
   assert.deepEqual(zh.ask.target, ["发送给", "Mori"]);
-  assert.deepEqual([zh.ask.placeholder, zh.ask.send], ["写一条回复…", "发送"]);
+  assert.deepEqual([zh.ask.placeholder, zh.ask.send, zh.ask.waitWhat], ["补充说明（可选）", "发送回复", "Wait, what?"]);
   assert.deepEqual(zh.ask.defer, ["推迟", "1 小时", "明天", "下周"]);
   assert.deepEqual(zh.reply, { head: "回复 “Progress” · 版本 1", to: "发给", placeholder: "给 Mori 的回复…", typed: DRAFT, send: "发送", close: "关闭回复；草稿会保留" });
   assert.deepEqual([zh.seenAll, zh.team], ["全部标为已看", "团队详情与历史"]);

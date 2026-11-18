@@ -70,6 +70,18 @@ const history = [
     card: { task: release, responsible: { agentId: "l", name: "lead-1", kind: "lead", state: "idle" } },
   }),
 ];
+// YN-212: a Project's page reads by request. R-2 went to YN-90, which goes on; R-1 to YN-88, done and confirmed.
+const desk = { agentId: "l", name: "lead-1" };
+const routedTo = (s, task, responsible) => ({ sectionId: s.id, key: s.key, title: s.title, live: !s.history,
+  task: { id: task.id, status: task.status, archived: false }, responsible });
+const requests = () => [
+  { id: "r2", n: 2, text: "设置页重新排版，文案改口语", textBlocks: null, title: "设置页排版", createdAt: at(60), frontAgentId: "l", messageId: "m2",
+    delivery: "accepted", replies: [], notes: [{ note: "交给设计。", by: desk, at: at(59) }], routes: [],
+    cards: [routedTo(sections[1], settings, designer)], state: "doing", progress: { cards: 1, ended: 0 }, lines: [] },
+  { id: "r1", n: 1, text: "发布 core.32", textBlocks: null, title: "发布 core.32", createdAt: at(900), frontAgentId: "l", messageId: "m1",
+    delivery: "accepted", replies: [], notes: [{ note: "交给发布。", by: desk, at: at(899) }], routes: [],
+    cards: [routedTo(history[0], release, null)], state: "done", confirmedAt: at(100), progress: { cards: 1, ended: 1 }, lines: [] },
+];
 const home = () => ({
   generatedAt: at(0),
   order: ["p-dev"],
@@ -132,6 +144,7 @@ async function check(run) {
       return route.fulfill({ json: { workspace: { id: "ws-cards" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     }
     if (path === "/api/home") return route.fulfill({ json: home() });
+    if (path === "/api/projects/p-dev/requests" && method === "GET") return route.fulfill({ json: { requests: requests(), hasMore: false } });
     // A list read, though sent as POST (home-api.ts readLinkedRepositories): no repositories linked here.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
@@ -189,6 +202,8 @@ async function check(run) {
   try {
     await page.goto(`http://${HOST}/#/home?w=ws-cards&p=p-dev`);
     await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
+    // R-2's block, opened: its task's card and the Ask on it (YN-212).
+    await page.locator('[data-request-block="2"] .request-block-more').click();
     await page.waitForFunction(() => document.querySelectorAll(".home-card-responsible").length >= 3, null, { timeout: 15_000 });
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // The status card bound to YN-90: who answers for it, its state as the rail says it, its key and actions.
@@ -216,10 +231,13 @@ async function check(run) {
     // The ask bound to the same task: its reply goes to the executor too.
     assert.equal(await card("settings").locator(".home-ask-reply .home-reply-target select").inputValue(), "t");
     pass("an Ask on the card replies to its responsible executor by default");
-    // Done, opened: the report waiting to be read and the card archived with its task, with who did it.
-    const done = page.locator(".project-deck-done");
-    await page.locator(".project-deck-done > summary").click();
-    await page.waitForFunction(() => document.querySelector(".project-deck-done")?.open);
+    // Done, opened: R-1's block, its task's card archived with it and the report waiting to be read (YN-212).
+    const done = page.locator(".request-done");
+    await page.locator(".request-done > summary").click();
+    await page.waitForFunction(() => document.querySelector(".request-done")?.open);
+    await page.locator('[data-request-block="1"] .request-block-more').click();
+    const earlier = page.locator('[data-request-block="1"] .request-task-earlier');
+    if (await earlier.count()) await earlier.locator("summary").click();
     const archived = card("release");
     await archived.scrollIntoViewIfNeeded();
     assert.equal((await archived.locator(".home-task-ended").innerText()).trim(), w.ended);

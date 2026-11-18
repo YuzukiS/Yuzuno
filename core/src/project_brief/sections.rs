@@ -599,6 +599,8 @@ pub(super) fn expire_history(db: &Connection) -> Result<()> {
         [&cutoff],
     )?;
     db.execute("DELETE FROM project_brief_sections WHERE live=0 AND history_at<?1", [&cutoff])?;
+    // And the notes on asks that are no longer kept (YN-213).
+    super::ask_notes::expire(db)?;
     Ok(())
 }
 

@@ -298,7 +298,7 @@ test("who can't take files is said before sending; an older Core's refusal sends
   assert.deepEqual([...lab.errors, ...far.errors, ...way.errors, ...older.errors, ...retry.errors], []);
 });
 
-test("an Ask's words carry files; a pick does not; the answer card shows the files its reply took", async (t) => {
+test("an Ask's words carry files, and so does a pick, as one reply (YN-213); the answer card shows the files its reply took", async (t) => {
   const page = mount();
   t.after(page.close);
   const open = ask({ freeText: true });
@@ -316,18 +316,22 @@ test("an Ask's words carry files; a pick does not; the answer card shows the fil
   assert.equal(sent.body.askVersion, 3);
   await until(() => page.document.querySelector(".home-ask-replied"), "the reply is shown");
 
-  // A pick sends only its id: the files stay in the draft, as images do.
+  // A pick goes with the words and files beside it, as one reply (YN-213): the decision's one button.
   const picks = mount();
   t.after(picks.close);
-  picks.window.renderAsk({ section: ask({ options: [{ id: "a", label: "Option A" }] }), ...picks.context });
+  picks.window.renderAsk({ section: ask({ options: [{ id: "a", label: "Option A" }, { id: "b", label: "Option B" }] }), ...picks.context });
   await until(() => picks.document.querySelector(".home-ask-reply"), "the ask opens");
   picks.choose([picks.file("left.pdf", "left")]);
   await until(() => picks.chips().length === 1, "saved");
-  const button = [...picks.document.querySelectorAll(".home-ask-options button")].find((b) => b.textContent === "Option A");
-  button.click();
+  [...picks.document.querySelectorAll(".home-ask-options label")].find((l) => l.textContent === "Option A").querySelector("input").click();
+  const submit = () => picks.document.querySelector(".home-ask-decision .home-ask-actions .primary-button");
+  await until(() => submit()?.textContent.trim() === "Submit: Option A" && !submit().disabled, "the pick can be sent");
+  submit().click();
   await until(() => picks.postsTo("/brief/reply").length === 1, "the pick is sent");
-  assert.equal("files" in picks.postsTo("/brief/reply")[0].body, false, "a pick carries no files");
-  assert.equal(picks.chips().length, 1, "the file stays in the draft");
+  const [picked] = picks.postsTo("/brief/reply");
+  assert.equal(picked.body.choice, "a");
+  assert.deepEqual(picked.body.files, [{ id: id(1), name: "left.pdf", bytes: 4 }], "the pick carries the file beside it");
+  await until(() => picks.document.querySelector(".home-ask-replied"), "the pick is shown as the reply");
 
   // What Core kept of the reply: the answer card shows its files, downloaded from the Project.
   const answered = mount();

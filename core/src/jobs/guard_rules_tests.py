@@ -92,6 +92,9 @@ def old_remote_guard_reason(spec, now, tracked, changed):
         or "the list of changed tracked files", hint)
 
 
+os.environ.update(GIT_AUTHOR_NAME='Lab', GIT_AUTHOR_EMAIL='lab@example.invalid', GIT_COMMITTER_NAME='Lab',
+                  GIT_COMMITTER_EMAIL='lab@example.invalid', GIT_CONFIG_NOSYSTEM='1')
+
 HEAD = 'a' * 40
 OTHER = 'b' * 40
 SHA = 'c' * 64
@@ -346,6 +349,203 @@ class RemoteCompatibility(unittest.TestCase):
         spec = {'git': {'frozen': None}, 'inputs': []}
         self.assertEqual(self.check(spec, None, git(), [], []),
                          'Guarded inputs changed while queued (the Git commit); command was not started.')
+
+
+def old_local_exit_guard(spec):
+    """host.py's exit check as it was before the judgment was shared."""
+    frozen = spec.get('snapshot') or {}
+    if not (spec.get('guardGit') and isinstance(frozen.get('git'), dict)):
+        return None
+    record = {'attempt': spec['attempt']}
+    try:
+        current = HOST.snapshot(spec)
+    except Exception as error:
+        return dict(record, unchanged=None, problem=('the work tree could not be read again: %s' % error)[:300])
+
+    def real(path):
+        path = Path(path)
+        return str(path.parent.resolve() / path.name)
+    cwd = Path(spec['cwd']).resolve()
+    own = {real(cwd / (item['path'] if isinstance(item, dict) else item))
+           for item in (spec.get('artifacts') or []) + (spec.get('outputs') or [])}
+
+    def without_own(value):
+        return {**value, 'files': [f for f in value.get('files', []) if real(f['path']) not in own]}
+    changed = old_local_changed_inputs(without_own(frozen), without_own(current))
+    if not changed:
+        return dict(record, unchanged=True)
+    return dict(record, unchanged=False, changed=changed[:20],
+                reason=('The guarded work tree changed while the command ran (%s), by the command or by someone '
+                        'else: its results may not match the code it was submitted with.'
+                        % old_local_shown_list(changed)))
+
+
+def old_remote_exit_guard(spec, attempt):
+    """remote_job.py's exit check as it was before the judgment was shared."""
+    frozen = spec['git']['frozen']
+    if not frozen:
+        return None
+    record = {'attempt': attempt}
+    try:
+        now, tracked = REMOTE.git_snapshot(spec['cwd'], [g['path'] for g in frozen.get('guardPaths') or []],
+                                           spec['git'].get('guardExclude') or [])
+    except Exception as error:
+        return dict(record, unchanged=None, problem=('the work tree could not be read again: %s' % error)[:300])
+    cwd = Path(spec['cwd']).resolve()
+
+    def real(path):
+        path = cwd / path
+        return str(path.parent.resolve() / path.name)
+    own = {real(p) for p in [a['path'] for a in spec.get('artifacts') or []] + (spec.get('outputs') or [])}
+    inputs = spec.get('inputs') or []
+    named = {i['path'] for i in inputs}
+    changed = (old_remote_git_changes(frozen, now or {})
+               + [i['path'] for i in inputs if real(i['path']) not in own
+                  and REMOTE.inputs_changed(dict(spec, inputs=[i]))]
+               + [p for p in tracked if p not in named and real(p) not in own])
+    if not changed:
+        return dict(record, unchanged=True)
+    return dict(record, unchanged=False, changed=[c[:300] for c in changed[:20]], reason=(
+        'The guarded work tree changed while the command ran (%s), by the command or by someone else: its results '
+        'may not match the code it was submitted with.'
+        % (', '.join(changed[:5]) + (' and %d more' % (len(changed) - 5) if len(changed) > 5 else '')))[:1000])
+
+
+class ExitCompatibility(unittest.TestCase):
+    """A finished attempt on either end names the same changes as before,
+    with what the command declared it writes left out, and never claims
+    "unchanged" for a tree it could not read."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name).resolve()
+        os.environ['GIT_CEILING_DIRECTORIES'] = str(self.base)
+        self.work = self.base / 'work'
+        (self.work / 'src').mkdir(parents=True)
+        (self.work / 'a.txt').write_text('a\n')
+        (self.work / 'src' / 'x.txt').write_text('x\n')
+        (self.work / 'out.txt').write_text('out\n')
+        self.commit(init=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        subprocess.run(['git', '-C', str(self.work), *args], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def commit(self, init=False):
+        if init:
+            self.git('init', '-q')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'fixture')
+
+    def local(self, **extra):
+        """The facts Core would hold for one attempt: host.py's snapshot, and
+        the Git state remote_job.py is sent as frozen."""
+        spec = {'cwd': str(self.work), 'guardGit': True, 'inputs': [], 'attempt': 'attempt-1', **extra}
+        spec['snapshot'] = HOST.snapshot(spec)
+        spec['git'] = {'frozen': spec['snapshot']['git'], 'guardExclude': []}
+        return spec
+
+    def compare_local(self, spec):
+        value = HOST.exit_guard(spec)
+        old = old_local_exit_guard(spec)
+        for one in (value, old):
+            if one is not None:
+                one.pop('checkedAt', None)
+        self.assertEqual(value, old, 'host.py exit check')
+        return value
+
+    def compare_remote(self, spec):
+        value = REMOTE.exit_guard(spec, spec['attempt'])
+        old = old_remote_exit_guard(spec, spec['attempt'])
+        for one in (value, old):
+            if one is not None:
+                one.pop('checkedAt', None)
+        self.assertEqual(value, old, 'remote_job.py exit check')
+        return value
+
+    def both(self, spec):
+        """One attempt's check as each end answers it: the new rule and the
+        frozen old implementation, with the check's own time left out."""
+        return self.compare_local(spec), self.compare_remote(spec)
+
+    def test_an_untouched_tree_is_unchanged(self):
+        spec = self.local()
+        self.assertEqual(self.both(spec), ({'attempt': 'attempt-1', 'unchanged': True},
+                                           {'attempt': 'attempt-1', 'unchanged': True}))
+
+    def test_a_tracked_file_changed_after_the_snapshot_is_named(self):
+        spec = self.local()
+        (self.work / 'a.txt').write_text('changed\n')
+        local, remote = self.both(spec)
+        named = str((self.work / 'a.txt').resolve())
+        self.assertEqual((local['unchanged'], local['changed']), (False, [named]))
+        self.assertIn(named, remote['changed'])
+        self.assertIn('changed while the command ran', local['reason'])
+
+    def test_only_staging_after_the_snapshot_is_no_change_at_exit(self):
+        (self.work / 'a.txt').write_text('already modified\n')
+        spec = self.local()
+        self.git('add', 'a.txt')
+        self.assertEqual(self.both(spec)[0], {'attempt': 'attempt-1', 'unchanged': True})
+
+    def test_its_own_declared_artifact_is_left_out_even_when_tracked(self):
+        spec = self.local(artifacts=[{'path': 'out.txt', 'format': 'bytes'}])
+        (self.work / 'out.txt').write_text('written by the command\n')
+        self.assertEqual(self.both(spec)[0]['unchanged'], True)
+        # A declared output is the same rule, without an artifact contract.
+        spec = self.local(outputs=['out.txt'])
+        (self.work / 'out.txt').write_text('written again\n')
+        self.assertEqual(self.both(spec)[0]['unchanged'], True)
+
+    def test_a_commit_under_a_guarded_path_is_named_even_when_its_outputs_changed(self):
+        spec = self.local(guardPaths=['src'], artifacts=[{'path': 'src/out.txt', 'format': 'bytes'}])
+        (self.work / 'src' / 'out.txt').write_text('an output under the guarded path\n')
+        (self.work / 'src' / 'x.txt').write_text('changed and committed\n')
+        self.commit()
+        local, remote = self.both(spec)
+        self.assertEqual(local['unchanged'], False)
+        self.assertEqual(local['changed'], ['the committed content of guarded path src'])
+
+    def test_a_tree_that_cannot_be_read_again_is_not_unchanged(self):
+        spec = self.local()
+        (self.work / 'a.txt').unlink()
+        (self.work / 'a.txt').mkdir()
+        local, remote = self.both(spec)
+        self.assertEqual((local['unchanged'], remote['unchanged']), (None, None))
+        self.assertIn('could not be read again', local['problem'])
+        self.assertEqual(local, remote)
+
+    def test_without_a_frozen_git_state_nothing_is_checked(self):
+        plain = {'cwd': str(self.work), 'guardGit': False, 'inputs': [], 'attempt': 'attempt-1'}
+        self.assertIsNone(HOST.exit_guard(plain))
+        self.assertIsNone(REMOTE.exit_guard({'git': {'frozen': None}, 'cwd': str(self.work)}, 'attempt-1'))
+
+    def test_an_older_attempts_exit_record_is_never_taken_as_this_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / 'guard-exit.json').write_text('{"attempt": "another", "unchanged": true}')
+            spec = {'attempt': 'attempt-1', 'guardGit': True}
+            self.assertIsNone(HOST.reports(spec, folder)['guardAtExit'])
+            (folder / 'guard-exit.json').write_text('{"attempt": "attempt-1", "unchanged": false}')
+            self.assertEqual(HOST.reports(spec, folder)['guardAtExit']['unchanged'], False)
+            (folder / 'guard-exit.json').unlink()
+            spec['guardGit'] = False
+            self.assertNotIn('guardAtExit', HOST.reports(spec, folder))
+
+    def test_the_new_facts_name_a_frozen_input_by_path(self):
+        (self.work / 'input.txt').write_text('frozen\n')
+        given = str(self.work / 'input.txt')
+        facts = REMOTE.input_facts(str(self.work), given)
+        spec = self.local(inputs=[given])
+        (self.work / 'input.txt').write_text('changed\n')
+        named = str((self.work / 'input.txt').resolve())
+        self.assertIn(named, self.compare_local(spec)['changed'])
+        # remote_job.py holds an input as the record inspect returned at submit.
+        remote = dict(spec, inputs=[facts])
+        self.assertIn(named, self.compare_remote(remote)['changed'])
 
 
 class BothEnds(unittest.TestCase):

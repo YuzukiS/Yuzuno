@@ -9,6 +9,7 @@ import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { hoverTip, readTip } from "./tip-dom.mjs";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
 // real Core, Agents or GitHub.
@@ -273,7 +274,7 @@ async function choose(p, select, value) {
   select.dispatchEvent(new p.w.Event("change", { bubbles: true }));
   await pause();
 }
-const card = (p, projectId, key) => p.doc.getElementById(`home-section-${projectId}-${key}`);
+const card = (p, projectId, key) => (unfoldBlocks(p.doc), p.doc.getElementById(`home-section-${projectId}-${key}`));
 /** A Project's page, from its glance on the whole of Home (YN-86): where its cards are. */
 async function openProject(p, id) {
   if (p.panel(id)) return p.panel(id);
@@ -293,6 +294,22 @@ async function wholeHome(p) {
 const chips = (p, id) => [...p.glance(id).querySelectorAll(".home-chip")].map((c) => c.textContent);
 /** A reply's field under `root` (YN-91: the conversation's composer), or null. */
 const replyField = (root) => root?.querySelector(".home-text-reply [data-composer-input]") ?? null;
+/** An Ask's one button that sends its decision, or its words where they answer it (YN-213). */
+const decideButton = (root) =>
+  root?.querySelector(".home-ask-decision .clarification footer .primary-button, .home-ask-decision .home-ask-actions .primary-button") ?? null;
+/** What sends an Ask's words: free text alone has its own button; beside a decision, its one button. */
+const sendOf = (root) => root?.querySelector(".home-text-reply button[type=submit]") ?? decideButton(root);
+/** An Ask's option or approach labelled `label`, to pick. */
+const radioOf = (root, label) =>
+  [...root.querySelectorAll(".home-ask-decision fieldset label")].find((l) => l.textContent.includes(label))?.querySelector("input") ?? null;
+/** Picks it and sends it with the one button (YN-213). */
+async function pickAndSend(root, label) {
+  const input = radioOf(root, label);
+  assert.ok(input, `${label} is offered`);
+  input.click();
+  await waitFor(() => /^Submit: /.test(decideButton(root)?.textContent.trim() ?? ""), `${label} is picked`);
+  decideButton(root).click();
+}
 // A report or status is read on its page, opened from its card (T-18, Lead 2270).
 async function openReport(p, projectId, key) {
   card(p, projectId, key).querySelector(".home-report-open").click();
@@ -347,10 +364,10 @@ test("Home replaces Catch up: what needs you answered in place, then each projec
     const app = await openProject(p, "p-app");
     assert.match(app.querySelector(".home-agent-counts").textContent, /1 working.*1 idle.*0 waiting.*0 errors/);
     assert.match(app.textContent, /Mori ended a turn without updating the Brief/);
-    // A sub-topic sits under its parent, labelled with its own author.
+    // A sub-topic is a card of the Project's own block (YN-212: no request has it), labelled with its own author.
     const sub = card(p, "p-app", "notes/review");
-    assert.ok(sub.closest(".home-topic[data-topic=notes] .home-subs"), "notes/review is merged under notes");
-    assert.match(sub.querySelector(".home-owner").textContent, /by Hana/);
+    assert.ok(sub.closest("[data-project-block]"), "notes/review is in the Project's block");
+    assert.match(sub.querySelector(".home-owner").textContent, /Hana/);
     // A stale status is greyed and says how old its data is.
     await openProject(p, "p-res");
     assert.ok(card(p, "p-res", "metrics").classList.contains("is-stale"));
@@ -698,7 +715,7 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     assert.equal(p.w.localStorage.getItem("yuzuno.home-outbox.v1"), null, "a delivered reply leaves the outbox");
     // Choosing one of two approaches sends a pre-filled reply to that owner.
     const budget = card(p, "p-app", "budget");
-    p.button("Choose B", budget).click();
+    await pickAndSend(budget, "Plan B");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 3, "the choice was sent");
     const choice = p.posts(/\/brief\/reply$/)[2].body;
     assert.equal(choice.key, "budget");
@@ -706,8 +723,9 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     assert.equal(choice.choice, "plan-b");
     assert.equal(choice.text, "");
     assert.notEqual(choice.clientMessageId, first.body.clientMessageId);
-    // What is said to the project is a request to its front desk (YN-86 §4.2): no Agent to pick, no key.
-    const talk = p.panel("p-app").querySelector(".project-talk");
+    // What is said to the project is a request to its front desk (YN-86 §4.2): no Agent to pick, no key. Its
+    // composer is in Home's dock, under the page (YN-212).
+    const talk = p.doc;
     await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
     await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
     talk.querySelector(".project-talk-send").click();
@@ -723,12 +741,12 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
   }
 });
 
-test("an option button sends its id and no text; the label shows as sent", async () => {
+test("an option, picked and sent with the one button, sends its id and no text; the label shows as sent", async () => {
   const p = await mount();
   try {
     // Answered in place in Needs you, on the whole of Home (YN-86 §2.1).
     assert.ok(card(p, "p-app", "release").closest(".home-needs-you"));
-    p.button("Ship today", card(p, "p-app", "release")).click();
+    await pickAndSend(card(p, "p-app", "release"), "Ship today");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "the option was sent");
     const { body: sent } = p.posts(/\/brief\/reply$/)[0];
     assert.equal(sent.key, "release");
@@ -752,7 +770,7 @@ test("an Ask answered in Needs you keeps its answer card where it was until the 
     const count = () => p.doc.querySelector(".home-needs-you h2 .nav-count").textContent;
     assert.deepEqual(keys(), ["ask:p-app:release", "ask:p-app:budget", "approval:r-1"]);
     assert.equal(count(), "3");
-    p.button("Ship today", card(p, "p-app", "release")).click();
+    await pickAndSend(card(p, "p-app", "release"), "Ship today");
     await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "the option was sent");
     // Core has the reply: the Ask is no longer in its Needs you.
     const release = p.state.home.projects[0].brief.sections.find((s) => s.key === "release");
@@ -826,7 +844,7 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
     assert.equal(p.button("Defer", budget), undefined);
     // Reply again, on the card, brings the controls back.
     p.button("Reply again", budget).click();
-    await waitFor(() => p.button("Choose B", budget), "the choice is offered again");
+    await waitFor(() => radioOf(budget, "Plan B"), "the choice is offered again");
     // Updated by its owner after the reply: Updated, not New, and what the owner says now in place.
     const deploy = card(p, "p-app", "deploy");
     assert.ok(deploy.classList.contains("is-replied") && deploy.classList.contains("is-answer"));
@@ -896,6 +914,9 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     const scope = () => card(p, "p-app", "scope");
     const deck = () => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
     const order = deck();
+    // In the field, as the person writing is: the page's heading took the focus when the page opened (R-23), and
+    // focus goes to the card only when it went with the reply's controls.
+    replyField(release()).focus();
     await type(p, replyField(release()), "Ship it after the docs fix");
     p.button("Send", release()).click();
     // Core has it: the answer card at once, as a fresh visit shows it, with nothing held for the card it was.
@@ -911,7 +932,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     assert.ok(p.doc.activeElement === release(), "focus, gone with the reply's controls, is on the card");
     assert.deepEqual(deck(), order, "its place on the deck kept: only its size changed");
     // A choice.
-    p.button("Choose B", budget()).click();
+    await pickAndSend(budget(), "Plan B");
     await waitFor(() => budget().classList.contains("is-answer"), "a choice: the answer card as soon as Core has it");
     assert.match(budget().querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/);
     // A form, sent at its defaults (it copies its answers as it sends them).
@@ -1052,7 +1073,7 @@ test("a reply Core cannot confirm never shows as replied", async () => {
   const p = await mount({ open: "p-app", replyStatus: "uncertain" });
   try {
     const release = card(p, "p-app", "release");
-    p.button("Ship today", release).click();
+    await pickAndSend(release, "Ship today");
     await waitFor(() => release.querySelector('[role="alert"]'), "the unconfirmed delivery is shown");
     assert.match(release.querySelector('[role="alert"]').textContent, /not confirmed/);
     assert.equal(release.querySelector(".home-ask-replied"), null, "not shown as replied");
@@ -1176,7 +1197,8 @@ test("Reorder moves a project's glance and saves the whole order", async () => {
   }
 });
 
-test("non-editor content stays in closed team details and does not affect Seen all or Ask jumps", async () => {
+// YN-212: the team's cards are no longer in a fold of their own; a card no request has is the Project's own block's.
+test("non-editor content is in the Project's block and does not affect Seen all or Ask jumps", async () => {
   const home = homeFixture();
   const app = home.projects.find(panel => panel.project.id === 'p-app');
   app.brief.teamSections = [section('hidden-parent', 'status', 'Earlier worker progress', 3, owner('b', 'Hana'))];
@@ -1190,24 +1212,18 @@ test("non-editor content stays in closed team details and does not affect Seen a
     assert.ok(card(p, 'p-app', 'hidden-parent/question').closest('.home-needs-you'));
     assert.ok(!card(p, 'p-app', 'hidden-parent'));
     const page = await openProject(p, 'p-app');
-    const details = page.querySelector('.project-team-written');
-    assert.equal(details.open, false);
-    assert.ok(card(p, 'p-app', 'hidden-parent').closest('.project-team-written'));
-    assert.ok(!card(p, 'p-app', 'hidden-parent/question').closest('.project-team-written'));
+    assert.equal(page.querySelector('.project-team-written'), null, 'no team fold');
+    assert.ok(card(p, 'p-app', 'hidden-parent').closest('[data-project-block]'));
     // The page's Asks jump goes to it, the second Ask waiting, without opening the team's cards.
     const asks = page.querySelector('.home-jumps [data-jump="asks"]');
     asks.click();
     await waitFor(() => card(p, 'p-app', 'release').hasAttribute('data-home-highlight'), 'the first Ask');
     asks.click();
     await waitFor(() => card(p, 'p-app', 'hidden-parent/question').hasAttribute('data-home-highlight'), 'Ask under hidden parent is reachable');
-    assert.equal(details.open, false);
     assert.equal(p.posts(/brief\/seen$/).length, 0, 'source filtering and navigation do not mark Seen');
     p.button('Seen all', page).click();
     await waitFor(() => p.posts(/brief\/seen$/).length === 1, 'Seen all posted');
     assert.ok(!p.posts(/brief\/seen$/)[0].body.sections.some(section => section.key === 'hidden-parent'));
-    details.querySelector('summary').click();
-    assert.equal(details.open, true);
-    assert.equal(p.posts(/brief\/seen$/).length, 1, 'opening team details adds no Seen write');
   } finally { p.close(); }
 });
 
@@ -1560,18 +1576,15 @@ test("a section Core repaired is marked on its card, and its page says what Core
   }
 });
 
-test("a sub-topic without its topic's section stands as its own card; several get a readable heading (T-173)", async () => {
+// YN-212: a Project's page has no topics' headings or sub-cards any more; each card no request has is one of the
+// Project's own block, under its own title (T-173: never a bare key).
+test("a sub-topic without its topic's section is a card of its own in the Project's block, under no bare key (T-173)", async () => {
   const p = await mount({ open: "p-docs", home: readingFixture() });
   try {
     await waitFor(() => card(p, "p-docs", "ops/backup"), "the Docs cards are drawn");
-    const alone = p.panel("p-docs").querySelector('[data-topic="release-core12"]');
-    assert.ok(!alone.querySelector(".home-topic-name"), "no bare key over a single card");
-    assert.ok(!alone.querySelector(".home-subs"), "not drawn as a sub-card");
-    assert.ok(alone.contains(card(p, "p-docs", "release-core12/notes")));
-    const ops = p.panel("p-docs").querySelector('[data-topic="ops"]');
-    assert.equal(ops.querySelector(".home-topic-name").textContent, "Ops");
-    assert.deepEqual(await hoverTip(p.w, ops.querySelector(".home-topic-name")), ["ops"], "the key stays reachable");
-    assert.equal(ops.querySelectorAll(".home-subs .home-section").length, 2);
+    const block = p.panel("p-docs").querySelector("[data-project-block]");
+    for (const key of ["release-core12/notes", "ops/backup"]) assert.ok(block.contains(card(p, "p-docs", key)), key);
+    assert.equal(block.querySelector(".home-topic-name, .home-subs"), null, "no topic heading, no sub-cards");
   } finally {
     p.close();
   }
@@ -2328,7 +2341,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     assert.equal(composerText(askField(again)), "Only after the docs land.", "the text is back after a reload");
     assert.equal(release.querySelector(".home-reply-target select").value, "b", "and its recipient");
     assert.match(release.textContent, /Kept from before, not sent yet: your reply to this ask\./);
-    again.button("Send", release.querySelector(".home-text-reply")).click();
+    sendOf(release).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 1, "the reply is being sent");
     // Written while it is being sent: not what was sent, so it stays.
     await type(again, askField(again), "Only after the docs land. And the changelog.");
@@ -2344,7 +2357,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     again.button("Reply again", card(again, "p-app", "release")).click();
     await pause();
     assert.equal(composerText(askField(again)), "Only after the docs land. And the changelog.");
-    again.button("Send", card(again, "p-app", "release").querySelector(".home-text-reply")).click();
+    sendOf(card(again, "p-app", "release")).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 2, "the second reply is sent");
     await waitFor(() => again.w.localStorage.getItem(ASK_DRAFTS) === null, "a delivered reply leaves no draft");
     assert.equal(again.posts(/\/brief\/reply$/)[1].body.text, "Only after the docs land. And the changelog.");
@@ -2376,7 +2389,7 @@ test("YN-38 an Ask asked again while the user writes keeps the words and sends t
     const release = () => card(p, "p-app", "release");
     assert.doesNotMatch(release().textContent, /began this reply on version|Refer it to/);
     assert.equal(composerText(askField(p)), "Ship after QA.", "the text stays");
-    const send = () => p.button("Send", release().querySelector(".home-text-reply"));
+    const send = () => sendOf(release());
     assert.equal(send().disabled, false, "no step before it can be sent");
     assert.equal(p.button("Refer it to version 4", release()), undefined);
     send().click();
@@ -2487,10 +2500,10 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
     const release = card(gone, "p-app", "release");
     assert.equal(composerText(askField(gone)), "For an Agent who left.");
     assert.equal(release.querySelector(".home-reply-target select").value, "", "no recipient is chosen for the user");
-    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, true);
-    assert.equal(gone.button("Ship today", release).disabled, true, "nor does an option send it anywhere");
+    assert.equal(sendOf(release).disabled, true);
+    assert.equal(radioOf(release, "Ship today").disabled, true, "nor does an option send it anywhere");
     await choose(gone, release.querySelector(".home-reply-target select"), "a");
-    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, false);
+    assert.equal(sendOf(release).disabled, false);
     assert.equal(gone.posts(/\/brief\/reply$/).length, 0);
   } finally {
     gone.close();
@@ -3285,62 +3298,6 @@ function deckFixture() {
   ];
   return home;
 }
-const deckKeys = (p) => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
-
-test("YN-3 a project's page stands its cards in the deck's order within each group: open Asks then those put off; current status, reports, the Asks answered under their heading; status out of date in Done, closed (YN-86 §2.2)", async () => {
-  for (const [language, heading, done] of [
-    ["en", "Replied, waiting · 1", /^Done · 1 card · latest /],
-    ["zh-Hans", "已回复，等处理 · 1", /^已完成 · 1 张 · 最近 /],
-  ]) {
-    const p = await mount({ open: "p-app", home: deckFixture(), storage: { "yuzuno.language": JSON.stringify({ language }) } });
-    try {
-      await waitFor(() => card(p, "p-app", "eval"), `the deck is drawn (${language})`);
-      assert.deepEqual(deckKeys(p), ["release", "later", "train", "notes", "eval", "tokenizer", "progress"], `the deck's order (${language})`);
-      const later = p.panel("p-app").querySelector("details.project-deck-later");
-      assert.ok(!!later && !later.open && later.contains(card(p, "p-app", "later")), "the Ask put off, at the end of Needs you, closed");
-      const doing = p.panel("p-app").querySelector('[aria-labelledby="home-project-p-app-doing"] .home-brief');
-      const head = doing.querySelector(":scope > .home-deck-heading");
-      assert.equal(head?.textContent ?? null, heading);
-      const after = (a, b) => (a.compareDocumentPosition(b) & p.w.Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-      assert.ok(after(card(p, "p-app", "eval"), head) && after(head, card(p, "p-app", "tokenizer")), "the heading stands over the answered Ask");
-      const closed = p.panel("p-app").querySelector("details.project-deck-done");
-      assert.ok(!!closed && !closed.open, "status out of date, in Done, closed");
-      assert.ok(closed.contains(card(p, "p-app", "progress")));
-      assert.match(closed.querySelector("summary").textContent, done);
-      assert.deepEqual(p.errors, []);
-    } finally {
-      p.close();
-    }
-  }
-});
-
-test("YN-3 a status that goes out of date while Home is read keeps its place until the next visit; a card new in the visit stands before the answered Asks, then takes its own place", async () => {
-  const p = await mount({ open: "p-app", home: deckFixture() });
-  try {
-    await waitFor(() => card(p, "p-app", "eval"), "the deck is drawn");
-    const app = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief;
-    // While Home is read, the release train goes out of date and a new Ask comes in.
-    app.sections.find((s) => s.key === "train").status = deckStatus(true);
-    app.sections.push(section("budget", "ask", "Raise the budget?", 1, owner("a", "Mori"), {
-      id: 508, ask: { question: "Raise it?", state: "open", reply: { freeText: true } },
-    }));
-    p.doc.querySelector('[aria-label="Refresh Home"]').click();
-    await waitFor(() => card(p, "p-app", "budget"), "the new Ask");
-    assert.deepEqual(deckKeys(p), ["release", "later", "train", "notes", "eval", "budget", "tokenizer", "progress"],
-      "nothing moves: the release train stays, the new Ask is in progress before the answered ones");
-    // The next visit to Home: each in its own place.
-    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
-    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
-    await wholeHome(p);
-    await openProject(p, "p-app");
-    await waitFor(() => card(p, "p-app", "budget") && deckKeys(p)[1] === "budget", "the next visit");
-    assert.deepEqual(deckKeys(p), ["release", "budget", "later", "notes", "eval", "tokenizer", "progress", "train"]);
-    assert.ok(p.panel("p-app").querySelector("details.project-deck-done").contains(card(p, "p-app", "train")), "out of date, done, at the next visit");
-    assert.deepEqual(p.errors, []);
-  } finally {
-    p.close();
-  }
-});
 
 test("YN-3 the deck and My widgets are laid out with no holes, in order: each card spans its own size and the cells the grid's flow would leave empty", async () => {
   const home = homeFixture();
@@ -3389,7 +3346,7 @@ test("YN-3 the deck and My widgets are laid out with no holes, in order: each ca
 });
 
 // YN-3, the user's D3: answered Asks are small answer cards the deck packs, two to a row of four.
-test("YN-3 answered Asks are small answer cards on the deck: two share a row of four under their heading; one opened takes its row", async () => {
+test("YN-3 answered Asks are small answer cards on the deck: two share a row of four; one opened takes its row", async () => {
   const home = homeFixture();
   const mori = owner("a", "Mori");
   const replied = (key, title, id, reply) => section(key, "ask", title, 2, mori, {
@@ -3415,11 +3372,9 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
     await waitFor(() => card(p, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     const span = (key) => [card(p, "p-app", key).dataset.deckCols ?? null, card(p, "p-app", key).dataset.deckRows ?? null];
     assert.ok(["tokenizer", "draft"].every((key) => card(p, "p-app", key).classList.contains("is-answer")), "answer cards");
-    // The status takes its row alone; the heading its row; the two answer cards share theirs.
-    assert.deepEqual(span("train"), ["4", "1"]);
-    assert.deepEqual([span("tokenizer"), span("draft")], [["2", "1"], ["2", "1"]], "two to a row of four, never one and three");
-    const heading = p.panel("p-app").querySelector(".home-deck-heading");
-    assert.equal(heading.textContent, "Replied, waiting · 2");
+    // YN-212: no heading over them now; the status and the two answer cards share a row of four, the two alike.
+    assert.deepEqual(span("tokenizer"), span("draft"), "never one and three");
+    assert.equal(Number(span("train")[0]) + Number(span("tokenizer")[0]) + Number(span("draft")[0]), 4, "one row of four");
     // Opened, it takes its row, as an open Ask does: no longer a small card.
     const tokenizer = card(p, "p-app", "tokenizer");
     tokenizer.querySelector(".home-answer-details").click();
@@ -3429,14 +3384,14 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   } finally {
     p.close();
   }
-  // A lone answer card takes two columns, not the row: from three columns a card grows to at most twice its own
-  // size and the rest of the row stays empty (YN-157).
+  // A lone answer card never takes the row: a card grows to at most twice its own size (YN-157). On the Project's
+  // block it follows the status on its row (YN-212: no heading of its own over it).
   home.projects.find((entry) => entry.project.id === "p-app").brief.sections.splice(2, 1);
   const q = await mount({ open: "p-app", home, before: fourColumns });
   try {
     await waitFor(() => card(q, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     assert.equal(card(q, "p-app", "draft"), null);
-    assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "2", "a lone answer card takes two columns");
+    assert.ok(Number(card(q, "p-app", "tokenizer").dataset.deckCols) <= 2, "a lone answer card takes at most two columns");
     assert.deepEqual(q.errors, []);
   } finally {
     q.close();
@@ -3797,8 +3752,9 @@ test("YN-3 a card's page shown when its author writes a new version: the new ver
     Object.assign(p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring"), { version: 4 });
     p.event({ type: "workspace.changed", scope: "brief" });
     await waitFor(() => ring().dataset.sectionVersion === "4", "Home read version 4");
-    show();
-    await waitFor(() => asked.some((body) => body.section === "ring" && body.version === 4), "version 4's page asked for");
+    // In view again, as a browser's observer says of a card it starts watching, however late it starts (YN-212: the
+    // page by request may draw the card again once its requests are read anew).
+    await waitFor(() => (show(), asked.some((body) => body.section === "ring" && body.version === 4)), "version 4's page asked for");
     await waitFor(() => ring().querySelector("iframe.home-card-page-frame") && ring().querySelector(".home-card-page").dataset.pageState === "ready", "version 4's page is shown");
     ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
     await pause(50);
@@ -3872,6 +3828,42 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
   }
 });
 
+/** A Project's page opened, not one of its cards (R-23): nothing on it is marked, so nothing frames the whole page,
+ * and its heading has the focus, for Tab to go on from. */
+async function pageOpened(p, id) {
+  const heading = p.doc.querySelector(`[data-project-home="${id}"] .project-home-head h1`);
+  const marked = () => p.doc.querySelector("[data-home-highlight]");
+  // The page's opening has run once its heading has the focus, or once it has marked something.
+  await waitFor(() => p.doc.activeElement === heading || marked(), `${id}: the page's opening ran`);
+  assert.equal(marked()?.className ?? null, null, `${id}: nothing on the page is marked, the page itself least of all`);
+  assert.ok(p.doc.activeElement === heading, `${id}: its heading has the focus`);
+}
+
+test("from one Project's page to another, nothing frames the page; a card named is still marked (R-23)", async () => {
+  const p = await mount();
+  try {
+    const open = (id) => p.doc.querySelector(`.project-group[data-group="${id}"] .project-group-toggle`).click();
+    open("p-app");
+    await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "App's page");
+    await pageOpened(p, "p-app");
+    open("p-res");
+    await waitFor(() => p.doc.querySelector('[data-project-home="p-res"]'), "Research's page");
+    await pageOpened(p, "p-res");
+    open("p-app");
+    await waitFor(() => p.doc.querySelector('[data-project-home="p-app"]'), "App's page again");
+    await pageOpened(p, "p-app");
+    // The page's own jump to its Ask still marks that card, and gives it the focus.
+    p.doc.querySelector('[data-project-home="p-app"] .home-jumps [data-jump="asks"]').click();
+    const release = card(p, "p-app", "release");
+    await waitFor(() => release.hasAttribute("data-home-highlight"), "the Ask is marked");
+    assert.ok(p.doc.activeElement === release, "and has the focus");
+    assert.equal(p.doc.querySelectorAll("[data-home-highlight]").length, 1, "only the Ask");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // YN-86 S1a: a Project's page on Home, its entry on the rail, and the address
 // it lives at. The grouping itself is project-deck.test.mjs's; here the page
 // is built from Core's fixture, the arrow folds without opening it, Back
@@ -3914,38 +3906,33 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(p.doc.querySelector("[data-home-project]"), null, "its panel is not drawn too");
     assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
     assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "2 need you");
+    await pageOpened(p, "p-app");
+    // YN-212 §3.4: "n need you" counts the blocks in Needs you, the approvals and the executors' matters: here the
+    // Project's own block, which holds both open Asks.
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
-    // The three groups, cards in the group their place and read state put them.
-    const deck = (name) => p.doc.querySelector(`[aria-labelledby="home-project-p-app-${name}"]`);
-    assert.match(deck("needs").querySelector(".project-deck-title").textContent, /^Needs you2/);
-    assert.ok(p.doc.getElementById("home-section-p-app-release"), "the open Ask is in Needs you");
-    assert.ok(p.doc.getElementById("home-section-p-app-budget"), "so is the other one");
-    // A topic stands where its most urgent card does: the read report of "notes" stays with its unread sub-topic.
-    assert.match(deck("doing").querySelector(".project-deck-title").textContent, /^In progress2/);
-    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes/review")), "the unread report is in progress");
-    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes")), "so is the read report of its topic");
-    const done = p.doc.querySelector(".project-deck-done");
-    assert.equal(done.open, false, "Done is closed at first");
-    assert.match(done.querySelector("summary").textContent, /^Done · 1 card · latest .* · 30-day history 1$/);
-    done.querySelector("summary").click();
-    await waitFor(() => done.open, "Done opens");
-    assert.ok(done.contains(p.doc.getElementById("home-section-p-app-reviewed")), "the read report of its own topic is done");
-    assert.ok(!done.contains(p.doc.getElementById("home-section-p-app-notes")), "the read report kept with its unread topic is not");
+    const block = p.doc.querySelector('[data-project-home="p-app"] [data-project-block]');
+    assert.equal(block.closest(".request-group")?.dataset.group, "needs", "with open Asks, in Needs you");
+    assert.equal(block.closest(".request-group").querySelector(".request-group-title span").textContent, "1",
+      "the group's heading counts the Project's block once, as the chip does (PR 1092 R1)");
+    unfoldBlocks(p.doc);
+    await waitFor(() => p.doc.getElementById("home-section-p-app-release"), "the Project's block open");
+    for (const key of ["release", "budget", "notes/review", "notes", "reviewed"])
+      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is the Project's block's`);
     // A report opens over the page and closes back onto it, the card where it was.
     const card = p.doc.getElementById("home-section-p-app-notes/review");
     card.querySelector(".home-report-open").click();
     await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), "the report page");
     p.doc.querySelector(".home-report .report-back").click();
     await waitFor(() => !p.doc.querySelector(".home-report"), "the report closes");
-    assert.ok(deck("doing").contains(card), "the card stayed in In progress");
-    // Core's next read has it read: New goes, the card does not move in this visit.
+    assert.ok(block.contains(card), "the card stayed in its block");
+    // Core's next read has it read: New goes, the card does not move.
     const panel = p.state.home.projects.find((project) => project.project.id === "p-app");
     const section = panel.brief.sections.find((s) => s.key === "notes/review");
     section.opened = { version: section.version, at: at(1) };
     p.doc.querySelector('.project-home [aria-label="Refresh Home"]').click();
     await waitFor(() => !card.classList.contains("is-changed"), "the read version clears New");
-    assert.ok(deck("doing").contains(card), "and the card stays where this visit first put it");
+    assert.ok(block.contains(card), "and the card stays in its block");
     // Back, from the Project's page, to the whole of Home.
     p.w.history.back();
     await waitFor(() => p.doc.querySelector(".home-layout"), "Back on the whole of Home");
@@ -3967,11 +3954,10 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     name.click();
     await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
     assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    const titles = [...zh.doc.querySelectorAll(".project-deck-title")].map((title) => title.textContent);
-    assert.match(titles[0], /^需要你/);
-    assert.match(titles[1], /^进行中/);
-    assert.match(zh.doc.querySelector(".project-deck-done summary").textContent, /^已完成/);
-    assert.equal(zh.doc.querySelector(".project-deck-note").textContent, "一次访问内位置不变");
+    // The page by request (YN-212): its groups in Chinese, the Project's own block among them.
+    const titles = [...zh.doc.querySelectorAll(".request-group-title")].map((title) => title.textContent);
+    assert.match(titles[0], /^等你/);
+    assert.equal(zh.doc.querySelector("[data-project-block] .request-block-n").textContent, "项目");
     zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
     assert.deepEqual(zh.errors, []);
   } finally {

@@ -17,7 +17,11 @@
 //    team's facts beside them only from 1250 px of page, under them below
 //    that (YN-157);
 //  - nothing is wider than the window, and nothing is sent but the reads and
-//    the opened receipt.
+//    the opened receipt;
+//  - opening a page, by the rail's name, a glance tapped, Enter or from
+//    another page, frames nothing, on the way or landed: its heading has the
+//    focus, Tab goes on to its tools with their focus shown, and a card named
+//    (its Ask, a glance's recent card) is still marked (R-23).
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-home-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -33,7 +37,9 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const report = { task: "YN-86", runs: [], posts: [], opened: [], unexpected: [], errors: [] };
 const HOST = "localhost:47393";
-const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+// One time for the whole fixture, so cards given the same age are the same age, and order as the fixture lists them.
+const now = Date.now();
+const at = (minutes) => new Date(now - minutes * 60_000).toISOString();
 
 const base = {
   harness: "codex", model: "gpt-6", color: "sage", createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0,
@@ -138,8 +144,8 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you3/, doing: /^In progress2/, done: /^Done · 2 cards · .* · 30-day history 1$/, newMark: "New", inProgress: "In progress" },
-  "zh-Hans": { needs: /^需要你处理3/, doing: /^进行中2/, done: /^已完成 · 2 张 · .* · 30 天历史 1$/, newMark: "新", inProgress: "进行中" },
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress" },
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中" },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -256,6 +262,78 @@ async function check(run) {
     assert.deepEqual(widths.over, [], JSON.stringify(widths));
     return widths;
   };
+  /** What `act` puts around a Project's page, on the way and once landed (R-23): Home's mark of where a jump
+   * landed, on anything, and the page's own outline or ring, read every frame for 2.5 s. */
+  const framesWhile = async (act) => {
+    await page.evaluate(() => {
+      const seen = (window.r23Frames = []);
+      const observer = new MutationObserver((records) => {
+        for (const { target } of records)
+          if (target.hasAttribute("data-home-highlight")) seen.push(`marked: ${target.id || target.className}`);
+      });
+      observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-home-highlight"] });
+      const until = performance.now() + 2500;
+      const sample = () => {
+        for (const el of document.querySelectorAll(".project-home")) {
+          const style = getComputedStyle(el);
+          if (style.outlineStyle !== "none" || style.boxShadow !== "none")
+            seen.push(`framed ${el.dataset.projectHome}: ${style.outlineStyle} ${style.boxShadow}`);
+        }
+        if (performance.now() < until) requestAnimationFrame(sample);
+        else {
+          observer.disconnect();
+          window.r23Done = true;
+        }
+      };
+      window.r23Done = false;
+      requestAnimationFrame(sample);
+    });
+    await act();
+    await page.waitForFunction(() => window.r23Done, null, { timeout: 15_000 });
+    return page.evaluate(() => [...new Set(window.r23Frames)]);
+  };
+  /** A page opened, not a card on it: nothing framed it, its heading has the focus and stands at the top. */
+  const pageOpened = async (id, frames) => {
+    assert.deepEqual(frames, [], `${id}: nothing frames the page, on the way or landed`);
+    const place = await page.evaluate((id) => {
+      const heading = document.querySelector(`[data-project-home="${id}"] .project-home-head h1`);
+      const view = heading.closest(".home-view").getBoundingClientRect();
+      const box = heading.getBoundingClientRect();
+      const top = Math.max(view.top, 0);
+      return {
+        focused: document.activeElement === heading,
+        ring: getComputedStyle(heading).outlineStyle,
+        marks: document.querySelectorAll("[data-home-highlight]").length,
+        top: Math.round(box.top - top),
+        bottom: Math.round(box.bottom - top),
+        room: Math.round(Math.min(view.bottom, innerHeight) - top),
+      };
+    }, id);
+    assert.ok(place.focused, `${id}: the heading has the focus: ${JSON.stringify(place)}`);
+    assert.equal(place.ring, "none", `${id}: the heading focused by code shows no ring`);
+    assert.equal(place.marks, 0, `${id}: nothing is marked`);
+    assert.ok(place.top >= -1 && place.top <= 160 && place.bottom <= place.room, `${id}: the page opens at its top: ${JSON.stringify(place)}`);
+    return place;
+  };
+  /** A card named: marked once landed, its outline drawn, and the page around it framed by nothing. */
+  const cardMarked = async (key) => {
+    await page.waitForFunction((key) => document.getElementById(`home-section-p-dev-${key}`)?.hasAttribute("data-home-highlight"), key, { timeout: 10_000 });
+    const marked = await page.evaluate((key) => {
+      const card = document.getElementById(`home-section-p-dev-${key}`);
+      const pageStyle = getComputedStyle(document.querySelector('[data-project-home="p-dev"]'));
+      return {
+        outline: getComputedStyle(card).outlineStyle,
+        focused: document.activeElement === card,
+        marks: [...document.querySelectorAll("[data-home-highlight]")].map((el) => el.id),
+        page: pageStyle.outlineStyle,
+      };
+    }, key);
+    assert.equal(marked.outline, "solid", `${key}: the card's mark is drawn: ${JSON.stringify(marked)}`);
+    assert.ok(marked.focused, `${key}: the card has the focus`);
+    assert.deepEqual(marked.marks, [`home-section-p-dev-${key}`], "only that card is marked");
+    assert.equal(marked.page, "none", "the page itself is not framed");
+    return marked;
+  };
   try {
     if (run.phone) {
       // The address names Home, as a link from elsewhere does.
@@ -311,9 +389,13 @@ async function check(run) {
     assert.equal(await page.evaluate(() => document.activeElement?.dataset?.jump ?? null), "report", "the focus is back on Latest report");
     await page.waitForFunction(() => !document.querySelector('[data-glance-project="p-notes"] .home-chip.is-new'), null, { timeout: 10_000 });
     pass("Latest report opens its page; Back returns the focus to the jump; its project no longer counts it new");
+    let opening;
     if (run.phone) {
-      // On a phone, a project's page from its glance.
-      await page.locator('[data-glance-project="p-dev"] .project-glance-open').click();
+      // On a phone, a project's page from its glance, by touch.
+      opening = await framesWhile(async () => {
+        await page.locator('[data-glance-project="p-dev"] .project-glance-open').tap();
+        await projectPage().waitFor({ timeout: 15_000 });
+      });
     } else {
       // The rail's heading is two controls: arrow, name, +; the name opens the page.
       const head = page.locator('.project-group[data-group="p-dev"] .project-group-head');
@@ -334,33 +416,40 @@ async function check(run) {
       assert.match(await page.evaluate(() => document.activeElement?.className ?? ""), /project-group-toggle/);
       await page.keyboard.press("Tab");
       assert.match(await page.evaluate(() => document.activeElement?.className ?? ""), /project-group-add/);
-      await name.click();
-      await projectPage().waitFor({ timeout: 15_000 });
+      opening = await framesWhile(async () => {
+        await name.click();
+        await projectPage().waitFor({ timeout: 15_000 });
+      });
       pass("the rail's arrow folds only, its name opens the page, and Tab goes arrow, name, +", { order });
     }
     await projectPage().waitFor({ timeout: 15_000 });
     await page.waitForFunction(() => document.querySelectorAll("[data-section-key]").length >= 4, null, { timeout: 15_000 });
+    const opened = await pageOpened("p-dev", opening);
+    await shot("project-opened");
+    pass(`${run.phone ? "a glance tapped" : "the rail's name clicked"} opens the page at its heading, framed by nothing on the way or landed (R-23)`, opened);
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
-    await noOverflow(".project-home-head, .project-deck-group");
-    // The three groups, in order, Done closed.
-    const titles = await page.locator(".project-deck-title, .project-deck-done > summary").evaluateAll((els) => els.map((el) => el.textContent.trim()));
+    await noOverflow(".project-home-head, .request-blocks");
+    // YN-212: the page reads by request. With none, the Project's own block is all of it, open, in Needs you while an
+    // Ask of its own waits; the 30-day history is in Done, closed.
+    const titles = await page.locator(".request-group-title").evaluateAll((els) => els.map((el) => el.textContent.trim()));
     assert.match(titles[0], w.needs);
-    assert.match(titles[1], w.doing);
-    assert.match(titles[2], w.done);
-    assert.equal(await page.locator(".project-deck-done").evaluate((el) => el.open), false, "Done is closed at first");
-    assert.equal(await page.locator(".project-deck-done .home-history").count(), 1, "the 30-day history is inside Done");
+    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block][data-open]').count(), 1, "the Project's block, open, in Needs you");
+    assert.equal(await page.locator(".request-done").evaluate((el) => el.open), false, "Done is closed at first");
+    assert.equal(await page.locator(".request-done .home-history").count(), 1, "the 30-day history is inside Done");
     await shot("project");
-    pass("Needs you, In progress and Done in order; Done closed with the history inside; no overflow", titles);
-    // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page,
-    // and the cards' own third column from 932 px of card area.
+    pass("the Project's block open in Needs you; Done closed with the history inside; no overflow", titles);
+    // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page;
+    // the cards' columns follow the Project's block's own width (a deck of its own, YN-212), at most 920 px.
     const shape = await page.evaluate(() => {
       const page = document.querySelector('[data-project-home="p-dev"]');
       const main = page.querySelector(".project-home-main");
-      const deck = main.querySelector(".project-deck .home-brief");
+      const deck = main.querySelector(".project-block-cards .home-brief");
+      const box = getComputedStyle(deck.parentElement);
       const team = page.querySelector(".project-team");
       const teamBox = team.getBoundingClientRect(), mainBox = main.getBoundingClientRect();
-      return { width: Math.round(page.clientWidth), cardArea: Math.round(main.clientWidth),
+      return { width: Math.round(page.clientWidth),
+        cardArea: Math.round(deck.parentElement.clientWidth - Number.parseFloat(box.paddingLeft) - Number.parseFloat(box.paddingRight)),
         columns: getComputedStyle(deck).gridTemplateColumns.split(" ").length,
         team: team.tagName.toLowerCase(), beside: teamBox.left > mainBox.right - 1,
         spans: [...new Set([...deck.querySelectorAll("[data-section-key]")].map((el) => el.dataset.deckCols ?? "none"))] };
@@ -369,22 +458,21 @@ async function check(run) {
     assert.equal(shape.team, shape.width >= 1250 ? "aside" : "details", `the team beside only from 1250 px: ${JSON.stringify(shape)}`);
     assert.equal(shape.beside, shape.width >= 1250, JSON.stringify(shape));
     if (run.name === "1440") {
-      assert.equal(shape.columns, 3, `three columns at 1440: ${JSON.stringify(shape)}`);
+      assert.equal(shape.columns, 2, `two columns in the block at 1440: ${JSON.stringify(shape)}`);
       assert.equal(shape.team, "details", `the team below at 1440: ${JSON.stringify(shape)}`);
     }
     if (run.name === "1920") {
-      assert.equal(shape.columns, 4, `four columns at 1920: ${JSON.stringify(shape)}`);
+      assert.equal(shape.columns, 2, `two columns in the block at 1920: ${JSON.stringify(shape)}`);
       assert.equal(shape.team, "aside", `the team beside at 1920: ${JSON.stringify(shape)}`);
     }
     if (run.phone) assert.equal(shape.columns, 1, `one column on a phone: ${JSON.stringify(shape)}`);
-    pass("the cards' columns follow the card area, and the team stands beside them only from 1250 px", shape);
+    pass("the cards' columns follow the Project's block, and the team stands beside them only from 1250 px", shape);
     // The unread report: New, open it, read it, come back with New gone and the card in the same place.
     const unread = card("design");
     await unread.scrollIntoViewIfNeeded();
     assert.equal((await unread.locator(".home-changed").innerText()).trim(), w.newMark);
     const before = await unread.evaluate((el) => {
-      const group = el.closest("section[aria-labelledby], details");
-      return { top: Math.round(el.getBoundingClientRect().top), group: group?.getAttribute("aria-labelledby") ?? group?.className ?? null };
+      return { top: Math.round(el.getBoundingClientRect().top), group: el.closest(".request-group")?.dataset.group ?? null };
     });
     await unread.locator(".home-report-open").click();
     await page.locator(".home-report .report-head h1").waitFor({ timeout: 15_000 });
@@ -396,13 +484,79 @@ async function check(run) {
     await projectPage().waitFor({ timeout: 15_000 });
     await page.waitForFunction(() => !document.querySelector("#home-section-p-dev-design .home-changed"), null, { timeout: 10_000 });
     const after = await unread.evaluate((el) => {
-      const group = el.closest("section[aria-labelledby], details");
-      return { top: Math.round(el.getBoundingClientRect().top), group: group?.getAttribute("aria-labelledby") ?? group?.className ?? null };
+      return { top: Math.round(el.getBoundingClientRect().top), group: el.closest(".request-group")?.dataset.group ?? null };
     });
     assert.equal(after.group, before.group, "the card stays in the same group");
     assert.ok(Math.abs(after.top - before.top) <= 1, `the card does not move: ${JSON.stringify({ before, after })}`);
     await shot("project-read");
     pass("opening the unread report clears New and leaves the card in place", { before, after });
+    // R-23: from this page to another, down this one first so that one's opening scrolls; then back by the keyboard.
+    await page.evaluate(() => {
+      const view = document.querySelector(".home-view");
+      view.scrollTop = view.scrollHeight;
+    });
+    if (run.phone) {
+      // On a phone: Back to the whole of Home, and another project's glance tapped.
+      await page.goBack();
+      await page.locator('[data-glance-project="p-notes"]').waitFor({ timeout: 15_000 });
+      const toOther = await framesWhile(async () => {
+        await page.locator('[data-glance-project="p-notes"] .project-glance-open').tap();
+        await page.locator('[data-project-home="p-notes"]').waitFor({ timeout: 15_000 });
+      });
+      pass("another project's page, its glance tapped, framed by nothing (R-23)", await pageOpened("p-notes", toOther));
+      await page.goBack();
+      await page.locator('[data-glance-project="p-dev"]').waitFor({ timeout: 15_000 });
+      await page.locator('[data-glance-project="p-dev"] .project-glance-open').tap();
+      await projectPage().waitFor({ timeout: 15_000 });
+    } else {
+      const toOther = await framesWhile(async () => {
+        await page.locator('.project-group[data-group="p-notes"] .project-group-toggle').click();
+        await page.locator('[data-project-home="p-notes"]').waitFor({ timeout: 15_000 });
+      });
+      const other = await pageOpened("p-notes", toOther);
+      await shot("project-switched");
+      pass("from one project's page to another, framed by nothing on the way or landed (R-23)", other);
+      // The keyboard: Enter on the name opens the page at its heading; Tab goes on to the page's own tools, shown.
+      await page.locator('.project-group[data-group="p-dev"] .project-group-toggle').focus();
+      const byKey = await framesWhile(async () => {
+        await page.keyboard.press("Enter");
+        await projectPage().waitFor({ timeout: 15_000 });
+      });
+      await pageOpened("p-dev", byKey);
+      await page.keyboard.press("Tab");
+      const next = await page.evaluate(() => {
+        const el = document.activeElement;
+        const style = getComputedStyle(el);
+        return {
+          inHead: !!el.closest('[data-project-home="p-dev"] .project-home-head'),
+          name: el.getAttribute("aria-label") ?? el.textContent.trim(),
+          outline: style.outlineStyle,
+          width: parseFloat(style.outlineWidth),
+        };
+      });
+      assert.ok(next.inHead, `Tab goes on from the heading to the page's tools: ${JSON.stringify(next)}`);
+      assert.ok(next.outline !== "none" && next.width >= 1, `its focus is shown: ${JSON.stringify(next)}`);
+      await shot("project-keyboard");
+      pass("Enter on the name opens the page at its heading; Tab goes on to its tools, their focus shown (R-23)", next);
+    }
+    // A card named is still marked: the page's own Asks jump.
+    await page.locator('[data-project-home="p-dev"] .home-jumps [data-jump="asks"]').click();
+    const ask = await cardMarked("q1");
+    await shot("project-ask-marked");
+    pass("the page's Asks jump still marks the Ask (R-23)", ask);
+    // And the status card, a glance's recent card on the whole of Home: the page opens at that card, marked.
+    if (run.phone) await page.goBack();
+    else await page.locator(".catchup-nav:not(.collab-nav)").first().click();
+    // By its whole title: "This week" is also in the Ask's "Ship the settings page this week?".
+    const recent = page.locator('[data-glance-project="p-dev"] .project-glance-recent button', {
+      has: page.locator(".project-glance-card", { hasText: /^This week$/ }),
+    });
+    await recent.waitFor({ timeout: 15_000 });
+    await (run.phone ? recent.tap() : recent.click());
+    await projectPage().waitFor({ timeout: 15_000 });
+    const status = await cardMarked("status");
+    await shot("project-status-marked");
+    pass("the status card, from its glance, opens the page at that card, marked (R-23)", status);
   } finally {
     await context.close();
   }

@@ -22,7 +22,7 @@ fn holds(ws: &Workspace, agent: &str, files: &[crate::input_files::FileRef]) -> 
 
 fn reply(agent: &str, text: &str, id: &str, files: &[crate::input_files::FileRef]) -> home::ReplyInput {
     home::ReplyInput { key: None, agent_id: agent.into(), text: text.into(), client_message_id: id.into(), choice: None,
-        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: vec![], files: files.to_vec() }
+        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: vec![], files: files.to_vec(), intent: Default::default(), note: None }
 }
 
 fn card(agent: &str, text: &str, id: &str, files: &[crate::input_files::FileRef]) -> home::ReplyInput {
@@ -65,10 +65,12 @@ async fn a_card_an_ask_and_a_plain_reply_carry_their_files_to_the_agent_they_go_
     assert_eq!(home::reply(&ws, project.clone(), again).await.unwrap().files, files);
     let error = home::reply(&ws, project.clone(), card("b", "Looks good", "r1", &files[..1])).await.unwrap_err();
     assert!(error.to_string().contains("already used for another message"), "{error}");
-    // A form's reply takes no files; an Agent that takes no files is refused.
+    // A form's reply takes files too (YN-213): it is checked as a form's, never refused for them. An Agent
+    // that takes no files is refused.
     let mut formed = ask(&ws, "c", "Go", "r4", &files);
-    formed.form = Some(home::FormReply { form_id: "f".into(), answers: Default::default() });
-    assert!(home::reply(&ws, project.clone(), formed).await.unwrap_err().to_string().starts_with("form_files:"));
+    (formed.choice, formed.form) = (None, Some(home::FormReply { form_id: "f".into(), answers: Default::default() }));
+    let error = home::reply(&ws, project.clone(), formed).await.unwrap_err();
+    assert!(error.to_string().starts_with("form_not_found:"), "{error}");
     ws.store.update("b", "test/harness", &json!({}), |d| d.agent.harness = "plain-text".into()).unwrap();
     let error = home::reply(&ws, project.clone(), card("b", "Looks good", "r5", &files)).await.unwrap_err();
     assert!(error.to_string().starts_with("files_unsupported: Agent b"), "{error}");

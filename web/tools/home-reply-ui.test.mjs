@@ -8,6 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { FOLD_CHARS, FOLD_LINES, foldSource } from "../src/home-reply/home-reply-model.ts";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // T-9: a reply the user sent from Home shows in the conversation as its
 // answer (Dev 7's hr5), drawn only from `_yuzunoHome`, the snapshot Core
@@ -470,7 +471,7 @@ async function arrive(data, origin, n = 1) {
   return page;
 }
 const note = (page) => page.document.querySelector(".home-reply-arrival");
-const cardOf = (page, key) => page.document.querySelector(`[data-section-key="${key}"]`);
+const cardOf = (page, key) => (unfoldBlocks(page.document), page.document.querySelector(`[data-section-key="${key}"]`));
 const pressBack = (page) => [...note(page).querySelectorAll("button")].find((b) => b.textContent === "Back to your reply").click();
 async function arrivals(cases) {
   for (const [label, data, origin, check] of cases) {
@@ -581,44 +582,45 @@ test("on Home, a reply that names no section is told only by its very version", 
 });
 
 // R1 839f91d1: a section kept out of view (its author no longer a content
-// editor) is in the project page's closed "Cards from the team" (YN-86).
-test("on Home, the section answered in the team area is shown: its details open, its card unfolded and focused, again on each opening", async (t) => {
+// editor) is a card of the Project's own block (YN-212: before, the page's
+// closed "Cards from the team"): a reply to it opens the block.
+test("on Home, the section answered from the team is shown: its block open, its card unfolded and focused, again on each opening", async (t) => {
   const team = (version) => homeData([section("other", 40, 1)], [], [ask("export-paging", 10, version)]);
-  const details = (page) => page.document.querySelector(".project-team-written");
+  const block = (page) => page.document.querySelector("[data-project-block]");
+  const shown = (page) => page.document.querySelector('[data-section-key="export-paging"]');
   await arrivals([
     ["same version", team(3), askReply, (page) => {
-      assert.equal(details(page).open, true, "the team details hold it: open");
-      assert.ok(details(page).closest(".project-team").open, "and the team's area around them");
+      assert.ok(block(page).hasAttribute("data-open"), "the Project's block holds it: open");
       assert.equal(note(page), null);
-      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+      assert.equal(page.document.activeElement, shown(page));
     }],
     ["changed", team(4), askReply, (page) => {
-      assert.equal(details(page).open, true);
-      assert.equal(note(page).closest('[data-section-key="export-paging"]'), cardOf(page, "export-paging"), "the note in the card it answered");
-      assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+      assert.ok(block(page).hasAttribute("data-open"));
+      assert.equal(note(page).closest('[data-section-key="export-paging"]'), shown(page), "the note in the card it answered");
+      assert.equal(page.document.activeElement, shown(page));
     }],
   ]);
-  // Opened again after the user closed the details and folded the card: shown again.
+  // Opened again after the user folded the card and the block: shown again.
   const page = await arrive(team(4), askReply);
   t.after(page.close);
-  details(page).open = false;
-  cardOf(page, "export-paging").querySelector(".home-fold").click();
+  shown(page).querySelector(".home-fold").click();
   await tick(40);
-  assert.ok(cardOf(page, "export-paging").querySelector(".home-card-body").hidden, "folded by the user");
+  assert.ok(shown(page).querySelector(".home-card-body").hidden, "folded by the user");
+  block(page).querySelector(".request-block-more").click();
+  await until(() => !block(page).hasAttribute("data-open"), "the block folded by the user");
   page.window.renderHome({ origin: askReply, back, n: 2 });
-  await until(() => details(page).open && !cardOf(page, "export-paging").querySelector(".home-card-body").hidden, "shown again");
+  await until(() => block(page).hasAttribute("data-open") && shown(page) && !shown(page).querySelector(".home-card-body").hidden, "shown again");
   await tick(40);
-  assert.equal(page.document.activeElement, cardOf(page, "export-paging"));
+  assert.equal(page.document.activeElement, shown(page));
   assert.ok(note(page).closest('[data-section-key="export-paging"]'));
   assert.deepEqual(page.errors, []);
 });
 
-test("on Home, another section under the key in the team area is not opened as the one answered", async () => {
+test("on Home, another section under the key kept out of view is not opened as the one answered", async () => {
   await arrivals([
     ["key written anew, kept out of view", homeData([section("other", 40, 1)], [], [ask("plan", 31, 2)]), reportReply, (page) => {
       above(page, "You replied to version 1. Home can't tell whether this card is the one you answered; under this name it is version 2 now.Back to your reply");
-      assert.equal(page.document.querySelector(".project-team-written").open, false, "the team details stay closed");
-      assert.notEqual(page.document.activeElement, cardOf(page, "plan"));
+      assert.notEqual(page.document.activeElement, page.document.querySelector('[data-section-key="plan"]'));
     }],
   ]);
 });
@@ -627,7 +629,11 @@ test("on Home, a reply to the whole Brief opens its project; a project Home no l
   const whole = await arrive(homeData([section("other", 40, 1)]), projectOrigin);
   t.after(whole.close);
   assert.equal(note(whole), null);
-  assert.ok(whole.document.querySelector('.project-home[data-project-home="p1"]').hasAttribute("data-home-highlight"), "its project's page is shown");
+  // Its page, at its heading: a page opened is not a card landed on, so nothing frames it (R-23).
+  const projectPage = whole.document.querySelector('.project-home[data-project-home="p1"]');
+  assert.ok(projectPage, "its project's page is shown");
+  await until(() => whole.document.activeElement === projectPage.querySelector(".project-home-head h1"), "its heading has the focus");
+  assert.equal(whole.document.querySelector("[data-home-highlight]"), null, "nothing on it is marked, the page least of all");
   const gone = await arrive(homeData([]), { ...askReply, projectId: "p-gone" });
   t.after(gone.close);
   assert.equal(note(gone).textContent, "The project this reply was about is not on Home now.");

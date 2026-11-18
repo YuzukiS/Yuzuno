@@ -132,7 +132,7 @@ async function serve(route) {
     "/api/models": () => ({ models: [] }),
     "/api/waits/live": () => ({ agents: {} }),
     "/api/machine-live": () => ({ machines: [] }),
-    // The project's page (YN-96): no front desk Agent and no requests, as project-talk-check answers them.
+    // The project's page (YN-96): no front desk Agent and no requests.
     "/api/projects/p1/front-desk": () => ({ version: 1, agentId: null, effectiveAgentId: null }),
     "/api/projects/p1/requests": () => ({ requests: [], hasMore: false }),
   }[path];

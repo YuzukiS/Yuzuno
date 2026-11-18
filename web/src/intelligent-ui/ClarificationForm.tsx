@@ -134,6 +134,21 @@ type Props = {
   /** An answer was changed here: chosen, cleared or written (YN-103: a text
    * answer's field is an editor, which has no change event to listen to). */
   onEdit?: () => void;
+  /**
+   * Home's one way to decide (YN-213): `extra` is drawn after the fields,
+   * before the button (the user's note and what they attach); `secondary`
+   * takes the place of the line saying who the answers go to, beside the
+   * button ("Wait, what?"); `submitLabel` is the button's word while nothing
+   * is being sent; `submitInstead`, when given, is what the button (and
+   * Return in a text answer) does in place of sending these answers, as when
+   * one of the ask's own options is chosen. A field's `suggested` is said
+   * under it: a default the form does not choose for the user.
+   */
+  extra?: ReactNode;
+  secondary?: ReactNode;
+  submitLabel?: string;
+  submitInstead?: () => Promise<void>;
+  suggested?: Record<string, string>;
 };
 export function Clarification(props: Props) {
   return <Form key={`${props.identity}:${props.form.id}`} {...props} />;
@@ -152,6 +167,11 @@ function Form({
   onCarry,
   measure,
   onEdit,
+  extra,
+  secondary,
+  submitLabel,
+  submitInstead,
+  suggested,
 }: Props) {
   const domId = useId();
   const key = draftIdentity && clarificationDraftKey(draftIdentity, form);
@@ -366,6 +386,28 @@ function Form({
     }
     return shouldFoldPaste(text) ? { text, blocks: [{ id: `sent-${id}`, start: 0, end: text.length }] } : { text };
   }
+  /** What the button does: these answers, or what Home does in their place (`submitInstead`). */
+  function primary() {
+    if (submitInstead) void instead(submitInstead);
+    else void submit();
+  }
+  async function instead(go: () => Promise<void>) {
+    if (disabled || inFlight.current || composing.current) return;
+    const from = generation.current;
+    inFlight.current = true;
+    setBusy(true);
+    setFailure("");
+    try {
+      await go();
+    } catch (error) {
+      if (generation.current === from) setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation.current === from) {
+        setBusy(false);
+        inFlight.current = false;
+      }
+    }
+  }
   async function submit() {
     if (!onSubmit || disabled || inFlight.current || composing.current) return;
     const answers = latest.current;
@@ -461,6 +503,7 @@ function Form({
               <div id={descriptionId} className="clarification-note">
                 {field.description && <p>{field.description}</p>}
                 {field.default && <p>{t.default(field.default.source)}</p>}
+                {suggested?.[field.id] && <p>{suggested[field.id]}</p>}
               </div>
               {carried.length > 0 && (
                 <div id={carriedId} className="clarification-carried" role="status">
@@ -488,7 +531,7 @@ function Form({
                   placeholder={field.placeholder ?? ""}
                   words={words(field.id, value)}
                   onWords={(next) => change(field.id, next.text, next.blocks ?? [])}
-                  onSubmit={() => void submit()}
+                  onSubmit={primary}
                   readOnly={disabled}
                   attributes={{
                     id: fieldId,
@@ -564,13 +607,15 @@ function Form({
             {storageError === ONLY_HERE ? t.onlyHere : storageError}
           </p>
         )}
+        {extra}
         <footer>
-          <small>{t.goesTo(agentName)}</small>
+          {secondary ?? <small>{t.goesTo(agentName)}</small>}
           <button
             type="button"
             className="primary-button"
-            disabled={disabled || tooLong}
-            onClick={() => void submit()}
+            // A choice in this form's place goes however long the answers on screen are.
+            disabled={disabled || (tooLong && !submitInstead)}
+            onClick={primary}
           >
             {busy || sending ? (
               <LoaderCircle size={15} className="spin" />
@@ -581,7 +626,7 @@ function Form({
             ) : (
               <ArrowRight size={15} />
             )}
-            {busy || sending ? t.sending : accepted ? t.answered : queued ? t.waiting : t.submit}
+            {busy || sending ? t.sending : accepted ? t.answered : queued ? t.waiting : (submitLabel ?? t.submit)}
           </button>
         </footer>
         {notice && (

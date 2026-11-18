@@ -206,7 +206,7 @@ function HistoryReply({ section, projectId, workspaceId, agents }: { section: Se
   );
 }
 
-function History30({
+export function History30({
   sections,
   projectId,
   reply,
