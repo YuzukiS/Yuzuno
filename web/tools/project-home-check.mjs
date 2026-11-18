@@ -547,7 +547,10 @@ async function check(run) {
     // And the status card, a glance's recent card on the whole of Home: the page opens at that card, marked.
     if (run.phone) await page.goBack();
     else await page.locator(".catchup-nav:not(.collab-nav)").first().click();
-    const recent = page.locator('[data-glance-project="p-dev"] .project-glance-recent button', { hasText: "This week" });
+    // By its whole title: "This week" is also in the Ask's "Ship the settings page this week?".
+    const recent = page.locator('[data-glance-project="p-dev"] .project-glance-recent button', {
+      has: page.locator(".project-glance-card", { hasText: /^This week$/ }),
+    });
     await recent.waitFor({ timeout: 15_000 });
     await (run.phone ? recent.tap() : recent.click());
     await projectPage().waitFor({ timeout: 15_000 });
