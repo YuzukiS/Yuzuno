@@ -581,6 +581,7 @@ fn latest(store: &Store, db: &Connection, project: &str, changed: &[&str]) -> Re
         if changed.contains(&row.key.as_str()) {
             let mut section = sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at);
             cards::show(&mut section, cards.of(row)?);
+            cards::mark_placeholder(db, row, &mut section)?;
             listed.push(section);
         }
         index.push(sections::index_json(row, &owner, seen.get(&row.key), at));

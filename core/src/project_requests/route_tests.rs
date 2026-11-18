@@ -180,6 +180,17 @@ impl Lab {
             json!({"requestId":uuid::Uuid::new_v4().to_string(),"expectedVersion":version,"changes":[change]})).await.unwrap();
     }
 
+    /// `agent` writes task `task`'s card (YN-212 C3: routing puts none): a
+    /// status at the task's key in lower case, bound to it. Its identity on Home.
+    async fn write_card(&self, agent: &str, task: &str) -> i64 {
+        let key = task.to_lowercase();
+        self.brief(agent, json!({"op":"put","key":key,"kind":"status","title":format!("{task} 进展"),"markdown":"进行中。",
+            "status":{"asOf":crate::model::now(),"validFor":3600},"task":task})).await;
+        self.ws.store.db.read().unwrap().query_row(
+            "SELECT COALESCE(lineage,seq) FROM project_brief_sections WHERE project_id=?1 AND key=?2 AND live=1",
+            params![self.project, key], |r| r.get(0)).unwrap()
+    }
+
     /// The user sets the task done or cancelled.
     fn end(&self, key: &str, status: &str) {
         let version = self.task(key)["version"].clone();
@@ -303,15 +314,16 @@ async fn a_call_with_a_missing_or_long_line_is_refused_whole() {
     assert_eq!(lab.request(n)["title"], most);
 }
 
-// §4.2, §4.3: a card route is the front desk's own task_create and
-// task_dispatch from the user's template, then a status card the front desk
-// owns, bound to the task, keyed by its key in lowercase. The task's
-// description is Core's head, a blank line, the user's words byte for byte,
-// then why; the card names who it went to and why, never the words, and
-// its handoffs name the request. The request has its title, note, card and
-// progress; nothing but the front desk's dispatch reached anyone.
+// §4.2, §4.3, YN-212 C3: a card route is the front desk's own task_create
+// and task_dispatch from the user's template, and the task's card key, its
+// key in lowercase: no card. The task's description is Core's head, a blank
+// line, the user's words byte for byte, then why. Its executor writes the
+// card there; the request then finds it by that key and its binding, and its
+// handoffs name the request, never the words. The request has its title,
+// note, card and progress; nothing but the front desk's dispatch reached
+// anyone.
 #[tokio::test]
-async fn a_card_route_creates_the_task_dispatches_its_executor_and_puts_its_card() {
+async fn a_card_route_creates_the_task_dispatches_its_executor_and_records_its_card_key() {
     let lab = lab();
     let words = "  设置页重新排版，文案改口语 😀\r\n第二行  ";
     let n = lab.say(words, "m1").await;
@@ -335,28 +347,32 @@ async fn a_card_route_creates_the_task_dispatches_its_executor_and_puts_its_card
     assert_eq!(task["assignee"]["id"], executor);
     // Given no worktree, it starts in the Project's folder itself (YN-135).
     assert_eq!(lab.ws.store.agent(&executor).unwrap().cwd, lab.folder);
-    // Its card.
-    let card = lab.section(&key.to_lowercase()).await.expect("the card is live");
-    assert_eq!((card["kind"].clone(), card["owner"]["agentId"].clone(), card["title"].clone()), (json!("status"), json!("desk"), json!("设置页排版")));
-    assert_eq!(card["card"]["task"]["id"], key);
-    assert_eq!(card["card"]["responsible"]["agentId"], executor);
-    let name = card["card"]["responsible"]["name"].as_str().unwrap().to_owned();
-    assert_eq!(card["body"]["elements"]["lead"]["props"]["text"], format!("→ {name}: 先出两版布局"));
-    assert_eq!(card["body"]["elements"]["task"]["props"]["items"], json!([{"kind":"task","id":key}]));
+    // No card yet: the route records where it goes.
+    let card_key = key.to_lowercase();
+    assert!(lab.section(&card_key).await.is_none(), "routing puts no card");
+    assert_eq!((route["cardKey"].clone(), route["sectionId"].clone()), (json!(card_key), Value::Null));
+    let request = lab.request(n);
+    assert_eq!((request["title"].clone(), request["notes"][0]["note"].clone(), request["state"].clone()), (json!("设置页排版"), json!("好，交给设计。"), json!("doing")));
+    assert_eq!(request["progress"], json!({"cards":1,"ended":0}));
+    assert_eq!((request["cards"][0]["task"]["id"].clone(), request["cards"][0]["key"].clone(), request["cards"][0]["sectionId"].clone()),
+        (json!(key), Value::Null, Value::Null));
+    assert_eq!(request["cards"][0]["responsible"]["agentId"], executor);
+    // Its executor writes the card at that key: the request finds it, and it names the request.
+    running(&lab.ws, &executor);
+    let identity = lab.write_card(&executor, &key).await;
+    let card = lab.section(&card_key).await.expect("the executor's card");
+    assert_eq!((card["owner"]["agentId"].clone(), card["card"]["task"]["id"].clone(), card["card"]["responsible"]["agentId"].clone()),
+        (json!(executor), json!(key), json!(executor)));
+    assert!(card["card"].get("placeholder").is_none(), "no route's placeholder");
     let handoffs = &card["card"]["handoffs"];
     assert_eq!(handoffs["requests"].as_array().unwrap().len(), 1);
     let from = &handoffs["requests"][0];
     assert_eq!((from["n"].clone(), from["title"].clone(), from["merged"].clone(), from["messageId"].clone()), (json!(1), json!("设置页排版"), json!(false), json!("m1")));
     assert_eq!(handoffs["events"][0]["kind"], "card");
     assert!(!card.to_string().contains("文案改口语"), "the user's words are not on the card: {card}");
-    // The request.
     let request = lab.request(n);
-    assert_eq!((request["title"].clone(), request["notes"][0]["note"].clone(), request["state"].clone()), (json!("设置页排版"), json!("好，交给设计。"), json!("doing")));
-    assert_eq!(request["progress"], json!({"cards":1,"ended":0}));
-    assert_eq!((request["cards"][0]["task"]["id"].clone(), request["cards"][0]["key"].clone()), (json!(key), json!(key.to_lowercase())));
-    assert_eq!(request["cards"][0]["responsible"]["agentId"], executor);
-    assert!(request["cards"][0]["sectionId"].is_i64());
-    assert_eq!(request["cards"][0]["sectionId"], request["routes"][0]["sectionId"]);
+    assert_eq!((request["cards"][0]["key"].clone(), request["cards"][0]["sectionId"].clone()), (json!(card_key), json!(identity)));
+    assert_eq!(request["routes"][0]["sectionId"], Value::Null, "the route keeps its key only");
     // Only the front desk's dispatch: no message from Home to the executor or anyone else.
     assert_eq!((lab.sent(&executor), lab.sent("lead"), lab.sent("member")), (0, 0, 0));
     let mail = lab.mail(&executor);
@@ -366,7 +382,8 @@ async fn a_card_route_creates_the_task_dispatches_its_executor_and_puts_its_card
 
 // YN-136: a card is a task's and leaves with it, so it takes none of the
 // Brief's 12 topics: with 12 a lead wrote, the front desk still routes a
-// card, and the lead's next topic of its own is still refused.
+// card, its card is still written, and the lead's next topic of its own is
+// still refused.
 #[tokio::test]
 async fn a_card_is_routed_when_the_brief_has_twelve_topics() {
     let lab = lab();
@@ -376,8 +393,10 @@ async fn a_card_is_routed_when_the_brief_has_twelve_topics() {
     let n = lab.say("设置页重新排版", "m1").await;
     let answer = lab.route("desk", n, "设置页排版", "好，交给设计。", vec![design("设置页排版", "先出两版布局")]).await.unwrap();
     assert_eq!(answer["routes"][0]["state"], "done", "{answer}");
-    let key = answer["routes"][0]["task"].as_str().unwrap().to_lowercase();
-    assert_eq!(lab.section(&key).await.expect("the card is live")["card"]["task"]["id"], answer["routes"][0]["task"]);
+    let task = answer["routes"][0]["task"].as_str().unwrap().to_owned();
+    // The card its lead writes for the task takes no topic either (YN-212 C3: routing puts none).
+    lab.write_card("lead", &task).await;
+    assert_eq!(lab.section(&task.to_lowercase()).await.expect("the card is live")["card"]["task"]["id"], json!(task));
     let version = lab.ws.collaboration_call(Some("lead"), "brief_get", json!({"keys":[]})).await.unwrap()["version"].clone();
     let refused = lab.ws.collaboration_call(Some("lead"), "brief_update",
         json!({"requestId":"thirteen","expectedVersion":version,"changes":[topic(12)]})).await.unwrap_err().to_string();
@@ -569,7 +588,7 @@ async fn a_card_for_an_agent_here_is_dispatched_to_it_and_one_for_the_front_desk
     let own = lab.task(&own_task);
     assert_eq!((own["assignee"]["id"].clone(), own["status"].clone(), own["dispatch"].clone()), (json!("desk"), json!("doing"), Value::Null));
     assert!(lab.mail("desk").is_empty() && lab.sent("desk") == 1, "only the request itself reached the front desk");
-    assert_eq!(lab.section(&own_task.to_lowercase()).await.unwrap()["card"]["responsible"]["agentId"], "desk");
+    assert_eq!(lab.request(n)["cards"][1]["responsible"]["agentId"], "desk", "it answers for its own task's card");
     // An executor, or an Agent of no Project: refused before anything is made.
     let executor = lab.route("desk", n, "发布 core.33", "好。", vec![to_agent("发布 core.33", "lead", "发布归常驻负责人"),
         to_agent("核对发布说明", "desk", "我自己核对，兼任开发协调"), design("设计", "要设计")]).await.unwrap()["routes"][2]["to"]["agentId"]
@@ -620,7 +639,8 @@ async fn a_join_sends_the_words_to_who_answers_for_the_card_and_why_by_the_front
     let why = lab.mail("lead").into_iter().filter(|m| m["sender"]["id"] == "desk" && m["dispatchId"].is_null()).collect::<Vec<_>>();
     assert_eq!(why.len(), 1, "why, by the front desk's mail");
     assert!(why[0]["body"].as_str().unwrap().ends_with("Why, in the front desk's words: 和导出 CSV 是同一件事的补充"), "{}", why[0]);
-    // The card's handoffs and the request.
+    // The card's handoffs, once its lead writes it (YN-212 C3), and the request.
+    lab.write_card("lead", &key).await;
     let shown = lab.section(&card).await.unwrap();
     let requests = &shown["card"]["handoffs"]["requests"];
     assert_eq!(requests.as_array().unwrap().iter().map(|r| (r["n"].clone(), r["merged"].clone())).collect::<Vec<_>>(),
@@ -739,7 +759,7 @@ fn the_longest_hand_off_head_fits_and_words_fit_counts_the_head_and_the_blank_li
 // §4.2: one route failing undoes none of the others, and the same call
 // again goes on where it stopped: here a card whose key another lead's
 // section takes. Its task and executor stay; once the key is free, the
-// retry puts the card without a second task or executor.
+// retry records the card key (YN-212 C3) without a second task or executor.
 #[tokio::test]
 async fn a_failed_route_undoes_nothing_and_its_retry_goes_on_where_it_stopped() {
     let lab = lab();
@@ -758,14 +778,13 @@ async fn a_failed_route_undoes_nothing_and_its_retry_goes_on_where_it_stopped() 
     assert_eq!(answer["routes"][1]["task"].as_str().unwrap().to_lowercase(), next, "its task stays");
     let executor = answer["routes"][1]["to"]["agentId"].as_str().unwrap().to_owned();
     let (tasks, executors) = (lab.count("SELECT COUNT(*) FROM collaboration_tasks"), lab.count("SELECT COUNT(*) FROM agent_roles WHERE kind='executor'"));
-    assert!(lab.section(&key.to_lowercase()).await.is_some(), "the first card stays");
+    assert_eq!(first["routes"][0]["cardKey"], json!(key.to_lowercase()), "the first route keeps its card key");
     lab.brief("lead", json!({"op":"remove","key":next})).await;
     let again = lab.route("desk", n, "两件事", "好。", routes).await.unwrap();
     assert_eq!(again["routes"][1]["state"], "done", "{again}");
-    assert_eq!(again["routes"][1]["to"]["agentId"], executor);
+    assert_eq!((again["routes"][1]["to"]["agentId"].clone(), again["routes"][1]["cardKey"].clone()), (json!(executor), json!(next)));
     assert_eq!((lab.count("SELECT COUNT(*) FROM collaboration_tasks"), lab.count("SELECT COUNT(*) FROM agent_roles WHERE kind='executor'")), (tasks, executors));
-    let card = lab.section(&next).await.unwrap();
-    assert_eq!((card["owner"]["agentId"].clone(), card["card"]["responsible"]["agentId"].clone()), (json!("desk"), json!(executor)));
+    assert!(lab.section(&next).await.is_none(), "its card is its executor's to write");
 }
 
 // §4.4: a follow-up goes to the front desk until its request is routed,
@@ -808,6 +827,8 @@ async fn progress_and_lines_come_from_the_cards_tasks_and_asks_once_each() {
     let second = lab.say("导出也要 JSON", "m2").await;
     lab.route("desk", second, "导出 JSON", "并进去。", vec![join(&code.to_lowercase(), "同一件事")]).await.unwrap();
     assert_eq!((lab.request(n)["progress"].clone(), lab.request(n)["lines"].clone()), (json!({"cards":2,"ended":0}), json!([])));
+    // Its lead writes the code card (YN-212 C3: routing puts none), under which the Ask goes.
+    lab.write_card("lead", &code).await;
     // An Ask on the code card, then that task done.
     let body = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["t"]},"t":{"type":"Markdown","props":{"text":"两种做法"}}}});
     lab.brief("desk", json!({"op":"put","key":format!("{}/pick", code.to_lowercase()),"kind":"ask","title":"选一种","body":body,
@@ -856,7 +877,9 @@ async fn a_reassignment_dispatches_the_new_responsible_then_the_user_releases_th
     let lab = lab();
     let n = lab.say("设置页排版", "m1").await;
     let made = lab.route("desk", n, "设置页排版", "好。", vec![design("设置页排版", "要设计")]).await.unwrap();
-    let (old, section) = (made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned(), made["routes"][0]["sectionId"].clone());
+    // The card on the page the user reassigns: routing puts none (YN-212 C3), its lead writes it.
+    let section = json!(lab.write_card("lead", made["routes"][0]["task"].as_str().unwrap()).await);
+    let old = made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned();
     let body = |to: Value, id: &str| json!({"workspaceId":lab.workspace,"to":to,"why":"换个做法","clientRequestId":id});
     let (status, _) = reassign_on_page(&lab, &section, body(json!({"agentId":"lead"}), "r0"), true).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "an Agent's credential");
@@ -984,3 +1007,5 @@ mod route_owed_tests;
 mod route_confirm_tests;
 #[path = "route_deliverable_tests.rs"]
 mod route_deliverable_tests;
+#[path = "route_join_tests.rs"]
+mod route_join_tests;

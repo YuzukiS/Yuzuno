@@ -411,46 +411,58 @@ pub(crate) fn asks_of(db: &Connection, project: &str, task: &str) -> Result<Vec<
     Ok(asks)
 }
 
-/// The card project_route puts for a task (YN-86 §4.2): the status section
-/// `key`, owned by `actor` (the front desk) and bound to `task` (internal
-/// ID), titled `title`, its body `lead` and a Live Reference to the task.
-/// Written by `actor`'s own brief_update, every rule of the Brief applying;
-/// it does not go stale while the task goes on (the longest validFor the
-/// contract allows). A live section `key` that is already this, the card a
-/// retry finds, is taken as it is. Its identity on Home.
-pub(crate) async fn put_card(ws: &Arc<Workspace>, actor: &str, project: &str, key: &str, title: &str, lead: &str, task: &str)
-    -> Result<i64> {
-    let (owner, place, wanted, bound) = (actor.to_owned(), project.to_owned(), key.to_owned(), task.to_owned());
-    let (version, found, task_key) = ws
-        .stored(move |store| {
-            let db = store.db.read()?;
-            let found = sections::live_key(&db, &place, &wanted)?
-                .map(|row| (row.identity, row.owner_id == owner && row.task_id.as_deref() == Some(bound.as_str())));
-            Ok((sections::brief_version(&db, &place)?, found, crate::collaboration_store::task_shown(&db, &bound)))
-        })
-        .await?;
-    match found {
-        Some((identity, true)) => return Ok(identity),
-        Some(_) => bail!("card_key_taken: the Brief already has a live section {key} that is not this task's card of yours; nothing was put"),
-        None => {}
+/// The card of task `task` (internal ID) at `key` in `project`, as a request
+/// finds it when its route recorded no section (YN-212 C3): the section under
+/// `key` bound to that task by its own `task`, the live one, else its newest
+/// entry history still keeps, as `card_by_identity` finds one.
+pub(crate) fn bound_card(db: &Connection, project: &str, key: &str, task: &str) -> Result<Option<Card>> {
+    sections::bound_key(db, project, key, task)?.map(|row| card(db, &row)).transpose()
+}
+
+/// Whether `key` of `project` has ever held a section: live, kept in history,
+/// or ended (removed, resolved, seen or archived, whose ending outlives its
+/// history). A request joins a task whose first card is still to be written
+/// only where its key has held none (YN-212 C3).
+pub(crate) fn key_used(db: &Connection, project: &str, key: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM project_brief_sections WHERE project_id=?1 AND key=?2)
+         OR EXISTS(SELECT 1 FROM project_brief_endings WHERE project_id=?1 AND key=?2)",
+        params![project, key],
+        |r| r.get(0),
+    )?)
+}
+
+/// Whether `row` is a route's placeholder card (YN-212 C3), from before a
+/// task's card was its executor's to write: the section a card route
+/// recorded, still owned by the front desk that routed it, still as that
+/// route put it: a BriefBody of a Markdown lead "→ …" and Live References
+/// naming its task alone. Once anyone writes it, it is that task's card.
+pub(super) fn placeholder(db: &Connection, row: &Row) -> Result<bool> {
+    let Some(task) = row.task_id.as_deref().filter(|_| task_card(row) && row.kind == "status") else { return Ok(false) };
+    let routed: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM project_routes WHERE project_id=?1 AND kind='card' AND section_id=?2 AND by_agent_id=?3)",
+        params![row.project_id, row.identity, row.owner_id],
+        |r| r.get(0),
+    )?;
+    if !routed {
+        return Ok(false);
     }
-    let valid_for = limits()["validForMax"].as_i64().context("the Brief contract has no validForMax")?;
-    let input = json!({"requestId":format!("project-route-card:{task}:{version}"),"expectedVersion":version,"changes":[{
-        "op":"put","key":key,"kind":"status","title":title,"task":task_key,
-        "status":{"asOf":now(),"validFor":valid_for},
-        "body":{"root":"body","elements":{
-            "body":{"type":"BriefBody","props":{"summary":{"lead":"lead"}},"children":["lead","task"]},
-            "lead":{"type":"Markdown","props":{"text":lead}},
-            "task":{"type":"LiveRefs","props":{"items":[{"kind":"task","id":task_key}]}}}}}]});
-    if let Err(rejected) = super::update_tool(ws, actor, input).await? {
-        let problems: Vec<String> = rejected["problems"].as_array().into_iter().flatten()
-            .map(|problem| format!("{}: {}", problem["code"].as_str().unwrap_or("rejected"), problem["reason"].as_str().unwrap_or_default()))
-            .collect();
-        bail!("card_rejected: the Brief refused the card {key}: {}", problems.join("; "));
+    let shown = crate::collaboration_store::task_shown(db, task);
+    let elements = &row.data["body"]["elements"];
+    let root = &elements[row.data["body"]["root"].as_str().unwrap_or_default()];
+    let children: Vec<&Value> = root["children"].as_array().into_iter().flatten().map(|id| &elements[id.as_str().unwrap_or_default()]).collect();
+    let lead = children.iter().any(|block| block["type"] == "Markdown" && block["props"]["text"].as_str().is_some_and(|text| text.starts_with("→ ")));
+    let refs = children.iter().any(|block| {
+        block["type"] == "LiveRefs" && block["props"]["items"] == json!([{"kind":"task","id":shown}])
+    });
+    Ok(root["type"] == "BriefBody" && children.len() == 2 && lead && refs)
+}
+
+/// A section's JSON says it is a route's placeholder (`placeholder`), on its
+/// `card`, so Home shows it as no card (YN-212 C3).
+pub(super) fn mark_placeholder(db: &Connection, row: &Row, section: &mut Value) -> Result<()> {
+    if section["card"].is_object() && placeholder(db, row)? {
+        section["card"]["placeholder"] = json!(true);
     }
-    let (place, wanted) = (project.to_owned(), key.to_owned());
-    ws.stored(move |store| {
-        sections::live_key(&*store.db.read()?, &place, &wanted)?.map(|row| row.identity).context("the card left the Brief as it was put")
-    })
-    .await
+    Ok(())
 }

@@ -260,6 +260,17 @@ pub(super) fn by_identity(db: &Connection, project: &str, identity: i64) -> Resu
     .pop())
 }
 
+/// The section under `key` bound to `task` (internal ID) by its own `task`
+/// (YN-212 C3): the live one, else its newest entry history still keeps.
+pub(super) fn bound_key(db: &Connection, project: &str, key: &str, task: &str) -> Result<Option<Row>> {
+    Ok(read(
+        db,
+        "project_id=?1 AND key=?2 AND task_id=?3 AND (live=1 OR history_at>=?4) ORDER BY live DESC, seq DESC LIMIT 1",
+        params![project, key, task, history_cutoff()],
+    )?
+    .pop())
+}
+
 /// The Brief's version: how many accepted updates changed it (0 before any).
 pub(super) fn brief_version(db: &Connection, project: &str) -> Result<i64> {
     Ok(db

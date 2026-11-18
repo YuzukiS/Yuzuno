@@ -302,6 +302,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 section["id"] = json!(row.identity);
                 // The task it is the card of and who answers for it (YN-86 S2a).
                 cards::show(&mut section, cards.of(row)?);
+                cards::mark_placeholder(&db, row, &mut section)?;
                 // The newest version the user's browser showed whole (YN-86):
                 // apart from `seen`, which a report's Seen mark sets.
                 if row.live {

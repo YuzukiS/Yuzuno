@@ -20,7 +20,7 @@ pub(crate) use cards::{lead_left, task_closed};
 /// What the Project's requests read of cards and write as one (YN-86 S3a-2,
 /// project_requests): a card by its key or identity, who answers for a
 /// task's card, its Asks, and the card project_route puts.
-pub(crate) use cards::{asks_of, card_by_identity, live_card, put_card, responsible_agent, responsible_json, task_ended};
+pub(crate) use cards::{asks_of, bound_card, card_by_identity, card_key, key_used, live_card, responsible_agent, responsible_json, task_ended};
 /// A report a task's result names as delivered (YN-208): found by its key
 /// when the result is submitted, read by its identity and version since.
 mod delivered;
@@ -284,7 +284,7 @@ fn update_properties(project: Value) -> Value {
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
             "attachments":{"type":"array","maxItems":MAX_ATTACHMENTS,"items":attachment},
-            "task":{"type":["string","null"],"description":"put or edit, by a lead: the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
+            "task":{"type":["string","null"],"description":"put or edit, by a lead, or by a Task's current executor for its own Task's card at its key (yn-90 for YN-90): the Task this section is the card of, e.g. YN-90 or T-12; null unbinds it. A put without task keeps it. See brief_guide sections."},
             "refresh":{"type":["object","null"],"description":"put or edit of a report, by a lead: {every: day|hours|week, at?, hours?, days?, zone?, instruction, paused?} makes it refresh itself; null removes it; a put without it keeps it. Creating, speeding up or a new instruction only in a Turn the user started. See brief_guide refresh."}}}}
     })
 }
@@ -818,6 +818,7 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
         let owner = owners.get(store, &db, row)?;
         let mut section = sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at);
         cards::show(&mut section, cards.of(row)?);
+        cards::mark_placeholder(&db, row, &mut section)?;
         listed.push(section);
     }
     let you = actor.map(|actor| -> Result<Value> {
