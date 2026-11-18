@@ -250,11 +250,13 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let policy = editors::policy(&db, id)?;
         // A source filter, never a Seen mark or deletion. All Asks remain
         // reachable, including a subtopic whose regular parent is hidden.
-        // A lead's (YN-2 S4), and a sub-topic its card's executor wrote
-        // under it (YN-86 S2a): the others' are in the team sections.
+        // A lead's (YN-2 S4), a sub-topic its card's executor wrote under
+        // it (YN-86 S2a), and a topic's own section bound to a task by its
+        // own `task`, whoever wrote it (YN-212 C1): the others' are in the
+        // team sections.
         let mut visible = vec![];
         for row in &live {
-            if row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)? {
+            if row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)? || cards::bound_topic(row) {
                 visible.push(row.clone());
             }
         }
@@ -287,7 +289,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         // history entry says why it is history and whether its source is
         // one Home shows now (the same test as `visible`).
         let current = |row: &sections::Row| -> Result<bool> {
-            Ok(row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)?)
+            Ok(row.kind == "ask" || policy.includes(&row.owner_id) || cards::on_card(&db, row)? || cards::bound_topic(row))
         };
         // A card's refresh (YN-113), on the one entry Home shows of its
         // identity: the live section, else its newest history entry.

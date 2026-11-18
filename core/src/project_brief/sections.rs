@@ -6,7 +6,8 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 const COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,data,ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
+COALESCE(author_id,owner_id),COALESCE(author_name,owner_name)";
 
 #[derive(Clone, Debug)]
 pub(super) struct Row {
@@ -44,6 +45,11 @@ pub(super) struct Row {
     /// The files the user's reply to this version of an ask carried
     /// (YN-145); none for any other section or reply.
     pub reply_files: Vec<crate::input_files::FileRef>,
+    /// Who wrote this version's content (YN-212 C1): its owner, or a lead or
+    /// the task's current executor writing a task's card it does not own.
+    /// A row an older Core wrote names its owner.
+    pub author_id: String,
+    pub author_name: String,
 }
 
 impl Row {
@@ -67,7 +73,8 @@ fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Resu
 /// SQLite extracts these, so a large body is never read into Core.
 const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
 json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
-replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files";
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq),task_id,reply_images,reply_files,\
+COALESCE(author_id,owner_id),COALESCE(author_name,owner_name)";
 
 fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
     let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
@@ -97,6 +104,8 @@ fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl ru
                 // As kept by mark_replied_form; a value Core cannot read shows none.
                 reply_images: r.get::<_, Option<String>>(20)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
                 reply_files: r.get::<_, Option<String>>(21)?.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_default(),
+                author_id: r.get(22)?,
+                author_name: r.get(23)?,
             },
             r.get::<_, String>(8)?,
         ))
@@ -447,6 +456,7 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
     let mut section = json!({
         "key":row.key,"kind":row.kind,"title":data["title"],"version":row.version,
         "owner":{"agentId":row.owner_id,"name":owner.name,"state":owner.state},
+        "author":{"agentId":row.author_id,"name":row.author_name},
         "updatedAt":row.updated_at,"updatedTurnId":row.updated_turn_id,"body":data["body"],
         "attachments":attachments,
         "refs":refs,

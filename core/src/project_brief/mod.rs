@@ -449,6 +449,25 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS project_brief_sections_task ON project_brief_sections(task_id)
          WHERE live=1 AND task_id IS NOT NULL;",
     )?;
+    // author_id, author_name: who wrote each version's content (YN-212 C1).
+    // A task's card is written by its Project's leads and its task's current
+    // executor, not only by its owner, so the owner no longer says who wrote
+    // it. Filled from the owner once, when added; a row an older Core writes
+    // later leaves them NULL and reads as its owner's (sections.rs COLUMNS),
+    // as does a row left unfilled by an open that stopped between the steps.
+    let has_column = |name: &str| -> Result<bool> {
+        Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name=?1)", [name], |r| r.get(0))?)
+    };
+    let fill = !has_column("author_id")?;
+    if fill {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN author_id TEXT")?;
+    }
+    if !has_column("author_name")? {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN author_name TEXT")?;
+    }
+    if fill {
+        db.execute_batch("UPDATE project_brief_sections SET author_id=owner_id,author_name=owner_name WHERE author_id IS NULL")?;
+    }
     // The cards that refresh themselves (YN-113), by their identity on Home.
     // Older Cores ignore it.
     refresh::migrate(db)?;

@@ -1406,6 +1406,7 @@ fn the_longest_quote_fits_beside_the_longest_reply() {
             updated_at: String::new(), updated_turn_id: None, history_reason: None, history_at: None, identity: 1, task_id: None,
             reply_images: vec![],
             reply_files: vec![],
+            author_id: "a".into(), author_name: "A".into(),
         };
         let report = sections::Row { kind: "report".into(), ..row.clone() };
         for message in [
