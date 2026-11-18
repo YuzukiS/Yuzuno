@@ -125,6 +125,12 @@ struct Receipt {
 /// writes: this format, every field and no other, each of its type, within
 /// the size Core writes. Anything else leaves it out, and the message is
 /// shown as its text, never as part of a snapshot.
+/// `home_reply`, for the tests of the replies that write these origins.
+#[cfg(test)]
+pub(crate) fn home_reply_for_test(origin: &str) -> Option<Value> {
+    home_reply(origin)
+}
+
 fn home_reply(origin: &str) -> Option<Value> {
     let origin: Value = serde_json::from_str(origin).ok()?;
     let named = |key: &str| matches!(origin.get(key), None | Some(Value::Null | Value::String(_)));
@@ -141,6 +147,10 @@ fn home_reply(origin: &str) -> Option<Value> {
     let mut home = json!({"projectId":project,"key":origin["key"],"version":origin["version"],"workspaceId":origin["workspaceId"]});
     if let Some(section) = section {
         home["sectionId"] = section.into();
+    }
+    // A note on an ask (YN-213): the user's words that answer nothing.
+    if origin["intent"] == "note" {
+        home["intent"] = "note".into();
     }
     if let Some(snapshot) = origin.get("home").filter(|snapshot| snapshot_shape(snapshot) && snapshot.to_string().len() <= HOME_MAX_BYTES) {
         home["snapshot"] = snapshot.clone();

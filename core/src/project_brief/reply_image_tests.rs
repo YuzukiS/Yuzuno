@@ -24,7 +24,7 @@ fn holds(ws: &Workspace, agent: &str, images: &[String]) -> bool {
 
 fn reply(agent: &str, text: &str, id: &str, images: &[String]) -> home::ReplyInput {
     home::ReplyInput { key: None, agent_id: agent.into(), text: text.into(), client_message_id: id.into(), choice: None,
-        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: images.to_vec(), files: vec![] }
+        version: None, title: None, ask_version: None, workspace_id: None, form: None, images: images.to_vec(), files: vec![], intent: Default::default(), note: None }
 }
 
 fn card(agent: &str, text: &str, id: &str, images: &[String]) -> home::ReplyInput {
@@ -106,10 +106,10 @@ async fn a_reply_whose_images_cant_go_sends_nothing() {
         refused(home::reply(&ws, project.clone(), said).await.unwrap_err(), "images_unsupported: Agent b can't receive images");
     }
     assert!(ws.store.receipt("b", "r1").unwrap().is_none() && !ws.data_dir.join("input-images/b").exists());
-    // Never beside a form's answers.
+    // Beside a form's answers too (YN-213): checked as a form's, never refused for them.
     let mut form = ask(&ws, "c", "Answers", "r2", &images);
     (form.choice, form.form) = (None, Some(serde_json::from_value(json!({"formId":"prefs","answers":{}})).unwrap()));
-    refused(home::reply(&ws, project.clone(), form).await.unwrap_err(), "form_images");
+    refused(home::reply(&ws, project.clone(), form).await.unwrap_err(), "form_not_found");
     // An image no longer saved on Home, or never: nothing is copied or sent.
     let gone = format!("{:064x}.png", 7);
     for said in [card("c", "Looks good", "r2", &[images[0].clone(), gone.clone()]), ask(&ws, "c", "Go", "r2", &[gone.clone()]),
