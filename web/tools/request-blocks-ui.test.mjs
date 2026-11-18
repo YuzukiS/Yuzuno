@@ -302,6 +302,32 @@ test("every open Ask is in the first look once: two of one task, one of a shared
   assert.deepEqual(page.errors, []);
 });
 
+// PR 1098 R1: an Ask kept in History under a key a new open Ask uses again is another section (another identity):
+// only the new one is up front, held there once answered; the old one stays an Answered line, never a second card.
+test("an older Ask in History under the same key stays an Answered line beside the new one up front", async () => {
+  const page = mount({ opened: ["r7"] });
+  const data = fixtures();
+  const old = section("yn-91/pick", "ask", "Pick a layout", 300, {
+    history: true, historyReason: "resolved", card: bind("YN-91"),
+    ask: { question: "Which layout, first round?", state: "resolved", reply: { freeText: true }, repliedAt: ago(290), replyText: "B" },
+  });
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, old], readOnly: false });
+  await tick();
+  const block = page.block(7);
+  const upFront = () => [...block.querySelectorAll(".request-block-asks [data-section-key]")].map((el) => el.dataset.sectionKey);
+  assert.deepEqual(upFront(), ["yn-91/pick"]);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1, "one card by that id");
+  assert.deepEqual([...block.querySelectorAll(".request-task-answered")].map(page.text),
+    ["Answered: Casual copy? → Yes", "Answered: Which layout, first round? → B"], "the live one first, then History's");
+  // The new one answered meanwhile: still the only one up front.
+  const answered = data.sections.map((s) => s.key === "yn-91/pick" ? { ...s, version: 3, ask: { ...s.ask, state: "replied", repliedAt: ago(0), replyText: "A" } } : s);
+  page.window.renderPage({ requests: data.requests, sections: [...answered, old], readOnly: false });
+  await tick();
+  assert.deepEqual(upFront(), ["yn-91/pick"]);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1);
+  assert.deepEqual(page.errors, []);
+});
+
 test("read only: no action, the first look and what was delivered stay", () => {
   const page = mount({ readOnly: true });
   assert.equal(page.document.querySelectorAll(".request-block-action").length, 0);

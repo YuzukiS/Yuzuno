@@ -236,6 +236,10 @@ function FactLines({ fact }: { fact: BlockFact }) {
  * Whether an Ask is shown in its block's first look (W5, R-20 follow-up): while it is open; and one the page showed
  * open in this visit stays there once answered, the answer in its place (SectionCard's short reply), until the next
  * visit, as a block keeps its group (useHeldBlocks). A new visit starts afresh.
+ *
+ * Held by Home's identity for the section, which its versions keep and a new section under the same key does not
+ * (PR 1098 R1): an older Ask kept in History under a key a new one asks again stays in the Answered lines below,
+ * never drawn beside the new one. An older Core names no identity: then only a live entry is held, by its key.
  */
 export function useAsksUpFront() {
   const sizes = useContext(DeckSizes);
@@ -246,11 +250,12 @@ export function useAsksUpFront() {
   return useCallback(
     (section: Section) => {
       if (section.kind !== "ask") return false;
+      const held = section.id === undefined ? `k:${section.key}` : `i:${section.id}`;
       if (openAsk(section)) {
-        keys.add(section.key);
+        keys.add(held);
         return true;
       }
-      return keys.has(section.key);
+      return keys.has(held) && (section.id !== undefined || !section.history);
     },
     [keys],
   );
