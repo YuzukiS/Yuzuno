@@ -110,6 +110,10 @@ export type Section = {
     deferredUntil?: string;
     /** An executor's gate (T-43 S4): the step of its task's template this asks you to approve. */
     gate?: AskGate;
+    /** The user's notes on this ask (YN-213, "Wait, what?"), newest first, at most 5: words and what they
+     * attached, sent to an Agent without answering. Kept apart from the reply; absent without any, and from
+     * older Cores. */
+    notes?: AskNote[];
   };
   status?: { asOf: string; validFor: number; stale: boolean };
   time?: { due?: string; eta?: string; nextUpdate?: string };
@@ -298,6 +302,16 @@ export type NeedsYouItem = {
   gate?: AskGate;
   title: string;
   since: string;
+};
+
+/** One note on an ask (YN-213): the version it was written on, when, its words and who it went to. */
+export type AskNote = {
+  version: number;
+  at: string;
+  text: string;
+  agentId: string;
+  images?: string[];
+  files?: import("./home-files").HomeFile[];
 };
 
 /** The step of its task's template an executor's ask is the approval of (T-43 S4), counted from 0. */

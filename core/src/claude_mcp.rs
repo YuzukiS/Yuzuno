@@ -530,7 +530,10 @@ mod tests {
             tokio::spawn(async move { ws.claude_mcp_status(&id, true).await.unwrap() })
         };
         until(|| path.join("reading").exists()).await;
-        std::fs::write(path.join("switch-to"), SWITCHED).unwrap();
+        // Written whole, then put in place: the bridge reads `switch-to` the moment it is there, so a write it saw
+        // half done would name an empty session (PR 1086 macOS run 44237766035; YN-212 Job 290cc92b).
+        std::fs::write(path.join("switch-to.part"), SWITCHED).unwrap();
+        std::fs::rename(path.join("switch-to.part"), path.join("switch-to")).unwrap();
         // Released only once the bridge itself reports the new session.
         let bridge = ws.claudes.lock().unwrap().get(id).unwrap().bridge.clone();
         let mut reported = serde_json::Value::Null;

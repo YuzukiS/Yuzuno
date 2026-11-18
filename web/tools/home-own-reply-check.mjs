@@ -275,7 +275,7 @@ async function check(run) {
       const step = () => {
         const t = Math.round(performance.now() - t0);
         out.push({ t, height: Math.round(el.getBoundingClientRect().height * 10) / 10, answer: el.classList.contains("is-answer"),
-          replied: !!el.querySelector(":scope > :not(.card-ghost) .home-ask-replied"), disabled: el.querySelectorAll(":scope > :not(.card-ghost) .home-ask-options button:disabled").length,
+          replied: !!el.querySelector(":scope > :not(.card-ghost) .home-ask-replied"), disabled: el.querySelectorAll(":scope > :not(.card-ghost) .home-ask-options input:disabled").length,
           ghost: !!el.querySelector(":scope > .card-ghost"), minHeight: el.style.minHeight });
         if (end === null && el.classList.contains("is-answer")) end = t + 900;
         if ((end === null && t < 5000) || (end !== null && t < end)) requestAnimationFrame(step);
@@ -283,7 +283,9 @@ async function check(run) {
       };
       requestAnimationFrame(step);
     }));
-    await press(card("overnight").locator(".home-ask-options").getByRole("button", { name: w.yes, exact: true }));
+    // Picked, then sent with the one button that names it (YN-213).
+    await card("overnight").locator(".home-ask-options").getByRole("radio", { name: w.yes, exact: true }).check();
+    await press(card("overnight").locator(".home-ask-actions .primary-button"));
     await page.waitForFunction(() => document.getElementById("home-section-p-orch-overnight")?.classList.contains("is-answer"), null, { timeout: 5000 });
     const landed = await measure("overnight");
     await settle("overnight");

@@ -218,7 +218,7 @@ test("an Agent that can't take images: said under them, in Chinese too, and noth
   assert.deepEqual(page.errors, []);
 });
 
-test("an Ask's words take images; a pick and a form's answers never do, and the images stay in the draft", async (t) => {
+test("an Ask's words and images go with a pick or a form's answers as one reply (YN-213); alone, where the Ask asks for words", async (t) => {
   const page = mount();
   t.after(page.close);
   page.ask(ask({ options: [{ id: "a", label: "Layout A" }, { id: "b", label: "Layout B" }], freeText: true }));
@@ -226,31 +226,38 @@ test("an Ask's words take images; a pick and a form's answers never do, and the 
   setComposerText(page.field(), "A, with the menu from B");
   page.paste("menu.png", "menu");
   await until(() => page.thumbs().length === 1, "saved");
-  page.button("Layout A").click();
+  [...page.document.querySelectorAll(".home-ask-options label")].find((l) => l.textContent === "Layout A").querySelector("input").click();
+  const submit = () => page.document.querySelector(".home-ask-decision .home-ask-actions .primary-button");
+  await until(() => submit()?.textContent.trim() === "Submit: Layout A", "picked");
+  submit().click();
   await until(() => page.replies().length === 1, "the pick is sent");
-  assert.equal(page.replies()[0].body.choice, "a");
-  assert.equal("images" in page.replies()[0].body, false, "a pick goes without images");
-  const kept = JSON.parse(page.window.localStorage.getItem(ASK_DRAFTS));
-  assert.deepEqual(Object.values(kept)[0].images.map((image) => image.id), [id(1)], "the images stay with the words");
+  const [picked] = page.replies();
+  assert.deepEqual([picked.body.choice, picked.body.text, picked.body.images], ["a", "A, with the menu from B", [id(1)]], "one reply");
+  await until(() => !page.window.localStorage.getItem(ASK_DRAFTS), "sent: no draft left");
 
-  // Answered again in words: they go with the images, to the version on screen.
-  const words = mount({ storage: { [ASK_DRAFTS]: page.window.localStorage.getItem(ASK_DRAFTS) } });
+  // Words alone, where the Ask asks for them: they go with the images, to the version on screen.
+  const words = mount();
   t.after(words.close);
   words.ask(ask({ freeText: true }));
-  await until(() => words.thumbs().length === 1, "the kept image");
+  await until(words.field, "the Ask's field");
+  setComposerText(words.field(), "A, with the menu from B");
+  words.paste("menu.png", "menu");
+  await until(() => words.thumbs().length === 1, "saved");
+  await until(() => words.sendButton() && !words.sendButton().disabled, "sendable");
   words.sendButton().click();
   await until(() => words.replies().length === 1, "the words are sent");
   assert.deepEqual(words.replies()[0].body.images, [id(1)]);
   assert.equal(words.replies()[0].body.askVersion, 3);
   assert.equal(words.replies()[0].body.text, "A, with the menu from B");
 
-  // A form takes no images: no "+" in it, and its answers go without the field's images.
+  // A form: its own fields take no images; the words' field beside its answers does, and they go together.
   const formed = mount();
   t.after(formed.close);
   formed.ask(ask({ form }));
   await until(() => formed.document.querySelector(".clarification") && formed.field(), "the form and the words' field");
-  assert.equal(formed.document.querySelector(".clarification .composer-plus"), null, "no “+” in the form");
+  assert.equal(formed.document.querySelector(".clarification-field .composer-plus"), null, "no “+” in the form's own fields");
   assert.equal(formed.document.querySelectorAll(".home-ask-reply .composer-plus").length, 1, "only the words' field has one");
+  setComposerText(formed.field(), "See the screenshot");
   formed.paste("c.png", "c");
   await until(() => formed.thumbs().length === 1, "saved");
   const submitForm = formed.document.querySelector(".clarification footer .primary-button");
@@ -259,9 +266,9 @@ test("an Ask's words take images; a pick and a form's answers never do, and the 
   const said = () => formed.document.querySelector(".clarification-error, .clarification-delivery")?.textContent.trim();
   for (let i = 0; i < 80 && !formed.replies().length && !said(); i++) await tick(25);
   assert.equal(formed.replies().length, 1, `the form's answers are sent: ${formed.document.querySelector(".clarification")?.textContent}`);
-  assert.ok(formed.replies()[0].body.form, "a form's answers");
-  assert.equal("images" in formed.replies()[0].body, false, "a form's answers go without images");
-  assert.equal(formed.thumbs().length, 1, "the images stay");
+  const [answers] = formed.replies();
+  assert.ok(answers.body.form, "a form's answers");
+  assert.deepEqual([answers.body.note, answers.body.images], ["See the screenshot", [id(1)]], "with the words and the image beside them");
   assert.deepEqual([...page.errors, ...words.errors, ...formed.errors], []);
 });
 

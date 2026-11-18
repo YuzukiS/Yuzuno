@@ -9,6 +9,8 @@
 //   - A report card's reply follows the card to its latest version, and when
 //     Core has a newer one than the page, goes there.
 //   - An Ask's words, refused because Core has a newer version, go there.
+//   - An Ask's words where its newer version asks for a choice instead (YN-213):
+//     not sent as its answer; kept, and they can go there as a note.
 //   YUZUNO_UI_DIST=<isolated build> node tools/home-reply-latest-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -56,6 +58,7 @@ const template = () => [
   plan(1, [day([mon, tue]), extra]),
   section("words", "ask", "Anything before we ship?", 1, { ask: { question: "Anything before we ship?", state: "open", reply: { freeText: true } } }),
   section("notes", "report", "Notes", 2),
+  section("choose", "ask", "Which day?", 1, { ask: { question: "Which day ships?", state: "open", reply: { options: [mon, fri], freeText: true } } }),
 ];
 const home = (sections) => ({
   generatedAt: new Date().toISOString(),
@@ -115,7 +118,8 @@ async function open({ width, height, touch, theme, lang }) {
           return refuse(`ask_changed: version ${sent.askVersion} of the ask \`${sent.key}\` can't be answered now: it changed after you began this reply. Nothing was sent, and your reply is kept.`);
         if (sent.version !== undefined && (sent.version !== shown.version || sent.title !== shown.title))
           return refuse(`section_changed: version ${sent.version} of “${sent.title}” is no longer on Home; it changed after you began this reply. Nothing was sent, and your reply is kept.`);
-        if (shown.ask) shown.ask = { ...shown.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: sent.text };
+        // A note answers nothing (YN-213): the ask stays as it was.
+        if (shown.ask && sent.intent !== "note") shown.ask = { ...shown.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: sent.text };
         return route.fulfill({ json: { input: { text: sent.text, clientMessageId: sent.clientMessageId }, status: "accepted", turnId: "mori-t2", error: null } });
       }
       return route.fulfill({ json: { ok: true } });
@@ -143,6 +147,8 @@ async function open({ width, height, touch, theme, lang }) {
   page.on("pageerror", (error) => report.errors.push(error.message));
   await page.goto(`https://${HOST}/`);
   await page.locator(".toolbar-nav .catchup-nav").first().click();
+  // Nothing needs the user here, so the cards are on the project's page (YN-86): opened from its glance.
+  await page.locator('[data-glance-project="p1"] .project-glance-open').first().click();
   await page.locator('[data-section-key="plan"]').first().waitFor({ timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
   return { context, page, writes, sections };
@@ -188,14 +194,14 @@ try {
       const form = card(page, "plan");
       await form.locator(".clarification label", { hasText: "Tuesday" }).click();
       // A text answer's field is the conversation's composer (YN-103).
-      await form.locator(".clarification [data-composer-input]").fill("After the docs land.");
+      await form.locator(".clarification-field [data-composer-input]").fill("After the docs land.");
       sections[0] = plan(2, [day([mon, fri]), extra, who]);
       await refresh(page, "plan", 2);
       await form.locator(".clarification-carried").first().waitFor({ timeout: 10_000 });
       assert.deepEqual(await fieldNotes(page, "Release day"), [t.dropped]);
       assert.deepEqual(await fieldNotes(page, "Who ships it"), [t.added]);
       assert.deepEqual(await fieldNotes(page, "Anything else"), []);
-      assert.equal(await form.locator(".clarification [data-composer-input]").innerText(), "After the docs land.");
+      assert.equal(await form.locator(".clarification-field [data-composer-input]").innerText(), "After the docs land.");
       const checked = await form.locator('.clarification input:checked').count();
       assert.equal(checked, 0, "nothing picked for the user");
       assert.match(await form.textContent(), t.carried);
@@ -247,6 +253,28 @@ try {
       assert.equal(await card(page, "words").locator('[role="alert"]').count(), 0, "no refusal shown");
       await shoot(page, "words", `words-sent-latest-${view.name}`);
       record(`${view.name}: words refused at version 1 go to version 2`, said);
+
+      // 4. Words the ask took as its answer, refused because its newer version asks for a choice instead
+      //    (YN-213): never sent as that version's answer; kept, and they can go there as a note.
+      const choose = card(page, "choose");
+      await choose.locator(".home-ask-words [data-composer-input]").fill("Friday, after QA.");
+      sections[3] = { ...sections[3], version: 2, ask: { ...sections[3].ask, reply: { options: [mon, fri] } } };
+      await choose.locator(".home-ask-actions .primary-button").click();
+      await sent(page, writes, "choose", 1);
+      await choose.locator('[role="alert"]').first().waitFor({ timeout: 10_000 });
+      await refresh(page, "choose", 2);
+      const kept = card(page, "choose");
+      assert.equal(await kept.locator(".home-ask-words [data-composer-input]").innerText(), "Friday, after QA.", "the words stay");
+      assert.equal(await kept.locator(".home-ask-replied, .home-answer-reply").count(), 0, "not answered");
+      assert.equal(await kept.locator(".home-ask-actions .primary-button").isDisabled(), true, "nothing picked: nothing to answer with");
+      await shoot(page, "choose", `words-kept-${view.name}`);
+      await kept.getByRole("button", { name: "Wait, what?", exact: true }).click();
+      await page.keyboard.insertText("Friday, after QA.");
+      await kept.locator(".home-ask-note .primary-button").click();
+      await sent(page, writes, "choose", 2);
+      const toChoose = replies(writes).filter((r) => r.key === "choose");
+      assert.deepEqual(toChoose.map((r) => [r.askVersion, r.intent ?? null, r.choice ?? null]), [[1, null, null], [2, "note", null]]);
+      record(`${view.name}: words for an ask that now asks for a choice stay, and go to it as a note`, toChoose);
     } finally {
       report.writes.push(...writes.map((write) => ({ view: view.name, ...write })));
       await context.close();

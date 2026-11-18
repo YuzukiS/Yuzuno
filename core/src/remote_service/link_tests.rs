@@ -874,7 +874,10 @@ async fn one_gpu_child_while_on(lab: &Lab, machine: &RemoteMachine, ssh: String,
     link.watch_gpu(false);
     eventually("off ends it", || running(tool) == 0).await;
     link.watch_gpu(true);
-    eventually("on again: one", || running(tool) == 1).await;
+    // The second child is in /proc before the stand-in has recorded itself: wait for its record too, or closing
+    // now ends it before it writes and the count below reads 1 (main run 44240090625; YN-212 Job 2568142b).
+    let started = || std::fs::read_to_string(lab.path("gpu-pids")).map(|pids| pids.lines().count()).unwrap_or(0);
+    eventually("on again: one, and it has started", || running(tool) == 1 && started() == 2).await;
     link.close();
     let end = ended(&mut link).await;
     assert_eq!(outcome(&end), (After::Clean, None), "{end:?}");
