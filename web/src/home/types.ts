@@ -90,6 +90,9 @@ export type Section = {
   /** Who wrote this version (YN-212 C1): its owner, or a lead or the one who answers for its task writing a task's
    * card it does not own. Absent from older Cores, whose owner wrote every version. */
   author?: { agentId: string; name: string };
+  /** A task's card's earlier versions history still keeps (YN-212 C2), newest first, each with who wrote it; absent
+   * when it has none and from older Cores. Each opens on the report page by its identity and version. */
+  revisions?: { version: number; author: { agentId: string; name: string }; at: string }[];
   updatedAt: string;
   updatedTurnId: string | null;
   /** A json-render spec: { root, elements } with a BriefBody root. */

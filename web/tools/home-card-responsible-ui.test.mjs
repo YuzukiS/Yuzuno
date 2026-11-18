@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { tipOf } from "./tip-dom.mjs";
+import { noTipOf, tipOf } from "./tip-dom.mjs";
 import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-86 S2b: a card bound to a task says at its foot who answers for it, in
@@ -63,7 +63,7 @@ const body = (text) => ({ root: "body", elements: {
   body: { type: "BriefBody", props: {}, children: ["text"] },
   text: { type: "Markdown", props: { text } },
 } });
-const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16 };
+const ids = { spec: 11, question: 12, plain: 13, late: 14, design: 15, old: 16, loose: 17 };
 const section = (key, kind, title, version, by, extra = {}) => ({ id: ids[key], key, kind, title, version, owner: by,
   updatedAt: ago(20), updatedTurnId: null, body: body(`${title}: what it says.`), attachments: [], refs: {}, seen: null,
   history: false, ...extra });
@@ -88,7 +88,7 @@ const agents = [
 const projects = [{ id: "p1", name: "atlas-notes", defaultDirs: {}, createdAt: "", updatedAt: "" }];
 
 /** Home's read; `answered`: the user has replied to the Ask on YN-7's card since (it then needs no one). */
-function homeData(answered = false) {
+function homeData(answered = false, loose = false) {
   return {
     generatedAt: ago(0),
     order: ["p1"],
@@ -109,6 +109,9 @@ function homeData(answered = false) {
             card: { task: buildTask, responsible: builder } }),
           // No task: as before.
           section("plain", "report", "Plain notes", 1, mori, read(1)),
+          // `loose`: an Ask of no task, the Project's own; answered with the rest.
+          ...(loose ? [section("loose", "ask", "Which colour?", 1, mori, { ask: { question: "Blue or green?", reply: { freeText: true },
+            ...(answered ? { state: "replied", repliedAt: ago(1), replyText: "Blue" } : { state: "open" }) } })] : []),
           // Its task is done, not read yet: in Done until it is (§3.4). Core has no responsible Agent for it now.
           section("late", "report", "Design notes", 2, mori, { card: { task: designTask, responsible: null } }),
         ],
@@ -136,7 +139,7 @@ const pageRequests = () => [
     cards: [routedTo(ids.spec, "spec", "Page spec", buildTask, builder)], state: "doing", progress: { cards: 1, ended: 0 }, lines: [] },
 ];
 
-function mount({ language } = {}) {
+function mount({ language, loose = false } = {}) {
   const errors = [];
   const requests = [];
   const opened = [];
@@ -152,13 +155,13 @@ function mount({ language } = {}) {
   window.HTMLElement.prototype.scrollIntoView = function () {};
   window.HTMLElement.prototype.scrollTo = function () {};
   window.addEventListener("yuzuno:open-task-review", (event) => opened.push(event.detail));
-  const state = { answered: false };
+  const state = { answered: false, loose };
   window.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     const request = { url: String(url), method, body: init.body ? JSON.parse(init.body) : null };
     requests.push(request);
     let answer = { repositories: [], links: [] };
-    if (request.url === "/api/home") answer = homeData(state.answered);
+    if (request.url === "/api/home") answer = homeData(state.answered, state.loose);
     else if (method === "GET" && /\/requests(\?|$)/.test(request.url)) answer = { requests: pageRequests(), hasMore: false };
     else if (request.url.endsWith("/brief/reply"))
       answer = { input: { ...request.body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t2", error: null };
@@ -192,9 +195,11 @@ test("a card bound to a task says who answers for it at its foot, in the rail's 
   // The executor's state as its row on the rail says it (executorView, ExecutorRowState.tsx): running and working.
   assert.equal(strip.querySelector(".home-card-responsible-state").textContent, "Working");
   assert.ok(strip.querySelector(".status-dot").classList.contains("working"));
-  // It takes the author's byline: the author is named in its tip, being someone else.
+  // It takes the author's byline: who wrote this version follows the task's key (YN-212 W4), here its owner, as an
+  // older Core says it; a version another wrote names them, its owner in its tip.
   assert.equal(spec.querySelector(".home-summary-byline .home-owner"), null, "no byline with the author");
-  assert.deepEqual(await tipOf(strip.querySelector(".home-card-responsible-name")), ["Card written by Mori"]);
+  assert.equal(strip.querySelector(".home-card-author").textContent, "Written by Mori");
+  assert.ok(await noTipOf(strip.querySelector(".home-card-author")), "its owner wrote it: no tip");
   // Reply moved into the line: not also in the card's head.
   assert.equal(spec.querySelector(".home-summary-head .home-reply-open"), null);
   assert.deepEqual([...strip.querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["Reply", "Open session", "Reassign"]);
@@ -308,6 +313,21 @@ test("a block whose Ask the user just answered stays in Needs you for the visit,
   assert.deepEqual(p.errors, []);
 });
 
+// PR 1093 R1 (P3): the Project's own block keeps its group for the visit as request blocks do: its last open Ask
+// answered, it stays in Needs you until the next visit.
+test("the Project's own block, its Ask answered, stays in Needs you for the visit", async (t) => {
+  const p = await openPage({ loose: true });
+  t.after(p.close);
+  const group = () => p.document.querySelector(".project-home [data-project-block]")?.closest(".request-group")?.dataset.group;
+  assert.equal(group(), "needs", "its Ask open");
+  p.state.answered = true;
+  p.document.querySelector('.project-home [aria-label="Refresh Home"]').click();
+  await until(() => !p.document.querySelector(".project-home-head .home-chip.is-attention"), "Core's next read: nothing needs the user");
+  await tick(40);
+  assert.equal(group(), "needs", "held where it was");
+  assert.deepEqual(p.errors, []);
+});
+
 test("the responsible line and Done's archived cards in Chinese (YN-86 S2b)", async (t) => {
   const p = await openPage({ language: "zh-Hans" });
   t.after(p.close);
@@ -317,7 +337,7 @@ test("the responsible line and Done's archived cards in Chinese (YN-86 S2b)", as
   assert.equal(strip.querySelector(".home-card-responsible-state").textContent, "在做");
   assert.deepEqual([...strip.querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["回复", "打开会话", "改派"]);
   assert.equal(strip.querySelector(".home-card-task").getAttribute("aria-label"), "打开任务 YN-7");
-  assert.deepEqual(await tipOf(strip.querySelector(".home-card-responsible-name")), ["卡片由 Mori 写"]);
+  assert.equal(strip.querySelector(".home-card-author").textContent, "Mori 写");
   assert.equal(p.card("late").querySelector(".home-task-ended").textContent, "任务已完成");
   assert.equal(p.card("design").querySelector(".home-task-ended").textContent, "任务完成，已归档");
   assert.equal(p.strip("design").querySelector(".home-card-responsible-state").textContent, "完成 · 已归档");

@@ -12,7 +12,7 @@ import { changedSinceSeen, readBefore, readVersion, unreadChange } from "../brie
 import { unmaintained } from "../card-summary";
 import { CardReply, replyableIn } from "../CardReply";
 import { absolute, duration, relative } from "../format";
-import type { SeenMark } from "../home-api";
+import { readRefreshIssue, type SeenMark } from "../home-api";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
 import type { BodyDrawn } from "../brief/BriefSectionBody";
@@ -95,9 +95,25 @@ export function ReportPage({
   // under the version linked.
   const [kept, setKept] = useState<Section | null>(null);
   if (place?.kind === "found" && place.section !== kept) setKept(place.section);
-  const shown = place?.kind === "found" ? place.section : kept;
-  const live = place?.kind === "found" && !place.section.history;
   const liveNow = panel && [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((s) => s.key === link.key);
+  // A task's card's earlier version (YN-212 C2): Home holds only its newest, so the version linked, which the card's
+  // history still keeps, is read from Core by the card's identity and shown read only, its current version offered.
+  const [revised, setRevised] = useState<Section | null>(null);
+  const revisionId = place?.kind === "unavailable" && typeof link.sectionId === "number" && liveNow?.card && liveNow.id === link.sectionId
+    && (liveNow.revisions ?? []).some((revision) => revision.version === link.version) ? link.sectionId : null;
+  useEffect(() => {
+    if (revisionId === null) return;
+    const controller = new AbortController();
+    readRefreshIssue(link.projectId, revisionId, link.version, controller.signal)
+      .then((section) => {
+        if (!controller.signal.aborted) setRevised({ ...section, history: true });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [revisionId, link.projectId, link.version]);
+  const revision = revised && revisionId !== null && revised.id === revisionId && revised.version === link.version ? revised : null;
+  const shown = place?.kind === "found" ? place.section : revision ?? kept;
+  const live = place?.kind === "found" && !place.section.history;
   // A refreshing report (YN-113 R3): its live issue's schedule, and past issues Core keeps out of Home's history.
   // A past issue is read whole from Core and shown read only, above the page's own words (design §3.4).
   const [oldIssue, setOldIssue] = useState<Section | null>(null);
@@ -224,6 +240,8 @@ export function ReportPage({
         {newer && <> {t.newerLive(newer.version)}</>}
       </Notice>
     ) : null
+  ) : revision && newer ? (
+    <Notice actions={openNewer}>{t.revised(revision.version, newer.version)}</Notice>
   ) : shown ? (
     <Notice actions={openNewer ?? toProject}>{newer ? t.arrived(shown.version, newer.version) : t.notKept(shown.version)}</Notice>
   ) : place?.kind === "unavailable" ? (

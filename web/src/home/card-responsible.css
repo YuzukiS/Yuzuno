@@ -58,6 +58,14 @@
   white-space: nowrap;
   cursor: pointer;
 }
+/* Who wrote this version (YN-212 C1): a footnote after the task's key, cut before it widens the line. */
+.home-card-author {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .home-card-responsible-actions {
   display: inline-flex;
   flex-wrap: wrap;

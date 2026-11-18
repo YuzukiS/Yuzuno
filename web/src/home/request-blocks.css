@@ -304,6 +304,27 @@
   color: var(--home-ink-2);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+/* A task's card's earlier versions (YN-212 C2), folded under it. */
+.request-task-versions > summary {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.request-task-versions ol {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.request-task-versions li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
 .request-task-earlier > summary,
 .request-thread > summary {
   color: var(--home-ink-2);

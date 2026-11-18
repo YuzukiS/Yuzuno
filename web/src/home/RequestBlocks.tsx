@@ -59,6 +59,10 @@ export const blockText = strings(
     noCardYet: (who: string) => `No card yet · with ${who}`,
     cardGone: "Its card is no longer on Home",
     earlier: (n: number) => `Earlier ${n === 1 ? "card" : "cards"} ${n}`,
+    beforeReply: "Written before your reply",
+    versions: (n: number) => `Earlier ${n === 1 ? "version" : "versions"} ${n}`,
+    version: (version: number) => `Version ${version}`,
+    openVersion: (title: string, version: number) => `Open version ${version} of “${title}”`,
     answeredAsk: (title: string, reply: string) => `Answered: ${title} → ${reply}`,
     thread: (n: number) => `Conversation ${n}`,
     you: "You",
@@ -103,6 +107,10 @@ export const blockText = strings(
     noCardYet: (who) => `还没有卡 · 交给 ${who}`,
     cardGone: "卡片已不在 Home",
     earlier: (n) => `更早的卡 ${n}`,
+    beforeReply: "写于你答复之前",
+    versions: (n) => `旧版本 ${n}`,
+    version: (version) => `第 ${version} 版`,
+    openVersion: (title, version) => `打开「${title}」第 ${version} 版`,
     answeredAsk: (title, reply) => `已答：${title} → ${reply}`,
     thread: (n) => `对话 ${n}`,
     you: "你",
@@ -378,7 +386,12 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
       {row.alsoFor.length > 0 && <p className="request-task-also">{t.alsoFor(row.alsoFor)}</p>}
       {asks.open.map(card)}
       {row.card ? (
-        <div className="request-task-card">{card(row.card)}</div>
+        <div className="request-task-card">
+          {/* Older than the user's newest reply on the task while it goes on: what it says may be past (§3.3). */}
+          {row.cardBeforeReply && <p className="request-task-before">{t.beforeReply}</p>}
+          {card(row.card)}
+          {row.card.revisions && row.card.revisions.length > 0 && <CardVersions section={row.card} onReport={common.onReport} />}
+        </div>
       ) : !over ? (
         <p className="request-task-none">{t.noCardYet(who)}</p>
       ) : (
@@ -411,6 +424,36 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
         </p>
       ))}
     </section>
+  );
+}
+
+/**
+ * A task's card's earlier versions (YN-212 C2), folded under it: each with who wrote it and when, opened on the
+ * report page at that version by the card's identity, as a report link opens.
+ */
+function CardVersions({ section, onReport }: { section: Section; onReport: OpenDeliveredReport }) {
+  const t = blockText(useLanguage());
+  const revisions = section.revisions ?? [];
+  return (
+    <details className="request-task-versions">
+      <summary>{t.versions(revisions.length)}</summary>
+      <ol>
+        {revisions.map((revision) => (
+          <li key={revision.version}>
+            <button
+              type="button"
+              className="talk-link"
+              aria-label={t.openVersion(section.title, revision.version)}
+              onClick={() => onReport({ key: section.key, version: revision.version, ...(typeof section.id === "number" ? { sectionId: section.id } : {}) })}
+            >
+              {t.version(revision.version)}
+            </button>
+            <span>{t.fact.by(revision.author.name)}</span>
+            <When at={revision.at} />
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
