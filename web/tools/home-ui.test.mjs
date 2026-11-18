@@ -706,8 +706,9 @@ test("replies go to the owner with the chosen option; a retry keeps its client i
     assert.equal(choice.choice, "plan-b");
     assert.equal(choice.text, "");
     assert.notEqual(choice.clientMessageId, first.body.clientMessageId);
-    // What is said to the project is a request to its front desk (YN-86 §4.2): no Agent to pick, no key.
-    const talk = p.panel("p-app").querySelector(".project-talk");
+    // What is said to the project is a request to its front desk (YN-86 §4.2): no Agent to pick, no key. Its
+    // composer is in Home's dock, under the page (YN-212).
+    const talk = p.doc;
     await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
     await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
     talk.querySelector(".project-talk-send").click();

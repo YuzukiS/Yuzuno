@@ -4,11 +4,19 @@
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  /* The second row is a Project's dock (YN-212, project-dock.css), none elsewhere. */
+  grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
 }
 .home-stage > * {
   grid-area: 1 / 1;
   min-height: 0;
+}
+.home-stage > .home-dock {
+  grid-area: 2 / 1;
+}
+/* Over Home and its dock alike. */
+.home-stage > .home-report {
+  grid-area: 1 / 1 / -1 / -1;
 }
 /* Kept laid out, so its scroll place is kept too, but neither seen nor reached. */
 .home-view.is-under-report {

@@ -5,11 +5,13 @@
  * they keep at least 4.5:1 on --paper, --home-surface and --home-soft in
  * every palette, light and dark (garden light is the tightest, about 4.9:1).
  * The plain accents are for dots, icons and borders only. */
-/* Home's colours, shared with a report over it and with Organize, which
-   opens outside Home's own element (T-18). */
+/* Home's colours, shared with a report over it, with Organize, which opens
+   outside Home's own element (T-18), and with a Project's dock under it
+   (YN-212). */
 .home-view,
 .home-report,
-.home-organize {
+.home-organize,
+.home-dock {
   --home-surface: var(--surface-raised, var(--paper));
   --home-soft: var(--surface-soft, var(--cream));
   --home-ink-2: var(--text-secondary, #5d6858);

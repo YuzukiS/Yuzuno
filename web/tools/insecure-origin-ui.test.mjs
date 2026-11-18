@@ -237,8 +237,9 @@ test("YN-36 over plain http, an option, a choice, a form and what is said to the
     p.card("scope").querySelector(".clarification footer .primary-button").click();
     await waitFor(() => replies(p).length === 3, () => `the form was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[2].body.form?.formId, "scope");
-    // What is said to the project goes to its front desk as a request (YN-86 §4.2).
-    const talk = p.doc.querySelector('[data-project-home="p-app"] .project-talk');
+    // What is said to the project goes to its front desk as a request (YN-86 §4.2), from the composer in
+    // Home's dock under the page (YN-212).
+    const talk = p.doc;
     await waitFor(() => !talk.querySelector(".home-composer[data-readonly]"), "the front desk is read");
     await type(p, talk.querySelector(".project-talk-field [data-composer-input]"), "Please tidy the notes");
     talk.querySelector(".project-talk-send").click();
