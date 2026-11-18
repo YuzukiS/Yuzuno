@@ -47,10 +47,20 @@ const TEAM_BESIDE = 1250;
  * finger. A request the user confirms goes to Done. One shown later comes in at the top of its group when it is newer
  * than every request shown so far, in the page's own order; older ones read from the pages before (Read older
  * requests) come after those shown, newest first (PR 1093 R1). The Project's own block keeps its group too.
+ *
+ * Nothing is held until the page has read both its sections and its requests (ready): before the requests, the
+ * Project's own block holds every card, a request's open Ask among them, so the groups it would show then are not
+ * the page's. A new visit holds them afresh, as it does the groups.
  */
-function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], project: ProjectBlock | null) {
+function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], project: ProjectBlock | null, ready: boolean) {
   const sizes = useContext(DeckSizes);
-  const order = useRef({ place: new Map<string, number>(), newest: 0 });
+  const visit = sizes?.visit ?? 0;
+  const order = useRef({ visit, place: new Map<string, number>(), newest: 0 });
+  if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0 };
+  if (!ready) {
+    const now = (group: BlockGroup) => blocks.filter((block) => block.group === group);
+    return { needs: now("needs"), doing: now("doing"), done: now("done"), project: project?.group ?? null };
+  }
   const now = [...blocks.map((block) => [block.key, block.group] as const), ...(project ? [[project.key, project.group] as const] : [])];
   const held = sizes ? sizes.groups(`${projectId}#requests`, now) : new Map(now);
   const groupOf = (block: RequestBlock): BlockGroup => {
@@ -171,7 +181,7 @@ export function ProjectHome({
   // Every section the requests' tasks may have: the leads', the team's, and History's (a card archived with its task).
   const all = useMemo(() => [...sections, ...(team ?? []), ...(history ?? [])], [sections, team, history]);
   const { blocks, project: projectBlock } = useMemo(() => pageBlocks(requests, all), [requests, all]);
-  const groups = useHeldBlocks(id, blocks, projectBlock);
+  const groups = useHeldBlocks(id, blocks, projectBlock, panel !== null && talkRequests !== null);
   const counts = blockCounts(blocks, projectBlock);
   // With no request on the page, the Project's own block is all of it: it starts open, as its cards were. A
   // block the user opened or closed, or a jump opened, stays as it was left.
