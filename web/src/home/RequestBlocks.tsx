@@ -1,4 +1,4 @@
-import { useContext, type ReactNode } from "react";
+import { useContext, useRef, type ReactNode } from "react";
 import { ChevronDown, CircleCheck, CircleDot, Hourglass, LoaderCircle, MessageSquare, PackageCheck, Reply, Send, TriangleAlert } from "lucide-react";
 import { strings, useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
@@ -6,12 +6,15 @@ import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
 import { requestDomId } from "./brief-layout";
+import { openTask } from "./CardResponsible";
 import { CardAgents } from "./card-responsible";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
 import { conversation, untitledHint } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
-import { DeliverableLine, type OpenDeliveredReport } from "./RequestCard";
+import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
+import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
+import { talkText } from "./talk-text";
 import type { BlockAction, BlockFact, BlockGroup, ProjectBlock, RequestBlock, TaskRow, Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
@@ -54,6 +57,8 @@ export const blockText = strings(
     joined: (task: string, title: string, home: number) => `Joined ${task} “${title}” · its card is under R-${home}`,
     show: "Show →",
     noCardYet: (who: string) => `No card yet · with ${who}`,
+    cardGone: "Its card is no longer on Home",
+    earlier: (n: number) => `Earlier ${n === 1 ? "card" : "cards"} ${n}`,
     answeredAsk: (title: string, reply: string) => `Answered: ${title} → ${reply}`,
     thread: (n: number) => `Conversation ${n}`,
     you: "You",
@@ -61,6 +66,7 @@ export const blockText = strings(
     projectSaid: "Project",
     line: { ask: (title: string) => `Asked: ${title}`, done: (title: string) => `Done: ${title}` },
     delivered: (title: string) => `What “${title}” delivered`,
+    olderRequests: "Read older requests",
   },
   {
     groups: { needs: "等你", doing: "进行中", done: "已完成" },
@@ -95,6 +101,8 @@ export const blockText = strings(
     joined: (task, title, home) => `并入 ${task}「${title}」· 卡片在 R-${home} 下`,
     show: "查看 →",
     noCardYet: (who) => `还没有卡 · 交给 ${who}`,
+    cardGone: "卡片已不在 Home",
+    earlier: (n) => `更早的卡 ${n}`,
     answeredAsk: (title, reply) => `已答：${title} → ${reply}`,
     thread: (n) => `对话 ${n}`,
     you: "你",
@@ -102,6 +110,7 @@ export const blockText = strings(
     projectSaid: "项目",
     line: { ask: (title) => `提问：${title}`, done: (title) => `完成：${title}` },
     delivered: (title) => `「${title}」交付的结果`,
+    olderRequests: "读更早的请求",
   },
 );
 
@@ -187,7 +196,7 @@ function FactLines({ fact }: { fact: BlockFact }) {
       meta = (
         <>
           {fact.stale && <><span className="request-block-stale">{t.fact.stale}</span> · </>}
-          {fact.author.startsWith(fact.task) ? "" : `${fact.task} · `}
+          {fact.author.startsWith(`${fact.task} `) ? "" : `${fact.task} · `}
           {t.fact.by(fact.author)} · <When at={fact.at} />
         </>
       );
@@ -217,6 +226,7 @@ export function RequestBlockView({
   onAction,
   onShowBlock,
   busy = false,
+  error,
   common,
 }: {
   block: RequestBlock;
@@ -228,6 +238,8 @@ export function RequestBlockView({
   onShowBlock: (n: number) => void;
   /** Its action is under way (a confirmation or a send again). */
   busy?: boolean;
+  /** Why its action failed last, in Core's words, until the next try. */
+  error?: string;
   common: BlockCommon;
 }) {
   const language = useLanguage();
@@ -242,6 +254,7 @@ export function RequestBlockView({
     <article
       className="request-block"
       id={requestDomId(request.id)}
+      data-block-key={block.key}
       data-request-block={request.n}
       data-group={block.group}
       data-fact={fact.kind}
@@ -273,13 +286,18 @@ export function RequestBlockView({
             {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
             {label}
           </button>
+          {error && (
+            <p className="inline-error request-block-error" role="alert">
+              {error}
+            </p>
+          )}
         </div>
       )}
       {block.delivered.length > 0 && (
         <ul className="request-block-delivered" aria-label={t.delivered(title)}>
           {block.delivered.flatMap((group) =>
             group.items.map((item, index) => (
-              <li key={`${group.task}:${index}`}>
+              <li key={`${group.task}:${index}`} data-task={group.task}>
                 <DeliverableLine
                   item={item}
                   task={group.task}
@@ -318,10 +336,18 @@ export function RequestBlockView({
 
 /** One task of a request: its open Asks, its one card (or whom it went to), and the Asks it had answered. */
 function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
-  const t = blockText(useLanguage());
+  const language = useLanguage();
+  const t = blockText(language);
+  const tt = talkText(language);
   const agents = useContext(CardAgents);
   const who = row.responsible ? agents.get(row.responsible.agentId)?.name || row.responsible.name : row.task.id;
   const asks = { open: row.asks.filter((a) => a.ask?.state === "open"), answered: row.asks.filter((a) => a.ask?.state !== "open") };
+  const over = row.task.archived || row.task.status === "done" || row.task.status === "cancelled";
+  const openIt = (
+    <button type="button" className="talk-link" aria-label={tt.openTaskLabel(row.task.id)} onClick={() => openTask(row.task.id)}>
+      {tt.openTask}
+    </button>
+  );
   const card = (section: Section) =>
     section.kind === "ask" ? (
       <SectionCard
@@ -353,8 +379,30 @@ function TaskRowView({ row, common }: { row: TaskRow; common: BlockCommon }) {
       {asks.open.map(card)}
       {row.card ? (
         <div className="request-task-card">{card(row.card)}</div>
-      ) : (
+      ) : !over ? (
         <p className="request-task-none">{t.noCardYet(who)}</p>
+      ) : (
+        // Ended, its card no longer kept: its task keeps what it did (as the request's card opened it, R1 56f63019).
+        !row.nothing && (
+          <p className="request-task-none">
+            <span>{t.cardGone}</span>
+            {openIt}
+          </p>
+        )
+      )}
+      {/* The task's other statuses and reports from before one task had one card (YN-212 §3.3), folded. */}
+      {row.earlier.length > 0 && (
+        <details className="request-task-earlier">
+          <summary>{t.earlier(row.earlier.length)}</summary>
+          {row.earlier.map((section) => card(section))}
+        </details>
+      )}
+      {/* Ended with nothing delivered: why, and its task, which keeps what it did (YN-208). */}
+      {row.nothing && (
+        <p className="request-deliverables-none">
+          <span>{tt[row.nothing === "cancelled" ? "cancelledNone" : row.nothing]}</span>
+          {openIt}
+        </p>
       )}
       {asks.answered.map((ask) => (
         <p key={ask.key} className="request-task-answered">
@@ -423,8 +471,12 @@ export function ProjectBlockView({ block, open, onToggle, common }: { block: Pro
   const language = useLanguage();
   const t = blockText(language);
   const all: Section[] = [...block.asks, ...block.sections];
+  // Opened, its cards keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
+  // deck-packing.ts), in a deck of the block's own width.
+  const grid = useRef<HTMLDivElement>(null);
+  useDeckPacking(grid, deckItems, deckCard);
   return (
-    <article className="request-block" data-project-block="" data-group={block.group} data-open={open ? "" : undefined} tabIndex={-1}>
+    <article className="request-block" data-block-key={block.key} data-project-block="" data-group={block.group} data-open={open ? "" : undefined} tabIndex={-1}>
       <header className="request-block-head">
         <span className="request-block-n">{t.project}</span>
         <button type="button" className="request-block-title" aria-expanded={open} onClick={onToggle}>
@@ -434,32 +486,35 @@ export function ProjectBlockView({ block, open, onToggle, common }: { block: Pro
       </header>
       {open ? (
         <div className="request-block-body project-block-cards">
-          {all.map((section) =>
-            section.kind === "ask" ? (
-              <SectionCard
-                key={section.key}
-                section={section}
-                projectId={common.projectId}
-                workspaceId={common.workspaceId}
-                agents={common.agents}
-                readOnly={common.readOnly}
-                onSeen={common.onSeen}
-                onChanged={common.onChanged}
-                notice={common.notice?.(section)}
-              />
-            ) : (
-              <SummaryCard
-                key={section.key}
-                section={section}
-                projectId={common.projectId}
-                workspaceId={common.workspaceId}
-                agents={common.agents}
-                readOnly={common.readOnly}
-                onSeen={common.onSeen}
-                notice={common.notice?.(section)}
-              />
-            ),
-          )}
+          <div ref={grid} className="home-brief">
+            {all.map((section) =>
+              section.kind === "ask" ? (
+                <SectionCard
+                  key={section.key}
+                  section={section}
+                  projectId={common.projectId}
+                  workspaceId={common.workspaceId}
+                  agents={common.agents}
+                  readOnly={common.readOnly}
+                  onSeen={common.onSeen}
+                  onChanged={common.onChanged}
+                  notice={common.notice?.(section)}
+                />
+              ) : (
+                <SummaryCard
+                  key={section.key}
+                  section={section}
+                  projectId={common.projectId}
+                  workspaceId={common.workspaceId}
+                  agents={common.agents}
+                  deck
+                  readOnly={common.readOnly}
+                  onSeen={common.onSeen}
+                  notice={common.notice?.(section)}
+                />
+              ),
+            )}
+          </div>
         </div>
       ) : (
         <ul className="project-block-lines">

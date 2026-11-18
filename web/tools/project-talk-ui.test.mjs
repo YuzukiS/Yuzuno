@@ -9,14 +9,14 @@ import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 
-// YN-86 S3b: "Talk to the project" on a Project's page. The requests on one
-// side (the project's titles, never the user's words), the conversation on
-// the other (the words, the project's short replies, follow-ups, Core's
-// lines), linked by selection; one switch shows either side or both, kept
-// per project on this device, two tabs where the page is narrow; what is
-// said goes to Core as a request or a follow-up, sent again as it was. And
-// the front desk chosen among the leads in a Project's settings. The real
-// components with a stand-in Core; synthetic data only.
+// YN-86 S3b, YN-212 W3: "Talk to the project" on a Project's page. It reads
+// the requests for the page's blocks, draws the conversation (the words,
+// the project's short replies, follow-ups, Core's lines) as the page's
+// Conversation view, runs the blocks' actions (follow up, confirm done,
+// send again) and keeps the composer; what is said goes to Core as a request
+// or a follow-up, sent again as it was. And the front desk chosen among the
+// leads in a Project's settings. The real components with a stand-in Core;
+// synthetic data only.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -34,8 +34,11 @@ import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-respons
 import {ProjectMembers} from ${JSON.stringify(path.join(root, "src/ProjectLeads.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.navigated=[];
-window.shownCards=[];
-window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onCard={(key)=>window.shownCards.push(key)} onNavigate={(target)=>window.navigated.push(target)} {...props}/></CardAgents.Provider>));
+window.shownRequests=[];
+window.chats=0;
+window.busy=null;
+window.read=null;
+window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onNavigate={(target)=>window.navigated.push(target)} onShowRequest={(n)=>window.shownRequests.push(n)} onShowChat={()=>window.chats++} onBusy={(busy)=>{window.busy={confirming:[...busy.confirming],resending:[...busy.resending],errors:[...busy.errors]};}} onRequests={(requests)=>{window.read=requests.map((r)=>r.n);}} {...props}/></CardAgents.Provider>));
 window.renderMembers=(props)=>flushSync(()=>root.render(<ProjectMembers {...props}/>));`,
   );
   const result = await build({
@@ -122,6 +125,7 @@ function mount({ width = 1440, lang = "en", storage = {}, front = { version: 1, 
   window.Range.prototype.getClientRects ||= () => [];
   window.Range.prototype.getBoundingClientRect ||= () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
   window.HTMLElement.prototype.scrollTo = function () {};
+  window.HTMLElement.prototype.scrollIntoView ||= function () {};
   // JSDOM lays nothing out: the window's width, as a media query reads it, says whether the two sides fit.
   window.matchMedia = (query) => {
     const most = query.match(/\(max-width: (\d+)px\)/);
@@ -163,341 +167,46 @@ function mount({ width = 1440, lang = "en", storage = {}, front = { version: 1, 
   };
   window.eval(bundle);
   const document = window.document;
-  const talk = () => document.querySelector(".project-talk");
-  const side = (name) => document.querySelector(`.project-talk-${name}`);
-  const tabs = () => [...document.querySelectorAll('.project-talk-tabs [role="tab"]')];
-  const tab = (label) => tabs().find((b) => b.textContent.trim().startsWith(label));
-  const request = (n) => document.querySelector(`.request-card[data-request="${n}"]`);
+  const talk = () => document.querySelector(".project-talk-page");
   const words = (n) => document.querySelector(`.project-talk-mine[data-words="${n}"]`);
   const button = (label, scope = document) =>
     [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
   const field = () => document.querySelector(".project-talk-field [data-composer-input]");
   const posts = () => calls.filter((c) => c.method !== "GET");
-  return { window, document, errors, calls, state, talk, side, tabs, tab, request, words, button, field, posts, close: () => window.close() };
+  return { window, document, errors, calls, state, talk, words, button, field, posts, close: () => window.close() };
 }
 
-async function talk(options) {
+async function talk(options, props = {}) {
   const page = mount(options);
-  page.window.renderTalk();
-  await until(() => page.request(3), "the requests are read");
+  page.window.renderTalk(props);
+  await until(() => page.window.read?.length, "the requests are read");
   await tick();
   return page;
 }
 
-test("wide, both sides show by default; a side chosen fills the width, the other inert, kept for the project", async (t) => {
-  const page = await talk();
+test("the requests are read for the page, and the conversation is drawn only as its Conversation view", async (t) => {
+  const page = await talk({}, { mode: "requests" });
   t.after(page.close);
-  assert.equal(page.talk().dataset.view, "both");
-  assert.deepEqual(page.tabs().map((b) => b.textContent.trim()), ["Requests 4", "Both", "Conversation"]);
-  assert.equal(page.tab("Both").getAttribute("aria-selected"), "true");
-  assert.ok(!page.side("requests").hasAttribute("inert") && !page.side("chat").hasAttribute("inert"), "both sides take part");
-  assert.ok(!page.side("chat").dataset.motion, "nothing moves as the page opens");
-
-  page.tab("Requests").click();
+  assert.deepEqual(plain(page.window.read), [4, 3, 2, 1], "every request read, for the blocks");
+  assert.ok(page.talk().hidden, "the Requests view draws no conversation");
+  assert.ok(page.document.querySelector(".project-talk-compose"), "the composer still");
+  page.window.renderTalk({ mode: "chat" });
   await tick();
-  assert.equal(page.talk().dataset.view, "requests");
-  assert.ok(page.side("chat").hasAttribute("inert"), "the closed side is inert");
-  assert.ok(!page.side("requests").hasAttribute("inert"));
-  assert.equal(page.side("chat").dataset.motion, "out", "the conversation leaves as its column closes");
-  assert.equal(page.window.localStorage.getItem("yuzuno.projectTalkView.ws.p1"), JSON.stringify("requests"), "kept on this device for p1");
-
-  page.tab("Conversation").click();
+  assert.ok(!page.talk().hidden);
+  // With a dock, the composer is there, not under the conversation.
+  const dock = page.document.createElement("div");
+  page.document.body.append(dock);
+  page.window.renderTalk({ mode: "chat", dock });
   await tick();
-  assert.equal(page.talk().dataset.view, "chat");
-  assert.ok(page.side("requests").hasAttribute("inert"));
-  assert.equal(page.side("chat").dataset.motion, "in", "the conversation comes in from its side");
-  assert.equal(page.side("requests").dataset.motion, "out");
-
-  // The keyboard moves along the tabs, as tabs do.
-  page.tab("Conversation").dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-  await tick();
-  assert.equal(page.talk().dataset.view, "both");
-  assert.equal(page.document.activeElement, page.tab("Both"));
-  assert.equal(page.side("requests").dataset.motion, "in");
-
-  // Another visit to the project shows what was chosen; another project shows both.
-  page.tab("Conversation").click();
-  await tick();
-  const again = await talk({ storage: { "yuzuno.projectTalkView.ws.p1": JSON.stringify("chat") } });
-  t.after(again.close);
-  assert.equal(again.talk().dataset.view, "chat");
-  const other = mount({ storage: { "yuzuno.projectTalkView.ws.p1": JSON.stringify("chat") } });
-  t.after(other.close);
-  other.window.renderTalk({ projectId: "p2" });
-  await until(() => other.talk(), "the other project's talk");
-  assert.equal(other.talk().dataset.view, "both");
+  assert.ok(dock.querySelector(".project-talk-compose.project-dock-form"));
+  assert.ok(!page.talk().querySelector(".project-talk-compose"));
   assert.deepEqual(page.errors, []);
-});
-
-test("narrow, two tabs and the requests first; a tab switches in place", async (t) => {
-  const page = await talk({ width: 600, storage: { "yuzuno.projectTalkView.ws.p1": JSON.stringify("both") } });
-  t.after(page.close);
-  assert.deepEqual(page.tabs().map((b) => b.textContent.trim()), ["Requests 4", "Conversation"]);
-  assert.equal(page.talk().dataset.view, "requests", "both, where they do not fit, is the requests");
-  assert.ok(page.side("chat").hasAttribute("inert"));
-  page.tab("Conversation").click();
-  await tick();
-  assert.equal(page.talk().dataset.view, "chat");
-  assert.equal(page.side("chat").dataset.motion, "switch");
-  assert.ok(!page.side("requests").dataset.motion, "the side going away just goes");
-  assert.deepEqual(page.errors, []);
-});
-
-test("the requests show the project's titles, states, cards and handoffs; never the user's words", async (t) => {
-  const page = await talk();
-  t.after(page.close);
-  const three = page.request(3);
-  assert.equal(three.querySelector(".request-card-title span").textContent, "Settings page layout");
-  assert.equal(three.querySelector(".request-card-state").textContent, "In progress");
-  assert.equal(three.querySelector(".request-card-count").textContent, "2 cards · 0/2 done");
-  const rows = [...three.querySelectorAll(".request-card-row")];
-  assert.deepEqual(rows.map((r) => r.querySelector(".request-card-row-title").textContent), ["Settings layout", "Casual copy"]);
-  assert.deepEqual(rows.map((r) => r.querySelector(".request-card-row-who").textContent), ["YN-91 · Design", "Dev Lead"]);
-  rows[0].click();
-  assert.deepEqual(plain(page.window.shownCards), ["yn-91"], "a card's row shows that card on the page");
-
-  const four = page.request(4);
-  assert.equal(four.querySelector(".request-card-title").dataset.untitled, "");
-  assert.equal(four.querySelector(".request-card-title span").textContent, "Waiting for a title · A long line of paste…");
-  assert.equal(four.querySelector(".request-card-state").textContent, "Waiting for the front desk");
-  assert.equal(four.querySelector(".request-card-wait").textContent, "The project is looking at it; no card yet.");
-
-  const two = page.request(2);
-  assert.equal(two.querySelector(".request-card-state").textContent, "Not confirmed delivered");
-  assert.ok(page.button("Send again", two), "it can be sent again");
-
-  // Done ones are folded apart; a joined request says where it went.
-  const fold = page.document.querySelector(".project-talk-done");
-  assert.equal(fold.querySelector("summary").textContent, "Done 1");
-  assert.equal(fold.open, false);
-  assert.ok(fold.contains(page.request(1)));
-  assert.equal(page.request(1).querySelector(".request-card-merged").textContent, "Joined “Export research”");
-  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress");
-
-  // The handoffs are folded until asked for: who did what, to whom, why below.
-  const trail = page.button("Handoffs 3", three);
-  assert.equal(trail.getAttribute("aria-expanded"), "false");
-  assert.ok(!three.querySelector(".routing-events"));
-  trail.click();
-  await tick();
-  const events = [...three.querySelectorAll(".routing-event")];
-  assert.deepEqual(events.map((e) => e.dataset.kind), ["card", "card", "note"]);
-  assert.equal(events[0].querySelector(".routing-event-text").textContent, "Project opened the card “Settings layout” → YN-91 · DesignA design with an end");
-  assert.equal(events[2].querySelector(".routing-event-text").textContent, "Project: OK, split into two cards");
-  page.button("Open card", events[0]).click();
-  assert.deepEqual(plain(page.window.shownCards), ["yn-91", "yn-91"]);
-  page.button("Handoffs 3", page.request(1)).click();
-  await tick();
-  assert.match(page.request(1).querySelector('.routing-event[data-kind="existing"]').textContent, /Project added this to the card “Export research” → YN-91 · Design/);
-  assert.match(page.request(1).querySelector('.routing-event[data-kind="done"]').textContent, /Every card ended/);
-  assert.equal(page.button("See archive", page.request(1))?.textContent, "See archive", "a card no longer live is in the archive");
-
-  // The user's words are nowhere in the requests.
-  const list = page.side("requests").textContent;
-  for (const said of ["Rework the settings page", "Make the backup faster", "Compare export formats"]) assert.ok(!list.includes(said), said);
-  assert.deepEqual(page.errors, []);
-});
-
-// YN-136: a question the front desk answers with no card. R-5 is answered: it waits for the user (YN-184),
-// its answer on the card, its handoff saying no card was opened, and no "Every card ended".
-const answered = (state = "answered") => {
-  // One time for the note and the answer it is about: the trail is sorted by
-  // time, and two `ago(2)` calls can land 1 ms apart, which puts the note
-  // first (main 6e9a3cfa, run 43648337865).
-  const at = ago(2);
-  return { id: "r5", n: 5, text: "Is the README done?", textBlocks: null, title: "README status",
-    createdAt: ago(3), frontAgentId: "d", messageId: "m5", delivery: "accepted", replies: [],
-    notes: [{ note: "Yes: YN-115 merged it this morning.", by: desk, at }],
-    routes: [{ kind: "answer", index: 0, request: 5, at, state: "done", why: "Only asks for progress", by: desk,
-      to: null, task: null, cardKey: null, sectionId: null }],
-    cards: [], state, progress: { cards: 0, ended: 0 }, lines: [] };
-};
-
-async function answeredTalk(options, state) {
-  const page = mount(options);
-  page.state.requests = [answered(state), ...page.state.requests];
-  page.window.renderTalk();
-  await until(() => page.request(5), "the requests are read");
-  await tick();
-  return page;
-}
-
-test("an answered request waits for the user, says its answer, and its handoff says no card was opened", async (t) => {
-  const page = await answeredTalk();
-  t.after(page.close);
-  const five = page.request(5);
-  assert.equal(five.querySelector(".request-card-state").textContent, "Answered · waiting for you");
-  assert.ok(page.button("Confirm done", five), "the user's to confirm");
-  assert.equal(five.querySelector(".request-card-answer").textContent, "Answer: Yes: YN-115 merged it this morning.");
-  assert.ok(!five.querySelector(".request-card-wait"), "not waiting for the front desk");
-  assert.ok(!five.querySelector(".request-card-count"), "no cards");
-  const fold = page.document.querySelector(".project-talk-done");
-  assert.equal(fold.querySelector("summary").textContent, "Done 1");
-  assert.ok(!fold.contains(five), "not done until the user confirms it");
-  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress · 1 waiting for you");
-  // A request still waiting says so as before.
-  assert.equal(page.request(4).querySelector(".request-card-wait").textContent, "The project is looking at it; no card yet.");
-
-  page.button("Handoffs 2", five).click();
-  await tick();
-  const events = [...five.querySelectorAll(".routing-event")];
-  assert.deepEqual(events.map((e) => e.dataset.kind), ["answer", "note"]);
-  assert.equal(events[0].querySelector(".routing-event-text").textContent, "Project answered here, no card: Only asks for progress");
-  assert.ok(!events[0].querySelector("small"), "its why is on its line, not again below");
-  assert.ok(!events[0].querySelector(".routing-event-link"), "no card to open");
-  assert.ok(!five.querySelector('.routing-event[data-kind="done"]'), "no Every card ended for an answer");
-  assert.deepEqual(page.errors, []);
-
-  // Confirmed, it is done: with the done ones, its answer still shown, no button.
-  const done = await answeredTalk({}, "done");
-  t.after(done.close);
-  const settled = done.request(5);
-  assert.equal(settled.querySelector(".request-card-state").textContent, "Done");
-  assert.ok(done.document.querySelector(".project-talk-done").contains(settled));
-  assert.equal(settled.querySelector(".request-card-answer").textContent, "Answer: Yes: YN-115 merged it this morning.");
-  assert.ok(!done.button("Confirm done", settled));
-  assert.deepEqual(done.errors, []);
-});
-
-test("an answered request in Chinese, and one reopened by a follow-up", async (t) => {
-  const zh = await answeredTalk({ lang: "zh" });
-  t.after(zh.close);
-  const five = zh.request(5);
-  assert.equal(five.querySelector(".request-card-state").textContent, "已回答 · 等你确认");
-  assert.ok(zh.button("确认完成", five));
-  assert.equal(five.querySelector(".request-card-answer").textContent, "回答：Yes: YN-115 merged it this morning.");
-  zh.button("转交记录 2", five).click();
-  await tick();
-  assert.equal(five.querySelector('.routing-event[data-kind="answer"] .routing-event-text').textContent, "项目 直接回答，没开卡：Only asks for progress");
-
-  const reopened = await answeredTalk({}, "waiting");
-  t.after(reopened.close);
-  const again = reopened.request(5);
-  assert.equal(again.querySelector(".request-card-state").textContent, "Waiting for the front desk");
-  assert.ok(!again.querySelector(".request-card-answer"), "no answer while it waits");
-  assert.ok(!reopened.document.querySelector(".project-talk-done").contains(again), "going on again");
-  assert.deepEqual([...zh.errors, ...reopened.errors], []);
-});
-
-// YN-184: a request whose cards all ended waits for the user: "Waiting for you" and Confirm done, out of
-// Done. Confirm done sends the page's Workspace once; Core's refusal shows on the request, nothing else is
-// sent, and once Core has it the request is done, with "You confirmed it done" in its handoffs. A read-only
-// page has no button.
-test("a request whose cards ended waits for the user's Confirm done, and only then is done", async (t) => {
-  const page = mount();
-  page.state.requests = page.state.requests.map((r) => (r.n === 1 ? { ...r, state: "ended" } : r));
-  page.state.refuse = "request_not_ready: R-1 still has a card going on. Nothing was confirmed.";
-  page.window.renderTalk();
-  await until(() => page.request(1), "the requests are read");
-  await tick();
-  t.after(page.close);
-  const one = () => page.request(1);
-  assert.equal(one().querySelector(".request-card-state").textContent, "Waiting for you");
-  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress · 1 waiting for you");
-  assert.ok(!page.document.querySelector(".project-talk-done"), "nothing done yet");
-  const confirm = page.button("Confirm “Export formats” is done", one());
-  assert.equal(confirm.textContent, "Confirm done");
-
-  confirm.click();
-  await until(() => one().querySelector(".request-card-error"), "Core's refusal is shown");
-  assert.equal(one().querySelector(".request-card-error").textContent, "Not confirmed: request_not_ready: R-1 still has a card going on. Nothing was confirmed.");
-  assert.equal(page.posts().length, 1);
-  assert.match(page.posts()[0].url, /\/api\/projects\/p1\/requests\/1\/confirm$/);
-  assert.deepEqual(plain(page.posts()[0].body), { workspaceId: "ws" });
-
-  page.state.refuse = "";
-  page.button("Confirm done", one()).click();
-  await until(() => page.document.querySelector(".project-talk-done")?.contains(one()), "done once Core has it");
-  assert.equal(page.posts().length, 2, "one more, nothing else");
-  assert.equal(one().querySelector(".request-card-state").textContent, "Done");
-  assert.ok(!one().querySelector(".request-card-error"), "the refusal is gone");
-  assert.ok(!page.button("Confirm done", one()));
-  assert.equal(page.document.querySelector(".project-talk-requests-title span").textContent, "3 in progress");
-  page.button("Handoffs 4", one()).click();
-  await tick();
-  const kinds = [...one().querySelectorAll(".routing-event")].map((e) => e.dataset.kind);
-  assert.deepEqual(kinds.slice(-2), ["done", "confirmed"]);
-  assert.match(one().querySelector('.routing-event[data-kind="confirmed"]').textContent, /You confirmed it done/);
-
-  const quiet = mount();
-  quiet.state.requests = quiet.state.requests.map((r) => (r.n === 1 ? { ...r, state: "ended" } : r));
-  quiet.window.renderTalk({ readOnly: true });
-  await until(() => quiet.request(1), "the requests are read");
-  t.after(quiet.close);
-  assert.equal(quiet.request(1).querySelector(".request-card-state").textContent, "Waiting for you");
-  assert.ok(!quiet.button("Confirm done", quiet.request(1)), "read-only: no button");
-  assert.deepEqual([...page.errors, ...quiet.errors], []);
-});
-
-// YN-184: a request with one card shows it on its own line: who answers for it, its state and Open →, no row of
-// its own and no "In progress" beside it; several cards keep their rows. A card whose task ended says how it ended
-// (Cancelled, not its released executor's state), and a done request with its one card done says Done once.
-test("a request with one card shows it on its own line; several keep their rows, each ended one saying how it ended", async (t) => {
-  const settings = { sectionId: 21, key: "yn-91", title: "Settings layout", live: true, task: { id: "YN-91", status: "doing", archived: false },
-    responsible: { agentId: "x", name: "YN-91 · Design", kind: "executor", state: "running" } };
-  const dropped = { sectionId: 23, key: "yn-93", title: "Dark mode research", live: true, task: { id: "YN-93", status: "cancelled", archived: false },
-    responsible: null };
-  const one = (n, card, state, title) => ({ id: `r${n}`, n, text: `Request ${n}`, textBlocks: null, title, createdAt: ago(n), frontAgentId: "d",
-    messageId: `m${n}`, delivery: "accepted", replies: [], notes: [], cards: [card], state, progress: { cards: 1, ended: state === "doing" ? 0 : 1 },
-    lines: [], routes: [{ kind: "card", index: 0, request: n, at: ago(n), state: "done", why: "One card", by: desk, to: null, task: card.task.id,
-      cardKey: card.key, sectionId: card.sectionId, title: card.title }] });
-  const mountWith = async (options) => {
-    const page = mount(options);
-    page.state.requests = [
-      one(6, settings, "doing", "Settings page, again"),
-      one(7, dropped, "ended", "Dark mode"),
-      ...page.state.requests.map((r) => (r.n === 3 ? { ...r, cards: [r.cards[0], { ...r.cards[1], task: { ...r.cards[1].task, status: "cancelled" } }] } : r)),
-    ];
-    page.window.renderTalk();
-    await until(() => page.request(7), "the requests are read");
-    await tick();
-    return page;
-  };
-  const page = await mountWith();
-  t.after(page.close);
-
-  const six = page.request(6);
-  assert.ok(!six.querySelector(".request-card-cards"), "no row of its own");
-  assert.ok(!six.querySelector(".request-card-state"), "its card's state says it is going on");
-  const line = six.querySelector(".request-card-one");
-  assert.equal(line.getAttribute("aria-label"), "Show the card “Settings layout” on this page");
-  assert.equal(line.querySelector(".request-card-one-who").textContent, "YN-91 · Design");
-  assert.ok(line.querySelector(".request-card-one-state").textContent, "who answers for it, with its state");
-  assert.equal(line.querySelector(".request-card-row-go").textContent, "Open →");
-  line.click();
-  assert.deepEqual(plain(page.window.shownCards), ["yn-91"], "the line shows that card on the page");
-
-  const seven = page.request(7);
-  assert.equal(seven.querySelector(".request-card-state").textContent, "Waiting for you");
-  assert.ok(page.button("Confirm done", seven));
-  assert.equal(seven.querySelector(".request-card-one-state").textContent, "Cancelled", "how its task ended");
-
-  const three = page.request(3);
-  const rows = [...three.querySelectorAll(".request-card-row")];
-  assert.equal(rows.length, 2, "several cards keep their rows");
-  assert.equal(three.querySelector(".request-card-count").textContent, "2 cards · 0/2 done");
-  assert.equal(rows[1].querySelector(".request-card-row-state").textContent, "Cancelled");
-  assert.notEqual(rows[0].querySelector(".request-card-row-state").textContent, "Cancelled");
-
-  // R-1 is done, joined to a card whose task is done: Done once, the card it joined named, no row.
-  const done = page.request(1);
-  assert.equal(done.querySelector(".request-card-state").textContent, "Done");
-  assert.equal(done.querySelector(".request-card-merged").textContent, "Joined “Export research”");
-  assert.ok(done.querySelector(".request-card-one") && !done.querySelector(".request-card-one-state"), "Done is said once");
-  assert.ok(!done.querySelector(".request-card-cards"));
-
-  const zh = await mountWith({ lang: "zh" });
-  t.after(zh.close);
-  assert.equal(zh.request(7).querySelector(".request-card-one-state").textContent, "已取消");
-  assert.equal(zh.request(6).querySelector(".request-card-one").getAttribute("aria-label"), "在本页显示卡片「Settings layout」");
-  assert.equal(zh.request(6).querySelector(".request-card-row-go").textContent, "打开 →");
-  assert.deepEqual([...page.errors, ...zh.errors], []);
 });
 
 test("the conversation has each request's words once, the project's short replies, follow-ups and Core's lines", async (t) => {
   const page = await talk();
   t.after(page.close);
-  const chat = page.side("chat");
+  const chat = page.talk();
   // The words, in a bubble; nowhere else on the page.
   assert.equal(page.words(3).querySelector(".project-talk-bubble").textContent, "Rework the settings page and make the copy casual");
   assert.equal(page.document.body.textContent.split("Rework the settings page").length - 1, 1);
@@ -534,28 +243,54 @@ test("the conversation has each request's words once, the project's short replie
   assert.deepEqual(page.errors, []);
 });
 
-test("selection links the sides: a request's title shows its words, a reply's Request → its request", async (t) => {
+test("a request's links in the conversation show its block; a card's See words shows its words here", async (t) => {
   const page = await talk();
   t.after(page.close);
-  const note = [...page.side("chat").querySelectorAll(".project-talk-project")].find((li) => li.textContent.includes("OK, split"));
+  const note = [...page.talk().querySelectorAll(".project-talk-project")].find((li) => li.textContent.includes("OK, split"));
   page.button("Request →", note).click();
+  page.button("Answer", page.talk()).click();
+  assert.deepEqual(plain(page.window.shownRequests), [3, 3]);
+  // See words: the page is asked for the conversation, the earlier part opened, the words focused.
+  page.window.renderTalk({ reveal: { n: 1, seq: 1 } });
+  await until(() => page.words(1), "the earlier conversation is open");
   await tick();
-  assert.equal(page.request(3).dataset.selected, "", "the request is selected");
-  assert.equal(page.document.activeElement, page.request(3));
-  // With only the conversation shown, Request → goes over to the requests.
-  page.tab("Conversation").click();
-  await tick();
-  page.button("Answer", page.side("chat")).click();
-  await tick();
-  assert.equal(page.talk().dataset.view, "requests");
-  assert.equal(page.request(3).dataset.selected, "");
-  // A title shows its words: over to the conversation, the earlier part opened when they are in it.
-  page.request(1).querySelector(".request-card-title").click();
-  await tick();
-  assert.equal(page.talk().dataset.view, "chat");
-  assert.ok(page.words(1), "the earlier conversation is open");
+  assert.equal(page.window.chats, 1);
   assert.equal(page.document.activeElement, page.words(1));
-  assert.equal(page.request(1).dataset.selected, "");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a block's actions run here: Confirm done asks Core and says why it refused, Follow up quotes, Send again goes as kept", async (t) => {
+  const page = mount();
+  page.state.requests = page.state.requests.map((r) => (r.n === 1 ? { ...r, state: "ended" } : r));
+  page.state.refuse = "request_not_ready: R-1 still has a card going on. Nothing was confirmed.";
+  page.window.renderTalk({ mode: "requests" });
+  await until(() => page.window.read?.length, "the requests are read");
+  t.after(page.close);
+
+  page.window.renderTalk({ mode: "requests", command: { kind: "confirm", n: 1, seq: 1 } });
+  await until(() => page.window.busy?.errors.length, "Core's refusal is told to the page");
+  assert.deepEqual(plain(page.window.busy.errors), [[1, "request_not_ready: R-1 still has a card going on. Nothing was confirmed."]]);
+  assert.equal(page.posts().length, 1);
+  assert.match(page.posts()[0].url, /\/api\/projects\/p1\/requests\/1\/confirm$/);
+  assert.deepEqual(plain(page.posts()[0].body), { workspaceId: "ws" });
+  // The same command again does nothing; a new one tries again.
+  page.window.renderTalk({ mode: "requests", command: { kind: "confirm", n: 1, seq: 1 } });
+  await tick();
+  assert.equal(page.posts().length, 1);
+  page.state.refuse = "";
+  page.window.renderTalk({ mode: "requests", command: { kind: "confirm", n: 1, seq: 2 } });
+  await until(() => page.posts().length === 2 && !page.window.busy.errors.length && !page.window.busy.confirming.length, "done, the refusal gone");
+
+  // Follow up: the request quoted in the composer, which takes the focus; the view stays.
+  page.window.renderTalk({ mode: "requests", command: { kind: "follow", n: 3, seq: 3 } });
+  await until(() => page.document.querySelector(".project-talk-quoting"), "quoted");
+  assert.equal(page.document.querySelector(".project-talk-quoting span").textContent, "Follow-up to “Settings page layout”");
+  assert.ok(page.talk().hidden, "still the requests");
+
+  // Send again: R-2's words as Core keeps them.
+  page.window.renderTalk({ mode: "requests", command: { kind: "resend", n: 2, seq: 4 } });
+  await until(() => page.posts().length === 3, "R-2 is sent again");
+  assert.deepEqual(plain(page.posts()[2].body), { workspaceId: "ws", text: "Make the backup faster please", clientMessageId: "m2" });
   assert.deepEqual(page.errors, []);
 });
 
@@ -581,10 +316,9 @@ test("what is said goes as a request or a follow-up; unconfirmed words go again 
   await until(() => !page.document.querySelector(".project-talk-compose [role=alert]") && !composerText(page.field()), "sent and emptied");
   assert.equal(page.window.localStorage.getItem("yuzuno.project-talk-outbox.v1"), null, "Core keeps it now");
 
-  // A follow-up: quoted, sent to that request.
-  page.button("Follow up “Settings page layout”").click();
-  await tick();
-  assert.equal(page.document.querySelector(".project-talk-quoting span").textContent, "Follow-up to “Settings page layout”");
+  // A follow-up: quoted, sent to that request; Esc would let it go, × too.
+  page.window.renderTalk({ command: { kind: "follow", n: 3, seq: 1 } });
+  await until(() => page.document.querySelector(".project-talk-quoting"), "quoted");
   setComposerText(page.field(), "And the phone");
   await tick();
   send().click();
@@ -593,8 +327,8 @@ test("what is said goes as a request or a follow-up; unconfirmed words go again 
   assert.equal(page.posts()[2].body.text, "And the phone");
   await until(() => !page.document.querySelector(".project-talk-quoting"), "no longer quoting");
 
-  // R-2 did not reach the front desk: sent again as Core keeps it.
-  page.button("Send again", page.request(2)).click();
+  // R-2 did not reach the front desk: sent again from its words, as Core keeps it.
+  page.button("Send again", page.words(2)).click();
   await until(() => page.posts().length === 4, "R-2 is sent again");
   assert.deepEqual(plain(page.posts()[3].body), { workspaceId: "ws", text: "Make the backup faster please", clientMessageId: "m2" });
   assert.deepEqual(page.errors, []);
@@ -615,12 +349,12 @@ test("past the limit, nothing is sent and the words are kept", async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
-test("with several leads and no front desk, it says so and links to the settings", async (t) => {
+test("with several leads and no front desk, it says so under the field and links to the settings", async (t) => {
   const page = await talk({ front: { version: 2, agentId: null, effectiveAgentId: null } });
   t.after(page.close);
   page.window.renderTalk({ leadCount: 2 });
   await tick();
-  assert.match(page.document.querySelector(".project-talk-desk").textContent, /^Choose a front desk first/);
+  assert.match(page.document.querySelector(".project-talk-compose .project-talk-hint[data-missing]").textContent, /^Choose a front desk first/);
   assert.equal(page.document.querySelector(".project-talk-compose .home-composer").dataset.readonly, "");
   page.button("Choose in settings").click();
   assert.deepEqual(plain(page.window.navigated), [{ kind: "projectSettings", projectId: "p1" }]);
@@ -630,14 +364,9 @@ test("with several leads and no front desk, it says so and links to the settings
 test("in Chinese", async (t) => {
   const page = await talk({ lang: "zh" });
   t.after(page.close);
-  assert.deepEqual(page.tabs().map((b) => b.textContent.trim()), ["需求单 4", "两者", "对话"]);
-  assert.equal(page.document.querySelector(".project-talk-head h2").textContent, "对项目说");
-  assert.equal(page.document.querySelector(".project-talk-desk").textContent, "项目由 Dev Lead 兼任前台");
-  assert.equal(page.request(3).querySelector(".request-card-state").textContent, "进行中");
-  assert.equal(page.request(3).querySelector(".request-card-count").textContent, "2 张卡 · 已完成 0/2");
-  assert.equal(page.request(4).querySelector(".request-card-title span").textContent, "等项目起标题 · A long line of paste…");
   assert.equal(page.document.querySelector('[data-reply="3:1"] .project-talk-receipt').textContent, "已转给 YN-91 · Design、Dev Lead");
   assert.ok(page.button("更早的对话 3 条"));
+  assert.ok(page.button("请求 →"));
   assert.equal(page.document.querySelector(".project-talk-hint").textContent, "项目（前台 Dev Lead）会转给合适的负责人或新开卡片，你的原话原样带过去");
   assert.deepEqual(page.errors, []);
 });

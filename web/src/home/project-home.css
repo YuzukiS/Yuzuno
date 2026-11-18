@@ -40,89 +40,41 @@
   }
 }
 
-/* The three groups: what needs you, what is in progress, what is done. */
-.project-deck {
-  display: grid;
-  gap: 22px;
-  min-width: 0;
+/* Requests or Conversation (YN-212 §3.1), at the page's top, under its jumps. */
+.project-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin: 14px 0 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
 }
-.project-deck-group {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.project-deck-title {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 2px 0;
-  font-size: calc(12px + var(--font-adjust, 3px));
-  font-weight: 600;
-}
-.project-deck-count {
-  font-size: calc(9px + var(--font-adjust, 3px));
-  font-weight: 500;
+.project-view-tabs button {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
   color: var(--home-ink-2);
-}
-.project-deck-note {
-  margin-left: auto;
-  font-size: calc(9px + var(--font-adjust, 3px));
-  font-weight: 400;
-  color: var(--home-ink-2);
-}
-/* A group's cards keep the deck's own grid (home.css .home-brief), without
-   the room the panel's first deck needs under its widgets. */
-.project-deck .home-brief {
-  padding-top: 6px;
-}
-.project-deck .home-brief-empty {
-  padding-top: 2px;
-}
-.project-deck-later > summary {
-  width: fit-content;
-  margin-top: 2px;
-  padding: 5px 10px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
-  color: var(--home-ink-2);
-  font-size: calc(9px + var(--font-adjust, 3px));
-  font-weight: 600;
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
   cursor: pointer;
 }
-.project-deck-later > summary:focus-visible,
-.project-deck-done > summary:focus-visible {
+.project-view-tabs button[aria-selected="true"] {
+  background: var(--home-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.project-view-tabs button:focus-visible {
   outline: 2px solid var(--home-focus);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
-.project-deck-later > .home-brief {
-  margin-top: 6px;
-}
-/* Done: closed at each visit; a jump to a card in it opens it (card-fold.tsx). */
-.project-deck-done > summary {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 0;
-  list-style: none;
-  font-size: calc(12px + var(--font-adjust, 3px));
-  font-weight: 600;
-  cursor: pointer;
-}
-.project-deck-done > summary::-webkit-details-marker {
+/* The Conversation view is the conversation alone, next to the composer; the team stays with the requests. */
+.project-home-body[hidden] {
   display: none;
 }
-.project-deck-done > summary::before {
-  content: "›";
-  display: inline-block;
-  color: var(--home-ink-2);
-  transition: transform var(--motion-small) var(--ease-standard);
-}
-.project-deck-done[open] > summary::before {
-  transform: rotate(90deg);
-}
-.project-deck-done .home-history {
-  margin-top: 10px;
+.project-home .request-blocks .home-brief-empty {
+  padding-top: 2px;
 }
 /* One executor matters on a Project's page: a line in Needs you, not a card. */
 .project-deck-executor {

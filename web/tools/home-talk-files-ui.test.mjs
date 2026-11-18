@@ -30,7 +30,7 @@ import {createRoot} from 'react-dom/client';
 import {ProjectTalk} from ${JSON.stringify(path.join(root, "src/home/ProjectTalk.tsx"))};
 import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-responsible.ts"))};
 const root=createRoot(document.getElementById('root'));
-window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onCard={()=>{}} onNavigate={()=>{}} {...props}/></CardAgents.Provider>));`,
+window.renderTalk=(props={})=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><ProjectTalk projectId="p1" projectName="Atlas" workspaceId="ws" readOnly={false} revision={0} leadCount={1} onNavigate={()=>{}} {...props}/></CardAgents.Provider>));`,
   );
   const result = await build({
     root,
@@ -253,7 +253,8 @@ test("a request and a follow-up send their files, only when there are any; the c
   assert.equal("files" in page.posts(/\/requests$/)[1].body, false, "no files, no field: an older Core takes it as before");
   await until(() => !composerText(page.field()) && !page.send().querySelector(".spin"), "the second is sent and emptied");
 
-  page.button("Follow up “Title 2”").click();
+  // A request's block asks "Talk to the project" to follow it up (YN-212).
+  page.window.renderTalk({ command: { kind: "follow", n: 2, seq: 1 } });
   await tick();
   setComposerText(page.field(), "One more");
   page.paste([page.newFile("more.txt", "more", "text/plain")]);

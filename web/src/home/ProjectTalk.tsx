@@ -1,8 +1,7 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
-import { useMessageLinks } from "../deep-link";
 import { ImageAttachments } from "../ImageAttachments";
 import { FileAttachments } from "../FileAttachments";
 import { useLanguage } from "../i18n";
@@ -21,22 +20,7 @@ import type { HomeTarget } from "./home-navigation";
 import { scrollWithinHome } from "./HomeJumps";
 import { draftStore } from "./reply-drafts";
 import { ReplyLength, replyTooLong } from "./reply-limit";
-import {
-  conversation,
-  earlierBefore,
-  itemKey,
-  replyDelivered,
-  awaitingConfirm,
-  requestGroups,
-  savedView,
-  saveView,
-  shownView,
-  sideOpen,
-  TALK_NARROW,
-  untitledHint,
-  type TalkItem,
-  type TalkView,
-} from "./project-talk";
+import { conversation, earlierBefore, itemKey, replyDelivered, untitledHint, type TalkItem } from "./project-talk";
 import {
   delivered,
   forgetWords,
@@ -51,17 +35,11 @@ import {
   type ProjectRequest,
   type RequestPage,
 } from "./project-talk-api";
-import { RequestCard, type OpenDeliveredReport } from "./RequestCard";
-import type { ShowCard } from "./RoutingEvents";
 import { talkText } from "./talk-text";
 import "./project-talk.css";
 
 const reducedMotion = () =>
   typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-type Side = "requests" | "chat";
-/** How a side's content comes or goes (§4.1): in or out beside the other, or the narrow tabs' switch. */
-type Motion = "in" | "out" | "switch" | null;
 
 /** What the user is writing to the project, kept in this browser until sent, as a card's reply is (CardReply.tsx);
  * with the images attached (YN-134), by their place in the Project's images, and the files (YN-145). */
@@ -93,63 +71,23 @@ function trimmed(words: ReplyWords): { text: string; textBlocks?: TextBlock[] } 
   return { text, ...(blocks.length ? { textBlocks: blocks } : {}) };
 }
 
-/** Scrolls `scroller` so `target` is in its middle, without moving the page. */
-function scrollInside(scroller: HTMLElement | null, target: HTMLElement, smooth: boolean) {
-  if (!scroller) return;
-  const outer = scroller.getBoundingClientRect();
-  const inner = target.getBoundingClientRect();
-  const top = Math.max(0, scroller.scrollTop + inner.top - outer.top - (outer.height - inner.height) / 2);
-  if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
-  else scroller.scrollTop = top;
-}
+/** What a request's block asks of "Talk to the project" (YN-212 §3.2), which keeps the draft and Core's answers:
+ * follow it up in the composer, confirm it done, or send its words again; another `seq` is another. */
+export type TalkCommand = { kind: "follow" | "confirm" | "resend"; n: number; seq: number };
 
-/** Whether the window is too narrow for the two sides side by side (§4.1, as the approved preview v8 measures it). */
-function useNarrowWindow() {
-  const query = `(max-width: ${TALK_NARROW}px)`;
-  const read = () => typeof window.matchMedia === "function" && window.matchMedia(query).matches;
-  const [narrow, setNarrow] = useState(read);
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const list = window.matchMedia(query);
-    const changed = () => setNarrow(list.matches);
-    changed();
-    list.addEventListener?.("change", changed);
-    return () => list.removeEventListener?.("change", changed);
-    // The query is a constant.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return narrow;
-}
+/** What the page's blocks show of the actions under way here: a confirmation, a send again, and their errors. */
+export type TalkBusy = { confirming: ReadonlySet<number>; resending: ReadonlySet<number>; errors: ReadonlyMap<number, string> };
 
-/** Runs `then` once `grid` has finished moving its columns: at once when it moves none (reduced motion, no change). */
-function afterColumns(grid: HTMLElement | null, then: () => void) {
-  if (!grid || reducedMotion()) return then();
-  const seconds = Number.parseFloat(getComputedStyle(grid).transitionDuration) || 0;
-  if (!seconds) return then();
-  let done = false;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    grid.removeEventListener("transitionend", ended);
-    clearTimeout(timer);
-    then();
-  };
-  const ended = (event: TransitionEvent) => {
-    if (event.target === grid) finish();
-  };
-  grid.addEventListener("transitionend", ended);
-  // The transition's own length and a frame: a transition that never ends (none ran) does not keep it waiting.
-  const timer = setTimeout(finish, seconds * 1000 + 50);
-}
+/** Older requests than those read, for the page's blocks: whether there are, a read under way, and how to read them. */
+export type TalkOlder = { hasMore: boolean; reading: boolean; read: () => void };
 
 /**
- * "Talk to the project" on a Project's page (YN-86 §4.1, v8): the requests
- * on one side, the conversation on the other, linked by selection; one
- * switch shows either side across the whole width, or both. What the user
- * says goes to Core as a request, or as a follow-up to the request quoted,
- * and from there to the project's front desk, shown as "the project".
- * Columns open and close as the task window's list and detail do
- * (collaboration.css), and not at all with reduced motion.
+ * "Talk to the project" on a Project's page (YN-86 §4.1; YN-212 §3–4): it
+ * reads the project's requests and its front desk for the page, keeps the
+ * composer in Home's dock, where what the user says goes to Core as a
+ * request or a follow-up to the request quoted, and, as the page's
+ * Conversation view, draws the conversation in time order, the newest last
+ * next to the composer. The page's request blocks run their actions here.
  */
 export function ProjectTalk({
   projectId,
@@ -158,11 +96,17 @@ export function ProjectTalk({
   readOnly,
   revision,
   leadCount,
-  onCard,
   onNavigate,
   reveal = null,
   onRequests,
+  onOlder,
+  onBusy,
   dock,
+  mode = "chat",
+  command = null,
+  onShowRequest,
+  onShowChat,
+  onFocusTarget,
 }: {
   projectId: string;
   projectName: string;
@@ -172,27 +116,33 @@ export function ProjectTalk({
   revision: number;
   /** The project's leads, to say why no front desk takes what is said. */
   leadCount: number;
-  /** Shows one of the project's cards on the page, or its task where the card is no longer there. */
-  onCard: ShowCard;
   onNavigate: (target: HomeTarget) => void;
-  /** A card's "See words" (§4.5): show request `n`'s words and select it; another `seq` is another ask. */
+  /** A card's "See words" (§4.5): show request `n`'s words in the conversation; another `seq` is another ask. */
   reveal?: { n: number; seq: number } | null;
-  /** The requests read, for the page's cards (talk-link.ts). */
+  /** The requests read, for the page's blocks and cards (talk-link.ts). */
   onRequests?: (requests: readonly ProjectRequest[]) => void;
-  /** Home's dock under its scroller (YN-212 §4.1): the composer stays there on screen, whichever side shows. null
+  onOlder?: (older: TalkOlder) => void;
+  onBusy?: (busy: TalkBusy) => void;
+  /** Home's dock under its scroller (YN-212 §4.1): the composer stays there on screen, whichever view shows. null
    * while it is not laid out yet (nothing is drawn); without one the composer stays under the conversation. */
   dock?: HTMLElement | null;
+  /** What the page shows (YN-212 §3.1): its requests' blocks, or this conversation. */
+  mode?: "requests" | "chat";
+  /** A block's action, run here. */
+  command?: TalkCommand | null;
+  /** A request's link in the conversation: its block. */
+  onShowRequest?: (n: number) => void;
+  /** "See words" asks the page for its conversation. */
+  onShowChat?: () => void;
+  /** The composer took focus following up request `n`: the page keeps that request in view above the dock (§4.4). */
+  onFocusTarget?: (n: number) => void;
 }) {
   const language = useLanguage();
   const t = talkText(language);
   const time = useTimeDisplay();
   const agents = useContext(CardAgents);
   const root = useRef<HTMLElement>(null);
-  const grid = useRef<HTMLDivElement>(null);
-  const requestsScroll = useRef<HTMLDivElement>(null);
-  const chatScroll = useRef<HTMLDivElement>(null);
   const composer = useRef<HomeComposerHandle>(null);
-  const requestRefs = useRef(new Map<number, HTMLDivElement>());
   const wordRefs = useRef(new Map<number, HTMLLIElement>());
 
   // Core's facts: the front desk, the newest requests and any older ones read since.
@@ -237,118 +187,56 @@ export function ProjectTalk({
     }
   }
 
-  // Which side shows: this device's choice for the project, one side at a time where the two do not fit.
-  const [view, setView] = useState<TalkView>(() => savedView(workspaceId, projectId));
-  const narrow = useNarrowWindow();
-  const shown = shownView(view, narrow);
-  // A side opening or closing moves its content as it goes; the window crossing the narrow line does not.
-  const [motion, setMotion] = useState<Record<Side, Motion>>({ requests: null, chat: null });
-  // A side that closes keeps its content at the width it had as it began to: its column narrows over it, clipping
-  // it, so its text is never seen squeezed or re-wrapped (§4.1; Dev Lead 2, seq 12212). Measured before the change.
-  const requestsSide = useRef<HTMLDivElement>(null);
-  const chatSide = useRef<HTMLDivElement>(null);
-  const widths = useRef<Record<Side, number>>({ requests: 0, chat: 0 });
-  const [held, setHeld] = useState<Record<Side, number | null>>({ requests: null, chat: null });
-  const changeView = (next: TalkView) => {
-    widths.current = {
-      requests: requestsSide.current?.getBoundingClientRect().width ?? 0,
-      chat: chatSide.current?.getBoundingClientRect().width ?? 0,
-    };
-    setView(next);
-  };
-  const last = useRef({ shown, narrow });
-  useLayoutEffect(() => {
-    const was = last.current;
-    last.current = { shown, narrow };
-    if (was.shown === shown && was.narrow === narrow) return;
-    if (was.narrow !== narrow) {
-      setMotion({ requests: null, chat: null });
-      setHeld({ requests: null, chat: null });
-      return;
-    }
-    const next = (side: Side, before: Motion): Motion => {
-      const open = sideOpen(shown, side);
-      if (sideOpen(was.shown, side) === open) return before;
-      if (narrow) return open ? "switch" : null;
-      return open ? "in" : "out";
-    };
-    const now = { requests: next("requests", motion.requests), chat: next("chat", motion.chat) };
-    setMotion(now);
-    setHeld({
-      requests: now.requests === "out" ? widths.current.requests || null : null,
-      chat: now.chat === "out" ? widths.current.chat || null : null,
-    });
-    // `motion` is read as this render has it; the effect runs only when what is shown changes.
+  useEffect(() => onOlder?.({ hasMore, reading: readingOlder, read: () => void readOlder() }),
+    // readOlder reads the requests as they are when called.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shown, narrow]);
-  const heldStyle = (side: Side) => (held[side] ? ({ "--talk-held": `${held[side]}px` } as CSSProperties) : undefined);
-  const choose = (next: TalkView) => {
-    changeView(next);
-    saveView(workspaceId, projectId, next);
-  };
-  const tabs: TalkView[] = narrow ? ["requests", "chat"] : ["requests", "both", "chat"];
-  const tabLabel = (tab: TalkView) =>
-    tab === "requests" ? t.tabRequests(requests.length) : tab === "both" ? t.tabBoth : t.tabChat;
-  const tabRefs = useRef(new Map<TalkView, HTMLButtonElement>());
-  function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
-    const at = tabs.indexOf(shown);
-    const to =
-      event.key === "ArrowRight" ? tabs[(at + 1) % tabs.length]
-        : event.key === "ArrowLeft" ? tabs[(at - 1 + tabs.length) % tabs.length]
-          : event.key === "Home" ? tabs[0]
-            : event.key === "End" ? tabs[tabs.length - 1]
-              : null;
-    if (!to) return;
-    event.preventDefault();
-    choose(to);
-    tabRefs.current.get(to)?.focus();
-  }
-
-  // Selection links the two sides: a request on one, its words on the other (§4.1).
-  const [selected, setSelected] = useState<number | null>(null);
-  const [trails, setTrails] = useState<ReadonlySet<number>>(new Set());
-  const [doneOpen, setDoneOpen] = useState(false);
+    [hasMore, readingOlder, requests, onOlder]);
   const [showEarlier, setShowEarlier] = useState(false);
-  /** Where to scroll once drawn; `instant` while the page itself scrolls smoothly (a browser runs one smooth scroll at a time). */
-  const pending = useRef<{ side: Side; n: number; moved: boolean; instant?: boolean }[]>([]);
-  // Asked for with the changes that draw them, so the scroll below is measured once they are drawn: a card's "See
-  // words" asks from inside an effect, where a scroll read at once would measure the side before it opens (YN-195).
-  const [scrolls, askScroll] = useReducer((n: number) => n + 1, 0);
   const items = useMemo(() => conversation(requests), [requests]);
   const cut = useMemo(() => earlierBefore(requests), [requests]);
   const earlier = items.filter((item) => item.at < cut);
-  const groups = useMemo(() => requestGroups(requests), [requests]);
   const byN = useMemo(() => new Map(requests.map((r) => [r.n, r])), [requests]);
-  /** Selects a request in the requests side, from the conversation. */
-  function showRequest(n: number) {
-    setSelected(n);
-    if (groups.done.some((r) => r.n === n)) setDoneOpen(true);
-    const moved = !sideOpen(shown, "requests");
-    if (moved) changeView("requests");
-    pending.current = [{ side: "requests", n, moved }];
-    askScroll();
-  }
-  /** Shows the user's own words of a request in the conversation, from its title. */
-  function showWords(n: number) {
-    setSelected(n);
-    const words = items.find((item) => item.kind === "mine" && item.request.n === n);
-    if (words && words.at < cut) setShowEarlier(true);
-    const moved = !sideOpen(shown, "chat");
-    if (moved) changeView("chat");
-    pending.current = [{ side: "chat", n, moved }];
-    askScroll();
-  }
-  /** A card's "See words": the talk brought into view, the request selected with its handoffs open, its words shown. */
-  function revealRequest(n: number) {
-    scrollWithinHome(root.current!, "start", !reducedMotion());
-    setTrails((was) => new Set(was).add(n));
-    if (groups.done.some((r) => r.n === n)) setDoneOpen(true);
-    showWords(n);
-    if (sideOpen(shown, "requests")) pending.current.push({ side: "requests", n, moved: false });
-    pending.current = pending.current.map((want) => ({ ...want, instant: true }));
-  }
-  // A card asked for a request not read yet: older pages are read until it is there, or there are none. A read that
-  // fails ends this ask, its error shown; the next "See words" asks again (#924 R1 7db7e3a9).
+  // Once read: the page waits for them to know which block holds a card it is asked to show. A read that fails
+  // leaves it none to show (its error is under the field).
+  useEffect(() => {
+    if (page) onRequests?.(requests);
+    else if (loadError) onRequests?.([]);
+  }, [page, loadError, requests, onRequests]);
+
+  // The conversation is the page (YN-212 §3.1): Home's scroller holds it, the newest last next to the dock. It opens
+  // at its newest, goes there again after the user's own message, and stays there while the user is there as the
+  // keyboard opens or the composer grows (§4.4); scrolled up, it stays where the user is.
+  const scroller = () => root.current?.closest<HTMLElement>(".home-view") ?? null;
+  const toBottom = useRef(true);
+  useLayoutEffect(() => {
+    if (mode === "chat") toBottom.current = true;
+  }, [mode]);
+  useLayoutEffect(() => {
+    if (mode !== "chat" || !page || !toBottom.current) return;
+    toBottom.current = false;
+    const view = scroller();
+    if (view) view.scrollTop = view.scrollHeight;
+  }, [mode, page, items]);
+  useEffect(() => {
+    const view = scroller();
+    if (mode !== "chat" || !view || typeof ResizeObserver === "undefined") return;
+    let atEnd = view.scrollHeight - view.scrollTop - view.clientHeight < 24;
+    const scrolled = () => (atEnd = view.scrollHeight - view.scrollTop - view.clientHeight < 24);
+    view.addEventListener("scroll", scrolled, { passive: true });
+    const observer = new ResizeObserver(() => {
+      if (atEnd) view.scrollTop = view.scrollHeight;
+    });
+    observer.observe(view);
+    if (root.current) observer.observe(root.current);
+    return () => {
+      view.removeEventListener("scroll", scrolled);
+      observer.disconnect();
+    };
+  }, [mode]);
+
+  // A card's "See words": the conversation shown, request n's words in it, read from older pages until they are
+  // there. A read that fails ends this ask, its error shown; the next "See words" asks again (#924 R1 7db7e3a9).
+  const [wanted, setWanted] = useState<number | null>(null);
   const revealed = useRef(0);
   useEffect(() => {
     if (!reveal || revealed.current === reveal.seq || !page) return;
@@ -358,37 +246,25 @@ export function ProjectTalk({
       return;
     }
     revealed.current = reveal.seq;
-    if (byN.has(reveal.n)) revealRequest(reveal.n);
-    // The page is drawn by the time this runs; the request's place is read then.
+    if (!byN.has(reveal.n)) return;
+    const words = items.find((item) => item.kind === "mine" && item.request.n === reveal.n);
+    if (words && words.at < cut) setShowEarlier(true);
+    toBottom.current = false;
+    setWanted(reveal.n);
+    onShowChat?.();
+    // The page is drawn by the time this runs; the words' place is read once shown.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal, byN, hasMore, readingOlder, page]);
-  useEffect(() => onRequests?.(requests), [requests, onRequests]);
   useEffect(() => {
-    const wants = pending.current;
-    if (!wants.length) return;
-    pending.current = [];
-    // A side that opens is scrolled once its column has: its text reflows as it widens.
-    afterColumns(wants.some((want) => want.moved) ? grid.current : null, () => {
-      const smooth = !reducedMotion();
-      for (const [index, want] of wants.entries()) {
-        const target = want.side === "requests" ? requestRefs.current.get(want.n) : wordRefs.current.get(want.n);
-        if (!target) continue;
-        scrollInside(want.side === "requests" ? requestsScroll.current : chatScroll.current, target, smooth && !want.instant);
-        // The first is where the focus goes and the highlight shows: the words, when both are asked for.
-        if (index > 0) continue;
-        target.focus({ preventScroll: true });
-        settleWhenLanded(target, "data-home-highlight", smooth, "animation");
-      }
-    });
-  }, [scrolls]);
-  // The conversation opens at its newest, and goes there again after the user's own message.
-  const toBottom = useRef(true);
-  useLayoutEffect(() => {
-    if (!page || !toBottom.current) return;
-    toBottom.current = false;
-    const scroller = chatScroll.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, [page]);
+    if (wanted === null || mode !== "chat") return;
+    const target = wordRefs.current.get(wanted);
+    setWanted(null);
+    if (!target) return;
+    const smooth = !reducedMotion();
+    scrollWithinHome(target, "center", smooth);
+    target.focus({ preventScroll: true });
+    settleWhenLanded(target, "data-home-highlight", smooth, "animation");
+  }, [wanted, mode, showEarlier]);
 
   // What the user writes: one draft per project, a follow-up when it quotes a request.
   const draftSlot = talkSlot(workspaceId, projectId);
@@ -455,31 +331,8 @@ export function ProjectTalk({
       setBusy(false);
     }
   }
-  // Following up request n, the composer focused: once a phone's keyboard is up (about 320 ms), the request stays in
-  // view above the dock (YN-212 §4.4), its card where the requests show, else its words in the conversation.
-  const keepTimer = useRef(0);
-  useEffect(() => () => window.clearTimeout(keepTimer.current), []);
-  function keepQuotedInView(n: number) {
-    if (!dock) return;
-    window.clearTimeout(keepTimer.current);
-    keepTimer.current = window.setTimeout(() => {
-      const card = sideOpen(shown, "requests") ? requestRefs.current.get(n) : undefined;
-      const said = card ? undefined : sideOpen(shown, "chat") ? wordRefs.current.get(n) : undefined;
-      const target = card ?? said;
-      const side = card ? requestsScroll.current : chatScroll.current;
-      // Within its side only when it is out of the side's view, as "nearest" goes.
-      if (target && side) {
-        const inner = target.getBoundingClientRect();
-        const outer = side.getBoundingClientRect();
-        if (inner.top < outer.top || inner.bottom > outer.bottom) scrollInside(side, target, false);
-      }
-      const shownNow = target ?? root.current;
-      if (shownNow) scrollWithinHome(shownNow, "nearest", !reducedMotion());
-    }, 320);
-  }
   function followUp(n: number) {
     write({ quote: n });
-    if (!sideOpen(shown, "chat")) changeView("chat");
     requestAnimationFrame(() => composer.current?.focusEnd());
   }
   // A request or follow-up Core keeps that did not reach its Agent: sent again as it was.
@@ -524,6 +377,25 @@ export function ProjectTalk({
       setReads((r) => r + 1);
     }
   }
+
+  useEffect(() => {
+    const numbers = new Set([...resending].filter((id) => id.startsWith("r:")).map((id) => Number(id.slice(2))));
+    onBusy?.({ confirming, resending: numbers, errors: confirmErrors });
+  }, [confirming, resending, confirmErrors, onBusy]);
+  // A block's action (YN-212 §3.2), once for each `seq`.
+  const ran = useRef(0);
+  useEffect(() => {
+    if (!command || ran.current === command.seq) return;
+    ran.current = command.seq;
+    if (command.kind === "follow") followUp(command.n);
+    else if (command.kind === "confirm") void confirm(command.n);
+    else {
+      const request = byN.get(command.n);
+      if (request) void resend(`r:${command.n}`, request);
+    }
+    // Run when a new command comes; the draft and the requests are read as they are then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command]);
 
   function titleOrNumber(n: number) {
     const request = byN.get(n);
@@ -612,9 +484,8 @@ export function ProjectTalk({
               <button
                 type="button"
                 className="project-talk-chip"
-                data-on={selected === n ? "" : undefined}
                 aria-label={t.toRequestLabel(titleOf(request))}
-                onClick={() => showRequest(n)}
+                onClick={() => onShowRequest?.(n)}
               >
                 {t.toRequest}
               </button>
@@ -654,7 +525,7 @@ export function ProjectTalk({
             </span>
             <span className="project-talk-line-text">{text}</span>
             {(!ask || line.state === "open") && (
-              <button type="button" className="talk-link" onClick={() => showRequest(n)}>
+              <button type="button" className="talk-link" onClick={() => onShowRequest?.(n)}>
                 {ask ? t.goAnswer : t.seeResult}
               </button>
             )}
@@ -675,39 +546,6 @@ export function ProjectTalk({
       </Tip>
     );
   }
-  // A report a card's task delivered (YN-208): opened over Home, as a report link is, at the version named.
-  const links = useMessageLinks();
-  const openDelivered: OpenDeliveredReport = (link) => links?.openReport({ workspaceId, projectId, ...link });
-  const card = (request: ProjectRequest) => (
-    <li key={request.id}>
-      <RequestCard
-        ref={(element) => {
-          if (element) requestRefs.current.set(request.n, element);
-          else requestRefs.current.delete(request.n);
-        }}
-        request={request}
-        selected={selected === request.n}
-        trailOpen={trails.has(request.n)}
-        readOnly={readOnly}
-        resending={resending.has(`r:${request.n}`)}
-        confirming={confirming.has(request.n)}
-        confirmError={confirmErrors.get(request.n) ?? ""}
-        onConfirm={() => void confirm(request.n)}
-        onTitle={() => showWords(request.n)}
-        onFollowUp={() => followUp(request.n)}
-        onTrail={() =>
-          setTrails((was) => {
-            const next = new Set(was);
-            if (!next.delete(request.n)) next.add(request.n);
-            return next;
-          })
-        }
-        onResend={() => void resend(`r:${request.n}`, request)}
-        onCard={onCard}
-        onReport={openDelivered}
-      />
-    </li>
-  );
   // The composer (YN-212 §4): in Home's dock when there is one, under the conversation otherwise.
   const form = (
     <form
@@ -717,7 +555,7 @@ export function ProjectTalk({
         event.preventDefault();
         void send();
       }}
-      onFocus={() => quote && keepQuotedInView(quote.n)}
+      onFocus={() => quote && onFocusTarget?.(quote.n)}
     >
       {quote && (
         <p className="project-talk-quoting">
@@ -755,8 +593,8 @@ export function ProjectTalk({
       )}
       {deskId && !quote ? (
         <p className="project-talk-hint">{t.hint(deskName)}</p>
-      ) : dock && desk && !deskId ? (
-        // Why the field takes nothing, where it is: the page's header says it too, far above the dock.
+      ) : desk && !deskId ? (
+        // Why the field takes nothing, where it is.
         <p className="project-talk-hint" data-missing="">
           {leadCount > 0 ? t.noDesk : t.noLead}{" "}
           {!readOnly && (
@@ -768,120 +606,32 @@ export function ProjectTalk({
       ) : null}
     </form>
   );
-  const open = { requests: sideOpen(shown, "requests"), chat: sideOpen(shown, "chat") };
-  const listId = `project-talk-requests-${projectId}`;
-  const chatId = `project-talk-chat-${projectId}`;
   return (
-    <section
-      ref={root}
-      className="project-talk"
-      aria-labelledby={`project-talk-title-${projectId}`}
-      data-view={shown}
-      data-narrow={narrow ? "" : undefined}
-    >
-      <header className="project-talk-head">
-        <h2 id={`project-talk-title-${projectId}`}>{t.title}</h2>
-        {deskId ? (
-          <span className="project-talk-desk">{t.deskNote(deskName)}</span>
-        ) : desk ? (
-          <span className="project-talk-desk" data-missing="">
-            {leadCount > 0 ? t.noDesk : t.noLead}{" "}
-            {!readOnly && (
-              <button type="button" className="talk-link" onClick={() => onNavigate({ kind: "projectSettings", projectId })}>
-                {t.chooseDesk}
-              </button>
-            )}
-          </span>
-        ) : null}
-        <div className="project-talk-tabs" role="tablist" aria-label={t.views}>
-          {tabs.map((tab) => (
-            <button
-              key={tab}
-              ref={(element) => {
-                if (element) tabRefs.current.set(tab, element);
-                else tabRefs.current.delete(tab);
-              }}
-              type="button"
-              role="tab"
-              data-tab={tab}
-              aria-selected={shown === tab}
-              aria-controls={tab === "requests" ? listId : tab === "chat" ? chatId : `${listId} ${chatId}`}
-              tabIndex={shown === tab ? 0 : -1}
-              onKeyDown={onTabKey}
-              onClick={() => choose(tab)}
-            >
-              {tabLabel(tab)}
-            </button>
-          ))}
-        </div>
-      </header>
-      <div className="project-talk-columns" ref={grid}>
-        <div
-          id={listId}
-          className="project-talk-side project-talk-requests"
-          ref={requestsSide}
-          style={heldStyle("requests")}
-          role="tabpanel"
-          aria-label={t.requests}
-          inert={!open.requests}
-          data-open={open.requests ? "" : undefined}
-          data-motion={motion.requests ?? undefined}
-        >
-          <div className="project-talk-scroll" ref={requestsScroll}>
-            <h3 className="project-talk-requests-title">
-              {t.requests}{" "}
-              <span>
-                {t.going(groups.open.length - groups.open.filter(awaitingConfirm).length)}
-                {groups.open.some(awaitingConfirm) ? t.awaiting(groups.open.filter(awaitingConfirm).length) : ""}
-              </span>
-            </h3>
-            {!page && !loadError && <p className="home-note">{t.reading}</p>}
-            {page && !requests.length && <p className="home-note">{t.noRequests}</p>}
-            {groups.open.length > 0 && <ol className="project-talk-list">{groups.open.map(card)}</ol>}
-            {groups.done.length > 0 && (
-              <details className="project-talk-done" open={doneOpen} onToggle={(event) => setDoneOpen(event.currentTarget.open)}>
-                <summary>{t.done(groups.done.length)}</summary>
-                <ol className="project-talk-list">{groups.done.map(card)}</ol>
-              </details>
-            )}
-            {/* Older requests, done ones with what they delivered (YN-208), read from here as from the conversation. */}
-            {hasMore && (
-              <button type="button" className="project-talk-earlier" disabled={readingOlder} onClick={() => void readOlder()}>
-                {readingOlder && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
-                {t.loadEarlier}
-              </button>
-            )}
-          </div>
-        </div>
-        <div
-          id={chatId}
-          className="project-talk-side project-talk-chat"
-          ref={chatSide}
-          style={heldStyle("chat")}
-          role="tabpanel"
-          aria-label={t.tabChat}
-          inert={!open.chat}
-          data-open={open.chat ? "" : undefined}
-          data-motion={motion.chat ?? undefined}
-        >
-          <div className="project-talk-scroll" ref={chatScroll}>
-            {earlier.length > 0 && !showEarlier && (
-              <button type="button" className="project-talk-earlier" onClick={() => setShowEarlier(true)}>
-                {t.earlier(earlier.length)}
-              </button>
-            )}
-            {hasMore && (showEarlier || !earlier.length) && (
-              <button type="button" className="project-talk-earlier" disabled={readingOlder} onClick={() => void readOlder()}>
-                {readingOlder && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
-                {t.loadEarlier}
-              </button>
-            )}
-            <ol className="project-talk-thread">{(showEarlier ? items : items.filter((entry) => entry.at >= cut)).map(item)}</ol>
-          </div>
-          {dock === undefined && form}
-        </div>
-      </div>
+    <>
+      <section
+        ref={root}
+        className="project-talk project-talk-page"
+        id={`project-talk-chat-${projectId}`}
+        aria-label={t.tabChat}
+        hidden={mode !== "chat"}
+      >
+        {!page && !loadError && <p className="home-note">{t.reading}</p>}
+        {page && !requests.length && <p className="home-note">{t.noRequests}</p>}
+        {earlier.length > 0 && !showEarlier && (
+          <button type="button" className="project-talk-earlier" onClick={() => setShowEarlier(true)}>
+            {t.earlier(earlier.length)}
+          </button>
+        )}
+        {hasMore && (showEarlier || !earlier.length) && (
+          <button type="button" className="project-talk-earlier" disabled={readingOlder} onClick={() => void readOlder()}>
+            {readingOlder && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
+            {t.loadEarlier}
+          </button>
+        )}
+        <ol className="project-talk-thread">{(showEarlier ? items : items.filter((entry) => entry.at >= cut)).map(item)}</ol>
+        {dock === undefined && form}
+      </section>
       {dock && createPortal(form, dock)}
-    </section>
+    </>
   );
 }

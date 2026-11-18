@@ -8,6 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { tipOf } from "./tip-dom.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-86 S2b: a card bound to a task says at its foot who answers for it, in
 // the rail's words; Reply goes to them by default, Open session opens their
@@ -120,6 +121,19 @@ function homeData() {
   };
 }
 
+// YN-212: a Project's page reads by request. R-1 went to YN-7, which goes on; R-2 to YN-5, done and confirmed.
+const desk = { agentId: "a", name: "Mori" };
+const routedTo = (sectionId, key, title, task, responsible) => ({ sectionId, key, title, live: true,
+  task: { id: task.id, status: task.status, archived: false }, responsible });
+const pageRequests = () => [
+  { id: "r2", n: 2, text: "Design the page", textBlocks: null, title: "Design the page", createdAt: ago(700), frontAgentId: "a", messageId: "m2",
+    delivery: "accepted", replies: [], notes: [{ note: "A design.", by: desk, at: ago(699) }], routes: [],
+    cards: [routedTo(ids.late, "late", "Design notes", designTask, null)], state: "done", confirmedAt: ago(50), progress: { cards: 1, ended: 1 }, lines: [] },
+  { id: "r1", n: 1, text: "Build the page", textBlocks: null, title: "Build the page", createdAt: ago(100), frontAgentId: "a", messageId: "m1",
+    delivery: "accepted", replies: [], notes: [{ note: "Building it.", by: desk, at: ago(99) }], routes: [],
+    cards: [routedTo(ids.spec, "spec", "Page spec", buildTask, builder)], state: "doing", progress: { cards: 1, ended: 0 }, lines: [] },
+];
+
 function mount({ language } = {}) {
   const errors = [];
   const requests = [];
@@ -142,17 +156,17 @@ function mount({ language } = {}) {
     requests.push(request);
     let answer = { repositories: [], links: [] };
     if (request.url === "/api/home") answer = homeData();
+    else if (method === "GET" && /\/requests(\?|$)/.test(request.url)) answer = { requests: pageRequests(), hasMore: false };
     else if (request.url.endsWith("/brief/reply"))
       answer = { input: { ...request.body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t2", error: null };
     return { ok: true, status: 200, json: async () => structuredClone(answer), text: async () => JSON.stringify(answer) };
   };
   window.eval(bundle);
   const document = window.document;
-  const card = (key) => document.querySelector(`.project-home [data-section-key="${key}"]`);
+  const card = (key) => (unfoldBlocks(document), document.querySelector(`.project-home [data-section-key="${key}"]`));
   const strip = (key) => card(key)?.querySelector(".home-card-responsible") ?? null;
-  const group = (name) => document.querySelector(`[aria-labelledby="home-project-p1-${name}"]`);
   const words = (element) => element.textContent.replace(/\s+/g, " ").trim();
-  return { window, document, errors, requests, opened, card, strip, group, words, close: () => window.close() };
+  return { window, document, errors, requests, opened, card, strip, words, close: () => window.close() };
 }
 
 async function openPage(options) {
@@ -233,18 +247,19 @@ test("Reply on a bound card and an Ask on it go to whoever answers for the card 
   assert.deepEqual(p.errors, []);
 });
 
-test("a card whose task is done is in Done: a report not read yet with its tag, an archived card with who did it and their session, nothing to reassign (YN-86 §3.4)", async (t) => {
+// YN-212: a card is in its request's block, the block in its group; a card of no request is the Project's own block's.
+test("a card whose task is done is in its request's block in Done: a report not read yet with its tag, an archived card with who did it and their session, nothing to reassign (YN-86 §3.4)", async (t) => {
   const p = await openPage();
   t.after(p.close);
-  // A read report whose task goes on stays in progress; a read report of no task is done, as before.
-  assert.ok(p.group("doing").contains(p.card("spec")), "bound, its task going on: in progress though read");
-  assert.ok(p.group("needs").contains(p.card("question")));
-  const done = p.document.querySelector(".project-deck-done");
-  for (const key of ["plain", "late", "design"]) assert.ok(done.contains(p.card(key)), `${key} is in Done`);
-  // Three cards there: the archived one among them, not in the 30-day list again.
-  assert.match(done.querySelector("summary").textContent, /^Done · 3 cards · latest .* · 30-day history 1$/);
-  done.querySelector("summary").click();
-  await until(() => done.open, "Done opens");
+  const block = (n) => p.document.querySelector(`[data-request-block="${n}"]`);
+  assert.ok(block(1).contains(p.card("spec")) && block(1).contains(p.card("question")), "R-1's task: its card and its Ask");
+  assert.equal(block(1).closest(".request-group").dataset.group, "needs", "its Ask waits for the user");
+  const done = p.document.querySelector(".request-done");
+  for (const key of ["late", "design"]) assert.ok(block(2).contains(p.card(key)) && done.contains(p.card(key)), `${key} is in Done, under R-2`);
+  assert.ok(p.card("plain").closest("[data-project-block]"), "a card of no request: the Project's own block");
+  // The 30-day list keeps what no block shows: not the archived card again.
+  done.open = true;
+  await tick();
   const listed = [...done.querySelectorAll(".home-history li summary")].map((s) => s.textContent);
   assert.equal(listed.length, 1);
   assert.match(listed[0], /Last week/);
@@ -282,6 +297,6 @@ test("the responsible line and Done's archived cards in Chinese (YN-86 S2b)", as
   assert.equal(p.card("late").querySelector(".home-task-ended").textContent, "任务已完成");
   assert.equal(p.card("design").querySelector(".home-task-ended").textContent, "任务完成，已归档");
   assert.equal(p.strip("design").querySelector(".home-card-responsible-state").textContent, "完成 · 已归档");
-  assert.match(p.document.querySelector(".project-deck-done summary").textContent, /^已完成/);
+  assert.match(p.document.querySelector(".request-done summary").textContent, /^已完成/);
   assert.deepEqual(p.errors, []);
 });

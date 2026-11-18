@@ -9,6 +9,7 @@ import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { hoverTip, readTip } from "./tip-dom.mjs";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
 // real Core, Agents or GitHub.
@@ -273,7 +274,7 @@ async function choose(p, select, value) {
   select.dispatchEvent(new p.w.Event("change", { bubbles: true }));
   await pause();
 }
-const card = (p, projectId, key) => p.doc.getElementById(`home-section-${projectId}-${key}`);
+const card = (p, projectId, key) => (unfoldBlocks(p.doc), p.doc.getElementById(`home-section-${projectId}-${key}`));
 /** A Project's page, from its glance on the whole of Home (YN-86): where its cards are. */
 async function openProject(p, id) {
   if (p.panel(id)) return p.panel(id);
@@ -347,10 +348,10 @@ test("Home replaces Catch up: what needs you answered in place, then each projec
     const app = await openProject(p, "p-app");
     assert.match(app.querySelector(".home-agent-counts").textContent, /1 working.*1 idle.*0 waiting.*0 errors/);
     assert.match(app.textContent, /Mori ended a turn without updating the Brief/);
-    // A sub-topic sits under its parent, labelled with its own author.
+    // A sub-topic is a card of the Project's own block (YN-212: no request has it), labelled with its own author.
     const sub = card(p, "p-app", "notes/review");
-    assert.ok(sub.closest(".home-topic[data-topic=notes] .home-subs"), "notes/review is merged under notes");
-    assert.match(sub.querySelector(".home-owner").textContent, /by Hana/);
+    assert.ok(sub.closest("[data-project-block]"), "notes/review is in the Project's block");
+    assert.match(sub.querySelector(".home-owner").textContent, /Hana/);
     // A stale status is greyed and says how old its data is.
     await openProject(p, "p-res");
     assert.ok(card(p, "p-res", "metrics").classList.contains("is-stale"));
@@ -1180,7 +1181,8 @@ test("Reorder moves a project's glance and saves the whole order", async () => {
   }
 });
 
-test("non-editor content stays in closed team details and does not affect Seen all or Ask jumps", async () => {
+// YN-212: the team's cards are no longer in a fold of their own; a card no request has is the Project's own block's.
+test("non-editor content is in the Project's block and does not affect Seen all or Ask jumps", async () => {
   const home = homeFixture();
   const app = home.projects.find(panel => panel.project.id === 'p-app');
   app.brief.teamSections = [section('hidden-parent', 'status', 'Earlier worker progress', 3, owner('b', 'Hana'))];
@@ -1194,24 +1196,18 @@ test("non-editor content stays in closed team details and does not affect Seen a
     assert.ok(card(p, 'p-app', 'hidden-parent/question').closest('.home-needs-you'));
     assert.ok(!card(p, 'p-app', 'hidden-parent'));
     const page = await openProject(p, 'p-app');
-    const details = page.querySelector('.project-team-written');
-    assert.equal(details.open, false);
-    assert.ok(card(p, 'p-app', 'hidden-parent').closest('.project-team-written'));
-    assert.ok(!card(p, 'p-app', 'hidden-parent/question').closest('.project-team-written'));
+    assert.equal(page.querySelector('.project-team-written'), null, 'no team fold');
+    assert.ok(card(p, 'p-app', 'hidden-parent').closest('[data-project-block]'));
     // The page's Asks jump goes to it, the second Ask waiting, without opening the team's cards.
     const asks = page.querySelector('.home-jumps [data-jump="asks"]');
     asks.click();
     await waitFor(() => card(p, 'p-app', 'release').hasAttribute('data-home-highlight'), 'the first Ask');
     asks.click();
     await waitFor(() => card(p, 'p-app', 'hidden-parent/question').hasAttribute('data-home-highlight'), 'Ask under hidden parent is reachable');
-    assert.equal(details.open, false);
     assert.equal(p.posts(/brief\/seen$/).length, 0, 'source filtering and navigation do not mark Seen');
     p.button('Seen all', page).click();
     await waitFor(() => p.posts(/brief\/seen$/).length === 1, 'Seen all posted');
     assert.ok(!p.posts(/brief\/seen$/)[0].body.sections.some(section => section.key === 'hidden-parent'));
-    details.querySelector('summary').click();
-    assert.equal(details.open, true);
-    assert.equal(p.posts(/brief\/seen$/).length, 1, 'opening team details adds no Seen write');
   } finally { p.close(); }
 });
 
@@ -1564,18 +1560,15 @@ test("a section Core repaired is marked on its card, and its page says what Core
   }
 });
 
-test("a sub-topic without its topic's section stands as its own card; several get a readable heading (T-173)", async () => {
+// YN-212: a Project's page has no topics' headings or sub-cards any more; each card no request has is one of the
+// Project's own block, under its own title (T-173: never a bare key).
+test("a sub-topic without its topic's section is a card of its own in the Project's block, under no bare key (T-173)", async () => {
   const p = await mount({ open: "p-docs", home: readingFixture() });
   try {
     await waitFor(() => card(p, "p-docs", "ops/backup"), "the Docs cards are drawn");
-    const alone = p.panel("p-docs").querySelector('[data-topic="release-core12"]');
-    assert.ok(!alone.querySelector(".home-topic-name"), "no bare key over a single card");
-    assert.ok(!alone.querySelector(".home-subs"), "not drawn as a sub-card");
-    assert.ok(alone.contains(card(p, "p-docs", "release-core12/notes")));
-    const ops = p.panel("p-docs").querySelector('[data-topic="ops"]');
-    assert.equal(ops.querySelector(".home-topic-name").textContent, "Ops");
-    assert.deepEqual(await hoverTip(p.w, ops.querySelector(".home-topic-name")), ["ops"], "the key stays reachable");
-    assert.equal(ops.querySelectorAll(".home-subs .home-section").length, 2);
+    const block = p.panel("p-docs").querySelector("[data-project-block]");
+    for (const key of ["release-core12/notes", "ops/backup"]) assert.ok(block.contains(card(p, "p-docs", key)), key);
+    assert.equal(block.querySelector(".home-topic-name, .home-subs"), null, "no topic heading, no sub-cards");
   } finally {
     p.close();
   }
@@ -3289,62 +3282,6 @@ function deckFixture() {
   ];
   return home;
 }
-const deckKeys = (p) => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
-
-test("YN-3 a project's page stands its cards in the deck's order within each group: open Asks then those put off; current status, reports, the Asks answered under their heading; status out of date in Done, closed (YN-86 §2.2)", async () => {
-  for (const [language, heading, done] of [
-    ["en", "Replied, waiting · 1", /^Done · 1 card · latest /],
-    ["zh-Hans", "已回复，等处理 · 1", /^已完成 · 1 张 · 最近 /],
-  ]) {
-    const p = await mount({ open: "p-app", home: deckFixture(), storage: { "yuzuno.language": JSON.stringify({ language }) } });
-    try {
-      await waitFor(() => card(p, "p-app", "eval"), `the deck is drawn (${language})`);
-      assert.deepEqual(deckKeys(p), ["release", "later", "train", "notes", "eval", "tokenizer", "progress"], `the deck's order (${language})`);
-      const later = p.panel("p-app").querySelector("details.project-deck-later");
-      assert.ok(!!later && !later.open && later.contains(card(p, "p-app", "later")), "the Ask put off, at the end of Needs you, closed");
-      const doing = p.panel("p-app").querySelector('[aria-labelledby="home-project-p-app-doing"] .home-brief');
-      const head = doing.querySelector(":scope > .home-deck-heading");
-      assert.equal(head?.textContent ?? null, heading);
-      const after = (a, b) => (a.compareDocumentPosition(b) & p.w.Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-      assert.ok(after(card(p, "p-app", "eval"), head) && after(head, card(p, "p-app", "tokenizer")), "the heading stands over the answered Ask");
-      const closed = p.panel("p-app").querySelector("details.project-deck-done");
-      assert.ok(!!closed && !closed.open, "status out of date, in Done, closed");
-      assert.ok(closed.contains(card(p, "p-app", "progress")));
-      assert.match(closed.querySelector("summary").textContent, done);
-      assert.deepEqual(p.errors, []);
-    } finally {
-      p.close();
-    }
-  }
-});
-
-test("YN-3 a status that goes out of date while Home is read keeps its place until the next visit; a card new in the visit stands before the answered Asks, then takes its own place", async () => {
-  const p = await mount({ open: "p-app", home: deckFixture() });
-  try {
-    await waitFor(() => card(p, "p-app", "eval"), "the deck is drawn");
-    const app = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief;
-    // While Home is read, the release train goes out of date and a new Ask comes in.
-    app.sections.find((s) => s.key === "train").status = deckStatus(true);
-    app.sections.push(section("budget", "ask", "Raise the budget?", 1, owner("a", "Mori"), {
-      id: 508, ask: { question: "Raise it?", state: "open", reply: { freeText: true } },
-    }));
-    p.doc.querySelector('[aria-label="Refresh Home"]').click();
-    await waitFor(() => card(p, "p-app", "budget"), "the new Ask");
-    assert.deepEqual(deckKeys(p), ["release", "later", "train", "notes", "eval", "budget", "tokenizer", "progress"],
-      "nothing moves: the release train stays, the new Ask is in progress before the answered ones");
-    // The next visit to Home: each in its own place.
-    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
-    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
-    await wholeHome(p);
-    await openProject(p, "p-app");
-    await waitFor(() => card(p, "p-app", "budget") && deckKeys(p)[1] === "budget", "the next visit");
-    assert.deepEqual(deckKeys(p), ["release", "budget", "later", "notes", "eval", "tokenizer", "progress", "train"]);
-    assert.ok(p.panel("p-app").querySelector("details.project-deck-done").contains(card(p, "p-app", "train")), "out of date, done, at the next visit");
-    assert.deepEqual(p.errors, []);
-  } finally {
-    p.close();
-  }
-});
 
 test("YN-3 the deck and My widgets are laid out with no holes, in order: each card spans its own size and the cells the grid's flow would leave empty", async () => {
   const home = homeFixture();
@@ -3393,7 +3330,7 @@ test("YN-3 the deck and My widgets are laid out with no holes, in order: each ca
 });
 
 // YN-3, the user's D3: answered Asks are small answer cards the deck packs, two to a row of four.
-test("YN-3 answered Asks are small answer cards on the deck: two share a row of four under their heading; one opened takes its row", async () => {
+test("YN-3 answered Asks are small answer cards on the deck: two share a row of four; one opened takes its row", async () => {
   const home = homeFixture();
   const mori = owner("a", "Mori");
   const replied = (key, title, id, reply) => section(key, "ask", title, 2, mori, {
@@ -3419,11 +3356,9 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
     await waitFor(() => card(p, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     const span = (key) => [card(p, "p-app", key).dataset.deckCols ?? null, card(p, "p-app", key).dataset.deckRows ?? null];
     assert.ok(["tokenizer", "draft"].every((key) => card(p, "p-app", key).classList.contains("is-answer")), "answer cards");
-    // The status takes its row alone; the heading its row; the two answer cards share theirs.
-    assert.deepEqual(span("train"), ["4", "1"]);
-    assert.deepEqual([span("tokenizer"), span("draft")], [["2", "1"], ["2", "1"]], "two to a row of four, never one and three");
-    const heading = p.panel("p-app").querySelector(".home-deck-heading");
-    assert.equal(heading.textContent, "Replied, waiting · 2");
+    // YN-212: no heading over them now; the status and the two answer cards share a row of four, the two alike.
+    assert.deepEqual(span("tokenizer"), span("draft"), "never one and three");
+    assert.equal(Number(span("train")[0]) + Number(span("tokenizer")[0]) + Number(span("draft")[0]), 4, "one row of four");
     // Opened, it takes its row, as an open Ask does: no longer a small card.
     const tokenizer = card(p, "p-app", "tokenizer");
     tokenizer.querySelector(".home-answer-details").click();
@@ -3433,14 +3368,14 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   } finally {
     p.close();
   }
-  // A lone answer card takes two columns, not the row: from three columns a card grows to at most twice its own
-  // size and the rest of the row stays empty (YN-157).
+  // A lone answer card never takes the row: a card grows to at most twice its own size (YN-157). On the Project's
+  // block it follows the status on its row (YN-212: no heading of its own over it).
   home.projects.find((entry) => entry.project.id === "p-app").brief.sections.splice(2, 1);
   const q = await mount({ open: "p-app", home, before: fourColumns });
   try {
     await waitFor(() => card(q, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     assert.equal(card(q, "p-app", "draft"), null);
-    assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "2", "a lone answer card takes two columns");
+    assert.ok(Number(card(q, "p-app", "tokenizer").dataset.deckCols) <= 2, "a lone answer card takes at most two columns");
     assert.deepEqual(q.errors, []);
   } finally {
     q.close();
@@ -3955,38 +3890,30 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
     assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
     await pageOpened(p, "p-app");
-    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "2 need you");
+    // YN-212 §3.4: "n need you" counts the blocks in Needs you, the approvals and the executors' matters: here the
+    // Project's own block, which holds both open Asks.
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
-    // The three groups, cards in the group their place and read state put them.
-    const deck = (name) => p.doc.querySelector(`[aria-labelledby="home-project-p-app-${name}"]`);
-    assert.match(deck("needs").querySelector(".project-deck-title").textContent, /^Needs you2/);
-    assert.ok(p.doc.getElementById("home-section-p-app-release"), "the open Ask is in Needs you");
-    assert.ok(p.doc.getElementById("home-section-p-app-budget"), "so is the other one");
-    // A topic stands where its most urgent card does: the read report of "notes" stays with its unread sub-topic.
-    assert.match(deck("doing").querySelector(".project-deck-title").textContent, /^In progress2/);
-    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes/review")), "the unread report is in progress");
-    assert.ok(deck("doing").contains(p.doc.getElementById("home-section-p-app-notes")), "so is the read report of its topic");
-    const done = p.doc.querySelector(".project-deck-done");
-    assert.equal(done.open, false, "Done is closed at first");
-    assert.match(done.querySelector("summary").textContent, /^Done · 1 card · latest .* · 30-day history 1$/);
-    done.querySelector("summary").click();
-    await waitFor(() => done.open, "Done opens");
-    assert.ok(done.contains(p.doc.getElementById("home-section-p-app-reviewed")), "the read report of its own topic is done");
-    assert.ok(!done.contains(p.doc.getElementById("home-section-p-app-notes")), "the read report kept with its unread topic is not");
+    const block = p.doc.querySelector('[data-project-home="p-app"] [data-project-block]');
+    assert.equal(block.closest(".request-group")?.dataset.group, "needs", "with open Asks, in Needs you");
+    unfoldBlocks(p.doc);
+    await waitFor(() => p.doc.getElementById("home-section-p-app-release"), "the Project's block open");
+    for (const key of ["release", "budget", "notes/review", "notes", "reviewed"])
+      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is the Project's block's`);
     // A report opens over the page and closes back onto it, the card where it was.
     const card = p.doc.getElementById("home-section-p-app-notes/review");
     card.querySelector(".home-report-open").click();
     await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), "the report page");
     p.doc.querySelector(".home-report .report-back").click();
     await waitFor(() => !p.doc.querySelector(".home-report"), "the report closes");
-    assert.ok(deck("doing").contains(card), "the card stayed in In progress");
-    // Core's next read has it read: New goes, the card does not move in this visit.
+    assert.ok(block.contains(card), "the card stayed in its block");
+    // Core's next read has it read: New goes, the card does not move.
     const panel = p.state.home.projects.find((project) => project.project.id === "p-app");
     const section = panel.brief.sections.find((s) => s.key === "notes/review");
     section.opened = { version: section.version, at: at(1) };
     p.doc.querySelector('.project-home [aria-label="Refresh Home"]').click();
     await waitFor(() => !card.classList.contains("is-changed"), "the read version clears New");
-    assert.ok(deck("doing").contains(card), "and the card stays where this visit first put it");
+    assert.ok(block.contains(card), "and the card stays in its block");
     // Back, from the Project's page, to the whole of Home.
     p.w.history.back();
     await waitFor(() => p.doc.querySelector(".home-layout"), "Back on the whole of Home");
@@ -4008,11 +3935,10 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     name.click();
     await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
     assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    const titles = [...zh.doc.querySelectorAll(".project-deck-title")].map((title) => title.textContent);
-    assert.match(titles[0], /^需要你/);
-    assert.match(titles[1], /^进行中/);
-    assert.match(zh.doc.querySelector(".project-deck-done summary").textContent, /^已完成/);
-    assert.equal(zh.doc.querySelector(".project-deck-note").textContent, "一次访问内位置不变");
+    // The page by request (YN-212): its groups in Chinese, the Project's own block among them.
+    const titles = [...zh.doc.querySelectorAll(".request-group-title")].map((title) => title.textContent);
+    assert.match(titles[0], /^等你/);
+    assert.equal(zh.doc.querySelector("[data-project-block] .request-block-n").textContent, "项目");
     zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
     assert.deepEqual(zh.errors, []);
   } finally {
