@@ -528,7 +528,11 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(BRIEF_HARD_RULES, /editContent is false.*only your own Asks/);
   assert.match(briefGuide("errors"), /ask_only.*removing your own older sections.*A Project's leads edit Home; the user chooses them\./);
   // YN-2 S4: the leads edit Home; an Ask-only member may also take down its own older sections.
-  assert.match(rules[3], /^3\. Leads edit Home; the user chooses leads\. If editContent is false and writeOwnAsk is true, write only your own Asks\./);
+  // YN-212 C3 R1: the one exception, the card of a Task the member answers for, wherever Ask-only is said.
+  assert.match(rules[3], /^3\. Leads edit Home; the user chooses leads\. If editContent is false and writeOwnAsk is true, write only your own Asks and a card of a Task you answer for\./);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /Ask-only members write only their own Asks and a Task card they answer for\./);
+  assert.match(briefGuide("sections"), /or write reports\/status, with one exception: the card of a Task you answer for\. Its current executor, or, while it has none, the Agent it is assigned to \(not an executor released from it\), puts, edits and patches the status or report at the Task's key \(yn-90\), bound with task; its current executor also writes report and status sub-topics under that card/);
+  assert.match(briefGuide("errors"), /ask_only: .*optional noChange, and the card of a Task you answer for \(see sections\)/);
   assert.match(briefGuide(), /When editContent is false and writeOwnAsk is true, only create\/update\/resolve\/remove your own Asks, remove your own older sections, or send noChange/);
   assert.doesNotMatch(BRIEF_HARD_RULES, /selects Home content editors/);
   for (const phrase of [/expectedVersion/, /version_conflict.*re-read.*merge/, /only their own sections.*topic\/sub/, /question plus .*options, freeText, a form or a choice/, /Resolve your asks explicitly/, /never executes actions/, /brief_guide/])

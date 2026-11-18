@@ -98,7 +98,14 @@ is Ask-only there.
   not yet released) may also put, edit and patch report and status
   sub-topics under that card's topic, which are its own. The same write
   anywhere else, or once it is no longer the current executor, is refused
-  with `not_card_responsible`. An executor never binds a section itself.
+  with `not_card_responsible`. Apart from its own task's card (below), an
+  executor binds no section.
+- **A task's card** (YN-212 C1, C3): the Project's leads and whoever answers
+  for the task (its current executor; with none, its assignee unless that
+  is an executor, such as an Agent a card route gave the task to) put, edit
+  and patch the card at the task's key in lower case (`yn-90`), bound to the
+  task with `task`. That one binds nothing else. The card keeps its owner,
+  and each version names who wrote it.
 - **What a former editor wrote.** A member that edited Home before and isn't
   a lead now becomes Ask-only. Its report and status leave Home's main view
   for the team sections, unread marks as they were; it can remove them.

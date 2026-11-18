@@ -99,7 +99,7 @@ pub(crate) fn tool_definition() -> Value {
     let line = |what: &str| json!({"type":"string","minLength":1,"maxLength":MAX_LINE,"description":what});
     json!({
         "name":TOOL,
-        "description":"For your Project's front desk only: route the user's request R-n to cards, or answer it, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card: a status section you own, keyed by the task's key in lowercase and bound to it. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins a live card bound to a task; its words go to the Agent answering for it;\n- answer: no task, no card: your note is the whole answer, and the request shows as answered. Only for a question you answer now in one or two sentences from what you already know (a state, a result, where something is). Never for work (code, a fix, research, design, a review, a release) or a choice the user must make: route those to cards. When unsure, make a card.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
+        "description":"For your Project's front desk only: route the user's request R-n to cards, or answer it, as one recorded step. Core copies the user's words byte for byte into each new task's description and each hand-off message; you add only title, note and why. Each route is done once per (request, its index): send the same routes again and none is done twice (one that failed is tried again where it stopped), so a call with the routes already done only changes the title. Routes, done in order, one failing never undoing another:\n- card + executor {templateId, tier?, machineId?}, materials?, body?: a new task, dispatched to a new executor as your own task_create and task_dispatch would (the user's templates and routing apply; materials and body go to that dispatch only, checked before the route is recorded), then its card key: the task's key in lowercase, where its executor writes the card. For code, give materials.worktree (made inside the Project's folder), a full baseSha and repositoryId, else it starts in the Project's folder (yuzuno_guide topic delivery);\n- card + agentId: a new task and card for an open member of the Project (yourself: no message);\n- existing + cardKey: the request joins that task's card, live or not written yet; its words go to the Agent answering for it;\n- answer: no task, no card: your note is the whole answer, and the request shows as answered. Only for a question you answer now in one or two sentences from what you already know (a state, a result, where something is). Never for work (code, a fix, research, design, a review, a release) or a choice the user must make: route those to cards. When unsure, make a card.\nWhere: development coordination (code, merges, releases, across cards) to the standing lead's card (existing, or card + agentId); research, design, comparison or audit to card + executor (templates investigation, design, decision-memo); the same matter as an existing card: existing, saying why. Do not research or design yourself; routing to yourself is recorded too.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["request","title","note","routes"],"properties":{
             "request":{"type":"string","description":"R-12, as Core's message names the request."},
             "title":line("A short phrase, like a task title, saying what the request is; not the user's words, not where it goes. The user knows the request by it."),
@@ -114,7 +114,7 @@ pub(crate) fn tool_definition() -> Value {
                 "materials":materials_schema(),
                 "body":{"type":"string","description":"card + executor: its dispatch's additional instructions, as task_dispatch's body; at most 16384 bytes in UTF-8."},
                 "agentId":{"type":"string","description":"card: an open member of the Project, not an executor."},
-                "cardKey":{"type":"string","description":"existing: the card's section key."}}}}}}
+                "cardKey":{"type":"string","description":"existing: the card's section key, its task's key in lowercase."}}}}}}
     })
 }
 
@@ -645,7 +645,7 @@ async fn own_call(ws: &Arc<Workspace>, actor: &str, operation: &str, input: Valu
 /// A step's result on the route, as soon as it is done, so a retry goes on
 /// from the next step.
 async fn save(ws: &Arc<Workspace>, id: &str, column: &'static str, value: Value) -> Result<()> {
-    debug_assert!(matches!(column, "task_id" | "target_agent_id"));
+    debug_assert!(matches!(column, "task_id" | "target_agent_id" | "card_key"));
     let id = id.to_owned();
     ws.stored(move |store| {
         let value: rusqlite::types::Value = match value {
@@ -669,15 +669,6 @@ async fn save_executor(ws: &Arc<Workspace>, id: &str, agent: &str, owes: bool) -
                 attachments=CASE WHEN ?3 THEN COALESCE(attachments,'owed') ELSE attachments END WHERE id=?1",
             params![id, agent, owes],
         )?;
-        Ok(())
-    })
-    .await
-}
-
-async fn save_card(ws: &Arc<Workspace>, id: &str, identity: i64, key: &str) -> Result<()> {
-    let (id, key) = (id.to_owned(), key.to_owned());
-    ws.stored(move |store| {
-        store.db.write()?.execute("UPDATE project_routes SET section_id=?2,card_key=?3 WHERE id=?1", params![id, identity, key])?;
         Ok(())
     })
     .await
@@ -964,7 +955,8 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
     };
     let id = task.clone();
     let key = ws.stored(move |store| Ok(crate::collaboration_store::task_shown(&*store.db.read()?, &id))).await?;
-    let agent = match (&row.target_agent_id, &given) {
+    // Who answers for the task now: the agent given, else its new executor (dispatched and saved on the route).
+    let _responsible = match (&row.target_agent_id, &given) {
         (Some(agent), _) => agent.clone(),
         (None, Some(agent)) => {
             if agent != actor {
@@ -1002,14 +994,24 @@ async fn card(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -> Re
             agent
         }
     };
-    if row.section_id.is_none() {
-        let card = key.to_lowercase();
-        let named = agent.clone();
-        let name = ws.stored(move |store| Ok(agent_name(&*store.db.read()?, &named))).await?;
-        let lead = format!("→ {name}: {}", row.why);
-        let title = input["title"].as_str().unwrap_or_default();
-        let identity = crate::project_brief::put_card(ws, actor, &ctx.project, &card, title, &lead, &task).await?;
-        save_card(ws, &row.id, identity, &card).await?;
+    // The task's card is for whoever answers for the task to write (its
+    // executor, or the Agent given; a lead too), at the task's key in lower
+    // case (YN-212 C3): the route records that key and puts no card; the request finds the card there once written, by its binding
+    // (progress.rs). Who took it and why are the route's.
+    if row.card_key.is_none() {
+        // A key another section holds, bound to no task or another, is no
+        // place for this task's card: the route fails until it is free, its
+        // task and executor kept for the retry.
+        let (project, card, bound) = (ctx.project.clone(), key.to_lowercase(), task.clone());
+        let taken = ws
+            .stored(move |store| {
+                let db = store.db.read()?;
+                Ok(crate::project_brief::live_card(&db, &project, &card)?.filter(|card| card.task.as_deref() != Some(bound.as_str())).is_some())
+            })
+            .await?;
+        ensure!(!taken, "card_key_taken: the Brief already has a live section {} that is not this task's card; nothing was recorded for it",
+            key.to_lowercase());
+        save(ws, &row.id, "card_key", json!(key.to_lowercase())).await?;
     }
     Ok(())
 }
@@ -1033,11 +1035,24 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
     let (card, task, ended, responsible, waiting) = ws
         .stored(move |store| {
             let db = store.db.read()?;
-            let card = crate::project_brief::live_card(&db, &project, &wanted)?
-                .with_context(|| format!("not_a_card: this Project's Brief has no live section {wanted}"))?;
-            let task = card.task.clone().with_context(|| {
-                format!("not_a_card: {wanted} is bound to no task, so no Agent answers for it; route to a card bound to one, or make a new card")
-            })?;
+            // The live card under the key; else a task routed here whose first
+            // card is still to be written (YN-212 C3): a request joins it by
+            // its key, which finds the card once its executor writes it.
+            let card = match crate::project_brief::live_card(&db, &project, &wanted)? {
+                Some(card) => {
+                    let task = card.task.clone().with_context(|| {
+                        format!("not_a_card: {wanted} is bound to no task, so no Agent answers for it; route to a card bound to one, or make a new card")
+                    })?;
+                    Joined { section: Some(card.identity), key: card.key, task }
+                }
+                None => {
+                    let task = first_card_pending(&db, &project, &wanted)?.with_context(|| {
+                        format!("not_a_card: this Project's Brief has no live section {wanted}, and no task routed here waits for its first card under it")
+                    })?;
+                    Joined { section: None, key: wanted.clone(), task }
+                }
+            };
+            let task = card.task.clone();
             let ended = crate::project_brief::task_ended(&db, &task)?;
             let responsible = crate::project_brief::responsible_agent(&db, &task)?;
             let waiting = match &responsible {
@@ -1057,7 +1072,7 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
     // Its images and files, which no mail carries, are owed to the card and
     // go once its executor has started (owed.rs, YN-173), recorded with it.
     let owes = queued.is_some() && attached(ctx);
-    let (route, card_key, identity, bound) = (row.id.clone(), card.key.clone(), card.identity, task.clone());
+    let (route, card_key, identity, bound) = (row.id.clone(), card.key.clone(), card.section, task.clone());
     ws.stored(move |store| {
         store.db.write()?.execute(
             "UPDATE project_routes SET task_id=?2,section_id=?3,card_key=?4,
@@ -1081,6 +1096,33 @@ async fn existing(ws: &Arc<Workspace>, actor: &str, ctx: &Ctx, row: &RouteRow) -
         None => {}
     }
     save(ws, &row.id, "target_agent_id", json!(agent)).await
+}
+
+/// What a join goes to: the card's identity on Home, none while its task's
+/// first card is still to be written, the card's key and its task.
+struct Joined {
+    section: Option<i64>,
+    key: String,
+    task: String,
+}
+
+/// The task (internal ID) whose first card a request may join before it is
+/// written (YN-212 C3): a finished card route of this Project recorded `key`
+/// as its task's card key, `key` is that task's key in lower case, and `key`
+/// has never held a section: a section there bound otherwise, or a card
+/// written and removed since, is no first card still to come.
+fn first_card_pending(db: &Connection, project: &str, key: &str) -> Result<Option<String>> {
+    if crate::project_brief::key_used(db, project, key)? {
+        return Ok(None);
+    }
+    let tasks: Vec<String> = db
+        .prepare_cached(&format!(
+            "SELECT DISTINCT task_id FROM project_routes WHERE project_id=?1 AND kind='{CARD}' AND state='{DONE}' AND card_key=?2 \
+             AND task_id IS NOT NULL ORDER BY at"
+        ))?
+        .query_map(params![project, key], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(tasks.into_iter().find(|task| crate::project_brief::card_key(db, task) == key))
 }
 
 /// The mail that hands a request to a card's executor still waiting for its
