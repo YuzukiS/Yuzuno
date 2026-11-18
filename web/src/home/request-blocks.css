@@ -1,0 +1,391 @@
+/* A Project's page by request (YN-212 §3): one block a request, its number
+   and title, one latest fact with one action, what it delivered; folded,
+   its tasks (one card each), the tasks it joined and its own conversation.
+   The Project's own block the same way, one line a card. Home's colours and
+   type (home.css); the deliverables' lines are the request card's
+   (project-talk.css .request-deliverable). */
+.request-blocks {
+  display: grid;
+  gap: 18px;
+  max-width: 920px;
+}
+.request-group {
+  display: grid;
+  gap: 8px;
+}
+.request-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.request-group-title span {
+  color: var(--home-ink-2);
+  font-weight: 400;
+}
+.request-done > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.request-done > summary::-webkit-details-marker {
+  display: none;
+}
+.request-done[open] > summary {
+  margin-bottom: 8px;
+}
+.request-done > .request-block + .request-block {
+  margin-top: 8px;
+}
+
+.request-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head head"
+    "fact act"
+    "delivered delivered"
+    "more more"
+    "body body";
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--home-surface);
+  overflow: hidden;
+}
+/* Focused by a jump (the page's links, "Answer"): its highlight says where it landed, not a ring. */
+.request-block:focus {
+  outline: none;
+}
+.request-block[data-group="needs"] {
+  border-color: color-mix(in srgb, var(--home-attention) 55%, var(--line));
+}
+.request-block-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 14px 0;
+}
+.request-block-n {
+  flex: none;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.request-block-title {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.request-block-title[data-untitled] {
+  color: var(--home-ink-2);
+  font-weight: 400;
+}
+.request-block-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+
+/* The one latest fact and the one action. */
+.request-block-fact {
+  grid-area: fact;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 6px 14px 10px;
+}
+.request-block-fact-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+}
+.request-block-fact-icon[data-kind="ask"],
+.request-block-fact-icon[data-kind="unconfirmed"] {
+  background: color-mix(in srgb, var(--home-attention) 22%, transparent);
+  color: var(--home-attention-ink);
+}
+.request-block-fact-icon[data-kind="result"],
+.request-block-fact-icon[data-kind="answered"] {
+  background: color-mix(in srgb, var(--home-new, var(--green)) 20%, transparent);
+  color: var(--home-new, var(--green));
+}
+.request-block-fact-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  margin: 0;
+}
+.request-block-fact-line {
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.request-block-fact-meta {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-block-stale {
+  color: var(--home-attention-ink);
+}
+.request-block-act {
+  grid-area: act;
+  align-self: start;
+  padding: 6px 14px 10px 0;
+}
+.request-block-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  cursor: pointer;
+}
+.request-block-action.is-primary {
+  border-color: var(--home-attention);
+  background: color-mix(in srgb, var(--home-attention) 18%, transparent);
+  color: var(--home-attention-ink);
+  font-weight: 600;
+}
+.request-block-action:hover {
+  background: var(--home-soft);
+}
+
+/* What it delivered: the request card's lines (project-talk.css), under the fact, each openable. */
+.request-block-delivered {
+  grid-area: delivered;
+  display: grid;
+  gap: 1px;
+  margin: -4px 0 0;
+  padding: 0 14px 8px 42px;
+  list-style: none;
+}
+
+.request-block-more {
+  grid-area: more;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--home-ink-2);
+  font: inherit;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.request-block-more svg {
+  transition: transform 160ms ease;
+}
+.request-block-more[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.request-block-body {
+  grid-area: body;
+  display: grid;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--home-soft) 45%, transparent);
+}
+.request-block-body > .request-block-more {
+  display: none;
+}
+
+/* One task: who answers for it, then its one card. */
+.request-task {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.request-task-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-task-id {
+  font-weight: 600;
+}
+.request-task-who,
+.request-task-state,
+.request-task-also {
+  color: var(--home-ink-2);
+}
+.request-task-also {
+  margin: 0;
+}
+.request-task-none {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.request-task-card {
+  display: grid;
+  gap: 4px;
+}
+.request-task-before,
+.request-task-none {
+  margin: 0;
+  color: var(--home-attention-ink);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-task-none {
+  color: var(--home-ink-2);
+}
+.request-task-answered {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.request-task-earlier > summary,
+.request-thread > summary {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.request-task-earlier[open] {
+  display: grid;
+  gap: 6px;
+}
+.request-block-joined {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+
+/* A request's own conversation, folded at the block's end. */
+.request-thread ol {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.request-thread li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.request-thread li[data-who="core"] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  color: var(--home-ink-2);
+}
+.request-thread li > b {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.request-thread li > time {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.request-thread .message-content,
+.request-thread .prose {
+  min-width: 0;
+}
+
+/* The Project's own block: one line a card until opened. */
+.project-block-lines {
+  display: grid;
+  margin: 0;
+  padding: 4px 6px 8px;
+  list-style: none;
+}
+.project-block-lines button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+}
+.project-block-lines button:hover {
+  background: var(--home-soft);
+}
+.project-block-line-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-block-line-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.project-block-cards {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+/* A phone: the action at the end of the fold's row, a whole finger high, so the fact keeps the width. */
+@container deck (max-width: 520px) {
+  .request-block {
+    grid-template-areas:
+      "head head"
+      "fact fact"
+      "delivered delivered"
+      "more act"
+      "body body";
+  }
+  .request-block-act {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    padding: 4px 10px 4px 0;
+    border-top: 1px solid var(--line);
+  }
+  .request-block-action {
+    min-height: 36px;
+  }
+  .request-block-delivered {
+    padding-left: 14px;
+  }
+}
