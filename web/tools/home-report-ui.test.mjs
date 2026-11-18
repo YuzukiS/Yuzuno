@@ -156,7 +156,9 @@ async function openHome(read, incoming = null, answer, project = "p1") {
   page.window.renderHome(incoming);
   await until(() => page.document.querySelector(".project-home, .home-layout"), "Home read");
   // A Project's page draws its cards once its requests are read (YN-212): wait a moment for them, as a reader would.
-  for (let i = 0; i < 50 && page.document.querySelector(".project-home") && !page.document.querySelector(".project-home [data-section-key]"); i++)
+  // An open Ask is drawn up front from the first render (W5), so it does not say the requests were read.
+  const drawn = () => [...page.document.querySelectorAll(".project-home [data-section-key]")].some((el) => !el.closest(".request-block-asks"));
+  for (let i = 0; i < 50 && page.document.querySelector(".project-home") && !drawn(); i++)
     await tick(20);
   await tick(40);
   return page;
