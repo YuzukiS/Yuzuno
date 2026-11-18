@@ -4,7 +4,7 @@
 // joining is pure; the page that draws it is W3's.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { authorOf, blockCounts, blockOfSection, isPlaceholder, pageBlocks } from "../src/home/request-blocks.ts";
+import { askUpFront, authorOf, blockCounts, blockOfSection, isPlaceholder, pageBlocks } from "../src/home/request-blocks.ts";
 
 const NOW = Date.now();
 const at = (minutes) => new Date(NOW - minutes * 60_000).toISOString();
@@ -126,7 +126,8 @@ const block = (blocks, n) => blocks.find((b) => b.request.n === n);
 
 test("R-7's five moments: one block each time, its fact, action and group from Core's facts (§3.3)", () => {
   const expected = {
-    asked: { group: "needs", kind: "ask", action: "answer" },
+    // Its own open Ask is shown in the block, to answer there (W5): no Answer leads to it.
+    asked: { group: "needs", kind: "ask", action: null },
     approved: { group: "doing", kind: "replied", action: "follow" },
     working: { group: "doing", kind: "card", action: "follow" },
     result: { group: "needs", kind: "result", action: "confirm" },
@@ -142,7 +143,15 @@ test("R-7's five moments: one block each time, its fact, action and group from C
     assert.equal(blocks.flatMap((b) => b.tasks).filter((row) => row.task.id === "YN-181").length, 1, `${stage}: one task, one row`);
   }
   const asked = block(page("asked").blocks, 7).fact;
-  assert.deepEqual([asked.title, asked.key, asked.count, asked.task], ["desktop-0.7.0：用 v3 脚本重签一次并发布？", "yn-181/sign", 1, "YN-181"]);
+  assert.deepEqual([asked.title, asked.key, asked.count, asked.task, asked.home], ["desktop-0.7.0：用 v3 脚本重签一次并发布？", "yn-181/sign", 1, "YN-181", null]);
+  const shown = page("asked");
+  assert.deepEqual(block(shown.blocks, 7).asks.map((s) => s.key), ["yn-181/sign"], "the block holds its task's Ask");
+  assert.equal(askUpFront("yn-181/sign", shown.blocks, shown.project), true, "a jump to it opens nothing");
+  assert.equal(askUpFront("yn-181", shown.blocks, shown.project), false, "a card is no Ask");
+  // Answered, it is no longer open: the page keeps it where it was for the visit (ProjectHome), the model says so.
+  const replied = page("approved");
+  assert.deepEqual(block(replied.blocks, 7).asks.map((s) => [s.key, s.ask?.state]), [["yn-181/sign", "replied"]]);
+  assert.equal(askUpFront("yn-181/sign", replied.blocks, replied.project), false);
   // Just answered: the reply, not the card that still asks, until the card is written again.
   const approved = block(page("approved").blocks, 7);
   assert.deepEqual([approved.fact.reply, approved.fact.who?.agentId, approved.fact.taken], ["批准：用 v3 重签一次并发布", "x181", false]);
@@ -182,6 +191,25 @@ test("a task serving two requests is one row under the first; the other names it
   assert.equal(blockOfSection("yn-197", blocks, null), "r12", "a link to the card opens the block it is shown in");
 });
 
+// W5: an open Ask of a task two requests share is shown once, in the block of the request it is under; the other
+// request says where, and its action goes there.
+test("an Ask of a task two requests share is in the first one's block once; the other points to it (R-12, R-14)", () => {
+  const { r7, sections } = r7At("working");
+  const rest = neighbours();
+  const question = section("yn-197/scope", "ask", "范围", 1, 3, lead, { ask: ask("只查 Core 吗？", "open"), card: binding("YN-197", "doing", x197) });
+  const { blocks, project } = pageBlocks([...rest.requests, r7], [...sections, ...rest.sections, question]);
+  const r12 = block(blocks, 12);
+  const r14 = block(blocks, 14);
+  assert.deepEqual([r12.fact.kind, r12.fact.home, r12.action, r12.group], ["ask", null, null, "needs"]);
+  assert.deepEqual(r12.asks.map((s) => s.key), ["yn-197/scope"]);
+  assert.equal(r12.askedElsewhere, null);
+  assert.deepEqual([r14.fact.kind, r14.fact.home, r14.fact.key, r14.action, r14.group], ["ask", 12, "yn-197/scope", "answer", "needs"]);
+  assert.deepEqual(r14.asks, [], "not drawn twice");
+  assert.deepEqual(r14.askedElsewhere, { home: 12, key: "yn-197/scope", title: "只查 Core 吗？", count: 1 });
+  assert.equal(blocks.flatMap((b) => b.asks).filter((s) => s.key === "yn-197/scope").length, 1, "one Ask, one block");
+  assert.equal(askUpFront("yn-197/scope", blocks, project), true);
+});
+
 test("two tasks, two deliverables, the newest result first; a card written since outranks the result (R-19)", () => {
   const { blocks } = page("working");
   const r19 = block(blocks, 19);
@@ -206,6 +234,7 @@ test("the Project's own block: every live section bound to no request's task, ne
   const pick = section("pick", "ask", "选一个", 1, 3, lead, { ask: ask("选哪个？", "open") });
   const withAsk = pageBlocks([], [pick, ...neighbours().sections.slice(-2)]).project;
   assert.deepEqual([withAsk.group, withAsk.asks.map((s) => s.key)], ["needs", ["pick"]]);
+  assert.equal(askUpFront("pick", [], withAsk), true, "its open Ask is in its first look too");
   assert.equal(pageBlocks([], []).project, null);
   // A section bound to a task no request has is the Project's too; a history entry is not.
   const loose = section("yn-300", "status", "无请求的任务", 1, 4, lead, { card: binding("YN-300", "doing", null) });
@@ -226,11 +255,17 @@ test("the facts of the design's §3.2 table, row by row", () => {
   }
   assert.equal(one(request(1, 10, "doing", [], { delivery: "queued" })).fact.kind, "waiting", "queued is delivered");
 
-  // 2. An open Ask: the oldest, with how many more, and answer.
+  // 2. An open Ask: the oldest, with how many more. Shown in the block, each to answer there (W5): no action.
   const later = section("yn-1/more", "ask", "Q2", 1, 2, lead, { ask: ask("还有一个？", "open"), card: binding("YN-1", "doing", x207) });
   const asked = one(request(1, 10, "doing", [routed(card(8), "YN-1", "doing", x207)]), [card(8), later, open]);
-  assert.deepEqual([asked.fact.kind, asked.fact.title, asked.fact.count, asked.action, asked.group], ["ask", "要哪个？", 2, "answer", "needs"]);
-  assert.equal(blockOfSection("yn-1/more", [asked], null), "r1", "a jump to an Ask opens its block");
+  assert.deepEqual([asked.fact.kind, asked.fact.title, asked.fact.count, asked.action, asked.group], ["ask", "要哪个？", 2, null, "needs"]);
+  assert.deepEqual(asked.asks.map((s) => s.key), ["yn-1/ask", "yn-1/more"], "each Ask, in the order they were put");
+  assert.equal(blockOfSection("yn-1/more", [asked], null), "r1");
+  assert.equal(askUpFront("yn-1/more", [asked], null), true, "a jump to an Ask lands on it in the first look");
+  // A newer version of the first Ask moves neither: they stay in the order they were put.
+  const rewritten = { ...open, version: 2, updatedAt: at(1) };
+  assert.deepEqual(one(request(1, 10, "doing", [routed(card(8), "YN-1", "doing", x207)]), [card(8), later, rewritten]).asks.map((s) => s.key),
+    ["yn-1/ask", "yn-1/more"]);
 
   // 3. Answered by the front desk: its answer, confirm done.
   const answered = one(request(1, 10, "answered", [], { notes: [{ note: "已经支持了。", by: desk, at: at(3) }] }));

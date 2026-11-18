@@ -66,6 +66,7 @@
   grid-template-areas:
     "head head"
     "fact act"
+    "asks asks"
     "delivered delivered"
     "more more"
     "body body";
@@ -201,6 +202,18 @@
 }
 
 /* What it delivered: the request card's lines (project-talk.css), under the fact, each openable. */
+/* Its open Asks (W5, R-20 follow-up): in the first look, each whole and answerable there, one under another. */
+.request-block-asks {
+  grid-area: asks;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 14px 12px;
+}
+.request-block-asks > .request-block-joined {
+  padding: 0 2px;
+}
+
 .request-block-delivered {
   grid-area: delivered;
   display: grid;
@@ -376,8 +389,10 @@
   min-width: 0;
 }
 
-/* The Project's own block: one line a card until opened. */
+/* The Project's own block: one line a card until opened, after its open Asks (a project block delivers nothing,
+   so its lines take that row). */
 .project-block-lines {
+  grid-area: delivered;
   display: grid;
   margin: 0;
   padding: 4px 6px 8px;
@@ -426,6 +441,7 @@
     grid-template-areas:
       "head head"
       "fact fact"
+      "asks asks"
       "delivered delivered"
       "more act"
       "body body";

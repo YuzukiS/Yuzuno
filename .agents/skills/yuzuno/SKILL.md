@@ -98,6 +98,19 @@ Three small shapes cover most other cards; `brief_guide examples` has each, as `
 - **Compare**: the answer in one sentence, then one chart or a short `Table` of measured values, with the sample and what it cannot show beside them.
 - **Decision**: an Ask with the question, the options and what each costs, in a few lines; the background stays on the task. Several related answers go in one form, as in the `form` example.
 
+### Write an Ask to be answered alone
+
+Home shows an open Ask whole where the user reads its request: the question, its body and how to reply, the task's card folded below it. Write it so the user can decide from the Ask alone, without first opening the status or a report. Keep apart the facts the decision needs and the wider background:
+
+- what is decided now, and why now, in a sentence;
+- the facts it rests on, each as far as it was really checked, and what was not checked where that matters;
+- what each option leads to, and anything that can't be undone;
+- what you recommend, and why.
+
+Link the longer background (a report, the latest status, the task) rather than copying it. An Ask and a status stay two sections: an answer is to the Ask's version, while a status changes as the work goes. A simple question stays one sentence; these are what to cover when they matter, not a template to fill.
+
+For example (synthetic): "Sign desktop-0.7.0 with the v3 script and publish it? A dry run without the signing key passed every step of the script; signing with the key, and installing the signed build, are not checked yet. Approve: sign and publish; the download can be withdrawn, but installs already made stay until the next version. Not now: 0.7.0 waits, and users stay on 0.6.x. I recommend approving: v3 changes only the signing step, which the dry run covered. Dry-run log: report yn-181." Writing "the signed release is verified" there would claim a check nobody made.
+
 ### Ask for a review
 
 To have the user review a document, a report or a design, ask with an Ask; `brief_guide examples` has this shape as `review`. A report holds only what is settled: the user's Seen mark takes it off Home at once, and Seen means read, not reviewed, so nothing still to decide (a name to choose, a draft to approve) belongs in a report.

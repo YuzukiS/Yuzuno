@@ -25,8 +25,8 @@ import { ProjectTalkLink, type TalkLink } from "./talk-link";
 import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
-import { blockCounts, blockOfSection, pageBlocks, type BlockAction, type BlockGroup, type ProjectBlock, type RequestBlock } from "./request-blocks";
-import { blockText, ProjectBlockView, RequestBlockView, type BlockCommon } from "./RequestBlocks";
+import { askUpFront, blockCounts, blockOfSection, pageBlocks, type BlockAction, type BlockGroup, type ProjectBlock, type RequestBlock } from "./request-blocks";
+import { blockText, ProjectBlockView, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -182,6 +182,7 @@ export function ProjectHome({
   const all = useMemo(() => [...sections, ...(team ?? []), ...(history ?? [])], [sections, team, history]);
   const { blocks, project: projectBlock } = useMemo(() => pageBlocks(requests, all), [requests, all]);
   const groups = useHeldBlocks(id, blocks, projectBlock, panel !== null && talkRequests !== null);
+  const upFront = useAsksUpFront();
   const counts = blockCounts(blocks, projectBlock);
   // With no request on the page, the Project's own block is all of it: it starts open, as its cards were. A
   // block the user opened or closed, or a jump opened, stays as it was left.
@@ -264,12 +265,15 @@ export function ProjectHome({
     // Run once the block it opened is drawn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landing, chosen, view]);
-  /** Shows the block a section is in, opened, and lands on the section; false when no block holds it. */
+  /**
+   * Shows the block a section is in, opened, and lands on the section; false when no block holds it. An open Ask is
+   * in its block's first look (W5): the jump lands on it and opens nothing.
+   */
   function showSection(key: string) {
     const block = blockOfSection(key, blocks, projectBlock);
     if (!block) return false;
     if (view !== "requests") setView("requests");
-    openBlock(block);
+    if (!askUpFront(key, blocks, projectBlock)) openBlock(block);
     setLanding((was) => ({ key, block, seq: (was?.seq ?? 0) + 1 }));
     return true;
   }
@@ -366,7 +370,7 @@ export function ProjectHome({
     const state = agent.executor?.state ? life.states[agent.executor.state] : "";
     return [name, state].filter(Boolean).join(" · ");
   };
-  const common: BlockCommon = { projectId: id, workspaceId, agents, readOnly, onSeen: (marks) => onSeen(id, marks), onChanged, onReport, notice };
+  const common: BlockCommon = { projectId: id, workspaceId, agents, readOnly, onSeen: (marks) => onSeen(id, marks), onChanged, onReport, notice, upFront };
   const teamFacts = (
     <>
       <ul className="project-team-members">
