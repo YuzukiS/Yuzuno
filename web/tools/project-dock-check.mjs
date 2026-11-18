@@ -11,7 +11,7 @@
 //  - a keyboard (simulated as keyboard-viewport.ts marks one: --visual-height
 //    and data-keyboard on the root): the dock's bottom is the visible
 //    height's, and the request followed up stays in view above it;
-//  - the conversation opens at its newest;
+//  - the conversation (the page's Conversation view) opens at its newest;
 //  - nothing is sent but the reads.
 // With YUZUNO_WEBKIT_WS it runs in Playwright's Linux WebKit instead (browser-engine.mjs), which is not iOS Safari.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-dock-check.mjs
@@ -85,10 +85,6 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const THUMB = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4cX0HVsQwtCQAhy6Vwe97qKgAAAAASUVORK5CYII=", "base64");
 const DRAFTS = "yuzuno.project-talk-drafts.v1";
 const SLOT = JSON.stringify(["ws-dock", "p-dev", "request"]);
-const words = {
-  en: { requests: "Requests", chat: "Conversation", followUp: "Follow up" },
-  "zh-Hans": { requests: "需求单", chat: "对话", followUp: "补充" },
-};
 // A phone's keyboard, as the design's prototype measured it (§4.4): 336 px of an 844 px screen.
 const KEYBOARD = 336;
 
@@ -119,7 +115,6 @@ async function check(run) {
     result.checks.push({ name, ...extra });
     console.log(`PASS [${engine} ${run.name}] ${name}`);
   };
-  const w = words[run.language];
   const context = await browser.newContext({
     viewport: run.viewport,
     locale: run.language === "en" ? "en-US" : "zh-CN",
@@ -176,7 +171,7 @@ async function check(run) {
     } else await page.reload();
     try {
       await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
-      await page.locator('.request-card[data-request="5"]').waitFor({ state: "attached", timeout: 15_000 });
+      await page.locator('[data-request-block="5"]').waitFor({ state: "attached", timeout: 15_000 });
       await page.locator(".home-dock .project-dock-form").waitFor({ timeout: 15_000 });
     } catch (error) {
       await page.screenshot({ path: join(output, `${engine}-${run.name}-failed-open.png`) }).catch(() => {});
@@ -210,7 +205,6 @@ async function check(run) {
   const page = await context.newPage();
   try {
     await open(page);
-    const narrow = run.viewport.width <= 900;
     // The composer is in the dock, and the dock is the stage's second row: nothing between, nothing under.
     let m = await measure(page);
     assert.ok(m.inDock && !m.underChat, `the composer is in the dock: ${JSON.stringify(m)}`);
@@ -226,7 +220,7 @@ async function check(run) {
     const end = await page.evaluate(() => {
       const view = document.querySelector(".home-view");
       view.scrollTop = view.scrollHeight;
-      const parts = [...document.querySelectorAll(".project-home > *, .project-home-body > *, .project-home-main > *")].filter((el) => el.getBoundingClientRect().height > 0);
+      const parts = [...document.querySelectorAll(".project-home > *, .project-home-body > *, .project-home-main > *, .request-blocks > *")].filter((el) => el.getBoundingClientRect().height > 0);
       const last = parts.reduce((a, b) => (b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a));
       return { last: last.className, bottom: last.getBoundingClientRect().bottom, viewBottom: view.getBoundingClientRect().bottom,
         dockTop: document.querySelector(".home-dock").getBoundingClientRect().top, scrolled: view.scrollTop > 0 };
@@ -262,8 +256,7 @@ async function check(run) {
 
     // A follow-up from a request: its tag above the field; what is written and the tag stay after a reload.
     await page.evaluate(() => (document.querySelector(".home-view").scrollTop = 0));
-    if (narrow) await page.locator('.project-talk-tabs [data-tab="requests"]').click();
-    await page.locator('.request-card[data-request="5"]').getByRole("button", { name: new RegExp(w.followUp) }).first().click();
+    await page.locator('[data-request-block="5"] .request-block-action[data-action="follow"]').click();
     const quoting = page.locator(".home-dock .project-talk-quoting");
     await quoting.waitFor({ timeout: 5000 });
     assert.match(await quoting.innerText(), new RegExp(R5));
@@ -295,8 +288,7 @@ async function check(run) {
         const view = document.querySelector(".home-view").getBoundingClientRect();
         const dock = document.querySelector(".home-dock").getBoundingClientRect();
         const main = document.querySelector(".main-panel").getBoundingClientRect();
-        const target = [...document.querySelectorAll(`.request-card[data-request="${n}"], .project-talk-mine[data-words="${n}"]`)]
-          .find((el) => el.getBoundingClientRect().height > 0) ?? document.querySelector(".project-talk");
+        const target = document.querySelector(`[data-request-block="${n}"]`);
         const box = target.getBoundingClientRect();
         return { dockBottom: dock.bottom, dockTop: dock.top, mainBottom: main.bottom, viewTop: view.top, viewBottom: view.bottom, target: target.className,
           targetTop: box.top, targetBottom: box.bottom, visible: innerHeight };
@@ -312,11 +304,11 @@ async function check(run) {
       });
     }
 
-    // The conversation opens at its newest.
-    if (narrow) await page.locator('.project-talk-tabs [data-tab="chat"]').click();
+    // The conversation, the page's Conversation view, opens at its newest, next to the dock.
+    await page.locator('.project-view-tabs [data-tab="chat"]').click();
     await page.waitForTimeout(300);
     const chat = await page.evaluate(() => {
-      const scroller = document.querySelector(".project-talk-chat .project-talk-scroll");
+      const scroller = document.querySelector(".home-view");
       return { top: scroller.scrollTop, height: scroller.scrollHeight, client: scroller.clientHeight };
     });
     assert.ok(chat.height - chat.top - chat.client <= 2, `the conversation is at its newest: ${JSON.stringify(chat)}`);

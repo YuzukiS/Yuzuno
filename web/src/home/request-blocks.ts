@@ -64,6 +64,11 @@ export type TaskRow = {
   asks: Section[];
   responsible: Who | null;
   deliverables: Deliverable[];
+  /**
+   * Why a task that ended shows nothing delivered (YN-208): cancelled, its result named nothing, or it ended with no
+   * result. Null while it goes on, once it delivered something, and from an older Core, which reads no deliverables.
+   */
+  nothing: "cancelled" | "noDeliverable" | "noResult" | null;
   /** Whether the card's version is older than the user's newest reply to one of the task's Asks, while it goes on. */
   cardBeforeReply: boolean;
   /** The request it is shown under: the lowest-numbered one routed to it. */
@@ -170,6 +175,7 @@ function rowsOf(requests: readonly ProjectRequest[], sections: readonly Section[
         asks,
         responsible: routed.responsible,
         deliverables: routed.deliverables?.items ?? [],
+        nothing: nothingDelivered(routed),
         cardBeforeReply: !!card && !ended(routed.task.status) && replied > time(card.updatedAt),
         home: request.n,
         alsoFor: [],
@@ -178,6 +184,13 @@ function rowsOf(requests: readonly ProjectRequest[], sections: readonly Section[
     }
   }
   return rows;
+}
+
+/** Why an ended task delivered nothing (`TaskRow.nothing`), as the request's card said it before YN-212. */
+function nothingDelivered(card: RequestCard): TaskRow["nothing"] {
+  const over = card.task.archived || ended(card.task.status);
+  if (card.deliverables === undefined || card.deliverables?.items.length || !over) return null;
+  return card.task.status === "cancelled" ? "cancelled" : card.result ? "noDeliverable" : "noResult";
 }
 
 /** The newest of what the user replied and what the card says, for one task going on (§3.2 row 7). */

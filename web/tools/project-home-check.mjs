@@ -144,8 +144,8 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you3/, doing: /^In progress2/, done: /^Done · 2 cards · .* · 30-day history 1$/, newMark: "New", inProgress: "In progress" },
-  "zh-Hans": { needs: /^需要你处理3/, doing: /^进行中2/, done: /^已完成 · 2 张 · .* · 30 天历史 1$/, newMark: "新", inProgress: "进行中" },
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress" },
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中" },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -429,25 +429,27 @@ async function check(run) {
     pass(`${run.phone ? "a glance tapped" : "the rail's name clicked"} opens the page at its heading, framed by nothing on the way or landed (R-23)`, opened);
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
-    await noOverflow(".project-home-head, .project-deck-group");
-    // The three groups, in order, Done closed.
-    const titles = await page.locator(".project-deck-title, .project-deck-done > summary").evaluateAll((els) => els.map((el) => el.textContent.trim()));
+    await noOverflow(".project-home-head, .request-blocks");
+    // YN-212: the page reads by request. With none, the Project's own block is all of it, open, in Needs you while an
+    // Ask of its own waits; the 30-day history is in Done, closed.
+    const titles = await page.locator(".request-group-title").evaluateAll((els) => els.map((el) => el.textContent.trim()));
     assert.match(titles[0], w.needs);
-    assert.match(titles[1], w.doing);
-    assert.match(titles[2], w.done);
-    assert.equal(await page.locator(".project-deck-done").evaluate((el) => el.open), false, "Done is closed at first");
-    assert.equal(await page.locator(".project-deck-done .home-history").count(), 1, "the 30-day history is inside Done");
+    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block][data-open]').count(), 1, "the Project's block, open, in Needs you");
+    assert.equal(await page.locator(".request-done").evaluate((el) => el.open), false, "Done is closed at first");
+    assert.equal(await page.locator(".request-done .home-history").count(), 1, "the 30-day history is inside Done");
     await shot("project");
-    pass("Needs you, In progress and Done in order; Done closed with the history inside; no overflow", titles);
-    // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page,
-    // and the cards' own third column from 932 px of card area.
+    pass("the Project's block open in Needs you; Done closed with the history inside; no overflow", titles);
+    // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page;
+    // the cards' columns follow the Project's block's own width (a deck of its own, YN-212), at most 920 px.
     const shape = await page.evaluate(() => {
       const page = document.querySelector('[data-project-home="p-dev"]');
       const main = page.querySelector(".project-home-main");
-      const deck = main.querySelector(".project-deck .home-brief");
+      const deck = main.querySelector(".project-block-cards .home-brief");
+      const box = getComputedStyle(deck.parentElement);
       const team = page.querySelector(".project-team");
       const teamBox = team.getBoundingClientRect(), mainBox = main.getBoundingClientRect();
-      return { width: Math.round(page.clientWidth), cardArea: Math.round(main.clientWidth),
+      return { width: Math.round(page.clientWidth),
+        cardArea: Math.round(deck.parentElement.clientWidth - Number.parseFloat(box.paddingLeft) - Number.parseFloat(box.paddingRight)),
         columns: getComputedStyle(deck).gridTemplateColumns.split(" ").length,
         team: team.tagName.toLowerCase(), beside: teamBox.left > mainBox.right - 1,
         spans: [...new Set([...deck.querySelectorAll("[data-section-key]")].map((el) => el.dataset.deckCols ?? "none"))] };
@@ -456,22 +458,21 @@ async function check(run) {
     assert.equal(shape.team, shape.width >= 1250 ? "aside" : "details", `the team beside only from 1250 px: ${JSON.stringify(shape)}`);
     assert.equal(shape.beside, shape.width >= 1250, JSON.stringify(shape));
     if (run.name === "1440") {
-      assert.equal(shape.columns, 3, `three columns at 1440: ${JSON.stringify(shape)}`);
+      assert.equal(shape.columns, 2, `two columns in the block at 1440: ${JSON.stringify(shape)}`);
       assert.equal(shape.team, "details", `the team below at 1440: ${JSON.stringify(shape)}`);
     }
     if (run.name === "1920") {
-      assert.equal(shape.columns, 4, `four columns at 1920: ${JSON.stringify(shape)}`);
+      assert.equal(shape.columns, 2, `two columns in the block at 1920: ${JSON.stringify(shape)}`);
       assert.equal(shape.team, "aside", `the team beside at 1920: ${JSON.stringify(shape)}`);
     }
     if (run.phone) assert.equal(shape.columns, 1, `one column on a phone: ${JSON.stringify(shape)}`);
-    pass("the cards' columns follow the card area, and the team stands beside them only from 1250 px", shape);
+    pass("the cards' columns follow the Project's block, and the team stands beside them only from 1250 px", shape);
     // The unread report: New, open it, read it, come back with New gone and the card in the same place.
     const unread = card("design");
     await unread.scrollIntoViewIfNeeded();
     assert.equal((await unread.locator(".home-changed").innerText()).trim(), w.newMark);
     const before = await unread.evaluate((el) => {
-      const group = el.closest("section[aria-labelledby], details");
-      return { top: Math.round(el.getBoundingClientRect().top), group: group?.getAttribute("aria-labelledby") ?? group?.className ?? null };
+      return { top: Math.round(el.getBoundingClientRect().top), group: el.closest(".request-group")?.dataset.group ?? null };
     });
     await unread.locator(".home-report-open").click();
     await page.locator(".home-report .report-head h1").waitFor({ timeout: 15_000 });
@@ -483,8 +484,7 @@ async function check(run) {
     await projectPage().waitFor({ timeout: 15_000 });
     await page.waitForFunction(() => !document.querySelector("#home-section-p-dev-design .home-changed"), null, { timeout: 10_000 });
     const after = await unread.evaluate((el) => {
-      const group = el.closest("section[aria-labelledby], details");
-      return { top: Math.round(el.getBoundingClientRect().top), group: group?.getAttribute("aria-labelledby") ?? group?.className ?? null };
+      return { top: Math.round(el.getBoundingClientRect().top), group: el.closest(".request-group")?.dataset.group ?? null };
     });
     assert.equal(after.group, before.group, "the card stays in the same group");
     assert.ok(Math.abs(after.top - before.top) <= 1, `the card does not move: ${JSON.stringify({ before, after })}`);

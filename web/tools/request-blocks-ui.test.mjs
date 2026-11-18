@@ -205,6 +205,26 @@ test("unfolded: open Asks first, then the task's one card, the answered Asks, jo
   assert.equal(page.block(7).querySelector(".request-block-body"), null);
 });
 
+// PR 1089 R1 (P3): a task's other statuses and reports, from before one task had one card, fold under its card; a
+// card's task is said unless its author is named for that very task (YN-9 is not YN-93).
+test("a task's earlier cards fold under its one card; its task is said unless its author is named for that very task", async () => {
+  const page = mount({ opened: ["r7"] });
+  const { requests, sections } = fixtures();
+  const earlier = section("yn-91/lead", "status", "Lead notes on the layouts", 90, { status: { asOf: ago(90), validFor: 3600, stale: false }, card: bind("YN-91") });
+  const nine = section("yn-9", "status", "Nine's card", 3, { author: { agentId: "x", name: "YN-93 · Export" },
+    status: { asOf: ago(3), validFor: 3600, stale: false }, card: bind("YN-9") });
+  page.window.renderPage({ requests: [...requests, request(12, 10, "doing", [routed(nine, "YN-9")])], sections: [...sections, earlier, nine] });
+  await tick();
+  const fold = page.block(7).querySelector('.request-task[data-task="YN-91"] > .request-task-earlier');
+  assert.equal(page.text(fold.querySelector("summary")), "Earlier card 1");
+  assert.equal(fold.open, false, "folded");
+  assert.ok(fold.querySelector('[data-section-key="yn-91/lead"]'), "the earlier card, in the fold");
+  assert.equal(page.block(7).querySelector('.request-task-card [data-section-key]').dataset.sectionKey, "yn-91", "the newest is its one card");
+  assert.match(page.text(page.block(12).querySelector(".request-block-fact-meta")), /^YN-9 · by YN-93 · Export/);
+  assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^Card past its validity · by YN-93 · Export/);
+  assert.deepEqual(page.errors, []);
+});
+
 test("read only: no action, the first look and what was delivered stay", () => {
   const page = mount({ readOnly: true });
   assert.equal(page.document.querySelectorAll(".request-block-action").length, 0);

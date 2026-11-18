@@ -10,6 +10,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // T-18: a section's report, a page over Home. The real Home, with Core
 // answered here and the app's links stood in for. Synthetic data only; no
@@ -138,7 +139,7 @@ function mount(read, answer = () => undefined) {
   window.eval(bundle);
   const document = window.document;
   const report = () => document.querySelector(".home-report");
-  const card = (key) => document.querySelector(`.home-view [data-section-key="${key}"]`);
+  const card = (key) => (unfoldBlocks(document), document.querySelector(`.home-view [data-section-key="${key}"]`));
   const button = (scope, label) => [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
   const press = async (scope, label) => {
     const found = button(scope, label);
@@ -154,6 +155,9 @@ async function openHome(read, incoming = null, answer, project = "p1") {
   page.window.startProject = project;
   page.window.renderHome(incoming);
   await until(() => page.document.querySelector(".project-home, .home-layout"), "Home read");
+  // A Project's page draws its cards once its requests are read (YN-212): wait a moment for them, as a reader would.
+  for (let i = 0; i < 50 && page.document.querySelector(".project-home") && !page.document.querySelector(".project-home [data-section-key]"); i++)
+    await tick(20);
   await tick(40);
   return page;
 }

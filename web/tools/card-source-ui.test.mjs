@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-86 S3b-2: a card a request was routed to says where it came from, in
 // one line above who answers for it: "Request: <title>", how many cards that
@@ -175,7 +176,7 @@ function mount({ language, refuse = 0, unread = null } = {}) {
   };
   window.eval(bundle);
   const document = window.document;
-  const cardOf = (key) => document.querySelector(`.project-home [data-section-key="${key}"]`);
+  const cardOf = (key) => (unfoldBlocks(document), document.querySelector(`.project-home [data-section-key="${key}"]`));
   const source = (key) => cardOf(key)?.querySelector(":scope .card-source") ?? null;
   const button = (label, scope = document) =>
     [...scope.querySelectorAll("button")].find((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
@@ -186,7 +187,7 @@ function mount({ language, refuse = 0, unread = null } = {}) {
 async function openPage(options) {
   const p = mount(options);
   p.window.renderHome({ agents, projects });
-  await until(() => p.cardOf("yn-7") && p.document.querySelector('.request-card[data-request="3"]'), "the Project's page, its cards and its requests");
+  await until(() => p.cardOf("yn-7") && p.document.querySelector('[data-request-block="3"]'), "the Project's page, its cards and its requests");
   await tick(40);
   return p;
 }
@@ -229,16 +230,15 @@ test("a card says which request it came from, above who answers for it; its deta
   assert.deepEqual(p.errors, []);
 });
 
-test("See words → goes back to the words in Talk to the project: shown, the request selected with its handoffs open", async (t) => {
+// YN-212: the page reads by request; a request's words are in the project's conversation, which See words shows.
+test("See words → goes back to the words in the project's conversation: shown, with the focus", async (t) => {
   const p = await openPage();
   t.after(p.close);
   p.source("yn-7").querySelector(".card-source-line").click();
   await tick();
   p.button("Show your words for “Export CSV” in the conversation").click();
-  await until(() => p.document.querySelector('.request-card[data-request="4"][data-selected]'), "R-4 selected");
-  const request = p.document.querySelector('.request-card[data-request="4"]');
-  assert.ok(request.querySelector(".routing-events"), "its handoffs open");
-  const words = p.document.querySelector('.project-talk-mine[data-words="4"]');
+  await until(() => p.document.querySelector('[role="tab"][data-tab="chat"][aria-selected="true"]'), "the conversation shown");
+  const words = await until(() => p.document.querySelector('.project-talk-mine[data-words="4"]'), "R-4's words");
   assert.equal(words.querySelector(".project-talk-bubble").textContent, "Export also as CSV, as said before");
   await until(() => p.document.activeElement === words, "the words have the focus");
   assert.deepEqual(p.errors, []);
@@ -306,20 +306,19 @@ test("the source line and the dialog in Chinese", async (t) => {
   assert.deepEqual(p.errors, []);
 });
 
-test("a card no longer on the page opens its task instead, from its request's line and its handoff (R1 56f63019 P3)", async (t) => {
+// YN-212: a request's tasks are in its block; one whose card is no longer kept says so and opens its task.
+test("a card no longer on the page opens its task instead, from its request's block (R1 56f63019 P3)", async (t) => {
   const p = await openPage();
   t.after(p.close);
-  const request = await until(() => p.document.querySelector('.request-card[data-request="2"]'), "R-2 in Done");
-  assert.equal(p.cardOf("yn-6"), null, "its card is not on the page");
-  request.querySelector(".request-card-one").click();
-  assert.deepEqual(realm(p.opened), [{ taskId: "YN-6" }]);
-  p.button("Handoffs 3", request).click();
+  const done = await until(() => p.document.querySelector(".request-done"), "Done's fold");
+  done.open = true;
   await tick();
-  p.button("See archive", request).click();
-  assert.deepEqual(realm(p.opened), [{ taskId: "YN-6" }, { taskId: "YN-6" }]);
-  // A card on the page is shown, not its task.
-  p.document.querySelector('.request-card[data-request="3"] .request-card-row').click();
-  assert.equal(p.opened.length, 2);
+  const request = await until(() => (unfoldBlocks(p.document), p.document.querySelector('[data-request-block="2"] .request-task[data-task="YN-6"]')),
+    "R-2's task in Done");
+  assert.equal(p.cardOf("yn-6"), null, "its card is not on the page");
+  assert.match(request.querySelector(".request-task-none").textContent, /^Its card is no longer on Home/);
+  p.button("Open YN-6 in Tasks", request).click();
+  assert.deepEqual(realm(p.opened), [{ taskId: "YN-6" }]);
   assert.deepEqual(p.errors, []);
 });
 
@@ -327,8 +326,8 @@ test("See words for a request not read yet reads the page before it once; a page
   const p = mount({ unread: 4 });
   t.after(p.close);
   p.window.renderHome({ agents, projects });
-  await until(() => p.cardOf("yn-7") && p.document.querySelector('.request-card[data-request="3"]'), "the page without R-4");
-  assert.equal(p.document.querySelector('.request-card[data-request="4"]'), null);
+  await until(() => p.cardOf("yn-7") && p.document.querySelector('[data-request-block="3"]'), "the page without R-4");
+  assert.equal(p.document.querySelector('[data-request-block="4"]'), null);
   p.source("yn-7").querySelector(".card-source-line").click();
   await tick();
   p.button("Show your words for “Export CSV” in the conversation").click();

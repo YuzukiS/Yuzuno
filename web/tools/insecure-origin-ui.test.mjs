@@ -8,6 +8,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { hoverTip } from "./tip-dom.mjs";
+import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-36: the built app opened over plain http on a LAN or tailnet address
 // (here 192.0.2.10, a documentation address). Such a page is not a secure
@@ -174,7 +175,7 @@ async function mount({ copies = null } = {}) {
     w.close();
     throw error;
   }
-  const card = (key) => doc.getElementById(`home-section-p-app-${key}`);
+  const card = (key) => (unfoldBlocks(doc), doc.getElementById(`home-section-p-app-${key}`));
   /** What the page says went wrong, if anything: each alert's words. */
   const alerts = (root = doc) => [...root.querySelectorAll('[role="alert"]')].map((e) => e.textContent.trim()).filter(Boolean);
   return {

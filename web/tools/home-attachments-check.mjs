@@ -46,9 +46,9 @@ const home = () => ({
 });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { chat: "Conversation", plus: "Add", items: ["Add images", "Mark up an image"], choose: "Choose images", markUp: (n) => `Mark up image ${n}`,
+  en: { chat: "Conversation", plus: "Add", items: ["Add images", "Mark up an image", "Add files"], choose: "Choose images", markUp: (n) => `Mark up image ${n}`,
     addsTo: "Adds to: Talk to Atlas dev", add: "Add" },
-  "zh-Hans": { chat: "对话", plus: "添加", items: ["添加图片", "标注图片"], choose: "选择图片", markUp: (n) => `标注图片 ${n}`,
+  "zh-Hans": { chat: "对话", plus: "添加", items: ["添加图片", "标注图片", "添加文件"], choose: "选择图片", markUp: (n) => `标注图片 ${n}`,
     addsTo: "加到：对 Atlas dev 说", add: "加入" },
 };
 
@@ -175,8 +175,9 @@ async function check(run) {
   try {
     await page.goto(`http://${HOST}/#/home?w=ws-img&p=p-dev`);
     await page.locator('[data-project-home="p-dev"]').waitFor({ timeout: 15_000 });
-    await page.locator('.request-card[data-request="5"]').waitFor({ timeout: 15_000 });
-    if (run.phone) await page.locator(".project-talk-tabs [role=tab]").filter({ hasText: w.chat }).first().click();
+    await page.locator('[data-request-block="5"]').waitFor({ timeout: 15_000 });
+    // The conversation (YN-212: the page's other view); the composer is in Home's dock under either.
+    if (run.phone) await page.locator('[role=tab][data-tab="chat"]').click();
     await compose.scrollIntoViewIfNeeded();
 
     // "+" inside the box, at its bottom left.
@@ -203,7 +204,8 @@ async function check(run) {
     assert.deepEqual(items.map((i) => i.label), w.items);
     assert.ok(items.every((i) => i.shown && i.inWindow), `the menu is whole, nothing clips or covers it: ${JSON.stringify(items)}`);
     if (run.phone) assert.ok(items.every((i) => i.height >= 44), `items at least 44px on a phone: ${JSON.stringify(items)}`);
-    await shot("menu", run.phone ? page : page.locator(".project-talk"));
+    // The menu over the page: in the Requests view the conversation is not shown (YN-212), the composer is in the dock.
+    await shot("menu", page);
     pass("the menu opens whole over the conversation", { items });
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
@@ -241,7 +243,8 @@ async function check(run) {
         if (r.left < frame.left - 0.5 || r.right > frame.right + 0.5) outside.push(Math.round(r.right));
       }
       return { page: document.scrollingElement.scrollWidth, window: innerWidth, view: document.querySelector(".home-view")?.scrollWidth ?? 0, rows: tops.size, outside,
-        chat: (() => { const s = document.querySelector(".project-talk-chat .project-talk-scroll"); return { scroll: s.scrollWidth, client: s.clientWidth }; })() };
+        // The conversation is the page itself now (YN-212): Home's scroller holds it.
+        chat: (() => { const s = document.querySelector(".home-view"); return { scroll: s.scrollWidth, client: s.clientWidth }; })() };
     });
     assert.ok(fit.page <= fit.window + 1 && fit.view <= fit.window + 1, `nothing wider than the window: ${JSON.stringify(fit)}`);
     assert.deepEqual(fit.outside, [], `thumbnails inside the box: ${JSON.stringify(fit)}`);
@@ -257,6 +260,8 @@ async function check(run) {
     assert.equal(posts[0].images.length, 8);
     assert.ok(posts[0].images.every((id) => stored.has(id)), "the IDs the project's images gave");
     report.sent.push({ run: run.name, images: posts[0].images.length, text: posts[0].text.slice(0, 40) });
+    // The conversation, where the request sent before shows its words and image (YN-212: the page's other view).
+    await page.locator('[role=tab][data-tab="chat"]').click();
     const bubble = page.locator('.project-talk-mine[data-words="5"] .project-talk-bubble');
     await bubble.locator(".input-image img").first().waitFor();
     const inside = await bubble.evaluate((el) => {
@@ -265,7 +270,7 @@ async function check(run) {
       return { inside: img.left >= frame.left && img.right <= frame.right && img.bottom <= frame.bottom + 0.5, loaded: el.querySelector(".input-image img").naturalWidth > 0 };
     });
     assert.ok(inside.inside && inside.loaded, `a sent image inside its bubble: ${JSON.stringify(inside)}`);
-    await shot("thread", page.locator(".project-talk-chat"));
+    await shot("thread", page.locator(".project-talk"));
     pass("the request sends its eight images' IDs; a sent image shows in its bubble", { sent: posts[0].images.length, inside });
   } finally {
     await context.close();

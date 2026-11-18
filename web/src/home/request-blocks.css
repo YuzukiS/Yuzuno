@@ -25,12 +25,33 @@
   color: var(--home-ink-2);
   font-weight: 400;
 }
+/* Done: closed at each visit; a jump to a request in it opens it (card-fold.tsx). */
 .request-done > summary {
   cursor: pointer;
   list-style: none;
 }
 .request-done > summary::-webkit-details-marker {
   display: none;
+}
+.request-done > summary::before {
+  content: "›";
+  display: inline-block;
+  color: var(--home-ink-2);
+  transition: transform var(--motion-small) var(--ease-standard);
+}
+.request-done[open] > summary::before {
+  transform: rotate(90deg);
+}
+.request-done > summary:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.request-done .home-history {
+  margin-top: 10px;
+}
+.request-block-error {
+  max-width: 260px;
+  margin: 4px 0 0;
 }
 .request-done[open] > summary {
   margin-bottom: 8px;
@@ -273,6 +294,16 @@
   color: var(--home-ink-2);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+/* An ended task with nothing delivered: why, then its task (YN-208). */
+.request-deliverables-none {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
 .request-task-earlier > summary,
 .request-thread > summary {
   color: var(--home-ink-2);
@@ -361,8 +392,11 @@
   color: var(--home-ink-2);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
+/* Its cards, opened: the Project's deck (home.css .home-brief), sized by the block's own width. */
 .project-block-cards {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  display: block;
+  padding-top: 0;
+  container: deck / inline-size;
 }
 
 /* A phone: the action at the end of the fold's row, a whole finger high, so the fact keeps the width. */
