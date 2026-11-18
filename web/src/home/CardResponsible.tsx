@@ -20,8 +20,10 @@ export const openTask = (taskId: string) =>
  * The foot of a card bound to a task (YN-86 §3.2, the user's A): who answers
  * for it, in what state, as the rail says it; its task's key, which opens the
  * task; and Reply (to them, by default), Open session and Reassign. It takes
- * the place of the author's byline; where the author is someone else, its tip
- * says so. Above it, where the card came from (CardSource, §4.3). Reassign
+ * the place of the author's byline: who wrote this version follows, the
+ * author Core records for it (YN-212 C1), else its owner, with the owner in
+ * its tip when that is someone else. Above it, where the card came from
+ * (CardSource, §4.3). Reassign
  * gives the card to another Agent of the Project or a new executor (§3.3,
  * §4.3), or opens its task; once the task is over there is nothing to
  * reassign. Reply's tip names whom the reply goes to by default, as the
@@ -56,8 +58,10 @@ export function CardResponsible({
     ?? (recipient === section.owner.agentId ? section.owner.name : who?.name ?? section.owner.name);
   const ended = taskEnded(card);
   const task = card.task.id;
-  // Who wrote the card, when that is not who answers for it.
-  const author = who && who.agentId !== section.owner.agentId ? t.writtenBy(section.owner.name) : null;
+  // Who wrote this version (YN-212 C1; an older Core's owner wrote every version), and whose card it is when not theirs.
+  const writer = section.author ?? section.owner;
+  const kept = writer.agentId !== section.owner.agentId ? t.keptBy(section.owner.name) : null;
+  const wrote = <span className="home-card-author">{t.writtenBy(writer.name)}</span>;
   const canReassign = !!place && section.id !== undefined;
   const name = (
     <span className="home-card-responsible-name">
@@ -75,7 +79,7 @@ export function CardResponsible({
         <span className="home-card-responsible-label">{t.responsible}</span>
         {who ? (
           <>
-            {author ? <Tip content={<TipText title={author} />}>{name}</Tip> : name}
+            {name}
             {/* Its whole state, when the line cuts it. */}
             <Tip content={<TipText title={who.state} />} cut>
               <span className="home-card-responsible-state" data-dot={who.dot || undefined}>{who.state}</span>
@@ -89,6 +93,7 @@ export function CardResponsible({
             {task}
           </button>
         </Tip>
+        {kept ? <Tip content={<TipText title={kept} />}>{wrote}</Tip> : wrote}
       </span>
       <span className="home-card-responsible-actions">
         {reply && (

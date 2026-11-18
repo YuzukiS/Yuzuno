@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { tipOf } from "./tip-dom.mjs";
+import { noTipOf, tipOf } from "./tip-dom.mjs";
 import { unfoldBlocks } from "./request-blocks-driver.mjs";
 
 // YN-86 S2b: a card bound to a task says at its foot who answers for it, in
@@ -195,9 +195,11 @@ test("a card bound to a task says who answers for it at its foot, in the rail's 
   // The executor's state as its row on the rail says it (executorView, ExecutorRowState.tsx): running and working.
   assert.equal(strip.querySelector(".home-card-responsible-state").textContent, "Working");
   assert.ok(strip.querySelector(".status-dot").classList.contains("working"));
-  // It takes the author's byline: the author is named in its tip, being someone else.
+  // It takes the author's byline: who wrote this version follows the task's key (YN-212 W4), here its owner, as an
+  // older Core says it; a version another wrote names them, its owner in its tip.
   assert.equal(spec.querySelector(".home-summary-byline .home-owner"), null, "no byline with the author");
-  assert.deepEqual(await tipOf(strip.querySelector(".home-card-responsible-name")), ["Card written by Mori"]);
+  assert.equal(strip.querySelector(".home-card-author").textContent, "Written by Mori");
+  assert.ok(await noTipOf(strip.querySelector(".home-card-author")), "its owner wrote it: no tip");
   // Reply moved into the line: not also in the card's head.
   assert.equal(spec.querySelector(".home-summary-head .home-reply-open"), null);
   assert.deepEqual([...strip.querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["Reply", "Open session", "Reassign"]);
@@ -335,7 +337,7 @@ test("the responsible line and Done's archived cards in Chinese (YN-86 S2b)", as
   assert.equal(strip.querySelector(".home-card-responsible-state").textContent, "在做");
   assert.deepEqual([...strip.querySelectorAll(".home-card-responsible-actions button")].map(p.words), ["回复", "打开会话", "改派"]);
   assert.equal(strip.querySelector(".home-card-task").getAttribute("aria-label"), "打开任务 YN-7");
-  assert.deepEqual(await tipOf(strip.querySelector(".home-card-responsible-name")), ["卡片由 Mori 写"]);
+  assert.equal(strip.querySelector(".home-card-author").textContent, "Mori 写");
   assert.equal(p.card("late").querySelector(".home-task-ended").textContent, "任务已完成");
   assert.equal(p.card("design").querySelector(".home-task-ended").textContent, "任务完成，已归档");
   assert.equal(p.strip("design").querySelector(".home-card-responsible-state").textContent, "完成 · 已归档");

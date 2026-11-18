@@ -7,6 +7,9 @@
 //  - Answer opens R-7's block at its Ask; Confirm done files it under Done;
 //    a joined task's line shows the request its card is under (R-14 → R-12);
 //  - nothing is wider than the window, and the composer is in the dock;
+//  - W4: R-7's card names who wrote it (Core's author, else its owner); its
+//    earlier version, from the card's versions fold, opens on the report
+//    page read only, as Core's history keeps it, the current one offered;
 //  - See words on R-7's card shows its words in the project's conversation,
 //    where a long unbroken word stays inside its bubble (before YN-212,
 //    project-talk-check's two columns checked these);
@@ -68,6 +71,7 @@ function fixtures(stage, confirmed = false) {
     done ? 6 : stage === "working" ? 5 : 4, cardMin, {
       author: { agentId: "x181", name: agents[1].name },
       ...(done ? {} : { status: { asOf: at(cardMin), validFor: 14_400, stale: false } }),
+      ...(stage === "working" ? { revisions: [{ version: 4, author: { agentId: "lead", name: "Dev Lead" }, at: at(52) }] } : {}),
       card: { ...binding("YN-181", done ? "done" : "doing", x181),
         handoffs: { requests: [{ n: 7, title: "Mac 桌面版应用内更新", at: at(2900), merged: false, messageId: "m7" }], events: [] } },
     });
@@ -194,6 +198,11 @@ async function check(run) {
     if (path === `/api/projects/${PROJECT}/front-desk`) return route.fulfill({ json: { version: 1, agentId: "lead", effectiveAgentId: "lead" } });
     if (path === `/api/projects/${PROJECT}/requests` && method === "GET") return route.fulfill({ json: { requests: data.requests, hasMore: false } });
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    // R-7's card's version 4, which its history keeps (C2), as Core reads it by the card's identity.
+    if (path === `/api/projects/${PROJECT}/brief/refreshes/901/versions/4` && method === "GET") {
+      const now = fixtures("asked").sections.find((s) => s.key === "yn-181");
+      return route.fulfill({ json: { ...now, version: 4, author: { agentId: "lead", name: "Dev Lead" }, historyReason: "revised" } });
+    }
     if (method !== "GET") {
       if (/^\/api\/agents\/\w+\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
       report.posts.push({ run: run.name, method, path });
@@ -303,6 +312,27 @@ async function check(run) {
     });
     assert.ok(joined.card && joined.top >= joined.viewTop - 1 && joined.top < joined.viewBottom, `R-12 shown with its card: ${JSON.stringify(joined)}`);
     pass("a joined line shows the request its card is under", joined);
+
+    // W4: who wrote R-7's card, and its earlier version opened on the report page, read only, the current one offered.
+    await open("working");
+    await page.locator('[data-request-block="7"] .request-block-more').click();
+    const author = (await page.locator('[data-request-block="7"] [data-section-key="yn-181"] .home-card-author').innerText()).trim();
+    assert.equal(author, run.language === "en" ? `Written by ${agents[1].name}` : `${agents[1].name} 写`);
+    const versions = page.locator('[data-request-block="7"] .request-task-versions');
+    await versions.locator("summary").click();
+    await versions.locator("button").first().click();
+    await page.locator(".home-report .report-head h1").waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.querySelector(".home-report .report-notice")?.textContent.includes("4"), null, { timeout: 10_000 });
+    const old = await page.evaluate(() => ({
+      hash: location.hash, title: document.querySelector(".home-report .report-head h1")?.textContent.trim() ?? "",
+      notice: document.querySelector(".home-report .report-notice")?.textContent.trim() ?? "",
+      offered: document.querySelectorAll(".home-report .report-notice button").length,
+    }));
+    assert.ok(/[?&]v=4\b/.test(old.hash) && old.title === "等你决定是否重签" && old.offered === 1, `version 4 on the report page: ${JSON.stringify(old)}`);
+    await shot("earlier-version");
+    await page.locator(".report-back").click();
+    await page.waitForFunction(() => !document.querySelector(".home-report"), null, { timeout: 10_000 });
+    pass("R-7's card names who wrote it; its earlier version opens on the report page", { author, ...old });
 
     // See words: R-7's card's source line shows its words in the conversation, with the focus; nothing is wider there.
     await open("working");
