@@ -790,13 +790,13 @@ async fn a_tasks_card_keeps_each_version_its_writes_replace() {
     let old = crate::project_brief::refresh_writes::version(&ws.store, &project, identity, 2).unwrap().unwrap_or_else(|_| panic!("refused"));
     assert_eq!((old["version"].clone(), old["author"]["agentId"].clone(), old["historyReason"].clone()), (json!(2), json!("c"), json!("revised")));
 
-    let panel = panel(&ws);
-    let shown = panel["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
+    let home = panel(&ws);
+    let shown = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
     let listed: Vec<(Value, Value)> = shown["revisions"].as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
     assert_eq!(listed, [(json!(3), json!("c")), (json!(2), json!("c")), (json!(1), json!("a"))]);
     assert_eq!(shown["id"], json!(identity), "the same section on Home");
-    assert!(!keys(&panel, "history").contains(&key), "History leaves the earlier versions out");
-    let plan = panel["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "plan").unwrap();
+    assert!(!keys(&home, "history").contains(&key), "History leaves the earlier versions out");
+    let plan = home["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "plan").unwrap();
     assert!(plan.get("revisions").is_none(), "{plan}");
     assert!(section(&brief(&ws, "a"), &key).get("revisions").is_none(), "brief_get stays as it was");
 
@@ -806,8 +806,8 @@ async fn a_tasks_card_keeps_each_version_its_writes_replace() {
     let left: i64 = ws.store.db.read().unwrap()
         .query_row("SELECT COUNT(*) FROM project_brief_sections WHERE history_reason='revised'", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0);
-    let panel = panel(&ws);
-    let shown = panel["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap();
+    let after = panel(&ws);
+    let shown = after["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap();
     assert!(shown.get("revisions").is_none() && shown["version"] == 4, "{shown}");
 }
 
