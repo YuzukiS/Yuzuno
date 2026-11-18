@@ -201,6 +201,34 @@ class LocalCompatibility(unittest.TestCase):
         had = {'cwd': '/w', 'git': None, 'files': [file('/w/gone', SHA), file('/w/here', SHA)]}
         self.assertIn('/w/gone', self.check(had, gone))
 
+    def test_every_snapshot_key_decides_as_before(self):
+        """cwd, scope, a key added later and the files' order all still refuse:
+        they are not in the named facts, so the old fallback sentence is used."""
+        frozen = {'cwd': '/w', 'git': git(), 'files': [file('/w/a', SHA), file('/w/b', SHA)],
+                  'scope': 'Frozen argv/env/resources; the old words.', 'resumeFrom': None}
+        fallback = 'Guarded inputs changed while queued (the list of changed tracked files); command was not started.'
+        for change in ({'cwd': '/v'}, {'scope': 'Frozen argv/env/resources; new words.'},
+                       {'added': {'by': 'a later wrapper'}}, {'files': [file('/w/b', SHA), file('/w/a', SHA)]}):
+            current = dict(frozen, **change)
+            self.assertEqual(self.check(frozen, current), fallback, change)
+
+    def test_a_record_written_by_an_older_wrapper_still_matches_or_refuses(self):
+        # Equal records of every shape allow the start, including an older one
+        # without resumeFrom and one carrying keys this wrapper does not know.
+        for frozen in ({'cwd': '/w', 'git': git(), 'files': []},
+                       {'cwd': '/w', 'git': None, 'files': [], 'resumeFrom': {'jobId': 'j'}},
+                       {'cwd': '/w', 'git': git(), 'files': [], 'legacy': {'attempt': 'a'}}):
+            self.assertIsNone(self.check(frozen, dict(frozen)), frozen)
+        old = {'cwd': '/w', 'git': git(), 'files': []}
+        self.assertIn('the checkpoint it resumes from',
+                      self.check(old, {'cwd': '/w', 'git': git(), 'files': [],
+                                       'resumeFrom': {'jobId': 'j', 'attempt': 'a', 'manifestSha256': SHA}}))
+        # A record frozen before a key existed differs from what this wrapper
+        # computes now: refused, by the fallback, never silently accepted.
+        self.assertEqual(self.check(old, dict(old, scope='a key a later wrapper added')),
+                         'Guarded inputs changed while queued (the list of changed tracked files); '
+                         'command was not started.')
+
     def test_a_moved_commit_is_the_git_commit(self):
         frozen = {'cwd': '/w', 'git': git(), 'files': []}
         current = {'cwd': '/w', 'git': git(head=OTHER), 'files': []}
@@ -275,13 +303,11 @@ class RemoteCompatibility(unittest.TestCase):
         old = old_remote_guard_reason(spec, now, tracked, changed)
         named = {i['path'] for i in spec.get('inputs') or []}
         hint = " If an earlier stage writes a tracked file, declare it as that stage's artifact." if 'needs' in spec else ""
-        new = REMOTE.check_start(frozen, now, changed, [p for p in tracked if p not in named], hint=hint)
         differs = bool(changed) or REMOTE.git_compared(now) != REMOTE.git_compared(frozen)
+        new = REMOTE.check_start(differs, frozen, now, changed, [p for p in tracked if p not in named], hint=hint)
         self.assertEqual(new is not None, differs)
         if differs:
             self.assertEqual(new, old)
-        else:
-            self.assertTrue(old.endswith('the list of changed tracked files); command was not started.'), old)
         return new
 
     def test_the_same_facts_name_the_same_changes(self):
@@ -292,8 +318,10 @@ class RemoteCompatibility(unittest.TestCase):
         self.assertEqual(self.check(spec, git(), git(), ['/w/c'], ['/w/a (its content changed)']),
                          'Guarded inputs changed while queued (/w/a (its content changed), /w/c); command was not started.')
         # A tracked file that is also a frozen input is no extra change; one
-        # that is not is named after the input's own change.
+        # that is not is named after the input's own change. The tracked files
+        # alone never refuse a start: the old predicate did not look at them.
         self.assertIsNone(self.check(spec, git(), git(), ['/w/a'], []))
+        self.assertIsNone(self.check(spec, git(), git(), ['/w/a', '/w/b'], []))
         self.assertEqual(self.check(spec, git(), git(), ['/w/a', '/w/b'], ['/w/a (its content changed)']),
                          'Guarded inputs changed while queued (/w/a (its content changed), /w/b); '
                          'command was not started.')
@@ -335,8 +363,11 @@ class BothEnds(unittest.TestCase):
         ]
         for frozen, now in cases:
             for changed, tracked, resume in (([], [], False), (['/w/a'], [], False), (['/w/a'], ['/w/b'], True)):
-                self.assertEqual(HOST.check_start(frozen, now, changed, tracked, resume, HINT),
-                                 REMOTE.check_start(frozen, now, changed, tracked, resume, HINT))
+                self.assertEqual(HOST.check_start(True, frozen, now, changed, tracked, resume, HINT),
+                                 REMOTE.check_start(True, frozen, now, changed, tracked, resume, HINT))
+                # The same items with no verdict are not a refusal.
+                self.assertIsNone(HOST.check_start(False, frozen, now, changed, tracked, resume, HINT))
+                self.assertIsNone(REMOTE.check_start(False, frozen, now, changed, tracked, resume, HINT))
 
     def test_the_region_is_one_text(self):
         self.assertTrue(callable(HOST.check_start) and callable(REMOTE.check_start))

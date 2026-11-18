@@ -542,38 +542,30 @@ def file_changes(frozen, now):
     return [path for path in sorted(set(before) | set(after)) if before.get(path) != after.get(path)]
 
 
-def files_differ(frozen, now):
-    """Whether the two lists name different files at all: a path only one of
-    them lists is a change even when neither records a digest for it."""
-    return set(f['path'] for f in frozen or []) != set(f['path'] for f in now or [])
-
-
 def shown_list(changed):
     return ', '.join(changed[:5]) + (' and %d more' % (len(changed) - 5) if len(changed) > 5 else '')
 
 
-def queued_reason(items, hint=''):
-    """The words both ends refuse a start in: a hidden fact is still named, by
-    the fallback, rather than refused without saying anything."""
-    return 'Guarded inputs changed while queued (%s); command was not started.%s' % (
-        shown_list(items) or 'the list of changed tracked files', hint)
-
-
-def check_start(frozen_git, now_git, changed_files, changed_tracked=(), resume_changed=False, hint='',
-                files_unlisted=False):
+def check_start(differs, frozen_git, now_git, changed_files, changed_tracked=(), resume_changed=False, hint=''):
     """None when the command may start, else why not, naming the facts in the
     order both ends have always named them: the Git commit (or the guarded
     paths' content), each changed file, each tracked file guardGit added, then
-    the checkpoint a resume would use. A status digest that moved while no
-    file or commit did (staging alone) is still a refusal, named by the
-    fallback: the tree is not the one that was frozen, so the command must not
-    start from it."""
+    the checkpoint a resume would use. A fact no item can name (staging
+    alone, or a snapshot entry added later) still gets the fallback sentence.
+
+    `differs` is the caller's own verdict over all its frozen facts, as it
+    was before this rule was shared: host.py compares every key of the
+    snapshot, so cwd, scope and any key added later still stop a start;
+    remote_job.py asks whether a frozen input changed or the compared Git
+    state does. The facts after it only choose the words, so an item named
+    for explanation can never become a new reason to refuse."""
+    if not differs:
+        return None
     items = git_changes(frozen_git, now_git) + list(changed_files) + list(changed_tracked)
     if resume_changed:
         items.append('the checkpoint it resumes from')
-    if not (items or files_unlisted or git_compared(frozen_git) != git_compared(now_git)):
-        return None
-    return queued_reason(items, hint)
+    return 'Guarded inputs changed while queued (%s); command was not started.%s' % (
+        shown_list(items) or 'the list of changed tracked files', hint)
 # <<< guard rules <<<
 
 
@@ -1224,7 +1216,8 @@ if child and guard is not None:
         named = set(i["path"] for i in spec.get("inputs") or [])
         hint = (" If an earlier stage writes a tracked file, declare it as that stage's artifact."
                 if "needs" in spec else "")
-        refused = check_start(frozen, now, changed, [p for p in tracked if p not in named], hint=hint)
+        refused = check_start(bool(changed) or git_compared(now) != git_compared(frozen), frozen, now,
+                              changed, [p for p in tracked if p not in named], hint=hint)
         if refused is None and frozen and "guardPaths" in frozen:
             # What the start found, as local jobs record it (guard.json).
             checked_guard = {"checkedAt": time.time(), "headAtSubmit": frozen["head"], "headAtStart": now["head"],

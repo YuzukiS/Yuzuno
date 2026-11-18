@@ -279,38 +279,30 @@ def file_changes(frozen, now):
     return [path for path in sorted(set(before) | set(after)) if before.get(path) != after.get(path)]
 
 
-def files_differ(frozen, now):
-    """Whether the two lists name different files at all: a path only one of
-    them lists is a change even when neither records a digest for it."""
-    return set(f['path'] for f in frozen or []) != set(f['path'] for f in now or [])
-
-
 def shown_list(changed):
     return ', '.join(changed[:5]) + (' and %d more' % (len(changed) - 5) if len(changed) > 5 else '')
 
 
-def queued_reason(items, hint=''):
-    """The words both ends refuse a start in: a hidden fact is still named, by
-    the fallback, rather than refused without saying anything."""
-    return 'Guarded inputs changed while queued (%s); command was not started.%s' % (
-        shown_list(items) or 'the list of changed tracked files', hint)
-
-
-def check_start(frozen_git, now_git, changed_files, changed_tracked=(), resume_changed=False, hint='',
-                files_unlisted=False):
+def check_start(differs, frozen_git, now_git, changed_files, changed_tracked=(), resume_changed=False, hint=''):
     """None when the command may start, else why not, naming the facts in the
     order both ends have always named them: the Git commit (or the guarded
     paths' content), each changed file, each tracked file guardGit added, then
-    the checkpoint a resume would use. A status digest that moved while no
-    file or commit did (staging alone) is still a refusal, named by the
-    fallback: the tree is not the one that was frozen, so the command must not
-    start from it."""
+    the checkpoint a resume would use. A fact no item can name (staging
+    alone, or a snapshot entry added later) still gets the fallback sentence.
+
+    `differs` is the caller's own verdict over all its frozen facts, as it
+    was before this rule was shared: host.py compares every key of the
+    snapshot, so cwd, scope and any key added later still stop a start;
+    remote_job.py asks whether a frozen input changed or the compared Git
+    state does. The facts after it only choose the words, so an item named
+    for explanation can never become a new reason to refuse."""
+    if not differs:
+        return None
     items = git_changes(frozen_git, now_git) + list(changed_files) + list(changed_tracked)
     if resume_changed:
         items.append('the checkpoint it resumes from')
-    if not (items or files_unlisted or git_compared(frozen_git) != git_compared(now_git)):
-        return None
-    return queued_reason(items, hint)
+    return 'Guarded inputs changed while queued (%s); command was not started.%s' % (
+        shown_list(items) or 'the list of changed tracked files', hint)
 # <<< guard rules <<<
 
 def guard_objects(root, head, scope):
@@ -346,15 +338,15 @@ def changed_inputs(frozen, current):
     return changed
 
 def guard_reason(spec, current):
-    """Why this start is refused, by name; None when it is not. The words are
-    the shared rule's, in the order both ends name their facts."""
+    """Why this start is refused, by name; None when it is not. Every key of
+    the frozen snapshot decides, as it always did -- cwd, scope and any key
+    added later included -- and the shared rule only chooses the words."""
     frozen = spec['snapshot']
     hint = (" If an earlier stage writes a tracked file, declare it as that stage's artifact."
             if spec.get('run') else '')
-    return check_start(frozen.get('git'), current.get('git'),
+    return check_start(compared(current) != compared(frozen), frozen.get('git'), current.get('git'),
                        file_changes(frozen.get('files'), current.get('files')),
-                       resume_changed=frozen.get('resumeFrom') != current.get('resumeFrom'), hint=hint,
-                       files_unlisted=files_differ(frozen.get('files'), current.get('files')))
+                       resume_changed=frozen.get('resumeFrom') != current.get('resumeFrom'), hint=hint)
 
 def snapshot(spec):
     cwd = Path(spec['cwd']).resolve(strict=True)
