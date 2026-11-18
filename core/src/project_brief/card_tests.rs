@@ -746,12 +746,14 @@ async fn sections_written_before_authors_read_as_their_owners() {
     accept(&ws, "b", input("b1", 1, vec![put("state", "status")])).await;
     {
         let db = ws.store.db.write().unwrap();
-        db.execute_batch("ALTER TABLE project_brief_sections DROP COLUMN author_id; ALTER TABLE project_brief_sections DROP COLUMN author_name;").unwrap();
+        db.execute_batch("ALTER TABLE project_brief_sections DROP COLUMN author_id; ALTER TABLE project_brief_sections DROP COLUMN author_name;
+            ALTER TABLE project_brief_sections DROP COLUMN author_version;").unwrap();
         migrate(&db).unwrap();
         migrate(&db).unwrap();
-        let filled: i64 = db.query_row("SELECT COUNT(*) FROM project_brief_sections WHERE author_id=owner_id AND author_name=owner_name", [], |r| r.get(0)).unwrap();
+        let filled: i64 = db.query_row("SELECT COUNT(*) FROM project_brief_sections WHERE author_id=owner_id AND author_name=owner_name
+            AND author_version=version", [], |r| r.get(0)).unwrap();
         assert_eq!(filled, 2);
-        db.execute("UPDATE project_brief_sections SET author_id=NULL,author_name=NULL WHERE key='state'", []).unwrap();
+        db.execute("UPDATE project_brief_sections SET author_id=NULL,author_name=NULL,author_version=NULL WHERE key='state'", []).unwrap();
     }
     assert_eq!(written(&ws, &project, "plan").2, "a");
     assert_eq!(section(&brief(&ws, "a"), "state")["author"], json!({"agentId":"b","name":"Agent b"}));
@@ -842,4 +844,47 @@ async fn an_edited_card_keeps_its_attachments_and_its_end_archives_it_as_before(
     assert_eq!(row(&ws, &project, &key), (false, Some("archived".into())), "its end archives the live version");
     let first = sections::find(&ws.store.db.read().unwrap(), &project, &key, Some(1)).unwrap().expect("kept");
     assert_eq!(first.history_reason.as_deref(), Some("revised"));
+}
+
+/// The lead's check (YN-212, seq 11728): this Core, then an older one, then
+/// this one again. Lead b writes lead a's task card here (its author b).
+/// An older Core, where only a card's owner writes it, edits it in place as
+/// it does (update.rs before C1: a new version, owner_name, data and times;
+/// the author columns, unknown to it, left as they were). Read here again,
+/// that version is its owner's, not b's; the next version this Core writes
+/// is its writer's again.
+#[tokio::test]
+async fn an_older_cores_edit_reads_as_its_owners_not_the_earlier_writers() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a", "b"]);
+    let (task, _) = task_in(&ws, &project, "Sign the release");
+    let key = task.to_lowercase();
+    accept(&ws, "a", input("a1", 0, vec![bound(&key, "status", &task)])).await;
+    accept(&ws, "b", input("b1", 1, vec![edit_note(&key, "Signing: 3 of 5.")])).await;
+    assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
+    // The older Core's own edit, as it writes it.
+    {
+        let db = ws.store.db.write().unwrap();
+        let (seq, version, data): (i64, i64, String) = db.query_row(
+            "SELECT seq,version,data FROM project_brief_sections WHERE project_id=?1 AND key=?2 AND live=1", params![project, key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        let mut data: Value = serde_json::from_str(&data).unwrap();
+        data["body"]["elements"]["note"]["props"]["text"] = json!("Signed by the older Core.");
+        db.execute("UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6,
+                     task_id=CASE WHEN ?7 THEN ?8 ELSE task_id END WHERE seq=?1",
+            params![seq, version + 1, "Agent a", data.to_string(), crate::model::now(), Option::<String>::None, false, Option::<String>::None])
+            .unwrap();
+    }
+    let shown = section(&brief(&ws, "a"), &key).clone();
+    assert_eq!((shown["version"].clone(), shown["author"].clone()), (json!(3), json!({"agentId":"a","name":"Agent a"})),
+        "the older Core's version is its owner's: {shown}");
+    let home = panel(&ws);
+    assert_eq!(section(&home["brief"], &key)["author"]["agentId"], "a", "on Home too");
+    // This Core again: the next version is its writer's.
+    accept(&ws, "b", input("b2", 3, vec![edit_note(&key, "Released.")])).await;
+    assert_eq!(section(&brief(&ws, "a"), &key)["author"], json!({"agentId":"b","name":"Agent b"}));
+    // C2: the versions it replaced keep their authors as read here, the older Core's as its owner's.
+    let revisions = section(&panel(&ws)["brief"], &key)["revisions"].clone();
+    let authors: Vec<(Value, Value)> = revisions.as_array().unwrap().iter().map(|r| (r["version"].clone(), r["author"]["agentId"].clone())).collect();
+    assert_eq!(authors, [(json!(3), json!("a")), (json!(2), json!("b")), (json!(1), json!("a"))], "{revisions}");
 }
