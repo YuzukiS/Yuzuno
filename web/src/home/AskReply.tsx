@@ -916,10 +916,6 @@ export function AskReply({
       {sentBefore !== null && sentBefore < section.version && (
         <p className="home-note" role="status">{t.askSentBefore(sentBefore, section.version)}</p>
       )}
-      {discarded && !pending && <p className="home-note" role="status">{t.askUnconfirmedDiscarded}</p>}
-      {sentBefore !== null && sentBefore < section.version && (
-        <p className="home-note" role="status">{t.askSentBefore(sentBefore, section.version)}</p>
-      )}
       {decides && (
         // Kept while a note is written: the pick and the answers begun stay as they were.
         <div className="home-ask-decision" hidden={noting}>

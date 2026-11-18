@@ -405,8 +405,8 @@ test("① an option whose outcome is unknown goes again as it was after the ask 
   const [first, second] = page.replies();
   assert.deepEqual(second, first, "the same version, option and client id");
   assert.equal(c.delivered.size, 1, "Core delivered it once");
-  assert.ok(page.notes().some((n) => /Your reply to version 2 of this ask was delivered before, so nothing more was sent\. Home shows version 3/.test(n)),
-    JSON.stringify(page.notes()));
+  assert.equal(page.notes().filter((n) => /Your reply to version 2 of this ask was delivered before, so nothing more was sent\. Home shows version 3/.test(n)).length, 1,
+    `said once: ${JSON.stringify(page.notes())}`);
   // Answering version 3 is a new reply, given once the earlier one is settled.
   await page.choose("Ship today");
   await tick();
@@ -786,7 +786,7 @@ test("④ discarding the unconfirmed reply forgets it here and says it may have 
   page.button("Clear pending record").click();
   await tick();
   assert.deepEqual(page.outbox(), []);
-  assert.ok(page.notes().some((n) => /Cleared here only: it may already have been delivered/.test(n)), JSON.stringify(page.notes()));
+  assert.equal(page.notes().filter((n) => /Cleared here only: it may already have been delivered/.test(n)).length, 1, `said once: ${JSON.stringify(page.notes())}`);
   assert.equal(page.replies().length, 1, "nothing sent");
   // A form: its answers stay version 2's.
   c.lose(true);
