@@ -182,17 +182,19 @@ function FactLines({ fact }: { fact: BlockFact }) {
       meta = <>{fact.taken ? t.fact.taken(name(fact.who, fact.task)) : t.fact.repliedNext(name(fact.who, fact.task))} · <When at={fact.at} /></>;
       break;
     case "card":
+      // Who wrote it says which task (an executor is named for its task); a lead's card names its task too.
       text = fact.title;
       meta = (
         <>
           {fact.stale && <><span className="request-block-stale">{t.fact.stale}</span> · </>}
-          {fact.task} · {t.fact.by(fact.author)} · <When at={fact.at} />
+          {fact.author.startsWith(fact.task) ? "" : `${fact.task} · `}
+          {t.fact.by(fact.author)} · <When at={fact.at} />
         </>
       );
       break;
     case "working":
       text = t.fact.working(name(fact.who, fact.task));
-      meta = <>{fact.task} · <When at={fact.at} /></>;
+      meta = <When at={fact.at} />;
       break;
   }
   return (

@@ -150,7 +150,7 @@ test("each request's first look: its one fact, its one action and what it delive
   assert.equal(action(8).dataset.action, "confirm");
   assert.equal(page.block(8).querySelectorAll(".request-block-delivered li").length, 2);
   assert.equal(fact(9), "Halfway through the export");
-  assert.match(meta(9), /^Card past its validity · YN-93 · by YN-93 · Export · /);
+  assert.match(meta(9), /^Card past its validity · by YN-93 · Export · /, "the author named for its task says which task");
   assert.equal(action(9).dataset.action, "follow");
   assert.ok(!action(9).classList.contains("is-primary"));
   assert.equal(fact(10), "Halfway through the export", "a joined request reads its task's fact");
@@ -167,7 +167,7 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.block(7).querySelector(".request-block-action")), "回答");
   assert.equal(page.text(page.block(8).querySelector(".request-block-action")), "确认完成");
   assert.equal(page.text(page.block(9).querySelector(".request-block-action")), "追问");
-  assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^卡片已过有效期 · YN-93 · YN-93 · Export 写 · /);
+  assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^卡片已过有效期 · YN-93 · Export 写 · /);
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
   assert.equal(page.text(page.document.querySelector("[data-project-block] .request-block-title")), "不属于任何请求");
 });
