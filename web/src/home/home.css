@@ -1551,14 +1551,69 @@ ul.home-widget {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-.home-choice {
+/* One way to decide (YN-213): the options are a choice to make, then the one
+   button sends it with the words beside it; "Wait, what?" opens a field of
+   its own, and the decision stays as it was under it. */
+.home-ask-decision,
+.home-ask-note {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+}
+/* Set aside while a note is written: kept, with what was picked and written, but not shown. */
+.home-ask-decision[hidden] {
+  display: none;
+}
+fieldset.home-ask-options,
+fieldset.home-ask-choice {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+fieldset.home-ask-options {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+.home-ask-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.home-ask-pick[data-selected],
+.home-choice[data-selected] {
+  border-color: var(--accent-ink, var(--green));
+  box-shadow: 0 0 0 1px var(--accent-ink, var(--green)) inset;
+}
+.home-ask-pick input,
+.home-choice input {
+  flex: none;
+  margin: 0;
+}
+.home-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
+  cursor: pointer;
+}
+.home-choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.home-choice small {
+  color: var(--home-ink-2);
 }
 .home-choice p {
   margin: 0;
@@ -1566,8 +1621,53 @@ ul.home-widget {
   color: var(--home-ink-2);
   font-size: calc(9.5px + var(--font-adjust, 3px));
 }
-.home-choice button {
-  align-self: flex-start;
+.home-ask-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.home-ask-actions > :only-child {
+  margin-left: auto;
+}
+.home-ask-note h4 {
+  margin: 0;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-ask-note .home-note {
+  margin: 0;
+}
+.home-ask-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 3px solid #89957a;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-ask-notes strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.home-ask-notes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.home-ask-notes li p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.home-ask-notes small {
+  color: var(--home-ink-2);
 }
 .home-text-reply {
   display: flex;
@@ -1938,6 +2038,14 @@ ul.home-widget {
   .home-text-reply {
     flex-direction: column;
     align-items: stretch;
+  }
+  /* The one button a row of its own, first, right under the words; "Wait, what?" under it. */
+  .home-ask-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .home-ask-actions > :only-child {
+    margin-left: 0;
   }
 }
 

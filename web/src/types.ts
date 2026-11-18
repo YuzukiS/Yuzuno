@@ -336,6 +336,8 @@ export interface HomeReplyOrigin {
    * receipts written before Core kept it, and for a whole-Brief reply. */
   sectionId?: number;
   snapshot?: HomeReplySnapshot;
+  /** A note on an ask (YN-213, "Wait, what?"): words that answer nothing. Absent for every reply. */
+  intent?: "note";
 }
 /** A Home reply as the user saw it when sending it (T-9, format 1). */
 export interface HomeReplySnapshot {

@@ -228,10 +228,17 @@ test("YN-36 over plain http on a LAN address, a written reply to an Ask is sent 
 test("YN-36 over plain http, an option, a choice, a form and what is said to the project are sent too, each with its own id", async () => {
   const p = await mount();
   try {
-    p.button("Ship today", p.card("release")).click();
+    // Picked, then sent with the Ask's one button (YN-213).
+    const send = async (card, label) => {
+      [...card.querySelectorAll(".home-ask-decision fieldset label")].find((l) => l.textContent.includes(label)).querySelector("input").click();
+      const button = () => card.querySelector(".home-ask-decision .home-ask-actions .primary-button");
+      await waitFor(() => /^Submit: /.test(button()?.textContent.trim() ?? ""), `${label} is picked`);
+      button().click();
+    };
+    await send(p.card("release"), "Ship today");
     await waitFor(() => replies(p).length === 1, () => `the option was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[0].body.choice, "ship");
-    p.button("Choose B", p.card("budget")).click();
+    await send(p.card("budget"), "Plan B");
     await waitFor(() => replies(p).length === 2, () => `the choice was sent; the page says: ${JSON.stringify(p.alerts())}`);
     assert.equal(replies(p)[1].body.choice, "plan-b");
     p.card("scope").querySelector(".clarification footer .primary-button").click();

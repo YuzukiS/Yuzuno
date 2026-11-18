@@ -5,7 +5,7 @@ import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye,
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
-import { AskReply } from "./AskReply";
+import { AskReply, withoutFormIds } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -415,7 +415,8 @@ export const SectionCard = memo(function SectionCard({
   );
   if (short) {
     const bodyId = `${sectionDomId(projectId, section.key)}-body`;
-    const replyText = section.ask?.replyText?.trim();
+    // A form's answers without the line of IDs Core reads them by, then the user's words (YN-213).
+    const replyText = withoutFormIds(section.ask?.replyText ?? "").trim();
     return (
       <article
         ref={ref}
