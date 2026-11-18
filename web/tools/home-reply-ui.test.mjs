@@ -627,7 +627,11 @@ test("on Home, a reply to the whole Brief opens its project; a project Home no l
   const whole = await arrive(homeData([section("other", 40, 1)]), projectOrigin);
   t.after(whole.close);
   assert.equal(note(whole), null);
-  assert.ok(whole.document.querySelector('.project-home[data-project-home="p1"]').hasAttribute("data-home-highlight"), "its project's page is shown");
+  // Its page, at its heading: a page opened is not a card landed on, so nothing frames it (R-23).
+  const projectPage = whole.document.querySelector('.project-home[data-project-home="p1"]');
+  assert.ok(projectPage, "its project's page is shown");
+  await until(() => whole.document.activeElement === projectPage.querySelector(".project-home-head h1"), "its heading has the focus");
+  assert.equal(whole.document.querySelector("[data-home-highlight]"), null, "nothing on it is marked, the page least of all");
   const gone = await arrive(homeData([]), { ...askReply, projectId: "p-gone" });
   t.after(gone.close);
   assert.equal(note(gone).textContent, "The project this reply was about is not on Home now.");
