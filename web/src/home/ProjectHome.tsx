@@ -153,11 +153,20 @@ export function ProjectHome({
     if (unfoldAround(target)) requestAnimationFrame(show);
     else show();
   }
+  /** The page opened, not a card on it: its top, with the focus on its heading so Tab goes on from there. The page
+   * is no card and takes no card's mark (R-23): that mark would frame the whole page. */
+  function toTop() {
+    const page = root.current;
+    if (!page) return;
+    scrollWithinHome(page, "start", !reducedMotion());
+    page.querySelector<HTMLElement>(".project-home-head h1")?.focus({ preventScroll: true });
+  }
   const jumped = useRef(0);
   useEffect(() => {
     if (!focus || jumped.current === focus.n) return;
     jumped.current = focus.n;
-    jumpTo(focus.key ? document.getElementById(sectionDomId(id, focus.key)) : root.current, focus.key ? "center" : "start");
+    if (focus.key) jumpTo(document.getElementById(sectionDomId(id, focus.key)));
+    else toTop();
     // The page is drawn by the time this runs, its read or its first render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus]);
