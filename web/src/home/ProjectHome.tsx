@@ -58,6 +58,7 @@ export function ProjectHome({
   arrival = null,
   revision = 0,
   onExit,
+  dock,
 }: {
   projectId: string;
   /** The project's facts as read; null when Core no longer lists it. */
@@ -82,6 +83,9 @@ export function ProjectHome({
   revision?: number;
   /** Back to the whole of Home. */
   onExit: () => void;
+  /** Home's dock under its scroller (YN-212 §4.1), where "Talk to the project" keeps its composer; null until it is
+   * laid out. Without one the composer stays in the conversation. */
+  dock?: HTMLElement | null;
 }) {
   const language = useLanguage();
   const t = homeText(language);
@@ -316,6 +320,7 @@ export function ProjectHome({
         onNavigate={onNavigate}
         reveal={reveal}
         onRequests={setTalkRequests}
+        dock={dock}
       />
       <div className="project-home-body">
         <div className="project-home-main">

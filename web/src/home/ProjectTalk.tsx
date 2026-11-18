@@ -1,4 +1,5 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { CircleCheck, LoaderCircle, MessageSquare, Send, X } from "lucide-react";
 import { errorText } from "../api";
 import { useMessageLinks } from "../deep-link";
@@ -161,6 +162,7 @@ export function ProjectTalk({
   onNavigate,
   reveal = null,
   onRequests,
+  dock,
 }: {
   projectId: string;
   projectName: string;
@@ -177,6 +179,9 @@ export function ProjectTalk({
   reveal?: { n: number; seq: number } | null;
   /** The requests read, for the page's cards (talk-link.ts). */
   onRequests?: (requests: readonly ProjectRequest[]) => void;
+  /** Home's dock under its scroller (YN-212 §4.1): the composer stays there on screen, whichever side shows. null
+   * while it is not laid out yet (nothing is drawn); without one the composer stays under the conversation. */
+  dock?: HTMLElement | null;
 }) {
   const language = useLanguage();
   const t = talkText(language);
@@ -450,6 +455,28 @@ export function ProjectTalk({
       setBusy(false);
     }
   }
+  // Following up request n, the composer focused: once a phone's keyboard is up (about 320 ms), the request stays in
+  // view above the dock (YN-212 §4.4), its card where the requests show, else its words in the conversation.
+  const keepTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(keepTimer.current), []);
+  function keepQuotedInView(n: number) {
+    if (!dock) return;
+    window.clearTimeout(keepTimer.current);
+    keepTimer.current = window.setTimeout(() => {
+      const card = sideOpen(shown, "requests") ? requestRefs.current.get(n) : undefined;
+      const said = card ? undefined : sideOpen(shown, "chat") ? wordRefs.current.get(n) : undefined;
+      const target = card ?? said;
+      const side = card ? requestsScroll.current : chatScroll.current;
+      // Within its side only when it is out of the side's view, as "nearest" goes.
+      if (target && side) {
+        const inner = target.getBoundingClientRect();
+        const outer = side.getBoundingClientRect();
+        if (inner.top < outer.top || inner.bottom > outer.bottom) scrollInside(side, target, false);
+      }
+      const shownNow = target ?? root.current;
+      if (shownNow) scrollWithinHome(shownNow, "nearest", !reducedMotion());
+    }, 320);
+  }
   function followUp(n: number) {
     write({ quote: n });
     if (!sideOpen(shown, "chat")) changeView("chat");
@@ -681,6 +708,66 @@ export function ProjectTalk({
       />
     </li>
   );
+  // The composer (YN-212 §4): in Home's dock when there is one, under the conversation otherwise.
+  const form = (
+    <form
+      className={`project-talk-compose${dock ? " project-dock-form" : ""}`}
+      data-quoting={quote ? "" : undefined}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void send();
+      }}
+      onFocus={() => quote && keepQuotedInView(quote.n)}
+    >
+      {quote && (
+        <p className="project-talk-quoting">
+          <span>{t.followUpOf(quote.title)}</span>
+          <button type="button" className="icon-button" aria-label={t.cancelFollowUp} onClick={() => write({ quote: undefined })}>
+            <X size={13} aria-hidden="true" />
+          </button>
+        </p>
+      )}
+      <div className="project-talk-field">
+        <HomeComposer
+          ref={composer}
+          slot={draftSlot}
+          label={quote ? t.followUpLabel(quote.title) : t.field(projectName)}
+          placeholder={quote ? t.followUpPlaceholder : t.placeholder(projectName)}
+          words={words}
+          oneLine
+          onWords={(next) => write({ text: next.text, blocks: next.blocks, images: next.images, files: next.files })}
+          onSubmit={() => void send()}
+          readOnly={readOnly || blocked}
+          onEscape={quote ? () => write({ quote: undefined }) : undefined}
+          attach={readOnly ? undefined : { projectId, refusal, files: { refusal: filesRefusal } }}
+          onUploading={setUploading}
+        />
+        <button type="submit" className="primary-button project-talk-send" aria-label={t.send} disabled={!canSend}>
+          {busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
+        </button>
+      </div>
+      <ReplyLength text={words.text} />
+      {unanswered && <p className="home-note" role="status">{t.kept}</p>}
+      {(sendError || loadError) && (
+        <p className="inline-error" role="alert">
+          {sendError || loadError}
+        </p>
+      )}
+      {deskId && !quote ? (
+        <p className="project-talk-hint">{t.hint(deskName)}</p>
+      ) : dock && desk && !deskId ? (
+        // Why the field takes nothing, where it is: the page's header says it too, far above the dock.
+        <p className="project-talk-hint" data-missing="">
+          {leadCount > 0 ? t.noDesk : t.noLead}{" "}
+          {!readOnly && (
+            <button type="button" className="talk-link" onClick={() => onNavigate({ kind: "projectSettings", projectId })}>
+              {t.chooseDesk}
+            </button>
+          )}
+        </p>
+      ) : null}
+    </form>
+  );
   const open = { requests: sideOpen(shown, "requests"), chat: sideOpen(shown, "chat") };
   const listId = `project-talk-requests-${projectId}`;
   const chatId = `project-talk-chat-${projectId}`;
@@ -791,51 +878,10 @@ export function ProjectTalk({
             )}
             <ol className="project-talk-thread">{(showEarlier ? items : items.filter((entry) => entry.at >= cut)).map(item)}</ol>
           </div>
-          <form
-            className="project-talk-compose"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void send();
-            }}
-          >
-            {quote && (
-              <p className="project-talk-quoting">
-                <span>{t.followUpOf(quote.title)}</span>
-                <button type="button" className="icon-button" aria-label={t.cancelFollowUp} onClick={() => write({ quote: undefined })}>
-                  <X size={13} aria-hidden="true" />
-                </button>
-              </p>
-            )}
-            <div className="project-talk-field">
-              <HomeComposer
-                ref={composer}
-                slot={draftSlot}
-                label={quote ? t.followUpLabel(quote.title) : t.field(projectName)}
-                placeholder={quote ? t.followUpPlaceholder : t.placeholder(projectName)}
-                words={words}
-                oneLine
-                onWords={(next) => write({ text: next.text, blocks: next.blocks, images: next.images, files: next.files })}
-                onSubmit={() => void send()}
-                readOnly={readOnly || blocked}
-                onEscape={quote ? () => write({ quote: undefined }) : undefined}
-                attach={readOnly ? undefined : { projectId, refusal, files: { refusal: filesRefusal } }}
-                onUploading={setUploading}
-              />
-              <button type="submit" className="primary-button project-talk-send" aria-label={t.send} disabled={!canSend}>
-                {busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
-              </button>
-            </div>
-            <ReplyLength text={words.text} />
-            {unanswered && <p className="home-note" role="status">{t.kept}</p>}
-            {(sendError || loadError) && (
-              <p className="inline-error" role="alert">
-                {sendError || loadError}
-              </p>
-            )}
-            {deskId && !quote && <p className="project-talk-hint">{t.hint(deskName)}</p>}
-          </form>
+          {dock === undefined && form}
         </div>
       </div>
+      {dock && createPortal(form, dock)}
     </section>
   );
 }

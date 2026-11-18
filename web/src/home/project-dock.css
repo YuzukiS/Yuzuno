@@ -1,0 +1,71 @@
+/* "Talk to the project" keeps its composer at the bottom of the screen, as a
+   conversation does (YN-212 §4; styles.css .composer-area): the dock is the
+   second row of Home's stage (report.css), so Home's scroller ends where it
+   begins and the last of the page is never under it, and a phone's keyboard
+   shortens the whole shell (keyboard-viewport.ts), so it rides above the
+   keyboard. A report covers it with the page. */
+.home-dock {
+  /* The page's own gutters (home.css .home-view), so the field lines up with the page. */
+  --dock-x: 40px;
+  min-width: 0;
+  padding: 8px var(--dock-x) max(12px, calc(15px - var(--shell-bottom, 0px)));
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--paper);
+  color: var(--ink);
+}
+/* Nothing to dock yet (the page is reading, or the Project is gone). */
+.home-dock:empty {
+  display: none;
+}
+@media (max-width: 720px) {
+  .home-dock {
+    --dock-x: 20px;
+  }
+}
+@media (max-width: 520px) {
+  .home-dock {
+    --dock-x: 10px;
+    padding-bottom: max(8px, calc(8px - var(--shell-bottom, 0px)));
+  }
+}
+/* As wide as the page's request blocks (§4.3), from the page's left edge. */
+.project-dock-form {
+  max-width: 920px;
+  padding: 0;
+  border-top: 0;
+}
+.project-dock-form .home-composer {
+  box-shadow: 0 3px 12px #384e2410;
+}
+/* The request followed up, above the field: amber, as Home's attention (§4.2). */
+.project-dock-form[data-quoting] .project-talk-quoting {
+  justify-self: start;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--home-attention) 16%, transparent);
+  color: var(--home-attention-ink);
+}
+/* A phone: "+", the line and Send a whole finger high, the text centred in
+   the line, as the conversation's (styles.css .app.phone .composer, 44 px);
+   the hint goes, as the conversation's footnote does on a phone. */
+.app.phone .home-dock .home-composer[data-shape] {
+  --composer-control: 44px;
+}
+.app.phone .home-dock .composer-plus {
+  min-width: 44px;
+  min-height: 44px;
+}
+.app.phone .project-dock-form .project-talk-send {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+}
+.app.phone .home-dock .project-talk-hint:not([data-missing]),
+:root[data-keyboard] .home-dock .project-talk-hint:not([data-missing]) {
+  display: none;
+}
+/* With the keyboard up a long draft takes at most 30% of what is visible, as the conversation's (styles.css). */
+:root[data-keyboard] .home-dock .pasted-text-composer .cm-scroller {
+  max-height: max(64px, calc(var(--visual-height, 100dvh) * 0.3));
+}

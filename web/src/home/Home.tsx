@@ -31,6 +31,7 @@ import { SummaryCard } from "./SummaryCard";
 import { replyableIn } from "./CardReply";
 import { CardAgents } from "./card-responsible";
 import "./home.css";
+import "./project-dock.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
 import { ReportPage } from "./report/ReportPage";
@@ -142,6 +143,8 @@ export function Home({
   // A late read from a previous Workspace must never seed the new
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
+  // Under Home's scroller, where a Project's page keeps its composer on screen (YN-212 §4.1).
+  const [dock, setDock] = useState<HTMLDivElement | null>(null);
   const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
   // An Ask "next needs you" chose: shown as its own row's click shows it.
   const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
@@ -911,6 +914,7 @@ export function Home({
       ) : project ? (
         <ProjectHome
           key={project}
+          dock={dock}
           projectId={project}
           panel={projectPanel ?? null}
           workspaceId={workspaceId}
@@ -980,6 +984,9 @@ export function Home({
         </div>
       )}
     </div>
+    {/* The stage's second row (YN-212 §4.1): its scroller ends where the dock begins, so nothing is under it; a report
+        covers both rows. */}
+    {project && <div className="home-dock" ref={setDock} lang={langTag(language)} inert={report ? true : undefined} />}
     {report && (
       <ReportPage
         key={report.entry}
