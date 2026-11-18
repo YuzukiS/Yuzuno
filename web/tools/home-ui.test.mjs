@@ -3736,8 +3736,9 @@ test("YN-3 a card's page shown when its author writes a new version: the new ver
     Object.assign(p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring"), { version: 4 });
     p.event({ type: "workspace.changed", scope: "brief" });
     await waitFor(() => ring().dataset.sectionVersion === "4", "Home read version 4");
-    show();
-    await waitFor(() => asked.some((body) => body.section === "ring" && body.version === 4), "version 4's page asked for");
+    // In view again, as a browser's observer says of a card it starts watching, however late it starts (YN-212: the
+    // page by request may draw the card again once its requests are read anew).
+    await waitFor(() => (show(), asked.some((body) => body.section === "ring" && body.version === 4)), "version 4's page asked for");
     await waitFor(() => ring().querySelector("iframe.home-card-page-frame") && ring().querySelector(".home-card-page").dataset.pageState === "ready", "version 4's page is shown");
     ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
     await pause(50);
