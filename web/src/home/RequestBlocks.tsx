@@ -1,4 +1,4 @@
-import { useCallback, useContext, useRef, type ReactNode } from "react";
+import { useContext, useRef, type ReactNode } from "react";
 import { ChevronDown, CircleCheck, CircleDot, Hourglass, LoaderCircle, MessageSquare, PackageCheck, Reply, Send, TriangleAlert } from "lucide-react";
 import { strings, useLanguage } from "../i18n";
 import { MessageContent } from "../MessageContent";
@@ -237,28 +237,28 @@ function FactLines({ fact }: { fact: BlockFact }) {
  * open in this visit stays there once answered, the answer in its place (SectionCard's short reply), until the next
  * visit, as a block keeps its group (useHeldBlocks). A new visit starts afresh.
  *
- * Held by Home's identity for the section, which its versions keep and a new section under the same key does not
- * (PR 1098 R1): an older Ask kept in History under a key a new one asks again stays in the Answered lines below,
- * never drawn beside the new one. An older Core names no identity: then only a live entry is held, by its key.
+ * Under each key only the newest Ask seen open in this visit is held, by Home's identity for the section, which an
+ * answer's new version keeps and a new section under the same key does not (PR 1098 R1, R2): an Ask the Agent
+ * resolved and asked again under its key gives way to the new one and is an Answered line again, never a second
+ * card beside it. `asks` are every Ask on the page, read first so that this holds whichever block is drawn first.
+ * An older Core names no identity: then only a live entry is held, by its key.
  */
-export function useAsksUpFront() {
+export function useAsksUpFront(asks: readonly Section[]) {
   const sizes = useContext(DeckSizes);
   const visit = sizes?.visit ?? 0;
-  const shown = useRef({ visit, keys: new Set<string>() });
-  if (shown.current.visit !== visit) shown.current = { visit, keys: new Set() };
-  const { keys } = shown.current;
-  return useCallback(
-    (section: Section) => {
-      if (section.kind !== "ask") return false;
-      const held = section.id === undefined ? `k:${section.key}` : `i:${section.id}`;
-      if (openAsk(section)) {
-        keys.add(held);
-        return true;
-      }
-      return keys.has(held) && (section.id !== undefined || !section.history);
-    },
-    [keys],
-  );
+  const shown = useRef({ visit, latest: new Map<string, string>() });
+  if (shown.current.visit !== visit) shown.current = { visit, latest: new Map() };
+  const { latest } = shown.current;
+  const identity = (section: Section) => (section.id === undefined ? `k:${section.key}` : `i:${section.id}`);
+  for (const ask of asks) if (openAsk(ask)) latest.set(ask.key, identity(ask));
+  return (section: Section) => {
+    if (section.kind !== "ask") return false;
+    if (openAsk(section)) {
+      latest.set(section.key, identity(section));
+      return true;
+    }
+    return latest.get(section.key) === identity(section) && (section.id !== undefined || !section.history);
+  };
 }
 
 /** An Ask as Home draws it, answerable where it stands (W5: the same card the block used to unfold to). */

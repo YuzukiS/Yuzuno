@@ -182,7 +182,7 @@ export function ProjectHome({
   const all = useMemo(() => [...sections, ...(team ?? []), ...(history ?? [])], [sections, team, history]);
   const { blocks, project: projectBlock } = useMemo(() => pageBlocks(requests, all), [requests, all]);
   const groups = useHeldBlocks(id, blocks, projectBlock, panel !== null && talkRequests !== null);
-  const upFront = useAsksUpFront();
+  const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(projectBlock?.asks ?? [])]);
   const counts = blockCounts(blocks, projectBlock);
   // With no request on the page, the Project's own block is all of it: it starts open, as its cards were. A
   // block the user opened or closed, or a jump opened, stays as it was left.

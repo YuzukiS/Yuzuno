@@ -34,7 +34,7 @@ function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
   const [open, setOpen] = useState(new Set(window.opened || []));
   const toggle = (key) => setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
-  const upFront = useAsksUpFront();
+  const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])]);
   const common = {projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly, onSeen: async () => {}, onChanged: () => {},
     onReport: (link) => window.calls.push({report: link}), upFront};
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
@@ -325,6 +325,44 @@ test("an older Ask in History under the same key stays an Answered line beside t
   await tick();
   assert.deepEqual(upFront(), ["yn-91/pick"]);
   assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1);
+  assert.deepEqual(page.errors, []);
+});
+
+// PR 1098 R2: the same visit. The user answers the Ask; its Agent resolves it into History and asks again under the
+// same key: the new one is up front alone, the earlier one an Answered line again, and so once the new one is answered.
+test("an Ask answered in this visit, resolved and asked again under its key, gives way to the new one", async () => {
+  const page = mount({ opened: ["r7"] });
+  const data = fixtures();
+  const render = (sections) => page.window.renderPage({ requests: data.requests, sections, readOnly: false });
+  const block = () => page.block(7);
+  const answeredLines = () => [...block().querySelectorAll(".request-task-answered")].map(page.text);
+  const first = data.sections.find((s) => s.key === "yn-91/pick");
+  const rest = data.sections.filter((s) => s.key !== "yn-91/pick");
+  await tick();
+  // Answered here: held where it was.
+  const replied = { ...first, version: 3, ask: { ...first.ask, state: "replied", repliedAt: ago(1), replyText: "A" } };
+  render([...rest, replied]);
+  await tick();
+  assert.equal(block().querySelectorAll(".request-block-asks [data-section-key]").length, 1);
+  // Resolved into History, and asked again under its key: another section.
+  const resolved = { ...replied, version: 4, history: true, historyReason: "resolved", ask: { ...replied.ask, state: "resolved" } };
+  const again = section("yn-91/pick", "ask", "Pick a layout again", 0, {
+    owner: { agentId: "x", name: "YN-91 · Design", state: "active" }, card: bind("YN-91"),
+    ask: { question: "Which layout, now that A is in?", state: "open", reply: { freeText: true } },
+  });
+  render([...rest, resolved, again]);
+  await tick();
+  const cards = () => [...block().querySelectorAll(".request-block-asks [data-section-key]")];
+  assert.equal(cards().length, 1, "the new one alone up front");
+  assert.match(page.text(cards()[0]), /now that A is in/);
+  assert.equal(page.document.querySelectorAll('[id="home-section-p1-yn-91/pick"]').length, 1, "one card by that id");
+  assert.ok(answeredLines().includes("Answered: Which layout? → A"), JSON.stringify(answeredLines()));
+  // The new one answered too: still the only one up front; the earlier one stays a line.
+  render([...rest, resolved, { ...again, version: 2, ask: { ...again.ask, state: "replied", repliedAt: ago(0), replyText: "B" } }]);
+  await tick();
+  assert.equal(cards().length, 1);
+  assert.match(page.text(cards()[0]), /now that A is in/);
+  assert.ok(answeredLines().includes("Answered: Which layout? → A"));
   assert.deepEqual(page.errors, []);
 });
 
