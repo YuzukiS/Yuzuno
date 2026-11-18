@@ -115,16 +115,26 @@ fn assignee(db: &Connection, task: &str) -> Result<Option<String>> {
         .flatten())
 }
 
-/// Whether `agent` writes `task`'s card as the one who answers for the task
-/// (YN-212 C1; C3 R1): its newest executor not yet released; or, while it
-/// has none, its assignee when that is no executor, such as an Agent a card
-/// route or a reassignment gave the task to. An executor released from the
-/// task writes it no more, though it may still be its assignee.
-fn writes_for(db: &Connection, task: &str, agent: &str) -> Result<bool> {
+/// How the one who answers for a task writes its card (YN-212 C1; C3 R1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writer {
+    /// Its newest executor not yet released (C1): the card, wherever a lead
+    /// bound it to the task, and its own binding at the task's key.
+    Executor,
+    /// While it has no such executor, its assignee when that is no executor,
+    /// such as an Agent a card route or a reassignment gave the task to
+    /// (C3 R1): only the status or report at the task's key, bound to it.
+    Assignee,
+}
+
+/// How `agent` writes `task`'s card, if it does. An executor released from
+/// the task writes it no more, though it may still be its assignee.
+fn writer(db: &Connection, task: &str, agent: &str) -> Result<Option<Writer>> {
     if let Some(executor) = current_executor(db, task)? {
-        return Ok(executor == agent);
+        return Ok((executor == agent).then_some(Writer::Executor));
     }
-    Ok(assignee(db, task)?.as_deref() == Some(agent) && crate::agent_roles::kind(db, agent)? != crate::agent_roles::EXECUTOR)
+    let assigned = assignee(db, task)?.as_deref() == Some(agent) && crate::agent_roles::kind(db, agent)? != crate::agent_roles::EXECUTOR;
+    Ok(assigned.then_some(Writer::Assignee))
 }
 
 /// The task's newest executor not yet released; else its assignee, when
@@ -179,7 +189,7 @@ pub(super) fn may_write_sub(db: &Connection, project: &str, key: &str, agent: &s
 /// A task's card itself (YN-212 C1): a topic's own section, not a sub-topic,
 /// bound to a task by its own `task`, as a status (while the task goes on)
 /// or a report (once it ends). Its Project's leads and the one who answers
-/// for its task (`writes_for`) write it, not only its owner (update.rs
+/// for its task (`writer`) write it, not only its owner (update.rs
 /// rules); an Ask, or a section bound only implicitly, stays its owner's.
 pub(super) fn task_card(row: &Row) -> bool {
     row.task_id.is_some() && !row.key.contains('/') && matches!(row.kind.as_str(), "status" | "report")
@@ -198,24 +208,31 @@ pub(crate) fn card_key(db: &Connection, task: &str) -> String {
 }
 
 /// Whether `agent` writes `row` as the one who answers for its task (YN-212
-/// C1): `row` is a task's card (`task_card`) and `agent` writes for that
-/// task (`writes_for`).
+/// C1): `row` is a task's card (`task_card`), and `agent` that task's
+/// current executor, or its assignee (`writer`) when `row` is at the task's
+/// own key. Another section a lead bound to the task stays the leads'.
 pub(super) fn may_write_card(db: &Connection, row: &Row, agent: &str) -> Result<bool> {
     let Some(task) = row.task_id.as_deref().filter(|_| task_card(row)) else { return Ok(false) };
-    writes_for(db, task, agent)
+    Ok(match writer(db, task, agent)? {
+        Some(Writer::Executor) => true,
+        Some(Writer::Assignee) => row.key == card_key(db, task),
+        None => false,
+    })
 }
 
 /// The task the own `task` of the one who answers for it binds (YN-212 C1),
 /// by internal ID: `reference` names a task of `project` that is not
-/// archived, `agent` writes for it (`writes_for`: its current executor, else
+/// archived, `agent` writes its card (`writer`: its current executor, else
 /// its assignee that is no executor), `key` is its card's key (`card_key`),
 /// and the live section under `key`, if there is one, is already bound to
-/// it. So it puts its task's card at its key and keeps it bound, and binds
-/// nothing else. None when any of that is not so.
-pub(super) fn own_card_binding(db: &Connection, project: &str, key: &str, reference: &str, agent: &str, live: Option<&Row>)
+/// it. An assignee binds only a status or a report (`kind`, the section's
+/// kind once written), never an Ask. So it puts its task's card at its key
+/// and keeps it bound, and binds nothing else. None when any of that is not so.
+pub(super) fn own_card_binding(db: &Connection, project: &str, key: &str, reference: &str, agent: &str, kind: &str, live: Option<&Row>)
     -> Result<Option<String>> {
     let Ok(task) = bindable(db, project, reference)? else { return Ok(None) };
-    if !writes_for(db, &task, agent)? || card_key(db, &task) != key {
+    let Some(writer) = writer(db, &task, agent)? else { return Ok(None) };
+    if card_key(db, &task) != key || (writer == Writer::Assignee && !matches!(kind, "status" | "report")) {
         return Ok(None);
     }
     if live.is_some_and(|row| row.task_id.as_deref() != Some(task.as_str())) {

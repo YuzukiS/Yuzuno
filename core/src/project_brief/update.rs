@@ -704,7 +704,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         // The task a section is the card of (YN-86 S2a): a lead binds it to
         // a task of this Project that is not archived, or unbinds it; the
         // one who answers for a task (its current executor, else its
-        // assignee that is no executor: cards::writes_for) binds its own
+        // assignee that is no executor: cards::writer) binds its own
         // task's card at its key and nothing else (YN-212 C1, C3 R1).
         // `binds`: the task this change binds it to, while that is open.
         // `own_card`: that one's own binding.
@@ -714,7 +714,12 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             if !can_edit {
                 let own = match (task, change.op) {
                     (Some(reference), Op::Put | Op::Edit) => {
-                        cards::own_card_binding(db, &ctx.project, key, reference, &ctx.agent, row_now)?
+                        // The kind it has once written: a put's own, an edit's as it is.
+                        let kind = match change.op {
+                            Op::Put => change.kind.as_str(),
+                            _ => row_now.map_or("", |row| row.kind.as_str()),
+                        };
+                        cards::own_card_binding(db, &ctx.project, key, reference, &ctx.agent, kind, row_now)?
                     }
                     _ => None,
                 };
