@@ -589,9 +589,9 @@ fn edit_note(key: &str, text: &str) -> Value {
 /// YN-212 C1: a task's card is written by its Project's leads, not only by
 /// the lead that put it. Another lead puts, edits and patches it while its
 /// owner still leads, without a claim; the owner and the binding stay, and
-/// each version names its author. Removing it stays its owner's, and so does
-/// binding it to another task or unbinding it. A lead's section bound to no
-/// task stays its owner's.
+/// each version names its author. Removing it stays its owner's, and so do
+/// binding it to another task or unbinding it, and its refresh, which runs as
+/// its owner (PR 1086 R1). A lead's section bound to no task stays its owner's.
 #[tokio::test]
 async fn another_lead_writes_an_open_tasks_card_while_its_owner_still_leads() {
     let (_dir, ws, project) = lab();
@@ -622,6 +622,11 @@ async fn another_lead_writes_an_open_tasks_card_while_its_owner_still_leads() {
         ("b-rebind", {let mut change = put(&key, "report"); change["task"] = json!(other); change}, "invalid_task"),
         ("b-ask", put(&key, "ask"), "not_owner"),
         ("b-plan", put("plan", "status"), "not_owner"),
+        // Its refresh runs as its owner: set, changed or removed by its owner only.
+        ("b-refresh", {let mut change = put(&key, "report"); change["refresh"] = json!({"every":"day","instruction":"Sum up the release."}); change},
+            "not_owner"),
+        ("b-refresh-edit", json!({"op":"edit","key":key,"refresh":{"every":"hours","hours":6}}), "not_owner"),
+        ("b-refresh-off", json!({"op":"edit","key":key,"refresh":null}), "not_owner"),
     ] {
         let refused = reject(&ws, "b", input(request, 6, vec![change])).await;
         assert_eq!(codes(&refused), [code], "{request}: {refused}");

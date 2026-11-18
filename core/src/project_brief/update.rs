@@ -794,7 +794,8 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         }
         // A task's card written by one that does not own it (YN-212 C1): a
         // lead, or the task's current executor. Its content only: the owner
-        // stays, and so does the binding, which only its owner changes.
+        // stays, and so do the binding and the refresh, which only its owner
+        // changes.
         let card_writer = existing.as_ref().is_some_and(|p| p.owner != ctx.agent)
             && row_now.is_some_and(cards::task_card)
             && match change.op {
@@ -816,6 +817,14 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 problems.push(problem("invalid_task", format!("{at}.task"), format!(
                     "{key} is a task's card you write but do not own; only its owner binds it to another task or unbinds it. \
                      Leave task out, or name the task it is bound to."), "sections"));
+                continue;
+            }
+            // A card's refresh runs as its owner (refresh_writes.rs): only the
+            // owner sets, changes or removes it.
+            if change.refresh.is_some() {
+                problems.push(problem("not_owner", format!("{at}.refresh"), format!(
+                    "{key} is a task's card you write but do not own; its refresh runs as its owner, so only its owner sets, \
+                     changes or removes it. Leave refresh out: the card keeps the refresh it has."), "refresh"));
                 continue;
             }
         }
