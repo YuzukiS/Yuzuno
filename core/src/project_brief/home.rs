@@ -294,6 +294,8 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let name = |agent: &str| by_id.get(agent).map(|a| a.name.clone());
         let refreshes = super::refresh::shown(&db, id, &name, at)?;
         let mut refreshed = std::collections::HashSet::new();
+        // The user's notes on each ask (YN-213), apart from its reply.
+        let notes = super::ask_notes::of_project(&db, id)?;
         let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -304,6 +306,9 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 // apart from `seen`, which a report's Seen mark sets.
                 if row.live {
                     section["opened"] = opened.get(&row.identity).map(|(version, at)| json!({"version":version,"at":at})).into();
+                    if let Some(notes) = notes.get(&row.identity).filter(|_| row.kind == "ask") {
+                        section["ask"]["notes"] = json!(notes);
+                    }
                 }
                 if !row.live {
                     section["historyReason"] = json!(row.history_reason);
@@ -365,15 +370,41 @@ pub(super) struct ReplyInput {
     /// Images the user attached on Home (YN-134), by their IDs in the
     /// Project's images written on Home (input_images::home_dir). Once the
     /// recipient is known they are copied to it (`adopt_images`) and go
-    /// with the message, as a conversation's do. Never with a form.
+    /// with the message, as a conversation's do; beside a form's answers
+    /// too (YN-213).
     #[serde(default)]
     pub images: Vec<String>,
     /// Files the user attached on Home (YN-145), by their references in the
     /// Project's files written on Home (input_files::home_dir). Once the
     /// recipient is known they are copied to it (`adopt_files`) and go with
-    /// the message. Never with a form.
+    /// the message; beside a form's answers too (YN-213).
     #[serde(default)]
     pub files: Vec<crate::input_files::FileRef>,
+    /// What a reply to an ask is (YN-213): an answer, as every reply was
+    /// before, or a note.
+    #[serde(default)]
+    pub intent: ReplyIntent,
+    /// The user's own words beside a form's answers (YN-213): `text` says
+    /// the answers exactly (form_answers), and these follow them in the same
+    /// message and on the answered ask. Only with a form: beside a choice,
+    /// and in a note, `text` is the user's words.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// What a reply to an ask is (YN-213).
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum ReplyIntent {
+    /// It answers the ask: its choice, its form's answers or the user's
+    /// words, and the ask is replied once it is delivered.
+    #[default]
+    Answer,
+    /// Home's "Wait, what?": the user's words, images and files to the
+    /// ask's Agent without answering it. No choice or form goes with it,
+    /// the ask stays open in Needs you at the version it was written on,
+    /// and Core keeps the note apart from any reply (ask_notes).
+    Note,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
@@ -492,7 +523,7 @@ pub(super) fn compose(project: &str, section: Option<&sections::Row>, choice: Op
         return format!("Reply from the user on Home, about the Project Brief of {project}:\n\n{}", text.trim());
     };
     let title = row.data["title"].as_str().unwrap_or_default();
-    quote(format!("Reply from the user on Home, to the Project Brief section `{}` (\"{title}\") of {project}:\n", row.key), row, choice, text)
+    quote(format!("Reply from the user on Home, to the Project Brief section `{}` (\"{title}\") of {project}:\n", row.key), row, choice, text, None)
 }
 
 /// The message a reply to an ask sends (T-9): which version of which ask of
@@ -500,28 +531,70 @@ pub(super) fn compose(project: &str, section: Option<&sections::Row>, choice: Op
 /// what compose quotes and adds. Nothing in it is read from the ask as it is
 /// later.
 pub(super) fn compose_ask(workspace: &str, project: &str, project_id: &str, row: &sections::Row, choice: Option<&(String, String)>, text: &str) -> String {
+    compose_answer(workspace, project, project_id, row, choice, text, None)
+}
+
+/// `compose_ask` with the user's note beside a form's answers (YN-213),
+/// after them.
+pub(super) fn compose_answer(workspace: &str, project: &str, project_id: &str, row: &sections::Row, choice: Option<&(String, String)>,
+    text: &str, note: Option<&str>) -> String {
     let title = row.data["title"].as_str().unwrap_or_default();
     quote(format!(
         "Reply from the user on Home, to version {} of the Project Brief section `{}` (\"{title}\") of {project} \
          (Workspace {workspace}, Project {project_id}):\n",
         row.version, row.key
-    ), row, choice, text)
+    ), row, choice, text, note)
 }
 
-/// `message`, then the section's question (or title) quoted, the choice, the
-/// user's own words and, for an ask, how its owner closes it.
-fn quote(mut message: String, row: &sections::Row, choice: Option<&(String, String)>, text: &str) -> String {
+/// The message a note on an ask sends (YN-213, Home's "Wait, what?"):
+/// which version of which ask it is about, as the user saw it, the user's
+/// words, and that it answers nothing. Nothing in it is read from the ask as
+/// it is later.
+pub(super) fn compose_note(workspace: &str, project: &str, project_id: &str, row: &sections::Row, text: &str) -> String {
+    let title = row.data["title"].as_str().unwrap_or_default();
+    let mut message = format!(
+        "Note from the user on Home, about version {} of the Project Brief section `{}` (\"{title}\") of {project} \
+         (Workspace {workspace}, Project {project_id}):\n",
+        row.version, row.key
+    );
+    quote_question(&mut message, row);
+    match text.trim() {
+        "" => message.push_str("\n(No words: see what the note attached.)\n"),
+        text => message.push_str(&format!("\n{text}\n")),
+    }
+    message.push_str(&format!(
+        "\nThis note is not an answer: the user chose none of the ask's options, answered nothing of its form and approved \
+         nothing. The ask stays open in their Needs you at version {}, with what they had begun to answer kept there. Take the \
+         note as a question or a remark about the ask: answer it by revising the ask (edit or put it), or resolve or remove the \
+         ask if it no longer applies. Act on none of its options as chosen.",
+        row.version
+    ));
+    message
+}
+
+/// The section's question (or title) quoted, one `> ` line each.
+fn quote_question(message: &mut String, row: &sections::Row) {
     let title = row.data["title"].as_str().unwrap_or_default();
     let quoted = row.data["ask"]["question"].as_str().filter(|_| row.kind == "ask").unwrap_or(title);
     let quoted: String = quoted.chars().take(500).collect();
     for line in quoted.lines() {
         message.push_str(&format!("> {line}\n"));
     }
+}
+
+/// `message`, then the section's question (or title) quoted, the choice, the
+/// user's own words, their note beside a form's answers and, for an ask, how
+/// its owner closes it.
+fn quote(mut message: String, row: &sections::Row, choice: Option<&(String, String)>, text: &str, note: Option<&str>) -> String {
+    quote_question(&mut message, row);
     if let Some((id, label)) = choice {
         message.push_str(&format!("\nChose: {label} ({id})\n"));
     }
     if let Some(text) = extra_text(choice, text) {
         message.push_str(&format!("\n{text}\n"));
+    }
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        message.push_str(&format!("\nWith these answers, the user wrote:\n{note}\n"));
     }
     if row.kind == "ask" {
         // How the owner closes it (brief-contract.ts, guide part ask).
@@ -602,7 +675,8 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// `POST /api/projects/{id}/brief/reply`: one user message to `agentId`,
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
-    let bytes = input.text.len();
+    // A form's note goes in the same message as its answers.
+    let bytes = input.text.len() + input.note.as_deref().map_or(0, str::len);
     if bytes > MAX_REPLY {
         return Err(not_submitted(format!(
             "reply_too_long: this reply is {bytes} bytes; a reply from Home is at most {MAX_REPLY} bytes in UTF-8, \
@@ -614,6 +688,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     refuse_files(ws, &input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
+        ensure!(input.intent == ReplyIntent::Answer && input.note.is_none(), "A note goes to an ask, not a card");
         return card_reply(ws, project, input, version).await;
     }
     ensure!(input.title.is_none(), "A title goes with the version of the card it was shown in");
@@ -622,6 +697,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     }
     ensure!(input.workspace_id.is_none(), "A Workspace goes with the version of the ask it was shown in");
     ensure!(input.form.is_none(), "A form's answers go with the version of the ask it was shown in");
+    ensure!(input.intent == ReplyIntent::Answer && input.note.is_none(), "A note goes with the version of the ask it was shown in");
     let (id, key) = (project.clone(), input.key.clone());
     let (workspace, name, section) = ws.stored(move |store| {
         let workspace = store.workspace_id()?;
@@ -723,15 +799,13 @@ fn not_submitted(message: String) -> anyhow::Error {
 }
 
 /// A reply's images (YN-134) once `reply_target` has chosen its recipient:
-/// never beside a form's answers, as a conversation's form goes without
-/// them (workspace.rs), and only to an Agent that takes images. Refused,
-/// nothing is sent and the client keeps the reply.
+/// only to an Agent that takes images. Beside a form's answers too
+/// (YN-213): Home's form goes as one message with the user's note and what
+/// it attached, though a conversation's form goes without them
+/// (workspace.rs). Refused, nothing is sent and the client keeps the reply.
 async fn refuse_images(ws: &Arc<Workspace>, input: &ReplyInput) -> Result<()> {
     if input.images.is_empty() {
         return Ok(());
-    }
-    if input.form.is_some() {
-        return Err(not_submitted("form_images: a form's answers go without images. Nothing was sent, and your reply is kept.".into()));
     }
     let to = input.agent_id.clone();
     let agent = ws.stored(move |store| store.agent(&to)).await?;
@@ -758,14 +832,11 @@ async fn adopt_images(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) ->
         .map_err(|error| not_submitted(format!("home_images: {error}. Nothing was sent, and your reply is kept.")))
 }
 
-/// Refuses a reply with files when its recipient takes none (YN-145), or the
-/// reply is a form's: nothing was sent, and the reply is kept.
+/// Refuses a reply with files when its recipient takes none (YN-145): nothing
+/// was sent, and the reply is kept. A form's answers take them too (YN-213).
 async fn refuse_files(ws: &Arc<Workspace>, input: &ReplyInput) -> Result<()> {
     if input.files.is_empty() {
         return Ok(());
-    }
-    if input.form.is_some() {
-        return Err(not_submitted("form_files: a form's answers go without files. Nothing was sent, and your reply is kept.".into()));
     }
     let agent = input.agent_id.clone();
     let found = ws.stored(move |store| store.agent(&agent)).await?;
@@ -808,6 +879,20 @@ async fn adopt_files(ws: &Arc<Workspace>, project: &str, input: &ReplyInput) -> 
 /// so an earlier receipt still matches.
 pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormReply>, images: &[String],
     files: &[crate::input_files::FileRef]) -> String {
+    said_digest(choice, text, form, images, files, None, ReplyIntent::Answer)
+}
+
+/// `reply_digest` of a whole reply to an ask: with a form's note and a
+/// note's intent (YN-213) when it has them. A note and an answer of the same
+/// words digest apart, and one without either digests as it always has.
+pub(super) fn input_digest(input: &ReplyInput) -> String {
+    said_digest(input.choice.as_deref(), &input.text, input.form.as_ref(), &input.images, &input.files,
+        input.note.as_deref(), input.intent)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn said_digest(choice: Option<&str>, text: &str, form: Option<&FormReply>, images: &[String],
+    files: &[crate::input_files::FileRef], note: Option<&str>, intent: ReplyIntent) -> String {
     use sha2::{Digest, Sha256};
     let mut said = match form {
         Some(form) => json!([choice, text, {"formId":form.form_id,"answers":form.answers}]),
@@ -823,6 +908,12 @@ pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormR
             said.push(json!({"files": files}));
         }
     }
+    if let (Some(note), Value::Array(said)) = (note, &mut said) {
+        said.push(json!({"note": note}));
+    }
+    if let (ReplyIntent::Note, Value::Array(said)) = (intent, &mut said) {
+        said.push(json!({"intent": "note"}));
+    }
     format!("{:x}", Sha256::digest(said.to_string().as_bytes()))
 }
 
@@ -832,7 +923,9 @@ pub(super) fn reply_digest(choice: Option<&str>, text: &str, form: Option<&FormR
 /// the client keeps the reply. A retry of a message already sent under this
 /// client id returns its receipt even if the ask changed since. A sent reply
 /// marks only that version replied, and only while it is still the live
-/// ask: never a newer one its owner asked under the same key.
+/// ask: never a newer one its owner asked under the same key. A sent note
+/// (YN-213) marks nothing: it is kept apart, with the version it was
+/// written on (ask_notes), and the ask stays as it was.
 async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, version: i64) -> Result<MessageReceipt> {
     let key = input.key.clone().context("A reply to an ask names its section")?;
     let (id, wanted) = (project.clone(), key.clone());
@@ -849,7 +942,13 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         ));
     }
     ensure!(input.choice.is_none() || input.form.is_none(), "A reply chooses an option or answers a form, not both");
-    let digest = reply_digest(input.choice.as_deref(), &input.text, input.form.as_ref(), &input.images, &input.files);
+    ensure!(input.note.is_none() || input.form.is_some(),
+        "A note beside the answers goes with a form's answers; with a choice or alone, the reply's text is your words");
+    let noting = input.intent == ReplyIntent::Note;
+    ensure!(!noting || (input.choice.is_none() && input.form.is_none()), "A note answers nothing: it goes without a choice or a form's answers");
+    // The user's words beside a form's answers, when there are any.
+    let note = input.note.as_deref().map(str::trim).filter(|note| !note.is_empty());
+    let digest = input_digest(&input);
     // The ask as it is now, if it is still the version the user saw.
     let shown = current.as_ref().filter(|row| row.live && row.unresolved_ask() && row.version == version).cloned();
     let chosen = match (&input.choice, &shown) {
@@ -878,16 +977,31 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
                 "{code}: version {version} of the ask `{key}` can't be answered now: {why}. Nothing was sent, and your reply is kept."
             )));
         };
-        ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
+        if noting {
+            ensure!(!input.text.trim().is_empty() || !input.images.is_empty() || !input.files.is_empty(), "Write a note or attach something");
+        } else {
+            ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
+        }
         let form = input.form.as_ref().map(|form| form_answers(row, form, &input.text)).transpose()?;
-        let origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"sectionId":row.identity,"workspaceId":workspace,"reply":digest,
-            "home":snapshot(&name, Some(row), None, chosen.as_ref(), extra_text(chosen.as_ref(), &input.text).filter(|_| form.is_none()), form)});
+        // The user's own words as the reply showed them: beside a form's
+        // answers, its note.
+        let words = if form.is_some() { note } else { extra_text(chosen.as_ref(), &input.text) };
+        let mut origin = json!({"kind":"home","projectId":project,"key":key,"version":version,"sectionId":row.identity,"workspaceId":workspace,"reply":digest,
+            "home":snapshot(&name, Some(row), None, chosen.as_ref(), words, form)});
+        // A note says so beside its snapshot, which stays the shape Core writes (input_origin).
+        if noting {
+            origin["intent"] = json!("note");
+        }
         let detail = ws.send_view(&input.agent_id).await?;
         adopt_images(ws, &project, &input).await?;
         adopt_files(ws, &project, &input).await?;
         let message = MessageInput {
             client_message_id: input.client_message_id.clone(),
-            text: compose_ask(&workspace, &name, &project, row, chosen.as_ref(), &input.text),
+            text: if noting {
+                compose_note(&workspace, &name, &project, row, &input.text)
+            } else {
+                compose_answer(&workspace, &name, &project, row, chosen.as_ref(), &input.text, note)
+            },
             text_blocks: None,
             images: input.images.clone(),
             expected_turn_id: follow_up_turn(&detail),
@@ -896,12 +1010,34 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
         };
         ws.send_message_from(&input.agent_id, message, Vec::new(), input.files.clone(), Some(origin)).await?
     };
+    // A note is kept with the version it was written on, while that is
+    // still the live ask: once, however often it is sent again.
+    if noting {
+        if let Some(row) = shown.as_ref().filter(|_| delivered(&receipt)) {
+            let (store, project_id, key, identity) = (ws.store.clone(), project.clone(), key.clone(), row.identity);
+            let (agent, client, text, images, files) =
+                (input.agent_id.clone(), input.client_message_id.clone(), input.text.clone(), input.images.clone(), input.files.clone());
+            let kept = crate::db::blocking(move || super::ask_notes::record(&store, &super::ask_notes::Note {
+                agent: &agent, client_message_id: &client, project: &project_id, key: &key, identity, version,
+                text: &text, images: &images, files: &files,
+            })).await?;
+            if kept {
+                announce(ws, Some(&project));
+            }
+        }
+        return Ok(receipt);
+    }
     // Marked on that version only, if it is still the live ask now.
     if shown.is_some() && delivered(&receipt) {
         let reply = match (&chosen, extra_text(chosen.as_ref(), &input.text)) {
             (Some((_, label)), None) => label.clone(),
             (Some((_, label)), Some(text)) => format!("{label}: {text}"),
             (None, text) => text.unwrap_or_default().to_owned(),
+        };
+        // A form's answers, then the user's note beside them (YN-213).
+        let reply = match note {
+            Some(note) if input.form.is_some() => format!("{reply}\n\n{note}"),
+            _ => reply,
         };
         let reply: String = reply.chars().take(2000).collect();
         // The form's answers by option id, kept only as form_answers took them

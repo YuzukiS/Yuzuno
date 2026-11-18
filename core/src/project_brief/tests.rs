@@ -1250,7 +1250,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
         text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![] };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -1269,7 +1269,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
     let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![] };
+        choice: None, version: Some(version), title: Some(title.into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -1327,7 +1327,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
         snapshot(json!({"sectionKind":"report","title":"About news","text":"Thanks"}))));
     let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
         client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None,
-        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![] };
+        ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let _ = home::reply(&ws, project.clone(), answer).await;
     assert_eq!(origin("r7"), (json!({"kind":"home","projectId":project,"key":"decide","version":1,
         "workspaceId":workspace,"reply":home::reply_digest(Some("left"), "", None, &[], &[])}),
@@ -1349,7 +1349,7 @@ async fn a_long_reply_from_home_is_handed_to_the_agent_whole() {
     for (id, words) in [("chinese", "长".repeat(8_000)), ("ascii", "a".repeat(30_000))] {
         let reply = home::ReplyInput {
             key: Some("news".into()), agent_id: "b".into(), text: words.clone(), client_message_id: id.into(),
-            choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![] };
+            choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
         let result = home::reply(&ws, project.clone(), reply).await;
         let receipt = ws.store.receipt("b", id).unwrap();
         assert!(receipt.is_some(), "{id}: a reply of {} bytes is handed to the Agent, not refused: {:?}", words.len(), result.err());
@@ -1375,7 +1375,7 @@ async fn a_reply_over_the_limit_is_refused_and_says_its_bytes() {
     accept(&ws, "a", input("c1", 0, vec![put("news", "report")])).await;
     let reply = |id: &str, text: String| home::ReplyInput {
         key: Some("news".into()), agent_id: "b".into(), text, client_message_id: id.into(),
-        choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![] };
+        choice: None, version: Some(1), title: Some("About news".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let _ = home::reply(&ws, project.clone(), reply("most", longest_reply())).await;
     assert!(ws.store.receipt("b", "most").unwrap().is_some(), "the longest reply is handed to the Agent");
     let error = home::reply(&ws, project.clone(), reply("over", longest_reply() + "a")).await.unwrap_err();
@@ -1436,7 +1436,7 @@ async fn an_ask_reply_is_bound_to_the_version_on_screen_and_marks_only_that_vers
     let workspace = ws.store.workspace_id().unwrap();
     let reply = |version: Option<i64>, choice: Option<&str>, text: &str, id: &str| home::ReplyInput {
         key: Some("decide".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
-        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![] };
+        choice: choice.map(str::to_owned), version: None, title: None, ask_version: version, workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let refused = |error: anyhow::Error, code: &str| {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
@@ -1551,7 +1551,7 @@ async fn a_delivered_form_reply_keeps_its_answers_by_id_with_the_version_it_answ
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
     let reply = home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.clone(), client_message_id: "f1".into(),
-        choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()), images: vec![], files: vec![] };
+        choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: Some(form.clone()), images: vec![], files: vec![], intent: Default::default(), note: None };
     home::reply(&ws, project.clone(), reply).await.unwrap();
     assert_eq!(kept(&ws), Some(json!({"version":1,"formId":"prefs","answers":{"checks":["wide","keys"]}})));
     // Asked again: the earlier reply's answers never count for the new question.
@@ -1580,7 +1580,7 @@ async fn a_home_reply_keeps_what_the_user_saw_and_its_retry_keeps_the_first() {
     let ask = |key: &str, choice: Option<&str>, text: &str, form: Option<&Value>, id: &str| home::ReplyInput {
         key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: choice.map(str::to_owned),
         version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
-        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()), images: vec![], files: vec![] };
+        form: form.map(|form| serde_json::from_value(form.clone()).unwrap()), images: vec![], files: vec![], intent: Default::default(), note: None };
     let card = |text: &str, id: &str| {
         let mut card = ask("news", None, text, None, id);
         (card.version, card.title, card.ask_version, card.workspace_id) = (Some(1), Some("About news".into()), None, None);
@@ -1714,7 +1714,7 @@ async fn a_form_reply_home_sends_is_kept_by_label_and_any_other_text_sends_nothi
     let sent = fixture["sent"]["text"].as_str().unwrap();
     let reply = |text: &str, id: &str, answers: bool| home::ReplyInput { key: Some("setup".into()), agent_id: "b".into(), text: text.into(),
         client_message_id: id.into(), choice: None, version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()),
-        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()), images: vec![], files: vec![] };
+        form: answers.then(|| serde_json::from_value(fixture["sent"]["form"].clone()).unwrap()), images: vec![], files: vec![], intent: Default::default(), note: None };
     for (id, other) in [("x1", format!("{sent}\n")), ("x2", sent.replacen("\u{6df1}\u{8272}", "\u{6d45}\u{8272}", 1)),
         ("x3", sent.replacen("(no answer)", "", 1)), ("x4", sent.replacen("\u{5bbd}\u{5b57}, \u{952e}\u{76d8}", "\u{952e}\u{76d8}, \u{5bbd}\u{5b57}", 1))] {
         assert_ne!(other, sent, "{id}");
@@ -1751,7 +1751,7 @@ fn round_text(review: &str, note: &str) -> String {
 fn round_reply(workspace: &str, text: &str, review: &str, id: &str) -> home::ReplyInput {
     home::ReplyInput { key: Some("after".into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(), choice: None,
         version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.into()),
-        form: Some(serde_json::from_value(json!({"formId":"round","answers":{"review":review,"note":""}})).unwrap()), images: vec![], files: vec![] }
+        form: Some(serde_json::from_value(json!({"formId":"round","answers":{"review":review,"note":""}})).unwrap()), images: vec![], files: vec![], intent: Default::default(), note: None }
 }
 
 /// YN-103: a form's text answer is as long as the reply it is in may be, no
@@ -1840,10 +1840,10 @@ async fn a_reply_names_its_section_so_home_tells_it_from_a_later_one_under_its_k
     let (plan, decide) = (identity(&ws, &project, "plan"), identity(&ws, &project, "decide"));
     assert_ne!(plan, decide);
     let card = home::ReplyInput { key: Some("plan".into()), agent_id: "b".into(), text: "Looks right".into(), client_message_id: "r1".into(),
-        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![] };
+        choice: None, version: Some(1), title: Some("About plan".into()), ask_version: None, workspace_id: None, form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let _ = home::reply(&ws, project.clone(), card).await;
     let ask = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(), client_message_id: "r2".into(),
-        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None, images: vec![], files: vec![] };
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
     let _ = home::reply(&ws, project.clone(), ask).await;
     assert_eq!((section_id(&ws, "b", "r1"), section_id(&ws, "b", "r2")), (json!(plan), json!(decide)));
     // The ask asked again, then resolved; the card removed, its key written as an ask, which is resolved.
@@ -2134,6 +2134,8 @@ mod card_tests;
 mod reply_image_tests;
 #[path = "reply_file_tests.rs"]
 mod reply_file_tests;
+#[path = "ask_note_tests.rs"]
+mod ask_note_tests;
 
 /// The user's Overview layout: a summary across the top, then two columns.
 fn overview() -> Value {
