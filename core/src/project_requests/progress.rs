@@ -168,12 +168,16 @@ pub(super) fn show(db: &Connection, project: &str, request: &str, n: i64, confir
             ended += 1;
             change(end.clone());
         }
-        // The card: where its newest route to it put it.
-        let section = rows.iter().rev().find(|row| to_card(row) && row.task_id.as_deref() == Some(id.as_str())).and_then(|row| row.section_id);
-        let card = match section {
-            Some(identity) => crate::project_brief::card_by_identity(db, project, identity)?,
-            None => None,
+        // The card: where its newest route to it put it; for a route that put
+        // none (YN-212 C3), the section the task's card key holds, bound to
+        // the task: none until its first card is written.
+        let route = rows.iter().rev().find(|row| to_card(row) && row.task_id.as_deref() == Some(id.as_str()));
+        let card = match (route.and_then(|row| row.section_id), route.and_then(|row| row.card_key.as_deref())) {
+            (Some(identity), _) => crate::project_brief::card_by_identity(db, project, identity)?,
+            (None, Some(key)) => crate::project_brief::bound_card(db, project, key, id)?,
+            (None, None) => None,
         };
+        let section = route.and_then(|row| row.section_id).or(card.as_ref().map(|c| c.identity));
         cards.push(json!({
             "sectionId":section,"key":card.as_ref().map(|c| c.key.clone()),"title":card.as_ref().map(|c| c.title.clone()),
             "live":card.as_ref().is_some_and(|c| c.live),

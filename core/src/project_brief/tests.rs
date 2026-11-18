@@ -1901,6 +1901,17 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     assert_eq!(hard_rules(), brief_contract().unwrap()["hardRules"]);
 }
 
+/// YN-212 C3 R1: an Ask-only member may write the card of a Task it answers
+/// for. The generated rules say so, and so do the rules and guide Core falls
+/// back on without the contract, never "only your own Asks" alone.
+#[test]
+fn the_rules_and_their_fallbacks_say_the_card_of_a_task_answered_for() {
+    assert!(hard_rules().contains("write only your own Asks and a card of a Task you answer for."), "{}", hard_rules());
+    assert!(FALLBACK_RULES.contains("and the card of a Task you answer for: its status or report at its key (yn-90), bound with task"));
+    assert!(FALLBACK_RULES.contains("apart from a Task's card, which its Project's leads and the Agent answering for the Task write too"));
+    assert!(FALLBACK_GUIDE.contains("apart from a Task's card, which its Project's leads and the Agent answering for the Task write too"));
+}
+
 #[test]
 fn the_guide_is_served_whole_or_by_part() {
     let whole = guide(&json!({})).unwrap();

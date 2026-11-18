@@ -221,8 +221,9 @@ async fn owed_attachments_follow_the_card_and_end_with_its_task() {
     let second = lab.say_words(with(lab.words(words, "m2"), &images, &[])).await;
     lab.route("desk", second, "截图", "并进去。", vec![join(&key(0).to_lowercase(), "同一件事"), join(&key(1).to_lowercase(), "也相关")])
         .await.unwrap();
-    // The first card goes to Lead, already running, before its executor started.
-    let section = made["routes"][0]["sectionId"].clone();
+    // The first card goes to Lead, already running, before its executor started: its card, which routing puts
+    // none of (YN-212 C3), written by Lead.
+    let section = json!(lab.write_card("lead", &key(0)).await);
     let (status, _) = reassign_on_page(&lab, &section, json!({"workspaceId":lab.workspace,"to":{"agentId":"lead"},"why":"给 Lead",
         "clientRequestId":"r1"}), false).await;
     assert_eq!(status, StatusCode::OK);
@@ -238,6 +239,45 @@ async fn owed_attachments_follow_the_card_and_end_with_its_task() {
     assert_eq!(shown(&lab, second, 1)["attachments"], json!({"state":"gone"}));
     let other = made["routes"][1]["to"]["agentId"].as_str().unwrap().to_owned();
     assert!(!images_dir(&lab, &other).exists(), "nothing copied for an ended card");
+}
+
+/// YN-212 C3, the lead's case A: a request with attachments joins a task
+/// before its first card is written, its executor still waiting for its
+/// slot; the first request's and the joined one's each go once it has
+/// started, and once only: neither the first card, written after, nor
+/// routing either request again sends them twice.
+#[tokio::test]
+async fn attachments_joined_before_the_first_card_go_once() {
+    let lab = lab();
+    let images = vec![image(&lab, 1)];
+    let first = lab.say_words(with(lab.words("按截图改设置页", "m1"), &images, &[])).await;
+    let routes = vec![design("设置页", "要设计")];
+    let made = lab.route("desk", first, "设置页", "好。", routes.clone()).await.unwrap();
+    let (key, executor) = (made["routes"][0]["task"].as_str().unwrap().to_owned(), made["routes"][0]["to"]["agentId"].as_str().unwrap().to_owned());
+    let files = vec![file(&lab, 1, "notes.txt")];
+    let second = lab.say_words(with(lab.words("文案也改", "m2"), &[], &files)).await;
+    let call = vec![join(&key.to_lowercase(), "同一张设置页")];
+    let joined = lab.route("desk", second, "文案", "并进设计卡。", call.clone()).await.unwrap();
+    assert_eq!((joined["routes"][0]["state"].clone(), joined["routes"][0]["attachments"].clone(), joined["routes"][0]["sectionId"].clone()),
+        (json!("done"), json!({"state":"owed"}), Value::Null), "{joined}");
+    start(&lab, &executor);
+    running(&lab.ws, &executor);
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    let sent = |n: i64| lab.receipt(&executor, &format!("route-{}", lab.route_id(n, 0)));
+    assert_eq!(sent(first).expect("the first request's image").input.images, images);
+    assert_eq!(sent(second).expect("the joined request's file").files, files);
+    assert_eq!(lab.sent(&executor), 2);
+    // Its first card, then every later step: nothing more.
+    let identity = lab.write_card(&executor, &key).await;
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    lab.route("desk", first, "设置页", "好。", routes).await.unwrap();
+    lab.route("desk", second, "文案", "并进设计卡。", call).await.unwrap();
+    lab.ws.deliver_owed_attachments().await.unwrap();
+    assert_eq!(lab.sent(&executor), 2, "once each");
+    assert_eq!((shown(&lab, first, 0)["attachments"].clone(), shown(&lab, second, 0)["attachments"].clone()),
+        (json!({"state":"sent","tries":0}), json!({"state":"sent","tries":0})));
+    assert_eq!((lab.request(first)["cards"][0]["sectionId"].clone(), lab.request(second)["cards"][0]["sectionId"].clone()),
+        (json!(identity), json!(identity)));
 }
 
 /// Without attachments nothing changes: no route owes anything, the task's

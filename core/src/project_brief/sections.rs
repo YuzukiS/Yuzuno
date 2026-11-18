@@ -50,7 +50,7 @@ pub(super) struct Row {
     /// (YN-145); none for any other section or reply.
     pub reply_files: Vec<crate::input_files::FileRef>,
     /// Who wrote this version's content (YN-212 C1): its owner, or a lead or
-    /// the task's current executor writing a task's card it does not own.
+    /// the one who answers for the task writing a task's card it does not own.
     /// A row an older Core wrote names its owner.
     pub author_id: String,
     pub author_name: String,
@@ -261,6 +261,17 @@ pub(super) fn by_identity(db: &Connection, project: &str, identity: i64) -> Resu
         db,
         "project_id=?1 AND COALESCE(lineage,seq)=?2 AND (live=1 OR history_at>=?3) ORDER BY live DESC, seq DESC LIMIT 1",
         params![project, identity, history_cutoff()],
+    )?
+    .pop())
+}
+
+/// The section under `key` bound to `task` (internal ID) by its own `task`
+/// (YN-212 C3): the live one, else its newest entry history still keeps.
+pub(super) fn bound_key(db: &Connection, project: &str, key: &str, task: &str) -> Result<Option<Row>> {
+    Ok(read(
+        db,
+        "project_id=?1 AND key=?2 AND task_id=?3 AND (live=1 OR history_at>=?4) ORDER BY live DESC, seq DESC LIMIT 1",
+        params![project, key, task, history_cutoff()],
     )?
     .pop())
 }

@@ -716,6 +716,64 @@ async fn a_tasks_current_executor_writes_its_own_tasks_card_and_no_other() {
     assert_eq!(written(&ws, &project, &key), ("c".into(), "Agent c".into(), "b".into(), 4));
 }
 
+/// PR 1091 R1: a task given to an Agent here that leads nothing, with no
+/// executor (its assignee, as a card route to it leaves it): that Agent
+/// puts its task's card at the task's key, a status or a report bound with
+/// task, and keeps writing it. Nothing else is its to write for the task:
+/// no Ask bound there, no other section a lead bound to the task, no
+/// sub-topic under the card, no other task's card. Another member writes
+/// none. An executor released from a task, though still its assignee,
+/// writes its card no more.
+#[tokio::test]
+async fn a_tasks_assignee_with_no_executor_writes_only_its_tasks_own_card() {
+    let (_dir, ws, project) = lab();
+    set_leads(&ws, &project, &["a"]);
+    let (task, _) = task_in(&ws, &project, "Write the docs");
+    let (other, _) = task_in(&ws, &project, "Fix the dock");
+    let (key, other_key) = (task.to_lowercase(), other.to_lowercase());
+    task_set(&ws, &task, json!({"assigneeAgentId":"b"}));
+    // A lead's other section bound to the task, and the other task's card.
+    accept(&ws, "a", input("a1", 0, vec![bound("notes", "status", &task), bound(&other_key, "status", &other)])).await;
+
+    for (request, change, code) in [
+        ("b-ask", bound(&key, "ask", &task), "invalid_task"),
+        ("b-elsewhere", bound("pages", "status", &task), "invalid_task"),
+        ("b-other-task", bound(&other_key, "status", &other), "invalid_task"),
+    ] {
+        let refused = reject(&ws, "b", input(request, 1, vec![change])).await;
+        assert_eq!(codes(&refused), [code], "{request}: {refused}");
+    }
+    let answer = accept(&ws, "b", input("b1", 1, vec![bound(&key, "status", &task)])).await;
+    assert_eq!(answer["sections"][0]["task"], json!(task));
+    accept(&ws, "b", input("b2", 2, vec![edit_note(&key, "Half done.")])).await;
+    accept(&ws, "b", input("b3", 3, vec![bound(&key, "report", &task)])).await;
+    assert_eq!(written(&ws, &project, &key), ("b".into(), "Agent b".into(), "b".into(), 3));
+    assert_eq!(card(&brief(&ws, "a"), &key)["responsible"]["agentId"], "b");
+    for (request, change) in [
+        ("b-notes", edit_note("notes", "Mine.")),
+        ("b-notes-put", put("notes", "status")),
+        ("b-sub", put(&format!("{key}/result"), "report")),
+        ("b-other-edit", edit_note(&other_key, "Mine.")),
+    ] {
+        let refused = reject(&ws, "b", input(request, 4, vec![change])).await;
+        assert_eq!(codes(&refused), ["ask_only"], "{request}: {refused}");
+    }
+    // c is a member the task is not given to.
+    for (request, change, code) in [("c-edit", edit_note(&key, "Mine."), "ask_only"), ("c-put", bound(&key, "status", &task), "invalid_task")] {
+        let refused = reject(&ws, "c", input(request, 4, vec![change])).await;
+        assert_eq!(codes(&refused), [code], "{request}: {refused}");
+    }
+
+    // An executor of the other task, still its assignee once released.
+    let internal = crate::collaboration_store::task_key(&ws.store.db.read().unwrap(), &other).unwrap().0;
+    role(&ws.store, "c", &internal, "agent:a", "d1", "running", None);
+    task_set(&ws, &other, json!({"assigneeAgentId":"c"}));
+    accept(&ws, "c", input("c1", 4, vec![edit_note(&other_key, "Fixing.")])).await;
+    ws.store.db.write().unwrap().execute("UPDATE agent_roles SET archived_at='2026-11-13T00:00:00Z' WHERE agent_id='c'", []).unwrap();
+    let refused = reject(&ws, "c", input("c2", 5, vec![edit_note(&other_key, "Still me.")])).await;
+    assert_eq!(codes(&refused), ["not_card_responsible"], "{refused}");
+}
+
 /// YN-212 C1: two writers of one card read the Brief at the same version;
 /// the first write is taken, the second is refused with version_conflict and
 /// the card as the first left it, to merge into.
