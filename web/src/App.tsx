@@ -229,6 +229,7 @@ import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDoc
 import { useArrivalsIn, useDelayedPresence, useSurfaceIn } from "./surface";
 import { ConversationStrips } from "./ConversationStrips";
 import { followVisualViewport } from "./keyboard-viewport";
+import { readServiceWorker } from "./push-client";
 import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { reportText } from "./home/report/report-text";
@@ -2164,8 +2165,10 @@ export function App() {
   // worker focuses this window and posts the link it built from its own
   // scope, never from the push.
   useEffect(() => {
-    const worker = typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
-    if (previewMode || !worker) return;
+    // The design preview first, which has no service worker: Home frames it sandboxed, where reading one throws (R-21).
+    if (previewMode) return;
+    const worker = readServiceWorker();
+    if (!worker) return;
     const take = (event: MessageEvent) => {
       const data = event.data as { type?: unknown; href?: unknown } | null;
       if (data?.type !== "yuzuno:open" || typeof data.href !== "string") return;
