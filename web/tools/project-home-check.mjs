@@ -37,7 +37,9 @@ const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const report = { task: "YN-86", runs: [], posts: [], opened: [], unexpected: [], errors: [] };
 const HOST = "localhost:47393";
-const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+// One time for the whole fixture, so cards given the same age are the same age, and order as the fixture lists them.
+const now = Date.now();
+const at = (minutes) => new Date(now - minutes * 60_000).toISOString();
 
 const base = {
   harness: "codex", model: "gpt-6", color: "sage", createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0,
@@ -542,21 +544,16 @@ async function check(run) {
     const ask = await cardMarked("q1");
     await shot("project-ask-marked");
     pass("the page's Asks jump still marks the Ask (R-23)", ask);
-    // And a glance's recent card, from the whole of Home: the page opens at that card, marked. Which two cards are
-    // recent turns on the milliseconds between the fixture's times; of any two, one is an Ask or a status card.
+    // And the status card, a glance's recent card on the whole of Home: the page opens at that card, marked.
     if (run.phone) await page.goBack();
     else await page.locator(".catchup-nav:not(.collab-nav)").first().click();
-    const recent = page.locator('[data-glance-project="p-dev"] .project-glance-recent button');
-    await recent.first().waitFor({ timeout: 15_000 });
-    const named = await recent.locator(".project-glance-card").allInnerTexts();
-    const target = sections.find((s) => (s.kind === "status" || s.kind === "ask") && named.includes(s.title));
-    assert.ok(target, `an Ask or status card among the recent: ${JSON.stringify(named)}`);
-    const link = recent.filter({ hasText: target.title });
-    await (run.phone ? link.tap() : link.click());
+    const recent = page.locator('[data-glance-project="p-dev"] .project-glance-recent button', { hasText: "This week" });
+    await recent.waitFor({ timeout: 15_000 });
+    await (run.phone ? recent.tap() : recent.click());
     await projectPage().waitFor({ timeout: 15_000 });
-    const status = await cardMarked(target.key);
-    await shot("project-recent-marked");
-    pass(`a glance's recent card (${target.kind} ${target.key}) opens the page at that card, marked (R-23)`, status);
+    const status = await cardMarked("status");
+    await shot("project-status-marked");
+    pass("the status card, from its glance, opens the page at that card, marked (R-23)", status);
   } finally {
     await context.close();
   }

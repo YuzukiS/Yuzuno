@@ -896,6 +896,9 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     const scope = () => card(p, "p-app", "scope");
     const deck = () => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
     const order = deck();
+    // In the field, as the person writing is: the page's heading took the focus when the page opened (R-23), and
+    // focus goes to the card only when it went with the reply's controls.
+    replyField(release()).focus();
     await type(p, replyField(release()), "Ship it after the docs fix");
     p.button("Send", release()).click();
     // Core has it: the answer card at once, as a fresh visit shows it, with nothing held for the card it was.
@@ -3876,8 +3879,11 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
  * and its heading has the focus, for Tab to go on from. */
 async function pageOpened(p, id) {
   const heading = p.doc.querySelector(`[data-project-home="${id}"] .project-home-head h1`);
-  await waitFor(() => p.doc.activeElement === heading, `${id}: its heading has the focus`);
-  assert.equal(p.doc.querySelector("[data-home-highlight]"), null, `${id}: nothing on the page is marked`);
+  const marked = () => p.doc.querySelector("[data-home-highlight]");
+  // The page's opening has run once its heading has the focus, or once it has marked something.
+  await waitFor(() => p.doc.activeElement === heading || marked(), `${id}: the page's opening ran`);
+  assert.equal(marked()?.className ?? null, null, `${id}: nothing on the page is marked, the page itself least of all`);
+  assert.ok(p.doc.activeElement === heading, `${id}: its heading has the focus`);
 }
 
 test("from one Project's page to another, nothing frames the page; a card named is still marked (R-23)", async () => {
