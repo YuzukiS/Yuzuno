@@ -392,14 +392,20 @@ async function check(run) {
     pass("a note leaves R-7's picked decision and its words as they were", noted);
 
     // Answered: in its place, once; R-7 stays where it was for the visit.
-    // Where it stands in the page's own scroll, not on the screen: an answer that folds the Ask to its short form near
-    // the page's end lowers how far the page scrolls, which moves the screen, not the block.
+    // What must not move: the Ask within its block, the block's place among the page's blocks and its group. The page
+    // above it may change (a phone's header loses a row when "1 needs you" goes), and an Ask folded to its short form
+    // near the page's end lowers how far the page scrolls; either moves the page, not the block. Where it is on the
+    // screen is recorded beside: scroll anchoring keeps it there when the page above changes out of view.
     const placed = () => page.evaluate((id) => {
       const view = document.querySelector(".home-view");
-      const at = (el) => el ? Math.round(el.getBoundingClientRect().top - view.getBoundingClientRect().top + view.scrollTop) : null;
       const r7 = document.querySelector('[data-request-block="7"]');
+      const ask = document.getElementById(id);
       return {
-        top: at(r7), ask: at(document.getElementById(id)), group: r7.closest(".request-group")?.dataset.group ?? null,
+        askInBlock: Math.round(ask.getBoundingClientRect().top - r7.getBoundingClientRect().top),
+        order: [...document.querySelectorAll("[data-request-block], [data-project-block]")].indexOf(r7),
+        group: r7.closest(".request-group")?.dataset.group ?? null,
+        screen: Math.round(r7.getBoundingClientRect().top),
+        page: Math.round(r7.getBoundingClientRect().top - view.getBoundingClientRect().top + view.scrollTop),
         upFront: !!r7.querySelector(`.request-block-asks [id="${id}"]`), cards: document.querySelectorAll(`[id="${id}"]`).length,
       };
     }, askId);
@@ -408,7 +414,8 @@ async function check(run) {
     await ask.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
     await page.waitForTimeout(600);
     const after = await placed();
-    assert.ok(after.group === before.group && Math.abs(after.top - before.top) <= 2 && Math.abs(after.ask - before.ask) <= 2 && after.upFront && after.cards === 1,
+    assert.ok(after.group === before.group && after.order === before.order && Math.abs(after.askInBlock - before.askInBlock) <= 2
+      && after.upFront && after.cards === 1,
       `answered in place: ${JSON.stringify({ before, after })}`);
     await shot("ask-answered");
     pass("answered, R-7's Ask stays in its place, once, and the block does not move", { before, after });
