@@ -2432,7 +2432,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   sections: [
     `This guide is the format. What to write and in which form is yuzuno_guide topic brief ("Write for Home"): one conclusion first, important limits beside it, each fact in one place, and execution evidence (logs, raw data, full test output, run and PR lists) left on its Task and linked.`,
     `What goes where: ${BRIEF_OUTCOME_HINT} Update a section when something changed, not every turn; a status past its validFor shows as stale until new facts refresh it. Details stay on the Task and its sources.`,
-    `A Project's leads edit its Home; the user chooses them. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks, remove your own older sections, or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
+    `A Project's leads edit its Home; the user chooses them. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks, remove your own older sections, or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status, with one exception: the card of a Task you answer for. Its current executor, or, while it has none, the Agent it is assigned to (not an executor released from it), puts, edits and patches the status or report at the Task's key (yn-90), bound with task; its current executor also writes report and status sub-topics under that card (see task). When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
     `- put {op:"put", ${signature(jsonSchema(sectionSchema), 1).slice(1)}`,
     `- key: topic or topic/sub; each part 1-48 of a-z, 0-9 and -, starting with a letter or digit (round-12, round-12/review). A Brief has at most ${L.topics} topics with ${L.subtopicsPerTopic} report or status subs each (Asks take none); a card of an open Task (a topic whose own section has task) does not count, one per Task: it leaves with its Task.`,
@@ -2554,7 +2554,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   errors: [
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
-    `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, and optional noChange. A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
+    `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, optional noChange, and the card of a Task you answer for (see sections). A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
     `- gate_not_yours, gate_step_unknown: an ask's gate names a task you are not the executor of, or a step of its template that is not a gate (see ask).`,
     `- invalid_task: task names no Task, a Task of another Project or an archived one, or comes from a member who is not a lead (see sections).`,
     `- not_card_responsible: an executor's report or status sub-topic outside the card of the Task it is the current executor of (see sections).`,
@@ -2596,8 +2596,8 @@ export const BRIEF_OUTCOME_HINT =
 export const BRIEF_HARD_RULES = [
   `Yuzuno Project Brief rules:`,
   `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; yuzuno-ui blocks never reach Home. Load tools with tool search if needed.`,
-  `2. Pass expectedVersion from brief_get. On version_conflict, re-read (the rejection has the latest), merge and retry with a new requestId.`,
-  `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
+  `2. Pass expectedVersion from brief_get. On version_conflict, re-read, merge and retry with a new requestId.`,
+  `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks and a card of a Task you answer for. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
@@ -2613,13 +2613,13 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
-    `Write Brief changes when something changed, not each turn. Ask-only members write only their own Asks. ` +
+    `Write when something changed, not each turn. Ask-only members write only their own Asks and a Task card they answer for. ` +
     `Pass expectedVersion from brief_get and a new requestId (reuse it only to retry); noChange:true changes nothing. ` +
     `Changes: put {op:"put", key, kind, title, body|markdown, ask?, status?, time?, attachments?, task?} creates or replaces your section ` +
     `(markdown: its text as one block); edit {op:"edit", key, elements:{<id>: block}} replaces only those blocks; ` +
     `patch {op:"patch", key, patch:[RFC 6902 ops on the body]} ` +
     `changes single values (@<id> names an array item by its id, e.g. /elements/t/props/rows/@r8/cells/x); resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} removes your section; ` +
-    `claim {op:"claim", key} takes an orphaned one (change it later). ` +
+    `claim {op:"claim", key} takes an orphaned one. ` +
     `task (put, edit): a Task's one card, at its key (yn-90); its leads and responsible Agent write it (null unbinds); ` +
     `refresh (put, edit of a report) makes it refresh itself (brief_guide refresh). ` +
     `key is topic or topic/sub (a-z, 0-9, -); ` +

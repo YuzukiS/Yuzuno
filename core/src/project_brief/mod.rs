@@ -182,10 +182,13 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 }
 
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
-Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
+Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, removing your own older sections, \
+and the card of a Task you answer for: its status or report at its key (yn-90), bound with task; as its current executor, also sub-topics under it. \
+When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
 (on version_conflict merge into the latest sections attached) and call again with a new requestId. \
-Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
+Only a section's owner changes it, apart from a Task's card, which its Project's leads and the Agent answering for the Task write too; \
+to add to another Agent's topic, put a sub-topic such as topic/review. \
 Kinds: ask (a question with options, freeText, form or choice; a reply marks it replied and it stays until you resolve it once handled), \
 report (leaves when the user marks it seen), status (current data with asOf and validFor). \
 Write conclusions, decisions and asks for the user, not a transcript; the Brief does not replace your reply. \
@@ -193,7 +196,7 @@ Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
 Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
-At most 12 topics with 4 report or status sub-topics each (Asks take none); a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
+At most 12 topics with 4 report or status sub-topics each (Asks take none); a card of an open task (a topic whose own section has task) does not count, one per task: it leaves with its task. Only the owner changes a section, apart from a Task's card, which its Project's leads and the Agent answering for the Task write too; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else; a status section's edit may send status alone.\n\

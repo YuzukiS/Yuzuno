@@ -797,7 +797,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             }
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
-                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
+                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, write the card of a Task you answer for (its status or report at its key, bound with task), or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
                 continue;
             }
         }
