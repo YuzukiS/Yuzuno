@@ -178,7 +178,7 @@ class GateTests(ReleaseCase):
     def test_passes_with_reads_only_and_names_the_next_command(self):
         rc, out, _ = self.call('gate')
         self.assertEqual(rc, 0, out)
-        self.assertIn(f'gh workflow run release-inputs.yml --repo {REPO} --ref main', out)
+        self.assertIn(f'gh workflow run release-inputs.yml --repo {REPO} --ref main -f ci_run_id=101', out)
         self.assertTrue(read(self.rundir / 'gate.json')['passed'])
         self.assertEqual({c['verdict'] for c in self.calls()}, {'read'})
 

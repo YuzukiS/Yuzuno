@@ -16,6 +16,11 @@ name: Release inputs
 
 on:
   workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: ID of the successful CI run for this push to main (CI_RUN from the release gate)
+        required: true
+        type: string
 
 # Read-only: actions: read only to look up the CI run of this commit.
 permissions:
@@ -51,12 +56,18 @@ jobs:
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
         run: |
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::release inputs are built from main only, not $GITHUB_REF"; exit 1; }
-          passed=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f head_sha="$GITHUB_SHA" -f event=push -f branch=main -f status=success --jq '.total_count')
-          [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
-          echo "CI passed on $GITHUB_SHA"
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::expected a numeric CI run ID"; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID")
+          jq -se --arg id "$CI_RUN_ID" --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
+            length == 1 and (.[0] |
+              (.id | tostring) == $id and .repository.full_name == $repo and .head_repository.full_name == $repo and
+              .path == ".github/workflows/ci.yml" and .head_sha == $sha and .head_branch == "main" and
+              .event == "push" and .status == "completed" and .conclusion == "success")
+          ' <<< "$run" > /dev/null || { echo "::error::CI run $CI_RUN_ID is not a successful main push CI run for $GITHUB_SHA"; exit 1; }
+          echo "CI run $CI_RUN_ID passed on $GITHUB_SHA"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,12 +118,18 @@ jobs:
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
         run: |
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::release inputs are built from main only, not $GITHUB_REF"; exit 1; }
-          passed=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f head_sha="$GITHUB_SHA" -f event=push -f branch=main -f status=success --jq '.total_count')
-          [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
-          echo "CI passed on $GITHUB_SHA"
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::expected a numeric CI run ID"; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID")
+          jq -se --arg id "$CI_RUN_ID" --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
+            length == 1 and (.[0] |
+              (.id | tostring) == $id and .repository.full_name == $repo and .head_repository.full_name == $repo and
+              .path == ".github/workflows/ci.yml" and .head_sha == $sha and .head_branch == "main" and
+              .event == "push" and .status == "completed" and .conclusion == "success")
+          ' <<< "$run" > /dev/null || { echo "::error::CI run $CI_RUN_ID is not a successful main push CI run for $GITHUB_SHA"; exit 1; }
+          echo "CI run $CI_RUN_ID passed on $GITHUB_SHA"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

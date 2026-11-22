@@ -320,7 +320,7 @@ def gate(env, args):
         say('gate refused:\n- ' + '\n- '.join(problems))
         return 1
     say(f"gate passed {receipt['checkedAt']}: main={sha} ci={ci_run}; {tag} / {version} unused")
-    say(f'next, as its own command: gh workflow run release-inputs.yml --repo {repo} --ref main')
+    say(f'next, as its own command: gh workflow run release-inputs.yml --repo {repo} --ref main -f ci_run_id={ci_run}')
     return 0
 
 
