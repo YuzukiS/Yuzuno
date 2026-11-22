@@ -43,7 +43,7 @@ Every command below runs from `W` as `python3 -I tools/core-release-run.py <comm
 
 ### 2. Inputs
 
-1. Right after the gate passes, run the dispatch as its own command: `gh workflow run release-inputs.yml --repo <REPO> --ref main`. The workflow builds main's head at the moment it starts, so nothing may merge in between.
+1. Right after the gate passes, run the dispatch as its own command: `gh workflow run release-inputs.yml --repo <REPO> --ref main -f ci_run_id=<CI_RUN>` using the verified `ciRun` from `gate.json`. The workflow builds main's head at the moment it starts, so nothing may merge in between.
 2. Run `inputs`. It finds the one run for SHA and checks it is the release-inputs workflow on main. While the run builds, it says the hold can lift. Once the run passes, it prints `INPUTS_RUN` and one `ARTIFACT_ID_<PLATFORM>` for each required platform (`ARTIFACT_ID_LINUX_X86_64`, `ARTIFACT_ID_MACOS_AARCH64`: the one `core-inputs-<platform>-<SHA>-<attempt>` artifact each); write them into the env file.
 3. Run `milestone --open core.N+1`. Merge-queue grouping tags a merge with the highest-numbered open milestone, and `core.N` stays open until publication. Without `core.N+1`, merges after the cut would be tagged `core.N`.
 4. Mail the Lead that the hold can lift. Include the cut's CI run, the gate's time, the inputs run, main's head and the new milestone.

@@ -55,7 +55,7 @@ those bytes. A `bundled-release` build without the value does not compile, and
 not carry, so no release ships an unpinned validator.
 
 **Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted runners, with a token that reads contents and actions and no secret. It has one job per platform: Linux x86_64 on ubuntu-24.04, and macOS on Apple silicon on the standard macos-26 runner (YN-108):
-- Each job builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
+- Each job builds `github.sha`, the head of `main` when it was started, and verifies the supplied CI run ID directly against GitHub before checkout. It must be a completed, successful `ci.yml` push on `main` in this repository for that exact commit. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
 - Each runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs for another platform, from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before the job's artifact is uploaded for 14 days. Each artifact is named `core-inputs-<platform>-<SHA>-<run attempt>`: `core-inputs-linux-x86_64-…` and `core-inputs-macos-aarch64-…`.
 - The Mac job also smokes the two binaries it built (`tools/release-inputs-smoke.py`), since the Linux release host cannot run them: Core answers `/api/health` and `/api/updates` says `macos-aarch64`; the update helper installs an unsigned local package of the inputs into a new managed root (`register --initialize`); `updates/start start` and `stop` start and stop that root's Core; every Core it started itself exits 0 after SIGTERM. It uses a new folder, HOME and ports of its own.
 - The run passes only when both jobs pass.
@@ -187,7 +187,7 @@ Job is sufficient for prepare/smoke; account for collector reservation too.
 The old private CI and runner budget belong to the historical workflow. Active
 CI runs in the public repository on GitHub-hosted runners; release inputs come from the on-request workflow.
 
-Start the inputs build for the candidate with `gh workflow run release-inputs.yml --ref main`, then inspect both runs and the artifact using `gh run view` and
+Start the inputs build for the candidate with `gh workflow run release-inputs.yml --ref main -f ci_run_id=<CI_RUN>`, then inspect both runs and the artifact using `gh run view` and
 `gh api repos/OWNER/REPO/actions/runs/RUN_ID/artifacts`. Freeze explicit inputs:
 
 ```sh

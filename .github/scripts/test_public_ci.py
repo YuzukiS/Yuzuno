@@ -49,10 +49,12 @@ $RUNNER_TEMP only, without install scripts, and no step's failure is
 ignored.
 """
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -207,7 +209,9 @@ def release_inputs_problems(text):
         def first(predicate):
             return next((i for i, step in enumerate(steps) if predicate(step)), None)
         gate = first(lambda step: '[ "$GITHUB_REF" = refs/heads/main ]' in step
-                     and 'actions/workflows/ci.yml/runs' in step and 'status=success' in step)
+                     and 'CI_RUN_ID: ${{ inputs.ci_run_id }}' in step
+                     and 'gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID"' in step
+                     and '.conclusion == "success"' in step)
         checkout = first(lambda step: 'actions/checkout@' in step)
         check = first(lambda step: 'tools/release-inputs-check.py' in step)
         uploads = [i for i, step in enumerate(steps) if 'actions/upload-artifact@' in step]
@@ -486,6 +490,49 @@ class PublicCi(unittest.TestCase):
     def test_the_release_inputs_workflow_keeps_its_rules(self):
         self.assertEqual(release_inputs_problems(RELEASE_INPUTS.read_text()), [])
 
+    def test_release_gate_checks_the_dispatched_ci_run(self):
+        repo, sha, run_id = 'owner/repo', 'a' * 40, '101'
+        response = {
+            'id': 101, 'path': '.github/workflows/ci.yml',
+            'repository': {'full_name': repo}, 'head_repository': {'full_name': repo},
+            'head_branch': 'main', 'head_sha': sha, 'event': 'push',
+            'status': 'completed', 'conclusion': 'success',
+        }
+        # The check runs before checkout on both platforms. Exercise the shipped shell
+        # against an exact-run API stand-in, including an unavailable response.
+        steps = jobs(code_lines(RELEASE_INPUTS.read_text()))
+        commands = []
+        for name in RELEASE_INPUT_JOBS:
+            gate = next(step for step in steps_of(steps[name]) if '- name: Main, with passed CI' in step)
+            commands.append(textwrap.dedent(gate.split('        run: |\n', 1)[1]))
+        self.assertEqual(commands[0], commands[1])
+        with tempfile.TemporaryDirectory() as directory:
+            gh = Path(directory) / 'gh'
+            gh.write_text('#!/bin/sh\n[ "$#" -eq 2 ] && [ "$1" = api ] && '
+                          '[ "$2" = repos/owner/repo/actions/runs/101 ] || exit 1\n'
+                          'printf "%s" "$RUN_JSON"\nexit "$API_EXIT"\n')
+            gh.chmod(0o755)
+            env = {**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                   'GITHUB_REF': 'refs/heads/main', 'GITHUB_REPOSITORY': repo, 'GITHUB_SHA': sha,
+                   'CI_RUN_ID': run_id, 'RUN_JSON': json.dumps(response), 'API_EXIT': '0'}
+
+            def run(**overrides):
+                return subprocess.run(['bash', '-e', '-c', commands[0]], env={**env, **overrides},
+                                      capture_output=True, text=True)
+
+            valid = run()
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            for key, value in [('id', 102), ('path', '.github/workflows/other.yml'), ('head_sha', 'b' * 40),
+                               ('repository', {'full_name': 'other/repo'}), ('head_repository', None),
+                               ('head_branch', 'work'), ('event', 'pull_request'),
+                               ('status', 'in_progress'), ('conclusion', 'failure')]:
+                with self.subTest(key=key):
+                    self.assertNotEqual(run(RUN_JSON=json.dumps({**response, key: value})).returncode, 0)
+            for overrides in [{'GITHUB_REF': 'refs/heads/work'}, {'CI_RUN_ID': ''}, {'CI_RUN_ID': '1/2'},
+                              {'API_EXIT': '1'}, {'RUN_JSON': ''}, {'RUN_JSON': '{}'}]:
+                with self.subTest(overrides=overrides):
+                    self.assertNotEqual(run(**overrides).returncode, 0)
+
     def test_each_broken_release_inputs_rule_is_reported(self):
         good = RELEASE_INPUTS.read_text()
         upload = '      - uses: actions/upload-artifact@'
@@ -499,7 +546,7 @@ class PublicCi(unittest.TestCase):
             'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
             'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
             'any branch': (good.replace('[ "$GITHUB_REF" = refs/heads/main ] ||', 'true ||', 1), 'passed CI before checkout'),
-            'no CI lookup': (good.replace('-f status=success', '-f status=completed', 1), 'passed CI before checkout'),
+            'wrong run lookup': (good.replace('actions/runs/$CI_RUN_ID', 'actions/runs/100', 1), 'passed CI before checkout'),
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
             'another artifact name': (good.replace('name: core-inputs-linux-x86_64-${{ github.sha }}', 'name: inputs-${{ github.sha }}', 1), 'one core-inputs artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one core-inputs artifact'),
