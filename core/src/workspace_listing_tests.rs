@@ -109,8 +109,13 @@ async fn a_slim_list_keeps_released_executors_to_their_listed_fields_and_every_o
     // The header asks for the same list, at the list's own address.
     let (status, by_header) = get(&app, "/api/workspace", &[LOCAL[0], LOCAL[1], ("x-yuzuno-listing", "slim")]).await;
     assert_eq!((status, by_header), (StatusCode::OK, slim_list));
-    let (status, refused) = get(&app, "/api/workspace", &[LOCAL[0], LOCAL[1], ("x-yuzuno-listing", "whole")]).await;
-    assert_eq!((status, &refused["code"]), (StatusCode::BAD_REQUEST, &json!("invalid_input")));
+    // Each form is checked on its own: a good one never covers a bad one.
+    for (uri, header) in [("/api/workspace", "whole"), ("/api/workspace?listing=slim", "whole"), ("/api/workspace?listing=whole", "slim")] {
+        let (status, refused) = get(&app, uri, &[LOCAL[0], LOCAL[1], ("x-yuzuno-listing", header)]).await;
+        assert_eq!((status, &refused["code"]), (StatusCode::BAD_REQUEST, &json!("invalid_input")), "{uri} with {header}");
+    }
+    let (status, both) = get(&app, "/api/workspace?listing=slim", &[LOCAL[0], LOCAL[1], ("x-yuzuno-listing", "slim")]).await;
+    assert_eq!((status, &both["listing"]), (StatusCode::OK, &json!("slim")), "both, saying the same");
 }
 
 #[tokio::test]
