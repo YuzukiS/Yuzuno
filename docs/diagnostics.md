@@ -67,7 +67,8 @@ recorded in the diagnostics too.
   the text says `unknown`.
 - **Desktop window:** whether the window is visible, minimized or hidden and
   whether it has focus, how long it was each since it opened, and its last 8
-  changes. A desktop app from before this says `unknown`.
+  changes. A window another window covers counts as visible: the system
+  does not tell the app. A desktop app from before this says `unknown`.
 - **WebView:** always `unknown`, because the desktop app does not report it.
 - **Page environment:** the page's browser engine (major version) and
   operating system, as the page reads them. This is never the full user-agent
