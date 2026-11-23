@@ -98,6 +98,9 @@ mod platform_tests;
 mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
+// Its Jobs run as watch_tests' do, on Linux's cgroups and boot id.
+#[cfg(all(test, target_os = "linux"))]
+mod tick_labels_tests;
 #[cfg(test)]
 mod service_tests;
 #[cfg(test)]
@@ -1989,6 +1992,30 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     if checkpoint::expire(ws).await? {
         changed(ws);
     }
+    // Each step under its own label (YN-221): the runs advanced, the running Jobs'
+    // evidence read and written, and the queue's admission; what is left of the
+    // tick (removed folders, checkpoint stops, the loop itself) stays `svc jobs`.
+    crate::runtime_diag::scope(TICK_EVIDENCE, evidence(ws)).await?;
+    // Queued work cannot start during Core update drain; running services remain independent.
+    let Ok(_work) = ws.admission.enter_work() else {
+        return Ok(());
+    };
+    if crate::runtime_diag::scope(TICK_RUNS, ws.stored(|s| s.advance_runs())).await? {
+        changed(ws);
+    }
+    crate::runtime_diag::scope(TICK_ADMISSION, admit(ws)).await
+}
+
+/// The fixed labels of the Jobs tick's steps (YN-221), under the service's own
+/// `svc jobs`, whose CPU is then only what none of them took. A Core from
+/// before them counts all of the tick under `svc jobs`.
+pub(crate) const TICK_EVIDENCE: &str = "svc jobs evidence";
+pub(crate) const TICK_RUNS: &str = "svc jobs runs";
+pub(crate) const TICK_ADMISSION: &str = "svc jobs admission";
+
+/// The running Jobs' evidence: each one's files read (and the helper asked
+/// when they call for it), and what changed written.
+async fn evidence(ws: &Arc<Workspace>) -> Result<()> {
     let active = ws.stored(|s| s.active_jobs()).await?;
     ws.jobs.watch.retain(&active.iter().filter_map(|job| job["attempt"].as_str().map(str::to_owned)).collect());
     for job in active {
@@ -2028,13 +2055,12 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
             }
         }
     }
-    // Queued work cannot start during Core update drain; running services remain independent.
-    let Ok(_work) = ws.admission.enter_work() else {
-        return Ok(());
-    };
-    if ws.stored(|s| s.advance_runs()).await? {
-        changed(ws);
-    }
+    Ok(())
+}
+
+/// The queue's admission: the next queued Job that fits is reserved and
+/// launched, else the waiting reasons kept and elastic Jobs raised.
+async fn admit(ws: &Arc<Workspace>) -> Result<()> {
     let candidates = ws.stored(|s| s.queued_candidates()).await?;
     if candidates.is_empty() {
         // Nothing waits: running elastic Jobs may take what is free (T-64).
