@@ -1806,6 +1806,8 @@ async fn a_form_reply_takes_a_long_pasted_answer_whole() {
         input: crate::model::MessageInput { client_message_id: "f2".into(), text: home::compose_ask(&workspace, "Code", &project, &row, None, &text),
             text_blocks: None, images: vec![], expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
+    // Its first send recorded it as the newest reply sent to that version (YN-223).
+    sections::reply_sent(&ws.store, &project, "after", 1, "f2").unwrap();
     home::reply(&ws, project.clone(), round_reply(&workspace, &text, &review, "f2")).await.unwrap();
     let raw: String = ws.store.db.read().unwrap().query_row(
         "SELECT reply_form FROM project_brief_sections WHERE project_id=?1 AND key='after' AND live=1", [&project], |r| r.get(0)).unwrap();
