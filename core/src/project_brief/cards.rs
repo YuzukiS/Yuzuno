@@ -483,8 +483,17 @@ pub(super) fn placeholder(db: &Connection, row: &Row) -> Result<bool> {
         return Ok(false);
     }
     let shown = crate::collaboration_store::task_shown(db, task);
-    let elements = &row.data["body"]["elements"];
-    let root = &elements[row.data["body"]["root"].as_str().unwrap_or_default()];
+    // A history index's row has no body (YN-221 S1): this one's is read.
+    let loaded;
+    let body = match row.data.get("body") {
+        Some(body) => body,
+        None => {
+            loaded = super::sections::body_of(db, row.seq)?;
+            &loaded
+        }
+    };
+    let elements = &body["elements"];
+    let root = &elements[body["root"].as_str().unwrap_or_default()];
     let children: Vec<&Value> = root["children"].as_array().into_iter().flatten().map(|id| &elements[id.as_str().unwrap_or_default()]).collect();
     let lead = children.iter().any(|block| block["type"] == "Markdown" && block["props"]["text"].as_str().is_some_and(|text| text.starts_with("→ ")));
     let refs = children.iter().any(|block| {
