@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readHome } from "./home-api";
 import type { NeedsYouItem } from "./types";
 
@@ -22,17 +22,41 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
       setRead({ workspaceId, items }),
     [workspaceId],
   );
+  // One read at a time, as Home's (YN-221): a change while one is on its way
+  // asks for one more after it; only coming back to Home, or another
+  // Workspace, drops it.
+  const reading = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
   useEffect(() => {
     if (!away || !workspaceId) return;
-    const controller = new AbortController();
-    readHome(controller.signal)
-      .then((value) => {
-        if (!controller.signal.aborted && Array.isArray(value?.needsYou)) report(value.needsYou);
-      })
-      // The last count stays; Home itself says when it cannot be read.
-      .catch(() => {});
-    return () => controller.abort();
+    const state = reading.current;
+    if (state.controller) {
+      state.again = true;
+      return;
+    }
+    const read = () => {
+      const controller = new AbortController();
+      state.controller = controller;
+      state.again = false;
+      readHome(controller.signal)
+        .then((value) => {
+          if (!controller.signal.aborted && Array.isArray(value?.needsYou)) report(value.needsYou);
+        })
+        // The last count stays; Home itself says when it cannot be read.
+        .catch(() => {})
+        .finally(() => {
+          if (state.controller !== controller) return;
+          state.controller = null;
+          if (state.again) read();
+        });
+    };
+    read();
   }, [away, workspaceId, revision, tick, report]);
+  useEffect(() => () => {
+    const state = reading.current;
+    state.controller?.abort();
+    state.controller = null;
+    state.again = false;
+  }, [away, workspaceId]);
   useEffect(() => {
     if (!away) return;
     const timer = setInterval(() => {

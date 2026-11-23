@@ -535,3 +535,72 @@ test("Core's merge-queue pass reads only what shows the queue; with collaboratio
     p.close();
   }
 });
+
+const setVisibility = (p, state) => {
+  Object.defineProperty(p.d, "visibilityState", { value: state, configurable: true });
+  p.d.dispatchEvent(new p.w.Event("visibilitychange"));
+};
+
+test("a burst of Job changes reads the Jobs once (YN-221)", async () => {
+  const p = await mount({ holdPoll: true, workspaceId: "w" });
+  try {
+    const opened = p.core.calls.length;
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-1" });
+    await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
+    await pause(600);
+    const before = p.count("/api/jobs/live");
+    for (let n = 0; n < 10; n++) {
+      p.send({ jobs: true, type: "workspace.changed", scope: "jobs" }, `e-${n + 2}`);
+      await pause(10);
+    }
+    // Real time: past the 250 ms the burst waits.
+    await pause(600);
+    assert.equal(p.count("/api/jobs/live") - before, 1, "ten changes, one read");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("while the page is hidden the shown conversation, Home and the board wait, the Agent list reads at most every 5 s, and shown again each reads once with the latest (YN-221)", async () => {
+  const p = await mount({ holdPoll: true, workspaceId: "w" });
+  try {
+    const opened = p.core.calls.length;
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-1" });
+    await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
+    await pause(600);
+    setVisibility(p, "hidden");
+    const at = p.core.calls.length;
+    const since = (path) => p.core.calls.slice(at).filter((c) => c.path === path).length;
+    // 6 s of changes to the shown Agent, every 200 ms, and one reset.
+    p.core.text = "Changed while hidden";
+    p.core.agents[0].rev = p.core.agents[0].lastSeq = 50;
+    let id = 1;
+    for (let n = 0; n < 30; n++) {
+      p.send({ type: "agent.changed", agentId: "a", rev: 50, lastSeq: 50 }, `e-${++id}`);
+      if (n === 15) p.send({ type: "reset", refresh: true, reason: "overflow" }, `e-${++id}`);
+      await pause(200);
+    }
+    assert.equal(since("/api/agents/a"), 0, "the shown conversation waits");
+    assert.equal(since("/api/ci/live") + since("/api/waits/live"), 0, "so does the board");
+    const lists = since("/api/workspace");
+    assert.ok(lists >= 1 && lists <= 2, `the Agent list, for the badge and title: at most every 5 s (${lists} in 6 s)`);
+    assert.doesNotMatch(p.d.querySelector('[data-item-id="m-a"]').textContent, /Changed while hidden/);
+    // Shown again: each waiting read once, now.
+    const back = p.core.calls.length;
+    const after = (path) => p.core.calls.slice(back).filter((c) => c.path === path).length;
+    setVisibility(p, "visible");
+    await until(() => p.d.querySelector('[data-item-id="m-a"]').textContent.includes("Changed while hidden"), "the latest conversation");
+    await pause(600);
+    assert.equal(after("/api/agents/a"), 1, "the conversation, once");
+    assert.equal(after("/api/workspace"), 1, "the Agent list, once");
+    assert.ok(after("/api/ci/live") >= 1, "the board's reads, after the reset");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

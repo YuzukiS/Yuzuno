@@ -235,42 +235,67 @@ export function Home({
   // Refresh asked for and not yet answered (T-19 HM:H3): its icon turns and it says it is busy. The reads Home makes
   // on its own (a revision, the safety net) show nothing.
   const [refreshing, setRefreshing] = useState(false);
+  // One read of Home at a time (YN-221): a change while one is on its way
+  // asks for one more after it and never aborts it, since Core would build
+  // the aborted answer whole anyway. Only leaving, or another Workspace,
+  // drops the read on its way.
+  const homeRead = useRef<{ controller: AbortController | null; again: boolean }>({ controller: null, again: false });
   useEffect(() => {
     if (readOnly) return;
-    const controller = new AbortController();
+    const state = homeRead.current;
+    if (state.controller) {
+      state.again = true;
+      return;
+    }
     const failed = () => setReadState((previous) => ({
       workspaceId,
       at: previous?.workspaceId === workspaceId ? previous.at : null,
       failed: true,
     }));
-    readHome(controller.signal)
-      .then((value) => {
-        if (controller.signal.aborted) return;
-        setRefreshing(false);
-        if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
-          setError({ kind: "unavailable", reason: "" });
+    const read = () => {
+      const controller = new AbortController();
+      state.controller = controller;
+      state.again = false;
+      readHome(controller.signal)
+        .then((value) => {
+          if (controller.signal.aborted) return;
+          setRefreshing(false);
+          if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
+            setError({ kind: "unavailable", reason: "" });
+            failed();
+            return;
+          }
+          setReading((previous) => ({
+            workspaceId,
+            value: keepUnchanged(previous?.workspaceId === workspaceId ? previous.value : null, value),
+          }));
+          onNeedsYou?.(value.needsYou);
+          setError(null);
+          setReadState({ workspaceId, at: new Date().toISOString(), failed: false });
+        })
+        .catch((e) => {
+          // The last read stays on screen; nothing is blanked while retrying.
+          if (controller.signal.aborted) return;
+          setRefreshing(false);
+          setError({ kind: "read", reason: errorText(e) });
           failed();
-          return;
-        }
-        setReading((previous) => ({
-          workspaceId,
-          value: keepUnchanged(previous?.workspaceId === workspaceId ? previous.value : null, value),
-        }));
-        onNeedsYou?.(value.needsYou);
-        setError(null);
-        setReadState({ workspaceId, at: new Date().toISOString(), failed: false });
-      })
-      .catch((e) => {
-        // The last read stays on screen; nothing is blanked while retrying.
-        if (controller.signal.aborted) return;
-        setRefreshing(false);
-        setError({ kind: "read", reason: errorText(e) });
-        failed();
-      });
-    return () => controller.abort();
+        })
+        .finally(() => {
+          if (state.controller !== controller) return;
+          state.controller = null;
+          if (state.again) read();
+        });
+    };
+    read();
     // A new report callback is not a reason to read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readOnly, workspaceId, revision, jobsRevision, tick]);
+  useEffect(() => () => {
+    const state = homeRead.current;
+    state.controller?.abort();
+    state.controller = null;
+    state.again = false;
+  }, [readOnly, workspaceId]);
   useEffect(() => {
     if (readOnly) return;
     const timer = setInterval(() => {
