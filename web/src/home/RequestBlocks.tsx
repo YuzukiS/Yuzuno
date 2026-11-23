@@ -5,7 +5,7 @@ import { MessageContent } from "../MessageContent";
 import { Tip, TipText } from "../Tip";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { requestDomId } from "./brief-layout";
+import { changedSinceSeen, requestDomId } from "./brief-layout";
 import { openTask } from "./CardResponsible";
 import { CardAgents } from "./card-responsible";
 import { DeckSizes } from "./card-sizes";
@@ -34,6 +34,12 @@ export const blockText = strings(
     project: "Project",
     projectCards: "Project cards",
     projectNote: "Not part of a request",
+    nowLabel: "Where the project stands",
+    now: "Now",
+    nowStale: "Past its validity",
+    nowOpen: (title: string | null) => `for you${title ? ` · ${title}` : ""}`,
+    nowMore: (n: number) => `${n} more · on the status page`,
+    nowCards: (n: number) => `Project cards ${n}`,
     untitled: (hint: string) => `Waiting for a title · ${hint}`,
     newMark: "New",
     actions: { answer: "Answer", resend: "Send again", confirm: "Confirm done", follow: "Follow up" } as Record<BlockAction, string>,
@@ -87,6 +93,12 @@ export const blockText = strings(
     project: "项目",
     projectCards: "项目卡",
     projectNote: "不属于任何请求",
+    nowLabel: "项目近况",
+    now: "近况",
+    nowStale: "已过有效期",
+    nowOpen: (title) => `项待你${title ? ` · ${title}` : ""}`,
+    nowMore: (n) => `另 ${n} 项 · 在状态页`,
+    nowCards: (n) => `项目卡 ${n}`,
     untitled: (hint) => `等待标题 · ${hint}`,
     newMark: "新",
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
@@ -174,7 +186,7 @@ export const requestTitle = (request: ProjectRequest, untitled: (hint: string) =
   request.title?.trim() || untitled(untitledHint(request.text));
 
 /** A time as the page says it, the exact one in its tip. */
-function When({ at }: { at: string | null | undefined }) {
+export function When({ at }: { at: string | null | undefined }) {
   const language = useLanguage();
   const time = useTimeDisplay();
   if (!at) return null;
@@ -650,15 +662,18 @@ export function ProjectAsks({ block, common }: { block: ProjectBlock; common: Bl
  * The Project's cards that belong to no request (R-27 §3.6): a group of their own after In progress, closed until the
  * user, a jump or a page with no request opens it; opened, the Project's deck at its authors' sizes, its Asks answered
  * before this visit among them as their answer cards (YN-3, the user's D3: Reply again, the owner's update in place).
- * Not drawn while closed, nor with nothing to hold.
+ * Not drawn while closed, nor with nothing to hold but the card the banner shows (ProjectNow is then its one place).
  */
 export function ProjectCards({
   block,
+  count,
   open,
   onToggle,
   common,
 }: {
   block: ProjectBlock;
+  /** What it holds (projectCardsCount): none, and it is not drawn. */
+  count: number;
   open: boolean;
   /** The group opened or closed, by the user or by a jump (the details' own toggle). */
   onToggle: (open: boolean) => void;
@@ -666,7 +681,8 @@ export function ProjectCards({
 }) {
   const t = blockText(useLanguage());
   const answered = block.asks.filter((ask) => !common.upFront(ask));
-  const count = block.sections.length + answered.length;
+  // New while closed, as the Project's block said it (#1102 R1): only for what the group holds, not an Ask up front.
+  const unread = [...answered, ...block.sections].some(changedSinceSeen);
   if (count === 0) return null;
   return (
     <details
@@ -680,6 +696,7 @@ export function ProjectCards({
     >
       <summary className="request-group-title">
         {t.projectCards} <span>{count}</span>
+        {unread && <span className="home-chip is-new">{t.newMark}</span>}
         <small className="request-group-note">{t.projectNote}</small>
       </summary>
       {open && <ProjectDeck sections={[...answered, ...block.sections]} common={common} />}

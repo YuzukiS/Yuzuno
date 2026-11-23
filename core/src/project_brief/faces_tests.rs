@@ -168,6 +168,19 @@ async fn an_edit_tells_the_face_with_the_attachments_as_stored() {
     assert!(!edited.to_string().contains(dir.path().to_str().unwrap()));
 }
 
+#[tokio::test]
+async fn the_summarys_for_you_checklist_is_told_as_requested() {
+    // R-27: summary.forYou names the Checklist of what the user is asked to do; the face's request names it too.
+    let (_dir, ws, _project) = lab();
+    let mut change = report("development", "Development", None, &[]);
+    let body = &mut change["body"]["elements"];
+    body["todo"] = json!({"type":"Checklist","props":{"title":"For you","items":[{"id":"try","text":"Try the new page","done":false}]}});
+    body["body"]["children"] = json!(["lead", "todo"]);
+    body["body"]["props"]["summary"]["forYou"] = json!("todo");
+    let written = update::update(&ws, &FAKE, "a", input("y", 0, vec![change])).await.unwrap().unwrap();
+    assert_eq!(written["cards"][0]["asked"]["requested"], json!({"lead":"lead","forYou":"todo"}));
+}
+
 /// `agent` starts Turn `turn` from the user's own message (a refresh is made only in one, YN-113).
 fn user_turn(ws: &Workspace, agent: &str, turn: &str) {
     let input = MessageInput { client_message_id: format!("{agent}-{turn}"), text: "Synthetic request.".into(), text_blocks: None,

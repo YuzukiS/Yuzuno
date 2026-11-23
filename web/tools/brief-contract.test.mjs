@@ -382,7 +382,9 @@ test("a body may name its summary and the details that start folded, among the r
     { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] }, { summary: { lead: "answer", visual: "runs" } },
     { summary: { lead: "answer", visual: "shot" } }, { details: ["method"] },
     { summary: { lead: "answer", size: "small" } }, { summary: { lead: "answer", visual: "runs", size: "wide" } },
-    { summary: { lead: "answer", visual: "shot", conditions: "holds", size: "large" } }])
+    { summary: { lead: "answer", visual: "shot", conditions: "holds", size: "large" } },
+    // R-27: forYou names the Checklist of what the user is asked to do.
+    { summary: { lead: "answer", forYou: "holds", size: "wide" } }, { summary: { lead: "answer", visual: "loss", forYou: "holds" } }])
     assert.deepEqual(checkBriefSection(body(props)).body.elements.body.props, props, JSON.stringify(props));
   const refused = (props) => problems(body(props));
   assert.deepEqual(refused({ summary: { lead: "method-text" } })[0], { code: "summary", path: "body.elements.body.props.summary.lead",
@@ -407,6 +409,12 @@ test("a body may name its summary and the details that start folded, among the r
   assert.deepEqual(code({ summary: { lead: "answer", conditions: "loss" } }), ["summary summary.conditions"]);
   assert.deepEqual(code({ summary: { lead: "answer", visual: "answer" } }), ["summary summary.visual"], "each block once");
   assert.deepEqual(code({ summary: { lead: "answer", visual: "loss", conditions: "missing" } }), ["summary summary.conditions"]);
+  // forYou is a Checklist of the root's own, never a block the summary already names.
+  assert.deepEqual(code({ summary: { lead: "answer", forYou: "answer" } }), ["summary summary.forYou"], "not the lead's block");
+  assert.deepEqual(code({ summary: { lead: "answer", conditions: "holds", forYou: "holds" } }), ["summary summary.forYou"], "each block once");
+  assert.deepEqual(code({ summary: { lead: "answer", forYou: "plan" } }), ["summary summary.forYou"], "a Plan is no Checklist");
+  assert.deepEqual(code({ summary: { lead: "answer", forYou: "missing" } }), ["summary summary.forYou"]);
+  assert.match(refused({ summary: { lead: "answer", forYou: "plan" } })[0].reason, /^summary\.forYou is a Checklist; "plan" is a Plan\./);
   assert.deepEqual(code({ details: ["untitled", "plan", "note", "method", "method"] }),
     ["details details.0", "details details.1", "details details.2", "details details.4"]);
   assert.deepEqual(code({ summary: { lead: "answer" }, details: ["answer"] }), ["details details.0"]);
@@ -419,12 +427,13 @@ test("a body may name its summary and the details that start folded, among the r
     assert.deepEqual(refused({ summary: { lead: "answer", size } }).map((p) => `${p.code} ${p.path}`), ["invalid_field body.elements.body.props.summary.size"], JSON.stringify(size));
   assert.equal(refused({ details: [] })[0].code, "invalid_field");
   const content = briefGuide("content");
-  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?, size\}: lead, visual and conditions are ids of the root's own blocks/);
+  assert.match(content, /give the BriefBody summary \{lead, visual\?, conditions\?, forYou\?, size\}: lead, visual, conditions and forYou are ids of the root's own blocks/);
+  assert.match(content, /forYou a Checklist of what the user is asked to do: when the card is the one the project's page leads with \(a lead's newest status, else report, bound to no task\), that page lists its open items beside it\. Leave forYou out for an Agent's own list\./);
   // The size is the author's to name with every summary; one without it is advised, not refused (Lead 2457, 2473).
   assert.match(content, /size is the room the card takes among Home's cards: small \(one column[^)]*\), wide \(two columns[^)]*\) or large \(two columns, two rows[^)]*\)\. Name it with every summary/);
   assert.match(content, /A summary without one is still accepted \(advice summary_size_missing\), and Home guesses its card's size from its figure\./);
   assert.match(content, /details lists titled Groups of supporting detail .* Nothing else folds, but a report's or status's Markdown block over 1200 characters: Home shows its headings and first paragraph, and the rest behind Show all, so its first paragraph should say the point\. Without summary, the page shows the body in your order\. Either way, Sources and Attachments directly under the root show beside the body \(after it on a narrow screen\), never behind a click\./);
-  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?, size\?="small"\|"wide"\|"large"\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
+  assert.match(content, /^- BriefBody \{summary\?\{lead, visual\?, conditions\?, forYou\?, size\?="small"\|"wide"\|"large"\}, details\?\[1-32\]\(string\)\}: The root of every section body\./m);
 });
 
 test("registered screenshots need reachable exact-name uses, not prose or source links", () => {
