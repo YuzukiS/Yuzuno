@@ -185,6 +185,7 @@ import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { HIDDEN_READ_MS, useRefreshTrigger } from "./refresh-trigger";
 import { usePageHidden } from "./page-visibility";
+import { SLIM_LISTING, isSlim, mergeListing, readFullAgent, withListing } from "./workspace-listing";
 import { useProgressBatch } from "./progress-batch";
 import { coreConnection } from "./connection-status";
 import { langTag, useLanguage } from "./i18n";
@@ -1013,6 +1014,13 @@ export function App() {
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
+  // Released executors' full rows read when they were opened, by Workspace
+  // and Agent (YN-221 S4), and the reads on their way.
+  const fullRows = useRef(new Map<string, Agent>());
+  const fullReads = useRef(new Set<string>());
+  // Those whose full row could not be read, said where it was opened, and a Retry that reads it again.
+  const [openFailed, setOpenFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [openAttempt, setOpenAttempt] = useState(0);
   /** Everything shown is read again: after the user's own actions, when Core
    * resets the stream, and while polling because it is not open. */
   const refresh = useCallback(() => {
@@ -1239,7 +1247,47 @@ export function App() {
       if (id === workspaceId) setNotice(shellNow.current.appearanceFollowed);
     });
   }, [workspaceId, setNotice]);
-  const agent = workspace?.agents.find((a) => a.id === selected);
+  // A released executor's slim row (YN-221 S4) is opened once its full row is
+  // read: until then nothing that needs its settings is shown for it.
+  const listedAgent = workspace?.agents.find((a) => a.id === selected);
+  const agent = isSlim(listedAgent) ? undefined : listedAgent;
+  useEffect(() => {
+    if (!workspaceId || !listedAgent || !isSlim(listedAgent)) return;
+    const id = listedAgent.id;
+    const key = `${workspaceId}|${id}`;
+    const show = (full: Agent) => setWorkspace((w) => {
+      if (!w || (w.workspace?.id || "") !== workspaceId) return w;
+      const row = w.agents.find((a) => a.id === id);
+      return row && isSlim(row) ? { ...w, agents: w.agents.map((a) => (a.id === id ? withListing(full, a) : a)) } : w;
+    });
+    const known = fullRows.current.get(key);
+    if (known) {
+      show(known);
+      return;
+    }
+    // One read per Workspace and Agent at a time; one that failed says so where it was opened, and is read again on
+    // Retry (or with a later list), never by reading everything again.
+    if (fullReads.current.has(key)) return;
+    fullReads.current.add(key);
+    const failed = (on: boolean) => setOpenFailed((was) => {
+      if (was.has(key) === on) return was;
+      const next = new Set(was);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+    failed(false);
+    readFullAgent(id)
+      .then((full) => {
+        fullRows.current.set(key, full);
+        failed(false);
+        show(full);
+      })
+      // Kept by its Workspace and Agent: one that comes late says nothing of another opened since.
+      .catch(() => failed(true))
+      .finally(() => fullReads.current.delete(key));
+  }, [workspaceId, listedAgent, openAttempt]);
+  const openKey = listedAgent && isSlim(listedAgent) ? `${workspaceId}|${listedAgent.id}` : null;
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
   // the left on a desktop window, the context panel from the right. Its column changes at once,
@@ -2103,7 +2151,10 @@ export function App() {
   useSnapshot<Workspace>(
     previewMode ? null : "/workspace",
     workspaceRevision,
-    (w) => {
+    (read) => {
+      // A released executor's slim row, with its full row once it was opened (YN-221 S4).
+      const readId = read.workspace?.id || "";
+      const w = mergeListing(read, workspaceRef.current, (id) => fullRows.current.get(`${readId}|${id}`));
       setWorkspace(w);
       workspaceFailed.current = false;
       setWorkspaceFailure(null);
@@ -2144,6 +2195,7 @@ export function App() {
       // Not while the read a Retry asked for still waits its turn.
       if (!more) setRetrying(false);
     },
+    SLIM_LISTING,
   );
   // Remembered for this Workspace only, and not at all until it is known.
   // Its own effect, so a Workspace that arrives or changes records what is
@@ -5067,6 +5119,21 @@ export function App() {
               </div>
             )}
           </>
+        ) : listedAgent && openKey && openFailed.has(openKey) ? (
+          <div className="loading-state full" lang={langTag(language)}>
+            <p role="alert" className="inline-error">
+              {shell.openAgentFailed}{" "}
+              <button type="button" className="quiet-button" onClick={() => setOpenAttempt((n) => n + 1)}>
+                <RefreshCw size={13} />
+                {shell.retry}
+              </button>
+            </p>
+          </div>
+        ) : listedAgent ? (
+          <div className="loading-state full" lang={langTag(language)}>
+            <LoaderCircle className="spin" size={22} />
+            {shell.openingAgent}
+          </div>
         ) : loading ? (
           <div className="loading-state full">
             <LoaderCircle className="spin" size={22} />
