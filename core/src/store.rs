@@ -2161,6 +2161,20 @@ impl Store {
         Ok(agents)
     }
 
+    /// One Agent as `agents` lists it, the same row (YN-221 S3: a released
+    /// executor's full row, read when a page opens it). None when there is
+    /// no such Agent.
+    pub fn agent_listed(&self, id: &str) -> Result<Option<Agent>> {
+        let Some(listed) = self.listed(id, Load::Reader)? else { return Ok(None) };
+        let mut agent = listed.agent;
+        let db = self.db.read()?;
+        agent.project_id = crate::projects::agent_projects(&db)?.remove(id);
+        agent.kind = crate::agent_roles::kinds(&db)?.get(id).map(|kind| (*kind).to_owned());
+        crate::executor_release::show(&mut agent, crate::executor_release::release_of(&db, id)?);
+        agent.executor = crate::executor_lifecycle::of(&db, id)?.map(|(lifecycle, _, _)| lifecycle);
+        Ok(Some(agent))
+    }
+
     /// Every Agent as listed, without what `agents` adds to each (its Project,
     /// role, release and executor lifecycle, about ten queries per executor):
     /// for a loop that reads only the listing, which memory keeps after its

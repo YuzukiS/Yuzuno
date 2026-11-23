@@ -136,6 +136,7 @@ mod cleanup_plans;
 pub mod updates;
 mod waits_live;
 pub mod workspace;
+pub mod workspace_listing;
 pub mod workspace_backup;
 mod web_push;
 
