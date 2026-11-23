@@ -133,8 +133,11 @@ function shownRow(projectId: string, row: Section): Section {
   if ("full" in entry) {
     // Home's read is newer than the entry's: its card, source and Seen mark
     // as Home read them, its body, attachments and refs as the entry has them.
+    // An Ask is both: its state as Home read it, over what only the entry
+    // has of it (a reply's snapshot of the question, say).
     const { bodyOmitted: _omitted, attachmentCount: _count, ...meta } = row;
-    section = { ...entry.full, ...meta, body: entry.full.body, attachments: entry.full.attachments ?? [], refs: entry.full.refs ?? {} };
+    const ask = entry.full.ask && meta.ask ? { ...entry.full.ask, ...meta.ask } : meta.ask ?? entry.full.ask;
+    section = { ...entry.full, ...meta, ...(ask ? { ask } : {}), body: entry.full.body, attachments: entry.full.attachments ?? [], refs: entry.full.refs ?? {} };
   } else {
     section = { ...row, bodyMissing: true };
   }
