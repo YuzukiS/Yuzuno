@@ -2340,6 +2340,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures-util",
+ "http-body",
  "http-body-util",
  "hyper-rustls",
  "hyper-util",
