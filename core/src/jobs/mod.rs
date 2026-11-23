@@ -98,7 +98,8 @@ mod platform_tests;
 mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
-#[cfg(test)]
+// Its Jobs run as watch_tests' do, on Linux's cgroups and boot id.
+#[cfg(all(test, target_os = "linux"))]
 mod tick_labels_tests;
 #[cfg(test)]
 mod service_tests;
