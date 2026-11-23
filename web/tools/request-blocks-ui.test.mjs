@@ -12,7 +12,9 @@ import { JSDOM, VirtualConsole } from "jsdom";
 // components over the blocks request-blocks.ts makes (W1), in English and
 // Chinese: the first look is one fact and one action, what was delivered,
 // and, unfolded, the tasks with one card each, the joined tasks and the
-// request's own conversation. Synthetic data only; nothing is sent.
+// request's own conversation. The Project's own block (R-27): its open Asks
+// each on their own, its cards in a group of their own. Synthetic data only;
+// nothing is sent.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -25,7 +27,7 @@ try {
     `import React, {useState} from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
-import {RequestBlockView, ProjectBlockView, useAsksUpFront} from ${JSON.stringify(path.join(root, "src/home/RequestBlocks.tsx"))};
+import {RequestBlockView, ProjectAsks, ProjectCards, useAsksUpFront} from ${JSON.stringify(path.join(root, "src/home/RequestBlocks.tsx"))};
 import {pageBlocks} from ${JSON.stringify(path.join(root, "src/home/request-blocks.ts"))};
 import {CardAgents} from ${JSON.stringify(path.join(root, "src/home/card-responsible.ts"))};
 const root=createRoot(document.getElementById('root'));
@@ -34,12 +36,14 @@ function Page({requests, sections, readOnly}) {
   const {blocks, project} = pageBlocks(requests, sections);
   const [open, setOpen] = useState(new Set(window.opened || []));
   const toggle = (key) => setOpen((was) => { const next = new Set(was); if (!next.delete(key)) next.add(key); return next; });
+  const choose = (key, on) => setOpen((was) => { if (was.has(key) === on) return was; const next = new Set(was); if (on) next.add(key); else next.delete(key); return next; });
   const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])]);
   const common = {projectId: 'p1', workspaceId: 'ws', agents: window.agents, readOnly: !!readOnly, onSeen: async () => {}, onChanged: () => {},
     onReport: (link) => window.calls.push({report: link}), upFront};
   return <div>{blocks.map((block) => <RequestBlockView key={block.key} block={block} open={open.has(block.key)} onToggle={() => toggle(block.key)}
     onAction={(action, n, key) => window.calls.push({action, n, key: key ?? null})} onShowBlock={(n) => window.calls.push({show: n})} common={common}/>)}
-    {project && <ProjectBlockView block={project} open={open.has('project')} onToggle={() => toggle('project')} common={common}/>}</div>;
+    {project && <div className="needs"><ProjectAsks block={project} common={common}/></div>}
+    {project && <ProjectCards block={project} open={open.has('project')} onToggle={(on) => choose('project', on)} common={common}/>}</div>;
 }
 window.renderPage=(props)=>flushSync(()=>root.render(<CardAgents.Provider value={new Map(window.agents.map((a)=>[a.id,a]))}><Page {...props}/></CardAgents.Provider>));`,
   );
@@ -175,7 +179,9 @@ test("the same in Chinese", () => {
   assert.equal(page.text(page.block(9).querySelector(".request-block-action")), "追问");
   assert.match(page.text(page.block(9).querySelector(".request-block-fact-meta")), /^卡片已过有效期 · YN-93 · Export 写 · /);
   assert.equal(page.text(page.block(7).querySelector(".request-block-more")), "1 个任务 · 对话 3 条");
-  assert.equal(page.text(page.document.querySelector("[data-project-block] .request-block-title")), "不属于任何请求");
+  const group = page.document.querySelector("[data-project-block] > summary");
+  assert.equal(page.text(group.querySelector(".request-group-note")), "不属于任何请求");
+  assert.equal(page.text(group), "项目卡 1不属于任何请求");
 });
 
 test("an action says which request it is for; a deliverable opens its version", () => {
@@ -304,9 +310,12 @@ test("every open Ask is in the first look once: two of one task, one of a shared
   assert.equal(page.text(page.block(10).querySelector(".request-block-fact-line")), "Waiting for you under R-9: JSON too?");
   page.block(10).querySelector(".request-block-action").click();
   assert.deepEqual(page.calls().at(-1), { action: "answer", n: 10, key: "yn-93/scope" }, "its Answer goes to the Ask under R-9");
-  const own = page.document.querySelector("[data-project-block]");
-  assert.deepEqual(keys(own), ["pick"]);
-  assert.deepEqual([...own.querySelectorAll(".project-block-line-title")].map(page.text), ["Development state"], "its other cards one line each");
+  // The Project's own Ask stands on its own (in Needs you on the page, R-27 §3.5), saying whose it is.
+  const own = [...page.document.querySelectorAll(".project-ask")];
+  assert.deepEqual(own.map((el) => el.dataset.projectAsk), ["pick"]);
+  assert.equal(page.text(own[0].querySelector(".home-from")), "Project · From Dev Lead");
+  assert.deepEqual([...own[0].querySelectorAll("[data-section-key]")].map((el) => el.dataset.sectionKey), ["pick"], "answerable there");
+  assert.equal(page.text(page.document.querySelector("[data-project-block] > summary")), "Project cards 1Not part of a request", "its other card in the group");
   assert.equal(page.document.querySelectorAll('[data-section-key="yn-91/pick"], [data-section-key="yn-93/scope"], [data-section-key="pick"]').length, 3);
 
   // Core's next read: R-7's first Ask answered. It stays where it was for the visit, its answer in its place.
@@ -394,14 +403,38 @@ test("read only: no action, the first look and what was delivered stay", () => {
   assert.equal(page.block(8).querySelectorAll(".request-deliverable").length, 2);
 });
 
-test("the Project's own block: one line a card until opened, then the cards", async () => {
+// R-27 §3.6: the Project's cards are a group of their own, closed with nothing drawn in it until opened; opened,
+// its deck, an Ask answered before this visit among them as its answer card (YN-3), no card up front.
+test("the Project's cards: a closed group drawing nothing until opened, then the deck with its answered Asks", async () => {
   const page = mount();
-  const own = page.document.querySelector("[data-project-block]");
-  assert.deepEqual([...own.querySelectorAll(".project-block-line-title")].map(page.text), ["Development state"]);
-  assert.equal(page.text(own.querySelector(".request-block-more")), "1 card");
-  own.querySelector(".project-block-lines button").click();
+  const data = fixtures();
+  const answered = section("window", "ask", "Release window", 50, {
+    ask: { question: "Ship on Friday?", state: "replied", reply: { freeText: true }, repliedAt: ago(45), replyText: "Yes" },
+  });
+  page.window.renderPage({ requests: data.requests, sections: [...data.sections, answered], readOnly: false });
   await tick();
-  const opened = page.document.querySelector("[data-project-block]");
-  assert.equal(opened.querySelector(".project-block-lines"), null);
-  assert.deepEqual([...opened.querySelectorAll(".project-block-cards [data-section-key]")].map((el) => el.dataset.sectionKey), ["development"]);
+  const group = () => page.document.querySelector("details[data-project-block]");
+  assert.equal(group().open, false);
+  assert.equal(group().dataset.group, "project");
+  assert.equal(page.text(group().querySelector("summary")), "Project cards 2Not part of a request", "a card and an answered Ask");
+  assert.equal(group().querySelector(".project-block-cards, [data-section-key]"), null, "nothing drawn while closed");
+  assert.equal(page.document.querySelectorAll(".project-ask").length, 0, "an Ask answered before this visit is not up front");
+  group().querySelector("summary").click();
+  await tick(40);
+  assert.equal(group().open, true);
+  assert.equal(group().dataset.open, "", "the page knows it is open");
+  assert.deepEqual([...group().querySelectorAll(".project-block-cards [data-section-key]")].map((el) => el.dataset.sectionKey), ["window", "development"],
+    "the answered Ask first, as before, then the card");
+  assert.equal(group().querySelector('[data-section-key="window"]').id, "home-section-p1-window", "a jump to it lands on its card");
+  assert.equal(page.document.querySelectorAll('[data-section-key="window"]').length, 1, "drawn once");
+  group().querySelector("summary").click();
+  await tick(40);
+  assert.equal(group().querySelector(".project-block-cards"), null, "closed again, nothing drawn");
+  // With nothing of its own but an open Ask, no group: the Ask is up front.
+  const ask = section("pick", "ask", "Release window", 6, { ask: { question: "Ship on Friday?", state: "open", reply: { freeText: true } } });
+  page.window.renderPage({ requests: data.requests, sections: data.sections.filter((s) => s.key !== "development").concat(ask), readOnly: false });
+  await tick();
+  assert.equal(group(), null);
+  assert.deepEqual([...page.document.querySelectorAll(".project-ask")].map((el) => el.dataset.projectAsk), ["pick"]);
+  assert.deepEqual(page.errors, []);
 });

@@ -25,8 +25,8 @@ import { ProjectTalkLink, type TalkLink } from "./talk-link";
 import { talkText } from "./talk-text";
 import { openTask } from "./CardResponsible";
 import { KeptCardReplies, referableHistory } from "./CardReply";
-import { askUpFront, blockCounts, blockOfSection, pageBlocks, type BlockAction, type BlockGroup, type ProjectBlock, type RequestBlock } from "./request-blocks";
-import { blockText, ProjectBlockView, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
+import { askUpFront, blockCounts, blockOfSection, openAsk, pageBlocks, type BlockAction, type BlockGroup, type RequestBlock } from "./request-blocks";
+import { blockText, ProjectAsks, ProjectCards, RequestBlockView, useAsksUpFront, type BlockCommon } from "./RequestBlocks";
 import type { OpenDeliveredReport } from "./DeliverableLine";
 import { projectUnseen } from "./unseen";
 import type { NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -46,22 +46,23 @@ const TEAM_BESIDE = 1250;
  * group and its place in it as first shown, so a block the user just answered does not move from under their
  * finger. A request the user confirms goes to Done. One shown later comes in at the top of its group when it is newer
  * than every request shown so far, in the page's own order; older ones read from the pages before (Read older
- * requests) come after those shown, newest first (PR 1093 R1). The Project's own block keeps its group too.
+ * requests) come after those shown, newest first (PR 1093 R1). The Project's own block is in no group (R-27): its
+ * Asks keep their places in Needs you by themselves (useAsksUpFront).
  *
  * Nothing is held until the page has read both its sections and its requests (ready): before the requests, the
- * Project's own block holds every card, a request's open Ask among them, so the groups it would show then are not
- * the page's. A new visit holds them afresh, as it does the groups.
+ * Project's own block holds every card, a request's open Ask among them, so the groups shown then are not the
+ * page's. A new visit holds them afresh, as it does the groups.
  */
-function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], project: ProjectBlock | null, ready: boolean) {
+function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], ready: boolean) {
   const sizes = useContext(DeckSizes);
   const visit = sizes?.visit ?? 0;
   const order = useRef({ visit, place: new Map<string, number>(), newest: 0 });
   if (order.current.visit !== visit) order.current = { visit, place: new Map(), newest: 0 };
   if (!ready) {
     const now = (group: BlockGroup) => blocks.filter((block) => block.group === group);
-    return { needs: now("needs"), doing: now("doing"), done: now("done"), project: project?.group ?? null };
+    return { needs: now("needs"), doing: now("doing"), done: now("done") };
   }
-  const now = [...blocks.map((block) => [block.key, block.group] as const), ...(project ? [[project.key, project.group] as const] : [])];
+  const now = blocks.map((block) => [block.key, block.group] as const);
   const held = sizes ? sizes.groups(`${projectId}#requests`, now) : new Map(now);
   const groupOf = (block: RequestBlock): BlockGroup => {
     const first = held.get(block.key) ?? block.group;
@@ -85,15 +86,15 @@ function useHeldBlocks(projectId: string, blocks: readonly RequestBlock[], proje
     needs: sorted("needs"),
     doing: sorted("doing"),
     done: sorted("done"),
-    project: project ? ((held.get(project.key) as BlockGroup | undefined) ?? project.group) : null,
   };
 }
 
 /**
  * One Project's page on Home (YN-212 §3, by request; YN-86 §2.2): its header
  * and tools, its own jumps, "Requests | Conversation", then each request once
- * in three groups (needs you, in progress, done), the Project's own block for
- * what belongs to no request, and the team and its running work beside them
+ * in three groups (needs you, in progress, done), what belongs to no request
+ * (its Asks in Needs you, its cards in a group of their own after In progress,
+ * R-27), and the team and its running work beside them
  * where the page is wide enough; or the conversation with the project. Its
  * composer stays in Home's dock (§4). It shows the same Brief sections as its
  * panel on Home, never a copy; every card is read on its own page and answered
@@ -182,10 +183,12 @@ export function ProjectHome({
   // Every section the requests' tasks may have: the leads', the team's, and History's (a card archived with its task).
   const all = useMemo(() => [...sections, ...(team ?? []), ...(history ?? [])], [sections, team, history]);
   const { blocks, project: projectBlock } = useMemo(() => pageBlocks(requests, all), [requests, all]);
-  const groups = useHeldBlocks(id, blocks, projectBlock, panel !== null && talkRequests !== null);
+  const groups = useHeldBlocks(id, blocks, panel !== null && talkRequests !== null);
   const upFront = useAsksUpFront([...blocks.flatMap((block) => block.asks), ...(projectBlock?.asks ?? [])]);
-  const counts = blockCounts(blocks, projectBlock);
-  // With no request on the page, the Project's own block is all of it: it starts open, as its cards were. A
+  // Requests only (R-27 §3.7): the Project's own Asks are counted on their own, its cards not at all.
+  const counts = blockCounts(blocks);
+  const projectAsks = projectBlock?.asks ?? [];
+  // With no request on the page, the Project's cards are all of it: their group starts open, as its cards were. A
   // block the user opened or closed, or a jump opened, stays as it was left.
   const alone = talkRequests !== null && blocks.length === 0;
   const [chosen, setChosen] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -202,12 +205,14 @@ export function ProjectHome({
   const editorIds = panel?.contentEditors?.editorAgentIds ?? null;
   const executors = needsYou.filter((item) => item.kind === "executor");
   const pending = panel?.pending ?? [];
-  // What needs the user (§3.4): the blocks in Needs you, the approvals and the executors' matters.
-  const needsCount = counts.needs + pending.length + executors.length;
+  // What needs the user (§3.4): the blocks in Needs you, the approvals, the executors' matters and the Project's
+  // own open Asks (R-27 §3.7).
+  const needsCount = counts.needs + pending.length + executors.length + projectAsks.filter(openAsk).length;
   // What the Needs you group holds on the page: its blocks as this visit holds them (useHeldBlocks), so a block
   // whose Ask the user just answered stays where it was, the approvals, the executors' matters and the Project's
-  // own block when an Ask of its own waits. The chip above counts what needs the user now (needsCount).
-  const needsShown = groups.needs.length + pending.length + executors.length + (groups.project === "needs" ? 1 : 0);
+  // own Asks shown up front, one answered in this visit among them. The chip above counts what needs the user now
+  // (needsCount).
+  const needsShown = groups.needs.length + pending.length + executors.length + projectAsks.filter(upFront).length;
   const unseen = panel ? projectUnseen(panel) : 0;
   const changed = sections.filter(changedSinceSeen).length;
   const asks = waitingAsks(needsYou);
@@ -433,11 +438,8 @@ export function ProjectHome({
       common={common}
     />
   );
-  const projectView = projectBlock && (
-    <ProjectBlockView key="project" block={projectBlock} open={isOpen("project")} onToggle={() => toggleBlock("project")} common={common} />
-  );
   // Needs you (§3.1): the approvals and executors' matters, then the blocks waiting for the user, then the Project's
-  // own block when an Ask of its own waits.
+  // own Asks, each on its own (R-27 §3.5).
   const needs = (
     <>
       {pending.map((request) => (
@@ -461,7 +463,7 @@ export function ProjectHome({
         </button>
       ))}
       {groups.needs.map(blockView)}
-      {groups.project === "needs" && projectView}
+      {projectBlock && <ProjectAsks block={projectBlock} common={common} />}
     </>
   );
   const empty = !needsShown && !groups.doing.length && !groups.done.length && !projectBlock && !restOfHistory.length;
@@ -558,15 +560,17 @@ export function ProjectHome({
                 {needs}
               </section>
             ) : null}
-            {groups.doing.length > 0 || groups.project === "doing" ? (
+            {groups.doing.length > 0 ? (
               <section className="request-group" data-group="doing" aria-label={tb.groups.doing}>
                 <h2 className="request-group-title">
-                  {tb.groups.doing} <span>{groups.doing.length + (groups.project === "doing" ? 1 : 0)}</span>
+                  {tb.groups.doing} <span>{groups.doing.length}</span>
                 </h2>
                 {groups.doing.map(blockView)}
-                {groups.project === "doing" && projectView}
               </section>
             ) : null}
+            {projectBlock && (
+              <ProjectCards block={projectBlock} open={isOpen("project")} onToggle={(open) => choose("project", open)} common={common} />
+            )}
             {(groups.done.length > 0 || restOfHistory.length > 0) && (
               <details className="request-group request-done" data-group="done">
                 <summary className="request-group-title">

@@ -3909,18 +3909,23 @@ test("a Project's name on the rail opens its page; the arrow only folds; Back re
     assert.equal(name.getAttribute("aria-current"), "page", "the rail says which Project's page is open");
     assert.equal(p.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
     await pageOpened(p, "p-app");
-    // YN-212 §3.4: "n need you" counts the blocks in Needs you, the approvals and the executors' matters: here the
-    // Project's own block, which holds both open Asks.
-    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "1 needs you");
+    // YN-212 §3.4, R-27 §3.7: "n need you" counts the blocks in Needs you, the approvals, the executors' matters and
+    // the Project's own open Asks: here its two, each on its own in Needs you.
+    assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-attention").textContent, "2 need you");
     assert.equal(p.doc.querySelector(".project-home-head .home-chip.is-new").textContent, "2 new");
+    const needs = p.doc.querySelector('[data-project-home="p-app"] .request-group[data-group="needs"]');
+    assert.deepEqual([...needs.querySelectorAll(".project-ask")].map((el) => el.dataset.projectAsk).sort(), ["budget", "release"], "both open Asks, each on its own");
+    assert.equal(needs.querySelector(".request-group-title span").textContent, "2",
+      "the group's heading counts what it shows, as the chip does (PR 1092 R1)");
+    assert.equal(p.doc.querySelector('[data-project-home="p-app"] [data-tab="requests"]').textContent, "Requests 0", "no request: the Project's own are none");
     const block = p.doc.querySelector('[data-project-home="p-app"] [data-project-block]');
-    assert.equal(block.closest(".request-group")?.dataset.group, "needs", "with open Asks, in Needs you");
-    assert.equal(block.closest(".request-group").querySelector(".request-group-title span").textContent, "1",
-      "the group's heading counts the Project's block once, as the chip does (PR 1092 R1)");
+    assert.equal(block.closest(".request-group")?.dataset.group, "project", "its cards, a group of their own");
     unfoldBlocks(p.doc);
-    await waitFor(() => p.doc.getElementById("home-section-p-app-release"), "the Project's block open");
-    for (const key of ["release", "budget", "notes/review", "notes", "reviewed"])
-      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is the Project's block's`);
+    await waitFor(() => p.doc.getElementById("home-section-p-app-notes"), "the Project's cards open");
+    for (const key of ["release", "budget"])
+      assert.ok(needs.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is in Needs you`);
+    for (const key of ["notes/review", "notes", "reviewed"])
+      assert.ok(block.contains(p.doc.getElementById(`home-section-p-app-${key}`)), `${key} is in the Project's cards`);
     // A report opens over the page and closes back onto it, the card where it was.
     const card = p.doc.getElementById("home-section-p-app-notes/review");
     card.querySelector(".home-report-open").click();
@@ -3956,10 +3961,12 @@ test("a Project's page in Chinese, and #/home?w&p opening it directly (YN-86)", 
     name.click();
     await waitFor(() => zh.doc.querySelector('[data-project-home="p-app"]'), "the Chinese Project's page");
     assert.equal(zh.doc.querySelector(".project-home-head h1").textContent.startsWith("App"), true);
-    // The page by request (YN-212): its groups in Chinese, the Project's own block among them.
+    // The page by request (YN-212): its groups in Chinese, the Project's own among them (R-27): its Asks in 等你, each
+    // saying it is the Project's, and its cards in a group of their own.
     const titles = [...zh.doc.querySelectorAll(".request-group-title")].map((title) => title.textContent);
     assert.match(titles[0], /^等你/);
-    assert.equal(zh.doc.querySelector("[data-project-block] .request-block-n").textContent, "项目");
+    assert.match(zh.doc.querySelector(".project-ask .home-from").textContent, /^项目 · 来自 /);
+    assert.equal(zh.doc.querySelector("[data-project-block] > summary").textContent, "项目卡 2不属于任何请求");
     zh.doc.querySelector('.project-home [aria-label="刷新 Home"]').click();
     assert.deepEqual(zh.errors, []);
   } finally {

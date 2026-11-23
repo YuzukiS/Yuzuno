@@ -241,3 +241,23 @@
   font-size: calc(10px + var(--font-adjust, 3px));
   font-weight: 600;
 }
+
+/* What belongs to no request (R-27 §3.5–3.6): the Project's own Asks in Needs you, each as an approval stands, and
+   its cards in a group of their own after In progress, folded as Done is (request-blocks.css). */
+.project-ask .home-from {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.request-group-note {
+  margin-left: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+.project-cards > .project-block-cards {
+  padding: 0;
+}
+.project-cards > .project-block-cards .home-brief {
+  padding-top: 0;
+}

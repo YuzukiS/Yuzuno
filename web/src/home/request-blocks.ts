@@ -15,7 +15,9 @@ import type { Section } from "./types";
  * - Every task is one row with one card, under the lowest-numbered request
  *   routed to it (progress.rs `first_request`); another request it serves
  *   names it in one line and shares its fact and deliverables.
- * - Every live section bound to no request's task is the Project's own block.
+ * - Every live section bound to no request's task is the Project's own block:
+ *   its open Asks each stand in Needs you, its cards in a group of their own
+ *   (R-27), and neither counts as a request.
  */
 
 /** Needs you, in progress, done (confirmed by the user, YN-184). */
@@ -117,13 +119,15 @@ export type RequestBlock = {
   last: number;
 };
 
-/** Every live section bound to no task a request has: the lead's overview, standing statuses, their Asks. */
+/**
+ * Every live section bound to no task a request has: the lead's overview, standing statuses, their Asks. It is no
+ * request (R-27 §2): its open Asks stand in Needs you each on its own, its cards in the page's Project cards group.
+ */
 export type ProjectBlock = {
   kind: "project";
   key: "project";
-  group: BlockGroup;
   sections: Section[];
-  /** Its Asks, oldest first: an open one is shown in its first look, as a request block's (W5). */
+  /** Its Asks, oldest first: an open one stands in Needs you, answerable there (W5). */
   asks: Section[];
   unread: boolean;
   last: number;
@@ -391,7 +395,6 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
     ? {
         kind: "project",
         key: "project",
-        group: asks.some(openAsk) ? "needs" : "doing",
         sections: rest.filter((s) => s.kind !== "ask"),
         asks,
         unread: rest.some(changedSinceSeen),
@@ -401,15 +404,18 @@ export function pageBlocks(requests: readonly ProjectRequest[], sections: readon
   return { blocks, project };
 }
 
-/** How many blocks each group has, the Project's own counted where it stands: the group heads and "n need you". */
-export function blockCounts(blocks: readonly RequestBlock[], project: ProjectBlock | null) {
+/**
+ * How many requests each group has: the group heads, "Requests N" and "n need you". The Project's own block is no
+ * request (R-27 §3.7): the page counts its Asks on their own.
+ */
+export function blockCounts(blocks: readonly RequestBlock[]) {
   const counts: Record<BlockGroup, number> = { needs: 0, doing: 0, done: 0 };
   for (const block of blocks) counts[block.group] += 1;
-  if (project) counts[project.group] += 1;
   return counts;
 }
 
-/** Whether `key` is an open Ask a block shows in its first look (W5): a jump to it opens no block. */
+/** Whether `key` is an open Ask shown up front (W5): in its block's first look, or in Needs you for the Project's. A
+ * jump to it opens no block. */
 export function askUpFront(key: string, blocks: readonly RequestBlock[], project: ProjectBlock | null) {
   return [...blocks.flatMap((block) => block.asks), ...(project?.asks ?? [])].some((ask) => ask.key === key && openAsk(ask));
 }
