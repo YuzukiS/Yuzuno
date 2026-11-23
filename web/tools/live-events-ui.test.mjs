@@ -61,8 +61,10 @@ function timerSeam(w) {
 }
 
 // holdPoll: the 5 s poll (setInterval, POLL_MS) is not started, so only the
-// paths a test drives read again (T-170).
-async function mount({ holdPoll = false } = {}) {
+// paths a test drives read again (T-170). workspaceId: the Workspace the list
+// names, which starts the reads kept per Workspace (the board's live CI and
+// waits); none by default.
+async function mount({ holdPoll = false, workspaceId = "" } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -109,7 +111,8 @@ async function mount({ holdPoll = false } = {}) {
       throw new w.TypeError("Failed to fetch");
     }
     let body = {};
-    if (path === "/api/workspace") body = { agents: core.agents.map((a) => ({ ...a })), runtime: { connected: true }, defaultCwd: "/w" };
+    if (path === "/api/workspace") body = { agents: core.agents.map((a) => ({ ...a })), runtime: { connected: true }, defaultCwd: "/w",
+      ...(workspaceId ? { workspace: { id: workspaceId } } : {}) };
     else if (/^\/api\/agents\/[ab]$/.test(path)) {
       const agent = core.agents.find((a) => path.endsWith(`/${a.id}`));
       body = { agent: { ...agent }, pending: [], artifacts: [], turns: [{ id: `t-${agent.id}`, status: "inProgress", items: [
@@ -118,6 +121,7 @@ async function mount({ holdPoll = false } = {}) {
       ] }] };
     } else if (path === "/api/catchup") body = { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } };
     else if (path === "/api/merge-queue") body = { entries: [] };
+    else if (path === "/api/ci/live" || path === "/api/waits/live") body = { agents: {} };
     return { ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) };
   };
   w.eval(bundle);
@@ -465,7 +469,7 @@ test("a read that failed while offline is tried again as soon as the browser is 
 });
 
 test("Core's merge-queue pass reads only what shows the queue; with collaboration, also the board's reads; any other notice, an unknown message or a reset reads everything again (YN-221)", async (t) => {
-  const p = await mount({ holdPoll: true });
+  const p = await mount({ holdPoll: true, workspaceId: "w" });
   // What the shell reads again for everything shown (App.tsx refresh): the
   // Agent list and the shown conversation.
   const everything = ["/api/workspace", "/api/agents/a"];
@@ -494,11 +498,11 @@ test("Core's merge-queue pass reads only what shows the queue; with collaboratio
 
     // The queue is not shown: its pass reads nothing that is.
     let paths = await after("merge queue only, queue closed", queueOnly);
-    for (const path of [...everything, "/api/home", "/api/ci/live", "/api/merge-queue"])
+    for (const path of [...everything, "/api/home", "/api/ci/live", "/api/waits/live", "/api/merge-queue"])
       assert.equal(reads(paths, path), 0, `a merge-queue pass does not read ${path}`);
     // With a collaboration change: the board's reads, not everything.
     paths = await after("merge queue and collaboration, queue closed", queueAndBoard);
-    assert.ok(reads(paths, "/api/ci/live") >= 1, "the collaboration part reads the board's live CI");
+    assert.ok(reads(paths, "/api/ci/live") >= 1 && reads(paths, "/api/waits/live") >= 1, "the collaboration part reads the board's live CI and waits");
     for (const path of everything) assert.equal(reads(paths, path), 0, `nor ${path}`);
 
     // The queue is open: each pass reads it again, and still nothing else.
@@ -507,7 +511,7 @@ test("Core's merge-queue pass reads only what shows the queue; with collaboratio
     await pause(1_100);
     paths = await after("merge queue only, queue open", queueOnly);
     assert.equal(reads(paths, "/api/merge-queue"), 1, "the open queue reads again once");
-    for (const path of [...everything, "/api/home", "/api/ci/live"])
+    for (const path of [...everything, "/api/home", "/api/ci/live", "/api/waits/live"])
       assert.equal(reads(paths, path), 0, `a merge-queue pass does not read ${path}`);
     paths = await after("merge queue and collaboration, queue open", queueAndBoard);
     assert.equal(reads(paths, "/api/merge-queue"), 1, "the open queue reads again once");
