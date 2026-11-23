@@ -40,11 +40,20 @@
   }
 }
 
-/* Requests or Conversation (YN-212 §3.1), at the page's top, under its jumps. */
+/* Requests or Conversation (YN-212 §3.1), under the page's jumps and stuck there with them (R-25): a long
+   conversation or request list can be switched where it is read, not only from the top. Opaque, so what scrolls
+   under the tabs is not read through them, and under the jumps, which keep the scroller's top edge. */
+.project-view-tabs-bar {
+  position: sticky;
+  top: calc(var(--home-jumps-height, 0px) - var(--home-pad-top));
+  z-index: 3;
+  margin: 8px 0 0;
+  padding: 6px 0 8px;
+  background: var(--paper);
+}
 .project-view-tabs {
   display: inline-flex;
   gap: 2px;
-  margin: 14px 0 0;
   padding: 2px;
   border: 1px solid var(--line);
   border-radius: 9px;
