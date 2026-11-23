@@ -170,13 +170,21 @@
   color: var(--home-ink-2);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
-.request-block-stale {
+.request-block-stale,
+.request-block-settle[data-confirmation="waiting"] {
   color: var(--home-attention-ink);
 }
 .request-block-act {
   grid-area: act;
   align-self: start;
   padding: 6px 14px 10px 0;
+}
+/* Confirm done with Follow up beside it (R-30), one row, wrapping before either overflows. */
+.request-block-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 .request-block-action {
   display: inline-flex;

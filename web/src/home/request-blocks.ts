@@ -24,7 +24,7 @@ export type BlockGroup = "needs" | "doing" | "done";
 /**
  * The one action a block's first look offers: answer > send again > confirm done > follow up. Answer is offered
  * only by a block whose open Ask is shown under another request it joined; an Ask of its own is shown in it, to
- * answer there (W5, R-20 follow-up).
+ * answer there (W5, R-20 follow-up). Confirm done has Follow up beside it (R-30), for a delivery not done enough.
  */
 export type BlockAction = "answer" | "resend" | "confirm" | "follow";
 

@@ -10,6 +10,10 @@
 //    evidence; a "Wait, what?" note leaves the picked decision and its
 //    words as they were; answered, it stays where it was, once;
 //  - Confirm done files R-7 under Done;
+//  - R-30: Follow up beside Confirm done, reached by Tab, quotes R-7 in the
+//    dock's composer and confirms nothing; Escape leaves R-7 as it was; a
+//    follow-up that fails stays to be sent again, then goes to R-7, which
+//    keeps what it delivered and still waits for the confirmation;
 //    a joined task's line shows the request its card is under (R-14 → R-12);
 //  - nothing is wider than the window, and the composer is in the dock;
 //  - W4: R-7's card names who wrote it (Core's author, else its owner); its
@@ -18,7 +22,7 @@
 //  - See words on R-7's card shows its words in the project's conversation,
 //    where a long unbroken word stays inside its bubble (before YN-212,
 //    project-talk-check's two columns checked these);
-//  - nothing is sent but the reads, the note, the answer and the confirmation.
+//  - nothing is sent but the reads, the note, the answer, the follow-up and the confirmation.
 // With YUZUNO_WEBKIT_WS it runs in Playwright's Linux WebKit instead (browser-engine.mjs).
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/request-blocks-check.mjs
 import assert from "node:assert/strict";
@@ -146,23 +150,25 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const expected = {
   en: {
     // W5: its open Ask is the first look, with no line repeating it and no Answer before it.
-    asked: { group: "needs", fact: "", action: null, delivered: 0, asks: ["yn-181/sign"] },
-    approved: { group: "doing", fact: `You replied “${REPLY}”`, action: "Follow up", delivered: 0, asks: [] },
-    working: { group: "doing", fact: "正在用 v3 脚本重签：3/5 个文件已签", action: "Follow up", delivered: 0, asks: [] },
-    result: { group: "needs", fact: "YN-181 is done · delivered 3 items", action: "Confirm done", delivered: 3, asks: [] },
-    confirmed: { group: "done", fact: "YN-181 is done · delivered 3 items", action: null, delivered: 3, asks: [] },
+    asked: { group: "needs", fact: "", action: null, actions: [], settle: null, delivered: 0, asks: ["yn-181/sign"] },
+    approved: { group: "doing", fact: `You replied “${REPLY}”`, action: "Follow up", actions: ["Follow up"], settle: null, delivered: 0, asks: [] },
+    working: { group: "doing", fact: "正在用 v3 脚本重签：3/5 个文件已签", action: "Follow up", actions: ["Follow up"], settle: null, delivered: 0, asks: [] },
+    // R-30: Follow up beside Confirm done; delivered and waiting for the user, or confirmed by them, said apart.
+    result: { group: "needs", fact: "YN-181 is done · delivered 3 items", action: "Confirm done", actions: ["Confirm done", "Follow up"],
+      settle: "Waiting for you to confirm", delivered: 3, asks: [] },
+    confirmed: { group: "done", fact: "YN-181 is done · delivered 3 items", action: null, actions: [], settle: "Confirmed by you", delivered: 3, asks: [] },
   },
   "zh-Hans": {
-    asked: { group: "needs", fact: "", action: null, delivered: 0, asks: ["yn-181/sign"] },
-    approved: { group: "doing", fact: `你已答复「${REPLY}」`, action: "追问", delivered: 0, asks: [] },
-    working: { group: "doing", fact: "正在用 v3 脚本重签：3/5 个文件已签", action: "追问", delivered: 0, asks: [] },
-    result: { group: "needs", fact: "YN-181 已完成 · 交付 3 项", action: "确认完成", delivered: 3, asks: [] },
-    confirmed: { group: "done", fact: "YN-181 已完成 · 交付 3 项", action: null, delivered: 3, asks: [] },
+    asked: { group: "needs", fact: "", action: null, actions: [], settle: null, delivered: 0, asks: ["yn-181/sign"] },
+    approved: { group: "doing", fact: `你已答复「${REPLY}」`, action: "追问", actions: ["追问"], settle: null, delivered: 0, asks: [] },
+    working: { group: "doing", fact: "正在用 v3 脚本重签：3/5 个文件已签", action: "追问", actions: ["追问"], settle: null, delivered: 0, asks: [] },
+    result: { group: "needs", fact: "YN-181 已完成 · 交付 3 项", action: "确认完成", actions: ["确认完成", "继续跟进"], settle: "等你确认", delivered: 3, asks: [] },
+    confirmed: { group: "done", fact: "YN-181 已完成 · 交付 3 项", action: null, actions: [], settle: "你已确认", delivered: 3, asks: [] },
   },
 };
 const words = {
-  en: { joined: "Show →", confirm: "Confirm done", sendNote: "Send to Agent", submit: `Submit: ${REPLY}` },
-  "zh-Hans": { joined: "查看 →", confirm: "确认完成", sendNote: "发给 Agent", submit: `提交：${REPLY}` },
+  en: { joined: "Show →", confirm: "Confirm done", sendNote: "Send to Agent", submit: `Submit: ${REPLY}`, quoting: "Follow-up to “Mac 桌面版应用内更新”" },
+  "zh-Hans": { joined: "查看 →", confirm: "确认完成", sendNote: "发给 Agent", submit: `提交：${REPLY}`, quoting: "补充「Mac 桌面版应用内更新」" },
 };
 
 const browser = await launchBrowser();
@@ -180,8 +186,8 @@ try {
 }
 assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
-assert.ok(report.posts.every((p) => /\/requests\/7\/confirm$|\/brief\/reply$/.test(p.path)),
-  `nothing sent but the confirmation, the note and the answer: ${JSON.stringify(report.posts)}`);
+assert.ok(report.posts.every((p) => /\/requests\/7\/(confirm|replies)$|\/brief\/reply$/.test(p.path)),
+  `nothing sent but the confirmation, the follow-up, the note and the answer: ${JSON.stringify(report.posts)}`);
 console.log(`request-blocks-check (${engine}): ${report.runs.length} runs, ${report.runs.reduce((n, run) => n + run.checks.length, 0)} checks`);
 
 async function check(run) {
@@ -205,7 +211,8 @@ async function check(run) {
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   }, run.language);
   // What the user did to R-7's Ask in this run (W5): its notes, and the answer once sent, as Core keeps them.
-  const state = { stage: "asked", confirmed: false, notes: [], answered: null };
+  // R-30: the follow-ups to R-7 Core keeps, and how many sends of one it refuses first.
+  const state = { stage: "asked", confirmed: false, notes: [], answered: null, replies: [], refuse: 0 };
   const asAnswered = (data) => {
     for (const s of data.sections) {
       if (s.key !== "yn-181/sign") continue;
@@ -221,6 +228,8 @@ async function check(run) {
       return route.abort();
     }
     const data = asAnswered(fixtures(state.stage, state.confirmed));
+    // A follow-up is on its request; R-7's tasks all ended, so Core keeps it waiting for the confirmation (progress.rs).
+    if (state.replies.length) data.requests.find((r) => r.n === 7).replies = state.replies;
     if (path === "/api/workspace") return route.fulfill({ json: { workspace: { id: "ws-blocks" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" } });
     if (path === "/api/home") return route.fulfill({ json: home(data) });
     if (path === `/api/projects/${PROJECT}/front-desk`) return route.fulfill({ json: { version: 1, agentId: "lead", effectiveAgentId: "lead" } });
@@ -241,6 +250,19 @@ async function check(run) {
         if (sent.intent === "note") state.notes = [{ version: 1, at: new Date().toISOString(), text: sent.text.trim(), agentId: sent.agentId }, ...state.notes];
         else state.answered = { at: new Date().toISOString(), text: sent.text ? `${REPLY}: ${sent.text}` : REPLY };
         return route.fulfill({ json: accepted });
+      }
+      if (path === `/api/projects/${PROJECT}/requests/7/replies`) {
+        const sent = JSON.parse(request.postData() || "{}");
+        report.posts.at(-1).text = sent.text;
+        if (state.refuse > 0) {
+          state.refuse -= 1;
+          return route.fulfill({ status: 503, json: { error: "core_busy: try again" } });
+        }
+        if (!state.replies.some((r) => r.messageId === sent.clientMessageId)) {
+          state.replies.push({ n: state.replies.length + 1, text: sent.text, textBlocks: null, images: [], files: [], at: new Date().toISOString(),
+            messageId: sent.clientMessageId, deliveredTo: [{ agentId: "lead", delivery: "accepted" }] });
+        }
+        return route.fulfill({ json: { receipts: [{ agentId: "lead", status: "accepted", clientMessageId: sent.clientMessageId }] } });
       }
       if (path === `/api/projects/${PROJECT}/requests/7/confirm`) {
         state.confirmed = true;
@@ -274,6 +296,8 @@ async function check(run) {
     state.confirmed = false;
     state.notes = [];
     state.answered = null;
+    state.replies = [];
+    state.refuse = 0;
     const url = `http://${HOST}/#/home?w=ws-blocks&p=${PROJECT}`;
     // Each moment read afresh, as a reload of the page reads it.
     if (page.url() === url) await page.reload();
@@ -301,6 +325,8 @@ async function check(run) {
       fact: r7.querySelector(".request-block-fact-line")?.textContent.trim() ?? "",
       meta: r7.querySelector(".request-block-fact-meta")?.textContent.trim() ?? "",
       action: r7.querySelector(".request-block-action")?.textContent.trim() || null,
+      actions: [...r7.querySelectorAll(".request-block-action")].map((el) => el.textContent.trim()),
+      settle: r7.querySelector(".request-block-settle")?.textContent.trim() ?? null,
       delivered: r7.querySelectorAll(".request-block-delivered li").length,
       asks: [...r7.querySelectorAll(".request-block-asks [data-section-key]")].map((el) => el.dataset.sectionKey),
       words: document.body.innerText.split("Mac 版也要能在应用里更新").length - 1,
@@ -316,7 +342,8 @@ async function check(run) {
       const got = await read();
       const want = expected[run.language][stage];
       assert.deepEqual(got.blocks.slice().sort((a, b) => a - b), [7, 12, 14, 21], `${stage}: every request once ${JSON.stringify(got.blocks)}`);
-      assert.deepEqual({ group: got.group, fact: got.fact, action: got.action, delivered: got.delivered, asks: got.asks }, want, `${stage}: ${JSON.stringify(got)}`);
+      assert.deepEqual({ group: got.group, fact: got.fact, action: got.action, actions: got.actions, settle: got.settle, delivered: got.delivered, asks: got.asks },
+        want, `${stage}: ${JSON.stringify(got)}`);
       assert.equal(got.words, 0, `${stage}: R-7's words stay in its folded conversation`);
       assert.ok(got.pageWidth <= got.innerWidth + 1 && got.viewWidth <= got.viewClient + 1 && got.wider === 0, `${stage}: nothing wider: ${JSON.stringify(got)}`);
       assert.ok(got.dock, "the composer is in the dock");
@@ -411,7 +438,9 @@ async function check(run) {
     }, askId);
     const before = await placed();
     await ask.getByRole("button", { name: w.submit, exact: true }).click();
-    await ask.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
+    // Replied: the reply block until Home's read has the reply, then the answer card with it (AskReply.tsx); a quick
+    // read can replace the first before it is seen.
+    await ask.locator(".home-ask-replied, .home-answer-reply").first().waitFor({ timeout: 10_000 });
     await page.waitForTimeout(600);
     const after = await placed();
     assert.ok(after.group === before.group && after.order === before.order && Math.abs(after.askInBlock - before.askInBlock) <= 2
@@ -481,11 +510,90 @@ async function check(run) {
     await shot("see-words");
     pass("See words shows R-7's words in the conversation; a long word stays in its bubble", chat);
 
+    // R-30: Follow up beside Confirm done. Reached by Tab and taken by Enter, it quotes R-7 in the dock's composer,
+    // focused, and sends nothing; R-7 stays waiting for the confirmation with what it delivered.
+    await open("result");
+    const r7 = page.locator('[data-request-block="7"]');
+    const sentSoFar = () => report.posts.filter((p) => p.run === run.name).length;
+    const posted = sentSoFar();
+    const r7now = () => page.evaluate(() => {
+      const r7 = document.querySelector('[data-request-block="7"]');
+      const input = document.querySelector(".home-dock .project-talk-compose [data-composer-input]");
+      return {
+        group: r7.closest(".request-group")?.dataset.group ?? null,
+        actions: [...r7.querySelectorAll(".request-block-action")].map((el) => el.dataset.action),
+        delivered: r7.querySelectorAll(".request-block-delivered li").length,
+        quoting: document.querySelector(".home-dock .project-talk-quoting")?.textContent.trim() ?? null,
+        typing: !!input && input.contains(document.activeElement),
+        // What is written, without the field's placeholder (CodeMirror's widget).
+        draft: (() => {
+          const copy = input?.cloneNode(true);
+          copy?.querySelectorAll(".cm-placeholder").forEach((el) => el.remove());
+          return copy?.textContent.trim() ?? null;
+        })(),
+        error: document.querySelector(".home-dock .project-talk-compose .inline-error")?.textContent.trim() ?? null,
+        kept: !!document.querySelector('.home-dock .project-talk-compose .home-note[role="status"]'),
+      };
+    });
+    await r7.locator('.request-block-action[data-action="confirm"]').focus();
+    await page.keyboard.press("Tab");
+    const tabbed = await page.evaluate(() => document.activeElement?.matches?.('[data-request-block="7"] .request-block-action[data-action="follow"]') ?? false);
+    assert.ok(tabbed, "Tab goes from Confirm done to Follow up");
+    await shot("follow-up-beside-confirm", r7);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose[data-quoting]"), null, { timeout: 5000 });
+    await page.waitForTimeout(400);
+    const quoted = await r7now();
+    assert.deepEqual({ ...quoted, error: null, kept: false }, { group: "needs", actions: ["confirm", "follow"], delivered: 3, quoting: w.quoting, typing: true,
+      draft: "", error: null, kept: false }, `Follow up quotes R-7, focused: ${JSON.stringify(quoted)}`);
+    assert.equal(sentSoFar(), posted, "Follow up sends nothing");
+    await shot("follow-up-quoting");
+    pass("Tab reaches Follow up beside Confirm done; Enter quotes R-7 in the composer, focused; nothing sent, R-7 still waits", quoted);
+    // Escape: not a follow-up after all; nothing sent, R-7 as it was.
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".home-dock .project-talk-compose[data-quoting]"), null, { timeout: 5000 });
+    const cancelled = await r7now();
+    assert.ok(cancelled.group === "needs" && cancelled.actions.join() === "confirm,follow" && cancelled.delivered === 3 && sentSoFar() === posted,
+      `Escape leaves R-7 as it was: ${JSON.stringify(cancelled)}`);
+    pass("Escape cancels the follow-up: nothing sent, R-7 still waits for the confirmation", cancelled);
+    // A follow-up Core refuses once stays, quoted, to be sent again; sent, it is on R-7, which still waits.
+    state.refuse = 1;
+    const FOLLOW = run.language === "en" ? "The release notes still miss the update steps." : "发布说明里还缺更新步骤。";
+    await r7.locator('.request-block-action[data-action="follow"]').click();
+    await page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose[data-quoting]"), null, { timeout: 5000 });
+    await page.keyboard.insertText(FOLLOW);
+    // Enter sends at a desk; on a phone it starts a new line and Send sends.
+    if (run.phone) await page.locator(".home-dock .project-talk-send").click();
+    else await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".home-dock .project-talk-compose .inline-error"), null, { timeout: 5000 });
+    const refused = await r7now();
+    assert.ok(refused.quoting === w.quoting && refused.draft === FOLLOW && refused.error && refused.kept && refused.group === "needs"
+      && !state.replies.length, `refused, the follow-up stays: ${JSON.stringify(refused)}`);
+    await shot("follow-up-refused");
+    pass("a refused follow-up stays quoted with its words and the error, to be sent again", refused);
+    await page.locator(".home-dock .project-talk-send").click();
+    await page.waitForFunction(() => !document.querySelector(".home-dock .project-talk-compose[data-quoting]"), null, { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelector('[data-request-block="7"] .request-block-more')?.textContent.includes("4"), null, { timeout: 5000 });
+    const sent = await r7now();
+    const replies = report.posts.filter((p) => p.run === run.name && p.path.endsWith("/requests/7/replies"));
+    assert.ok(sent.group === "needs" && sent.actions.join() === "confirm,follow" && sent.delivered === 3 && !sent.error && sent.draft === ""
+      && replies.length === 2 && replies.every((p) => p.text === FOLLOW) && state.replies.length === 1 && state.replies[0].text === FOLLOW
+      && !report.posts.some((p) => p.run === run.name && p.path.endsWith("/confirm")),
+      `sent to R-7, which still waits: ${JSON.stringify({ sent, replies, kept: state.replies })}`);
+    await r7.locator(".request-block-more").click();
+    await r7.locator(".request-thread > summary").click();
+    await shot("follow-up-sent", r7);
+    pass("sent again, the follow-up is on R-7, which keeps what it delivered and still waits for the confirmation", { sent, replies: replies.length });
+
     // Confirm done: R-7 goes to Done, once Core has it.
     await open("result");
-    await page.locator('[data-request-block="7"] .request-block-action').click();
+    await page.locator('[data-request-block="7"] .request-block-action[data-action="confirm"]').click();
     await page.waitForFunction(() => document.querySelector('[data-request-block="7"]')?.closest(".request-group")?.dataset.group === "done", null, { timeout: 5000 });
     pass("Confirm done files the request under Done");
+  } catch (error) {
+    // What the page showed when a step failed.
+    await page.screenshot({ path: join(output, `${engine}-${run.name}-failed.png`), fullPage: true }).catch(() => {});
+    throw error;
   } finally {
     await context.close();
   }

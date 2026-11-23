@@ -35,6 +35,8 @@ export const blockText = strings(
     untitled: (hint: string) => `Waiting for a title · ${hint}`,
     newMark: "New",
     actions: { answer: "Answer", resend: "Send again", confirm: "Confirm done", follow: "Follow up" } as Record<BlockAction, string>,
+    /** Beside Confirm done (R-30): not done enough, add to the same request. */
+    followOn: "Follow up",
     actionLabel: (action: string, n: number) => `${action}: R-${n}`,
     more: (tasks: number, said: number) => `${tasks ? `${tasks} ${tasks === 1 ? "task" : "tasks"} · ` : ""}${said} in the conversation`,
     projectMore: (n: number) => `${n} ${n === 1 ? "card" : "cards"}`,
@@ -54,6 +56,7 @@ export const blockText = strings(
       waiting: "Delivered · the project is looking at it",
       stale: "Card past its validity",
       by: (name: string) => `by ${name}`,
+      settle: { waiting: "Waiting for you to confirm", confirmed: "Confirmed by you" } as Record<Settle, string>,
     },
     alsoFor: (ns: number[]) => `Also for ${ns.map((n) => `R-${n}`).join(", ")}`,
     joined: (task: string, title: string, home: number) => `Joined ${task} “${title}” · its card is under R-${home}`,
@@ -85,6 +88,7 @@ export const blockText = strings(
     untitled: (hint) => `等待标题 · ${hint}`,
     newMark: "新",
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
+    followOn: "继续跟进",
     actionLabel: (action, n) => `${action}：R-${n}`,
     more: (tasks, said) => `${tasks ? `${tasks} 个任务 · ` : ""}对话 ${said} 条`,
     projectMore: (n) => `${n} 张卡`,
@@ -104,6 +108,7 @@ export const blockText = strings(
       waiting: "已送达 · 项目在看",
       stale: "卡片已过有效期",
       by: (name) => `${name} 写`,
+      settle: { waiting: "等你确认", confirmed: "你已确认" },
     },
     alsoFor: (ns) => `也服务于 ${ns.map((n) => `R-${n}`).join("、")}`,
     joined: (task, title, home) => `并入 ${task}「${title}」· 卡片在 R-${home} 下`,
@@ -126,6 +131,12 @@ export const blockText = strings(
     olderRequests: "读更早的请求",
   },
 );
+
+/**
+ * Whether the user has settled a request (R-30): delivered and waiting for the user's confirmation, or confirmed by
+ * them (YN-184); a task being done is neither.
+ */
+type Settle = "waiting" | "confirmed";
 
 /** What every block's cards need from the page. */
 export type BlockCommon = {
@@ -173,8 +184,11 @@ function When({ at }: { at: string | null | undefined }) {
   );
 }
 
-/** The fact's line and the line under it (§3.2). */
-function FactLines({ fact }: { fact: BlockFact }) {
+/**
+ * The fact's line and the line under it (§3.2). A settled request's line under it says so first (R-30): waiting for
+ * the user's confirmation, or confirmed by them, then when they confirmed it.
+ */
+function FactLines({ fact, settle, confirmedAt }: { fact: BlockFact; settle: Settle | null; confirmedAt?: string | null }) {
   const t = blockText(useLanguage());
   const agents = useContext(CardAgents);
   const name = (who: Who | null, fallback: string) => (who ? agents.get(who.agentId)?.name || who.name : "") || fallback;
@@ -223,6 +237,10 @@ function FactLines({ fact }: { fact: BlockFact }) {
       text = t.fact.working(name(fact.who, fact.task));
       meta = <When at={fact.at} />;
       break;
+  }
+  if (settle) {
+    const mark = <span className="request-block-settle" data-confirmation={settle}>{t.fact.settle[settle]}</span>;
+    meta = settle === "confirmed" && confirmedAt ? <>{mark} · <When at={confirmedAt} /></> : meta ? <>{mark} · {meta}</> : mark;
   }
   return (
     <p className="request-block-fact-text">
@@ -318,6 +336,7 @@ export function RequestBlockView({
   // Its own open Ask is the fact, shown whole below: no line repeats its question.
   const askedHere = fact.kind === "ask" && fact.home === null && asks.length > 0;
   const elsewhere = block.askedElsewhere;
+  const settle: Settle | null = action === "confirm" ? "waiting" : block.group === "done" ? "confirmed" : null;
   return (
     <article
       className="request-block"
@@ -356,22 +375,39 @@ export function RequestBlockView({
       {!askedHere && (
         <div className="request-block-fact">
           <span className="request-block-fact-icon" data-kind={fact.kind}>{FACT_ICON[fact.kind]}</span>
-          <FactLines fact={fact} />
+          <FactLines fact={fact} settle={settle} confirmedAt={request.confirmedAt} />
         </div>
       )}
       {action && !common.readOnly && (
         <div className="request-block-act">
-          <button
-            type="button"
-            className={action === "follow" ? "request-block-action" : "request-block-action is-primary"}
-            data-action={action}
-            aria-label={t.actionLabel(label, request.n)}
-            disabled={busy}
-            onClick={() => onAction(action, request.n, fact.kind === "ask" ? fact.key : undefined)}
-          >
-            {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
-            {label}
-          </button>
+          <span className="request-block-actions">
+            <button
+              type="button"
+              className={action === "follow" ? "request-block-action" : "request-block-action is-primary"}
+              data-action={action}
+              aria-label={t.actionLabel(label, request.n)}
+              disabled={busy}
+              onClick={() => onAction(action, request.n, fact.kind === "ask" ? fact.key : undefined)}
+            >
+              {busy ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : action === "follow" ? <Send size={12} aria-hidden="true" /> : null}
+              {label}
+            </button>
+            {/* Not done enough (R-30): the same request's follow-up in the composer; it confirms nothing, and the
+                request keeps what it delivered and keeps waiting for the confirmation. */}
+            {action === "confirm" && (
+              <button
+                type="button"
+                className="request-block-action"
+                data-action="follow"
+                aria-label={t.actionLabel(t.followOn, request.n)}
+                disabled={busy}
+                onClick={() => onAction("follow", request.n)}
+              >
+                <Send size={12} aria-hidden="true" />
+                {t.followOn}
+              </button>
+            )}
+          </span>
           {error && (
             <p className="inline-error request-block-error" role="alert">
               {error}
