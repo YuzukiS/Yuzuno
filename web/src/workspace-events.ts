@@ -77,6 +77,9 @@ export interface WorkspaceChangedEvent {
   tasks?: boolean;
   /** The merge queue changed: an entry, a repository's switch or its pause (T-65). */
   mergeQueue?: boolean;
+  /** Nothing but the merge queue changed: Core's pass over its due entries
+   * (core/src/merge_queue/mod.rs), about every 30 s while any is due (YN-221). */
+  onlyMergeQueue?: boolean;
 }
 /** Refetch everything shown: Core said so, live updates may have been
  * missed, or the stream is not open (polling). */
@@ -180,12 +183,23 @@ export function parseWorkspaceEvent(data: unknown): WorkspaceEvent {
               value.agent && value.agent.id === agentId ? value.agent : undefined,
           }
         : { type: "reset", reason: "unreadable" };
-    case "workspace.changed":
+    case "workspace.changed": {
+      const scope = isText(value.scope) ? value.scope : "workspace";
+      const mergeQueue = value.mergeQueue === true;
+      // Only `{mergeQueue}` with the fields Core's typing adds (events.rs
+      // `send`); any other field may be a change of its own.
+      const onlyMergeQueue =
+        mergeQueue &&
+        scope === "workspace" &&
+        Object.keys(value).every((key) => key === "type" || key === "scope" || key === "mergeQueue");
       return {
         type: "workspace.changed",
-        scope: isText(value.scope) ? value.scope : "workspace",
+        scope,
         ...(value.tasks === true ? { tasks: true } : {}),
+        ...(mergeQueue ? { mergeQueue: true } : {}),
+        ...(onlyMergeQueue ? { onlyMergeQueue: true } : {}),
       };
+    }
     case "reset":
       return { type: "reset", reason: isText(value.reason) ? value.reason : "reset" };
     case "resumed":

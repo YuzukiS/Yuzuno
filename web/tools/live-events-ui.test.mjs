@@ -61,8 +61,10 @@ function timerSeam(w) {
 }
 
 // holdPoll: the 5 s poll (setInterval, POLL_MS) is not started, so only the
-// paths a test drives read again (T-170).
-async function mount({ holdPoll = false } = {}) {
+// paths a test drives read again (T-170). workspaceId: the Workspace the list
+// names, which starts the reads kept per Workspace (the board's live CI and
+// waits); none by default.
+async function mount({ holdPoll = false, workspaceId = "" } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -109,7 +111,8 @@ async function mount({ holdPoll = false } = {}) {
       throw new w.TypeError("Failed to fetch");
     }
     let body = {};
-    if (path === "/api/workspace") body = { agents: core.agents.map((a) => ({ ...a })), runtime: { connected: true }, defaultCwd: "/w" };
+    if (path === "/api/workspace") body = { agents: core.agents.map((a) => ({ ...a })), runtime: { connected: true }, defaultCwd: "/w",
+      ...(workspaceId ? { workspace: { id: workspaceId } } : {}) };
     else if (/^\/api\/agents\/[ab]$/.test(path)) {
       const agent = core.agents.find((a) => path.endsWith(`/${a.id}`));
       body = { agent: { ...agent }, pending: [], artifacts: [], turns: [{ id: `t-${agent.id}`, status: "inProgress", items: [
@@ -117,6 +120,8 @@ async function mount({ holdPoll = false } = {}) {
         { id: `m-${agent.id}`, type: "agentMessage", text: `${agent.name}: ${core.text}` },
       ] }] };
     } else if (path === "/api/catchup") body = { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } };
+    else if (path === "/api/merge-queue") body = { entries: [] };
+    else if (path === "/api/ci/live" || path === "/api/waits/live") body = { agents: {} };
     return { ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) };
   };
   w.eval(bundle);
@@ -457,6 +462,74 @@ test("a read that failed while offline is tried again as soon as the browser is 
     await pause(300);
     assert.equal(agentReads().length, settled, "online after a successful read reads nothing");
     assert.deepEqual(p.core.calls.filter((c) => c.method !== "GET"), [], "nothing is written or sent");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("Core's merge-queue pass reads only what shows the queue; with collaboration, also the board's reads; any other notice, an unknown message or a reset reads everything again (YN-221)", async (t) => {
+  const p = await mount({ holdPoll: true, workspaceId: "w" });
+  // What the shell reads again for everything shown (App.tsx refresh): the
+  // Agent list and the shown conversation.
+  const everything = ["/api/workspace", "/api/agents/a"];
+  // Each message as Core's events.rs `send` types it, decoded by the real page.
+  const queueOnly = { mergeQueue: true, type: "workspace.changed", scope: "workspace" };
+  const queueAndBoard = { mergeQueue: true, collaboration: true, type: "workspace.changed", scope: "collaboration" };
+  let id = 1;
+  const after = async (label, data) => {
+    const from = p.core.calls.length;
+    p.send(data, `e-${++id}`);
+    // Real time: past the 1 s merge-queue cadence and the 250–500 ms reads
+    // the other notices start.
+    await pause(1_300);
+    const paths = p.core.calls.slice(from).map((c) => c.path);
+    t.diagnostic(`${label}: ${paths.length} reads ${JSON.stringify(paths.sort())}`);
+    return paths;
+  };
+  const reads = (paths, path) => paths.filter((p) => p === path).length;
+  try {
+    const opened = p.core.calls.length;
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-1" });
+    await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
+    await pause(600);
+
+    // The queue is not shown: its pass reads nothing that is.
+    let paths = await after("merge queue only, queue closed", queueOnly);
+    for (const path of [...everything, "/api/home", "/api/ci/live", "/api/waits/live", "/api/merge-queue"])
+      assert.equal(reads(paths, path), 0, `a merge-queue pass does not read ${path}`);
+    // With a collaboration change: the board's reads, not everything.
+    paths = await after("merge queue and collaboration, queue closed", queueAndBoard);
+    assert.ok(reads(paths, "/api/ci/live") >= 1 && reads(paths, "/api/waits/live") >= 1, "the collaboration part reads the board's live CI and waits");
+    for (const path of everything) assert.equal(reads(paths, path), 0, `nor ${path}`);
+
+    // The queue is open: each pass reads it again, and still nothing else.
+    p.w.dispatchEvent(new p.w.CustomEvent("yuzuno:open-job", { detail: { source: "merge_queue" } }));
+    await until(() => p.count("/api/merge-queue") > 0, "the open queue's first read");
+    await pause(1_100);
+    paths = await after("merge queue only, queue open", queueOnly);
+    assert.equal(reads(paths, "/api/merge-queue"), 1, "the open queue reads again once");
+    for (const path of [...everything, "/api/home", "/api/ci/live", "/api/waits/live"])
+      assert.equal(reads(paths, path), 0, `a merge-queue pass does not read ${path}`);
+    paths = await after("merge queue and collaboration, queue open", queueAndBoard);
+    assert.equal(reads(paths, "/api/merge-queue"), 1, "the open queue reads again once");
+    assert.ok(reads(paths, "/api/ci/live") >= 1, "and the board's live CI");
+    for (const path of everything) assert.equal(reads(paths, path), 0, `nor ${path}`);
+
+    // Everything else keeps its full read: another workspace notice, one that
+    // names the queue with another change, an unknown message, a reset.
+    for (const [label, data] of [
+      ["another workspace notice", { prReviews: true, type: "workspace.changed", scope: "workspace" }],
+      ["merge queue with another change", { mergeQueue: true, executorSlots: true, type: "workspace.changed", scope: "workspace" }],
+      ["an unknown message", { type: "something.new" }],
+      ["a reset", { type: "reset", refresh: true, reason: "overflow" }],
+    ]) {
+      paths = await after(label, data);
+      for (const path of everything) assert.ok(reads(paths, path) >= 1, `${label} reads ${path}`);
+    }
+    assert.deepEqual(p.core.calls.filter((c) => c.method !== "GET"), [], "nothing is written");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

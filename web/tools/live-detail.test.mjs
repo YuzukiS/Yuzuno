@@ -233,6 +233,11 @@ test("stream messages parse into kinds, and older notices keep working", () => {
   assert.deepEqual(parseWorkspaceEvent('{"refresh":true}'), { type: "reset", reason: "refresh" });
   assert.deepEqual(parseWorkspaceEvent('{"collaboration":true}'), { type: "workspace.changed", scope: "collaboration" });
   assert.deepEqual(parseWorkspaceEvent('{"type":"workspace.changed","scope":"machines","machines":true}'), { type: "workspace.changed", scope: "machines" });
+  // The merge queue's mark is kept; alone, it is the queue's change only (YN-221).
+  assert.deepEqual(parseWorkspaceEvent('{"mergeQueue":true,"type":"workspace.changed","scope":"workspace"}'), { type: "workspace.changed", scope: "workspace", mergeQueue: true, onlyMergeQueue: true });
+  assert.deepEqual(parseWorkspaceEvent('{"mergeQueue":true,"collaboration":true,"type":"workspace.changed","scope":"collaboration"}'), { type: "workspace.changed", scope: "collaboration", mergeQueue: true });
+  assert.deepEqual(parseWorkspaceEvent('{"mergeQueue":true,"executorSlots":true,"type":"workspace.changed","scope":"workspace"}'), { type: "workspace.changed", scope: "workspace", mergeQueue: true });
+  assert.deepEqual(parseWorkspaceEvent('{"mergeQueue":"yes","type":"workspace.changed","scope":"workspace"}'), { type: "workspace.changed", scope: "workspace" });
   // A malformed streamed change is still a change to its Agent.
   assert.deepEqual(parseWorkspaceEvent('{"type":"agent.delta","agentId":"a","rev":"x"}'), { type: "agent.changed", agentId: "a", lastSeq: null });
   assert.equal(parseWorkspaceEvent("not json").type, "reset");
