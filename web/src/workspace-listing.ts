@@ -27,14 +27,18 @@ export function withListing(full: Agent, slim: Agent): Agent {
 }
 
 /** A slim list with the full rows known for its slim rows: read when one was
- * opened (`known`), or the row the last list had whole (an Agent released
- * while it was open). */
+ * opened (`known`), or the row the last list of the same Workspace had whole
+ * (an Agent released while it was open). Another Workspace's rows are never
+ * used: a Core restored from a backup may give its Agents the same ids. */
 export function mergeListing(next: Workspace, previous: Workspace | null | undefined, known: (id: string) => Agent | undefined): Workspace {
   if (next.listing !== "slim") return next;
+  const sameWorkspace = !!previous && !!next.workspace?.id && previous.workspace?.id === next.workspace.id;
+  const whole = new Map<string, Agent>();
+  if (sameWorkspace) for (const a of previous.agents) if (!isSlim(a)) whole.set(a.id, a);
   let changed = false;
   const agents = next.agents.map((row) => {
     if (!isSlim(row)) return row;
-    const full = known(row.id) ?? previous?.agents.find((a) => a.id === row.id && !isSlim(a));
+    const full = known(row.id) ?? whole.get(row.id);
     if (!full) return row;
     changed = true;
     return withListing(full, row);

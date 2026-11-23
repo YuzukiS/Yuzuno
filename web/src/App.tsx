@@ -1018,6 +1018,9 @@ export function App() {
   // and Agent (YN-221 S4), and the reads on their way.
   const fullRows = useRef(new Map<string, Agent>());
   const fullReads = useRef(new Set<string>());
+  // Those whose full row could not be read, said where it was opened, and a Retry that reads it again.
+  const [openFailed, setOpenFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [openAttempt, setOpenAttempt] = useState(0);
   /** Everything shown is read again: after the user's own actions, when Core
    * resets the stream, and while polling because it is not open. */
   const refresh = useCallback(() => {
@@ -1262,17 +1265,29 @@ export function App() {
       show(known);
       return;
     }
-    // One read per Workspace and Agent; one that failed is tried again with the next list.
+    // One read per Workspace and Agent at a time; one that failed says so where it was opened, and is read again on
+    // Retry (or with a later list), never by reading everything again.
     if (fullReads.current.has(key)) return;
     fullReads.current.add(key);
+    const failed = (on: boolean) => setOpenFailed((was) => {
+      if (was.has(key) === on) return was;
+      const next = new Set(was);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+    failed(false);
     readFullAgent(id)
       .then((full) => {
         fullRows.current.set(key, full);
+        failed(false);
         show(full);
       })
-      .catch(() => {})
+      // Kept by its Workspace and Agent: one that comes late says nothing of another opened since.
+      .catch(() => failed(true))
       .finally(() => fullReads.current.delete(key));
-  }, [workspaceId, listedAgent]);
+  }, [workspaceId, listedAgent, openAttempt]);
+  const openKey = listedAgent && isSlim(listedAgent) ? `${workspaceId}|${listedAgent.id}` : null;
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
   // the left on a desktop window, the context panel from the right. Its column changes at once,
@@ -5104,6 +5119,16 @@ export function App() {
               </div>
             )}
           </>
+        ) : listedAgent && openKey && openFailed.has(openKey) ? (
+          <div className="loading-state full" lang={langTag(language)}>
+            <p role="alert" className="inline-error">
+              {shell.openAgentFailed}{" "}
+              <button type="button" className="quiet-button" onClick={() => setOpenAttempt((n) => n + 1)}>
+                <RefreshCw size={13} />
+                {shell.retry}
+              </button>
+            </p>
+          </div>
         ) : listedAgent ? (
           <div className="loading-state full" lang={langTag(language)}>
             <LoaderCircle className="spin" size={22} />
