@@ -489,8 +489,8 @@ test("the banner lists what the author names forYou: two open items and how many
   assert.equal(now.querySelector(".now-todo-more"), null);
   page.window.renderNow({ section: nowCard({ forYou: items.map((i) => ({ ...i, done: true })) }), more: 0 });
   assert.equal(now.querySelector(".now-hero-aside"), null);
-  // Past its validity: said, the same card, in the attention colour.
-  page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
+  // Past its validity: said, the same card, in the attention colour (with other cards; alone, its card's Data as of).
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 2 });
   assert.ok(now.classList.contains("is-stale"));
   assert.equal(page.text(now.querySelector(".now-hero-label")), "Past its validity");
   assert.ok([...now.querySelectorAll(".now-meta-part")].map(page.text).includes("Card past its validity"));
