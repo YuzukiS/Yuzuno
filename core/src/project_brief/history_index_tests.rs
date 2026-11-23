@@ -189,12 +189,12 @@ async fn each_kind_of_history_entry_is_the_same_in_the_index_and_read_alone() {
     let indexed = home::build_with(&ws.store, home::History::Index).unwrap();
     assert_eq!(indexed["projects"][0]["brief"]["history"][2]["attachmentCount"], 1);
     assert_eq!(indexed["projects"][0]["brief"]["history"][0]["ask"]["replyImages"], json!(["synthetic.png"]));
-    // More entries than one read takes.
+    // More entries than one read takes; each is seen before the next is
+    // written, within the Brief's topics.
     for n in 0..55 {
         accept(&ws, "b", input(&format!("m{n}"), version(&ws, &project), vec![put(&format!("note-{n}"), "report")])).await;
+        sections::mark_seen(&ws.store, &project, &[(format!("note-{n}"), 1)]).unwrap();
     }
-    let marked: Vec<(String, i64)> = (0..55).map(|n| (format!("note-{n}"), 1)).collect();
-    sections::mark_seen(&ws.store, &project, &marked).unwrap();
     assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["brief"]["history"].as_array().unwrap().len(), 58);
     check(&ws.store);
 }
@@ -278,8 +278,11 @@ async fn home_measure() {
         ws.store.collaboration_call(None, "task_update", json!({"requestId":format!("done {i}"),"taskId":task,
             "expectedVersion":version,"patch":{"status":"done"}})).unwrap();
     }
+    // 20 live sections in 5 topics, within the Brief's 12 topics and 4
+    // sub-topics each.
     for i in 0..20 {
-        let mut change = put(&format!("live-{i}"), "report");
+        let key = if i % 4 == 0 { format!("live-{}", i / 4) } else { format!("live-{}/part-{}", i / 4, i % 4) };
+        let mut change = put(&key, "report");
         change["body"] = prose(i, BODY);
         seed(&ws, &project, format!("l{i}"), change).await;
     }
