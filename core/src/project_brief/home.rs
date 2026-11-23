@@ -298,6 +298,8 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let mut refreshed = std::collections::HashSet::new();
         // The user's notes on each ask (YN-213), apart from its reply.
         let notes = super::ask_notes::of_project(&db, id)?;
+        // Each replied ask's reply as the user gave it (YN-223), when Core kept one.
+        let snapshots = sections::reply_snapshots(&db, id)?;
         let mut shown = |rows: &[sections::Row]| -> Result<Vec<Value>> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -311,6 +313,9 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                     section["opened"] = opened.get(&row.identity).map(|(version, at)| json!({"version":version,"at":at})).into();
                     if let Some(notes) = notes.get(&row.identity).filter(|_| row.kind == "ask") {
                         section["ask"]["notes"] = json!(notes);
+                    }
+                    if let Some(snapshot) = snapshots.get(&row.seq).filter(|_| row.replied_ask()) {
+                        section["ask"]["replySnapshot"] = snapshot.clone();
                     }
                 }
                 if !row.live {
@@ -1060,8 +1065,17 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             (Some(row), Some(form)) if form_answers(row, form, &input.text).is_ok() => Some(json!({"formId": form.form_id, "answers": form.answers})),
             _ => None,
         };
+        // The reply as the user gave it to that version (YN-223): the same
+        // snapshot its receipt keeps, read from the same version of the ask,
+        // so Home's answered ask shows the question, options and answer the
+        // user saw, whatever its owner edits after.
+        let kept = shown.as_ref().map(|row| {
+            let answers = input.form.as_ref().and_then(|form| form_answers(row, form, &input.text).ok());
+            let words = if input.form.is_some() { note } else { extra_text(chosen.as_ref(), &input.text) };
+            snapshot(&name, Some(row), None, chosen.as_ref(), words, answers)
+        });
         let (store, key, id, images, files) = (ws.store.clone(), key.clone(), project.clone(), input.images.clone(), input.files.clone());
-        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images, &files)).await? {
+        if crate::db::blocking(move || sections::mark_replied_form(&store, &id, &key, version, &reply, form.as_ref(), &images, &files, kept.as_ref())).await? {
             announce(ws, Some(&project));
         }
     }

@@ -397,6 +397,16 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_files {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_files TEXT")?;
     }
+    // reply_snapshot: the replied version of an ask as the user answered it
+    // (YN-223), the same format-1 snapshot the reply's conversation receipt
+    // keeps (input_origin HOME_FORMAT): question, options, choice, words and
+    // a form's answers. Home's answered ask is drawn from it; NULL for a
+    // reply from before it was kept. Older Cores ignore it.
+    let has_reply_snapshot: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_snapshot')", [], |r| r.get(0))?;
+    if !has_reply_snapshot {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_snapshot TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

@@ -2289,6 +2289,58 @@ async fn an_edit_never_reopens_a_replied_ask() {
     assert_eq!(ask["body"]["elements"]["note"]["props"]["text"], "More context.");
 }
 
+// YN-223: Home draws an answered ask from the reply as the user gave it to
+// that version (the snapshot its receipt keeps): kept through an edit of its
+// body, gone once its owner asks again; a reply from before Core kept one has
+// none, and an Agent's brief_get never carries it.
+#[tokio::test]
+async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("q1", 0, vec![put("decide", "ask")])).await;
+    let workspace = ws.store.workspace_id().unwrap();
+    let row = sections::live_key(&ws.store.db.read().unwrap(), &project, "decide").unwrap().unwrap();
+    let message = home::compose_ask(&workspace, "Code", &project, &row, home::choice(&row, "left").as_ref(), "Go");
+    // Home's first send was accepted: its retry marks version 1.
+    let sent = crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![], skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
+            "reply":home::reply_digest(Some("left"), "Go", None, &[], &[])})),
+        input: crate::model::MessageInput { client_message_id: "m1".into(), text: message, text_blocks: None, images: vec![],
+            expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(sent)).unwrap();
+    let reply = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: "Go".into(), client_message_id: "m1".into(),
+        choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace.clone()), form: None,
+        images: vec![], files: vec![], intent: Default::default(), note: None };
+    home::reply(&ws, project.clone(), reply).await.unwrap();
+    let shown = |ws: &Workspace| -> Value {
+        let home = home::build(&ws.store).unwrap();
+        home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "decide").unwrap().clone()
+    };
+    let given = snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
+        "choice":{"id":"left","label":"Left"},"text":"Go"}));
+    let answered = shown(&ws);
+    assert_eq!((answered["ask"]["state"].clone(), answered["ask"]["replyText"].clone()), (json!("replied"), json!("Left: Go")));
+    assert_eq!(answered["ask"]["replySnapshot"], given);
+    // Its owner's edit of the body keeps the reply as it was given; an Agent's read never carries it.
+    accept(&ws, "a", input("q2", 1, vec![edit("decide", json!({"note":markdown("Started on the left.")}))])).await;
+    let edited = shown(&ws);
+    assert_eq!((edited["version"].clone(), edited["ask"]["state"].clone()), (json!(2), json!("replied")));
+    assert_eq!(edited["ask"]["replySnapshot"], given);
+    assert!(section(&brief(&ws, "a"), "decide")["ask"].get("replySnapshot").is_none());
+    // Asked again: open, and the earlier reply's snapshot is gone with its text.
+    accept(&ws, "a", input("q3", 2, vec![put("decide", "ask")])).await;
+    let again = shown(&ws);
+    assert_eq!(again["ask"]["state"], "open");
+    assert!(again["ask"].get("replySnapshot").is_none(), "{again}");
+    let kept: Option<String> = ws.store.db.read().unwrap().query_row(
+        "SELECT reply_snapshot FROM project_brief_sections WHERE project_id=?1 AND key='decide' AND live=1", [&project], |r| r.get(0)).unwrap();
+    assert_eq!(kept, None);
+    // A reply marked without one, as before Core kept them: replied, with no snapshot.
+    assert!(sections::mark_replied_live(&ws.store, &project, "decide", "Right").unwrap());
+    let earlier = shown(&ws);
+    assert_eq!(earlier["ask"]["state"], "replied");
+    assert!(earlier["ask"].get("replySnapshot").is_none(), "{earlier}");
+}
+
 #[tokio::test]
 async fn an_edit_is_refused_whole_for_unknown_or_root_blocks_other_owners_and_stale_versions() {
     let (_dir, ws, project) = lab();

@@ -670,23 +670,46 @@ pub(super) fn defer(store: &Store, project: &str, key: &str, until: Option<&str>
 /// no longer the live unresolved ask: a reply to it never marks a newer ask
 /// under the same key (T-9), as when its owner asked again meanwhile.
 pub(super) fn mark_replied(store: &Store, project: &str, key: &str, version: i64, text: &str) -> Result<bool> {
-    mark_replied_form(store, project, key, version, text, None, &[], &[])
+    mark_replied_form(store, project, key, version, text, None, &[], &[], None)
 }
 
 /// `mark_replied` with the form answers Home checked (form_answers), kept
-/// with the version they answer (YN-74), and the images the reply carried
-/// (YN-134); a reply without them clears any.
+/// with the version they answer (YN-74), the images the reply carried
+/// (YN-134), and the reply as the user gave it to that version (YN-223:
+/// its receipt's snapshot, which Home's answered ask is drawn from); a reply
+/// without them clears any.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version: i64, text: &str, form: Option<&Value>, images: &[String],
-    files: &[crate::input_files::FileRef]) -> Result<bool> {
+    files: &[crate::input_files::FileRef], snapshot: Option<&Value>) -> Result<bool> {
     let form = form.map(|form| json!({"version": version, "formId": form["formId"], "answers": form["answers"]}).to_string());
     let images = (!images.is_empty()).then(|| json!(images).to_string());
     let files = (!files.is_empty()).then(|| json!(files).to_string());
+    let snapshot = snapshot.map(Value::to_string);
     let changed = store.db.write()?.execute(
-        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8
+        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8,reply_snapshot=?9
          WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
-        params![project, key, now(), text, version, form, images, files],
+        params![project, key, now(), text, version, form, images, files, snapshot],
     )?;
     Ok(changed == 1)
+}
+
+/// The reply snapshot (YN-223) of each live replied ask of `project` that
+/// has one, by its row: what Home's answered ask is drawn from. A value Core
+/// cannot read shows none, as a reply from before snapshots were kept.
+pub(super) fn reply_snapshots(db: &Connection, project: &str) -> Result<HashMap<i64, Value>> {
+    let mut query = db.prepare_cached(
+        "SELECT seq,reply_snapshot FROM project_brief_sections
+         WHERE project_id=?1 AND live=1 AND kind='ask' AND ask_state='replied' AND reply_snapshot IS NOT NULL",
+    )?;
+    let rows = query.query_map([project], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut kept = HashMap::new();
+    for row in rows {
+        let (seq, raw) = row?;
+        if let Some(snapshot) = serde_json::from_str::<Value>(&raw).ok().filter(Value::is_object) {
+            kept.insert(seq, snapshot);
+        }
+    }
+    Ok(kept)
 }
 
 /// `mark_replied` of whatever version is live now: for tests that only set
