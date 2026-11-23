@@ -1,7 +1,7 @@
 /* A Project's page by request (YN-212 §3): one block a request, its number
    and title, one latest fact with one action, what it delivered; folded,
    its tasks (one card each), the tasks it joined and its own conversation.
-   The Project's own block the same way, one line a card. Home's colours and
+   The Project's own cards in a group of their own (project-home.css). Home's colours and
    type (home.css); the deliverables' lines are the request card's
    (project-talk.css .request-deliverable). */
 .request-blocks {
@@ -25,24 +25,25 @@
   color: var(--home-ink-2);
   font-weight: 400;
 }
-/* Done: closed at each visit; a jump to a request in it opens it (card-fold.tsx). */
-.request-done > summary {
+/* Done, and the Project's cards (R-27, project-home.css): closed at each visit; a jump to a card in one opens it
+   (card-fold.tsx). */
+:is(.request-done, .project-cards) > summary {
   cursor: pointer;
   list-style: none;
 }
-.request-done > summary::-webkit-details-marker {
+:is(.request-done, .project-cards) > summary::-webkit-details-marker {
   display: none;
 }
-.request-done > summary::before {
+:is(.request-done, .project-cards) > summary::before {
   content: "›";
   display: inline-block;
   color: var(--home-ink-2);
   transition: transform var(--motion-small) var(--ease-standard);
 }
-.request-done[open] > summary::before {
+:is(.request-done, .project-cards)[open] > summary::before {
   transform: rotate(90deg);
 }
-.request-done > summary:focus-visible {
+:is(.request-done, .project-cards) > summary:focus-visible {
   outline: 2px solid var(--home-focus);
   outline-offset: 2px;
 }
@@ -53,7 +54,7 @@
   max-width: 260px;
   margin: 4px 0 0;
 }
-.request-done[open] > summary {
+:is(.request-done, .project-cards)[open] > summary {
   margin-bottom: 8px;
 }
 .request-done > .request-block + .request-block {
@@ -391,46 +392,7 @@
   min-width: 0;
 }
 
-/* The Project's own block: one line a card until opened, after its open Asks (a project block delivers nothing,
-   so its lines take that row). */
-.project-block-lines {
-  grid-area: delivered;
-  display: grid;
-  margin: 0;
-  padding: 4px 6px 8px;
-  list-style: none;
-}
-.project-block-lines button {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  width: 100%;
-  padding: 4px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: calc(9.5px + var(--font-adjust, 3px));
-  text-align: left;
-  cursor: pointer;
-}
-.project-block-lines button:hover {
-  background: var(--home-soft);
-}
-.project-block-line-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-block-line-time {
-  flex: none;
-  margin-left: auto;
-  color: var(--home-ink-2);
-  font-size: calc(8.5px + var(--font-adjust, 3px));
-}
-/* Its cards, opened: the Project's deck (home.css .home-brief), sized by the block's own width. */
+/* The Project's cards, opened in their group (R-27): its deck (home.css .home-brief), sized by the group's own width. */
 .project-block-cards {
   display: block;
   padding-top: 0;

@@ -8,11 +8,14 @@
 //  - a Project's name on the rail opens its page; the arrow before it only
 //    folds the group, and Tab goes arrow, name, +;
 //  - the page's three groups: Needs you, In progress (cards stay put for the
-//    visit), and Done, closed at first, with the 30-day history inside;
+//    visit), and Done, closed at first, with the 30-day history inside; what
+//    belongs to no request (R-27): its Ask on its own in Needs you, its cards
+//    in the Project cards group (open on a page with no request), each card
+//    once, the group opened and closed from the keyboard;
 //  - an unread report opened from its card comes back with New gone and the
 //    card in the same place and the same group;
 //  - on a phone (390), the whole of Home from the address and a project's
-//    page from its glance; 1920, 1440, 940 and Chinese at 1440 otherwise;
+//    page from its glance; 1920, 1440, 1400, 940 and Chinese at 1440 otherwise;
 //  - a project's cards in three columns from 932 px of card area and the
 //    team's facts beside them only from 1250 px of page, under them below
 //    that (YN-157);
@@ -144,13 +147,13 @@ const findSection = (projectId, key) =>
   ?? state.home.projects.find((panel) => panel.project.id === projectId)?.brief.history.find((section) => section.key === key);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress" },
-  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中" },
+  en: { needs: /^Needs you/, newMark: "New", inProgress: "In progress", projectCards: /^Project cards 4\s*Not part of a request$/ },
+  "zh-Hans": { needs: /^等你/, newMark: "新", inProgress: "进行中", projectCards: /^项目卡 4\s*不属于任何请求$/ },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [];
-for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
+for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["1400", { width: 1400, height: 1000 }, false], ["940", { width: 940, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]]) {
   runs.push({ name: `${name}`, viewport, phone, language: "en" });
 }
 runs.push({ name: "zh-1440", viewport: { width: 1440, height: 1000 }, phone: false, language: "zh-Hans" });
@@ -230,6 +233,8 @@ async function check(run) {
       "/api/collaboration/github_repositories": { repositories: [], links: [] },
     }[path];
     if (json) return route.fulfill({ json });
+    // No project has a request here: the page holds what belongs to no request (YN-212, R-27).
+    if (/^\/api\/projects\/[^/]+\/requests$/.test(path)) return route.fulfill({ json: { requests: [], hasMore: false } });
     if (path.startsWith("/api/")) return route.fulfill({ json: {} });
     const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
     assert.ok(file.startsWith(dist + "/"));
@@ -430,17 +435,41 @@ async function check(run) {
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language);
     // No horizontal overflow: the page and Home's own scroller.
     await noOverflow(".project-home-head, .request-blocks");
-    // YN-212: the page reads by request. With none, the Project's own block is all of it, open, in Needs you while an
-    // Ask of its own waits; the 30-day history is in Done, closed.
+    // YN-212: the page reads by request. R-27: with none, the Project's own Ask stands on its own in Needs you and its
+    // cards are a group of their own after it, open; the 30-day history is in Done, closed.
     const titles = await page.locator(".request-group-title").evaluateAll((els) => els.map((el) => el.textContent.trim()));
     assert.match(titles[0], w.needs);
-    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block][data-open]').count(), 1, "the Project's block, open, in Needs you");
-    assert.equal(await page.locator(".request-done").evaluate((el) => el.open), false, "Done is closed at first");
+    assert.equal(await page.locator('.request-group[data-group="needs"] .project-ask #home-section-p-dev-q1').count(), 1, "the Project's Ask on its own in Needs you");
+    assert.equal(await page.locator('.request-group[data-group="needs"] [data-project-block]').count(), 0, "its cards are not in Needs you");
+    const group = page.locator("details.project-cards");
+    assert.equal(await group.evaluate((el) => el.open), true, "the Project's cards, open on a page with no request");
+    assert.match(titles[1], w.projectCards);
+    assert.equal(await page.locator('.request-done[data-group="done"]').evaluate((el) => el.open), false, "Done is closed at first");
     assert.equal(await page.locator(".request-done .home-history").count(), 1, "the 30-day history is inside Done");
+    const once = await page.evaluate(() => {
+      const ids = [...document.querySelectorAll('[data-project-home="p-dev"] [id^="home-section-p-dev-"]')].map((el) => el.id).filter((id) => !/-(title|body)$/.test(id));
+      return { ids, repeated: ids.filter((id, i) => ids.indexOf(id) !== i) };
+    });
+    assert.deepEqual(once.repeated, [], `each card once: ${JSON.stringify(once)}`);
+    for (const key of ["q1", "status", "design", "read-a", "old-status"]) assert.ok(once.ids.includes(`home-section-p-dev-${key}`), `${key} is on the page`);
     await shot("project");
-    pass("the Project's block open in Needs you; Done closed with the history inside; no overflow", titles);
+    // The keyboard: the group's heading closes and opens it, its focus shown, its cards drawn only while open.
+    await group.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    // The details close at once; the page takes it from their toggle, a task later, and its data-open follows.
+    await page.waitForFunction(() => !document.querySelector("details.project-cards").open);
+    await page.waitForFunction(() => !document.querySelector("details.project-cards").hasAttribute("data-open"));
+    const focusShown = await group.locator("summary").evaluate((el) => el === document.activeElement && getComputedStyle(el).outlineStyle !== "none");
+    assert.equal(await group.locator(".project-block-cards").count(), 0, "closed: no card drawn");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector("details.project-cards")?.hasAttribute("data-open"));
+    await card("design").waitFor({ timeout: 5_000 });
+    assert.ok(focusShown, "the group's heading shows its focus");
+    await group.locator("summary").evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await shot("project-cards");
+    pass("the Project's Ask on its own in Needs you; its cards in their group, open, each once, closed and opened by the keyboard; Done closed with the history inside; no overflow", { titles, cards: once.ids.length });
     // The cards' columns and where the team's facts stand (YN-157): the team beside them only from 1250 px of page;
-    // the cards' columns follow the Project's block's own width (a deck of its own, YN-212), at most 920 px.
+    // the cards' columns follow the Project cards group's own width (a deck of its own, YN-212, R-27), at most 920 px.
     const shape = await page.evaluate(() => {
       const page = document.querySelector('[data-project-home="p-dev"]');
       const main = page.querySelector(".project-home-main");
@@ -466,7 +495,7 @@ async function check(run) {
       assert.equal(shape.team, "aside", `the team beside at 1920: ${JSON.stringify(shape)}`);
     }
     if (run.phone) assert.equal(shape.columns, 1, `one column on a phone: ${JSON.stringify(shape)}`);
-    pass("the cards' columns follow the Project's block, and the team stands beside them only from 1250 px", shape);
+    pass("the cards' columns follow the Project cards group, and the team stands beside them only from 1250 px", shape);
     // The unread report: New, open it, read it, come back with New gone and the card in the same place.
     const unread = card("design");
     await unread.scrollIntoViewIfNeeded();

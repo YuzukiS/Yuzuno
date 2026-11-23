@@ -11,12 +11,13 @@ import { CardAgents } from "./card-responsible";
 import { DeckSizes } from "./card-sizes";
 import { absolute, relative } from "./format";
 import type { SeenMark } from "./home-api";
+import { homeText } from "./home-text";
 import { conversation, untitledHint } from "./project-talk";
 import type { ProjectRequest } from "./project-talk-api";
 import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { DeliverableLine, type OpenDeliveredReport } from "./DeliverableLine";
 import { talkText } from "./talk-text";
-import { openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
+import { authorOf, openAsk, type BlockAction, type BlockFact, type BlockGroup, type ProjectBlock, type RequestBlock, type TaskRow, type Who } from "./request-blocks";
 import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
 import type { Section } from "./types";
@@ -31,13 +32,13 @@ export const blockText = strings(
     requestsTab: (n: number) => `Requests ${n}`,
     chatTab: "Conversation",
     project: "Project",
+    projectCards: "Project cards",
     projectNote: "Not part of a request",
     untitled: (hint: string) => `Waiting for a title · ${hint}`,
     newMark: "New",
     actions: { answer: "Answer", resend: "Send again", confirm: "Confirm done", follow: "Follow up" } as Record<BlockAction, string>,
     actionLabel: (action: string, n: number) => `${action}: R-${n}`,
     more: (tasks: number, said: number) => `${tasks ? `${tasks} ${tasks === 1 ? "task" : "tasks"} · ` : ""}${said} in the conversation`,
-    projectMore: (n: number) => `${n} ${n === 1 ? "card" : "cards"}`,
     less: "Fold",
     fact: {
       unconfirmed: "Not confirmed delivered",
@@ -81,13 +82,13 @@ export const blockText = strings(
     requestsTab: (n) => `请求 ${n}`,
     chatTab: "对话",
     project: "项目",
+    projectCards: "项目卡",
     projectNote: "不属于任何请求",
     untitled: (hint) => `等待标题 · ${hint}`,
     newMark: "新",
     actions: { answer: "回答", resend: "再发一次", confirm: "确认完成", follow: "追问" },
     actionLabel: (action, n) => `${action}：R-${n}`,
     more: (tasks, said) => `${tasks ? `${tasks} 个任务 · ` : ""}对话 ${said} 条`,
-    projectMore: (n) => `${n} 张卡`,
     less: "收起",
     fact: {
       unconfirmed: "没确认送达",
@@ -591,83 +592,91 @@ function RequestThread({ request }: { request: ProjectRequest }) {
   );
 }
 
-/** The Project's own block (§2.2 rule 3): what belongs to no request, one line each until opened. */
-export function ProjectBlockView({ block, open, onToggle, common }: { block: ProjectBlock; open: boolean; onToggle: () => void; common: BlockCommon }) {
+/**
+ * The Project's own open Asks in Needs you (R-27 §3.5): each its own entry, as an approval stands, saying it is the
+ * Project's and who asked, answerable there. One answered in this visit stays where it was (useAsksUpFront).
+ */
+export function ProjectAsks({ block, common }: { block: ProjectBlock; common: BlockCommon }) {
   const language = useLanguage();
   const t = blockText(language);
-  // Its open Asks in the first look, answerable there (W5); the rest one line each until opened.
-  const asks = block.asks.filter(common.upFront);
-  const all: Section[] = [...block.asks.filter((ask) => !asks.includes(ask)), ...block.sections];
-  // Opened, its cards keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
-  // deck-packing.ts), in a deck of the block's own width.
+  const th = homeText(language);
+  return block.asks.filter(common.upFront).map((ask) => (
+    <div key={ask.key} className="home-approval project-ask" data-project-ask={ask.key}>
+      <span className="home-from">
+        {t.project} · {th.from(authorOf(ask))}
+      </span>
+      <AskCard section={ask} common={common} />
+    </div>
+  ));
+}
+
+/**
+ * The Project's cards that belong to no request (R-27 §3.6): a group of their own after In progress, closed until the
+ * user, a jump or a page with no request opens it; opened, the Project's deck at its authors' sizes, its Asks answered
+ * before this visit among them as their answer cards (YN-3, the user's D3: Reply again, the owner's update in place).
+ * Not drawn while closed, nor with nothing to hold.
+ */
+export function ProjectCards({
+  block,
+  open,
+  onToggle,
+  common,
+}: {
+  block: ProjectBlock;
+  open: boolean;
+  /** The group opened or closed, by the user or by a jump (the details' own toggle). */
+  onToggle: (open: boolean) => void;
+  common: BlockCommon;
+}) {
+  const t = blockText(useLanguage());
+  const answered = block.asks.filter((ask) => !common.upFront(ask));
+  const count = block.sections.length + answered.length;
+  if (count === 0) return null;
+  return (
+    <details
+      className="request-group project-cards"
+      data-group="project"
+      data-block-key={block.key}
+      data-project-block=""
+      data-open={open ? "" : undefined}
+      open={open}
+      onToggle={(event) => onToggle(event.currentTarget.open)}
+    >
+      <summary className="request-group-title">
+        {t.projectCards} <span>{count}</span>
+        <small className="request-group-note">{t.projectNote}</small>
+      </summary>
+      {open && <ProjectDeck sections={[...answered, ...block.sections]} common={common} />}
+    </details>
+  );
+}
+
+/** The Project's cards, opened: they keep their authors' sizes and are packed as the Project's deck packed them (YN-3,
+ * deck-packing.ts), in a deck of the group's own width. An answered Ask is its answer card there. */
+function ProjectDeck({ sections, common }: { sections: readonly Section[]; common: BlockCommon }) {
   const grid = useRef<HTMLDivElement>(null);
   useDeckPacking(grid, deckItems, deckCard);
   return (
-    <article className="request-block" data-block-key={block.key} data-project-block="" data-group={block.group} data-open={open ? "" : undefined} tabIndex={-1}>
-      <header className="request-block-head">
-        <span className="request-block-n">{t.project}</span>
-        <button type="button" className="request-block-title" aria-expanded={open} onClick={onToggle}>
-          {t.projectNote}
-        </button>
-        {block.unread && <span className="home-chip is-new">{t.newMark}</span>}
-      </header>
-      {asks.length > 0 && (
-        <div className="request-block-asks" role="group" aria-label={t.asks(t.projectNote)}>
-          {asks.map((ask) => (
-            <AskCard key={ask.key} section={ask} common={common} />
-          ))}
-        </div>
-      )}
-      {all.length === 0 ? null : open ? (
-        <div className="request-block-body project-block-cards">
-          <div ref={grid} className="home-brief">
-            {all.map((section) =>
-              section.kind === "ask" ? (
-                <SectionCard
-                  key={section.key}
-                  section={section}
-                  projectId={common.projectId}
-                  workspaceId={common.workspaceId}
-                  agents={common.agents}
-                  readOnly={common.readOnly}
-                  onSeen={common.onSeen}
-                  onChanged={common.onChanged}
-                  notice={common.notice?.(section)}
-                />
-              ) : (
-                <SummaryCard
-                  key={section.key}
-                  section={section}
-                  projectId={common.projectId}
-                  workspaceId={common.workspaceId}
-                  agents={common.agents}
-                  deck
-                  readOnly={common.readOnly}
-                  onSeen={common.onSeen}
-                  notice={common.notice?.(section)}
-                />
-              ),
-            )}
-          </div>
-        </div>
-      ) : (
-        <ul className="project-block-lines">
-          {all.map((section) => (
-            <li key={section.key}>
-              <button type="button" onClick={onToggle}>
-                <span className="project-block-line-title">{section.title}</span>
-                <span className="project-block-line-time">{relative(section.updatedAt, language)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {all.length > 0 && (
-        <button type="button" className="request-block-more" aria-expanded={open} onClick={onToggle}>
-          <ChevronDown size={13} aria-hidden="true" />
-          {open ? t.less : t.projectMore(all.length)}
-        </button>
-      )}
-    </article>
+    <div className="project-block-cards">
+      <div ref={grid} className="home-brief">
+        {sections.map((section) =>
+          section.kind === "ask" ? (
+            <AskCard key={section.key} section={section} common={common} />
+          ) : (
+            <SummaryCard
+              key={section.key}
+              section={section}
+              projectId={common.projectId}
+              workspaceId={common.workspaceId}
+              agents={common.agents}
+              deck
+              readOnly={common.readOnly}
+              onSeen={common.onSeen}
+              notice={common.notice?.(section)}
+            />
+          ),
+        )}
+      </div>
+    </div>
   );
 }

@@ -174,7 +174,9 @@ test("each request is one block, and the order is needs you, then in progress ne
   const { blocks, project } = page("asked");
   assert.deepEqual(blocks.map((b) => b.request.n).sort((a, b) => a - b), [7, 12, 14, 19, 21]);
   assert.deepEqual(blocks.map((b) => [b.request.n, b.group]), [[7, "needs"], [21, "doing"], [19, "doing"], [14, "doing"], [12, "doing"]]);
-  assert.deepEqual(blockCounts(blocks, project), { needs: 1, doing: 5, done: 0 }, "the Project's own block counted where it stands");
+  assert.ok(project.sections.length > 0, "the Project has cards of its own");
+  // R-27 §3.7: requests only; the Project's own block is no request.
+  assert.deepEqual(blockCounts(blocks), { needs: 1, doing: 4, done: 0 }, "the Project's own block is not counted");
 });
 
 test("a task serving two requests is one row under the first; the other names it and shares its fact (R-12, R-14)", () => {
@@ -228,13 +230,15 @@ test("two tasks, two deliverables, the newest result first; a card written since
 test("the Project's own block: every live section bound to no request's task, never a placeholder", () => {
   const { blocks, project } = page("working");
   assert.deepEqual(project.sections.map((s) => s.key), ["development", "desktop-check"]);
-  assert.deepEqual([project.group, project.asks], ["doing", []]);
+  assert.deepEqual(project.asks, []);
+  assert.equal("group" in project, false, "in no group of requests (R-27)");
   assert.equal(blockOfSection("development", blocks, project), "project");
-  // An open Ask of its own puts it in Needs you.
+  // An open Ask of its own is shown up front (in Needs you, R-27 §3.5): a jump to it opens nothing.
   const pick = section("pick", "ask", "选一个", 1, 3, lead, { ask: ask("选哪个？", "open") });
   const withAsk = pageBlocks([], [pick, ...neighbours().sections.slice(-2)]).project;
-  assert.deepEqual([withAsk.group, withAsk.asks.map((s) => s.key)], ["needs", ["pick"]]);
-  assert.equal(askUpFront("pick", [], withAsk), true, "its open Ask is in its first look too");
+  assert.deepEqual(withAsk.asks.map((s) => s.key), ["pick"]);
+  assert.equal(askUpFront("pick", [], withAsk), true, "its open Ask is up front");
+  assert.equal(blockOfSection("pick", [], withAsk), "project");
   assert.equal(pageBlocks([], []).project, null);
   // A section bound to a task no request has is the Project's too; a history entry is not.
   const loose = section("yn-300", "status", "无请求的任务", 1, 4, lead, { card: binding("YN-300", "doing", null) });
