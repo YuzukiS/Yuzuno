@@ -504,8 +504,9 @@ export function runtimeRead(report: unknown, at: string): RuntimeRead | null {
     if (n === null) continue;
     requests += n;
     // Another label is counted, never named.
-    const key = method && route ? `${method} ${route}` : "(unnamed)";
-    const kept = routes.get(key) ?? { method: method ?? "", route: route ?? "(unnamed)", count: 0, visible: 0, hidden: 0, unsaid: 0, bytesSent: 0 };
+    const named = method && route;
+    const key = named ? `${method} ${route}` : "(unnamed)";
+    const kept = routes.get(key) ?? { method: named ? method : "", route: named ? route : "(unnamed)", count: 0, visible: 0, hidden: 0, unsaid: 0, bytesSent: 0 };
     kept.count += n;
     kept.visible += count(visibility.visible) ?? 0;
     kept.hidden += count(visibility.hidden) ?? 0;
