@@ -131,6 +131,15 @@ async fn home_refuses_an_unknown_history_form_and_the_phone_entry_serves_the_new
     let (_, by_query) = get(&app, "/api/home?history=index").await;
     assert_eq!((indexed["projects"].clone(), indexed["needsYou"].clone()), (by_query["projects"].clone(), by_query["needsYou"].clone()));
     assert_eq!(app.clone().oneshot(by_header("whole")).await.unwrap().status(), 400);
+    // Each form is checked on its own: a good one never covers a bad one.
+    let both = |uri: &str, value: &str| Request::builder().uri(uri).header("x-yuzuno-history", value).body(Body::empty()).unwrap();
+    for (uri, value) in [("/api/home?history=index", "whole"), ("/api/home?history=whole", "index")] {
+        assert_eq!(app.clone().oneshot(both(uri, value)).await.unwrap().status(), 400, "{uri} with {value}");
+    }
+    let response = app.clone().oneshot(both("/api/home?history=index", "index")).await.unwrap();
+    assert_eq!(response.status(), 200, "both, saying the same");
+    let agreed: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 64 << 20).await.unwrap()).unwrap();
+    assert_eq!(agreed["projects"][0]["brief"]["historyIndex"], true);
     let (status, whole) = get(&app, "/api/home").await;
     assert_eq!(status, 200);
     assert!(whole["projects"][0]["brief"].get("historyIndex").is_none(), "without the parameter Home is as it was");

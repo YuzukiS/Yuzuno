@@ -61,12 +61,14 @@ struct HomeQuery {
 /// header `X-Yuzuno-History: index` as a conversation's window is asked
 /// for, YN-221 S1); without either it is what every page has read.
 async fn view(State(ws): State<Arc<Workspace>>, Query(query): Query<HomeQuery>, headers: axum::http::HeaderMap) -> ApiResult<Response> {
-    let asked = query.history.or_else(|| headers.get("x-yuzuno-history").map(|v| v.to_str().unwrap_or("").to_owned()));
-    let history = match asked.as_deref() {
-        None => home::History::Full,
-        Some("index") => home::History::Index,
-        Some(_) => return Ok(invalid("history is index, or not given")),
-    };
+    // Each form is checked on its own: either alone asks for the index, both
+    // may say it together, and any other value of either is refused.
+    let header = headers.get("x-yuzuno-history").map(|v| v.to_str().unwrap_or(""));
+    let asked = [query.history.as_deref(), header];
+    if asked.iter().flatten().any(|value| *value != "index") {
+        return Ok(invalid("history is index, or not given"));
+    }
+    let history = if asked.iter().any(Option::is_some) { home::History::Index } else { home::History::Full };
     let bytes = ws.stored(move |store| Ok(serde_json::to_vec(&home::build_with(store, history)?)?)).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
 }
