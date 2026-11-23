@@ -517,8 +517,11 @@ test("the banner in Chinese", () => {
   assert.equal(page.text(now.querySelector(".now-todo-head")), "3项待你 · Try the new page");
   assert.equal(page.text(now.querySelector(".now-todo-more")), "另 1 项 · 在状态页");
   assert.deepEqual([...now.querySelectorAll(".now-actions button")].map(page.text), ["项目卡 2", "打开状态"]);
-  page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 2 });
   assert.equal(page.text(now.querySelector(".now-hero-label")), "已过有效期");
+  // Alone, the banner is the card and says 新 as its card would.
+  page.window.renderNow({ section: nowCard({ stale: true }), more: 0 });
+  assert.equal(page.text(now.querySelector(".now-hero-label")), "已过有效期新");
 });
 
 // The lead's call on YN-218 (seq 12072): with no other card, the banner is the card's one place: its id, a reply's
