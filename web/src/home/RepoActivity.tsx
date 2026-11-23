@@ -395,11 +395,13 @@ function Name({ name, url }: { name: string; url: string }) {
   const href = githubPage(url);
   return href ? (
     <a href={href} target="_blank" rel="noopener noreferrer" className="repo-name">
-      {name}
+      <span className="repo-name-text">{name}</span>
       <ArrowUpRight size={11} aria-hidden />
     </a>
   ) : (
-    <span className="repo-name">{name}</span>
+    <span className="repo-name">
+      <span className="repo-name-text">{name}</span>
+    </span>
   );
 }
 

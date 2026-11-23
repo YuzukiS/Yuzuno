@@ -30,6 +30,17 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The name itself takes the room there is and is cut with an ellipsis; the
+   arrow after it stays whole (R-28). */
+.repo-activity .repo-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-activity .repo-name > svg {
+  flex: none;
+}
 /* A repository's name links to GitHub: the accent ink, readable at 4.5:1 or
    more in every palette (the default link colour was 4.2:1 in Garden). */
 .repo-activity a.repo-name {
@@ -61,6 +72,13 @@
 }
 .repo-activity .repo-line > * {
   flex: none;
+}
+/* The repository's own name is the one part of the line that may be cut: a
+   long name (and the arrow after it) takes the room it has, not the card's
+   border (R-28). */
+.repo-activity .repo-line > .repo-name {
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 .repo-activity .repo-line .repo-row {
   height: auto;

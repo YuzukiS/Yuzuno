@@ -118,15 +118,22 @@
 }
 
 /* The team and its running work: a column beside the cards on a wide page,
-   folded under them otherwise (YN-86 §2.2). */
+   folded under them otherwise (YN-86 §2.2). Its one column is the card's own
+   width: an implicit `auto` column would take the widest row's content
+   (a long Job or repository name) and push everything past the card's border
+   (R-28); the rows below cut their own long words instead. */
 .project-team {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--home-surface);
+  /* Its rows follow the card's own width (R-28): beside the cards it is 300 px,
+     folded under them it is the page's width. */
+  container: team / inline-size;
 }
 .project-team:not([open]) {
   padding-block: 10px;
@@ -192,6 +199,32 @@
 }
 .project-team .home-widgets {
   padding-top: 0;
+}
+/* A card narrower than its rows need (R-28): the side column is 300 px, and a
+   phone's folded card about 340. Below 380 a Job line puts its name on the
+   state's line and its Agent under them, and the repositories' Manage goes
+   under them, so a long name is cut by the row rather than the card's border. */
+@container team (max-width: 380px) {
+  .project-team .home-job {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 8px;
+    align-items: baseline;
+  }
+  .project-team .home-job strong {
+    grid-column: 2;
+  }
+  .project-team .home-job > span:last-child {
+    grid-column: 1 / -1;
+    font-size: calc(9px + var(--font-adjust, 3px));
+  }
+  .project-team .home-repos {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .project-team .home-repos-manage {
+    grid-column: 2;
+    justify-self: end;
+  }
 }
 .project-team-written > summary {
   cursor: pointer;

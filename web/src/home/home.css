@@ -1102,6 +1102,13 @@ ul.home-widget {
   flex-wrap: wrap;
   gap: 6px;
 }
+/* A flex item is as wide as its widest row unless it is told otherwise: a long
+   Job name would then run past the card (R-28). Each line stays in the list,
+   and the name is the part that is cut. */
+.home-jobs li {
+  min-width: 0;
+  max-width: 100%;
+}
 .home-job {
   display: flex;
   align-items: center;
@@ -1122,7 +1129,11 @@ ul.home-widget {
   white-space: nowrap;
 }
 .home-job > span:last-child {
+  min-width: 0;
+  overflow: hidden;
   color: var(--home-ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .home-job-status {
   padding: 0 6px;
