@@ -2015,6 +2015,11 @@ fieldset.home-ask-options {
 .app.phone .home-answer-hint {
   font-size: calc(11px + var(--font-adjust, 3px));
 }
+/* A resolved Ask's answer as the user gave it (YN-223), at History's own size. */
+.home-reply.home-history-answer {
+  margin: 4px 0 8px;
+  font-size: inherit;
+}
 .home-history-reply {
   margin: 4px 0 0;
   color: var(--home-ink-2);

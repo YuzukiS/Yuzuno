@@ -14,6 +14,9 @@ import { SectionBody } from "./SectionBody";
 import type { BriefOutcome, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
 import { Tip, TipText } from "../Tip";
+import { ReplyAnswer } from "../home-reply/HomeReply";
+import { withoutFormIds } from "./AskReply";
+import { answerShown } from "./answer-card";
 
 /*
  * A Project's facts, as its panel and its page on Home show them (YN-86
@@ -197,6 +200,25 @@ function HistoryReply({ section, projectId, workspaceId, agents }: { section: Se
   );
 }
 
+/** A resolved Ask's question and the user's answer, in History (YN-223). */
+function HistoryAnswer({ ask }: { ask: NonNullable<Section["ask"]> }) {
+  const t = useStrings(homeText);
+  const text = withoutFormIds(ask.replyText ?? "").trim();
+  const shown = answerShown(ask, text);
+  return (
+    <>
+      <p className="home-question">{shown.question}</p>
+      {shown.snapshot ? (
+        <div className="home-reply home-answer-given home-history-answer" role="group" aria-label={t.yourAnswer}>
+          <ReplyAnswer snapshot={shown.snapshot} />
+        </div>
+      ) : (
+        text && <p className="home-history-reply">{t.yourReply}{text}</p>
+      )}
+    </>
+  );
+}
+
 export function History30({
   sections,
   projectId,
@@ -243,9 +265,9 @@ export function History30({
                 {/* Read only when opened: history never costs the live view. */}
                 {open.has(id) && (
                   <>
-                    {/* A resolved ask keeps its question and the user's answer. */}
-                    {section.ask && <p className="home-question">{section.ask.question}</p>}
-                    {section.ask?.replyText && <p className="home-history-reply">{t.yourReply}{section.ask.replyText}</p>}
+                    {/* A resolved ask keeps its question and the user's answer: as the user gave it to that question
+                        when Core kept it (YN-223), else the reply as sent, without a form's line of IDs. */}
+                    {section.ask && <HistoryAnswer ask={section.ask} />}
                     <SectionBody section={section} projectId={projectId} />
                     {reply?.referable.includes(section) && (
                       <HistoryReply section={section} projectId={projectId} workspaceId={reply.workspaceId} agents={reply.agents} />

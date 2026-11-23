@@ -826,6 +826,14 @@ function repliedFixture() {
       history: true, historyReason: "resolved", body: body("Migrated 12 tables"),
       ask: { question: "Run the migration now?", state: "resolved", repliedAt: at(80), replyText: "Run it tonight", reply: { freeText: true } },
     }),
+    // Resolved after a reply Core kept as the user gave it (YN-223).
+    section("region", "ask", "Which region?", 2, owner("a", "Mori"), {
+      history: true, historyReason: "resolved", body: body("Moved to the EU region"),
+      ask: { question: "Move the data to the EU region?", state: "resolved", repliedAt: at(90), replyText: "EU: before Friday",
+        reply: { options: [{ id: "eu", label: "EU" }, { id: "us", label: "US" }], freeText: true },
+        replySnapshot: { format: 1, projectName: "App", sectionKind: "ask", title: "Which region?", question: "Move the data to the EU region?",
+          options: [{ id: "eu", label: "EU" }, { id: "us", label: "US" }], choice: { id: "eu", label: "EU" }, text: "before Friday", form: null } },
+    }),
   );
   return home;
 }
@@ -919,6 +927,15 @@ test("YN-3 a replied ask is an answer card, as R-29 settled it (YN-223): the que
     assert.equal(migrate.querySelector(".home-question").textContent, "Run the migration now?");
     assert.equal(migrate.querySelector(".home-history-reply").textContent, "Your reply: Run it tonight");
     assert.match(migrate.textContent, /Migrated 12 tables/);
+    // One whose reply Core kept as the user gave it (YN-223): the option chosen and their words, as on its answer card.
+    const region = [...history.querySelectorAll("li details")].find((d) => /Which region\?/.test(d.textContent));
+    region.open = true;
+    region.dispatchEvent(new p.w.Event("toggle"));
+    await waitFor(() => region.querySelector(".home-history-answer"), "the resolved ask with its kept reply opens");
+    assert.equal(region.querySelector(".home-question").textContent, "Move the data to the EU region?");
+    assert.equal(region.querySelector(".home-history-answer .home-reply-choice").textContent, "EU");
+    assert.equal(region.querySelector(".home-history-answer .home-reply-words").textContent.trim(), "before Friday");
+    assert.equal(region.querySelector(".home-history-reply"), null, "not the text as sent besides");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
