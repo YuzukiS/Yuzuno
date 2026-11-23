@@ -54,8 +54,10 @@ async fn a_card_an_ask_and_a_plain_reply_carry_their_files_to_the_agent_they_go_
     assert_eq!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &[], &files));
     assert_ne!(origin["reply"], home::reply_digest(Some("left"), "Go", None, &[], &[]));
     // The ask's answered version keeps the files it carried (a runtime's
-    // delivery marks it; here none runs, so it is marked as other tests do).
-    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left", sections::Marked { files: &files, ..Default::default() }).unwrap());
+    // delivery marks it; here none runs, so it is marked as other tests do,
+    // as that reply, the newest sent to it: YN-223).
+    assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Left",
+        sections::Marked { files: &files, client: Some("r2"), ..Default::default() }).unwrap());
     let row = sections::find(&ws.store.db.read().unwrap(), &project, "decide", None).unwrap().unwrap();
     assert_eq!(row.reply_files, files, "kept with the version it answered");
     let shown = sections::section_json(&row, &sections::Owner { state: "active", name: "Agent a".into() }, None, json!([]), chrono::Utc::now());

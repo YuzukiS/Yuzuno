@@ -741,9 +741,21 @@ pub(super) struct Marked<'a> {
     /// The reply as the user gave it to that version (YN-223): its receipt's snapshot, which Home's answered ask is
     /// drawn from.
     pub snapshot: Option<&'a Value>,
-    /// A retry of a reply already sent (YN-223): it marks the ask only while no reply is marked on it, as when the
-    /// first send was delivered but not marked, so a later reply the user sent meanwhile is never overwritten.
-    pub retry: bool,
+    /// The reply's clientMessageId (YN-223): it marks the ask only if it is the newest reply sent to it (`reply_sent`),
+    /// or none is recorded; so a late retry of an earlier reply never overwrites a newer one. None for a mark that names
+    /// no message (tests), which marks only where none is recorded.
+    pub client: Option<&'a str>,
+}
+
+/// A reply the user sent to `version` of an ask (YN-223), delivered or not: the newest one, the only one that may
+/// mark it from now on (Marked::client). Sent to a version no longer the live unresolved ask, it records nothing.
+pub(super) fn reply_sent(store: &Store, project: &str, key: &str, version: i64, client: &str) -> Result<()> {
+    store.db.write()?.execute(
+        "UPDATE project_brief_sections SET reply_client=?4
+         WHERE project_id=?1 AND key=?2 AND version=?3 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')",
+        params![project, key, version, client],
+    )?;
+    Ok(())
 }
 
 /// `mark_replied` with what else the reply kept (Marked); a reply without one of them clears it.
@@ -753,10 +765,11 @@ pub(super) fn mark_replied_form(store: &Store, project: &str, key: &str, version
     let files = (!marked.files.is_empty()).then(|| json!(marked.files).to_string());
     let snapshot = marked.snapshot.map(Value::to_string);
     let changed = store.db.write()?.execute(
-        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8,reply_snapshot=?9
-         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask'
-         AND (ask_state='open' OR (ask_state='replied' AND NOT ?10))",
-        params![project, key, now(), text, version, form, images, files, snapshot, marked.retry],
+        "UPDATE project_brief_sections SET ask_state='replied',replied_at=?3,reply_text=?4,reply_form=?6,reply_images=?7,reply_files=?8,reply_snapshot=?9,
+         reply_client=COALESCE(?10,reply_client)
+         WHERE project_id=?1 AND key=?2 AND version=?5 AND live=1 AND kind='ask' AND ask_state IN ('open','replied')
+         AND (reply_client IS NULL OR reply_client IS ?10)",
+        params![project, key, now(), text, version, form, images, files, snapshot, marked.client],
     )?;
     Ok(changed == 1)
 }

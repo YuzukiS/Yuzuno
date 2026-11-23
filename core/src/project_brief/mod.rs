@@ -407,6 +407,16 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has_reply_snapshot {
         db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_snapshot TEXT")?;
     }
+    // reply_client: the clientMessageId of the newest reply the user sent to
+    // this ask (YN-223), delivered or not: only that reply marks it, so a
+    // late retry of an earlier one never overwrites a newer one, and a
+    // newer one still marks when its retry is what delivers it. NULL until
+    // Home sends a reply through a Core that records it.
+    let has_reply_client: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='reply_client')", [], |r| r.get(0))?;
+    if !has_reply_client {
+        db.execute_batch("ALTER TABLE project_brief_sections ADD COLUMN reply_client TEXT")?;
+    }
     let has_lineage: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_brief_sections') WHERE name='lineage')", [], |r| r.get(0))?;
     if !has_lineage {

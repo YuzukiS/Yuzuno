@@ -2348,15 +2348,38 @@ async fn home_shows_a_replied_asks_reply_as_the_user_gave_it_to_that_version() {
     let answered = shown(&ws);
     assert_eq!((answered["ask"]["state"].clone(), answered["ask"]["replyText"].clone()), (json!("replied"), json!("Left: Go")));
     assert_eq!(answered["ask"]["replySnapshot"], given);
-    // The user replies again; a retry of the first send then never overwrites that later reply.
+    // A reply sent before Core marked it, its first send not delivered, then delivered by its retry: the newest reply
+    // sent, so its retry marks it (review 62a6e4eb).
+    let accepted = |client: &str, choice: &str, label: &str, text: &str| crate::model::MessageReceipt { binding: None, files: vec![], file_paths: vec![],
+        skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        origin: Some(json!({"kind":"home","projectId":project,"key":"decide","version":1,"workspaceId":workspace,
+            "reply":home::reply_digest(Some(choice), text, None, &[], &[])})),
+        input: crate::model::MessageInput { client_message_id: client.into(),
+            text: home::compose_ask(&workspace, "Code", &project, &row, Some(&(choice.to_owned(), label.to_owned())), text), text_blocks: None,
+            images: vec![], expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    let again = |client: &str, choice: &str, text: &str| home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: text.into(),
+        client_message_id: client.into(), choice: Some(choice.into()), version: None, title: None, ask_version: Some(1),
+        workspace_id: Some(workspace.clone()), form: None, images: vec![], files: vec![], intent: Default::default(), note: None };
+    sections::reply_sent(&ws.store, &project, "decide", 1, "m2").unwrap();
+    let m2 = accepted("m2", "right", "Right", "Delivered on its retry");
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(m2)).unwrap();
+    home::reply(&ws, project.clone(), again("m2", "right", "Delivered on its retry")).await.unwrap();
+    let retried = snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
+        "choice":{"id":"right","label":"Right"},"text":"Delivered on its retry"}));
+    let marked = shown(&ws);
+    assert_eq!((marked["ask"]["replyText"].clone(), marked["ask"]["replySnapshot"].clone()), (json!("Right: Delivered on its retry"), retried));
+    // The user replies again; a late retry of an earlier reply then never overwrites that newer one.
     let later = snapshot(json!({"sectionKind":"ask","title":"About decide","question":"Which way?","options":two_ways(),
         "choice":{"id":"right","label":"Right"},"text":"On second thought"}));
+    sections::reply_sent(&ws.store, &project, "decide", 1, "m3").unwrap();
     assert!(sections::mark_replied_form(&ws.store, &project, "decide", 1, "Right: On second thought",
-        sections::Marked { snapshot: Some(&later), ..Default::default() }).unwrap());
-    let retried = home::reply(&ws, project.clone(), reply()).await.unwrap();
-    assert_eq!(retried.status, "accepted", "the retry answers with the first send's receipt");
-    let kept_later = shown(&ws);
-    assert_eq!((kept_later["ask"]["replyText"].clone(), kept_later["ask"]["replySnapshot"].clone()), (json!("Right: On second thought"), later.clone()));
+        sections::Marked { snapshot: Some(&later), client: Some("m3"), ..Default::default() }).unwrap());
+    for (retry, choice, text) in [(reply(), "left", "Go"), (again("m2", "right", "Delivered on its retry"), "right", "Delivered on its retry")] {
+        let answered = home::reply(&ws, project.clone(), retry).await.unwrap();
+        assert_eq!(answered.status, "accepted", "the retry of {choice}: {text} answers with its first send's receipt");
+        let kept_later = shown(&ws);
+        assert_eq!((kept_later["ask"]["replyText"].clone(), kept_later["ask"]["replySnapshot"].clone()), (json!("Right: On second thought"), later.clone()));
+    }
     let given = later;
     // Its owner's edit of the body keeps the reply as it was given; an Agent's read never carries it.
     accept(&ws, "a", input("q2", 1, vec![edit("decide", json!({"note":markdown("Started on the left.")}))])).await;
