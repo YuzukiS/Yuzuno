@@ -185,6 +185,7 @@ import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { HIDDEN_READ_MS, useRefreshTrigger } from "./refresh-trigger";
 import { usePageHidden } from "./page-visibility";
+import { SLIM_LISTING, isSlim, mergeListing, readFullAgent, withListing } from "./workspace-listing";
 import { useProgressBatch } from "./progress-batch";
 import { coreConnection } from "./connection-status";
 import { langTag, useLanguage } from "./i18n";
@@ -1013,6 +1014,10 @@ export function App() {
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
+  // Released executors' full rows read when they were opened, by Workspace
+  // and Agent (YN-221 S4), and the reads on their way.
+  const fullRows = useRef(new Map<string, Agent>());
+  const fullReads = useRef(new Set<string>());
   /** Everything shown is read again: after the user's own actions, when Core
    * resets the stream, and while polling because it is not open. */
   const refresh = useCallback(() => {
@@ -1239,7 +1244,35 @@ export function App() {
       if (id === workspaceId) setNotice(shellNow.current.appearanceFollowed);
     });
   }, [workspaceId, setNotice]);
-  const agent = workspace?.agents.find((a) => a.id === selected);
+  // A released executor's slim row (YN-221 S4) is opened once its full row is
+  // read: until then nothing that needs its settings is shown for it.
+  const listedAgent = workspace?.agents.find((a) => a.id === selected);
+  const agent = isSlim(listedAgent) ? undefined : listedAgent;
+  useEffect(() => {
+    if (!workspaceId || !listedAgent || !isSlim(listedAgent)) return;
+    const id = listedAgent.id;
+    const key = `${workspaceId}|${id}`;
+    const show = (full: Agent) => setWorkspace((w) => {
+      if (!w || (w.workspace?.id || "") !== workspaceId) return w;
+      const row = w.agents.find((a) => a.id === id);
+      return row && isSlim(row) ? { ...w, agents: w.agents.map((a) => (a.id === id ? withListing(full, a) : a)) } : w;
+    });
+    const known = fullRows.current.get(key);
+    if (known) {
+      show(known);
+      return;
+    }
+    // One read per Workspace and Agent; one that failed is tried again with the next list.
+    if (fullReads.current.has(key)) return;
+    fullReads.current.add(key);
+    readFullAgent(id)
+      .then((full) => {
+        fullRows.current.set(key, full);
+        show(full);
+      })
+      .catch(() => {})
+      .finally(() => fullReads.current.delete(key));
+  }, [workspaceId, listedAgent]);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
   // the left on a desktop window, the context panel from the right. Its column changes at once,
@@ -2103,7 +2136,10 @@ export function App() {
   useSnapshot<Workspace>(
     previewMode ? null : "/workspace",
     workspaceRevision,
-    (w) => {
+    (read) => {
+      // A released executor's slim row, with its full row once it was opened (YN-221 S4).
+      const readId = read.workspace?.id || "";
+      const w = mergeListing(read, workspaceRef.current, (id) => fullRows.current.get(`${readId}|${id}`));
       setWorkspace(w);
       workspaceFailed.current = false;
       setWorkspaceFailure(null);
@@ -2144,6 +2180,7 @@ export function App() {
       // Not while the read a Retry asked for still waits its turn.
       if (!more) setRetrying(false);
     },
+    SLIM_LISTING,
   );
   // Remembered for this Workspace only, and not at all until it is known.
   // Its own effect, so a Workspace that arrives or changes records what is
@@ -5067,6 +5104,11 @@ export function App() {
               </div>
             )}
           </>
+        ) : listedAgent ? (
+          <div className="loading-state full" lang={langTag(language)}>
+            <LoaderCircle className="spin" size={22} />
+            {shell.openingAgent}
+          </div>
         ) : loading ? (
           <div className="loading-state full">
             <LoaderCircle className="spin" size={22} />

@@ -10,6 +10,8 @@ export function useSnapshot<T>(
   onError: (error: unknown) => void,
   // `more`: a read asked for meanwhile runs next.
   onSettled?: (more: boolean) => void,
+  // Sent with each read; keep the same object across renders.
+  headers?: HeadersInit,
 ) {
   const callbacks = useRef({ onData, onError, onSettled });
   callbacks.current = { onData, onError, onSettled };
@@ -29,7 +31,7 @@ export function useSnapshot<T>(
       running = true;
       queued = false;
       try {
-        const data = await readSnapshot<T>(path, controller.signal);
+        const data = await readSnapshot<T>(path, controller.signal, headers);
         if (!disposed) callbacks.current.onData(data);
       } catch (error) {
         if (!disposed) callbacks.current.onError(error);
@@ -47,7 +49,7 @@ export function useSnapshot<T>(
       controller.abort();
       if (request.current === run) request.current = () => {};
     };
-  }, [path]);
+  }, [path, headers]);
   useEffect(() => {
     request.current();
   }, [path, revision]);

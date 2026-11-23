@@ -5,6 +5,7 @@ import { checkAge, harnessName, type HarnessCheck, type MachineCheck } from "./m
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, Model, Workspace } from "./types";
 import { loadedRelease } from "./updates";
+import { SLIM_LISTING } from "./workspace-listing";
 
 /**
  * The runtime and versions this Workspace runs on (T-191): Core's version,
@@ -120,7 +121,7 @@ export async function readRuntime(signal?: AbortSignal): Promise<RuntimeRead> {
   const [health, machines, workspace, budget, sdk, desktop] = await Promise.all([
     settle(() => api<CoreHealth>("/health", { signal })),
     settle(async () => (await api<{ machines: WorkspaceMachine[] }>("/machines", { signal })).machines),
-    settle(() => api<Workspace>("/workspace", { signal })),
+    settle(() => api<Workspace>("/workspace", { signal, headers: SLIM_LISTING })),
     settle(() => api<JobsBudget>("/jobs/budget", { signal })),
     settle(() => api<ClaudeSdkStatus>("/claude-sdk", { signal })),
     invoke ? settle(async () => (await invoke("desktop_update_status")) as DesktopUpdateStatus) : Promise.resolve(null),

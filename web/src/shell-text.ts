@@ -199,6 +199,7 @@ export const shellText = strings({
   projectReady: (name: string) => `${name} is ready. Add agents or tasks to it.`,
   // In place of the welcome while no Workspace has been read.
   workspaceUnread: "Your Workspace couldn’t be read.",
+  openingAgent: "Opening this Agent…",
   workspaceUnreadDetail: "Whether it has any Agents isn’t known yet. The banner above says why and can try again.",
 }, {
   status: {
@@ -376,6 +377,7 @@ export const shellText = strings({
   created: (name) => `${name} 有了属于自己的小空间。`,
   projectReady: (name) => `${name} 已就绪。可以向其中添加 Agent 或任务。`,
   workspaceUnread: "无法读取你的工作区。",
+  openingAgent: "正在打开这个 Agent…",
   workspaceUnreadDetail: "目前还不知道其中是否有 Agent。上方的提示说明了原因，并可以重试。",
 });
 
