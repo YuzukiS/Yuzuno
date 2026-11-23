@@ -6,7 +6,7 @@ import { projectColour } from "../project-groups";
 import { Tip, TipText } from "../Tip";
 import { BriefMarkdown } from "./brief/Markdown";
 import { briefText } from "./brief/brief-text";
-import { changedSinceSeen, sectionDomId } from "./brief-layout";
+import { changedSinceSeen, readBefore, sectionDomId, unreadChange } from "./brief-layout";
 import { cardContent } from "./card-preview";
 import { cardText } from "./card-text";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -31,8 +31,8 @@ const CONTROLS = "button, a, summary, input, textarea, select, label, .home-card
  * With other cards, "Project cards N" leads to the group below, where the card itself is. With none (`more` 0), the
  * banner is the card's one place on the page (the lead's call on YN-218, seq 12072): it carries the card's id, so a
  * link, a jump or a reply's "Open on Home" lands here with its note, says a status's "Data as of" as its card does,
- * and offers the card's own Reply (the same draft and recipient, CardReply), Seen (the page's) and More actions (Pin,
- * Copy report), as a read-only Home withholds them from the card.
+ * says New or Updated as its card does, and offers the card's own Reply (the same draft and recipient, CardReply), Seen
+ * (the page's) and More actions (Pin, Copy report), as a read-only Home withholds them from the card.
  */
 export function ProjectNow({
   section,
@@ -66,6 +66,8 @@ export function ProjectNow({
   };
   // The card's own actions, when the banner is its one place: as its card has them (SummaryCard).
   const replyable = alone && !readOnly;
+  // New or Updated since the user last read it, as the card says it (SummaryCard): only where the banner is the card.
+  const changed = alone && section.historyReason !== "archived" && unreadChange(section);
   const [replying, setReplying] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
   const [replyOpened, setReplyOpened] = useState(false);
   const replyButton = useRef<HTMLButtonElement>(null);
@@ -95,7 +97,14 @@ export function ProjectNow({
     >
       <div className="now-hero-main">
         {alone && common.notice?.(section)}
-        <p className="now-hero-label">{stale ? tb.nowStale : tb.now}</p>
+        <p className="now-hero-label">
+          {stale ? tb.nowStale : tb.now}
+          {changed && (
+            <Tip content={<TipText body={home.changedTitle} />}>
+              <span className="home-changed">{readBefore(section) ? home.updated : home.new}</span>
+            </Tip>
+          )}
+        </p>
         <p className="now-hero-head">{lead?.head ?? section.title}</p>
         {lead?.rest && (
           <div className="now-hero-text">

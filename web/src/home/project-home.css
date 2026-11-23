@@ -474,6 +474,11 @@
 }
 /* The card's own actions when the banner is its one place (R-27, the lead's call on YN-218): as its card's head has
    them (summary-card.css .home-summary-actions), and its reply across the banner's width under the rest. */
+.now-hero-label .home-changed {
+  margin-left: 10px;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .now-card-actions {
   display: inline-flex;
   align-items: center;

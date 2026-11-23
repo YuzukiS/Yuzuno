@@ -455,7 +455,7 @@ test("the banner: the conclusion as its heading, who and when, the Project cards
   assert.equal(now.querySelector(".now-hero-aside"), null, "no forYou named: the conclusion alone, never the lead's own list");
   assert.equal(now.id, "", "the card itself is in the group, by its id");
   assert.equal(now.dataset.sectionKey, undefined);
-  assert.equal(now.querySelector(".now-card-actions"), null, "its actions are the card's, in the group");
+  assert.equal(now.querySelector(".now-card-actions, .home-changed"), null, "its actions and New are the card's, in the group");
   const [more, open] = now.querySelectorAll(".now-actions button");
   assert.equal(page.text(more), "Project cards 3");
   assert.equal(page.text(open), "Open status");
@@ -530,6 +530,7 @@ test("alone, the banner is the card's one place: its id, the note, Data as of, R
   assert.equal(now.id, "home-section-p1-development");
   assert.equal(now.dataset.sectionKey, "development");
   assert.ok(now.classList.contains("is-alone"));
+  assert.equal(page.text(now.querySelector(".now-hero-label .home-changed")), "New", "not read yet: New, as its card says");
   assert.equal(page.text(now.querySelector(".home-reply-arrival")), "A reply landed here", "a reply's Open on Home lands here");
   assert.match(page.text(now.querySelector(".now-meta")), /Data as of .*older than its .* validity/, "as its card says it");
   assert.equal(now.querySelector(".now-actions .talk-link"), null, "no Project cards to go to");
